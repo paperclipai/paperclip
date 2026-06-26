@@ -1019,5 +1019,69 @@
       "monitors": "Monitors",
       "users": "Users"
     }
+  },
+  "approvalDetail": {
+    "errors": {
+      "approve": "Approve failed",
+      "comment": "Comment failed",
+      "delete": "Delete failed",
+      "reject": "Reject failed",
+      "resubmit": "Resubmit failed"
+    },
+    "text": {
+      "confirmed": "Approval confirmed",
+      "notFound": "Approval not found.",
+      "linkedTasks": "Linked Tasks",
+      "requestedBy": "Requested by"
+    },
+    "labels": {
+      "approvals": "Approvals",
+      "backToApprovals": "Back to approvals",
+      "openHiredAgent": "Open hired agent"
+    },
+    "placeholders": {
+      "addComment": "Add a comment..."
+    }
+  },
+  "artifacts": {
+    "text": {
+      "groupBy": "Group by"
+    },
+    "labelsJsx": {
+      "clearSearch": "Clear artifact search",
+      "filterByType": "Filter artifacts by type",
+      "search": "Search artifacts"
+    },
+    "labelsObj": {
+      "artifacts": "Artifacts",
+      "documents": "Documents",
+      "files": "Files",
+      "images": "Images",
+      "none": "None"
+    }
+  },
+  "boardClaim": {
+    "errors": {
+      "challengeInvalid": "Challenge is invalid or expired.",
+      "claimFailed": "Failed to claim board ownership"
+    },
+    "text": {
+      "claimed": "Board ownership claimed",
+      "claim": "Claim Board ownership",
+      "challengeUnavailable": "Claim challenge unavailable",
+      "invalidUrl": "Invalid board claim URL.",
+      "loading": "Loading claim challenge...",
+      "openBoard": "Open board",
+      "signInRequired": "Sign in required"
+    }
+  },
+  "companies": {
+    "text": {
+      "loading": "Loading companies...",
+      "unlimitedBudget": "Unlimited budget"
+    },
+    "tabs": {
+      "companies": "Companies"
+    }
   }
 }

@@ -1019,5 +1019,69 @@
       "monitors": "監控",
       "users": "使用者"
     }
+  },
+  "approvalDetail": {
+    "errors": {
+      "approve": "審批失敗",
+      "comment": "評論失敗",
+      "delete": "刪除失敗",
+      "reject": "拒絕失敗",
+      "resubmit": "重新提交失敗"
+    },
+    "text": {
+      "confirmed": "審批已確認",
+      "notFound": "未找到審批。",
+      "linkedTasks": "連結任務",
+      "requestedBy": "請求人"
+    },
+    "labels": {
+      "approvals": "審批",
+      "backToApprovals": "返回審批",
+      "openHiredAgent": "開啟已僱用智慧代理"
+    },
+    "placeholders": {
+      "addComment": "新增評論……"
+    }
+  },
+  "artifacts": {
+    "text": {
+      "groupBy": "分組方式"
+    },
+    "labelsJsx": {
+      "clearSearch": "清除產物搜尋",
+      "filterByType": "按類型篩選產物",
+      "search": "搜尋產物"
+    },
+    "labelsObj": {
+      "artifacts": "產物",
+      "documents": "文件",
+      "files": "檔案",
+      "images": "圖片",
+      "none": "無"
+    }
+  },
+  "boardClaim": {
+    "errors": {
+      "challengeInvalid": "挑戰無效或已過期。",
+      "claimFailed": "認領董事會擁有權失敗"
+    },
+    "text": {
+      "claimed": "董事會擁有權已認領",
+      "claim": "認領董事會擁有權",
+      "challengeUnavailable": "認領挑戰不可用",
+      "invalidUrl": "無效的董事會認領 URL。",
+      "loading": "正在載入認領挑戰……",
+      "openBoard": "開啟董事會",
+      "signInRequired": "需要登入"
+    }
+  },
+  "companies": {
+    "text": {
+      "loading": "正在載入公司……",
+      "unlimitedBudget": "無限預算"
+    },
+    "tabs": {
+      "companies": "公司"
+    }
   }
 }

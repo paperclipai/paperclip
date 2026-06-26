@@ -1019,5 +1019,69 @@
       "monitors": "监控",
       "users": "用户"
     }
+  },
+  "approvalDetail": {
+    "errors": {
+      "approve": "审批失败",
+      "comment": "评论失败",
+      "delete": "删除失败",
+      "reject": "拒绝失败",
+      "resubmit": "重新提交失败"
+    },
+    "text": {
+      "confirmed": "审批已确认",
+      "notFound": "未找到审批。",
+      "linkedTasks": "链接任务",
+      "requestedBy": "请求人"
+    },
+    "labels": {
+      "approvals": "审批",
+      "backToApprovals": "返回审批",
+      "openHiredAgent": "打开已雇用智能体"
+    },
+    "placeholders": {
+      "addComment": "添加评论……"
+    }
+  },
+  "artifacts": {
+    "text": {
+      "groupBy": "分组方式"
+    },
+    "labelsJsx": {
+      "clearSearch": "清除产物搜索",
+      "filterByType": "按类型筛选产物",
+      "search": "搜索产物"
+    },
+    "labelsObj": {
+      "artifacts": "产物",
+      "documents": "文档",
+      "files": "文件",
+      "images": "图片",
+      "none": "无"
+    }
+  },
+  "boardClaim": {
+    "errors": {
+      "challengeInvalid": "挑战无效或已过期。",
+      "claimFailed": "认领董事会所有权失败"
+    },
+    "text": {
+      "claimed": "董事会所有权已认领",
+      "claim": "认领董事会所有权",
+      "challengeUnavailable": "认领挑战不可用",
+      "invalidUrl": "无效的董事会认领 URL。",
+      "loading": "正在加载认领挑战……",
+      "openBoard": "打开董事会",
+      "signInRequired": "需要登录"
+    }
+  },
+  "companies": {
+    "text": {
+      "loading": "正在加载公司……",
+      "unlimitedBudget": "无限预算"
+    },
+    "tabs": {
+      "companies": "公司"
+    }
   }
 }
