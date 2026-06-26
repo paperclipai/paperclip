@@ -1,67 +1,67 @@
-# Webhook de Review GitHub -> Paperclip
+# GitHub Review Webhook -> Paperclip
 
-Este fluxo conecta o review de PR no GitHub ao Paperclip para criar ou atualizar tasks de correção.
+This flow connects GitHub pull request reviews to Paperclip so review feedback can become actionable tasks.
 
-## Fluxo esperado
+## Expected Flow
 
-1. Um humano pede a implementação ao Hermes Agent.
-2. O Hermes Agent analisa o pedido e delega para um ou mais agentes capazes.
-3. O(s) agente(s) cria(m) branch, resolve(m) o trabalho e abrem um PR.
-4. O Codex no GitHub (`chatgpt-codex-connector[bot]` ou outro bot configurado) revisa o PR e escreve comentários/melhorias.
-5. O GitHub dispara um webhook para o Paperclip.
-6. O Paperclip normaliza o review, aplica allowlist/assinatura/idempotência e cria ou atualiza a task.
-7. O agente responsável recebe a task e corrige o PR na mesma branch.
+1. A human asks the Hermes Agent to implement something.
+2. The Hermes Agent analyzes the request and delegates work to one or more capable agents.
+3. The agent or agents create a branch, complete the work, and open a pull request.
+4. Codex on GitHub (`chatgpt-codex-connector[bot]` or another configured bot) reviews the pull request and writes comments or improvement suggestions.
+5. GitHub sends a webhook to Paperclip.
+6. Paperclip normalizes the review, applies allowlist/signature/idempotency rules, and creates or updates a task.
+7. The responsible agent receives the task and fixes the pull request on the same branch.
 
 ## Endpoint
 
-- URL local/pública: `POST /api/github/webhook`
+- Local/public URL: `POST /api/github/webhook`
 - `Content-Type`: `application/json`
-- Assinatura: `X-Hub-Signature-256`
-- Delivery ID: `X-GitHub-Delivery`
+- Signature header: `X-Hub-Signature-256`
+- Delivery ID header: `X-GitHub-Delivery`
 
-## Eventos aceitos
+## Accepted Events
 
-O endpoint processa apenas estes eventos:
+The endpoint processes only these GitHub events:
 
 - `pull_request_review`
 - `pull_request_review_comment`
-- `issue_comment` quando `issue.pull_request` existe
+- `issue_comment` when `issue.pull_request` is present
 
-Comentários em issue comum são ignorados.
+Comments on regular issues are ignored.
 
-## Configuração
+## Configuration
 
-As variáveis abaixo são lidas do ambiente do Paperclip. Não coloque segredos no código.
+These environment variables are read from the Paperclip runtime. Do not hardcode secrets in the codebase.
 
 - `GITHUB_WEBHOOK_SECRET`
 - `GITHUB_WEBHOOK_COMPANY_ID`
-- `GITHUB_WEBHOOK_PROJECT_ID` opcional
-- `GITHUB_WEBHOOK_ALLOWED_REPOS` opcional, lista separada por vírgula ou quebra de linha
-- `GITHUB_WEBHOOK_ALLOWED_ORGS` opcional
-- `GITHUB_WEBHOOK_ALLOWED_BOT_LOGINS` opcional, padrão: `chatgpt-codex-connector[bot]`
-- `GITHUB_WEBHOOK_ALLOW_HUMAN_REVIEWERS` opcional, padrão `false`
-- `GITHUB_WEBHOOK_CEO_AGENT_ID` opcional
-- `GITHUB_WEBHOOK_DEFAULT_ASSIGNEE_AGENT_ID` opcional
-- `GITHUB_WEBHOOK_AGENT_CTO`, `GITHUB_WEBHOOK_AGENT_DEVOPS`, `GITHUB_WEBHOOK_AGENT_QA`, `GITHUB_WEBHOOK_AGENT_UXDESIGNER` opcionais
+- `GITHUB_WEBHOOK_PROJECT_ID` optional
+- `GITHUB_WEBHOOK_ALLOWED_REPOS` optional, comma-separated or newline-separated list
+- `GITHUB_WEBHOOK_ALLOWED_ORGS` optional
+- `GITHUB_WEBHOOK_ALLOWED_BOT_LOGINS` optional, defaults to `chatgpt-codex-connector[bot]`
+- `GITHUB_WEBHOOK_ALLOW_HUMAN_REVIEWERS` optional, defaults to `false`
+- `GITHUB_WEBHOOK_CEO_AGENT_ID` optional
+- `GITHUB_WEBHOOK_DEFAULT_ASSIGNEE_AGENT_ID` optional
+- `GITHUB_WEBHOOK_AGENT_CTO`, `GITHUB_WEBHOOK_AGENT_DEVOPS`, `GITHUB_WEBHOOK_AGENT_QA`, `GITHUB_WEBHOOK_AGENT_UXDESIGNER` optional
 
-## Allowlist e segurança
+## Allowlist and Security
 
-- Se `GITHUB_WEBHOOK_ALLOWED_REPOS` ou `GITHUB_WEBHOOK_ALLOWED_ORGS` estiverem configurados, o webhook só aceita o repositório correspondente.
-- A assinatura HMAC SHA-256 é validada quando `GITHUB_WEBHOOK_SECRET` estiver configurado.
-- Duplicatas são tratadas por `originKind + originId`, evitando tasks repetidas para o mesmo review/comentário.
-- Review/comentário de humano é ignorado por padrão; para aceitar, habilite `GITHUB_WEBHOOK_ALLOW_HUMAN_REVIEWERS=true`.
+- If `GITHUB_WEBHOOK_ALLOWED_REPOS` or `GITHUB_WEBHOOK_ALLOWED_ORGS` is configured, the webhook only accepts matching repositories.
+- The HMAC SHA-256 signature is validated when `GITHUB_WEBHOOK_SECRET` is configured.
+- Duplicates are handled by `originKind + originId`, preventing repeated tasks for the same review or comment.
+- Human reviews or comments are ignored by default; to accept them, set `GITHUB_WEBHOOK_ALLOW_HUMAN_REVIEWERS=true`.
 
-## Task criada no Paperclip
+## Task Created in Paperclip
 
-Para cada review acionável, o Paperclip registra:
+For each actionable review, Paperclip records:
 
-- repositório e URL
-- PR, branch head/base e SHA
-- autor do PR
-- autor do review/comentário
-- review ID, estado e corpo
-- comentário, arquivo e linha quando aplicável
-- delivery ID e sender
-- critérios de aceite para a correção
+- repository and URL
+- pull request, head/base branches, and SHA
+- pull request author
+- review/comment author
+- review ID, state, and body
+- comment, file, and line when applicable
+- delivery ID and sender
+- acceptance criteria for the fix
 
-Se uma task já existir para o mesmo review/comentário, o Paperclip atualiza a task em vez de criar outra.
+If a task already exists for the same review or comment, Paperclip updates the task instead of creating another one.

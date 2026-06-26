@@ -16,6 +16,7 @@ const createStore = () => {
     originId: string | null;
     originFingerprint: string | null;
     updatedAt: Date;
+    hiddenAt?: Date | null;
   };
 
   const issues = new Map<string, Issue>();
@@ -23,7 +24,10 @@ const createStore = () => {
 
   return {
     issues,
-    findByOrigin: vi.fn(async (_companyId: string, _originKind: string, originId: string) => issues.get(originId) ?? null),
+    findByOrigin: vi.fn(async (_companyId: string, _originKind: string, originId: string) => {
+      const issue = issues.get(originId) ?? null;
+      return issue?.hiddenAt ? null : issue;
+    }),
     create: vi.fn(async (_companyId: string, input: { title: string; description: string; priority: string; assigneeAgentId: string | null; originKind: string; originId: string; originFingerprint: string; }) => {
       counter += 1;
       const issue: Issue = {
@@ -152,7 +156,7 @@ describe("github webhook route", () => {
     process.env.GITHUB_WEBHOOK_CEO_AGENT_ID = originalEnv.ceo;
   });
 
-  it("cria um task idempotente para pull_request_review.submitted do bot do Codex", async () => {
+  it("creates an idempotent task for pull_request_review.submitted from the Codex bot", async () => {
     const payload = {
       action: "submitted",
       repository: {
@@ -212,7 +216,7 @@ describe("github webhook route", () => {
     }));
   });
 
-  it("atualiza um task existente com path, linha e corpo do review comment", async () => {
+  it("updates an existing task with review comment path, line, and body", async () => {
     mockIssueStore.issues.set("github:webhook|acme/repo|pull_request_review_comment|created|pr:8|item:2001", {
       id: "issue-9",
       status: "todo",
@@ -270,11 +274,11 @@ describe("github webhook route", () => {
     expect(mockIssueStore.update).toHaveBeenCalledWith("issue-9", expect.objectContaining({
       originKind: "github:webhook",
       originId: "github:webhook|acme/repo|pull_request_review_comment|created|pr:8|item:2001",
-      description: expect.stringContaining("Arquivo: src/app.ts"),
+      description: expect.stringContaining("File: src/app.ts"),
     }));
   });
 
-  it("aceita issue_comment em PR e ignora issue_comment em issue comum", async () => {
+  it("accepts issue_comment on PRs and ignores issue_comment on regular issues", async () => {
     const prPayload = {
       action: "created",
       repository: {
@@ -287,15 +291,6 @@ describe("github webhook route", () => {
         pull_request: {
           url: "https://api.github.com/repos/acme/repo/pulls/11",
         },
-      },
-      pull_request: {
-        number: 11,
-        title: "Fix comment review",
-        body: "PR body",
-        html_url: "https://github.com/acme/repo/pull/11",
-        head: { ref: "feature/comment-review", sha: "aa11" },
-        base: { ref: "main" },
-        user: { login: "alice" },
       },
       comment: {
         id: 3001,
@@ -316,6 +311,11 @@ describe("github webhook route", () => {
       kind: "created",
       processed: true,
     });
+    expect(mockIssueStore.create).toHaveBeenCalledWith("company-123", expect.objectContaining({
+      originId: "github:webhook|acme/repo|issue_comment|created|pr:11|item:3001",
+      originFingerprint: "github:webhook|acme/repo|pr:11",
+      title: expect.stringContaining("#11"),
+    }));
 
     const issuePayload = {
       action: "created",
@@ -348,7 +348,7 @@ describe("github webhook route", () => {
     });
   });
 
-  it("rejeita repositório fora da allowlist", async () => {
+  it("rejects repositories outside the allowlist", async () => {
     const payload = {
       action: "submitted",
       repository: {
@@ -386,7 +386,7 @@ describe("github webhook route", () => {
     expect(mockIssueStore.create).not.toHaveBeenCalled();
   });
 
-  it("ignora review humano por padrão e aceita quando configurado", async () => {
+  it("ignores human reviews by default and accepts them when configured", async () => {
     const payload = {
       action: "submitted",
       repository: {
@@ -434,7 +434,48 @@ describe("github webhook route", () => {
     });
   });
 
-  it("rejeita assinatura inválida", async () => {
+
+  it("creates a new task when a previous matching origin is hidden", async () => {
+    const originId = "github:webhook|acme/repo|pull_request_review|submitted|pr:7|item:9001";
+    mockIssueStore.issues.set(originId, {
+      id: "issue-hidden",
+      status: "todo",
+      title: "Hidden old task",
+      description: null,
+      priority: "high",
+      assigneeAgentId: "agent-ceo",
+      projectId: "project-123",
+      originKind: "github:webhook",
+      originId,
+      originFingerprint: "github:webhook|acme/repo|pr:7",
+      updatedAt: new Date(),
+      hiddenAt: new Date(),
+    });
+
+    const payload = {
+      action: "submitted",
+      repository: { full_name: "acme/repo", html_url: "https://github.com/acme/repo" },
+      pull_request: { number: 7, title: "Fix review flow", html_url: "https://github.com/acme/repo/pull/7" },
+      review: {
+        id: 9001,
+        state: "changes_requested",
+        body: "Please fix the failing validation.",
+        html_url: "https://github.com/acme/repo/pull/7#review-9001",
+        user: { login: "chatgpt-codex-connector[bot]" },
+      },
+      sender: { login: "chatgpt-codex-connector[bot]" },
+    };
+    const signature = `sha256=${createHmac("sha256", "github-secret").update(Buffer.from(JSON.stringify(payload))).digest("hex")}`;
+    const req = createRequest({ event: "pull_request_review", deliveryId: "delivery-hidden", signature, body: payload });
+    const res = createResponse();
+
+    await handleGithubWebhookRequest({} as never, req, res, { issueStore: mockIssueStore });
+
+    expect(res.statusCode).toBe(201);
+    expect(res.body).toMatchObject({ kind: "created", processed: true });
+  });
+
+  it("rejects an invalid signature", async () => {
     const payload = {
       action: "submitted",
       repository: {

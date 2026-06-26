@@ -1,5 +1,11 @@
 import { createHmac } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("../services/index.js", () => ({
+  issueService: vi.fn(),
+  logActivity: vi.fn(),
+}));
+
 import {
   buildGitHubWebhookIssueInput,
   normalizeGitHubWebhookEvent,
@@ -8,7 +14,7 @@ import {
 } from "../services/github-webhook.js";
 
 describe("github webhook helpers", () => {
-  it("verifica a assinatura HMAC com o corpo bruto", () => {
+  it("verifies the HMAC signature against the raw body", () => {
     const secret = "super-secret";
     const rawBody = Buffer.from(JSON.stringify({ hello: "world" }));
     const signature = `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
@@ -20,7 +26,7 @@ describe("github webhook helpers", () => {
     })).toBe(true);
   });
 
-  it("rejeita assinatura inválida", () => {
+  it("rejects an invalid signature", () => {
     expect(verifyGitHubWebhookSignature({
       secret: "super-secret",
       rawBody: Buffer.from("{}"),
@@ -28,7 +34,7 @@ describe("github webhook helpers", () => {
     })).toBe(false);
   });
 
-  it("lê allowlist e credenciais sem expor secrets", () => {
+  it("reads allowlists and credentials without exposing secrets", () => {
     const config = readGitHubWebhookConfig({
       GITHUB_WEBHOOK_SECRET: "secret",
       GITHUB_WEBHOOK_COMPANY_ID: "company-123",
@@ -52,7 +58,7 @@ describe("github webhook helpers", () => {
     });
   });
 
-  it("normaliza um review submitted acionável do bot do Codex", () => {
+  it("normalizes an actionable submitted review from the Codex bot", () => {
     const normalized = normalizeGitHubWebhookEvent({
       event: "pull_request_review",
       deliveryId: "delivery-1",
@@ -123,7 +129,86 @@ describe("github webhook helpers", () => {
     });
   });
 
-  it("ignora comentário em issue comum", () => {
+
+  it("normalizes issue_comment PR data from payload.issue without a top-level pull_request", () => {
+    const normalized = normalizeGitHubWebhookEvent({
+      event: "issue_comment",
+      deliveryId: "delivery-issue-comment",
+      config: {
+        secret: "secret",
+        companyId: "company-123",
+        projectId: null,
+        allowedRepos: [],
+        allowedOrgs: [],
+        allowedBotLogins: ["chatgpt-codex-connector[bot]"],
+        allowHumanReviewers: false,
+        defaultAssigneeAgentId: "agent-ceo",
+        ownerAgentIds: { CEO: "agent-ceo", DevOps: null, QA: null, CTO: null, UXDesigner: null },
+      },
+      payload: {
+        action: "created",
+        repository: { full_name: "acme/repo", html_url: "https://github.com/acme/repo" },
+        issue: {
+          number: 11,
+          title: "Fix comment review",
+          html_url: "https://github.com/acme/repo/pull/11",
+          pull_request: { url: "https://api.github.com/repos/acme/repo/pulls/11" },
+        },
+        comment: {
+          id: 3001,
+          body: "Please adjust the API response.",
+          html_url: "https://github.com/acme/repo/pull/11#issuecomment-3001",
+          user: { login: "chatgpt-codex-connector[bot]" },
+        },
+        sender: { login: "chatgpt-codex-connector[bot]" },
+      },
+    });
+
+    expect(normalized).not.toBeNull();
+    expect(normalized).toMatchObject({
+      event: "issue_comment",
+      disposition: "actionable",
+      originId: "github:webhook|acme/repo|issue_comment|created|pr:11|item:3001",
+      originFingerprint: "github:webhook|acme/repo|pr:11",
+      pullRequest: { number: 11, title: "Fix comment review" },
+    });
+  });
+
+  it("does not treat approval merge language as actionable", () => {
+    const normalized = normalizeGitHubWebhookEvent({
+      event: "pull_request_review",
+      deliveryId: "delivery-approved",
+      config: {
+        secret: "secret",
+        companyId: "company-123",
+        projectId: null,
+        allowedRepos: [],
+        allowedOrgs: [],
+        allowedBotLogins: ["chatgpt-codex-connector[bot]"],
+        allowHumanReviewers: false,
+        defaultAssigneeAgentId: "agent-ceo",
+        ownerAgentIds: { CEO: "agent-ceo", DevOps: null, QA: null, CTO: null, UXDesigner: null },
+      },
+      payload: {
+        action: "submitted",
+        repository: { full_name: "acme/repo", html_url: "https://github.com/acme/repo" },
+        pull_request: { number: 42, title: "Fix webhook handling", html_url: "https://github.com/acme/repo/pull/42" },
+        review: {
+          id: 9002,
+          state: "approved",
+          body: "LGTM, looks good, should merge.",
+          html_url: "https://github.com/acme/repo/pull/42#review-9002",
+          user: { login: "chatgpt-codex-connector[bot]" },
+        },
+        sender: { login: "chatgpt-codex-connector[bot]" },
+      },
+    });
+
+    expect(normalized).not.toBeNull();
+    expect(normalized).toMatchObject({ disposition: "ignored" });
+  });
+
+  it("ignores comments on regular issues", () => {
     const normalized = normalizeGitHubWebhookEvent({
       event: "issue_comment",
       deliveryId: "delivery-2",

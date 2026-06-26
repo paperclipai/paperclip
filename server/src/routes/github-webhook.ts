@@ -37,8 +37,8 @@ export async function handleGithubWebhookRequest(
     const config = readGitHubWebhookConfig();
     if (!config.secret || !config.companyId) {
       res.status(500).json({
-        error: "Webhook do GitHub não configurado",
-        details: "GITHUB_WEBHOOK_SECRET e GITHUB_WEBHOOK_COMPANY_ID são obrigatórios",
+        error: "GitHub webhook is not configured",
+        details: "GITHUB_WEBHOOK_SECRET and GITHUB_WEBHOOK_COMPANY_ID are required",
       });
       return;
     }
@@ -51,7 +51,7 @@ export async function handleGithubWebhookRequest(
         res.status(401).json({ error: "Invalid signature" });
         return;
       }
-      res.status(200).json({ ok: true, ignored: true, reason: "Evento GitHub não suportado" });
+      res.status(200).json({ ok: true, ignored: true, reason: "Unsupported GitHub event" });
       return;
     }
 
@@ -86,7 +86,7 @@ export async function handleGithubWebhookRequest(
     });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: "Erro interno ao processar webhook do GitHub" });
+    res.status(500).json({ error: "Internal error while processing the GitHub webhook" });
   }
 }
 

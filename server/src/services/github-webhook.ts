@@ -219,17 +219,19 @@ function normalizeRepository(payload: PlainRecord): GitHubWebhookRepository {
 
 function normalizePullRequest(payload: PlainRecord): GitHubWebhookPullRequest {
   const pullRequest = isPlainRecord(payload.pull_request) ? payload.pull_request : {};
-  const head = isPlainRecord(pullRequest.head) ? pullRequest.head : {};
-  const base = isPlainRecord(pullRequest.base) ? pullRequest.base : {};
+  const issue = isPlainRecord(payload.issue) ? payload.issue : {};
+  const source = isPlainRecord(payload.pull_request) ? pullRequest : issue;
+  const head = isPlainRecord(source.head) ? source.head : {};
+  const base = isPlainRecord(source.base) ? source.base : {};
   return {
-    number: readNumber(pullRequest.number),
-    title: firstString(pullRequest.title),
-    body: firstString(pullRequest.body),
-    htmlUrl: firstString(pullRequest.html_url, pullRequest.htmlUrl),
-    headRef: firstString(head.ref, pullRequest.head_ref, pullRequest.headRef),
-    headSha: firstString(head.sha, pullRequest.head_sha, pullRequest.headSha),
-    baseRef: firstString(base.ref, pullRequest.base_ref, pullRequest.baseRef),
-    user: normalizeIdentity(pullRequest.user),
+    number: readNumber(source.number),
+    title: firstString(source.title),
+    body: firstString(source.body),
+    htmlUrl: firstString(source.html_url, source.htmlUrl, issue.html_url, issue.htmlUrl),
+    headRef: firstString(head.ref, source.head_ref, source.headRef),
+    headSha: firstString(head.sha, source.head_sha, source.headSha),
+    baseRef: firstString(base.ref, source.base_ref, source.baseRef),
+    user: normalizeIdentity(source.user),
   };
 }
 
@@ -267,44 +269,52 @@ function normalizeText(value: string | null | undefined): string {
   return (value ?? "").trim().replace(/\s+/g, " ");
 }
 
-function hasActionableMarker(text: string): boolean {
+function hasApprovalLanguage(text: string): boolean {
   const normalized = text.toLowerCase();
   return [
-    "please",
-    "fix",
-    "adjust",
-    "change",
-    "replace",
-    "remove",
-    "add ",
-    "update",
-    "refactor",
-    "rename",
-    "resolve",
-    "needs",
-    "must",
-    "should",
-    "security",
-    "bug",
-    "regression",
-    "broken",
-    "failing",
-    "cleanup",
+    "lgtm",
+    "looks good",
+    "approved",
+    "ship it",
+    "ready to merge",
+    "good to merge",
+    "merge it",
+    "should merge",
+    "good to go",
+    "all good",
+    "no blockers",
   ].some((needle) => normalized.includes(needle));
 }
 
-function hasAmbiguousMarker(text: string): boolean {
+function hasActionableMarker(text: string): boolean {
   const normalized = text.toLowerCase();
-  return [
-    "?",
-    "maybe",
-    "perhaps",
-    "consider",
-    "nit",
-    "not sure",
-    "unclear",
-    "question",
-  ].some((needle) => normalized.includes(needle));
+  const actionablePatterns = [
+    /\bplease\b/,
+    /\bfix\b/,
+    /\badjust\b/,
+    /\bchange\b/,
+    /\breplace\b/,
+    /\bremove\b/,
+    /\brefactor\b/,
+    /\brename\b/,
+    /\bresolve\b/,
+    /\baddress\b/,
+    /\binvestigate\b/,
+    /\bcleanup\b/,
+    /\bdocument\b/,
+    /\bretest\b/,
+    /\bverify\b/,
+    /\btest\b/,
+    /\bbug\b/,
+    /\bregression\b/,
+    /\bbroken\b/,
+    /\bfailing\b/,
+    /\bsecurity\b/,
+    /\bupdate\s+(?:the|this|that|these|those|tests?|docs?|documentation|readme|code|logic|implementation|layout|ui|api|copy|text|comments?|handlers?|checks?|validation|support|handling|coverage|fallback|guard|examples?|files?|routes?|inputs?|outputs?)\b/,
+    /\badd\s+(?:the|this|that|these|those|tests?|docs?|documentation|readme|code|logic|implementation|handlers?|checks?|validation|support|handling|coverage|fallback|guard|examples?|comments?|files?|routes?|inputs?|outputs?)\b/,
+  ];
+
+  return actionablePatterns.some((pattern) => pattern.test(normalized));
 }
 
 function repoMatchesAllowlist(repository: GitHubWebhookRepository, config: GitHubWebhookConfig): boolean {
@@ -364,44 +374,44 @@ function buildOriginFingerprint(input: {
 
 function buildIssueBody(input: GitHubWebhookNormalizedEvent) {
   const lines = [
-    "Evento de review do GitHub recebido pelo Paperclip.",
+    "GitHub review event received by Paperclip.",
     "",
-    `Repositório: ${input.repository.fullName ?? "não informado"}`,
-    input.repository.htmlUrl ? `URL do repositório: ${input.repository.htmlUrl}` : null,
-    `Evento: ${input.event}`,
-    `Ação: ${input.action}`,
-    `Delivery ID: ${input.deliveryId ?? "não informado"}`,
+    `Repository: ${input.repository.fullName ?? "not provided"}`,
+    input.repository.htmlUrl ? `Repository URL: ${input.repository.htmlUrl}` : null,
+    `Event: ${input.event}`,
+    `Action: ${input.action}`,
+    `Delivery ID: ${input.deliveryId ?? "not provided"}`,
     "",
-    `PR: ${input.pullRequest.number != null ? `#${input.pullRequest.number}` : "não informado"}`,
-    input.pullRequest.htmlUrl ? `URL do PR: ${input.pullRequest.htmlUrl}` : null,
-    input.pullRequest.title ? `Título do PR: ${input.pullRequest.title}` : null,
-    input.pullRequest.headRef ? `Branch head: ${input.pullRequest.headRef}` : null,
-    input.pullRequest.baseRef ? `Branch base: ${input.pullRequest.baseRef}` : null,
+    `Pull request: ${input.pullRequest.number != null ? `#${input.pullRequest.number}` : "not provided"}`,
+    input.pullRequest.htmlUrl ? `Pull request URL: ${input.pullRequest.htmlUrl}` : null,
+    input.pullRequest.title ? `Pull request title: ${input.pullRequest.title}` : null,
+    input.pullRequest.headRef ? `Head branch: ${input.pullRequest.headRef}` : null,
+    input.pullRequest.baseRef ? `Base branch: ${input.pullRequest.baseRef}` : null,
     input.pullRequest.headSha ? `Head SHA: ${input.pullRequest.headSha}` : null,
-    input.pullRequest.user.login ? `Autor do PR: ${input.pullRequest.user.login}` : null,
+    input.pullRequest.user.login ? `PR author: ${input.pullRequest.user.login}` : null,
     "",
-    `Autor do feedback: ${input.actorLogin ?? "não informado"}`,
+    `Feedback author: ${input.actorLogin ?? "not provided"}`,
     input.sender.login ? `Sender: ${input.sender.login}` : null,
     input.review?.id ? `Review ID: ${input.review.id}` : null,
-    input.review?.state ? `Estado do review: ${input.review.state}` : null,
-    input.review?.htmlUrl ? `URL do review: ${input.review.htmlUrl}` : null,
-    input.comment?.id ? `Comentário ID: ${input.comment.id}` : null,
-    input.comment?.htmlUrl ? `URL do comentário: ${input.comment.htmlUrl}` : null,
-    input.comment?.path ? `Arquivo: ${input.comment.path}` : null,
-    input.comment?.line != null ? `Linha: ${input.comment.line}` : null,
-    input.comment?.side ? `Lado: ${input.comment.side}` : null,
+    input.review?.state ? `Review state: ${input.review.state}` : null,
+    input.review?.htmlUrl ? `Review URL: ${input.review.htmlUrl}` : null,
+    input.comment?.id ? `Comment ID: ${input.comment.id}` : null,
+    input.comment?.htmlUrl ? `Comment URL: ${input.comment.htmlUrl}` : null,
+    input.comment?.path ? `File: ${input.comment.path}` : null,
+    input.comment?.line != null ? `Line: ${input.comment.line}` : null,
+    input.comment?.side ? `Side: ${input.comment.side}` : null,
     "",
-    "Conteúdo do feedback:",
-    normalizeText(firstString(input.review?.body, input.comment?.body, input.pullRequest.body, "Sem conteúdo.") ?? "Sem conteúdo."),
+    "Feedback body:",
+    normalizeText(firstString(input.review?.body, input.comment?.body, input.pullRequest.body, "No content provided.") ?? "No content provided."),
     "",
-    `Classificação: ${input.disposition === "actionable" ? "acionável" : input.disposition === "triage" ? "triagem" : "ignorado"}`,
-    `Motivo: ${input.dispositionReason}`,
+    `Disposition: ${input.disposition === "actionable" ? "actionable" : input.disposition === "triage" ? "triage" : "ignored"}`,
+    `Reason: ${input.dispositionReason}`,
     "",
-    "Critérios de aceite:",
-    "- Confirmar se o comentário/review realmente pede ajuste no PR.",
-    "- Aplicar a correção na branch do PR.",
-    "- Rodar os testes relevantes para o trecho afetado.",
-    "- Responder no PR com o resumo da correção e o resultado da validação.",
+    "Acceptance criteria:",
+    "- Confirm the comment or review actually requests a change to the PR.",
+    "- Apply the fix on the PR branch.",
+    "- Run the relevant tests for the affected area.",
+    "- Reply on the PR with the fix summary and validation result.",
   ].filter((line): line is string => line !== null);
 
   return lines.join("\n");
@@ -410,15 +420,15 @@ function buildIssueBody(input: GitHubWebhookNormalizedEvent) {
 function buildIssueTitle(input: GitHubWebhookNormalizedEvent) {
   const repo = input.repository.fullName ?? input.repository.name ?? "GitHub";
   const prNumber = input.pullRequest.number != null ? `PR #${input.pullRequest.number}` : "PR";
-  const noun = input.disposition === "triage" ? "Triagem" : "Ajuste";
+  const noun = input.disposition === "triage" ? "Triage" : "Fix";
   const subject = input.review?.state === "changes_requested"
     ? "review"
     : input.comment?.path
-      ? `comentário em ${input.comment.path}`
+      ? `comment on ${input.comment.path}`
       : input.event === "issue_comment"
-        ? "comentário no PR"
+        ? "PR comment"
         : "review";
-  return `${noun} do GitHub em ${repo} ${prNumber}: ${subject}`;
+  return `${noun} from GitHub on ${repo} ${prNumber}: ${subject}`;
 }
 
 function resolveWebhookOwner(input: {
@@ -452,49 +462,54 @@ function resolveDisposition(input: {
   allowedActor: boolean;
 }): { disposition: GitHubWebhookDisposition; reason: string } {
   if (!input.allowedActor && !input.allowHumanReviewers) {
-    return { disposition: "ignored", reason: "Autor não está na allowlist de bots configurada." };
+    return { disposition: "ignored", reason: "The author is not on the configured bot allowlist." };
   }
 
   const body = normalizeText(input.review?.body ?? input.comment?.body ?? "");
   if (!body) {
-    return { disposition: "ignored", reason: "O evento não possui texto de review/comentário acionável." };
+    return { disposition: "ignored", reason: "The event does not include actionable review or comment text." };
   }
 
   if (input.event === "pull_request_review") {
     const state = input.review?.state?.toLowerCase() ?? "";
     if (state === "dismissed" || state === "approved") {
       if (hasActionableMarker(body)) {
-        return { disposition: "actionable", reason: "Review aprovado com texto que contém instruções de ajuste." };
+        return { disposition: "actionable", reason: "Approved or dismissed review still includes a clear change request." };
       }
-      return { disposition: "ignored", reason: "Review aprovado/dispensado sem pedido de ajuste." };
+      return { disposition: "ignored", reason: "Approved or dismissed review does not include a clear change request." };
     }
     if (state === "changes_requested") {
-      return { disposition: "actionable", reason: "Review com changes_requested precisa de ajuste." };
+      return { disposition: "actionable", reason: "Review with changes_requested needs a change." };
     }
     return hasActionableMarker(body)
-      ? { disposition: "actionable", reason: "Review contém instruções de ajuste." }
-      : { disposition: "triage", reason: "Review é ambíguo; vai para triagem." };
+      ? { disposition: "actionable", reason: "Review includes clear change instructions." }
+      : { disposition: "triage", reason: "Review is ambiguous and goes to triage." };
   }
 
   if (input.event === "pull_request_review_comment") {
     if (input.comment?.path || input.comment?.line != null) {
-      return { disposition: "actionable", reason: "Comentário aponta arquivo/linha específica." };
+      return { disposition: "actionable", reason: "Comment points to a specific file or line." };
     }
-    return hasActionableMarker(body)
-      ? { disposition: "actionable", reason: "Comentário contém instruções de ajuste." }
-      : { disposition: "triage", reason: "Comentário em review é ambíguo; vai para triagem." };
+    if (hasActionableMarker(body)) {
+      return { disposition: "actionable", reason: "Review comment includes clear change instructions." };
+    }
+    if (hasApprovalLanguage(body)) {
+      return { disposition: "ignored", reason: "Review comment is approval or merge language, not a change request." };
+    }
+    return { disposition: "triage", reason: "Review comment is ambiguous and goes to triage." };
   }
 
   if (input.event === "issue_comment" && input.issueCommentIsOnPullRequest) {
     if (hasActionableMarker(body)) {
-      return { disposition: "actionable", reason: "Comentário em PR contém instruções de ajuste." };
+      return { disposition: "actionable", reason: "PR comment includes clear change instructions." };
     }
-    return hasAmbiguousMarker(body)
-      ? { disposition: "triage", reason: "Comentário em PR é ambíguo; vai para triagem." }
-      : { disposition: "triage", reason: "Comentário em PR foi aceito como triagem." };
+    if (hasApprovalLanguage(body)) {
+      return { disposition: "ignored", reason: "PR comment is approval or merge language, not a change request." };
+    }
+    return { disposition: "triage", reason: "PR comment is accepted as triage." };
   }
 
-  return { disposition: "ignored", reason: "Evento não indica ajuste acionável." };
+  return { disposition: "ignored", reason: "The event does not indicate actionable work." };
 }
 
 export function verifyGitHubWebhookSignature(args: {
@@ -686,7 +701,7 @@ export function createGitHubWebhookIssueStore(db: Db): GitHubWebhookIssueStore {
           updatedAt: issues.updatedAt,
         })
         .from(issues)
-        .where(and(eq(issues.companyId, companyId), eq(issues.originKind, originKind), eq(issues.originId, originId)))
+        .where(and(eq(issues.companyId, companyId), eq(issues.originKind, originKind), eq(issues.originId, originId), isNull(issues.hiddenAt)))
         .then((rows) => rows[0] ?? null);
     },
     async create(companyId, input) {
@@ -756,7 +771,7 @@ export async function processGitHubWebhook(input: {
     config: input.config,
   });
   if (!normalized) {
-    return { kind: "ignored", reason: "Evento fora da allowlist ou sem PR acionável." };
+    return { kind: "ignored", reason: "Event is outside the allowlist or does not target an actionable pull request." };
   }
   if (normalized.disposition === "ignored") {
     return { kind: "ignored", reason: normalized.dispositionReason };
