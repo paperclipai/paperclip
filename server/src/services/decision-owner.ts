@@ -3,15 +3,8 @@ import type { Db } from "@paperclipai/db";
 import { companyMemberships, issueComments, issues } from "@paperclipai/db";
 import { badRequest } from "../errors.js";
 import { instanceSettingsService } from "./instance-settings.js";
-
-const MAX_ISSUE_PARENT_WALK_DEPTH = 50;
-
-type IssueOwnerRow = {
-  id: string;
-  companyId: string;
-  parentId: string | null;
-  createdByUserId: string | null;
-};
+import { issueRequesterService } from "./issue-requester.js";
+import { normalizeUserId } from "./user-ids.js";
 
 export type DecisionOwnerResolutionSource =
   | "explicit_user"
@@ -26,11 +19,6 @@ export interface DecisionOwnerResolution {
   source: DecisionOwnerResolutionSource;
   issueId?: string | null;
   commentId?: string | null;
-}
-
-function normalizeUserId(value: string | null | undefined): string | null {
-  const normalized = typeof value === "string" ? value.trim() : "";
-  return normalized.length > 0 ? normalized : null;
 }
 
 async function findSourceCommentAuthor(db: Db, args: {
@@ -74,53 +62,18 @@ async function assertActiveCompanyUser(db: Db, args: {
   }
 }
 
-async function findRootHumanRequesterForIssue(db: Db, args: {
-  companyId: string;
-  issueId: string;
-}): Promise<DecisionOwnerResolution | null> {
-  const path: IssueOwnerRow[] = [];
-  let cursor: string | null = args.issueId;
-  const seen = new Set<string>();
-
-  while (cursor && !seen.has(cursor) && path.length < MAX_ISSUE_PARENT_WALK_DEPTH) {
-    seen.add(cursor);
-    const row: IssueOwnerRow | null = await db
-      .select({
-        id: issues.id,
-        companyId: issues.companyId,
-        parentId: issues.parentId,
-        createdByUserId: issues.createdByUserId,
-      })
-      .from(issues)
-      .where(and(eq(issues.companyId, args.companyId), eq(issues.id, cursor)))
-      .then((rows) => rows[0] ?? null);
-    if (!row) break;
-    path.push(row);
-    cursor = row.parentId;
-  }
-
-  const rootmostHumanIssue = [...path]
-    .reverse()
-    .find((issue) => normalizeUserId(issue.createdByUserId));
-  const userId = normalizeUserId(rootmostHumanIssue?.createdByUserId ?? null);
-  return userId
-    ? { userId, source: "root_human_requester", issueId: rootmostHumanIssue!.id }
-    : null;
-}
-
 async function findRootHumanRequester(db: Db, args: {
   companyId: string;
   issueIds?: string[];
 }): Promise<DecisionOwnerResolution | null> {
-  const issueIds = Array.from(new Set((args.issueIds ?? []).filter(Boolean)));
-  for (const issueId of issueIds) {
-    const resolution = await findRootHumanRequesterForIssue(db, {
-      companyId: args.companyId,
-      issueId,
-    });
-    if (resolution) return resolution;
-  }
-  return null;
+  const resolution = await issueRequesterService(db).resolveRootHumanRequesterForIssues(args);
+  return resolution
+    ? {
+        userId: resolution.userId,
+        source: "root_human_requester",
+        issueId: resolution.issueId,
+      }
+    : null;
 }
 
 async function findConfiguredDefaultOwner(db: Db): Promise<DecisionOwnerResolution | null> {
