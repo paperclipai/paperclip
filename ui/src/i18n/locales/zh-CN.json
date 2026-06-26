@@ -2041,14 +2041,11 @@
   },
   "issueFiltersPopover": {
     "text": {
-      "assignee": "负责人",
-      "creator": "创建人",
-      "externalObjectStatus": "外部对象状态",
-      "filters": "过滤",
-      "hideRoutineRuns": "隐藏例程运行"
-    },
-    "placeholders": {
-      "searchCreators": "搜索创建人..."
+      "labels": "标签",
+      "liveRunsOnly": "仅实时运行",
+      "noAssignee": "无负责人",
+      "noCreatorsMatch": "无匹配创建人。",
+      "priority": "优先级"
     }
   },
   "issuesList": {
@@ -2228,7 +2225,14 @@
     "options": {
       "custom": "自定义 (cron)",
       "everyDay": "每天",
-      "everyHour": "每小时"
+      "everyHour": "每小时",
+      "everyMinute": "每分钟",
+      "monthly": "每月",
+      "weekdays": "工作日",
+      "weekly": "每周"
+    },
+    "placeholders": {
+      "chooseFrequency": "选择频率..."
     }
   },
   "agentActionButtons": {
@@ -2348,6 +2352,149 @@
       "role": "角色",
       "scope": "范围",
       "title": "标题"
+    }
+  },
+  "agentBubbleActionRow": {
+    "text": {
+      "alwaysAllow": "始终允许",
+      "savePreference": "保存你的反馈分享偏好?",
+      "alwaysSavedLocally": "此投票始终仅在本地保存。",
+      "whatBetter": "哪些方面可以改进?"
+    },
+    "labelsJsx": {
+      "copyMessage": "复制消息",
+      "helpful": "有帮助",
+      "moreActions": "更多操作",
+      "needsWork": "需要改进"
+    },
+    "placeholders": {
+      "shortNote": "添加简短备注"
+    }
+  },
+  "activityCharts": {
+    "text": {
+      "noRuns": "暂无运行",
+      "noTasks": "无任务"
+    }
+  },
+  "issueRow": {
+    "aria": {
+      "dismissFromInbox": "从收件箱忽略",
+      "markAsRead": "标记为已读",
+      "productivityReview": "生产力审查已打开"
+    }
+  },
+  "budgetPolicyCard": {
+    "text": {
+      "budget": "预算",
+      "observed": "已观察",
+      "remaining": "剩余"
+    }
+  },
+  "routineSubSidebar": {
+    "labelsJsx": {
+      "routineSection": "例程分组",
+      "routineSections": "例程分组",
+      "unsavedChanges": "有未保存的更改"
+    },
+    "tabs": {
+      "activity": "活动",
+      "delivery": "交付"
+    }
+  },
+  "companySettingsSidebar": {
+    "labelsJsx": {
+      "access": "访问",
+      "adapters": "适配器",
+      "cloudUpstream": "云上游",
+      "environments": "环境",
+      "experimental": "实验性"
+    }
+  },
+  "keyboardShortcuts": {
+    "toasts": {
+      "global": "全局",
+      "inbox": "收件箱",
+      "taskDetail": "任务详情"
+    },
+    "text": {
+      "title": "键盘快捷键"
+    },
+    "shortcuts": {
+      "archiveItem": "归档项目",
+      "collapseExpandSidebar": "折叠或展开侧边栏",
+      "collapseSelectedGroup": "折叠所选分组",
+      "expandSelectedGroup": "展开所选分组",
+      "focusCommentComposer": "聚焦评论编辑器"
+    }
+  },
+  "agentProperties": {
+    "labelsJsx": {
+      "adapter": "适配器",
+      "created": "创建时间",
+      "errorReason": "错误原因",
+      "lastHeartbeat": "上次心跳",
+      "reportsTo": "报告给"
+    }
+  },
+  "standaloneBrowser": {
+    "toasts": {
+      "linkCopied": "链接已复制",
+      "shareFailed": "分享失败",
+      "sharingUnavailable": "分享不可用"
+    },
+    "labelsJsx": {
+      "openInBrowser": "在浏览器中打开",
+      "refresh": "刷新",
+      "share": "分享"
+    }
+  },
+  "priorityIcon": {
+    "labelsObj": {
+      "critical": "关键",
+      "high": "高",
+      "medium": "中"
+    }
+  },
+  "instanceSidebar": {
+    "labelsJsx": {
+      "access": "访问",
+      "adapters": "适配器",
+      "environments": "环境",
+      "experimental": "实验性",
+      "general": "常规"
+    }
+  },
+  "accountingModelCard": {
+    "toasts": {
+      "financeLedger": "财务分类账",
+      "inferenceLedger": "推理分类账",
+      "liveQuotas": "实时配额"
+    },
+    "descriptions": {
+      "accountLevel": "非单次提示-响应对的账户级别费用。",
+      "requestScoped": "来自 cost_events 的请求级使用和计费运行。"
+    }
+  },
+  "sourceResolvedFoldCallout": {
+    "labelsJsx": {
+      "evaluationTask": "评估任务",
+      "processCleanup": "进程清理",
+      "sameRunEvidence": "同运行证据",
+      "silenceAge": "折叠前静默时长",
+      "watchdogFold": "源解析看门狗折叠"
+    }
+  },
+  "goalProperties": {
+    "text": {
+      "none": "无"
+    },
+    "labelsJsx": {
+      "created": "创建时间",
+      "level": "层级",
+      "owner": "所有者",
+      "parentGoal": "父目标",
+      "status": "状态"
     }
   }
 }

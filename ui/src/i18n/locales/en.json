@@ -2041,14 +2041,11 @@
   },
   "issueFiltersPopover": {
     "text": {
-      "assignee": "Assignee",
-      "creator": "Creator",
-      "externalObjectStatus": "External object status",
-      "filters": "Filters",
-      "hideRoutineRuns": "Hide routine runs"
-    },
-    "placeholders": {
-      "searchCreators": "Search creators..."
+      "labels": "Labels",
+      "liveRunsOnly": "Live runs only",
+      "noAssignee": "No assignee",
+      "noCreatorsMatch": "No creators match.",
+      "priority": "Priority"
     }
   },
   "issuesList": {
@@ -2228,7 +2225,14 @@
     "options": {
       "custom": "Custom (cron)",
       "everyDay": "Every day",
-      "everyHour": "Every hour"
+      "everyHour": "Every hour",
+      "everyMinute": "Every minute",
+      "monthly": "Monthly",
+      "weekdays": "Weekdays",
+      "weekly": "Weekly"
+    },
+    "placeholders": {
+      "chooseFrequency": "Choose frequency..."
     }
   },
   "agentActionButtons": {
@@ -2348,6 +2352,149 @@
       "role": "Role",
       "scope": "Scope",
       "title": "Title"
+    }
+  },
+  "agentBubbleActionRow": {
+    "text": {
+      "alwaysAllow": "Always allow",
+      "savePreference": "Save your feedback sharing preference?",
+      "alwaysSavedLocally": "This vote is always saved locally.",
+      "whatBetter": "What could have been better?"
+    },
+    "labelsJsx": {
+      "copyMessage": "Copy message",
+      "helpful": "Helpful",
+      "moreActions": "More actions",
+      "needsWork": "Needs work"
+    },
+    "placeholders": {
+      "shortNote": "Add a short note"
+    }
+  },
+  "activityCharts": {
+    "text": {
+      "noRuns": "No runs yet",
+      "noTasks": "No tasks"
+    }
+  },
+  "issueRow": {
+    "aria": {
+      "dismissFromInbox": "Dismiss from inbox",
+      "markAsRead": "Mark as read",
+      "productivityReview": "Productivity review open"
+    }
+  },
+  "budgetPolicyCard": {
+    "text": {
+      "budget": "Budget",
+      "observed": "Observed",
+      "remaining": "Remaining"
+    }
+  },
+  "routineSubSidebar": {
+    "labelsJsx": {
+      "routineSection": "Routine section",
+      "routineSections": "Routine sections",
+      "unsavedChanges": "Unsaved changes"
+    },
+    "tabs": {
+      "activity": "Activity",
+      "delivery": "Delivery"
+    }
+  },
+  "companySettingsSidebar": {
+    "labelsJsx": {
+      "access": "Access",
+      "adapters": "Adapters",
+      "cloudUpstream": "Cloud upstream",
+      "environments": "Environments",
+      "experimental": "Experimental"
+    }
+  },
+  "keyboardShortcuts": {
+    "toasts": {
+      "global": "Global",
+      "inbox": "Inbox",
+      "taskDetail": "Task detail"
+    },
+    "text": {
+      "title": "Keyboard shortcuts"
+    },
+    "shortcuts": {
+      "archiveItem": "Archive item",
+      "collapseExpandSidebar": "Collapse or expand sidebar",
+      "collapseSelectedGroup": "Collapse selected group",
+      "expandSelectedGroup": "Expand selected group",
+      "focusCommentComposer": "Focus comment composer"
+    }
+  },
+  "agentProperties": {
+    "labelsJsx": {
+      "adapter": "Adapter",
+      "created": "Created",
+      "errorReason": "Error reason",
+      "lastHeartbeat": "Last Heartbeat",
+      "reportsTo": "Reports To"
+    }
+  },
+  "standaloneBrowser": {
+    "toasts": {
+      "linkCopied": "Link copied",
+      "shareFailed": "Share failed",
+      "sharingUnavailable": "Sharing is unavailable"
+    },
+    "labelsJsx": {
+      "openInBrowser": "Open in Browser",
+      "refresh": "Refresh",
+      "share": "Share"
+    }
+  },
+  "priorityIcon": {
+    "labelsObj": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium"
+    }
+  },
+  "instanceSidebar": {
+    "labelsJsx": {
+      "access": "Access",
+      "adapters": "Adapters",
+      "environments": "Environments",
+      "experimental": "Experimental",
+      "general": "General"
+    }
+  },
+  "accountingModelCard": {
+    "toasts": {
+      "financeLedger": "Finance ledger",
+      "inferenceLedger": "Inference ledger",
+      "liveQuotas": "Live quotas"
+    },
+    "descriptions": {
+      "accountLevel": "Account-level charges that are not one prompt-response pair.",
+      "requestScoped": "Request-scoped usage and billed runs from cost_events."
+    }
+  },
+  "sourceResolvedFoldCallout": {
+    "labelsJsx": {
+      "evaluationTask": "Evaluation task",
+      "processCleanup": "Process cleanup",
+      "sameRunEvidence": "Same-run evidence",
+      "silenceAge": "Silence age before fold",
+      "watchdogFold": "Source-resolved watchdog fold"
+    }
+  },
+  "goalProperties": {
+    "text": {
+      "none": "None"
+    },
+    "labelsJsx": {
+      "created": "Created",
+      "level": "Level",
+      "owner": "Owner",
+      "parentGoal": "Parent Goal",
+      "status": "Status"
     }
   }
 }

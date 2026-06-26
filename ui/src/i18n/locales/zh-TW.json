@@ -2041,14 +2041,11 @@
   },
   "issueFiltersPopover": {
     "text": {
-      "assignee": "負責人",
-      "creator": "建立者",
-      "externalObjectStatus": "外部物件狀態",
-      "filters": "篩選",
-      "hideRoutineRuns": "隱藏排程執行"
-    },
-    "placeholders": {
-      "searchCreators": "搜尋建立者..."
+      "labels": "標籤",
+      "liveRunsOnly": "僅即時執行",
+      "noAssignee": "無負責人",
+      "noCreatorsMatch": "無符合建立者。",
+      "priority": "優先級"
     }
   },
   "issuesList": {
@@ -2228,7 +2225,14 @@
     "options": {
       "custom": "自訂 (cron)",
       "everyDay": "每天",
-      "everyHour": "每小時"
+      "everyHour": "每小時",
+      "everyMinute": "每分鐘",
+      "monthly": "每月",
+      "weekdays": "工作日",
+      "weekly": "每週"
+    },
+    "placeholders": {
+      "chooseFrequency": "選擇頻率..."
     }
   },
   "agentActionButtons": {
@@ -2348,6 +2352,149 @@
       "role": "角色",
       "scope": "範圍",
       "title": "標題"
+    }
+  },
+  "agentBubbleActionRow": {
+    "text": {
+      "alwaysAllow": "始終允許",
+      "savePreference": "儲存你的回饋分享偏好?",
+      "alwaysSavedLocally": "此投票始終僅在本機儲存。",
+      "whatBetter": "哪些方面可以改進?"
+    },
+    "labelsJsx": {
+      "copyMessage": "複製訊息",
+      "helpful": "有幫助",
+      "moreActions": "更多操作",
+      "needsWork": "需要改進"
+    },
+    "placeholders": {
+      "shortNote": "新增簡短備註"
+    }
+  },
+  "activityCharts": {
+    "text": {
+      "noRuns": "暫無執行",
+      "noTasks": "無工作"
+    }
+  },
+  "issueRow": {
+    "aria": {
+      "dismissFromInbox": "從收件匣忽略",
+      "markAsRead": "標記為已讀",
+      "productivityReview": "生產力審查已開啟"
+    }
+  },
+  "budgetPolicyCard": {
+    "text": {
+      "budget": "預算",
+      "observed": "已觀察",
+      "remaining": "剩餘"
+    }
+  },
+  "routineSubSidebar": {
+    "labelsJsx": {
+      "routineSection": "排程區段",
+      "routineSections": "排程區段",
+      "unsavedChanges": "有未儲存的變更"
+    },
+    "tabs": {
+      "activity": "活動",
+      "delivery": "交付"
+    }
+  },
+  "companySettingsSidebar": {
+    "labelsJsx": {
+      "access": "存取",
+      "adapters": "介接器",
+      "cloudUpstream": "雲端上游",
+      "environments": "環境",
+      "experimental": "實驗性"
+    }
+  },
+  "keyboardShortcuts": {
+    "toasts": {
+      "global": "全域",
+      "inbox": "收件匣",
+      "taskDetail": "工作詳情"
+    },
+    "text": {
+      "title": "鍵盤快速鍵"
+    },
+    "shortcuts": {
+      "archiveItem": "封存項目",
+      "collapseExpandSidebar": "摺疊或展開側邊欄",
+      "collapseSelectedGroup": "摺疊所選群組",
+      "expandSelectedGroup": "展開所選群組",
+      "focusCommentComposer": "聚焦評論編輯器"
+    }
+  },
+  "agentProperties": {
+    "labelsJsx": {
+      "adapter": "介接器",
+      "created": "建立時間",
+      "errorReason": "錯誤原因",
+      "lastHeartbeat": "上次心跳",
+      "reportsTo": "報告給"
+    }
+  },
+  "standaloneBrowser": {
+    "toasts": {
+      "linkCopied": "連結已複製",
+      "shareFailed": "分享失敗",
+      "sharingUnavailable": "分享不可用"
+    },
+    "labelsJsx": {
+      "openInBrowser": "在瀏覽器中開啟",
+      "refresh": "重新整理",
+      "share": "分享"
+    }
+  },
+  "priorityIcon": {
+    "labelsObj": {
+      "critical": "關鍵",
+      "high": "高",
+      "medium": "中"
+    }
+  },
+  "instanceSidebar": {
+    "labelsJsx": {
+      "access": "存取",
+      "adapters": "介接器",
+      "environments": "環境",
+      "experimental": "實驗性",
+      "general": "一般"
+    }
+  },
+  "accountingModelCard": {
+    "toasts": {
+      "financeLedger": "財務分類帳",
+      "inferenceLedger": "推理分類帳",
+      "liveQuotas": "即時配額"
+    },
+    "descriptions": {
+      "accountLevel": "非單次提示-回應對的帳戶層級費用。",
+      "requestScoped": "來自 cost_events 的請求層級使用和計費執行。"
+    }
+  },
+  "sourceResolvedFoldCallout": {
+    "labelsJsx": {
+      "evaluationTask": "評估工作",
+      "processCleanup": "程序清理",
+      "sameRunEvidence": "同執行證據",
+      "silenceAge": "摺疊前靜默時長",
+      "watchdogFold": "來源解析看門狗摺疊"
+    }
+  },
+  "goalProperties": {
+    "text": {
+      "none": "無"
+    },
+    "labelsJsx": {
+      "created": "建立時間",
+      "level": "層級",
+      "owner": "擁有者",
+      "parentGoal": "父目標",
+      "status": "狀態"
     }
   }
 }

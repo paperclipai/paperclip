@@ -7,12 +7,12 @@ import { nextCronFires, parseCronExpression } from "../lib/cron-fires";
 export type SchedulePreset = "every_minute" | "every_hour" | "every_day" | "weekdays" | "weekly" | "monthly" | "custom";
 
 const PRESETS: { value: SchedulePreset; label: string }[] = [
-  { value: "every_minute", label: "Every minute" },
+  { value: "every_minute", label: t("scheduleEditor.tabs.everyMinute") },
   { value: "every_hour", label: t("scheduleEditor.status.everyHour") },
   { value: "every_day", label: t("scheduleEditor.status.everyDay") },
-  { value: "weekdays", label: "Weekdays" },
-  { value: "weekly", label: "Weekly" },
-  { value: "monthly", label: "Monthly" },
+  { value: "weekdays", label: t("scheduleEditor.tabs.weekdays") },
+  { value: "weekly", label: t("scheduleEditor.tabs.weekly") },
+  { value: "monthly", label: t("scheduleEditor.tabs.monthly") },
   { value: "custom", label: t("scheduleEditor.status.custom") },
 ];
 
@@ -248,7 +248,7 @@ export function ScheduleEditor({
     <div className="space-y-3">
       <Select value={preset} onValueChange={(v) => handlePresetChange(v as SchedulePreset)}>
         <SelectTrigger className="w-full" aria-label={t("scheduleEditor.labelsJsx.scheduleFrequency")}>
-          <SelectValue placeholder="Choose frequency..." />
+          <SelectValue placeholder={t("scheduleEditor.placeholders.chooseFrequency")} />
         </SelectTrigger>
         <SelectContent>
           {PRESETS.map((p) => (

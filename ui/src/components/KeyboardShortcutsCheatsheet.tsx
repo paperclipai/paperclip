@@ -26,7 +26,7 @@ interface ShortcutSection {
 
 const sections: ShortcutSection[] = [
   {
-    title: "Inbox",
+    title: t("keyboardShortcuts.toasts.inbox"),
     shortcuts: [
       { keys: ["j"], label: "Move down" },
       { keys: ["↓"], label: "Move down" },
@@ -42,7 +42,7 @@ const sections: ShortcutSection[] = [
     ],
   },
   {
-    title: "Task detail",
+    title: t("keyboardShortcuts.toasts.taskDetail"),
     shortcuts: [
       { keys: ["y"], label: "Quick-archive back to inbox" },
       { keys: ["g", "i"], label: "Go to inbox" },
@@ -50,7 +50,7 @@ const sections: ShortcutSection[] = [
     ],
   },
   {
-    title: "Global",
+    title: t("keyboardShortcuts.toasts.global"),
     shortcuts: [
       { keys: ["/"], label: "Search current page or quick search" },
       { keys: ["c"], label: "New task" },
@@ -71,6 +71,7 @@ function KeyCap({ children }: { children: string }) {
 }
 
 export function KeyboardShortcutsCheatsheetContent() {
+  const { t } = useTranslation();
   return (
     <>
       <div className="divide-y divide-border border-t border-border">
@@ -124,7 +125,7 @@ export function KeyboardShortcutsCheatsheet({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md gap-0 p-0 overflow-hidden" showCloseButton={false}>
         <DialogHeader className="px-5 pt-5 pb-3">
-          <DialogTitle className="text-base">Keyboard shortcuts</DialogTitle>
+          <DialogTitle className="text-base">{t("keyboardShortcuts.text.title")}</DialogTitle>
         </DialogHeader>
         <KeyboardShortcutsCheatsheetContent />
       </DialogContent>

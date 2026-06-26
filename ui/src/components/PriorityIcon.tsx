@@ -6,9 +6,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Button } from "@/components/ui/button";
 
 const priorityConfig: Record<string, { icon: typeof ArrowUp; color: string; label: string }> = {
-  critical: { icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault, label: "Critical" },
-  high: { icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault, label: "High" },
-  medium: { icon: Minus, color: priorityColor.medium ?? priorityColorDefault, label: "Medium" },
+  critical: { icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault, label: t("priorityIcon.tabs.critical") },
+  high: { icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault, label: t("priorityIcon.tabs.high") },
+  medium: { icon: Minus, color: priorityColor.medium ?? priorityColorDefault, label: t("priorityIcon.tabs.medium") },
   low: { icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault, label: "Low" },
 };
 
@@ -22,6 +22,7 @@ interface PriorityIconProps {
 }
 
 export function PriorityIcon({ priority, onChange, className, showLabel }: PriorityIconProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const config = priorityConfig[priority] ?? priorityConfig.medium!;
   const Icon = config.icon;

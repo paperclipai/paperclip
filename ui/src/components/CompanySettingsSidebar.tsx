@@ -21,6 +21,7 @@ import { instanceSettingsApi } from "@/api/instanceSettings";
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
 import { Link, NavLink } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { SIDEBAR_SCROLL_RESET_STATE } from "@/lib/navigation-scroll";
 import { queryKeys } from "@/lib/queryKeys";
@@ -42,6 +43,7 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
 }
 
 export function CompanySettingsSidebar() {
+  const { t } = useTranslation();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
   const { slots: companySettingsPluginSlots } = usePluginSlots({
@@ -108,7 +110,7 @@ export function CompanySettingsSidebar() {
           {showCloudUpstream ? (
             <SidebarNavItem
               to="/company/settings/cloud-upstream"
-              label="Cloud upstream"
+              label={t("companySettingsSidebar.labelsJsx.cloudUpstream")}
               icon={CloudUpload}
               end
             />
@@ -152,13 +154,13 @@ export function CompanySettingsSidebar() {
           />
           <SidebarNavItem
             to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`}
-            label="Environments"
+            label={t("companySettingsSidebar.labelsJsx.environments")}
             icon={MonitorCog}
             end
           />
           <SidebarNavItem
             to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`}
-            label="Access"
+            label={t("companySettingsSidebar.labelsJsx.access")}
             icon={Shield}
             end
           />
@@ -170,7 +172,7 @@ export function CompanySettingsSidebar() {
           />
           <SidebarNavItem
             to={`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`}
-            label="Experimental"
+            label={t("companySettingsSidebar.labelsJsx.experimental")}
             icon={FlaskConical}
           />
           <SidebarNavItem
@@ -201,7 +203,7 @@ export function CompanySettingsSidebar() {
           ) : null}
           <SidebarNavItem
             to={`${INSTANCE_SETTINGS_PATH_PREFIX}/adapters`}
-            label="Adapters"
+            label={t("companySettingsSidebar.labelsJsx.adapters")}
             icon={Cpu}
           />
         </div>

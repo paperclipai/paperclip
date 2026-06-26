@@ -1,5 +1,6 @@
 import { Sparkles } from "lucide-react";
 import { Link } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { cn, relativeTime } from "@/lib/utils";
 import {
   type SourceResolvedWatchdogFold,
@@ -48,6 +49,7 @@ export function SourceResolvedFoldCallout({
   finalizedAt,
   className,
 }: SourceResolvedFoldCalloutProps) {
+  const { t } = useTranslation();
   const sourceLabel = fold.sourceIssueIdentifier ?? fold.sourceIssueId.slice(0, 8);
   const evidenceShort = shortenEvidenceId(fold.sameRunEvidenceId);
   const evidenceAt = isoOrLocaleString(fold.sameRunEvidenceAt);
@@ -60,7 +62,7 @@ export function SourceResolvedFoldCallout({
   return (
     <section
       role="status"
-      aria-label="Source-resolved watchdog fold"
+      aria-label={t("sourceResolvedFoldCallout.labelsJsx.watchdogFold")}
       data-source-resolved-fold
       className={cn(
         "relative w-full overflow-hidden rounded-lg border text-sm shadow-[0_1px_0_rgba(15,23,42,0.02)]",
@@ -120,7 +122,7 @@ export function SourceResolvedFoldCallout({
             </span>
           </span>
         </MetaRow>
-        <MetaRow label="Same-run evidence">
+        <MetaRow label={t("sourceResolvedFoldCallout.labelsJsx.sameRunEvidence")}>
           <span className="inline-flex flex-wrap items-baseline gap-1.5">
             <span className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[11px] text-emerald-900 dark:bg-background/40 dark:text-emerald-100">
               {fold.sameRunEvidenceKind}
@@ -136,7 +138,7 @@ export function SourceResolvedFoldCallout({
             ) : null}
           </span>
         </MetaRow>
-        <MetaRow label="Silence age before fold">
+        <MetaRow label={t("sourceResolvedFoldCallout.labelsJsx.silenceAge")}>
           {silenceAgeLabel ? (
             <span>
               {silenceAgeLabel}
@@ -148,7 +150,7 @@ export function SourceResolvedFoldCallout({
             <span className="text-muted-foreground">unknown</span>
           )}
         </MetaRow>
-        <MetaRow label="Process cleanup">
+        <MetaRow label={t("sourceResolvedFoldCallout.labelsJsx.processCleanup")}>
           <span
             className="inline-flex flex-wrap items-baseline gap-1.5"
             title={fold.cleanup.outcome}
@@ -160,7 +162,7 @@ export function SourceResolvedFoldCallout({
           </span>
         </MetaRow>
         {fold.evaluationIssueId ? (
-          <MetaRow label="Evaluation task">
+          <MetaRow label={t("sourceResolvedFoldCallout.labelsJsx.evaluationTask")}>
             <Link
               to={issueLink(fold.evaluationIssueId, fold.evaluationIssueIdentifier)}
               className="rounded-sm font-medium underline-offset-2 hover:underline"
