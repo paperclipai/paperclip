@@ -2234,6 +2234,7 @@ describe("realizeExecutionWorkspace", () => {
 
   it("auto-detects the default branch via symbolic-ref when origin/HEAD is set", async () => {
     const repoRoot = await createTempRepo("main");
+    await runGit(repoRoot, ["branch", "-f", "master", "main"]);
 
     const bareRemote = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-bare-symref-"));
     await runGit(bareRemote, ["init", "--bare"]);
