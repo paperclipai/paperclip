@@ -1,6 +1,4 @@
 {
-  "id": "e5df5d9f-65b6-47f8-b012-743a1192908e",
-  "prevId": "2f165122-98b4-4284-809a-e12a1a13d7d6",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -5654,6 +5652,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "issue_comment_id": {
+          "name": "issue_comment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -5741,6 +5745,21 @@
             },
             {
               "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "document_annotation_comments_issue_comment_idx": {
+          "name": "document_annotation_comments_issue_comment_idx",
+          "columns": [
+            {
+              "expression": "issue_comment_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -5840,6 +5859,19 @@
           "tableTo": "heartbeat_runs",
           "columnsFrom": [
             "created_by_run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "document_annotation_comments_issue_comment_id_issue_comments_id_fk": {
+          "name": "document_annotation_comments_issue_comment_id_issue_comments_id_fk",
+          "tableFrom": "document_annotation_comments",
+          "tableTo": "issue_comments",
+          "columnsFrom": [
+            "issue_comment_id"
           ],
           "columnsTo": [
             "id"
@@ -6516,6 +6548,18 @@
         "locked_by_user_id": {
           "name": "locked_by_user_id",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_trust": {
+          "name": "source_trust",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "acl_roles": {
+          "name": "acl_roles",
+          "type": "text[]",
           "primaryKey": false,
           "notNull": false
         },
@@ -9335,6 +9379,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "auth_context": {
+          "name": "auth_context",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -9511,6 +9561,152 @@
             "id"
           ],
           "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.identity_maps": {
+      "name": "identity_maps",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "neoreef_id": {
+          "name": "neoreef_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "zoho_id": {
+          "name": "zoho_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "paperclip_user_id": {
+          "name": "paperclip_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "identity_maps_company_idx": {
+          "name": "identity_maps_company_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "identity_maps_neoreef_id_idx": {
+          "name": "identity_maps_neoreef_id_idx",
+          "columns": [
+            {
+              "expression": "neoreef_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "identity_maps_zoho_id_idx": {
+          "name": "identity_maps_zoho_id_idx",
+          "columns": [
+            {
+              "expression": "zoho_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "identity_maps_paperclip_user_id_idx": {
+          "name": "identity_maps_paperclip_user_id_idx",
+          "columns": [
+            {
+              "expression": "paperclip_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "identity_maps_company_id_companies_id_fk": {
+          "name": "identity_maps_company_id_companies_id_fk",
+          "tableFrom": "identity_maps",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "identity_maps_paperclip_user_id_user_id_fk": {
+          "name": "identity_maps_paperclip_user_id_user_id_fk",
+          "tableFrom": "identity_maps",
+          "tableTo": "user",
+          "columnsFrom": [
+            "paperclip_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
           "onUpdate": "no action"
         }
       },
@@ -10356,6 +10552,42 @@
           "primaryKey": false,
           "notNull": false
         },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_by_type": {
+          "name": "deleted_by_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_by_agent_id": {
+          "name": "deleted_by_agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_by_user_id": {
+          "name": "deleted_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deleted_by_run_id": {
+          "name": "deleted_by_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_trust": {
+          "name": "source_trust",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -10525,6 +10757,32 @@
           "tableTo": "heartbeat_runs",
           "columnsFrom": [
             "created_by_run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "issue_comments_deleted_by_agent_id_agents_id_fk": {
+          "name": "issue_comments_deleted_by_agent_id_agents_id_fk",
+          "tableFrom": "issue_comments",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "deleted_by_agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "issue_comments_deleted_by_run_id_heartbeat_runs_id_fk": {
+          "name": "issue_comments_deleted_by_run_id_heartbeat_runs_id_fk",
+          "tableFrom": "issue_comments",
+          "tableTo": "heartbeat_runs",
+          "columnsFrom": [
+            "deleted_by_run_id"
           ],
           "columnsTo": [
             "id"
@@ -12589,6 +12847,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "auth_context": {
+          "name": "auth_context",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "resolved_at": {
           "name": "resolved_at",
           "type": "timestamp with time zone",
@@ -13448,6 +13712,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "source_trust": {
+          "name": "source_trust",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_by_run_id": {
           "name": "created_by_run_id",
           "type": "uuid",
@@ -13901,6 +14171,12 @@
         },
         "execution_workspace_settings": {
           "name": "execution_workspace_settings",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_trust": {
+          "name": "source_trust",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
@@ -19542,8 +19818,10 @@
   "policies": {},
   "views": {},
   "_meta": {
-    "columns": {},
     "schemas": {},
-    "tables": {}
-  }
+    "tables": {},
+    "columns": {}
+  },
+  "id": "ebebd887-ce77-4234-a1e2-463fccff2b2b",
+  "prevId": "e5df5d9f-65b6-47f8-b012-743a1192908e"
 }
