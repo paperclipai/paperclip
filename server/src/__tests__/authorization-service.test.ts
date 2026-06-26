@@ -250,6 +250,78 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("simple mode");
   });
 
+  it("lets a CEO re-parent an issue owned by another agent (FUS-765)", async () => {
+    const company = await createCompany(db, "CeoReparent");
+    const ceoAgent = await createAgent(db, company.id, { role: "ceo" });
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const ownedIssue = await createIssue(db, company.id, { assigneeAgentId: ownerAgent.id });
+
+    const reparentResource = {
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: ownedIssue.id,
+      assigneeAgentId: ownedIssue.assigneeAgentId,
+      status: ownedIssue.status,
+    };
+    const actor = { type: "agent" as const, agentId: ceoAgent.id, companyId: company.id, source: "agent_key" as const };
+    const authorization = authorizationService(db);
+
+    // The same actor cannot perform an arbitrary mutation on the issue...
+    const mutateDecision = await authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource: reparentResource,
+      scope: { issueId: ownedIssue.id, assigneeAgentId: ownedIssue.assigneeAgentId },
+    });
+    expect(mutateDecision.allowed).toBe(false);
+
+    // ...but re-parenting (structural-only) is allowed.
+    const reparentDecision = await authorization.decide({
+      actor,
+      action: "issue:reparent",
+      resource: reparentResource,
+      scope: { issueId: ownedIssue.id, assigneeAgentId: ownedIssue.assigneeAgentId },
+    });
+    expect(reparentDecision).toMatchObject({ allowed: true, reason: "allow_manager_reparent" });
+  });
+
+  it("lets a manager re-parent a reporting-chain subordinate's issue but denies an unrelated peer (FUS-765)", async () => {
+    const company = await createCompany(db, "ManagerReparent");
+    const managerAgent = await createAgent(db, company.id, { role: "manager" });
+    const subordinateAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      reportsTo: managerAgent.id,
+    });
+    const peerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const subIssue = await createIssue(db, company.id, { assigneeAgentId: subordinateAgent.id });
+
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: subIssue.id,
+      assigneeAgentId: subIssue.assigneeAgentId,
+      status: subIssue.status,
+    };
+    const scope = { issueId: subIssue.id, assigneeAgentId: subIssue.assigneeAgentId };
+    const authorization = authorizationService(db);
+
+    const managerDecision = await authorization.decide({
+      actor: { type: "agent", agentId: managerAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:reparent",
+      resource,
+      scope,
+    });
+    expect(managerDecision).toMatchObject({ allowed: true, reason: "allow_manager_reparent" });
+
+    const peerDecision = await authorization.decide({
+      actor: { type: "agent", agentId: peerAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:reparent",
+      resource,
+      scope,
+    });
+    expect(peerDecision.allowed).toBe(false);
+  });
+
   it("limits low-trust issue reads to the configured project and root issue boundary", async () => {
     const company = await createCompany(db, "LowTrustIssueReads");
     const project = await createProject(db, company.id, "Allowed");

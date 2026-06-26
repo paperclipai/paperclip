@@ -35,6 +35,9 @@ export const updateCompanySchema = createCompanySchema
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
     attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
+    // Bucket that agent-created orphan tasks (no parent) are auto-filed under.
+    // Null disables auto-filing (default), preserving top-level issue creation.
+    triageParentIssueId: z.string().uuid().nullable().optional(),
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;

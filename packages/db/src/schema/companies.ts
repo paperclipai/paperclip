@@ -26,6 +26,10 @@ export const companies = pgTable(
     feedbackDataSharingConsentByUserId: text("feedback_data_sharing_consent_by_user_id"),
     feedbackDataSharingTermsVersion: text("feedback_data_sharing_terms_version"),
     brandColor: text("brand_color"),
+    // Optional bucket (top-level issue) that agent-created orphan tasks are
+    // auto-filed under at creation. Null = disabled (default). No FK to avoid a
+    // circular table dependency with issues; validated at the application layer.
+    triageParentIssueId: uuid("triage_parent_issue_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

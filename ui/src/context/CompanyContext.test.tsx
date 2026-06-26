@@ -45,6 +45,7 @@ function makeCompany(id: string): Company {
     feedbackDataSharingConsentByUserId: null,
     feedbackDataSharingTermsVersion: null,
     brandColor: null,
+    triageParentIssueId: null,
     logoAssetId: null,
     logoUrl: null,
     createdAt: new Date(),

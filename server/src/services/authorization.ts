@@ -50,6 +50,7 @@ export type AuthorizationAction =
   | "issue:comment"
   | "issue:mutate"
   | "issue:read"
+  | "issue:reparent"
   | "project:read"
   | "runtime:manage"
   | "secrets:read";
@@ -85,6 +86,7 @@ export type AuthorizationDecision = {
     | "allow_company_member"
     | "allow_simple_company_member"
     | "allow_manager_chain"
+    | "allow_manager_reparent"
     | "deny_unauthenticated"
     | "deny_company_boundary"
     | "deny_missing_membership"
@@ -122,7 +124,7 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
   ) {
     return null;
   }
-  if (action === "issue:comment" || action === "issue:mutate") return null;
+  if (action === "issue:comment" || action === "issue:mutate" || action === "issue:reparent") return null;
   return action;
 }
 
@@ -757,7 +759,12 @@ export function authorizationService(db: Db) {
         : lowTrustDeny("Project is outside this low-trust boundary.");
     }
 
-    if (input.action === "issue:comment" || input.action === "issue:read" || input.action === "issue:mutate") {
+    if (
+      input.action === "issue:comment" ||
+      input.action === "issue:read" ||
+      input.action === "issue:mutate" ||
+      input.action === "issue:reparent"
+    ) {
       if (input.resource.type !== "issue") {
         return lowTrustDeny("Low-trust issue access is missing an issue resource.");
       }
@@ -766,6 +773,7 @@ export function authorizationService(db: Db) {
       }
       if (
         input.action !== "issue:mutate" &&
+        input.action !== "issue:reparent" &&
         input.resource.issueId &&
         await agentHasMentionGrantOnIssue({
           action: input.action,
@@ -1062,7 +1070,9 @@ export function authorizationService(db: Db) {
             });
           }
           if (
-            (input.action === "issue:comment" || input.action === "issue:mutate") &&
+            (input.action === "issue:comment" ||
+              input.action === "issue:mutate" ||
+              input.action === "issue:reparent") &&
             membership.membershipRole !== "viewer"
           ) {
             return allow({
@@ -1291,6 +1301,38 @@ export function authorizationService(db: Db) {
         })
       ) {
         return allowIssueMentionGrant(input.action);
+      }
+    }
+    if (input.action === "issue:reparent") {
+      // Re-parenting is a structural-only mutation (parentId/projectId). It is
+      // intentionally separated from issue:mutate so a manager/CEO can file an
+      // agent-owned orphan into a bucket without gaining authority to edit the
+      // issue's content, status, or assignee.
+      const resource = input.resource.type === "issue" ? input.resource : null;
+      if (resource?.assigneeAgentId === actorAgentId) {
+        return allow({
+          action: input.action,
+          reason: "allow_self",
+          explanation: "Allowed because the actor owns the issue being re-parented.",
+        });
+      }
+      if (!resource?.assigneeAgentId) {
+        return allow({
+          action: input.action,
+          reason: "allow_company_agent",
+          explanation: "Allowed because the issue has no agent assignee.",
+        });
+      }
+      if (
+        canCreateAgentsLegacy(actorAgent) ||
+        (await isManagerOf(companyId, actorAgentId, resource.assigneeAgentId))
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_manager_reparent",
+          explanation:
+            "Allowed because a manager or CEO may re-parent issues owned by agents they manage.",
+        });
       }
     }
     if (

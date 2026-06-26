@@ -1858,7 +1858,7 @@ export function issueRoutes(
       assigneeUserId: string | null;
       status: string;
     },
-    action: "issue:comment" | "issue:read" | "issue:mutate",
+    action: "issue:comment" | "issue:read" | "issue:mutate" | "issue:reparent",
   ) {
     return access.decide({
       actor: req.actor,
@@ -1885,6 +1885,29 @@ export function issueRoutes(
 
   async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
     const decision = await decideIssueAccess(req, issue, "issue:read");
+    if (decision.allowed) return true;
+    res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+    return false;
+  }
+
+  // A re-parent-only update mutates structure (parentId/projectId) and nothing
+  // else. Such updates are authorized via the dedicated issue:reparent action,
+  // which lets a manager/CEO bucket an agent-owned orphan without granting the
+  // broader issue:mutate authority over its content/status/assignee.
+  function isReparentOnlyUpdate(body: Record<string, unknown>) {
+    const mutatingKeys = Object.keys(body).filter((key) => body[key] !== undefined);
+    if (mutatingKeys.length === 0) return false;
+    const isReparentKey = (key: string) => key === "parentId" || key === "projectId";
+    if (!mutatingKeys.some(isReparentKey)) return false;
+    return mutatingKeys.every(isReparentKey);
+  }
+
+  async function assertAgentIssueReparentAllowed(
+    req: Request,
+    res: Response,
+    issue: Parameters<typeof decideIssueAccess>[1],
+  ) {
+    const decision = await decideIssueAccess(req, issue, "issue:reparent");
     if (decision.allowed) return true;
     res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
     return false;
@@ -5028,6 +5051,36 @@ export function issueRoutes(
       !watchdogProductBugFollowUp &&
       !(await assertTaskWatchdogCreateIssueAllowed(req, res, companyId, createParent))
     ) return;
+    // Soft auto-file (FUS-765): an agent-created task with no parent and no
+    // project is an orphan. If the company configured a triage bucket, file the
+    // orphan under it so every task lands in a bucket. A stale/invalid bucket
+    // config falls back to top-level creation rather than failing the request.
+    let resolvedParentId = effectiveParentId;
+    if (
+      req.actor.type === "agent" &&
+      !effectiveParentId &&
+      !rawCreateBody.projectId &&
+      !watchdogProductBugFollowUp
+    ) {
+      const company = await companiesSvc.getById(companyId);
+      const triageParentIssueId = company?.triageParentIssueId ?? null;
+      if (triageParentIssueId) {
+        const triageBucket = await svc.getById(triageParentIssueId);
+        // Only auto-file under a genuine bucket: a same-company, top-level
+        // (parentId === null), non-terminal issue. A stale config that now
+        // points at a child issue or a closed/replaced task is ignored so we
+        // never nest new tasks into an invalid hierarchy.
+        const isUsableBucket =
+          !!triageBucket &&
+          triageBucket.companyId === companyId &&
+          triageBucket.parentId === null &&
+          triageBucket.status !== "done" &&
+          triageBucket.status !== "cancelled";
+        if (isUsableBucket) {
+          resolvedParentId = triageParentIssueId;
+        }
+      }
+    }
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       companyId,
       rawCreateBody.assigneeAgentId as string | null | undefined,
@@ -5038,7 +5091,7 @@ export function issueRoutes(
       : await resolveRunIssueWorkspaceInheritanceSource(companyId, actor);
     const createBody = {
       ...rawCreateBody,
-      parentId: effectiveParentId,
+      parentId: resolvedParentId,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
       ...(runWorkspaceInheritanceSourceIssueId
         ? { inheritExecutionWorkspaceFromIssueId: runWorkspaceInheritanceSourceIssueId }
@@ -5636,7 +5689,14 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    // Managers/CEO may re-parent an agent-owned issue (structural cleanup) even
+    // though they can't otherwise mutate it. A re-parent-only request is routed
+    // through the issue:reparent authorization instead of issue:mutate.
+    if (req.actor.type === "agent" && isReparentOnlyUpdate(req.body)) {
+      if (!(await assertAgentIssueReparentAllowed(req, res, existing))) return;
+    } else if (!(await assertAgentIssueMutationAllowed(req, res, existing))) {
+      return;
+    }
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
