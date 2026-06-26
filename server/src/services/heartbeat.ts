@@ -412,7 +412,10 @@ const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64",
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
-  "resolveAdapterConfigForRuntime" | "resolveEnvBindings" | "collectMissingRuntimeBindings"
+  | "resolveAdapterConfigForRuntime"
+  | "resolveEnvBindings"
+  | "collectMissingRuntimeBindings"
+  | "collectMissingAdapterConfigRuntimeBindings"
 >;
 
 function formatMissingBindingForOperator(missing: MissingRuntimeBinding): string {
@@ -494,6 +497,7 @@ function assertLowTrustEnvConfigAllowed(envValue: unknown, source: string) {
 export async function resolveExecutionRunAdapterConfig(input: {
   companyId: string;
   agentId?: string | null;
+  adapterType?: string | null;
   issueId?: string | null;
   heartbeatRunId?: string | null;
   environmentId?: string | null;
@@ -574,6 +578,16 @@ export async function resolveExecutionRunAdapterConfig(input: {
           { consumerType: "agent", consumerId: input.agentId },
         )),
       );
+      if (typeof input.secretsSvc.collectMissingAdapterConfigRuntimeBindings === "function") {
+        missingBindings.push(
+          ...(await input.secretsSvc.collectMissingAdapterConfigRuntimeBindings(
+            input.companyId,
+            executionRunConfig,
+            input.adapterType ?? null,
+            { consumerType: "agent", consumerId: input.agentId },
+          )),
+        );
+      }
     }
     if (projectEnv && input.projectId) {
       missingBindings.push(
@@ -666,6 +680,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
           ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
         }
       : undefined,
+    { adapterType: input.adapterType ?? null },
   );
   if (Object.keys(environmentEnvResolution.env).length > 0) {
     resolvedConfig.env = {
@@ -3140,6 +3155,13 @@ export function buildPaperclipTaskMarkdown(input: {
     workMode?: string | null;
     description?: string | null;
   } | null;
+  ancestors?: Array<{
+    id: string;
+    identifier?: string | null;
+    title?: string | null;
+    status?: string | null;
+    priority?: string | null;
+  }> | null;
   wakeComment?: {
     id: string;
     body: string;
@@ -3160,6 +3182,7 @@ export function buildPaperclipTaskMarkdown(input: {
     return [fence + "text", value, fence].join("\n");
   };
   const issue = input.issue;
+  const ancestors = (input.ancestors ?? []).slice(0, 6);
   const wakeComment = input.wakeComment ?? null;
   const acceptedPlanContinuation =
     !wakeComment &&
@@ -3210,6 +3233,19 @@ export function buildPaperclipTaskMarkdown(input: {
     const description = issue.description?.trim();
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
+    }
+  }
+  if (ancestors.length > 0) {
+    lines.push("", "Authoritative parent / ancestor context:");
+    for (const [index, ancestor] of ancestors.entries()) {
+      const label = ancestor.identifier || ancestor.id;
+      const status = ancestor.status ? ` (${ancestor.status})` : "";
+      const priority = ancestor.priority ? ` [${ancestor.priority}]` : "";
+      const title = ancestor.title ? ` ${ancestor.title}` : "";
+      lines.push(`- ${index === 0 ? "Parent" : `Ancestor ${index + 1}`}: ${label}${title}${status}${priority}`);
+    }
+    if ((input.ancestors ?? []).length > ancestors.length) {
+      lines.push(`- [ancestor context truncated after ${ancestors.length} entries]`);
     }
   }
   if (wakeComment?.body.trim()) {
@@ -8647,6 +8683,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       wakeCommentContext && !exposeLowTrustRaw
         ? sanitizeQuarantinedCommentForHigherTrust(wakeCommentContext)
         : wakeCommentContext;
+    const issueAncestors = issueRef
+      ? await issuesSvc.getAncestors(issueRef.id)
+      : [];
     if (continuationSummary) {
       context.paperclipContinuationSummary = {
         key: safeContinuationSummary!.key,
@@ -8692,6 +8731,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             description: issueRef.description,
           }
         : null,
+      ancestors: issueAncestors,
       wakeComment: safeWakeCommentContext,
       interaction: {
         kind: readNonEmptyString(context.interactionKind),
@@ -8918,6 +8958,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,
+      adapterType: agent.adapterType,
       issueId,
       heartbeatRunId: run.id,
       environmentId: selectedEnvironmentForConfig?.id ?? null,

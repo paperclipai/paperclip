@@ -83,6 +83,7 @@ import {
 } from "../board-claim.js";
 import { claimFirstInstanceAdmin } from "../first-admin-claim.js";
 import { getStorageService } from "../storage/index.js";
+import { secretService } from "../services/secrets.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -294,8 +295,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isLoopbackHost(hostname: string): boolean {
-  const value = hostname.trim().toLowerCase();
-  return value === "localhost" || value === "127.0.0.1" || value === "::1";
+  const value = hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return (
+    value === "localhost" ||
+    value === "::1" ||
+    value === "0:0:0:0:0:0:0:1" ||
+    value === "127.0.0.1" ||
+    /^127(?:\.\d{1,3}){3}$/.test(value)
+  );
 }
 
 function normalizeHostname(value: string | null | undefined): string | null {
@@ -474,8 +481,8 @@ function parseBooleanLike(value: unknown): boolean | null {
   if (typeof value === "boolean") return value;
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
-  if (normalized === "true" || normalized === "1") return true;
-  if (normalized === "false" || normalized === "0") return false;
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
   return null;
 }
 
@@ -676,6 +683,91 @@ export function normalizeAgentDefaultsForJoin(input: {
 }) {
   const fatalErrors: string[] = [];
   const diagnostics: JoinDiagnostic[] = [];
+  if (input.adapterType === "hermes_gateway") {
+    if (!isPlainObject(input.defaultsPayload)) {
+      diagnostics.push({
+        code: "hermes_gateway_defaults_missing",
+        level: "warn",
+        message: "No Hermes gateway config was provided in agentDefaultsPayload.",
+        hint: "Include agentDefaultsPayload.apiBaseUrl and agentDefaultsPayload.apiKey for Hermes gateway joins.",
+      });
+      fatalErrors.push("agentDefaultsPayload is required for adapterType=hermes_gateway");
+      return { normalized: null as Record<string, unknown> | null, diagnostics, fatalErrors };
+    }
+
+    const defaults = input.defaultsPayload as Record<string, unknown>;
+    const normalized = { ...defaults };
+    const rawApiBaseUrl = nonEmptyTrimmedString(defaults.apiBaseUrl ?? defaults.url);
+    if (!rawApiBaseUrl) {
+      diagnostics.push({
+        code: "hermes_gateway_api_base_url_missing",
+        level: "warn",
+        message: "Hermes gateway apiBaseUrl is missing.",
+        hint: "Set agentDefaultsPayload.apiBaseUrl to the Hermes API server URL.",
+      });
+      fatalErrors.push("agentDefaultsPayload.apiBaseUrl is required");
+    } else {
+      try {
+        const apiBaseUrl = new URL(rawApiBaseUrl);
+        if (apiBaseUrl.protocol !== "http:" && apiBaseUrl.protocol !== "https:") {
+          diagnostics.push({
+            code: "hermes_gateway_api_base_url_protocol",
+            level: "warn",
+            message: `Hermes gateway apiBaseUrl must use http:// or https:// (got ${apiBaseUrl.protocol}).`,
+          });
+          fatalErrors.push("agentDefaultsPayload.apiBaseUrl must use http:// or https:// for hermes_gateway");
+        } else if (
+          apiBaseUrl.protocol === "http:" &&
+          !isLoopbackHost(apiBaseUrl.hostname) &&
+          parseBooleanLike(defaults.dangerouslyAllowInsecureRemoteHttp) !== true
+        ) {
+          diagnostics.push({
+            code: "hermes_gateway_plain_http_remote_denied",
+            level: "warn",
+            message: "Remote plain HTTP Hermes gateway traffic is denied by default.",
+            hint: "Use https:// or set agentDefaultsPayload.dangerouslyAllowInsecureRemoteHttp=true only for unsafe local development.",
+          });
+          fatalErrors.push(
+            "agentDefaultsPayload.apiBaseUrl uses remote plain HTTP; use HTTPS or set dangerouslyAllowInsecureRemoteHttp=true for unsafe local development",
+          );
+        } else {
+          normalized.apiBaseUrl = apiBaseUrl.toString();
+          if (apiBaseUrl.protocol === "http:" && !isLoopbackHost(apiBaseUrl.hostname)) {
+            diagnostics.push({
+              code: "hermes_gateway_plain_http_remote_unsafe_allowed",
+              level: "warn",
+              message: "Unsafe dev escape hatch enabled for non-loopback HTTP Hermes traffic.",
+            });
+          } else {
+            diagnostics.push({
+              code: "hermes_gateway_api_base_url_configured",
+              level: "info",
+              message: `Hermes gateway endpoint set to ${apiBaseUrl.toString()}`,
+            });
+          }
+        }
+      } catch {
+        diagnostics.push({
+          code: "hermes_gateway_api_base_url_invalid",
+          level: "warn",
+          message: `Invalid Hermes gateway apiBaseUrl: ${rawApiBaseUrl}`,
+        });
+        fatalErrors.push("agentDefaultsPayload.apiBaseUrl is not a valid URL");
+      }
+    }
+
+    if (!nonEmptyTrimmedString(defaults.apiKey)) {
+      diagnostics.push({
+        code: "hermes_gateway_api_key_missing",
+        level: "warn",
+        message: "Hermes gateway API key is missing.",
+        hint: "Set agentDefaultsPayload.apiKey to the Hermes API_SERVER_KEY value.",
+      });
+      fatalErrors.push("agentDefaultsPayload.apiKey is required");
+    }
+
+    return { normalized, diagnostics, fatalErrors };
+  }
   if (input.adapterType !== "openclaw_gateway") {
     const normalized = isPlainObject(input.defaultsPayload)
       ? (input.defaultsPayload as Record<string, unknown>)
@@ -917,6 +1009,24 @@ export function normalizeAgentDefaultsForJoin(input: {
   }
 
   return { normalized, diagnostics, fatalErrors };
+}
+
+export async function prepareAgentDefaultsPayloadForJoinPersistence(input: {
+  db: Db;
+  companyId: string;
+  adapterType: string | null;
+  normalized: Record<string, unknown> | null;
+  actor?: { userId?: string | null; agentId?: string | null };
+}): Promise<Record<string, unknown> | null> {
+  if (input.adapterType !== "hermes_gateway" || !input.normalized) {
+    return input.normalized;
+  }
+
+  return secretService(input.db).normalizeAdapterConfigForPersistence(
+    input.companyId,
+    input.normalized,
+    { adapterType: input.adapterType, actor: input.actor },
+  );
 }
 
 function toInviteSummaryResponse(
@@ -1585,17 +1695,17 @@ function buildInviteOnboardingManifest(
     ),
     onboarding: {
       instructions:
-        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your API key. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token.",
+        "Join as an external Paperclip agent, save your one-time claim secret, wait for board approval, then claim your API key. Use requestType='agent', include your agentName and capabilities, and set adapterType plus agentDefaultsPayload for your runtime when applicable. OpenClaw Gateway agents must use adapterType='openclaw_gateway', set agentDefaultsPayload.url to a ws:// or wss:// gateway endpoint, and include agentDefaultsPayload.headers.x-openclaw-token. Hermes Gateway agents must use adapterType='hermes_gateway', start Hermes with API_SERVER_ENABLED=true, API_SERVER_KEY, and `hermes gateway run --replace --accept-hooks`, then set agentDefaultsPayload.apiBaseUrl and agentDefaultsPayload.paperclipApiUrl.",
       inviteMessage: extractInviteMessage(invite),
       recommendedAdapterType: null,
       requiredFields: {
         requestType: "agent",
         agentName: "Display name for this agent",
         adapterType:
-          "Adapter type for this runtime. Use 'openclaw_gateway' only for OpenClaw Gateway agents.",
+          "Adapter type for this runtime. Use 'openclaw_gateway' only for OpenClaw Gateway agents. Use 'hermes_gateway' only for Hermes Gateway agents.",
         capabilities: "Optional capability summary",
         agentDefaultsPayload:
-          "Runtime-specific adapter config. OpenClaw Gateway agents must include url (ws:// or wss://) and headers.x-openclaw-token. Other runtimes should include the config their adapter expects."
+          "Runtime-specific adapter config. OpenClaw Gateway agents must include url (ws:// or wss://) and headers.x-openclaw-token. Hermes Gateway agents must include apiBaseUrl, API_SERVER_KEY-backed auth, and paperclipApiUrl. Other runtimes should include the config their adapter expects."
       },
       registrationEndpoint: {
         method: "POST",
@@ -1743,6 +1853,37 @@ export function buildInviteOnboardingTextDocument(
     }
 
     For OpenClaw Gateway, include agentDefaultsPayload.headers.x-openclaw-token with your gateway token. Legacy x-openclaw-auth is also accepted, but x-openclaw-token is preferred. Do NOT use /v1/responses or /hooks/* in this gateway join flow.
+
+    Hermes Gateway setup:
+    - adapterType: "hermes_gateway"
+    - Start Hermes with API_SERVER_ENABLED=true and API_SERVER_KEY=<random-gateway-key>.
+    - Run: hermes gateway run --replace --accept-hooks
+    - Default Hermes API server port: 8642.
+    - Set agentDefaultsPayload.apiBaseUrl to the Hermes gateway URL Paperclip can reach.
+    - Set agentDefaultsPayload.paperclipApiUrl to the Paperclip base URL Hermes can reach.
+    - Use hermes_local when Paperclip should start Hermes on the Paperclip host.
+    - Use hermes_gateway when Paperclip should call an already-running Hermes API server.
+    - Hermes-originated Paperclip API usage means Hermes calls Paperclip with PAPERCLIP_API_URL and PAPERCLIP_API_KEY after approval/key claim. Do not confuse that with agentDefaultsPayload.apiBaseUrl, which points Paperclip to Hermes.
+
+    Hermes Gateway payload example:
+    {
+      "requestType": "agent",
+      "agentName": "My Hermes Gateway Agent",
+      "adapterType": "hermes_gateway",
+      "capabilities": "Hermes gateway agent",
+      "agentDefaultsPayload": {
+        "apiBaseUrl": "http://127.0.0.1:8642",
+        "apiKey": "<same-value-as-API_SERVER_KEY>",
+        "paperclipApiUrl": "http://localhost:3100"
+      }
+    }
+
+    Hermes Gateway network examples:
+    - Local loopback: agentDefaultsPayload.apiBaseUrl = "http://127.0.0.1:8642" and agentDefaultsPayload.paperclipApiUrl = "http://127.0.0.1:3100".
+    - LAN/private network: use reachable private addresses, for example agentDefaultsPayload.apiBaseUrl = "http://192.168.1.25:8642" and agentDefaultsPayload.paperclipApiUrl = "http://192.168.1.10:3100".
+    - Private overlay: use overlay DNS names, for example agentDefaultsPayload.apiBaseUrl = "http://hermes-host.tailnet-name.ts.net:8642" and agentDefaultsPayload.paperclipApiUrl = "http://paperclip-host.tailnet-name.ts.net:3100".
+    - Docker: if Paperclip runs in Docker and Hermes runs on the host, use agentDefaultsPayload.apiBaseUrl = "http://host.docker.internal:8642"; if both run in Compose, use the Hermes service name.
+    - Reverse proxy/TLS: use HTTPS origins, for example agentDefaultsPayload.apiBaseUrl = "https://hermes-gateway.example" and agentDefaultsPayload.paperclipApiUrl = "https://paperclip.example".
 
     Expected response includes:
     - request id
@@ -3565,6 +3706,20 @@ export function accessRoutes(
         throw badRequest(joinDefaults.fatalErrors.join("; "));
       }
 
+      const persistedJoinDefaultsPayload =
+        requestType === "agent"
+          ? await prepareAgentDefaultsPayloadForJoinPersistence({
+              db,
+              companyId,
+              adapterType,
+              normalized: joinDefaults.normalized,
+              actor: {
+                userId: req.actor.userId ?? null,
+                agentId: req.actor.agentId ?? null
+              }
+            })
+          : null;
+
       if (requestType === "agent" && adapterType === "openclaw_gateway") {
         logger.info(
           {
@@ -3658,7 +3813,7 @@ export function accessRoutes(
                       ? req.body.capabilities ?? null
                       : null,
                   agentDefaultsPayload:
-                    requestType === "agent" ? joinDefaults.normalized : null,
+                    requestType === "agent" ? persistedJoinDefaultsPayload : null,
                   claimSecretHash,
                   claimSecretExpiresAt
                 })
@@ -3684,7 +3839,7 @@ export function accessRoutes(
                   : null,
               adapterType: requestType === "agent" ? adapterType : null,
               agentDefaultsPayload:
-                requestType === "agent" ? joinDefaults.normalized : null,
+                requestType === "agent" ? persistedJoinDefaultsPayload : null,
               updatedAt: new Date()
             })
             .where(eq(joinRequests.id, replayJoinRequestId as string))

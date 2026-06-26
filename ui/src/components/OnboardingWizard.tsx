@@ -271,7 +271,6 @@ export function OnboardingWizard() {
     adapterType === "claude_local" ||
     adapterType === "codex_local" ||
     adapterType === "gemini_local" ||
-    adapterType === "hermes_local" ||
     adapterType === "opencode_local" ||
     adapterType === "pi_local" ||
     adapterType === "cursor";
@@ -298,7 +297,6 @@ export function OnboardingWizard() {
     claude_local: "claude",
     codex_local: "codex",
     gemini_local: "gemini",
-    hermes_local: "hermes",
     pi_local: "pi",
     cursor: "agent",
     opencode_local: "opencode",
