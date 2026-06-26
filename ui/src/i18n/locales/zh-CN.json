@@ -975,5 +975,49 @@
       "cloudUpstream": "云上游",
       "settings": "设置"
     }
+  },
+  "cloudUpstreamUxLab": {
+    "checks": {
+      "automationsPaused": {
+        "title": "自动化保持暂停",
+        "detail": "导入的智能体、例程和监控需要在推送后显式激活。"
+      },
+      "unmatchedUsers": {
+        "title": "未匹配的用户成为历史作者",
+        "detail": "传输完成后,邀请操作降级为次要操作。"
+      },
+      "secretsNotTransferred": {
+        "title": "密钥值不传输",
+        "detail": "推送仅包含密钥需求。在激活自动化前请先配置云端密钥。"
+      },
+      "stackUpgradeRequired": {
+        "title": "需要云栈升级",
+        "detail": "此本地构建使用上游 schema 7,但云栈报告 schema 5。"
+      }
+    },
+    "text": {
+      "activationChecklist": "激活检查清单",
+      "cloudUpstream": "云上游",
+      "conflicts": "冲突",
+      "connection": "连接",
+      "noConflicts": "此预览未检测到目标冲突。",
+      "preview": "预览",
+      "progressAndFinish": "进度与完成"
+    },
+    "labelsJsx": {
+      "stackUrl": "Paperclip Cloud 栈地址"
+    },
+    "steps": {
+      "scan": "扫描",
+      "connect": "连接",
+      "preview": "预览",
+      "activate": "激活",
+      "push": "推送",
+      "verify": "验证",
+      "agents": "智能体",
+      "routines": "例程",
+      "monitors": "监控",
+      "users": "用户"
+    }
   }
 }

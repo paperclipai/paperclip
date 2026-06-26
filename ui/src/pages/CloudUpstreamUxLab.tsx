@@ -24,6 +24,7 @@ import type {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useLocation } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 
 type FixtureStateKey =
   | "settings-pane"
@@ -36,12 +37,12 @@ type FixtureStateKey =
   | "finish";
 
 const STEPS: Array<{ key: CloudUpstreamStep; label: string }> = [
-  { key: "connect", label: "Connect" },
-  { key: "scan", label: "Scan" },
-  { key: "preview", label: "Preview" },
-  { key: "push", label: "Push" },
-  { key: "verify", label: "Verify" },
-  { key: "activate", label: "Activate" },
+  { key: "connect", label: t("cloudUpstreamUxLab.steps.connect") },
+  { key: "scan", label: t("cloudUpstreamUxLab.steps.scan") },
+  { key: "preview", label: t("cloudUpstreamUxLab.steps.preview") },
+  { key: "push", label: t("cloudUpstreamUxLab.steps.push") },
+  { key: "verify", label: t("cloudUpstreamUxLab.steps.verify") },
+  { key: "activate", label: t("cloudUpstreamUxLab.steps.activate") },
 ];
 
 const ACTIVATION_CATEGORIES: Array<{
@@ -52,19 +53,19 @@ const ACTIVATION_CATEGORIES: Array<{
 }> = [
   {
     key: "agents",
-    label: "Agents",
+    label: t("cloudUpstreamUxLab.steps.agents"),
     singular: "agent",
     detail: "Keep paused until cloud secrets and adapter credentials are verified.",
   },
   {
     key: "routines",
-    label: "Routines",
+    label: t("cloudUpstreamUxLab.steps.routines"),
     singular: "routine",
     detail: "Review schedules before enabling triggers.",
   },
   {
     key: "monitors",
-    label: "Monitors",
+    label: t("cloudUpstreamUxLab.steps.monitors"),
     singular: "monitor",
     detail: "Activate after the target instance has been smoke tested.",
   },
@@ -93,6 +94,7 @@ const PARSE_ORDER: FixtureStateKey[] = [
 ];
 
 export function CloudUpstreamUxLab() {
+  const { t } = useTranslation();
   const location = useLocation();
   const { state, showChrome } = useMemo(() => {
     const params = new URLSearchParams(location.search);
@@ -156,7 +158,7 @@ function CloudUpstreamRender({ fixture }: { fixture: Fixture }) {
         <div className="space-y-1">
           <div className="flex items-center gap-2">
             <CloudUpload className="h-5 w-5 text-muted-foreground" />
-            <h1 className="text-lg font-semibold">Cloud upstream</h1>
+            <h1 className="text-lg font-semibold">{t("cloudUpstreamUxLab.text.cloudUpstream")}</h1>
           </div>
           <p className="max-w-2xl text-sm text-muted-foreground">
             Push {selectedCompanyName} into a Paperclip Cloud stack. Automations stay paused until activation.
@@ -186,7 +188,7 @@ function CloudUpstreamRender({ fixture }: { fixture: Fixture }) {
       <Stepper activeStep={activeStep} />
 
       <section className="space-y-3">
-        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Connection</div>
+        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("cloudUpstreamUxLab.text.connection")}</div>
         <div className="rounded-md border border-border px-4 py-4">
           {connection ? (
             <div className="grid gap-3 lg:grid-cols-[1fr_auto] lg:items-start">
@@ -211,7 +213,7 @@ function CloudUpstreamRender({ fixture }: { fixture: Fixture }) {
               <Input
                 defaultValue="https://paperclip.paperclip.app/PC521D/dashboard"
                 placeholder="https://paperclip.paperclip.app/PC521D/dashboard"
-                aria-label="Paperclip Cloud stack URL"
+                aria-label={t("cloudUpstreamUxLab.labelsJsx.stackUrl")}
                 autoFocus
               />
               <Button disabled>
@@ -226,7 +228,7 @@ function CloudUpstreamRender({ fixture }: { fixture: Fixture }) {
       {preview ? (
         <section className="space-y-3">
           <div className="flex items-center justify-between gap-3">
-            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Preview</div>
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("cloudUpstreamUxLab.text.preview")}</div>
             <Button disabled={!preview.schemaCompatible}>
               <CloudUpload className="h-4 w-4" />
               Push to cloud
@@ -241,7 +243,7 @@ function CloudUpstreamRender({ fixture }: { fixture: Fixture }) {
       {latestRun ? (
         <section className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Progress and finish</div>
+            <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("cloudUpstreamUxLab.text.progressAndFinish")}</div>
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" size="sm">
                 <FileJson className="h-4 w-4" />
@@ -373,9 +375,9 @@ function WarningsPanel({ warnings }: { warnings: CloudUpstreamWarning[] }) {
 function ConflictTable({ conflicts }: { conflicts: CloudUpstreamConflict[] }) {
   return (
     <div className="rounded-md border border-border px-4 py-3">
-      <div className="mb-2 text-sm font-medium">Conflicts</div>
+      <div className="mb-2 text-sm font-medium">{t("cloudUpstreamUxLab.text.conflicts")}</div>
       {conflicts.length === 0 ? (
-        <div className="text-sm text-muted-foreground">No target conflicts detected for this preview.</div>
+        <div className="text-sm text-muted-foreground">{t("cloudUpstreamUxLab.text.noConflicts")}</div>
       ) : (
         <div className="divide-y divide-border">
           {conflicts.map((conflict) => (
@@ -396,7 +398,7 @@ function ActivationChecklist({ run }: { run: CloudUpstreamRun }) {
   const rows = buildActivationRows(run);
   return (
     <div className="rounded-md border border-border px-4 py-3">
-      <div className="mb-2 text-sm font-medium">Activation checklist</div>
+      <div className="mb-2 text-sm font-medium">{t("cloudUpstreamUxLab.text.activationChecklist")}</div>
       <div className="divide-y divide-border">
         {rows.map((row) => {
           const activated = row.status === "activated";
@@ -521,30 +523,30 @@ function connectedConnection(target = STACK_TARGET): CloudUpstreamConnection {
 }
 
 const PREVIEW_SUMMARY: CloudUpstreamSummaryCount[] = [
-  { key: "users", label: "Users", count: 14 },
-  { key: "agents", label: "Agents", count: 6 },
-  { key: "routines", label: "Routines", count: 4 },
-  { key: "monitors", label: "Monitors", count: 2 },
+  { key: "users", label: t("cloudUpstreamUxLab.steps.users"), count: 14 },
+  { key: "agents", label: t("cloudUpstreamUxLab.steps.agents"), count: 6 },
+  { key: "routines", label: t("cloudUpstreamUxLab.steps.routines"), count: 4 },
+  { key: "monitors", label: t("cloudUpstreamUxLab.steps.monitors"), count: 2 },
 ];
 
 const PREVIEW_WARNINGS_NORMAL: CloudUpstreamWarning[] = [
   {
     code: "imported_automations_paused",
     severity: "warning",
-    title: "Automations stay paused",
-    detail: "Imported agents, routines, and monitors require explicit activation after the push.",
+    title: t("cloudUpstreamUxLab.checks.automationsPaused.title"),
+    detail: t("cloudUpstreamUxLab.checks.automationsPaused.detail"),
   },
   {
     code: "unmatched_users_import_as_historical_authors",
     severity: "warning",
-    title: "Unmatched users become historical authors",
-    detail: "Invite now remains a secondary action after the transfer is complete.",
+    title: t("cloudUpstreamUxLab.checks.unmatchedUsers.title"),
+    detail: t("cloudUpstreamUxLab.checks.unmatchedUsers.detail"),
   },
   {
     code: "secret_values_redacted",
     severity: "warning",
-    title: "Secret values are not transferred",
-    detail: "The push carries secret requirements only. Configure cloud secrets before activating automations.",
+    title: t("cloudUpstreamUxLab.checks.secretsNotTransferred.title"),
+    detail: t("cloudUpstreamUxLab.checks.secretsNotTransferred.detail"),
   },
 ];
 
@@ -552,8 +554,8 @@ const PREVIEW_WARNINGS_SCHEMA: CloudUpstreamWarning[] = [
   {
     code: "schema_mismatch",
     severity: "blocker",
-    title: "Cloud stack upgrade required",
-    detail: "This local build uses upstream schema 7, but the cloud stack reports schema 5.",
+    title: t("cloudUpstreamUxLab.checks.stackUpgradeRequired.title"),
+    detail: t("cloudUpstreamUxLab.checks.stackUpgradeRequired.detail"),
   },
   ...PREVIEW_WARNINGS_NORMAL,
 ];

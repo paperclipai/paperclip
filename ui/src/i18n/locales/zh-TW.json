@@ -975,5 +975,49 @@
       "cloudUpstream": "雲端上游",
       "settings": "設定"
     }
+  },
+  "cloudUpstreamUxLab": {
+    "checks": {
+      "automationsPaused": {
+        "title": "自動化保持暫停",
+        "detail": "匯入的智慧代理、排程和監控需要在推送後顯式啟動。"
+      },
+      "unmatchedUsers": {
+        "title": "未匹配的使用者成為歷史作者",
+        "detail": "傳輸完成後,邀請操作降級為次要操作。"
+      },
+      "secretsNotTransferred": {
+        "title": "密鑰值不傳輸",
+        "detail": "推送僅包含密鑰需求。在啟動自動化前請先設定雲端密鑰。"
+      },
+      "stackUpgradeRequired": {
+        "title": "需要雲棧升級",
+        "detail": "此本機建置使用上游 schema 7,但雲棧回報 schema 5。"
+      }
+    },
+    "text": {
+      "activationChecklist": "啟動檢查清單",
+      "cloudUpstream": "雲端上游",
+      "conflicts": "衝突",
+      "connection": "連線",
+      "noConflicts": "此預覽未偵測到目標衝突。",
+      "preview": "預覽",
+      "progressAndFinish": "進度與完成"
+    },
+    "labelsJsx": {
+      "stackUrl": "Paperclip Cloud 棧址"
+    },
+    "steps": {
+      "scan": "掃描",
+      "connect": "連線",
+      "preview": "預覽",
+      "activate": "啟動",
+      "push": "推送",
+      "verify": "驗證",
+      "agents": "智慧代理",
+      "routines": "排程",
+      "monitors": "監控",
+      "users": "使用者"
+    }
   }
 }

@@ -975,5 +975,49 @@
       "cloudUpstream": "Cloud upstream",
       "settings": "Settings"
     }
+  },
+  "cloudUpstreamUxLab": {
+    "checks": {
+      "automationsPaused": {
+        "title": "Automations stay paused",
+        "detail": "Imported agents, routines, and monitors require explicit activation after the push."
+      },
+      "unmatchedUsers": {
+        "title": "Unmatched users become historical authors",
+        "detail": "Invite now remains a secondary action after the transfer is complete."
+      },
+      "secretsNotTransferred": {
+        "title": "Secret values are not transferred",
+        "detail": "The push carries secret requirements only. Configure cloud secrets before activating automations."
+      },
+      "stackUpgradeRequired": {
+        "title": "Cloud stack upgrade required",
+        "detail": "This local build uses upstream schema 7, but the cloud stack reports schema 5."
+      }
+    },
+    "text": {
+      "activationChecklist": "Activation checklist",
+      "cloudUpstream": "Cloud upstream",
+      "conflicts": "Conflicts",
+      "connection": "Connection",
+      "noConflicts": "No target conflicts detected for this preview.",
+      "preview": "Preview",
+      "progressAndFinish": "Progress and finish"
+    },
+    "labelsJsx": {
+      "stackUrl": "Paperclip Cloud stack URL"
+    },
+    "steps": {
+      "scan": "Scan",
+      "connect": "Connect",
+      "preview": "Preview",
+      "activate": "Activate",
+      "push": "Push",
+      "verify": "Verify",
+      "agents": "Agents",
+      "routines": "Routines",
+      "monitors": "Monitors",
+      "users": "Users"
+    }
   }
 }
