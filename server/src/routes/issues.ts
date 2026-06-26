@@ -677,6 +677,10 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
   "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
 
+const INVALID_AGENT_DONE_WITH_OPEN_GITHUB_PR_MESSAGE =
+  "invalid_issue_disposition: Agent-authored updates cannot move a GitHub-backed lane to done while a linked pull request is still open. " +
+  "GitHub remains the source of truth for merge/close evidence, so keep the lane in_progress, in_review, or blocked until the pull request is actually merged, closed, or otherwise reaches the required terminal evidence.";
+
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
   right: ParsedExecutionState["currentParticipant"] | null,
@@ -1824,6 +1828,32 @@ export function issueRoutes(
         "scheduled_issue_monitor",
       ],
     });
+  }
+
+  async function assertAgentDoneWithoutOpenGitHubPullRequest(input: {
+    existing: {
+      id: string;
+      status: string;
+    };
+    updateFields: Record<string, unknown>;
+    actorType: string;
+  }) {
+    const nextStatus = typeof input.updateFields.status === "string"
+      ? input.updateFields.status
+      : input.existing.status;
+    if (input.actorType !== "agent" || input.existing.status === "done" || nextStatus !== "done") return;
+
+    if (await issueHasOpenGitHubPullRequest(externalObjectsSvc, input.existing.id)) {
+      throw unprocessable(INVALID_AGENT_DONE_WITH_OPEN_GITHUB_PR_MESSAGE, {
+        code: "invalid_issue_disposition",
+        missing: "github_terminal_evidence",
+        validTerminalEvidence: [
+          "merged_pull_request",
+          "closed_pull_request",
+          "other_required_terminal_github_evidence",
+        ],
+      });
+    }
   }
 
   async function logExpiredRequestConfirmations(input: {
@@ -6036,6 +6066,11 @@ export function issueRoutes(
     }
 
     await assertAgentInReviewReviewPath({
+      existing,
+      updateFields,
+      actorType: req.actor.type,
+    });
+    await assertAgentDoneWithoutOpenGitHubPullRequest({
       existing,
       updateFields,
       actorType: req.actor.type,
