@@ -723,6 +723,16 @@ function isApprovalReviewComment(body: string) {
   );
 }
 
+async function issueHasOpenGitHubPullRequest(externalObjectsSvc: ReturnType<typeof externalObjectService>, issueId: string) {
+  const objects = await externalObjectsSvc.listForIssue(issueId);
+  return objects.some((group) =>
+    group.object &&
+    group.object.providerKey === "github" &&
+    group.object.objectType === "pull_request" &&
+    group.object.isTerminal === false
+  );
+}
+
 function buildExecutionStageWakeContext(input: {
   state: ParsedExecutionState;
   wakeRole: ExecutionStageWakeContext["wakeRole"];
@@ -7787,11 +7797,17 @@ export function issueRoutes(
 
     const currentExecutionState = parseIssueExecutionState(currentIssue.executionState);
     const currentExecutionPolicy = normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null);
-    const shouldAutoApproveReviewComment =
+    const reviewCommentLooksApproved =
       currentIssue.status === "in_review" &&
       currentExecutionState?.status === "pending" &&
       actorMatchesExecutionParticipant(actor, currentExecutionState.currentParticipant ?? null) &&
       isApprovalReviewComment(req.body.body);
+    const linkedGitHubPrStillOpen = reviewCommentLooksApproved
+      ? await issueHasOpenGitHubPullRequest(externalObjectsSvc, currentIssue.id)
+      : false;
+    const shouldAutoApproveReviewComment =
+      reviewCommentLooksApproved &&
+      !linkedGitHubPrStillOpen;
 
     // Persist the comment and the auto-approval state transition atomically when both apply.
     // Without a single transaction, a 422 (or any error) thrown by the status update after the
