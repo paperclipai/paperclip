@@ -2250,6 +2250,7 @@ export function secretService(db: Db) {
         secretId: string;
         configPath: string;
         versionSelector: SecretVersionSelector;
+        label: string;
       }> = [];
       const pathPrefix = target.pathPrefix ?? "env";
       const bindingDb = options?.db ?? db;
@@ -2263,6 +2264,7 @@ export function secretService(db: Db) {
           secretId: binding.secretId,
           configPath: `${pathPrefix}.${key}`,
           versionSelector: binding.version,
+          label: key,
         });
       }
 
@@ -2287,6 +2289,7 @@ export function secretService(db: Db) {
             configPath: ref.configPath,
             versionSelector: String(ref.versionSelector),
             required: true,
+            label: ref.label,
           })),
         );
       };
