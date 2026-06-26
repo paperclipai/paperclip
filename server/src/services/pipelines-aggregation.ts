@@ -182,6 +182,7 @@ export async function listPipelineAttention(
           rejectToStageKey: typeof config.rejectToStageKey === "string" ? config.rejectToStageKey : null,
           requestChangesToStageKey: typeof config.requestChangesToStageKey === "string" ? config.requestChangesToStageKey : null,
           requireRejectReason: config.requireRejectReason !== false,
+          requireRequestChangesReason: config.requireRequestChangesReason !== false,
           reviewerKind:
             typeof config.reviewerKind === "string"
               ? config.reviewerKind

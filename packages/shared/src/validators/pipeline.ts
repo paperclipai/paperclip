@@ -110,6 +110,7 @@ export const pipelineStageConfigSchema = z.object({
   rejectToStageKey: z.string().trim().min(1).max(120).optional(),
   requestChangesToStageKey: z.string().trim().min(1).max(120).optional(),
   requireRejectReason: z.boolean().optional(),
+  requireRequestChangesReason: z.boolean().optional(),
   requireChildrenTerminal: z.boolean().optional(),
   requireNoUnresolvedDrift: z.boolean().optional(),
 }).passthrough().superRefine((value, ctx) => {

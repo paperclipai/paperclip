@@ -319,6 +319,7 @@ export interface PipelineAttentionReview {
     rejectToStageKey: string | null;
     requestChangesToStageKey: string | null;
     requireRejectReason: boolean;
+    requireRequestChangesReason: boolean;
     reviewerKind: string;
   };
 }
@@ -354,6 +355,7 @@ export interface PipelineReviewConfig {
   rejectToStageKey?: string | null;
   requestChangesToStageKey?: string | null;
   requireRejectReason?: boolean;
+  requireRequestChangesReason?: boolean;
   reviewerKind?: string;
   [key: string]: unknown;
 }

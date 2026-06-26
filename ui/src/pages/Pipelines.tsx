@@ -2773,7 +2773,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     <ReviewDecisionPanel
       actions={reviewActions}
       note={reviewDecisionNote}
-      requireReason={reviewConfig.requireRejectReason}
+      requireReason={reviewActions.some((action) => action.requireReason)}
       pendingDecision={decideReview.variables?.decision ?? null}
       pending={decideReview.isPending}
       nextItemTitle={nextReviewItem?.case.title ?? null}
@@ -3540,6 +3540,7 @@ interface ReviewDecisionConfig {
   rejectToStageKey: string | null;
   requestChangesToStageKey: string | null;
   requireRejectReason: boolean;
+  requireRequestChangesReason: boolean;
 }
 
 interface ReviewDecisionAction {
@@ -3568,6 +3569,7 @@ function reviewDecisionConfig(stage: PipelineStage, stages: PipelineStage[]): Re
     rejectToStageKey: configString(config, "rejectToStageKey") ?? stageKeyForKind(stages, "cancelled"),
     requestChangesToStageKey: configString(config, "requestChangesToStageKey"),
     requireRejectReason: config.requireRejectReason !== false,
+    requireRequestChangesReason: config.requireRequestChangesReason !== false,
   };
 }
 
@@ -3592,7 +3594,7 @@ function reviewDecisionActions(
       label: "Request changes",
       targetStageKey: config.requestChangesToStageKey,
       targetStageName: stageLookup.get(config.requestChangesToStageKey) ?? humanizePipelineItemStatus(config.requestChangesToStageKey),
-      requireReason: true,
+      requireReason: config.requireRequestChangesReason,
       variant: "outline",
     });
   }
@@ -4421,6 +4423,7 @@ export interface ReviewQueueRow {
   expectedVersion: number | null;
   suggestionId: string | null;
   requireRejectReason: boolean;
+  requireRequestChangesReason: boolean;
   fields: Record<string, unknown> | null;
 }
 
@@ -4469,6 +4472,7 @@ export function buildReviewQueueRows({
       expectedVersion: entry.case.version ?? null,
       suggestionId: entry.suggestion.id,
       requireRejectReason: false,
+      requireRequestChangesReason: true,
       fields: null,
     });
   }
@@ -4489,6 +4493,7 @@ export function buildReviewQueueRows({
       expectedVersion: entry.review.expectedVersion ?? entry.case.version ?? null,
       suggestionId: null,
       requireRejectReason: entry.review.requireRejectReason !== false,
+      requireRequestChangesReason: entry.review.requireRequestChangesReason !== false,
       fields: null,
     });
   }
@@ -4510,6 +4515,7 @@ export function buildReviewQueueRows({
       expectedVersion: entry.case.version ?? null,
       suggestionId: null,
       requireRejectReason: false,
+      requireRequestChangesReason: false,
       fields: null,
     });
   }
@@ -4540,6 +4546,7 @@ export function buildReviewQueueRows({
       expectedVersion: typeof entry.case.version === "number" ? entry.case.version : null,
       suggestionId: null,
       requireRejectReason: entry.reviewConfig?.requireRejectReason !== false,
+      requireRequestChangesReason: entry.reviewConfig?.requireRequestChangesReason !== false,
       fields: entry.case.fields ?? null,
     });
   }
@@ -4592,6 +4599,7 @@ function ReviewQueueDetailDialog({
   const fields = reviewQueueFieldEntries(row?.fields);
   const trimmedNote = note.trim();
   const canDecide = row ? row.kind !== "headsUp" : false;
+  const requestChangesRequiresNote = row?.kind === "review" ? row.requireRequestChangesReason : true;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -4644,7 +4652,7 @@ function ReviewQueueDetailDialog({
                 value={note}
                 onChange={(event) => setNote(event.target.value)}
                 rows={3}
-                placeholder="Required when requesting changes."
+                placeholder={requestChangesRequiresNote ? "Required when requesting changes." : "Optional note."}
               />
             </label>
           ) : null}
@@ -4660,7 +4668,7 @@ function ReviewQueueDetailDialog({
                 type="button"
                 variant="outline"
                 onClick={() => onRequestChanges(trimmedNote)}
-                disabled={pending || !trimmedNote}
+                disabled={pending || (requestChangesRequiresNote && !trimmedNote)}
               >
                 {row?.kind === "suggestion" ? "Not yet" : "Request changes"}
               </Button>

@@ -151,6 +151,7 @@ type StageConfig = {
   rejectToStageKey?: string;
   requestChangesToStageKey?: string;
   requireRejectReason?: boolean;
+  requireRequestChangesReason?: boolean;
   requireChildrenTerminal?: boolean;
   autoAdvanceOnChildrenTerminal?: string;
   [key: string]: unknown;
@@ -675,6 +676,7 @@ type StageFormValues = {
   rejectTarget: string;
   requestChangesTarget: string;
   requireRejectReason: boolean;
+  requireRequestChangesReason: boolean;
   requireChildrenTerminal: boolean;
   autoAdvanceOnChildrenTerminal: string;
   breakdownEnabled: boolean;
@@ -714,6 +716,7 @@ function computeStageForm(
     rejectTarget: config.rejectToStageKey ?? "",
     requestChangesTarget: config.requestChangesToStageKey ?? "",
     requireRejectReason: config.requireRejectReason ?? true,
+    requireRequestChangesReason: config.requireRequestChangesReason ?? true,
     requireChildrenTerminal: config.requireChildrenTerminal === true,
     autoAdvanceOnChildrenTerminal:
       typeof config.autoAdvanceOnChildrenTerminal === "string" ? config.autoAdvanceOnChildrenTerminal : "",
@@ -1250,6 +1253,7 @@ export function PipelineSettings() {
   const [rejectTarget, setRejectTarget] = useState("");
   const [requestChangesTarget, setRequestChangesTarget] = useState("");
   const [requireRejectReason, setRequireRejectReason] = useState(true);
+  const [requireRequestChangesReason, setRequireRequestChangesReason] = useState(true);
   const [requireChildrenTerminal, setRequireChildrenTerminal] = useState(false);
   const [autoAdvanceOnChildrenTerminal, setAutoAdvanceOnChildrenTerminal] = useState("");
   const [breakdownEnabled, setBreakdownEnabled] = useState(false);
@@ -1603,6 +1607,7 @@ export function PipelineSettings() {
     setRejectTarget(form.rejectTarget);
     setRequestChangesTarget(form.requestChangesTarget);
     setRequireRejectReason(form.requireRejectReason);
+    setRequireRequestChangesReason(form.requireRequestChangesReason);
     setRequireChildrenTerminal(form.requireChildrenTerminal);
     setAutoAdvanceOnChildrenTerminal(form.autoAdvanceOnChildrenTerminal);
     setBreakdownEnabled(form.breakdownEnabled);
@@ -1755,6 +1760,7 @@ export function PipelineSettings() {
           delete config.requestChangesToStageKey;
         }
         config.requireRejectReason = requireRejectReason;
+        config.requireRequestChangesReason = requireRequestChangesReason;
       }
 
       const keyById = new Map(stages.map((stage) => [stage.id, stage.key]));
@@ -2089,6 +2095,7 @@ export function PipelineSettings() {
         rejectTarget,
         requestChangesTarget,
         requireRejectReason,
+        requireRequestChangesReason,
         requireChildrenTerminal,
         autoAdvanceOnChildrenTerminal,
         breakdownEnabled,
@@ -2781,6 +2788,12 @@ export function PipelineSettings() {
                                   </select>
                                 </div>
                               ))}
+                              <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[minmax(0,1fr)_240px]">
+                                <span className="text-sm font-medium">Ask for a note when requesting changes</span>
+                                <div className="sm:justify-self-start">
+                                  <ToggleSwitch checked={requireRequestChangesReason} onCheckedChange={setRequireRequestChangesReason} />
+                                </div>
+                              </div>
                               <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[minmax(0,1fr)_240px]">
                                 <span className="text-sm font-medium">Ask for a note when declining</span>
                                 <div className="sm:justify-self-start">

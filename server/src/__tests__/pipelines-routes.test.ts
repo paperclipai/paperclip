@@ -1125,6 +1125,7 @@ describeEmbeddedPostgres("pipeline routes", () => {
               rejectToStageKey: "cancelled",
               requestChangesToStageKey: "drafting",
               requireRejectReason: false,
+              requireRequestChangesReason: false,
             },
           },
           { key: "done", name: "Done", kind: "done", position: 900 },
@@ -1139,15 +1140,15 @@ describeEmbeddedPostgres("pipeline routes", () => {
     await http.post(`/api/cases/${optionalReject.body.case.id}/transition`).send({ toStageKey: "review", expectedVersion: 1 }).expect(200);
     await http.post(`/api/cases/${optionalReject.body.case.id}/review`).send({ decision: "reject", expectedVersion: 2 }).expect(200);
 
-    const requiredRequestChangesReason = await http
+    const optionalRequestChangesReason = await http
       .post(`/api/pipelines/${optionalRejectReasonPipeline.body.id}/cases`)
       .send({ caseKey: "request-changes-reason", title: "Request changes reason" })
       .expect(201);
-    await http.post(`/api/cases/${requiredRequestChangesReason.body.case.id}/transition`).send({ toStageKey: "review", expectedVersion: 1 }).expect(200);
+    await http.post(`/api/cases/${optionalRequestChangesReason.body.case.id}/transition`).send({ toStageKey: "review", expectedVersion: 1 }).expect(200);
     await http
-      .post(`/api/cases/${requiredRequestChangesReason.body.case.id}/review`)
+      .post(`/api/cases/${optionalRequestChangesReason.body.case.id}/review`)
       .send({ decision: "request_changes", expectedVersion: 2 })
-      .expect(422);
+      .expect(200);
   });
 
   it("aggregates the review inbox across pipelines with parent and review config context", async () => {

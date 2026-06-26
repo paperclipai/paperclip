@@ -78,6 +78,7 @@ const DEFAULT_STAGES = [
       approveToStageKey: "done",
       rejectToStageKey: "cancelled",
       requireRejectReason: true,
+      requireRequestChangesReason: true,
       requireApproval: true,
       approver: { kind: "any_human" },
     },
@@ -101,6 +102,7 @@ export type PipelineStageConfig = Record<string, unknown> & {
   rejectToStageKey?: string;
   requestChangesToStageKey?: string;
   requireRejectReason?: boolean;
+  requireRequestChangesReason?: boolean;
   requireChildrenTerminal?: boolean;
   requireNoUnresolvedDrift?: boolean;
   disabled?: boolean;
@@ -965,12 +967,16 @@ function normalizeStageConfig(kind: PipelineStageKind | string, config?: Pipelin
   if (next.requireRejectReason !== undefined && typeof next.requireRejectReason !== "boolean") {
     throw unprocessable("Review stage requireRejectReason must be boolean", { code: "validation" });
   }
+  if (next.requireRequestChangesReason !== undefined && typeof next.requireRequestChangesReason !== "boolean") {
+    throw unprocessable("Review stage requireRequestChangesReason must be boolean", { code: "validation" });
+  }
   return {
     ...next,
     approveToStageKey: next.approveToStageKey.trim(),
     rejectToStageKey: next.rejectToStageKey.trim(),
     ...(next.requestChangesToStageKey !== undefined ? { requestChangesToStageKey: next.requestChangesToStageKey.trim() } : {}),
     requireRejectReason: next.requireRejectReason ?? true,
+    requireRequestChangesReason: next.requireRequestChangesReason ?? true,
     requireApproval,
     approver,
   };
@@ -4844,7 +4850,9 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         }
         const config = reviewConfigForStage(detail.stage);
         assertActorCanApproveStageExit(detail.stage, input.actor);
-        const reasonRequired = input.decision === "request_changes" || (input.decision === "reject" && config.requireRejectReason !== false);
+        const reasonRequired =
+          (input.decision === "request_changes" && config.requireRequestChangesReason !== false) ||
+          (input.decision === "reject" && config.requireRejectReason !== false);
         if (reasonRequired && !input.reason?.trim()) {
           throw unprocessable("Review decision reason is required", { code: "validation" });
         }
