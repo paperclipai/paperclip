@@ -6,11 +6,12 @@ Date: 2026-06-18
 ## 1. Purpose
 
 Cortex agents are assigned to develop **Paperclip itself**. The catch: the **live
-orchestrator instance that runs those very agents** is built from the same canonical
-source the agents edit. Without isolation, a build, migration, seed, restart, or dirty
-git state from one task can take down the control plane — including the run that issued
-the command. This is the literal "agents break the very system we are using to build the
-system" failure.
+orchestrator that runs those very agents** is deployed from the same canonical source the
+agents edit (promoted into its own separate runtime tree — see §2). Without isolation, a
+build, migration, seed, restart, or dirty git state — whether against that shared canonical
+source or against the live runtime directly — can take down the control plane, including
+the run that issued the command. This is the literal "agents break the very system we are
+using to build the system" failure.
 
 This document defines the **instance topology** (which instance is which, and its rule)
 and the **paperclip-dev Hard Rules** that every agent must follow. It is the in-repo,
@@ -26,27 +27,35 @@ skill must stay in sync.
 
 ## 2. Instance Topology
 
-There are **four** environments in play. Only one of them is the live control plane, and
-it is **never** a build/test/migrate/restart target. Know which is which before you run
-anything.
+There are **five** trees/environments in play. Only one of them is the live control plane,
+and it is **never** a build/test/migrate/restart target. The live runtime and the canonical
+agent source are **two different directories** — do not conflate them. Know which is which
+before you run anything.
 
 | Role | What it is | Where | Rule |
 |------|-----------|-------|------|
-| **Live / Orchestrator** | The running Paperclip control plane that assigns and runs Cortex agents. Treat it as production. | Controller host: `/home/ubuntu/.paperclip/instances/default/projects/0078c9af-…/8764704b-…/paperclip` (+ its Postgres DB + its serving port) | **Never** a build / test / migrate / seed / restart / port-bind target. Changes reach it only via the governed promotion path (§5). |
+| **Live / Orchestrator (runtime)** | The running Paperclip control plane that assigns and runs Cortex agents. Treat it as production. | Controller host, served by **`paperclip.service`** from **`/home/ubuntu/projects/paperclip`** (port `3100`, its own embedded Postgres), fronted by Caddy as `cortex.neoreef.com`. | **Never** a build / test / migrate / seed / restart / port-bind target. Changes reach it only via the governed promotion path (§5). |
+| **Canonical agent source (project workspace)** | The shared `project_primary` source tree every issue resolves to and syncs back into — what agents actually edit. **Not** a running server. | `/home/ubuntu/.paperclip/instances/default/projects/0078c9af-…/8764704b-…/paperclip` — and `/home/ubuntu/.paperclip` is a **symlink to `/data/paperclip`**, so this is the same tree as `/data/paperclip/instances/…/paperclip`. | Promoted into the live runtime via §5. Shared across concurrent agents: never trash it (dirty git state, stray build/migrate, or a second server bound to it) and never make it a build/migrate target — use an isolated worktree instead. |
 | **Dev (per-issue worktree instance)** | Ephemeral, isolated Paperclip instance with its **own** Postgres DB and server port, created via the `worktree` CLI (`cli/src/commands/worktree.ts`). | Under the worktree home (separate DB + port, printed by `worktree env`) | This is **where agents actually build / run / migrate / seed / smoke-test.** One per issue. Cleaned up when done. |
 | **Execution remote (sandbox)** | The SSH box where the adapter process runs a **synced copy** of the source; changes are exported back to the canonical tree. | `brian@172.31.0.32:2022`, path `/mnt/c/inetpub/.paperclip-runtime/runs/<runId>/workspace` — the legacy **Neoreef Platform** box (`EC2AMAZ-V5Q175O`, IIS/ASP.NET) | **Source edits only.** It is **not** a Paperclip runtime. Do **not** start a Paperclip server/DB here and treat it as "the dev instance." Its `localhost`/ports are not the controller's. |
 | **Staging (optional, deferred)** | Longer-lived shared instance running merged `master`, for integration testing before promotion. | TBD | Not provisioned today. Rely on ephemeral per-issue worktree instances; add staging only if per-issue isolation proves insufficient. |
 
 ### Why the distinction is load-bearing
 
-The dangerous target is the **single live orchestrator instance on the controller**
-(`/home/ubuntu/.paperclip/instances/default/…/paperclip` + its DB + its serving port) —
-**not** `/mnt/c/inetpub`. Because the project's workspace policy resolves every issue to
-that one canonical source (and run changes **sync back** to it), build / `db:migrate` /
-`db:generate` / seed / server-restart / port-bind run against the live instance unless
-you deliberately target an isolated worktree instance. The SSH-remote indirection does
-**not** protect against this: the synced-back source is the live instance's own install
-directory.
+There are **two** dangerous targets — **not** `/mnt/c/inetpub`:
+
+1. The **live orchestrator runtime** (`/home/ubuntu/projects/paperclip`, `paperclip.service`,
+   port `3100` → `cortex.neoreef.com`). Never a direct build / `db:migrate` / `db:generate` /
+   seed / server-restart / port-bind target; it changes only via the §5 promotion path.
+2. The **shared canonical agent source**
+   (`/home/ubuntu/.paperclip/instances/default/…/paperclip` ≡ `/data/paperclip/…`) that the
+   project's workspace policy resolves every issue to and **syncs back** into. Because it is
+   shared across every concurrent agent, a build / migrate / seed / dirty git state / stray
+   server bound to it corrupts work in flight for everyone and feeds bad state into the next
+   promotion — unless you deliberately target an isolated worktree instance instead.
+
+The SSH-remote indirection does **not** protect against (2): the synced-back source is this
+canonical tree, not a throwaway.
 
 This is also why any enforcement guard must key off an **explicit instance-role marker**,
 not host/port/URL heuristics — under the SSH realization the adapter runs on a *different*
@@ -61,7 +70,8 @@ execution-workspace (`GET /api/execution-workspaces/…`) and the live filesyste
 
 | Element | Reality | Evidence |
 |---|---|---|
-| **Canonical source + LIVE orchestrator instance** | `/home/ubuntu/.paperclip/instances/default/projects/0078c9af-…/8764704b-…/paperclip` on the **controller host** (the machine running the Paperclip control plane that orchestrates Cortex agents). The path embeds **this** companyId + projectId. | `workspaceRealization.local.path` + `cwd`; `source = project_primary`; `repoUrl = github.com/Neoreef/paperclip` |
+| **Canonical agent source (project workspace)** | `/home/ubuntu/.paperclip/instances/default/projects/0078c9af-…/8764704b-…/paperclip` on the **controller host**; `/home/ubuntu/.paperclip` is a **symlink to `/data/paperclip`**, so this is the same inode as `/data/paperclip/instances/…/paperclip`. The path embeds **this** companyId + projectId. **Source tree agents edit — not a running server.** | `workspaceRealization.local.path` + `cwd`; `source = project_primary`; `repoUrl = github.com/Neoreef/paperclip`; `readlink /home/ubuntu/.paperclip → /data/paperclip` (NEO-217) |
+| **Live orchestrator runtime** (where `cortex.neoreef.com` actually runs) | `/home/ubuntu/projects/paperclip` — a **separate** tree from the canonical source above, served by `paperclip.service`. | `systemctl` unit `paperclip.service` (`WorkingDirectory=/home/ubuntu/projects/paperclip/server`, `PORT=3100`, `PUBLIC_URL=https://cortex.neoreef.com`); listening pid `cwd=/home/ubuntu/projects/paperclip`; Caddy `reverse_proxy 127.0.0.1:3100` (NEO-217) |
 | **Execution remote** (where the adapter process actually runs) | `brian@172.31.0.32:2022`, path `/mnt/c/inetpub` — the legacy **Neoreef Platform** box (`EC2AMAZ-V5Q175O`, IIS/ASP.NET `Neoreef OneNet 2023.sln`). **Not Paperclip.** | `workspaceRealization.remote = {host,port,username,path}`; `whoami=brian`, `hostname=EC2AMAZ-V5Q175O`; `/mnt/c/inetpub` is the Neoreef platform tree |
 | **Per-run workspace** | A **synced copy** of the canonical source, materialized on the remote at `/mnt/c/inetpub/.paperclip-runtime/runs/<runId>/workspace`, then exported back. | `workspaceRealization.sync.strategy = ssh_git_import_export` (prepare = import local→remote; syncBack = export remote→local) |
 | **Current workspace policy** | `mode = shared_workspace`, `strategyType = project_primary`, `providerType = local_fs`. | execution-workspace record (confirmed, not inferred) |
