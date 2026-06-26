@@ -1912,5 +1912,143 @@
       "agentDesc": "描述此智能体能做什么……",
       "initialPrompt": "首次运行的可选初始设置提示"
     }
+  },
+  "issueThreadInteractionCard": {
+    "text": {
+      "confirmed": "已确认",
+      "declined": "已拒绝",
+      "jumpToComment": "跳转到评论",
+      "noAnswerRecorded": "未记录答案。",
+      "noAnswerWasRecorded": "未记录任何答案。"
+    },
+    "labelsJsx": {
+      "answer": "答案",
+      "assignee": "负责人",
+      "billing": "账单",
+      "defaultParent": "默认父级",
+      "label": "标签"
+    }
+  },
+  "issueDocumentsSection": {
+    "errors": {
+      "delete": "删除文档失败",
+      "restoreRevision": "恢复文档历史版本失败",
+      "save": "保存文档失败"
+    },
+    "text": {
+      "documents": "文档",
+      "loadingRevisions": "正在加载历史版本……",
+      "newDocument": "新建文档",
+      "noRevisionsYet": "尚无历史版本",
+      "outOfDate": "已过期"
+    },
+    "labelsJsx": {
+      "locked": "已锁定文档"
+    },
+    "placeholders": {
+      "docKey": "文档键",
+      "body": "Markdown 正文",
+      "title": "可选标题"
+    }
+  },
+  "routineHistoryTab": {
+    "toasts": {
+      "restoreFailed": "恢复历史版本失败"
+    },
+    "errors": {
+      "restore": "Paperclip 无法恢复该历史版本。"
+    },
+    "text": {
+      "compare": "比较例程历史版本",
+      "content": "内容",
+      "loadFailed": "无法加载历史版本",
+      "identical": "描述相同。",
+      "field": "字段"
+    },
+    "tabs": {
+      "catchup": "追赶",
+      "concurrency": "并发",
+      "defaultAgent": "默认智能体",
+      "priority": "优先级",
+      "project": "项目"
+    }
+  },
+  "projectProperties": {
+    "text": {
+      "baseRef": "基线引用",
+      "branchTemplate": "分支模板",
+      "codebase": "代码库",
+      "enableIsolated": "启用隔离任务检出",
+      "environment": "环境"
+    },
+    "labelsJsx": {
+      "clearLocalFolder": "清空本地文件夹",
+      "clearRepo": "清空仓库",
+      "codebaseHelp": "代码库帮助",
+      "created": "创建时间",
+      "description": "描述"
+    }
+  },
+  "fileViewerSheet": {
+    "toasts": {
+      "cantPreview": "无法预览此文件",
+      "tooLarge": "文件过大无法预览",
+      "outsideWorkspace": "路径在工作区之外"
+    },
+    "text": {
+      "loadingPreview": "正在加载文件预览"
+    },
+    "labelsJsx": {
+      "backToFiles": "返回文件",
+      "closeViewer": "关闭文件查看器",
+      "loadingDetails": "正在加载文件详情",
+      "markdownMode": "Markdown 预览模式",
+      "resizeTree": "调整文件目录"
+    }
+  },
+  "issueRunLedger": {
+    "toasts": {
+      "watchdogNotRecorded": "看门狗决策未记录"
+    },
+    "text": {
+      "childWork": "子任务",
+      "elapsed": "耗时",
+      "lastUsefulAction": "最后有用动作",
+      "nextAction": "下一动作:",
+      "runLedger": "运行记录"
+    },
+    "descriptions": {
+      "evaluatedAfterFinish": "活跃度在运行结束后评估。",
+      "queuedRetry": "Paperclip 排队了尚未开始的自动重试。",
+      "noConcreteAction": "运行描述了未来工作但无具体动作证据。",
+      "endedUnsuccessfully": "运行未成功结束。",
+      "noUsefulOutput": "运行结束但无有用输出。"
+    }
+  },
+  "issueRecoveryActionCard": {
+    "text": {
+      "board": "委员会",
+      "recovery": "恢复:",
+      "system": "系统"
+    },
+    "descriptions": {
+      "dismissComplete": "忽略恢复并将来源任务标记为完成。",
+      "dismissTodo": "忽略恢复并将来源任务返回待办。",
+      "dismissReview": "忽略恢复并将来源任务送去审查。",
+      "reviewPath": "移交给具有真实审查路径的审查人。",
+      "recordComplete": "通过将请求的工作记录为完成来恢复。"
+    }
+  },
+  "issueFiltersPopover": {
+    "text": {
+      "assignee": "负责人",
+      "creator": "创建人",
+      "externalObjectStatus": "外部对象状态",
+      "filters": "过滤",
+      "hideRoutineRuns": "隐藏例程运行"
+    },
+    "placeholders": {
+      "searchCreators": "搜索创建人..."
+    }
   }
 }

@@ -1912,5 +1912,143 @@
       "agentDesc": "Describe what this agent can do...",
       "initialPrompt": "Optional initial setup prompt for the first run"
     }
+  },
+  "issueThreadInteractionCard": {
+    "text": {
+      "confirmed": "Confirmed",
+      "declined": "Declined",
+      "jumpToComment": "Jump to comment",
+      "noAnswerRecorded": "No answer recorded.",
+      "noAnswerWasRecorded": "No answer was recorded."
+    },
+    "labelsJsx": {
+      "answer": "Answer",
+      "assignee": "Assignee",
+      "billing": "Billing",
+      "defaultParent": "Default parent",
+      "label": "Label"
+    }
+  },
+  "issueDocumentsSection": {
+    "errors": {
+      "delete": "Failed to delete document",
+      "restoreRevision": "Failed to restore document revision",
+      "save": "Failed to save document"
+    },
+    "text": {
+      "documents": "Documents",
+      "loadingRevisions": "Loading revisions...",
+      "newDocument": "New document",
+      "noRevisionsYet": "No revisions yet",
+      "outOfDate": "Out of date"
+    },
+    "labelsJsx": {
+      "locked": "Locked document"
+    },
+    "placeholders": {
+      "docKey": "Document key",
+      "body": "Markdown body",
+      "title": "Optional title"
+    }
+  },
+  "routineHistoryTab": {
+    "toasts": {
+      "restoreFailed": "Failed to restore revision"
+    },
+    "errors": {
+      "restore": "Paperclip could not restore the revision."
+    },
+    "text": {
+      "compare": "Compare routine revisions",
+      "content": "Content",
+      "loadFailed": "Could not load revisions",
+      "identical": "Descriptions are identical.",
+      "field": "Field"
+    },
+    "tabs": {
+      "catchup": "Catch-up",
+      "concurrency": "Concurrency",
+      "defaultAgent": "Default agent",
+      "priority": "Priority",
+      "project": "Project"
+    }
+  },
+  "projectProperties": {
+    "text": {
+      "baseRef": "Base ref",
+      "branchTemplate": "Branch template",
+      "codebase": "Codebase",
+      "enableIsolated": "Enable isolated task checkouts",
+      "environment": "Environment"
+    },
+    "labelsJsx": {
+      "clearLocalFolder": "Clear local folder",
+      "clearRepo": "Clear repo",
+      "codebaseHelp": "Codebase help",
+      "created": "Created",
+      "description": "Description"
+    }
+  },
+  "fileViewerSheet": {
+    "toasts": {
+      "cantPreview": "Can't preview this file",
+      "tooLarge": "File is too large to preview",
+      "outsideWorkspace": "Path is outside the workspace"
+    },
+    "text": {
+      "loadingPreview": "Loading file preview"
+    },
+    "labelsJsx": {
+      "backToFiles": "Back to files",
+      "closeViewer": "Close file viewer",
+      "loadingDetails": "Loading file details",
+      "markdownMode": "Markdown preview mode",
+      "resizeTree": "Resize file tree"
+    }
+  },
+  "issueRunLedger": {
+    "toasts": {
+      "watchdogNotRecorded": "Watchdog decision not recorded"
+    },
+    "text": {
+      "childWork": "Child work",
+      "elapsed": "Elapsed",
+      "lastUsefulAction": "Last useful action",
+      "nextAction": "Next action: ",
+      "runLedger": "Run ledger"
+    },
+    "descriptions": {
+      "evaluatedAfterFinish": "Liveness is evaluated after the run finishes.",
+      "queuedRetry": "Paperclip queued an automatic retry that has not started yet.",
+      "noConcreteAction": "Run described future work without concrete action evidence.",
+      "endedUnsuccessfully": "Run ended unsuccessfully.",
+      "noUsefulOutput": "Run finished without useful output."
+    }
+  },
+  "issueRecoveryActionCard": {
+    "text": {
+      "board": "Board",
+      "recovery": "Recovery:",
+      "system": "System"
+    },
+    "descriptions": {
+      "dismissComplete": "Dismiss recovery and mark the source task complete.",
+      "dismissTodo": "Dismiss recovery and return the source task to todo.",
+      "dismissReview": "Dismiss recovery and send the source task for review.",
+      "reviewPath": "Hand off to a reviewer with a real review path.",
+      "recordComplete": "Restore by recording the requested work as complete."
+    }
+  },
+  "issueFiltersPopover": {
+    "text": {
+      "assignee": "Assignee",
+      "creator": "Creator",
+      "externalObjectStatus": "External object status",
+      "filters": "Filters",
+      "hideRoutineRuns": "Hide routine runs"
+    },
+    "placeholders": {
+      "searchCreators": "Search creators..."
+    }
   }
 }

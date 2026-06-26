@@ -8,6 +8,7 @@ import type {
 } from "@paperclipai/shared";
 import { Eye, OctagonAlert, RefreshCw, Sparkles, TriangleAlert } from "lucide-react";
 import { Link } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -303,29 +304,29 @@ const RESOLVE_OPTIONS: Array<{
   {
     outcome: "todo",
     label: "Try again",
-    description: "Dismiss recovery and return the source task to todo.",
+    description: t("issueRecoveryActionCard.descriptions.dismissTodo"),
   },
   {
     outcome: "done",
     label: "Mark task done",
-    description: "Restore by recording the requested work as complete.",
+    description: t("issueRecoveryActionCard.descriptions.recordComplete"),
   },
   {
     outcome: "in_review",
     label: "Send for review",
-    description: "Hand off to a reviewer with a real review path.",
+    description: t("issueRecoveryActionCard.descriptions.reviewPath"),
   },
   {
     outcome: "false_positive_done",
     label: "False positive, done",
-    description: "Dismiss recovery and mark the source task complete.",
+    description: t("issueRecoveryActionCard.descriptions.dismissComplete"),
     destructive: true,
     boardOnly: true,
   },
   {
     outcome: "false_positive_in_review",
     label: "False positive, review",
-    description: "Dismiss recovery and send the source task for review.",
+    description: t("issueRecoveryActionCard.descriptions.dismissReview"),
     destructive: true,
     boardOnly: true,
   },
@@ -339,6 +340,7 @@ export function IssueRecoveryActionCard({
   canFalsePositive = false,
   className,
 }: IssueRecoveryActionCardProps) {
+  const { t } = useTranslation();
   const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action);
   const tone = STATE_TONE[cardState];
   const ToneIcon = tone.Icon;
@@ -427,15 +429,15 @@ export function IssueRecoveryActionCard({
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {action.ownerType === "agent" && action.ownerAgentId ? (
               <>
-                <span className="text-muted-foreground">Recovery:</span>
+                <span className="text-muted-foreground">{t("issueRecoveryActionCard.text.recovery")}</span>
                 <AgentLink agentId={action.ownerAgentId} agentMap={agentMap} />
               </>
             ) : action.ownerType === "board" ? (
-              <span className="font-medium">Board</span>
+              <span className="font-medium">{t("issueRecoveryActionCard.text.board")}</span>
             ) : action.ownerType === "user" && action.ownerUserId ? (
               <span className="font-medium">user {action.ownerUserId.slice(0, 6)}</span>
             ) : action.ownerType === "system" ? (
-              <span className="font-medium">System</span>
+              <span className="font-medium">{t("issueRecoveryActionCard.text.system")}</span>
             ) : (
               <span className="text-muted-foreground">unassigned — pick one to wake them</span>
             )}

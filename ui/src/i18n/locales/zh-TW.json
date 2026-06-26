@@ -1912,5 +1912,143 @@
       "agentDesc": "描述此智慧代理能做什麼……",
       "initialPrompt": "首次執行的可選初始設定提示"
     }
+  },
+  "issueThreadInteractionCard": {
+    "text": {
+      "confirmed": "已確認",
+      "declined": "已拒絕",
+      "jumpToComment": "跳轉到評論",
+      "noAnswerRecorded": "未記錄答案。",
+      "noAnswerWasRecorded": "未記錄任何答案。"
+    },
+    "labelsJsx": {
+      "answer": "答案",
+      "assignee": "負責人",
+      "billing": "帳單",
+      "defaultParent": "預設父級",
+      "label": "標籤"
+    }
+  },
+  "issueDocumentsSection": {
+    "errors": {
+      "delete": "刪除文件失敗",
+      "restoreRevision": "復原文件歷史版本失敗",
+      "save": "儲存文件失敗"
+    },
+    "text": {
+      "documents": "文件",
+      "loadingRevisions": "正在載入歷史版本……",
+      "newDocument": "新建文件",
+      "noRevisionsYet": "尚無歷史版本",
+      "outOfDate": "已過期"
+    },
+    "labelsJsx": {
+      "locked": "已鎖定文件"
+    },
+    "placeholders": {
+      "docKey": "文件鍵",
+      "body": "Markdown 正文",
+      "title": "可選標題"
+    }
+  },
+  "routineHistoryTab": {
+    "toasts": {
+      "restoreFailed": "復原歷史版本失敗"
+    },
+    "errors": {
+      "restore": "Paperclip 無法復原該歷史版本。"
+    },
+    "text": {
+      "compare": "比較排程歷史版本",
+      "content": "內容",
+      "loadFailed": "無法載入歷史版本",
+      "identical": "描述相同。",
+      "field": "欄位"
+    },
+    "tabs": {
+      "catchup": "追趕",
+      "concurrency": "並行",
+      "defaultAgent": "預設智慧代理",
+      "priority": "優先級",
+      "project": "專案"
+    }
+  },
+  "projectProperties": {
+    "text": {
+      "baseRef": "基線引用",
+      "branchTemplate": "分支範本",
+      "codebase": "程式碼庫",
+      "enableIsolated": "啟用隔離工作檢出",
+      "environment": "環境"
+    },
+    "labelsJsx": {
+      "clearLocalFolder": "清空本機資料夾",
+      "clearRepo": "清空倉庫",
+      "codebaseHelp": "程式碼庫說明",
+      "created": "建立時間",
+      "description": "描述"
+    }
+  },
+  "fileViewerSheet": {
+    "toasts": {
+      "cantPreview": "無法預覽此檔案",
+      "tooLarge": "檔案過大無法預覽",
+      "outsideWorkspace": "路徑在工作區之外"
+    },
+    "text": {
+      "loadingPreview": "正在載入檔案預覽"
+    },
+    "labelsJsx": {
+      "backToFiles": "返回檔案",
+      "closeViewer": "關閉檔案檢視器",
+      "loadingDetails": "正在載入檔案詳情",
+      "markdownMode": "Markdown 預覽模式",
+      "resizeTree": "調整檔案目錄"
+    }
+  },
+  "issueRunLedger": {
+    "toasts": {
+      "watchdogNotRecorded": "看門狗決策未記錄"
+    },
+    "text": {
+      "childWork": "子工作",
+      "elapsed": "耗時",
+      "lastUsefulAction": "最後有用動作",
+      "nextAction": "下一動作:",
+      "runLedger": "執行記錄"
+    },
+    "descriptions": {
+      "evaluatedAfterFinish": "活躍度在執行結束後評估。",
+      "queuedRetry": "Paperclip 排隊了尚未開始的自動重試。",
+      "noConcreteAction": "執行描述了未來工作但無具體動作證據。",
+      "endedUnsuccessfully": "執行未成功結束。",
+      "noUsefulOutput": "執行結束但無有用輸出。"
+    }
+  },
+  "issueRecoveryActionCard": {
+    "text": {
+      "board": "委員會",
+      "recovery": "復原:",
+      "system": "系統"
+    },
+    "descriptions": {
+      "dismissComplete": "忽略復原並將來源工作標記為完成。",
+      "dismissTodo": "忽略復原並將來源工作返回待辦。",
+      "dismissReview": "忽略復原並將來源工作送去審查。",
+      "reviewPath": "移交给具有真實審查路徑的審查人。",
+      "recordComplete": "通過將請求的工作記錄為完成來復原。"
+    }
+  },
+  "issueFiltersPopover": {
+    "text": {
+      "assignee": "負責人",
+      "creator": "建立者",
+      "externalObjectStatus": "外部物件狀態",
+      "filters": "篩選",
+      "hideRoutineRuns": "隱藏排程執行"
+    },
+    "placeholders": {
+      "searchCreators": "搜尋建立者..."
+    }
   }
 }
