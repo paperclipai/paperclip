@@ -84,8 +84,8 @@ export async function handleGithubWebhookRequest(
       disposition: result.normalized.disposition,
       originId: result.normalized.originId,
     });
-  } catch (error) {
-    console.error(error);
+  } catch {
+    console.error("GitHub webhook processing failed");
     res.status(500).json({ error: "Internal error while processing the GitHub webhook" });
   }
 }
