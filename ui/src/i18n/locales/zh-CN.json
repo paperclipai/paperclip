@@ -820,5 +820,45 @@
       "unset": "未设置",
       "userAccount": "用户账号"
     }
+  },
+  "companyEnvironments": {
+    "toasts": {
+      "defaultUpdated": "默认环境已更新",
+      "draftProbeFailed": "草稿探测失败",
+      "probeFailed": "环境探测失败",
+      "saveFailed": "保存环境失败",
+      "defaultUpdateFailed": "更新默认环境失败"
+    },
+    "errors": {
+      "defaultUpdateFailed": "默认环境更新失败。",
+      "probeFailed": "环境探测失败。",
+      "saveFailed": "环境保存失败。"
+    },
+    "text": {
+      "default": "默认",
+      "local": "本地",
+      "noSavedSecret": "无已保存密钥",
+      "runsOnHost": "在此 Paperclip 主机上运行。",
+      "sandbox": "沙盒"
+    },
+    "labelsJsx": {
+      "description": "描述",
+      "driver": "驱动",
+      "envVars": "环境变量",
+      "host": "主机",
+      "knownHosts": "已知主机",
+      "name": "名称",
+      "port": "端口",
+      "privateKey": "私钥",
+      "provider": "提供商",
+      "remotePath": "远程工作区路径",
+      "strictHostKey": "严格的主机密钥检查",
+      "username": "用户名"
+    },
+    "tabs": {
+      "environments": "环境",
+      "instanceSettings": "实例设置",
+      "settings": "设置"
+    }
   }
 }

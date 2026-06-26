@@ -820,5 +820,45 @@
       "unset": "Unset",
       "userAccount": "User account"
     }
+  },
+  "companyEnvironments": {
+    "toasts": {
+      "defaultUpdated": "Default environment updated",
+      "draftProbeFailed": "Draft probe failed",
+      "probeFailed": "Environment probe failed",
+      "saveFailed": "Failed to save environment",
+      "defaultUpdateFailed": "Failed to update default environment"
+    },
+    "errors": {
+      "defaultUpdateFailed": "Default environment update failed.",
+      "probeFailed": "Environment probe failed.",
+      "saveFailed": "Environment save failed."
+    },
+    "text": {
+      "default": "Default",
+      "local": "Local",
+      "noSavedSecret": "No saved secret",
+      "runsOnHost": "Runs on this Paperclip host.",
+      "sandbox": "Sandbox"
+    },
+    "labelsJsx": {
+      "description": "Description",
+      "driver": "Driver",
+      "envVars": "Environment variables",
+      "host": "Host",
+      "knownHosts": "Known hosts",
+      "name": "Name",
+      "port": "Port",
+      "privateKey": "Private key",
+      "provider": "Provider",
+      "remotePath": "Remote workspace path",
+      "strictHostKey": "Strict host key checking",
+      "username": "Username"
+    },
+    "tabs": {
+      "environments": "Environments",
+      "instanceSettings": "Instance settings",
+      "settings": "Settings"
+    }
   }
 }

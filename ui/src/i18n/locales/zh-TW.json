@@ -820,5 +820,45 @@
       "unset": "未設定",
       "userAccount": "使用者帳號"
     }
+  },
+  "companyEnvironments": {
+    "toasts": {
+      "defaultUpdated": "預設環境已更新",
+      "draftProbeFailed": "草稿探測失敗",
+      "probeFailed": "環境探測失敗",
+      "saveFailed": "儲存環境失敗",
+      "defaultUpdateFailed": "更新預設環境失敗"
+    },
+    "errors": {
+      "defaultUpdateFailed": "預設環境更新失敗。",
+      "probeFailed": "環境探測失敗。",
+      "saveFailed": "環境儲存失敗。"
+    },
+    "text": {
+      "default": "預設",
+      "local": "本機",
+      "noSavedSecret": "無已儲存密鑰",
+      "runsOnHost": "在此 Paperclip 主機上執行。",
+      "sandbox": "沙盒"
+    },
+    "labelsJsx": {
+      "description": "描述",
+      "driver": "驅動",
+      "envVars": "環境變數",
+      "host": "主機",
+      "knownHosts": "已知主機",
+      "name": "名稱",
+      "port": "通訊埠",
+      "privateKey": "私鑰",
+      "provider": "提供商",
+      "remotePath": "遠端工作區路徑",
+      "strictHostKey": "嚴格的主機密鑰檢查",
+      "username": "使用者名稱"
+    },
+    "tabs": {
+      "environments": "環境",
+      "instanceSettings": "實例設定",
+      "settings": "設定"
+    }
   }
 }
