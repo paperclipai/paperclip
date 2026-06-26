@@ -15,4 +15,5 @@ export const BUILTIN_ADAPTER_TYPES = new Set([
   "hermes_local",
   "process",
   "http",
+  "deerflow",
 ]);
