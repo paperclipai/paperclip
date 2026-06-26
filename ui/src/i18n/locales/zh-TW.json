@@ -1569,5 +1569,15 @@
       "taskLinkedUsage": "任務關聯用量",
       "users": "使用者"
     }
+  },
+  "runTranscriptUxLab": {
+    "text": {
+      "fixtures": "執行記錄固定資料"
+    },
+    "tabs": {
+      "dashboardCard": "儀表板卡片",
+      "issueWidget": "問題小工具",
+      "runDetail": "執行詳情"
+    }
   }
 }

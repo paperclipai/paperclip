@@ -19,21 +19,21 @@ const surfaceOptions: Array<{
 }> = [
   {
     id: "detail",
-    label: "Run Detail",
+    label: t("runTranscriptUxLab.tabs.runDetail"),
     eyebrow: "Full transcript",
     description: "The long-form run page with the `Nice | Raw` toggle and the most inspectable transcript view.",
     icon: MonitorCog,
   },
   {
     id: "live",
-    label: "Issue Widget",
+    label: t("runTranscriptUxLab.tabs.issueWidget"),
     eyebrow: "Live stream",
     description: "The issue-detail live run widget, optimized for following an active run without leaving the task page.",
     icon: RadioTower,
   },
   {
     id: "dashboard",
-    label: "Dashboard Card",
+    label: t("runTranscriptUxLab.tabs.dashboardCard"),
     eyebrow: "Dense card",
     description: "The active-agents dashboard card, tuned for compact scanning while keeping the same transcript language.",
     icon: PanelsTopLeft,
@@ -191,6 +191,7 @@ function DashboardPreview({
 }
 
 export function RunTranscriptUxLab() {
+  const { t } = useTranslation();
   const [selectedSurface, setSelectedSurface] = useState<SurfaceId>("detail");
   const [detailMode, setDetailMode] = useState<TranscriptMode>("nice");
   const [streaming, setStreaming] = useState(true);
@@ -208,7 +209,7 @@ export function RunTranscriptUxLab() {
                 <FlaskConical className="h-3.5 w-3.5" />
                 UX Lab
               </div>
-              <h1 className="mt-4 text-2xl font-semibold tracking-tight">Run Transcript Fixtures</h1>
+              <h1 className="mt-4 text-2xl font-semibold tracking-tight">{t("runTranscriptUxLab.text.fixtures")}</h1>
               <p className="mt-2 text-sm text-muted-foreground">
                 Built from a real Paperclip development run, then sanitized so no secrets, local paths, or environment details survive into the fixture.
               </p>

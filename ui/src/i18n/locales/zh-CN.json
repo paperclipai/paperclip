@@ -1569,5 +1569,15 @@
       "taskLinkedUsage": "任务关联用量",
       "users": "用户"
     }
+  },
+  "runTranscriptUxLab": {
+    "text": {
+      "fixtures": "运行记录固定数据"
+    },
+    "tabs": {
+      "dashboardCard": "仪表盘卡片",
+      "issueWidget": "问题小部件",
+      "runDetail": "运行详情"
+    }
   }
 }

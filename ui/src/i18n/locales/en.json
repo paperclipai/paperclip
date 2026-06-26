@@ -1569,5 +1569,15 @@
       "taskLinkedUsage": "Task-linked usage",
       "users": "Users"
     }
+  },
+  "runTranscriptUxLab": {
+    "text": {
+      "fixtures": "Run Transcript Fixtures"
+    },
+    "tabs": {
+      "dashboardCard": "Dashboard Card",
+      "issueWidget": "Issue Widget",
+      "runDetail": "Run Detail"
+    }
   }
 }
