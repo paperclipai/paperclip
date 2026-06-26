@@ -696,5 +696,17 @@
       "workspaceName": "執行工作區名稱",
       "paperclipWorkspace": "PAP-946-工作區"
     }
+  },
+  "pluginSettings": {
+    "labels": {
+      "configured": "已設定",
+      "readable": "可讀",
+      "writable": "可寫",
+      "configuration": "設定",
+      "instanceSettings": "實例設定",
+      "plugins": "外掛",
+      "settings": "設定",
+      "status": "狀態"
+    }
   }
 }

@@ -696,5 +696,17 @@
       "workspaceName": "Execution workspace name",
       "paperclipWorkspace": "PAP-946-workspace"
     }
+  },
+  "pluginSettings": {
+    "labels": {
+      "configured": "Configured",
+      "readable": "Readable",
+      "writable": "Writable",
+      "configuration": "Configuration",
+      "instanceSettings": "Instance settings",
+      "plugins": "Plugins",
+      "settings": "Settings",
+      "status": "Status"
+    }
   }
 }
