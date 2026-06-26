@@ -1083,5 +1083,83 @@
     "tabs": {
       "companies": "公司"
     }
+  },
+  "companySettingsPluginPage": {
+    "text": {
+      "loading": "加载中……",
+      "selectCompany": "选择一家公司以查看此页面。"
+    },
+    "tabs": {
+      "settings": "设置"
+    }
+  },
+  "dashboardLive": {
+    "text": {
+      "liveRuns": "正在运行的智能体"
+    },
+    "tabs": {
+      "dashboard": "仪表盘",
+      "liveRuns": "正在运行"
+    }
+  },
+  "goalDetail": {
+    "text": {
+      "noLinkedProjects": "无链接项目。"
+    },
+    "tabs": {
+      "goals": "目标"
+    },
+    "placeholders": {
+      "addDescription": "添加描述……"
+    }
+  },
+  "cliAuth": {
+    "errors": {
+      "challengeInvalid": "挑战无效或已过期。"
+    },
+    "text": {
+      "approve": "批准 Paperclip CLI 访问",
+      "client": "客户端",
+      "command": "命令",
+      "invalidUrl": "无效的 CLI 认证 URL。",
+      "loading": "正在加载 CLI 认证挑战……",
+      "requestedAccess": "请求的访问",
+      "requestedCompany": "请求的公司",
+      "signInRequired": "需要登录"
+    }
+  },
+  "bootstrapSetupUxLab": {
+    "text": {
+      "claimInstance": "认领此实例",
+      "continueToDashboard": "继续前往控制台",
+      "finishSetup": "完成此 Paperclip 的设置",
+      "preferHostSetup": "更想在主机上完成设置?",
+      "alreadyClaimed": "此实例已被他人认领。",
+      "waitingForAdmin": "此 Paperclip 正在等待首位管理员"
+    }
+  },
+  "instanceAccess": {
+    "toasts": {
+      "companyAccessUpdated": "公司访问已更新",
+      "instanceRoleUpdated": "实例角色已更新"
+    },
+    "errors": {
+      "loadUserAccess": "加载用户访问失败。"
+    },
+    "text": {
+      "companyAccess": "公司访问",
+      "currentMemberships": "当前成员资格",
+      "instanceAccess": "实例访问",
+      "searchUsers": "搜索用户",
+      "selectUserToInspect": "选择用户以查看实例访问。"
+    },
+    "tabs": {
+      "access": "访问",
+      "instanceSettings": "实例设置",
+      "settings": "设置"
+    },
+    "placeholders": {
+      "searchByName": "按名称或邮箱搜索"
+    }
   }
 }

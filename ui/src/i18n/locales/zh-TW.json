@@ -1083,5 +1083,83 @@
     "tabs": {
       "companies": "公司"
     }
+  },
+  "companySettingsPluginPage": {
+    "text": {
+      "loading": "載入中……",
+      "selectCompany": "選擇一家公司以檢視此頁面。"
+    },
+    "tabs": {
+      "settings": "設定"
+    }
+  },
+  "dashboardLive": {
+    "text": {
+      "liveRuns": "執行中的智慧代理"
+    },
+    "tabs": {
+      "dashboard": "儀表板",
+      "liveRuns": "執行中"
+    }
+  },
+  "goalDetail": {
+    "text": {
+      "noLinkedProjects": "無連結專案。"
+    },
+    "tabs": {
+      "goals": "目標"
+    },
+    "placeholders": {
+      "addDescription": "新增描述……"
+    }
+  },
+  "cliAuth": {
+    "errors": {
+      "challengeInvalid": "挑戰無效或已過期。"
+    },
+    "text": {
+      "approve": "核准 Paperclip CLI 存取",
+      "client": "用戶端",
+      "command": "命令",
+      "invalidUrl": "無效的 CLI 認證 URL。",
+      "loading": "正在載入 CLI 認證挑戰……",
+      "requestedAccess": "請求的存取",
+      "requestedCompany": "請求的公司",
+      "signInRequired": "需要登入"
+    }
+  },
+  "bootstrapSetupUxLab": {
+    "text": {
+      "claimInstance": "認領此實例",
+      "continueToDashboard": "繼續前往控制台",
+      "finishSetup": "完成此 Paperclip 的設定",
+      "preferHostSetup": "更想在本機上完成設定?",
+      "alreadyClaimed": "此實例已被他人認領。",
+      "waitingForAdmin": "此 Paperclip 正在等待首位管理員"
+    }
+  },
+  "instanceAccess": {
+    "toasts": {
+      "companyAccessUpdated": "公司存取已更新",
+      "instanceRoleUpdated": "實例角色已更新"
+    },
+    "errors": {
+      "loadUserAccess": "載入使用者存取失敗。"
+    },
+    "text": {
+      "companyAccess": "公司存取",
+      "currentMemberships": "目前成員資格",
+      "instanceAccess": "實例存取",
+      "searchUsers": "搜尋使用者",
+      "selectUserToInspect": "選擇使用者以檢視實例存取。"
+    },
+    "tabs": {
+      "access": "存取",
+      "instanceSettings": "實例設定",
+      "settings": "設定"
+    },
+    "placeholders": {
+      "searchByName": "按名稱或電子郵件搜尋"
+    }
   }
 }

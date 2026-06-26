@@ -34,7 +34,7 @@ function CliFallback({ hasActiveInvite }: { hasActiveInvite: boolean }) {
     <div className="mt-6 border-t border-border pt-5">
       <div className="flex items-center gap-2 text-sm font-medium">
         <Terminal className="size-4 text-muted-foreground" aria-hidden />
-        <span>Prefer to finish setup from the host?</span>
+        <span>{t("bootstrapSetupUxLab.text.preferHostSetup")}</span>
       </div>
       <p className="mt-2 text-sm text-muted-foreground">
         {hasActiveInvite
@@ -59,7 +59,7 @@ function StateChrome({ children }: { children: ReactNode }) {
 function SignedOutPrivate() {
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">Finish setting up this Paperclip</h1>
+      <h1 className="text-xl font-semibold">{t("bootstrapSetupUxLab.text.finishSetup")}</h1>
       <p className="mt-2 text-sm text-muted-foreground">
         No admin has claimed this instance yet. Sign in or create your Paperclip account to become the first
         admin from this browser.
@@ -77,12 +77,12 @@ function SignedOutPrivate() {
 function SignedInPrivate() {
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">Finish setting up this Paperclip</h1>
+      <h1 className="text-xl font-semibold">{t("bootstrapSetupUxLab.text.finishSetup")}</h1>
       <p className="mt-2 text-sm text-muted-foreground">
         No admin has claimed this instance yet. Claim it now to become the first admin and start onboarding.
       </p>
       <div className="mt-5 flex flex-wrap items-center gap-3">
-        <Button>Claim this instance</Button>
+        <Button>{t("bootstrapSetupUxLab.text.claimInstance")}</Button>
         <span className="text-sm text-muted-foreground">
           Signed in as <span className="font-medium text-foreground">jane@appliance.local</span>
         </span>
@@ -102,7 +102,7 @@ function SignedInPrivate() {
 function ClaimingPrivate() {
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">Finish setting up this Paperclip</h1>
+      <h1 className="text-xl font-semibold">{t("bootstrapSetupUxLab.text.finishSetup")}</h1>
       <p className="mt-2 text-sm text-muted-foreground">
         No admin has claimed this instance yet. Claim it now to become the first admin and start onboarding.
       </p>
@@ -123,12 +123,12 @@ function ClaimingPrivate() {
 function ClaimErrorPrivate() {
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">Finish setting up this Paperclip</h1>
+      <h1 className="text-xl font-semibold">{t("bootstrapSetupUxLab.text.finishSetup")}</h1>
       <p className="mt-2 text-sm text-muted-foreground">
         No admin has claimed this instance yet. Claim it now to become the first admin and start onboarding.
       </p>
       <div className="mt-5 flex flex-wrap items-center gap-3">
-        <Button>Claim this instance</Button>
+        <Button>{t("bootstrapSetupUxLab.text.claimInstance")}</Button>
         <span className="text-sm text-muted-foreground">
           Signed in as <span className="font-medium text-foreground">jane@appliance.local</span>
         </span>
@@ -139,7 +139,7 @@ function ClaimErrorPrivate() {
       >
         <TriangleAlert className="mt-0.5 size-4 flex-shrink-0" aria-hidden />
         <div>
-          <p className="font-medium">Someone else has already claimed this instance.</p>
+          <p className="font-medium">{t("bootstrapSetupUxLab.text.alreadyClaimed")}</p>
           <p className="mt-1 text-destructive/90">
             Refresh to sign in, or ask the existing admin to invite you from{" "}
             <span className="font-mono">Instance settings → Access</span>.
@@ -171,7 +171,7 @@ function ClaimSuccess() {
       </div>
       <div className="mt-5">
         <Button asChild variant="outline">
-          <a href="/">Continue to dashboard</a>
+          <a href="/">{t("bootstrapSetupUxLab.text.continueToDashboard")}</a>
         </Button>
       </div>
     </StateChrome>
@@ -181,7 +181,7 @@ function ClaimSuccess() {
 function PublicInviteOnly() {
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">This Paperclip is waiting on its first admin</h1>
+      <h1 className="text-xl font-semibold">{t("bootstrapSetupUxLab.text.waitingForAdmin")}</h1>
       <p className="mt-2 text-sm text-muted-foreground">
         This instance runs in invite‑only mode. The operator must generate a one‑time first‑admin invite URL
         from the host. Once you have the link, open it from this browser to finish setup.
@@ -205,6 +205,7 @@ const FIXTURE_BODIES: Record<LabFixtureKey, ReactElement> = {
 };
 
 export function BootstrapSetupUxLab() {
+  const { t } = useTranslation();
   return (
     <div className="bg-background min-h-screen pb-16">
       <header className="border-b border-border bg-muted/20">

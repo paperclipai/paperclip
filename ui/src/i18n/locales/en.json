@@ -1083,5 +1083,83 @@
     "tabs": {
       "companies": "Companies"
     }
+  },
+  "companySettingsPluginPage": {
+    "text": {
+      "loading": "Loading...",
+      "selectCompany": "Select a company to view this page."
+    },
+    "tabs": {
+      "settings": "Settings"
+    }
+  },
+  "dashboardLive": {
+    "text": {
+      "liveRuns": "Live agent runs"
+    },
+    "tabs": {
+      "dashboard": "Dashboard",
+      "liveRuns": "Live runs"
+    }
+  },
+  "goalDetail": {
+    "text": {
+      "noLinkedProjects": "No linked projects."
+    },
+    "tabs": {
+      "goals": "Goals"
+    },
+    "placeholders": {
+      "addDescription": "Add a description..."
+    }
+  },
+  "cliAuth": {
+    "errors": {
+      "challengeInvalid": "Challenge is invalid or expired."
+    },
+    "text": {
+      "approve": "Approve Paperclip CLI access",
+      "client": "Client",
+      "command": "Command",
+      "invalidUrl": "Invalid CLI auth URL.",
+      "loading": "Loading CLI auth challenge...",
+      "requestedAccess": "Requested access",
+      "requestedCompany": "Requested company",
+      "signInRequired": "Sign in required"
+    }
+  },
+  "bootstrapSetupUxLab": {
+    "text": {
+      "claimInstance": "Claim this instance",
+      "continueToDashboard": "Continue to dashboard",
+      "finishSetup": "Finish setting up this Paperclip",
+      "preferHostSetup": "Prefer to finish setup from the host?",
+      "alreadyClaimed": "Someone else has already claimed this instance.",
+      "waitingForAdmin": "This Paperclip is waiting on its first admin"
+    }
+  },
+  "instanceAccess": {
+    "toasts": {
+      "companyAccessUpdated": "Company access updated",
+      "instanceRoleUpdated": "Instance role updated"
+    },
+    "errors": {
+      "loadUserAccess": "Failed to load user access."
+    },
+    "text": {
+      "companyAccess": "Company access",
+      "currentMemberships": "Current memberships",
+      "instanceAccess": "Instance Access",
+      "searchUsers": "Search users",
+      "selectUserToInspect": "Select a user to inspect instance access."
+    },
+    "tabs": {
+      "access": "Access",
+      "instanceSettings": "Instance settings",
+      "settings": "Settings"
+    },
+    "placeholders": {
+      "searchByName": "Search by name or email"
+    }
   }
 }
