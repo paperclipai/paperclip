@@ -410,7 +410,7 @@ describe("Sidebar", () => {
 
     expect(container.querySelector('button[aria-label="Expand sidebar"]')).toBeNull();
     expect(container.querySelector('a[aria-label="Open search"]')).toBeNull();
-    // The company menu (workspace switcher / logo) is still present in the rail.
+    // The company menu (company switcher / logo) is still present in the rail.
     expect(container.textContent).toContain("Company menu");
 
     flushSync(() => {
