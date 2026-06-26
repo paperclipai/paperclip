@@ -22,7 +22,12 @@ async function main(): Promise<void> {
     }
     console.log("Migrations complete");
   } finally {
-    await resolved.stop();
+    const timeout = setTimeout(() => {
+      console.warn("Warning: embedded PostgreSQL stop timed out; forcing exit");
+      process.exit(0);
+    }, 30000);
+    await resolved.stop().catch(() => {});
+    clearTimeout(timeout);
   }
 }
 

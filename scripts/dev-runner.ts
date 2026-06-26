@@ -453,6 +453,13 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
     return;
   }
 
+  if (process.platform === "win32") {
+    console.log(
+      `[paperclip] Pending migrations detected (${formatPendingMigrationSummary(pendingMigrations)}). Deferring to server startup on Windows to avoid embedded-postgres stop() hang.`,
+    );
+    return;
+  }
+
   const exit = await runPnpm(["db:migrate"], {
     stdio: "inherit",
     env,
