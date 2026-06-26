@@ -166,13 +166,21 @@ describe("execute", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await execute(makeCtx({
+    const ctx = makeCtx({
       apiBaseUrl: "http://127.0.0.1:9119",
       apiKey: "secret-key",
       timeoutSec: 5,
-    }));
+    });
+    const result = await execute(ctx);
 
     expect(result.exitCode).toBe(0);
+    expect(ctx.onMeta).toHaveBeenCalledWith(
+      expect.objectContaining({
+        commandArgs: ["http://127.0.0.1:9119/api/v1/runs"],
+      }),
+    );
+    expect((ctx.onLog as ReturnType<typeof vi.fn>).mock.calls.map(([, line]) => String(line)).join("\n"))
+      .toContain("creating run at http://127.0.0.1:9119/api/v1/runs");
     expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual(
       expect.arrayContaining([
         "http://127.0.0.1:9119/api/v1/runs",
@@ -312,6 +320,7 @@ describe("execute", () => {
     }));
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_auth_failed");
+    expect(result.errorMessage).toContain("Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY");
   });
 
   it("includes network causes in connection failure messages", async () => {

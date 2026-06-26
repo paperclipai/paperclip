@@ -733,6 +733,9 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
   const hermesError = err as HermesHttpError;
   const code = hermesError.code ?? "hermes_gateway_protocol_error";
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
+  const errorMessage = code === "hermes_gateway_auth_failed"
+    ? `${redactErrorMessage(err, redactText)}. Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway.`
+    : redactErrorMessage(err, redactText);
   return {
     exitCode: 1,
     signal: null,
@@ -740,7 +743,7 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
     errorCode: code,
     errorFamily: classified?.family ?? (code === "hermes_gateway_connect_failed" ? "transient_upstream" : null),
     retryNotBefore: hermesError.retryNotBefore ?? null,
-    errorMessage: redactErrorMessage(err, redactText),
+    errorMessage,
     errorMeta: {
       ...(hermesError.status ? { status: hermesError.status } : {}),
       ...(hermesError.body ? { body: redactForLog(hermesError.body, [], 0, redactText) as Record<string, unknown> } : {}),
@@ -826,11 +829,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runHeaders["X-Hermes-Session-Key"],
   ]);
   const body = buildRunBody(ctx, sessionKey);
+  const createRunUrl = apiUrl(baseUrl, "/v1/runs");
 
   await ctx.onMeta?.({
     adapterType: ADAPTER_TYPE,
     command: "POST /v1/runs",
-    commandArgs: [baseUrl.origin, "/v1/runs"],
+    commandArgs: [createRunUrl],
     context: {
       runId: ctx.runId,
       timeoutSec,
@@ -839,12 +843,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       hasSessionKey: Boolean(sessionKey),
     },
   });
-  await ctx.onLog("stdout", `[hermes-gateway] creating run at ${baseUrl.origin}/v1/runs (timeout=${timeoutSec}s, session=${strategy})\n`);
+  await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy})\n`);
   await ctx.onLog("stdout", `[hermes-gateway] request headers (redacted): ${stringifyForLog(redactForLog(runHeaders, [], 0, redactText), 3_000)}\n`);
 
   let runId: string | null = null;
   try {
-    const created = await fetchJson(apiUrl(baseUrl, "/v1/runs"), {
+    const created = await fetchJson(createRunUrl, {
       method: "POST",
       headers: runHeaders,
       body: JSON.stringify(body),
