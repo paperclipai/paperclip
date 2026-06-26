@@ -89,6 +89,7 @@ function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
 }
 
 export function EnvVarEditor({
+  const { t } = useTranslation();
   value,
   secrets,
   onCreateSecret,
@@ -207,7 +208,7 @@ export function EnvVarEditor({
     if (!key || plain.length === 0) return;
 
     const suggested = defaultSecretName(key) || "secret";
-    const name = window.prompt("Secret name", suggested)?.trim();
+    const name = window.prompt(t("envVarEditor.prompts.secretName"), suggested)?.trim();
     if (!name) return;
 
     try {
@@ -320,7 +321,7 @@ export function EnvVarEditor({
                   className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
                   onClick={() => sealRow(index)}
                   disabled={!row.key.trim() || !row.plainValue}
-                  title="Create secret from current plain value"
+                  title={t("envVarEditor.aria.createSecret")}
                 >
                   New
                 </button>
@@ -338,7 +339,7 @@ export function EnvVarEditor({
                   className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
                   onClick={() => sealRow(index)}
                   disabled={!row.key.trim() || !row.plainValue}
-                  title="Store value as secret and replace with reference"
+                  title={t("envVarEditor.aria.storeAsSecret")}
                 >
                   Seal
                 </button>

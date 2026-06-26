@@ -2159,20 +2159,12 @@
     }
   },
   "envVarEditor": {
-    "errors": {
-      "createSecret": "建立密鑰失敗"
+    "aria": {
+      "createSecret": "從目前明文值建立密鑰",
+      "storeAsSecret": "將值儲存為密鑰並取代為引用"
     },
-    "text": {
-      "plain": "明文",
-      "secret": "密鑰"
-    },
-    "labelsJsx": {
-      "bindingMode": "綁定模式",
-      "secret": "密鑰",
-      "version": "版本"
-    },
-    "placeholders": {
-      "selectSecret": "選擇密鑰..."
+    "prompts": {
+      "secretName": "密鑰名稱"
     }
   },
   "commentThread": {
@@ -2533,6 +2525,11 @@
   "chatComposer": {
     "text": {
       "attachFiles": "附加檔案",
+      "message": "訊息……",
+      "sendMessage": "傳送訊息",
+      "uploading": "上傳中……"
+    },
+    "placeholders": {
       "message": "訊息……"
     }
   },

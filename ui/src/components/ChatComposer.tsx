@@ -113,7 +113,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     value,
     onChange,
     onSubmit,
-    placeholder = "Message…",
+    placeholder = t("chatComposer.text.message"),
     disabled = false,
     submitting = false,
     submitKey = "mod-enter",
@@ -121,7 +121,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
     tone = "standard",
     surface = "card",
     autoFocus = false,
-    sendLabel = "Send message",
+    sendLabel = t("chatComposer.text.sendMessage"),
     onAttachFiles,
     attachments = [],
     attaching = false,
@@ -288,7 +288,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
             const sizeLabel = formatAttachmentSize(attachment.size);
             const statusLabel =
               attachment.status === "uploading"
-                ? "Uploading…"
+                ? t("chatComposer.text.uploading")
                 : attachment.status === "error"
                   ? attachment.error ?? "Upload failed"
                   : attachment.inline
@@ -342,7 +342,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
               type="button"
               onClick={triggerFilePicker}
               disabled={disabled || attaching}
-              aria-label="Attach files"
+              aria-label={t("chatComposer.text.attachFiles")}
               title="Attach files"
               className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             >

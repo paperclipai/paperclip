@@ -2159,20 +2159,12 @@
     }
   },
   "envVarEditor": {
-    "errors": {
-      "createSecret": "Failed to create secret"
+    "aria": {
+      "createSecret": "Create secret from current plain value",
+      "storeAsSecret": "Store value as secret and replace with reference"
     },
-    "text": {
-      "plain": "Plain",
-      "secret": "Secret"
-    },
-    "labelsJsx": {
-      "bindingMode": "Binding mode",
-      "secret": "Secret",
-      "version": "Version"
-    },
-    "placeholders": {
-      "selectSecret": "Select secret..."
+    "prompts": {
+      "secretName": "Secret name"
     }
   },
   "commentThread": {
@@ -2533,6 +2525,11 @@
   "chatComposer": {
     "text": {
       "attachFiles": "Attach files",
+      "message": "Message…",
+      "sendMessage": "Send message",
+      "uploading": "Uploading…"
+    },
+    "placeholders": {
       "message": "Message…"
     }
   },
