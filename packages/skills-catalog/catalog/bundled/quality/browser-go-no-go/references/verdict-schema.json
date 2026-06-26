@@ -1,0 +1,232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclipai.local/schemas/browser-go-no-go-verdict.schema.json",
+  "title": "Paperclip Browser GO/NO-GO Verdict",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "qaIssueId",
+    "featureIssueIds",
+    "environment",
+    "browserContext",
+    "journeys",
+    "overallVerdict",
+    "approver",
+    "generatedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "qaIssueId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "featureIssueIds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "baseUrl"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "baseUrl": {
+          "type": "string",
+          "minLength": 1
+        },
+        "commit": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "browserContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tool", "isolated", "viewport"],
+      "properties": {
+        "tool": {
+          "type": "string",
+          "minLength": 1
+        },
+        "isolated": {
+          "type": "boolean"
+        },
+        "profileRef": {
+          "type": ["string", "null"]
+        },
+        "viewport": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height"],
+          "properties": {
+            "width": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "height": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "journeys": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "required", "status", "steps", "assertions", "evidence"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "status": {
+            "enum": ["pass", "fail", "quarantined"]
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "assertions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["description", "result"],
+              "properties": {
+                "description": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "result": {
+                  "enum": ["pass", "fail"]
+                },
+                "observed": {
+                  "type": ["string", "null"]
+                }
+              }
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "ref"],
+              "properties": {
+                "kind": {
+                  "enum": ["screenshot", "dom", "console", "network", "record"]
+                },
+                "ref": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sha256": {
+                  "type": ["string", "null"],
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "description": {
+                  "type": ["string", "null"]
+                }
+              }
+            }
+          },
+          "retryCount": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          },
+          "quarantine": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["reason", "owner"],
+            "properties": {
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "owner": {
+                "type": "string",
+                "minLength": 1
+              },
+              "followUpIssueId": {
+                "type": ["string", "null"]
+              }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "quarantined"
+                }
+              },
+              "required": ["status"]
+            },
+            "then": {
+              "required": ["quarantine"],
+              "properties": {
+                "quarantine": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "overallVerdict": {
+      "enum": ["go", "no-go", "advisory-go", "advisory-no-go"]
+    },
+    "approver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "name"],
+      "properties": {
+        "type": {
+          "enum": ["agent", "user"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "generatedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
+
