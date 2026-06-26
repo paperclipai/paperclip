@@ -294,8 +294,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function isLoopbackHost(hostname: string): boolean {
-  const value = hostname.trim().toLowerCase();
-  return value === "localhost" || value === "127.0.0.1" || value === "::1";
+  const value = hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  return (
+    value === "localhost" ||
+    value === "::1" ||
+    value === "0:0:0:0:0:0:0:1" ||
+    value === "127.0.0.1" ||
+    /^127(?:\.\d{1,3}){3}$/.test(value)
+  );
 }
 
 function normalizeHostname(value: string | null | undefined): string | null {
@@ -474,8 +480,8 @@ function parseBooleanLike(value: unknown): boolean | null {
   if (typeof value === "boolean") return value;
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
-  if (normalized === "true" || normalized === "1") return true;
-  if (normalized === "false" || normalized === "0") return false;
+  if (["true", "1", "yes", "on"].includes(normalized)) return true;
+  if (["false", "0", "no", "off"].includes(normalized)) return false;
   return null;
 }
 
@@ -676,6 +682,91 @@ export function normalizeAgentDefaultsForJoin(input: {
 }) {
   const fatalErrors: string[] = [];
   const diagnostics: JoinDiagnostic[] = [];
+  if (input.adapterType === "hermes_gateway") {
+    if (!isPlainObject(input.defaultsPayload)) {
+      diagnostics.push({
+        code: "hermes_gateway_defaults_missing",
+        level: "warn",
+        message: "No Hermes gateway config was provided in agentDefaultsPayload.",
+        hint: "Include agentDefaultsPayload.apiBaseUrl and agentDefaultsPayload.apiKey for Hermes gateway joins.",
+      });
+      fatalErrors.push("agentDefaultsPayload is required for adapterType=hermes_gateway");
+      return { normalized: null as Record<string, unknown> | null, diagnostics, fatalErrors };
+    }
+
+    const defaults = input.defaultsPayload as Record<string, unknown>;
+    const normalized = { ...defaults };
+    const rawApiBaseUrl = nonEmptyTrimmedString(defaults.apiBaseUrl ?? defaults.url);
+    if (!rawApiBaseUrl) {
+      diagnostics.push({
+        code: "hermes_gateway_api_base_url_missing",
+        level: "warn",
+        message: "Hermes gateway apiBaseUrl is missing.",
+        hint: "Set agentDefaultsPayload.apiBaseUrl to the Hermes API server URL.",
+      });
+      fatalErrors.push("agentDefaultsPayload.apiBaseUrl is required");
+    } else {
+      try {
+        const apiBaseUrl = new URL(rawApiBaseUrl);
+        if (apiBaseUrl.protocol !== "http:" && apiBaseUrl.protocol !== "https:") {
+          diagnostics.push({
+            code: "hermes_gateway_api_base_url_protocol",
+            level: "warn",
+            message: `Hermes gateway apiBaseUrl must use http:// or https:// (got ${apiBaseUrl.protocol}).`,
+          });
+          fatalErrors.push("agentDefaultsPayload.apiBaseUrl must use http:// or https:// for hermes_gateway");
+        } else if (
+          apiBaseUrl.protocol === "http:" &&
+          !isLoopbackHost(apiBaseUrl.hostname) &&
+          parseBooleanLike(defaults.dangerouslyAllowInsecureRemoteHttp) !== true
+        ) {
+          diagnostics.push({
+            code: "hermes_gateway_plain_http_remote_denied",
+            level: "warn",
+            message: "Remote plain HTTP Hermes gateway traffic is denied by default.",
+            hint: "Use https:// or set agentDefaultsPayload.dangerouslyAllowInsecureRemoteHttp=true only for unsafe local development.",
+          });
+          fatalErrors.push(
+            "agentDefaultsPayload.apiBaseUrl uses remote plain HTTP; use HTTPS or set dangerouslyAllowInsecureRemoteHttp=true for unsafe local development",
+          );
+        } else {
+          normalized.apiBaseUrl = apiBaseUrl.toString();
+          if (apiBaseUrl.protocol === "http:" && !isLoopbackHost(apiBaseUrl.hostname)) {
+            diagnostics.push({
+              code: "hermes_gateway_plain_http_remote_unsafe_allowed",
+              level: "warn",
+              message: "Unsafe dev escape hatch enabled for non-loopback HTTP Hermes traffic.",
+            });
+          } else {
+            diagnostics.push({
+              code: "hermes_gateway_api_base_url_configured",
+              level: "info",
+              message: `Hermes gateway endpoint set to ${apiBaseUrl.toString()}`,
+            });
+          }
+        }
+      } catch {
+        diagnostics.push({
+          code: "hermes_gateway_api_base_url_invalid",
+          level: "warn",
+          message: `Invalid Hermes gateway apiBaseUrl: ${rawApiBaseUrl}`,
+        });
+        fatalErrors.push("agentDefaultsPayload.apiBaseUrl is not a valid URL");
+      }
+    }
+
+    if (!nonEmptyTrimmedString(defaults.apiKey)) {
+      diagnostics.push({
+        code: "hermes_gateway_api_key_missing",
+        level: "warn",
+        message: "Hermes gateway API key is missing.",
+        hint: "Set agentDefaultsPayload.apiKey to the Hermes API_SERVER_KEY value.",
+      });
+      fatalErrors.push("agentDefaultsPayload.apiKey is required");
+    }
+
+    return { normalized, diagnostics, fatalErrors };
+  }
   if (input.adapterType !== "openclaw_gateway") {
     const normalized = isPlainObject(input.defaultsPayload)
       ? (input.defaultsPayload as Record<string, unknown>)

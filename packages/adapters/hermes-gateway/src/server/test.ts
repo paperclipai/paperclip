@@ -4,6 +4,12 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import { asString } from "@paperclipai/adapter-utils/server-utils";
+import {
+  allowsInsecureRemoteHttp,
+  isLoopbackHostname,
+  isRemotePlainHttp,
+  remotePlainHttpDeniedMessage,
+} from "./transport-security.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -19,11 +25,6 @@ function normalizeBaseUrl(value: string): URL | null {
   } catch {
     return null;
   }
-}
-
-function isLoopback(hostname: string): boolean {
-  const value = hostname.toLowerCase();
-  return value === "localhost" || value === "127.0.0.1" || value === "::1";
 }
 
 export async function testEnvironment(
@@ -60,12 +61,25 @@ export async function testEnvironment(
     });
   }
 
-  if (parsed?.protocol === "http:" && !isLoopback(parsed.hostname)) {
+  if (parsed && isRemotePlainHttp(parsed) && !allowsInsecureRemoteHttp(ctx.config)) {
     checks.push({
-      code: "hermes_gateway_plain_http_remote",
+      code: "hermes_gateway_plain_http_remote_denied",
+      level: "error",
+      message: remotePlainHttpDeniedMessage(parsed.hostname),
+      hint: "Use https:// for remote Hermes gateways. Loopback http://localhost and http://127.0.0.1 remain allowed.",
+    });
+  } else if (parsed && isRemotePlainHttp(parsed)) {
+    checks.push({
+      code: "hermes_gateway_plain_http_remote_unsafe_allowed",
       level: "warn",
-      message: "Non-loopback HTTP exposes Hermes traffic without transport encryption.",
-      hint: "Prefer HTTPS or a private overlay network for remote Hermes hosts.",
+      message: "Unsafe dev escape hatch enabled for non-loopback HTTP Hermes traffic.",
+      hint: "Remove the escape hatch and use HTTPS before using this gateway for real credentials.",
+    });
+  } else if (parsed?.protocol === "http:" && isLoopbackHostname(parsed.hostname)) {
+    checks.push({
+      code: "hermes_gateway_loopback_http_allowed",
+      level: "info",
+      message: "Loopback HTTP Hermes gateway URL is allowed.",
     });
   }
 
@@ -111,4 +125,3 @@ export async function testEnvironment(
     testedAt: new Date().toISOString(),
   };
 }
-

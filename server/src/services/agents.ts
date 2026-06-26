@@ -428,6 +428,16 @@ export function agentService(db: Db) {
       const role = (data.role ?? existing.role) as string;
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
     }
+    if (
+      Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig") &&
+      isPlainRecord(normalizedPatch.adapterConfig)
+    ) {
+      normalizedPatch.adapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+        existing.companyId,
+        normalizedPatch.adapterConfig,
+        { adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string },
+      );
+    }
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
@@ -503,11 +513,24 @@ export function agentService(db: Db) {
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
+      const adapterType = data.adapterType ?? "process";
+      const adapterConfig = isPlainRecord(data.adapterConfig)
+        ? await secretsSvc.normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
+        : {};
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         const created = await tx
           .insert(agents)
-          .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions, runtimeConfig })
+          .values({
+            ...data,
+            name: uniqueName,
+            companyId,
+            role,
+            adapterType,
+            adapterConfig,
+            permissions: normalizedPermissions,
+            runtimeConfig,
+          })
           .returning()
           .then((rows) => rows[0]);
         await syncAgentSecretBindings(created, txDb);

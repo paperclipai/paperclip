@@ -1,5 +1,6 @@
 import type { AdapterConfigSchema } from "@paperclipai/adapter-utils";
 import { DEFAULT_EVENT_RECONNECT_MS, DEFAULT_TIMEOUT_SEC } from "../shared/constants.js";
+import { INSECURE_REMOTE_HTTP_ESCAPE_HATCH } from "./transport-security.js";
 
 export function getConfigSchema(): AdapterConfigSchema {
   return {
@@ -16,8 +17,15 @@ export function getConfigSchema(): AdapterConfigSchema {
         label: "API key",
         type: "text",
         required: true,
-        hint: "Hermes API_SERVER_KEY. Stored in adapter config; avoid sharing exported configs.",
+        hint: "Hermes API_SERVER_KEY. Stored as a Paperclip secret reference.",
         meta: { secret: true },
+      },
+      {
+        key: INSECURE_REMOTE_HTTP_ESCAPE_HATCH,
+        label: "Dangerously allow remote HTTP",
+        type: "toggle",
+        default: false,
+        hint: "Unsafe dev-only escape hatch. Remote Hermes gateways should use HTTPS; loopback HTTP remains allowed.",
       },
       {
         key: "sessionKeyStrategy",
