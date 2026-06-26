@@ -694,6 +694,13 @@
       "when": 1780534200000,
       "tag": "0098_project_icon",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1782518400000,
+      "tag": "0099_neo28_identity_auth_framework",
+      "breakpoints": true
     }
   ]
 }
