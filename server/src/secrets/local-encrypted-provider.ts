@@ -194,7 +194,7 @@ async function inspectLocalEncryptedHealth(): Promise<SecretProviderHealthCheck>
 
 function encryptValue(masterKey: Buffer, value: string): LocalEncryptedMaterial {
   const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", masterKey, iv);
+  const cipher = createCipheriv("aes-256-gcm", masterKey, iv, { authTagLength: 16 });
   const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
   return {
@@ -209,7 +209,7 @@ function decryptValue(masterKey: Buffer, material: LocalEncryptedMaterial): stri
   const iv = Buffer.from(material.iv, "base64");
   const tag = Buffer.from(material.tag, "base64");
   const ciphertext = Buffer.from(material.ciphertext, "base64");
-  const decipher = createDecipheriv("aes-256-gcm", masterKey, iv);
+  const decipher = createDecipheriv("aes-256-gcm", masterKey, iv, { authTagLength: 16 });
   decipher.setAuthTag(tag);
   try {
     const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);

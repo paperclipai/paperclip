@@ -199,7 +199,8 @@ describe("worktree config repair", () => {
     process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
     delete process.env.PAPERCLIP_HOME;
     delete process.env.PAPERCLIP_INSTANCE_ID;
-    delete process.env.PAPERCLIP_CONFIG;
+    // Explicitly set PAPERCLIP_CONFIG to prevent ancestor search from finding user's real config
+    process.env.PAPERCLIP_CONFIG = configPath;
     delete process.env.PAPERCLIP_CONTEXT;
 
     const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
@@ -480,6 +481,11 @@ describe("worktree config repair", () => {
     process.env.PAPERCLIP_IN_WORKTREE = "true";
     process.env.PAPERCLIP_WORKTREE_NAME = "PAP-884-ai-commits-component";
     process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.PAPERCLIP_HOME;
+    // Explicitly set PAPERCLIP_CONFIG to prevent ancestor search from finding user's real config
+    process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.PAPERCLIP_CONTEXT;
 
     const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
     const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));

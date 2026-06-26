@@ -27,12 +27,15 @@ const DEFAULT_SESSION_COMPACTION_POLICY: SessionCompactionPolicy = {
   maxSessionAgeHours: 72,
 };
 
-// Adapters with native context management still participate in session resume,
-// but Paperclip should not rotate them using threshold-based compaction.
+// Adapters with native context management still participate in session resume.
+// A conservative maxRawInputTokens threshold acts as a safety net for proxied
+// providers (e.g. z.ai GLM) that may have smaller context windows than direct
+// Anthropic. Claude CLI's own compaction usually fires first for 1M-context
+// providers; this only kicks in as a fallback guard.
 const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
   enabled: true,
   maxSessionRuns: 0,
-  maxRawInputTokens: 0,
+  maxRawInputTokens: 150_000,
   maxSessionAgeHours: 0,
 };
 

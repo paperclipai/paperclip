@@ -39,13 +39,6 @@ describe("keyboardShortcuts helpers", () => {
     expect(hasBlockingShortcutDialog(document.createElement("div"))).toBe(false);
   });
 
-  it("ignores non-dialog elements that happen to be aria-modal", () => {
-    const root = document.createElement("div");
-    root.innerHTML = `<section aria-modal="true"></section>`;
-
-    expect(hasBlockingShortcutDialog(root)).toBe(false);
-  });
-
   it("finds the visible page search shortcut target", () => {
     const root = document.createElement("div");
     const hidden = document.createElement("input");

@@ -28,7 +28,7 @@ export function isKeyboardShortcutTextInputTarget(target: EventTarget | null): b
 }
 
 export function hasBlockingShortcutDialog(root: ParentNode = document): boolean {
-  return !!root.querySelector("[role='dialog'][aria-modal='true']");
+  return !!root.querySelector("[role='dialog'], [aria-modal='true']");
 }
 
 function isVisibleShortcutTarget(element: HTMLElement): boolean {
