@@ -26,12 +26,15 @@ export function queueIssueAssignmentWakeup(input: {
   contextSource: string;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  requestedByActorRunId?: string | null;
   rethrowOnError?: boolean;
 }) {
-  if (!input.issue.assigneeAgentId || input.issue.status === "backlog") return;
+  if (issueAssignmentWakeupSkipReason(input)) return;
+  const assigneeAgentId = input.issue.assigneeAgentId;
+  if (!assigneeAgentId) return;
 
   return input.heartbeat
-    .wakeup(input.issue.assigneeAgentId, {
+    .wakeup(assigneeAgentId, {
       source: "assignment",
       triggerDetail: "system",
       reason: input.reason,
@@ -45,4 +48,22 @@ export function queueIssueAssignmentWakeup(input: {
       if (input.rethrowOnError) throw err;
       return null;
     });
+}
+
+export function issueAssignmentWakeupSkipReason(input: {
+  issue: { assigneeAgentId: string | null; status: string };
+  requestedByActorType?: "user" | "agent" | "system";
+  requestedByActorId?: string | null;
+  requestedByActorRunId?: string | null;
+}) {
+  if (!input.issue.assigneeAgentId) return "no_agent_assignee";
+  if (input.issue.status === "backlog") return "assigned_backlog";
+  if (
+    input.requestedByActorType === "agent" &&
+    Boolean(input.requestedByActorRunId) &&
+    input.requestedByActorId === input.issue.assigneeAgentId
+  ) {
+    return "self_assignment";
+  }
+  return null;
 }
