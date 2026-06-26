@@ -360,6 +360,35 @@ describe("agent live run routes", () => {
     });
   });
 
+  it("returns an empty unavailable log payload instead of 404 for reaped run logs", async () => {
+    const { notFound } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+    mockHeartbeatService.readLog.mockRejectedValueOnce(notFound("Run log not found"));
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.readLog).toHaveBeenCalledWith({
+      id: "run-1",
+      companyId: "company-1",
+      logStore: "local_file",
+      logRef: "logs/run-1.ndjson",
+    }, {
+      offset: 12,
+      limitBytes: 64,
+    });
+    expect(res.body).toEqual({
+      runId: "run-1",
+      store: "local_file",
+      logRef: "logs/run-1.ndjson",
+      content: "",
+      logUnavailable: true,
+    });
+  });
+
   it("caps company live run polling by default", async () => {
     const rows = Array.from({ length: 75 }, (_, index) => ({
       id: `run-${index}`,

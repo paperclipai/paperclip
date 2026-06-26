@@ -51,7 +51,7 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -3656,11 +3656,29 @@ export function agentRoutes(
     assertCompanyAccess(req, run.companyId);
 
     const offset = Number(req.query.offset ?? 0);
+    const readOffset = Number.isFinite(offset) ? offset : 0;
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
-    const result = await heartbeat.readLog(run, {
-      offset: Number.isFinite(offset) ? offset : 0,
-      limitBytes,
-    });
+    let result;
+    try {
+      result = await heartbeat.readLog(run, {
+        offset: readOffset,
+        limitBytes,
+      });
+    } catch (err) {
+      if (err instanceof HttpError && err.status === 404 && err.message === "Run log not found") {
+        res.set("Cache-Control", "no-cache, no-store");
+        res.json({
+          runId,
+          store: run.logStore,
+          logRef: run.logRef,
+          content: "",
+          nextOffset: undefined,
+          logUnavailable: true,
+        });
+        return;
+      }
+      throw err;
+    }
 
     res.set("Cache-Control", "no-cache, no-store");
     res.json(result);
