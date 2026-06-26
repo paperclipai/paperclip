@@ -14,6 +14,7 @@ import {
   buildExplicitResumeSessionOverride,
   buildEffectiveRunSessionConfigMetadata,
   buildEffectiveRunWorkspaceConfigMetadata,
+  buildWorkspaceConfigFreshnessOperation,
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
@@ -1014,6 +1015,68 @@ describe("effective run execution workspace config freshness", () => {
     expect(decision.action).toBe("replace");
     expect(decision.shouldReuseExisting).toBe(false);
     expect(decision.changedCategories).toContain(category);
+  });
+
+  it("formats a safe workspace operation payload for config drift decisions", () => {
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(buildWorkspaceConfigMetadata()),
+      nextMetadata: buildWorkspaceConfigMetadata({
+        configSnapshot: {
+          workspaceRuntime: {
+            services: [{ name: "web", command: "pnpm dev -- --host 0.0.0.0", port: 3200 }],
+          },
+        },
+      }),
+    });
+
+    const operation = buildWorkspaceConfigFreshnessOperation({
+      decision,
+      hasExistingWorkspace: true,
+      reuseRequested: true,
+      workspaceReused: true,
+      configSnapshotRefreshed: true,
+      previousWorkspaceId: "workspace-old",
+      activeWorkspaceId: "workspace-old",
+    });
+
+    expect(operation).toMatchObject({
+      metadata: {
+        kind: "config_freshness",
+        action: "refresh",
+        changedCategories: ["lifecycleCommands", "runtimeServices"],
+        changedCategoryLabels: ["workspace lifecycle commands", "runtime services"],
+        reuseRequested: true,
+        workspaceReused: true,
+        configSnapshotRefreshed: true,
+        previousWorkspaceId: "workspace-old",
+        activeWorkspaceId: "workspace-old",
+      },
+      system: expect.stringContaining("refreshed execution workspace config"),
+    });
+    const serialized = JSON.stringify(operation);
+    expect(serialized).toContain("runtime services");
+    expect(serialized).not.toContain("pnpm dev");
+    expect(serialized).not.toContain("0.0.0.0");
+  });
+
+  it("does not record a freshness operation when an unchanged workspace is simply reused", () => {
+    const metadata = buildWorkspaceConfigMetadata();
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(metadata),
+      nextMetadata: metadata,
+    });
+
+    expect(buildWorkspaceConfigFreshnessOperation({
+      decision,
+      hasExistingWorkspace: true,
+      reuseRequested: true,
+      workspaceReused: true,
+      configSnapshotRefreshed: false,
+      previousWorkspaceId: "workspace-1",
+      activeWorkspaceId: "workspace-1",
+    })).toBeNull();
   });
 });
 

@@ -123,7 +123,7 @@ import {
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { workspaceOperationService } from "./workspace-operations.js";
+import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
@@ -2522,6 +2522,16 @@ type ExecutionWorkspaceConfigFreshnessDecision = {
   storedFingerprintPresent: boolean;
 };
 
+type WorkspaceConfigFreshnessOperationInput = {
+  decision: ExecutionWorkspaceConfigFreshnessDecision;
+  hasExistingWorkspace: boolean;
+  reuseRequested: boolean;
+  workspaceReused: boolean;
+  configSnapshotRefreshed: boolean;
+  previousWorkspaceId: string | null;
+  activeWorkspaceId: string | null;
+};
+
 const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORY_LABELS: Record<EffectiveRunSessionConfigCategory, string> = {
   adapter: "adapter",
   adapterConfig: "adapter config",
@@ -2656,6 +2666,80 @@ function changedEffectiveRunWorkspaceConfigCategories(input: {
     (category) => input.previous[category] !== input.next[category],
   );
   return changed.length > 0 ? changed : [...EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES];
+}
+
+function workspaceConfigFreshnessActionLabel(action: WorkspaceConfigFreshnessDecisionAction) {
+  switch (action) {
+    case "refresh":
+      return "refreshed execution workspace config";
+    case "replace":
+      return "replaced execution workspace";
+    case "reuse":
+      return "updated execution workspace freshness metadata";
+    case "create":
+      return "created execution workspace";
+  }
+}
+
+export function buildWorkspaceConfigFreshnessOperation(input: WorkspaceConfigFreshnessOperationInput) {
+  if (!input.reuseRequested || !input.hasExistingWorkspace || input.decision.reasons.length === 0) {
+    return null;
+  }
+
+  const changedCategoryLabels = input.decision.changedCategories.map(
+    (category) => EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORY_LABELS[category],
+  );
+  const categorySummary =
+    changedCategoryLabels.length > 0 ? ` (${changedCategoryLabels.join(", ")})` : "";
+  const reasonSummary = input.decision.reasons.join("; ");
+
+  return {
+    metadata: {
+      kind: "config_freshness",
+      action: input.decision.action,
+      changedCategories: input.decision.changedCategories,
+      changedCategoryLabels,
+      reasons: input.decision.reasons,
+      reuseRequested: input.reuseRequested,
+      workspaceReused: input.workspaceReused,
+      configSnapshotRefreshed: input.configSnapshotRefreshed,
+      storedFingerprintPresent: input.decision.storedFingerprintPresent,
+      previousWorkspaceId: input.previousWorkspaceId,
+      activeWorkspaceId: input.activeWorkspaceId,
+    },
+    system:
+      `[paperclip] ${workspaceConfigFreshnessActionLabel(input.decision.action)} after config freshness check${categorySummary}: ${reasonSummary}\n`,
+  };
+}
+
+async function recordWorkspaceConfigFreshnessOperation(input: WorkspaceConfigFreshnessOperationInput & {
+  recorder: WorkspaceOperationRecorder;
+  runId: string;
+}) {
+  const operation = buildWorkspaceConfigFreshnessOperation(input);
+  if (!operation) return;
+
+  try {
+    await input.recorder.recordOperation({
+      phase: "workspace_config_freshness",
+      metadata: operation.metadata,
+      run: async () => ({
+        status: "succeeded",
+        system: operation.system,
+      }),
+    });
+  } catch (error) {
+    logger.warn(
+      {
+        err: error instanceof Error ? error.message : String(error),
+        runId: input.runId,
+        previousWorkspaceId: input.previousWorkspaceId,
+        activeWorkspaceId: input.activeWorkspaceId,
+        action: input.decision.action,
+      },
+      "failed to record workspace config freshness operation",
+    );
+  }
 }
 
 function sanitizeSecretManifestForConfigFingerprint(
@@ -9893,6 +9977,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       throw error;
     }
     await workspaceOperationRecorder.attachExecutionWorkspaceId(persistedExecutionWorkspace?.id ?? null);
+    await recordWorkspaceConfigFreshnessOperation({
+      recorder: workspaceOperationRecorder,
+      runId: run.id,
+      decision: workspaceConfigFreshness,
+      hasExistingWorkspace: Boolean(existingExecutionWorkspace),
+      reuseRequested: requestedShouldReuseExisting,
+      workspaceReused: Boolean(reusedExecutionWorkspace),
+      configSnapshotRefreshed: shouldRefreshWorkspaceConfigSnapshot,
+      previousWorkspaceId: existingExecutionWorkspace?.id ?? null,
+      activeWorkspaceId: persistedExecutionWorkspace?.id ?? null,
+    });
     if (
       existingExecutionWorkspace &&
       persistedExecutionWorkspace &&
