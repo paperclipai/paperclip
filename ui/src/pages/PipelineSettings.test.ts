@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { resolvePipelineSettingsFallbackStageId } from "./PipelineSettings";
+import {
+  isPipelineSettingsStageSectionAvailable,
+  resolvePipelineSettingsFallbackStageId,
+} from "./PipelineSettings";
 
 const stages = [{ id: "first-stage" }, { id: "break-assets" }];
 
@@ -14,5 +17,15 @@ describe("resolvePipelineSettingsFallbackStageId", () => {
 
   it("keeps the current selected stage when one is already selected", () => {
     expect(resolvePipelineSettingsFallbackStageId(stages, "break-assets", null)).toBeNull();
+  });
+});
+
+describe("isPipelineSettingsStageSectionAvailable", () => {
+  it("accepts deep-linked stage config sections", () => {
+    expect(isPipelineSettingsStageSectionAvailable("working", "instructions")).toBe(true);
+    expect(isPipelineSettingsStageSectionAvailable("working", "advanced")).toBe(true);
+    expect(isPipelineSettingsStageSectionAvailable("working", "secrets")).toBe(true);
+    expect(isPipelineSettingsStageSectionAvailable("working", "activity")).toBe(true);
+    expect(isPipelineSettingsStageSectionAvailable("working", "history")).toBe(true);
   });
 });

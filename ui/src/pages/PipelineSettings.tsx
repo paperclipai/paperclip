@@ -798,6 +798,10 @@ function stageNavGroups(kind: string): typeof STAGE_NAV_GROUPS {
   return STAGE_NAV_GROUPS;
 }
 
+export function isPipelineSettingsStageSectionAvailable(kind: string, section: StageSectionKey) {
+  return stageNavGroups(kind).some((group) => group.items.some((item) => item.id === section));
+}
+
 function defaultReviewTarget(stages: PipelineStage[], selectedStageId: string | null, kind: string) {
   const match = stages.find((stage) => stage.kind === kind && stage.id !== selectedStageId);
   if (match) return match.key;
@@ -1629,20 +1633,14 @@ export function PipelineSettings() {
 
   useEffect(() => {
     if (!selectedStage) return;
-    const requestedSectionAvailable = requestedStageSection
-      ? stageNavGroups(selectedStage.kind).some((group) =>
-          group.items.some((item) => item.id === requestedStageSection),
-        )
-      : false;
-    if (requestedStageSection && requestedSectionAvailable) {
+    if (requestedStageSection && isPipelineSettingsStageSectionAvailable(selectedStage.kind, requestedStageSection)) {
       setActiveStageSection(requestedStageSection);
-      return;
     }
+  }, [requestedStageSection, selectedStage?.id, selectedStage?.kind]);
 
-    const activeSectionAvailable = stageNavGroups(selectedStage.kind).some((group) =>
-      group.items.some((item) => item.id === activeStageSection),
-    );
-    if (!activeSectionAvailable) {
+  useEffect(() => {
+    if (!selectedStage) return;
+    if (!isPipelineSettingsStageSectionAvailable(selectedStage.kind, activeStageSection)) {
       setActiveStageSection("instructions");
     }
   }, [activeStageSection, requestedStageSection, selectedStage]);
@@ -2024,6 +2022,16 @@ export function PipelineSettings() {
     setStageExecutionWorkspaceId(nextExecutionWorkspaceId);
     const workspace = deduplicatedReusableWorkspaces.find((entry) => entry.id === nextExecutionWorkspaceId) ?? null;
     setStageExecutionWorkspaceSettings(executionWorkspaceSettingsForPreference("reuse_existing", workspace));
+  };
+
+  const handleStageSectionChange = (section: StageSectionKey) => {
+    setActiveStageSection(section);
+    const nextSearchParams = new URLSearchParams(searchParams);
+    if (selectedStage?.id) {
+      nextSearchParams.set("stage", selectedStage.id);
+    }
+    nextSearchParams.set("section", section);
+    navigate(`/pipelines/${pipelineId}/settings?${nextSearchParams.toString()}`, { replace: true });
   };
 
   if (!selectedCompanyId) {
@@ -2616,7 +2624,7 @@ export function PipelineSettings() {
                 <StageSubSidebar
                   activeSection={activeStageSection}
                   stageKind={stageKind}
-                  onSectionChange={setActiveStageSection}
+                  onSectionChange={handleStageSectionChange}
                 />
                 <div className="min-w-0 flex-1 md:px-8">
                   <div className="mb-4 flex items-center justify-between gap-3">
