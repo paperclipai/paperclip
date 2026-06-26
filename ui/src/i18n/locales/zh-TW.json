@@ -90,11 +90,38 @@
       "org": "組織",
       "costs": "成本",
       "activity": "活動",
-      "settings": "設定"
+      "settings": "設定",
+      "agents": "智慧代理"
     },
     "sections": {
       "work": "工作",
       "company": "公司"
+    }
+  },
+  "command": {
+    "placeholder": "搜尋任務、智慧代理、專案……",
+    "empty": {
+      "noMatchPrefix": "沒有快速匹配的任務。按",
+      "noMatchSuffix": "搜尋全部，或繼續輸入以縮小範圍。",
+      "noResults": "未找到結果。"
+    },
+    "headings": {
+      "search": "搜尋",
+      "actions": "操作",
+      "pages": "頁面",
+      "tasks": "任務",
+      "agents": "智慧代理",
+      "projects": "專案"
+    },
+    "actions": {
+      "newTask": "新建任務",
+      "openFile": "開啟此任務中的檔案……",
+      "newAgent": "新建智慧代理",
+      "newProject": "新建專案"
+    },
+    "searchAll": {
+      "label": "搜尋全部",
+      "openFullSearch": "開啟完整搜尋"
     }
   }
 }

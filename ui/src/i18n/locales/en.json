@@ -90,11 +90,38 @@
       "org": "Org",
       "costs": "Costs",
       "activity": "Activity",
-      "settings": "Settings"
+      "settings": "Settings",
+      "agents": "Agents"
     },
     "sections": {
       "work": "Work",
       "company": "Company"
+    }
+  },
+  "command": {
+    "placeholder": "Search tasks, agents, projects...",
+    "empty": {
+      "noMatchPrefix": "No quick task matches. Press",
+      "noMatchSuffix": "to search all or keep typing to refine.",
+      "noResults": "No results found."
+    },
+    "headings": {
+      "search": "Search",
+      "actions": "Actions",
+      "pages": "Pages",
+      "tasks": "Tasks",
+      "agents": "Agents",
+      "projects": "Projects"
+    },
+    "actions": {
+      "newTask": "Create new task",
+      "openFile": "Open file in this issue...",
+      "newAgent": "Create new agent",
+      "newProject": "Create new project"
+    },
+    "searchAll": {
+      "label": "Search all for",
+      "openFullSearch": "open full search"
     }
   }
 }

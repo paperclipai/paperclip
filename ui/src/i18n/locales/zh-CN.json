@@ -90,11 +90,38 @@
       "org": "组织",
       "costs": "成本",
       "activity": "活动",
-      "settings": "设置"
+      "settings": "设置",
+      "agents": "智能体"
     },
     "sections": {
       "work": "工作",
       "company": "公司"
+    }
+  },
+  "command": {
+    "placeholder": "搜索任务、智能体、项目……",
+    "empty": {
+      "noMatchPrefix": "没有快速匹配的任务。按",
+      "noMatchSuffix": "搜索全部，或继续输入以缩小范围。",
+      "noResults": "未找到结果。"
+    },
+    "headings": {
+      "search": "搜索",
+      "actions": "操作",
+      "pages": "页面",
+      "tasks": "任务",
+      "agents": "智能体",
+      "projects": "项目"
+    },
+    "actions": {
+      "newTask": "新建任务",
+      "openFile": "打开此任务中的文件……",
+      "newAgent": "新建智能体",
+      "newProject": "新建项目"
+    },
+    "searchAll": {
+      "label": "搜索全部",
+      "openFullSearch": "打开完整搜索"
     }
   }
 }
