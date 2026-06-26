@@ -83,6 +83,7 @@ import {
 } from "../board-claim.js";
 import { claimFirstInstanceAdmin } from "../first-admin-claim.js";
 import { getStorageService } from "../storage/index.js";
+import { secretService } from "../services/secrets.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -1008,6 +1009,24 @@ export function normalizeAgentDefaultsForJoin(input: {
   }
 
   return { normalized, diagnostics, fatalErrors };
+}
+
+export async function prepareAgentDefaultsPayloadForJoinPersistence(input: {
+  db: Db;
+  companyId: string;
+  adapterType: string | null;
+  normalized: Record<string, unknown> | null;
+  actor?: { userId?: string | null; agentId?: string | null };
+}): Promise<Record<string, unknown> | null> {
+  if (input.adapterType !== "hermes_gateway" || !input.normalized) {
+    return input.normalized;
+  }
+
+  return secretService(input.db).normalizeAdapterConfigForPersistence(
+    input.companyId,
+    input.normalized,
+    { adapterType: input.adapterType, actor: input.actor },
+  );
 }
 
 function toInviteSummaryResponse(
@@ -3687,6 +3706,20 @@ export function accessRoutes(
         throw badRequest(joinDefaults.fatalErrors.join("; "));
       }
 
+      const persistedJoinDefaultsPayload =
+        requestType === "agent"
+          ? await prepareAgentDefaultsPayloadForJoinPersistence({
+              db,
+              companyId,
+              adapterType,
+              normalized: joinDefaults.normalized,
+              actor: {
+                userId: req.actor.userId ?? null,
+                agentId: req.actor.agentId ?? null
+              }
+            })
+          : null;
+
       if (requestType === "agent" && adapterType === "openclaw_gateway") {
         logger.info(
           {
@@ -3780,7 +3813,7 @@ export function accessRoutes(
                       ? req.body.capabilities ?? null
                       : null,
                   agentDefaultsPayload:
-                    requestType === "agent" ? joinDefaults.normalized : null,
+                    requestType === "agent" ? persistedJoinDefaultsPayload : null,
                   claimSecretHash,
                   claimSecretExpiresAt
                 })
@@ -3806,7 +3839,7 @@ export function accessRoutes(
                   : null,
               adapterType: requestType === "agent" ? adapterType : null,
               agentDefaultsPayload:
-                requestType === "agent" ? joinDefaults.normalized : null,
+                requestType === "agent" ? persistedJoinDefaultsPayload : null,
               updatedAt: new Date()
             })
             .where(eq(joinRequests.id, replayJoinRequestId as string))
