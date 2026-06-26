@@ -2,7 +2,6 @@ import type { CSSProperties } from "react";
 import { cn } from "../lib/utils";
 import {
   statusBadge,
-  statusBadgeClassic,
   statusBadgeDefault,
   agentStatusMotion,
   agentStatusVar,
@@ -10,7 +9,6 @@ import {
   taskStatusVar,
   taskStatusVarDefault,
 } from "../lib/status-colors";
-import { useConferenceRoomChatEnabled } from "../hooks/useConferenceRoomChatEnabled";
 import { StatusGlyph } from "./StatusGlyph";
 
 /** Inline `--sc` local var pointing a status helper at a base-hue CSS var. */
@@ -25,18 +23,14 @@ function sentenceCaseStatus(status: string): string {
 }
 
 /**
- * Generic status badge for runs / goals / approvals (not task status). Keeps
- * the PAP-75 brand palette behind the Conference Room Chat flag (PAP-139); flag
- * OFF keeps master's palette. Non-issue entries are identical in both records.
+ * Generic status badge for runs / goals / approvals (not task status).
  */
 export function StatusBadge({ status }: { status: string }) {
-  const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
-  const palette = conferenceRoomChatEnabled ? statusBadge : statusBadgeClassic;
   return (
     <span
       className={cn(
         "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap shrink-0",
-        palette[status] ?? statusBadgeDefault
+        statusBadge[status] ?? statusBadgeDefault
       )}
     >
       {status.replace(/_/g, " ")}

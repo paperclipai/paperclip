@@ -12,11 +12,9 @@
 // PAP-75 brand mapping ("blue = liveness"): todo → amber (queued), in_progress
 // → blue (live). See `issueStatusColor` below for the canonical chip palette.
 //
-// The brand mapping ships behind the "Conference Room Chat" experimental flag
-// (PAP-136/PAP-139): each record below also has a `*Classic` variant pinning
-// master's hues (todo → blue, in_progress → yellow). Consumers (StatusIcon,
-// StatusBadge, NewIssueDialog) select the palette by flag; delete the Classic
-// variants when the flag graduates or dies.
+// The brand mapping is the default status palette. Chat-specific gating stays
+// isolated to the Conference Room route/nav/API and does not control task
+// status presentation.
 
 /** StatusIcon circle: text + border classes */
 export const issueStatusIcon: Record<string, string> = {
@@ -27,13 +25,6 @@ export const issueStatusIcon: Record<string, string> = {
   done: "text-green-600 border-green-600 dark:text-green-400 dark:border-green-400",
   cancelled: "text-neutral-500 border-neutral-500",
   blocked: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
-};
-
-/** Master hues for StatusIcon (Conference Room Chat flag OFF). */
-export const issueStatusIconClassic: Record<string, string> = {
-  ...issueStatusIcon,
-  todo: "text-blue-600 border-blue-600 dark:text-blue-400 dark:border-blue-400",
-  in_progress: "text-yellow-600 border-yellow-600 dark:text-yellow-400 dark:border-yellow-400",
 };
 
 export const issueStatusIconDefault = "text-muted-foreground border-muted-foreground";
@@ -47,13 +38,6 @@ export const issueStatusText: Record<string, string> = {
   done: "text-green-600 dark:text-green-400",
   cancelled: "text-neutral-500",
   blocked: "text-red-600 dark:text-red-400",
-};
-
-/** Master hues for text-only issue statuses (Conference Room Chat flag OFF). */
-export const issueStatusTextClassic: Record<string, string> = {
-  ...issueStatusText,
-  todo: "text-blue-600 dark:text-blue-400",
-  in_progress: "text-yellow-600 dark:text-yellow-400",
 };
 
 export const issueStatusTextDefault = "text-muted-foreground";
@@ -102,13 +86,6 @@ export const statusBadge: Record<string, string> = {
   blocked: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   done: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   cancelled: "bg-muted text-muted-foreground",
-};
-
-/** Master hues for StatusBadge issue entries (Conference Room Chat flag OFF). */
-export const statusBadgeClassic: Record<string, string> = {
-  ...statusBadge,
-  todo: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
-  in_progress: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
 };
 
 export const statusBadgeDefault = "bg-muted text-muted-foreground";

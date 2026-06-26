@@ -41,6 +41,12 @@ export interface IssueDocumentAnnotationsProps {
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   /** Seed which thread is focused on mount. Used by Storybook/screenshot harness. */
   defaultFocusedThreadId?: string;
+  /**
+   * Seed the composer with a pending anchor and open the panel once. Used when
+   * a host captures a selection before the annotated document wrapper exists.
+   */
+  initialComposerAnchor?: PendingAnchor | null;
+  onInitialComposerAnchorConsumed?: () => void;
 }
 
 export function IssueDocumentAnnotations({
@@ -58,6 +64,8 @@ export function IssueDocumentAnnotations({
   agentMap,
   userProfileMap,
   defaultFocusedThreadId,
+  initialComposerAnchor,
+  onInitialComposerAnchorConsumed,
 }: IssueDocumentAnnotationsProps) {
   const containerRef = useRef<HTMLElement | null>(null);
   const [focusedThreadId, setFocusedThreadId] = useState<string | null>(defaultFocusedThreadId ?? null);
@@ -74,6 +82,7 @@ export function IssueDocumentAnnotations({
   const hashHandledRef = useRef<string | null>(null);
   // Bus token to ask the body layer to capture the current selection into a pendingAnchor.
   const [captureSelectionRequestId, setCaptureSelectionRequestId] = useState(0);
+  const consumedInitialAnchorRef = useRef<PendingAnchor | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
@@ -205,6 +214,16 @@ export function IssueDocumentAnnotations({
     setComposerAnchor(anchor);
     onPanelOpenChange(true);
   }, [newCommentDisabled, onPanelOpenChange]);
+
+  useEffect(() => {
+    if (!initialComposerAnchor) return;
+    if (consumedInitialAnchorRef.current === initialComposerAnchor) return;
+    if (newCommentDisabled) return;
+    consumedInitialAnchorRef.current = initialComposerAnchor;
+    setComposerAnchor(initialComposerAnchor);
+    onPanelOpenChange(true);
+    onInitialComposerAnchorConsumed?.();
+  }, [initialComposerAnchor, newCommentDisabled, onInitialComposerAnchorConsumed, onPanelOpenChange]);
 
   const handleThreadFocus = useCallback((threadId: string | null) => {
     setFocusedThreadId(threadId);

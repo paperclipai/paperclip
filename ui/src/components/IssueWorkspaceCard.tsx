@@ -7,6 +7,11 @@ import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
+import {
+  defaultExecutionWorkspaceModeForProject,
+  issueExecutionWorkspaceModeForExistingWorkspace,
+} from "../lib/project-workspace-defaults";
+import { orderReusableExecutionWorkspaces } from "../lib/reusable-execution-workspaces";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Check, Copy, FileSearch, FolderOpen, FolderSearch, GitBranch, Pencil, X } from "lucide-react";
@@ -22,12 +27,6 @@ const EXECUTION_WORKSPACE_OPTIONS = [
   { value: "reuse_existing", label: "Reuse existing workspace" },
 ] as const;
 
-function issueModeForExistingWorkspace(mode: string | null | undefined) {
-  if (mode === "isolated_workspace" || mode === "operator_branch" || mode === "shared_workspace") return mode;
-  if (mode === "adapter_managed" || mode === "cloud_sandbox") return "agent_default";
-  return "shared_workspace";
-}
-
 function shouldPresentExistingWorkspaceSelection(
   issue: Pick<
     Issue,
@@ -42,13 +41,6 @@ function shouldPresentExistingWorkspaceSelection(
     issue.executionWorkspaceId &&
     (persistedMode === "isolated_workspace" || persistedMode === "operator_branch"),
   );
-}
-
-function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePolicy?: { enabled?: boolean; defaultMode?: string | null } | null } | null | undefined) {
-  const defaultMode = project?.executionWorkspacePolicy?.enabled ? project.executionWorkspacePolicy.defaultMode : null;
-  if (defaultMode === "isolated_workspace" || defaultMode === "operator_branch") return defaultMode;
-  if (defaultMode === "adapter_default") return "agent_default";
-  return "shared_workspace";
 }
 
 /* -------------------------------------------------------------------------- */
@@ -314,7 +306,7 @@ export function IssueWorkspaceCard({
     executionWorkspaceSettings: {
       mode:
         draftSelection === "reuse_existing"
-          ? issueModeForExistingWorkspace(configuredReusableWorkspace?.mode)
+          ? issueExecutionWorkspaceModeForExistingWorkspace(configuredReusableWorkspace?.mode)
           : draftSelection,
       environmentId: null,
     },

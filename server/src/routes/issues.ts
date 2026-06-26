@@ -16,6 +16,10 @@ import {
   issueRelations,
   issues as issueRows,
   issueWorkProducts,
+  pipelineCaseIssueLinks,
+  pipelineCases,
+  pipelineStages,
+  pipelines,
   projectWorkspaces,
 } from "@paperclipai/db";
 import {
@@ -109,7 +113,6 @@ import {
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
   isInlineAttachmentContentType,
-  isAllowedContentType,
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
   SVG_CONTENT_TYPE,
@@ -167,6 +170,44 @@ const promoteLowTrustOutputSchema = z.object({
   title: z.string().trim().min(1).max(200),
   summary: z.string().trim().min(1).max(8_000),
 });
+
+async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) {
+  const rows = await db
+    .select({
+      link: pipelineCaseIssueLinks,
+      case: pipelineCases,
+      pipeline: pipelines,
+      stage: pipelineStages,
+    })
+    .from(pipelineCaseIssueLinks)
+    .innerJoin(pipelineCases, eq(pipelineCaseIssueLinks.caseId, pipelineCases.id))
+    .innerJoin(pipelines, eq(pipelineCases.pipelineId, pipelines.id))
+    .innerJoin(pipelineStages, eq(pipelineCases.stageId, pipelineStages.id))
+    .where(and(
+      eq(pipelineCaseIssueLinks.companyId, companyId),
+      eq(pipelineCaseIssueLinks.issueId, issueId),
+      eq(pipelineCases.companyId, companyId),
+      eq(pipelines.companyId, companyId),
+    ));
+  return rows.map((row) => ({
+    id: row.case.id,
+    caseKey: row.case.caseKey,
+    title: row.case.title,
+    status: row.case.terminalKind ?? "open",
+    role: row.link.role,
+    pipeline: {
+      id: row.pipeline.id,
+      key: row.pipeline.key,
+      name: row.pipeline.name,
+    },
+    stage: {
+      id: row.stage.id,
+      key: row.stage.key,
+      name: row.stage.name,
+      kind: row.stage.kind,
+    },
+  }));
+}
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
@@ -1848,6 +1889,25 @@ export function issueRoutes(
     throw forbidden(decision.explanation);
   }
 
+  function isTaskBridgeKeyActor(req: Request) {
+    return req.actor.type === "agent" && req.actor.source === "agent_key" && req.actor.keyScope?.kind === "task_bridge";
+  }
+
+  function taskBridgeOriginForActor(req: Request) {
+    return isTaskBridgeKeyActor(req) && req.actor.keyId
+      ? { originKind: "task_bridge", originId: req.actor.keyId }
+      : null;
+  }
+
+  async function assertTaskBridgeCreateAllowed(
+    req: Request,
+    companyId: string,
+    assignmentScope: TaskAssignmentAuthorizationScope,
+  ) {
+    if (!isTaskBridgeKeyActor(req)) return;
+    await assertCanAssignTasks(req, companyId, assignmentScope);
+  }
+
   async function decideIssueAccess(
     req: Request,
     issue: {
@@ -2925,6 +2985,10 @@ export function issueRoutes(
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (isTaskBridgeKeyActor(req)) {
+      res.status(403).json({ error: "Task bridge keys cannot use company-wide issue list APIs" });
+      return;
+    }
     const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
     const touchedByUserFilterRaw = req.query.touchedByUserId as string | undefined;
     const inboxArchivedByUserFilterRaw = req.query.inboxArchivedByUserId as string | undefined;
@@ -3085,6 +3149,10 @@ export function issueRoutes(
   router.get("/companies/:companyId/issues/count", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (isTaskBridgeKeyActor(req)) {
+      res.status(403).json({ error: "Task bridge keys cannot use company-wide issue count APIs" });
+      return;
+    }
     const attention = req.query.attention as string | undefined;
     const hasPlanDocument = parseOptionalBooleanQuery(req.query.hasPlanDocument);
     if (attention !== "blocked") {
@@ -3387,6 +3455,7 @@ export function issueRoutes(
       successfulRunHandoffStates,
       scheduledRetry,
       activeRecoveryAction,
+      linkedCases,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -3399,6 +3468,7 @@ export function issueRoutes(
       listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
       svc.getCurrentScheduledRetry(issue.id),
       recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
+      listIssueLinkedCases(db, issue.companyId, issue.id),
     ]);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
@@ -3441,6 +3511,7 @@ export function issueRoutes(
       mentionedProjects,
       currentExecutionWorkspace,
       workProducts,
+      linkedCases,
     });
   });
 
@@ -5006,7 +5077,7 @@ export function issueRoutes(
     if (watchdogProductBugFollowUp === false) return;
     const effectiveParentId = watchdogProductBugFollowUp ? null : rawCreateBody.parentId;
     let createParent: Awaited<ReturnType<typeof svc.getById>> | null = null;
-    if (req.actor.type === "agent" && !effectiveParentId && !watchdogProductBugFollowUp) {
+    if (req.actor.type === "agent" && !effectiveParentId && !watchdogProductBugFollowUp && !isTaskBridgeKeyActor(req)) {
       const companyScopeDecision = await access.decide({
         actor: req.actor,
         action: "company_scope:read",
@@ -5023,7 +5094,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Parent issue not found" });
         return;
       }
-      if (!(await assertIssueReadAllowed(req, res, createParent))) return;
+      if (!isTaskBridgeKeyActor(req) && !(await assertIssueReadAllowed(req, res, createParent))) return;
     }
     if (
       !watchdogProductBugFollowUp &&
@@ -5069,17 +5140,19 @@ export function issueRoutes(
         : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
+    const createAssignmentScope = {
+      projectId: await resolveAssignmentProjectId({
+        companyId,
+        projectId: createBody.projectId,
+        parentIssueId: createBody.parentId,
+      }),
+      parentIssueId: createBody.parentId ?? null,
+      assigneeAgentId: createBody.assigneeAgentId ?? null,
+      assigneeUserId: rawCreateBody.assigneeUserId ?? null,
+    };
+    await assertTaskBridgeCreateAllowed(req, companyId, createAssignmentScope);
     if (rawCreateBody.assigneeAgentId || rawCreateBody.assigneeUserId) {
-      await assertCanAssignTasks(req, companyId, {
-        projectId: await resolveAssignmentProjectId({
-          companyId,
-          projectId: createBody.projectId,
-          parentIssueId: createBody.parentId,
-        }),
-        parentIssueId: createBody.parentId ?? null,
-        assigneeAgentId: createBody.assigneeAgentId ?? null,
-        assigneeUserId: rawCreateBody.assigneeUserId ?? null,
-      });
+      await assertCanAssignTasks(req, companyId, createAssignmentScope);
     }
     await assertIssueEnvironmentSelection(companyId, createBody.executionWorkspaceSettings?.environmentId);
 
@@ -5097,6 +5170,7 @@ export function issueRoutes(
     }, actor);
     const issue = await svc.create(companyId, {
       ...createBody,
+      ...(taskBridgeOriginForActor(req) ?? {}),
       id: issueId,
       executionPolicy,
       ...(sourceTrust ? { sourceTrust } : {}),
@@ -5214,7 +5288,7 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, parent.companyId);
-    if (!(await assertIssueReadAllowed(req, res, parent))) return;
+    if (!isTaskBridgeKeyActor(req) && !(await assertIssueReadAllowed(req, res, parent))) return;
     if (!(await assertTaskWatchdogCreateIssueAllowed(req, res, parent.companyId, parent))) return;
     if (await assertLowTrustControlPlaneDenied(req, res, parent.companyId, parent)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
@@ -5227,13 +5301,15 @@ export function issueRoutes(
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
+    const childAssignmentScope = {
+      projectId: createBody.projectId ?? parent.projectId ?? null,
+      parentIssueId: parent.id,
+      assigneeAgentId: createBody.assigneeAgentId ?? null,
+      assigneeUserId: createBody.assigneeUserId ?? null,
+    };
+    await assertTaskBridgeCreateAllowed(req, parent.companyId, childAssignmentScope);
     if (req.body.assigneeAgentId || req.body.assigneeUserId) {
-      await assertCanAssignTasks(req, parent.companyId, {
-        projectId: createBody.projectId ?? parent.projectId ?? null,
-        parentIssueId: parent.id,
-        assigneeAgentId: createBody.assigneeAgentId ?? null,
-        assigneeUserId: createBody.assigneeUserId ?? null,
-      });
+      await assertCanAssignTasks(req, parent.companyId, childAssignmentScope);
     }
     await assertIssueEnvironmentSelection(parent.companyId, createBody.executionWorkspaceSettings?.environmentId);
 
@@ -5256,6 +5332,7 @@ export function issueRoutes(
     }, actor);
     const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
       ...createBody,
+      ...(taskBridgeOriginForActor(req) ?? {}),
       id: issueId,
       executionPolicy,
       ...(currentSerializedChild
@@ -8196,10 +8273,6 @@ export function issueRoutes(
     const contentType = normalizeContentType(file.mimetype);
     if (file.buffer.length <= 0) {
       res.status(422).json({ error: "Attachment is empty" });
-      return;
-    }
-    if (!isAllowedContentType(contentType)) {
-      res.status(422).json({ error: `Unsupported attachment content type: ${contentType}` });
       return;
     }
 

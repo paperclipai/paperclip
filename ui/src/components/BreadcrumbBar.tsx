@@ -18,14 +18,17 @@ import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
-function GlobalToolbarPlugins({ context }: { context: GlobalToolbarContext }) {
+function GlobalToolbar({ context }: { context: GlobalToolbarContext }) {
   const { slots } = usePluginSlots({ slotTypes: ["globalToolbarButton"], companyId: context.companyId });
   const { launchers } = usePluginLaunchers({ placementZones: ["globalToolbarButton"], companyId: context.companyId, enabled: !!context.companyId });
-  if (slots.length === 0 && launchers.length === 0) return null;
   return (
-    <div className="flex items-center gap-1 ml-auto shrink-0 pl-2">
-      <PluginSlotOutlet slotTypes={["globalToolbarButton"]} context={context} className="flex items-center gap-1" />
-      <PluginLauncherOutlet placementZones={["globalToolbarButton"]} context={context} className="flex items-center gap-1" />
+    <div className="ml-auto flex shrink-0 items-center gap-1 pl-2 empty:hidden">
+      {slots.length > 0 ? (
+        <PluginSlotOutlet slotTypes={["globalToolbarButton"]} context={context} className="flex items-center gap-1" />
+      ) : null}
+      {launchers.length > 0 ? (
+        <PluginLauncherOutlet placementZones={["globalToolbarButton"]} context={context} className="flex items-center gap-1" />
+      ) : null}
     </div>
   );
 }
@@ -43,7 +46,7 @@ export function BreadcrumbBar() {
     [selectedCompanyId, selectedCompany?.issuePrefix],
   );
 
-  const globalToolbarSlots = <GlobalToolbarPlugins context={globalToolbarSlotContext} />;
+  const globalToolbarSlots = <GlobalToolbar context={globalToolbarSlotContext} />;
 
   if (isMobile && mobileToolbar) {
     return (

@@ -212,11 +212,21 @@ describe.sequential("issue goal context routes", () => {
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
     mockDb.select.mockReturnValue({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          orderBy: vi.fn(async () => []),
-        })),
-      })),
+      from: vi.fn(() => {
+        let hasJoin = false;
+        const query = {
+          innerJoin: vi.fn(() => {
+            hasJoin = true;
+            return query;
+          }),
+          where: vi.fn(() => hasJoin
+            ? Promise.resolve([])
+            : {
+              orderBy: vi.fn(async () => []),
+            }),
+        };
+        return query;
+      }),
     });
     mockDb.execute.mockResolvedValue([]);
     mockProjectService.getById.mockResolvedValue({

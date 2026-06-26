@@ -709,7 +709,7 @@ describe.sequential("agent permission routes", () => {
         model: "gpt-5.3-codex-spark",
         env: expect.any(Object),
       }),
-      { strictMode: false },
+      { strictMode: false, adapterType: "codex_local" },
     );
     expect(mockAgentService.update).toHaveBeenCalledWith(
       agentId,

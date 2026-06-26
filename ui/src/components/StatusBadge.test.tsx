@@ -1,21 +1,9 @@
 // @vitest-environment node
 
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentStatusBadge, IssueStatusBadge, StatusBadge } from "./StatusBadge";
-import { agentStatusVar, statusBadgeClassic, taskStatusVar } from "../lib/status-colors";
-
-// The generic StatusBadge (runs/goals/approvals) keeps the PAP-75 brand palette
-// behind the Conference Room Chat flag (PAP-139). Seeded ON; the suite below
-// flips it OFF. The task/agent status chips no longer depend on this flag.
-const conferenceRoomChatFlag = vi.hoisted(() => ({ enabled: true }));
-vi.mock("../hooks/useConferenceRoomChatEnabled", () => ({
-  useConferenceRoomChatEnabled: () => ({ enabled: conferenceRoomChatFlag.enabled, loaded: true }),
-}));
-
-afterEach(() => {
-  conferenceRoomChatFlag.enabled = true;
-});
+import { agentStatusVar, taskStatusVar } from "../lib/status-colors";
 
 /**
  * Issue/task status chips carry the unified glyph and are recolored from the
@@ -53,8 +41,7 @@ describe("IssueStatusBadge", () => {
     expect(renderToStaticMarkup(<IssueStatusBadge status="mystery" />)).toContain("var(--status-task-backlog)");
   });
 
-  it("is independent of the Conference Room Chat flag", () => {
-    conferenceRoomChatFlag.enabled = false;
+  it("renders task chips without depending on the chat flag", () => {
     const html = renderToStaticMarkup(<IssueStatusBadge status="todo" />);
     expect(html).toContain("status-chip");
     expect(html).toContain('viewBox="0 0 24 24"');
@@ -77,18 +64,8 @@ describe("AgentStatusBadge", () => {
   });
 });
 
-/** The generic badge still honors the PAP-139 Conference Room Chat palette. */
-describe("StatusBadge — Conference Room Chat flag palettes (PAP-139)", () => {
-  it("keeps master's blue todo / yellow in_progress palette when the flag is OFF", () => {
-    conferenceRoomChatFlag.enabled = false;
-    expect(renderToStaticMarkup(<StatusBadge status="todo" />)).toContain("bg-blue-100");
-    expect(renderToStaticMarkup(<StatusBadge status="in_progress" />)).toContain("bg-yellow-100");
-    expect(renderToStaticMarkup(<StatusBadge status="in_progress" />)).toContain(
-      statusBadgeClassic.in_progress!.split(" ")[0],
-    );
-  });
-
-  it("uses the brand hues when the flag is ON", () => {
+describe("StatusBadge", () => {
+  it("uses the graduated brand hues", () => {
     expect(renderToStaticMarkup(<StatusBadge status="todo" />)).toContain("bg-amber-100");
     expect(renderToStaticMarkup(<StatusBadge status="in_progress" />)).toContain("bg-blue-100");
   });

@@ -145,6 +145,45 @@ describeEmbeddedPostgres("secretService", () => {
     ).rejects.toThrow(/already exists/i);
   });
 
+  it("syncs top-level secret refs idempotently", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const firstSecret = await svc.create(companyId, {
+      name: `top-level-first-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "one",
+    });
+    const secondSecret = await svc.create(companyId, {
+      name: `top-level-second-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "two",
+    });
+    const target = { targetType: "environment" as const, targetId: "env-1" };
+
+    await svc.syncSecretRefsForTarget(companyId, target, [
+      { secretId: firstSecret.id, configPath: "apiKey" },
+    ]);
+    await svc.syncSecretRefsForTarget(companyId, target, [
+      { secretId: firstSecret.id, configPath: "apiKey" },
+    ]);
+    await svc.syncSecretRefsForTarget(companyId, target, [
+      { secretId: secondSecret.id, configPath: "apiKey" },
+    ]);
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, target.targetId));
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toMatchObject({
+      companyId,
+      targetType: "environment",
+      targetId: target.targetId,
+      configPath: "apiKey",
+      secretId: secondSecret.id,
+    });
+  });
+
   it("reports reference counts and resolves binding target labels", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -959,6 +998,11 @@ describeEmbeddedPostgres("secretService", () => {
         version: 1,
       },
     }));
+
+    const persisted = await svc.getByName(companyId, "Create Rollback");
+    expect(persisted).toBeNull();
+    const versions = await db.select().from(companySecretVersions);
+    expect(versions).toHaveLength(0);
   });
 
   it("keeps a local cleanup handle when create rollback cleanup fails", async () => {

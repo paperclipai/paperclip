@@ -514,6 +514,7 @@ describe("secret routes", () => {
 
     expect(res.status).toBe(403);
     expect(res.body).toEqual({
+      code: "access_denied",
       error: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
       details: { code: "access_denied" },
     });

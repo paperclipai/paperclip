@@ -1851,6 +1851,41 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("allows long watchdog instructions to wrap inside the properties value column", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableTaskWatchdogs: true,
+    });
+    mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
+    const root = renderProperties(container, {
+      issue: createIssue({
+        watchdog: createWatchdogSummary({
+          instructions: "get greptile to stop re-reviewing the same task unless a fresh code change lands",
+        }),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    let instructionNode: HTMLSpanElement | undefined;
+    await waitForAssertion(() => {
+      instructionNode = Array.from(container.querySelectorAll("span"))
+        .find((node) =>
+          node.textContent?.includes("get greptile")
+          && node.className.includes("text-muted-foreground")
+          && !node.className.includes("inline-flex")
+        ) as HTMLSpanElement | undefined;
+      expect(instructionNode).toBeTruthy();
+    });
+
+    expect(instructionNode!.className).toContain("whitespace-normal");
+    expect(instructionNode!.className).toContain("break-words");
+    expect(instructionNode!.className).not.toContain("truncate");
+
+    act(() => root.unmount());
+  });
+
   it("links to the generated watchdog task when one exists", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableTaskWatchdogs: true,
@@ -1932,12 +1967,36 @@ describe("IssueProperties", () => {
             sourceLabels: ["Comment"],
           },
         },
+        {
+          mentionCount: 1,
+          sourceLabels: ["Comment"],
+          pill: {
+            providerKey: "url",
+            objectType: "link",
+            displayKey: null,
+            iconKey: null,
+            statusCategory: "unknown",
+            statusIconKey: null,
+            statusLabel: null,
+            liveness: "unknown",
+            displayTitle: "https://example.com/release-notes",
+            url: "https://example.com/release-notes",
+          },
+          group: {
+            object: null,
+            mentions: [],
+            mentionCount: 1,
+            sourceLabels: ["Comment"],
+          },
+        },
       ],
     });
     await flush();
 
     expect(container.textContent).toContain("Github Pull Request");
     expect(container.textContent).toContain("Github Issue");
+    expect(container.textContent).toContain("URL");
+    expect(container.textContent).not.toContain("URL link");
     expect(container.textContent).toContain("PR 241 - Merged");
     expect(container.textContent).toContain("Merged");
     expect(container.textContent).toContain("Open");

@@ -57,6 +57,7 @@ export function ExecutionWorkspaceCloseDialog({
     mutationFn: () => executionWorkspacesApi.update(workspaceId, { status: "archived" }),
     onSuccess: (workspace) => {
       queryClient.setQueryData(queryKeys.executionWorkspaces.detail(workspace.id), workspace);
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(workspace.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.closeReadiness(workspace.id) });
       pushToast({
         title: currentStatus === "cleanup_failed" ? "Workspace close retried" : "Workspace closed",
