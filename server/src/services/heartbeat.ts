@@ -1530,6 +1530,12 @@ const heartbeatRunLogAccessColumns = {
   logRef: heartbeatRuns.logRef,
 } as const;
 
+const heartbeatRunAccessColumns = {
+  id: heartbeatRuns.id,
+  companyId: heartbeatRuns.companyId,
+  executionWorkspaceId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'executionWorkspaceId'`.as("executionWorkspaceId"),
+} as const;
+
 const heartbeatRunIssueSummaryColumns = {
   id: heartbeatRuns.id,
   status: heartbeatRuns.status,
@@ -3622,6 +3628,80 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getRunForDisplay(runId: string) {
+    const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
+    const row = await db
+      .select(
+        safeForLegacyEncoding
+          ? {
+              ...heartbeatRunListColumns,
+              error: sql<string | null>`NULL`.as("error"),
+              ...heartbeatRunListContextColumns,
+            }
+          : {
+              ...heartbeatRunListColumns,
+              ...heartbeatRunListContextColumns,
+              ...heartbeatRunListResultColumns,
+            },
+      )
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
+
+    const {
+      contextIssueId,
+      contextTaskId,
+      contextTaskKey,
+      contextCommentId,
+      contextWakeCommentId,
+      contextWakeReason,
+      contextWakeSource,
+      contextWakeTriggerDetail,
+      resultSummary,
+      resultResult,
+      resultMessage,
+      resultError,
+      resultTotalCostUsd,
+      resultCostUsd,
+      resultCostUsdCamel,
+      ...rest
+    } = row as typeof row & {
+      resultSummary?: string | null;
+      resultResult?: string | null;
+      resultMessage?: string | null;
+      resultError?: string | null;
+      resultTotalCostUsd?: string | null;
+      resultCostUsd?: string | null;
+      resultCostUsdCamel?: string | null;
+    };
+
+    return {
+      ...rest,
+      contextSnapshot: summarizeHeartbeatRunContextSnapshot({
+        issueId: contextIssueId,
+        taskId: contextTaskId,
+        taskKey: contextTaskKey,
+        commentId: contextCommentId,
+        wakeCommentId: contextWakeCommentId,
+        wakeReason: contextWakeReason,
+        wakeSource: contextWakeSource,
+        wakeTriggerDetail: contextWakeTriggerDetail,
+      }),
+      resultJson: safeForLegacyEncoding
+        ? null
+        : summarizeHeartbeatRunListResultJson({
+            summary: resultSummary,
+            result: resultResult,
+            message: resultMessage,
+            error: resultError,
+            totalCostUsd: resultTotalCostUsd,
+            costUsd: resultCostUsd,
+            costUsdCamel: resultCostUsdCamel,
+          }),
+    };
+  }
+
   async function recordCurrentHeartbeatRunRuntimeProgress(
     run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "status" | "contextSnapshot">,
     update: RuntimeStatusUpdate,
@@ -3644,6 +3724,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function getRunLogAccess(runId: string) {
     return db
       .select(heartbeatRunLogAccessColumns)
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getRunAccess(runId: string) {
+    return db
+      .select(heartbeatRunAccessColumns)
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
@@ -12171,11 +12259,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     getRun,
+    getRunForDisplay,
 
     decorateActiveRunStatus: decorateHeartbeatRunRuntimeStatus,
     recordRuntimeProgress: recordCurrentHeartbeatRunRuntimeProgress,
     sweepExpiredRuntimeStatuses: sweepExpiredHeartbeatRunRuntimeStatuses,
 
+    getRunAccess,
     getRunLogAccess,
 
     getRuntimeState: async (agentId: string) => {
