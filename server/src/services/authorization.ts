@@ -1292,6 +1292,23 @@ export function authorizationService(db: Db) {
       ) {
         return allowIssueMentionGrant(input.action);
       }
+      if (
+        resource?.assigneeAgentId &&
+        await isManagerOf(companyId, actorAgentId, resource.assigneeAgentId)
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_manager_chain",
+          explanation: "Allowed because the actor manages the issue assignee in the reporting chain.",
+        });
+      }
+      if (resource?.assigneeAgentId && canCreateAgentsLegacy(actorAgent)) {
+        return allow({
+          action: input.action,
+          reason: "allow_legacy_agent_creator",
+          explanation: "Allowed by legacy agent creator authority over same-company issue assignees.",
+        });
+      }
     }
     if (
       input.action === "agent_config:update" &&

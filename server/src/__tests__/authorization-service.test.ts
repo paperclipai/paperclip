@@ -1021,6 +1021,74 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("allows manager-chain agents to comment on and mutate report-owned issues", async () => {
+    const company = await createCompany(db, "ManagerIssueRouting");
+    const managerAgent = await createAgent(db, company.id, { role: "cto" });
+    const reportAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      reportsTo: managerAgent.id,
+    });
+    const unrelatedAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: reportAgent.id });
+
+    for (const action of ["issue:comment", "issue:mutate"] as const) {
+      const allowed = await authorizationService(db).decide({
+        actor: { type: "agent", agentId: managerAgent.id, companyId: company.id, source: "agent_jwt" },
+        action,
+        resource: {
+          type: "issue",
+          companyId: company.id,
+          issueId: issue.id,
+          assigneeAgentId: reportAgent.id,
+        },
+      });
+      const denied = await authorizationService(db).decide({
+        actor: { type: "agent", agentId: unrelatedAgent.id, companyId: company.id, source: "agent_jwt" },
+        action,
+        resource: {
+          type: "issue",
+          companyId: company.id,
+          issueId: issue.id,
+          assigneeAgentId: reportAgent.id,
+        },
+      });
+
+      expect(allowed).toMatchObject({
+        allowed: true,
+        reason: "allow_manager_chain",
+      });
+      expect(denied).toMatchObject({
+        allowed: false,
+        reason: "deny_missing_grant",
+      });
+    }
+  });
+
+  it("allows legacy executive agents to comment on and mutate same-company assigned issues", async () => {
+    const company = await createCompany(db, "ExecutiveIssueRouting");
+    const executiveAgent = await createAgent(db, company.id, { role: "ceo" });
+    const reportAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: reportAgent.id });
+
+    for (const action of ["issue:comment", "issue:mutate"] as const) {
+      const decision = await authorizationService(db).decide({
+        actor: { type: "agent", agentId: executiveAgent.id, companyId: company.id, source: "agent_jwt" },
+        action,
+        resource: {
+          type: "issue",
+          companyId: company.id,
+          issueId: issue.id,
+          assigneeAgentId: reportAgent.id,
+        },
+      });
+
+      expect(decision).toMatchObject({
+        allowed: true,
+        reason: "allow_legacy_agent_creator",
+      });
+    }
+  });
+
   it("denies active-checkout management outside the CEO caller company scope", async () => {
     const sourceCompany = await createCompany(db, "CheckoutSource");
     const targetCompany = await createCompany(db, "CheckoutTarget");

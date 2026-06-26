@@ -7,6 +7,7 @@ const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
 const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
+const managerAgentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
 
@@ -342,6 +343,16 @@ function ownerActor() {
   };
 }
 
+function managerActor() {
+  return {
+    type: "agent",
+    agentId: managerAgentId,
+    companyId,
+    source: "agent_key",
+    runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  };
+}
+
 function boardActor() {
   return {
     type: "board",
@@ -517,11 +528,13 @@ describe("agent issue mutation checkout ownership", () => {
     mockAgentService.getById.mockImplementation(async (id: string) => {
       if (id === ownerAgentId) return makeAgent(ownerAgentId);
       if (id === peerAgentId) return makeAgent(peerAgentId);
+      if (id === managerAgentId) return makeAgent(managerAgentId, { role: "cto" });
       return null;
     });
     mockAgentService.list.mockResolvedValue([
       makeAgent(ownerAgentId),
       makeAgent(peerAgentId),
+      makeAgent(managerAgentId, { role: "cto" }),
     ]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: null });
     mockCompanyService.getById.mockResolvedValue({ id: companyId, issuePrefix: "PAP" });
@@ -1299,6 +1312,82 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("allows manager-chain actors to reassign stale in-progress routine issues", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+      originKind: "routine_execution",
+      checkoutRunId: ownerRunId,
+      executionRunId: ownerRunId,
+    }));
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      agent: makeAgent(peerAgentId),
+    });
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
+      const managerActions = new Set([
+        "issue:mutate",
+        "tasks:manage_active_checkouts",
+      ]);
+      const allowedActions = new Set([
+        "company_scope:read",
+        "issue:comment",
+        "issue:read",
+        "tasks:assign",
+      ]);
+      const allowed = managerActions.has(input.action) || allowedActions.has(input.action);
+      return {
+        allowed,
+        action: input.action,
+        reason: managerActions.has(input.action)
+          ? "allow_manager_chain"
+          : allowed
+            ? "allow_explicit_grant"
+            : "deny_missing_grant",
+        explanation: managerActions.has(input.action)
+          ? "Allowed because the actor manages the issue assignee in the reporting chain."
+          : allowed
+            ? "Allowed by test grant."
+            : "Missing permission.",
+      };
+    });
+
+    const res = await request(await createApp(managerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        assigneeAgentId: peerAgentId,
+        comment: "Routing stale routine issue back to an active engineer.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+      resource: expect.objectContaining({ assigneeAgentId: ownerAgentId }),
+    }));
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "tasks:manage_active_checkouts",
+      resource: expect.objectContaining({ assigneeAgentId: ownerAgentId }),
+    }));
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "tasks:assign",
+      scope: expect.objectContaining({ assigneeAgentId: peerAgentId }),
+    }));
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        assigneeAgentId: peerAgentId,
+        actorAgentId: managerAgentId,
+      }),
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Routing stale routine issue back to an active engineer.",
+      expect.any(Object),
+      expect.any(Object),
+    );
   });
 
   it.each([
