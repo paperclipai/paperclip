@@ -4,7 +4,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import type { DeploymentMode } from "@paperclipai/shared";
+import { isUuidLike, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
@@ -34,7 +34,21 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const rawRunIdHeader = req.header("x-paperclip-run-id");
+    // activity_log.run_id and the FK columns it points at are UUIDs. If a caller
+    // sends a descriptive value (e.g. "subagent:cleanup-..."), passing it through
+    // turns every mutation that calls logActivity / addComment into a Postgres
+    // 22P02 "invalid input syntax for type uuid" — which surfaces as a confusing
+    // 500 and, on the comment INSERT path, silently loses the row. Drop the
+    // attribution rather than poison the request.
+    const runIdHeader =
+      rawRunIdHeader && isUuidLike(rawRunIdHeader) ? rawRunIdHeader : undefined;
+    if (rawRunIdHeader && !runIdHeader) {
+      logger.warn(
+        { runIdHeader: rawRunIdHeader, method: req.method, url: req.originalUrl },
+        "Ignoring non-UUID X-Paperclip-Run-Id header",
+      );
+    }
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
