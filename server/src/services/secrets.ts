@@ -239,6 +239,7 @@ export type RuntimeSecretManifestEntry = {
   secretKey: string;
   version: number;
   provider: SecretProvider;
+  providerVersionRef?: string | null;
   outcome: "success" | "failure";
   errorCode?: string | null;
 };
@@ -686,6 +687,7 @@ export function secretService(db: Db) {
           secretKey: secret.key,
           version: resolvedVersion,
           provider: providerId,
+          providerVersionRef: versionRow.providerVersionRef,
           outcome: "success",
         },
       };
