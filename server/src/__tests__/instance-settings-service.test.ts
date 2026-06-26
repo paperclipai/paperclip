@@ -10,6 +10,7 @@ describe("instance settings service", () => {
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
       enableCloudSync: true,
+      enableDynamicSecrets: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
@@ -24,6 +25,7 @@ describe("instance settings service", () => {
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
       enableCloudSync: true,
+      enableDynamicSecrets: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
@@ -45,6 +47,24 @@ describe("instance settings service", () => {
     expect(
       normalizeExperimentalSettings({ enableExperimentalFileViewer: true }).enableTaskWatchdogs,
     ).toBe(false);
+  });
+
+  it("defaults enableDynamicSecrets to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableDynamicSecrets).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableDynamicSecrets).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableExternalObjects: true }).enableDynamicSecrets,
+    ).toBe(false);
+  });
+
+  it("round-trips an enableDynamicSecrets patch through the update merge", () => {
+    const current = normalizeExperimentalSettings({});
+    const enabled = normalizeExperimentalSettings({ ...current, enableDynamicSecrets: true });
+    expect(enabled.enableDynamicSecrets).toBe(true);
+    expect(enabled.enableStreamlinedLeftNavigation).toBe(true);
+
+    const disabled = normalizeExperimentalSettings({ ...enabled, enableDynamicSecrets: false });
+    expect(disabled).toEqual(current);
   });
 
   it("round-trips an enableConferenceRoomChat patch through the update merge", () => {

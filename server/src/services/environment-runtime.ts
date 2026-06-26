@@ -8,6 +8,7 @@ import type {
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
   PluginEnvironmentConfig,
+  PluginEnvironmentDriverDeclaration,
   SandboxEnvironmentConfig,
 } from "@paperclipai/shared";
 import type {
@@ -1113,6 +1114,53 @@ function sandboxConfigForLeaseMetadata(config: SandboxEnvironmentConfig): Record
   return { ...config };
 }
 
+export type RuntimeSecretPosture = "hard" | "soft";
+
+function pluginDriverReportsHardIsolation(
+  driver: PluginEnvironmentDriverDeclaration | null | undefined,
+): boolean {
+  return driver?.isolation?.hardBoundary === true;
+}
+
+async function resolvePluginEnvironmentHardIsolation(input: {
+  db: Db;
+  config: PluginEnvironmentConfig;
+}): Promise<boolean> {
+  const plugin = await pluginRegistryService(input.db).getByKey(input.config.pluginKey);
+  if (!plugin || plugin.status !== "ready") return false;
+  const driver = plugin.manifestJson.environmentDrivers?.find(
+    (candidate) => candidate.driverKey === input.config.driverKey,
+  );
+  return pluginDriverReportsHardIsolation(driver);
+}
+
+export async function resolveEnvironmentRuntimeSecretPosture(input: {
+  db: Db;
+  environment: Pick<Environment, "driver" | "config">;
+}): Promise<RuntimeSecretPosture> {
+  try {
+    const parsed = parseEnvironmentDriverConfig(input.environment as Environment);
+    if (parsed.driver === "sandbox") {
+      if (isBuiltinSandboxProvider(parsed.config.provider)) return "soft";
+      const resolved = await resolvePluginSandboxProviderDriverByKey({
+        db: input.db,
+        driverKey: parsed.config.provider,
+        requireRunning: false,
+      });
+      return pluginDriverReportsHardIsolation(resolved?.driver) ? "hard" : "soft";
+    }
+    if (parsed.driver === "plugin") {
+      return await resolvePluginEnvironmentHardIsolation({
+        db: input.db,
+        config: parsed.config,
+      }) ? "hard" : "soft";
+    }
+  } catch {
+    return "soft";
+  }
+  return "soft";
+}
+
 function tryParseCurrentPluginConfig(environment: Environment): PluginEnvironmentConfig | null {
   if (environment.driver !== "plugin") {
     return null;
@@ -1437,6 +1485,10 @@ export function environmentRuntimeService(
 
   return {
     getDriver,
+
+    async resolveSecretPosture(environment: Pick<Environment, "driver" | "config">): Promise<RuntimeSecretPosture> {
+      return await resolveEnvironmentRuntimeSecretPosture({ db, environment });
+    },
 
     async acquireRunLease(input: {
       companyId: string;

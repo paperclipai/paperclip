@@ -81,6 +81,8 @@ describe("instance settings routes", () => {
         enableIssuePlanDecompositions: false,
         enableExperimentalFileViewer: false,
         enableCloudSync: false,
+        enableExternalObjects: false,
+        enableDynamicSecrets: false,
         autoRestartDevServerWhenIdle: false,
         enableIssueGraphLivenessAutoRecovery: true,
         issueGraphLivenessAutoRecoveryLookbackHours: 24,
@@ -101,6 +103,7 @@ describe("instance settings routes", () => {
       enableTaskWatchdogs: false,
       enableCloudSync: false,
       enableExternalObjects: false,
+      enableDynamicSecrets: false,
       autoRestartDevServerWhenIdle: false,
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 24,
@@ -119,6 +122,8 @@ describe("instance settings routes", () => {
         enableIssuePlanDecompositions: true,
         enableExperimentalFileViewer: true,
         enableCloudSync: true,
+        enableExternalObjects: false,
+        enableDynamicSecrets: false,
         autoRestartDevServerWhenIdle: false,
         enableIssueGraphLivenessAutoRecovery: true,
         issueGraphLivenessAutoRecoveryLookbackHours: 24,
@@ -144,6 +149,7 @@ describe("instance settings routes", () => {
         enableTaskWatchdogs: true,
         enableCloudSync: true,
         enableExternalObjects: false,
+        enableDynamicSecrets: true,
         autoRestartDevServerWhenIdle: false,
         enableIssueGraphLivenessAutoRecovery: true,
         issueGraphLivenessAutoRecoveryLookbackHours: 24,
@@ -197,6 +203,7 @@ describe("instance settings routes", () => {
       enableTaskWatchdogs: false,
       enableCloudSync: false,
       enableExternalObjects: false,
+      enableDynamicSecrets: false,
       autoRestartDevServerWhenIdle: false,
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 24,
@@ -289,6 +296,24 @@ describe("instance settings routes", () => {
 
     expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
       enableExternalObjects: true,
+    });
+  });
+
+  it("allows local board users to update dynamic secrets", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ enableDynamicSecrets: true })
+      .expect(200);
+
+    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+      enableDynamicSecrets: true,
     });
   });
 

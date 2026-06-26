@@ -792,6 +792,20 @@
       "when": 1781902600000,
       "tag": "0112_rename_skill_create_permission_key",
       "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "7",
+      "when": 1782417600000,
+      "tag": "0113_dynamic_secret_command_config",
+      "breakpoints": true
+    },
+    {
+      "idx": 114,
+      "version": "7",
+      "when": 1782417900000,
+      "tag": "0114_dynamic_secret_encrypted_payloads",
+      "breakpoints": true
     }
   ]
 }

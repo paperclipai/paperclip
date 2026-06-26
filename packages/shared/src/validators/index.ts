@@ -439,6 +439,9 @@ export {
   envBindingSecretRefSchema,
   envBindingSchema,
   envConfigSchema,
+  dynamicSecretCommandSchema,
+  staticArgvSchema,
+  testDynamicSecretCommandSchema,
   createSecretSchema,
   createSecretProviderConfigSchema,
   updateSecretProviderConfigSchema,
@@ -465,6 +468,7 @@ export {
   type RemoteSecretImportSelection,
   type RotateSecret,
   type UpdateSecret,
+  type TestDynamicSecretCommand,
 } from "./secret.js";
 
 export {

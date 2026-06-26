@@ -189,6 +189,11 @@ For local/default installs, the active provider is `local_encrypted`:
 - Backup/restore requires both the database metadata and the local master key file; either artifact alone is insufficient.
 - The server best-effort enforces `0600` key file permissions and provider health reports permission warnings.
 
+Dynamic command-backed secrets are experimental and use host-side generator
+commands instead of stored secret material. For the generator invocation
+contract, trust posture, TTL guidance, and a GitHub App token example, see
+[DYNAMIC-SECRETS.md](./DYNAMIC-SECRETS.md).
+
 Optional overrides:
 
 - `PAPERCLIP_SECRETS_MASTER_KEY` (32-byte key as base64, hex, or raw 32-char string)

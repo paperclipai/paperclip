@@ -645,6 +645,11 @@ CLI configuration support:
 - `pnpm paperclipai doctor` validates secrets adapter configuration, can create a missing local key file with `--repair`, and reports missing AWS Secrets Manager bootstrap env when that provider is selected.
 - Provider health is available at `GET /api/companies/:companyId/secret-providers/health` and reports local key permission warnings plus backup guidance.
 
+Dynamic secrets are experimental host-command generators. Before enabling
+`enableDynamicSecrets` or attaching a generator, read
+`doc/DYNAMIC-SECRETS.md` for the shipped invocation contract, fail-closed
+behavior, trust posture, and TTL guidance.
+
 Per-company provider vaults are configured in the board UI under
 `Company Settings → Secrets → Provider vaults`, backed by
 `/api/companies/{companyId}/secret-provider-configs`. The CLI does not own

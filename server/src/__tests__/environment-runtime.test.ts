@@ -277,6 +277,83 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     };
   }
 
+  it("reports hard secret posture only for plugin-backed sandbox providers with a hard isolation claim", async () => {
+    await db.insert(plugins).values({
+      id: randomUUID(),
+      pluginKey: "acme.hard-sandbox-provider",
+      packageName: "@acme/hard-sandbox-provider",
+      version: "1.0.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: {
+        id: "acme.hard-sandbox-provider",
+        apiVersion: 1,
+        version: "1.0.0",
+        displayName: "Hard Sandbox Provider",
+        description: "Test provider with a declared container boundary",
+        author: "Paperclip",
+        categories: ["automation"],
+        capabilities: ["environment.drivers.register"],
+        entrypoints: { worker: "dist/worker.js" },
+        environmentDrivers: [
+          {
+            driverKey: "hard-plugin",
+            kind: "sandbox_provider",
+            displayName: "Hard Plugin",
+            isolation: {
+              kind: "container",
+              hardBoundary: true,
+            },
+            configSchema: {
+              type: "object",
+              properties: {
+                image: { type: "string" },
+              },
+            },
+          },
+        ],
+      },
+      status: "ready",
+      installOrder: 1,
+      config: {},
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const { environment } = await seedEnvironment({
+      driver: "sandbox",
+      config: {
+        provider: "hard-plugin",
+        image: "paperclip:test",
+      },
+    });
+
+    await expect(runtime.resolveSecretPosture(environment)).resolves.toBe("hard");
+  });
+
+  it("reports soft secret posture for the built-in fake sandbox provider", async () => {
+    const { environment } = await seedEnvironment({
+      driver: "sandbox",
+      config: {
+        provider: "fake",
+        image: "ubuntu:24.04",
+      },
+    });
+
+    await expect(runtime.resolveSecretPosture(environment)).resolves.toBe("soft");
+  });
+
+  it("defaults unknown sandbox providers to soft secret posture", async () => {
+    const { environment } = await seedEnvironment({
+      driver: "sandbox",
+      config: {
+        provider: "missing-plugin",
+        image: "paperclip:test",
+      },
+    });
+
+    await expect(runtime.resolveSecretPosture(environment)).resolves.toBe("soft");
+  });
+
   async function seedReusablePluginSandboxLease() {
     const pluginId = randomUUID();
     const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();

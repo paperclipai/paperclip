@@ -144,6 +144,15 @@ export interface PluginEnvironmentDriverDeclaration {
    * behavior even if their config schema exposes a reuse-like setting.
    */
   supportsReusableLeases?: boolean;
+  /**
+   * Optional isolation claim used by the host to decide whether runtime secret
+   * material may be described as protected by a hard boundary. Omit this unless
+   * the driver actually runs work behind the declared boundary.
+   */
+  isolation?: {
+    kind: "separate_uid" | "namespace" | "container" | "vm" | "remote";
+    hardBoundary?: boolean;
+  };
   /** JSON Schema describing the driver's provider-specific configuration. */
   configSchema: JsonSchema;
 }

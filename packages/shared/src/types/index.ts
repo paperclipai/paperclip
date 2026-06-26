@@ -410,6 +410,7 @@ export type {
   CompanySecretBindingTarget,
   CompanySecretUsageBinding,
   CompanySecretVersion,
+  DynamicSecretCommandConfig,
   SecretAccessEvent,
   RemoteSecretImportCandidate,
   RemoteSecretImportCandidateStatus,

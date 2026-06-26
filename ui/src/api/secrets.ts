@@ -2,6 +2,7 @@ import type {
   CompanySecret,
   CompanySecretUsageBinding,
   CompanySecretProviderConfig,
+  DynamicSecretCommandConfig,
   SecretProviderConfigDiscoveryPreviewResult,
   RemoteSecretImportPreviewResult,
   RemoteSecretImportResult,
@@ -26,11 +27,25 @@ export interface CreateSecretInput {
   provider?: SecretProvider;
   managedMode?: SecretManagedMode;
   value?: string | null;
+  dynamicCommand?: DynamicSecretCommandConfig | null;
   description?: string | null;
   externalRef?: string | null;
   providerVersionRef?: string | null;
   providerConfigId?: string | null;
   providerMetadata?: Record<string, unknown> | null;
+}
+
+export interface TestDynamicCommandInput {
+  secretId: string;
+  bindingId: string;
+}
+
+export interface TestDynamicCommandResult {
+  ok: boolean;
+  posture: "hard" | "soft";
+  bytes?: number;
+  errorCode?: string;
+  message?: string;
 }
 
 export interface SecretProviderHealthResponse {
@@ -134,6 +149,11 @@ export const secretsApi = {
     api.post<SecretProviderConfigHealthResponse>(`/secret-provider-configs/${id}/health`, {}),
   create: (companyId: string, data: CreateSecretInput) =>
     api.post<CompanySecret>(`/companies/${companyId}/secrets`, data),
+  testDynamicCommand: (companyId: string, data: TestDynamicCommandInput) =>
+    api.post<TestDynamicCommandResult>(
+      `/companies/${companyId}/secrets/dynamic-command/test`,
+      data,
+    ),
   update: (id: string, data: UpdateSecretInput) =>
     api.patch<CompanySecret>(`/secrets/${id}`, data),
   rotate: (id: string, data: RotateSecretInput) =>

@@ -52,6 +52,7 @@ function secret(partial: Partial<CompanySecret>): CompanySecret {
     status: "active",
     managedMode: "paperclip_managed",
     externalRef: null,
+    dynamicCommand: null,
     providerConfigId: null,
     providerMetadata: null,
     latestVersion: 1,

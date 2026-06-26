@@ -1,5 +1,5 @@
 import * as p from "@clack/prompts";
-import type { SecretProvider } from "@paperclipai/shared";
+import type { SecretStorageProvider } from "@paperclipai/shared";
 import type { SecretsConfig } from "../config/schema.js";
 import { resolveDefaultSecretsKeyFilePath, resolvePaperclipInstanceId } from "../config/home.js";
 
@@ -92,7 +92,7 @@ export async function promptSecrets(current?: SecretsConfig): Promise<SecretsCon
   }
 
   return {
-    provider: provider as SecretProvider,
+    provider: provider as SecretStorageProvider,
     strictMode,
     localEncrypted: {
       keyFilePath,

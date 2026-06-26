@@ -244,6 +244,7 @@ export function InstanceExperimentalSettings() {
   const enableTaskWatchdogs = experimentalQuery.data?.enableTaskWatchdogs === true;
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
+  const enableDynamicSecrets = experimentalQuery.data?.enableDynamicSecrets === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
     experimentalQuery.data?.enableIssueGraphLivenessAutoRecovery === true;
@@ -331,6 +332,23 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ enableEnvironments: !enableEnvironments })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle environments experimental setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Dynamic Secrets</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Enables experimental command-backed secret resolution. Review the dynamic secrets operator guide before attaching generator commands.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableDynamicSecrets}
+            onCheckedChange={(checked) => toggleMutation.mutate({ enableDynamicSecrets: checked })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle dynamic secrets experimental setting"
           />
         </div>
       </section>

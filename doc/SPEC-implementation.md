@@ -358,6 +358,9 @@ Operational policy:
 - Config read APIs redact sensitive plain values.
 - Activity and approval payloads must not persist raw sensitive values.
 - Config revisions may include redacted placeholders; such revisions are non-restorable for redacted fields.
+- Dynamic command-backed secrets are experimental host-command generators. The
+  operator-facing runtime contract and safe authoring guidance live in
+  `doc/DYNAMIC-SECRETS.md`.
 
 ## 7.14 Required Indexes
 

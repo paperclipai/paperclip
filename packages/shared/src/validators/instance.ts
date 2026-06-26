@@ -48,6 +48,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableExperimentalFileViewer: z.boolean().default(false),
   enableCloudSync: z.boolean().default(false),
   enableExternalObjects: z.boolean().default(false),
+  enableDynamicSecrets: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),
   issueGraphLivenessAutoRecoveryLookbackHours: z

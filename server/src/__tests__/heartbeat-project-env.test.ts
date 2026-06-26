@@ -118,6 +118,7 @@ describe("resolveExecutionRunAdapterConfig", () => {
       "secret-project",
       "secret-routine",
     ]);
+    expect(result.secretManifest.every((entry) => entry.posture === "soft")).toBe(true);
     expect(JSON.stringify(result.secretManifest)).not.toContain("agent-only");
     expect(JSON.stringify(result.secretManifest)).not.toContain("environment-only");
     expect(JSON.stringify(result.secretManifest)).not.toContain("project-only");
@@ -130,6 +131,44 @@ describe("resolveExecutionRunAdapterConfig", () => {
       consumerType: "routine",
       consumerId: "routine-1",
     });
+  });
+
+  it("labels runtime secret manifest entries with the selected environment posture", async () => {
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: { env: { AGENT_SECRET: "resolved" } },
+      secretKeys: new Set(["AGENT_SECRET"]),
+      manifest: [
+        {
+          configPath: "env.AGENT_SECRET",
+          envKey: "AGENT_SECRET",
+          secretId: "secret-agent",
+          secretKey: "agent-secret",
+          version: 1,
+          provider: "local_encrypted",
+          posture: "soft",
+          outcome: "success",
+        },
+      ],
+    });
+
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      executionRunConfig: { env: { AGENT_SECRET: { type: "secret_ref", secretId: "secret-agent" } } },
+      projectEnv: null,
+      secretPosture: "hard",
+      secretsSvc: {
+        resolveAdapterConfigForRuntime,
+        resolveEnvBindings: vi.fn(),
+      } as any,
+    });
+
+    expect(result.secretManifest).toEqual([
+      expect.objectContaining({
+        secretId: "secret-agent",
+        posture: "hard",
+      }),
+    ]);
   });
 
   it("drops Paperclip runtime-owned env before resolving environment, agent, project, and routine overlays", async () => {

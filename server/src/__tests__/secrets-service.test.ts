@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -13,12 +13,15 @@ import {
   companySecretVersions,
   companySecrets,
   createDb,
+  activityLog,
+  issues,
   secretAccessEvents,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { SecretProviderClientError } from "../secrets/types.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { secretService } from "../services/secrets.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -46,11 +49,14 @@ describeEmbeddedPostgres("secretService", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    await instanceSettingsService(db).updateExperimental({ enableDynamicSecrets: false });
+    await db.delete(activityLog);
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(companySecretProviderConfigs);
+    await db.delete(issues);
     await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
@@ -79,6 +85,26 @@ describeEmbeddedPostgres("secretService", () => {
     return companyId;
   }
 
+  async function seedIssue(companyId: string) {
+    return db
+      .insert(issues)
+      .values({
+        companyId,
+        title: `Issue ${randomUUID()}`,
+        status: "in_progress",
+        priority: "medium",
+      })
+      .returning()
+      .then((rows) => rows[0]);
+  }
+
+  function writeGeneratorScript(name: string, body: string) {
+    const scriptPath = path.join(secretsTmpDir, `${name}-${randomUUID()}.js`);
+    writeFileSync(scriptPath, body, { mode: 0o700 });
+    chmodSync(scriptPath, 0o700);
+    return scriptPath;
+  }
+
   async function seedCompanyMember(
     companyId: string,
     userId: string,
@@ -93,6 +119,10 @@ describeEmbeddedPostgres("secretService", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+  }
+
+  async function enableDynamicSecrets() {
+    await instanceSettingsService(db).updateExperimental({ enableDynamicSecrets: true });
   }
 
   it("rejects cross-company secret references during env normalization", async () => {
@@ -143,6 +173,453 @@ describeEmbeddedPostgres("secretService", () => {
         configPath: "env.API_KEY",
       }),
     ).rejects.toThrow(/already exists/i);
+  });
+
+  it("rejects dynamic command secret creation when the experimental flag is disabled", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+
+    await expect(
+      svc.create(companyId, {
+        name: `dynamic-disabled-${randomUUID()}`,
+        provider: "host_command",
+        managedMode: "dynamic_command",
+        dynamicCommand: {
+          provider: "host-command",
+          command: "/usr/local/bin/mint-github-token",
+          ttlSeconds: 3600,
+        },
+      }),
+    ).rejects.toThrow(/not enabled/i);
+  });
+
+  it("persists dynamic command secrets and operator static argv bindings as encrypted material", async () => {
+    const companyId = await seedCompany();
+    await enableDynamicSecrets();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `dynamic-${randomUUID()}`,
+      provider: "host_command",
+      managedMode: "dynamic_command",
+      dynamicCommand: {
+        provider: "host-command",
+        command: "/usr/local/bin/mint-github-token",
+        ttlSeconds: 3600,
+      },
+    });
+
+    expect(secret).toMatchObject({
+      managedMode: "dynamic_command",
+      provider: "host_command",
+      externalRef: null,
+      latestVersion: 1,
+      dynamicCommand: {
+        provider: "host-command",
+        command: "***REDACTED***",
+        ttlSeconds: 3600,
+      },
+    });
+
+    const versions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, secret.id));
+    expect(versions).toHaveLength(1);
+    expect(JSON.stringify(versions[0]?.material)).not.toContain("mint-github-token");
+
+    const binding = await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: "agent-1",
+      configPath: "env.GITHUB_TOKEN",
+      staticArgv: ["--installation", "12345"],
+    });
+
+    expect(binding.staticArgv).toEqual(["***REDACTED***", "***REDACTED***"]);
+    expect(JSON.stringify(binding.staticArgvMaterial)).not.toContain("--installation");
+    expect(JSON.stringify(binding.staticArgvMaterial)).not.toContain("12345");
+  });
+
+  it("resolves dynamic command secrets with a TTL cache and metadata-only task activity", async () => {
+    const companyId = await seedCompany();
+    await enableDynamicSecrets();
+    const issue = await seedIssue(companyId);
+    const countFile = path.join(secretsTmpDir, `count-${randomUUID()}.txt`);
+    const scriptPath = writeGeneratorScript("dynamic-success", `
+const { readFileSync, writeFileSync } = require("node:fs");
+const countFile = ${JSON.stringify(countFile)};
+let count = 0;
+try { count = Number(readFileSync(countFile, "utf8")) || 0; } catch {}
+count += 1;
+writeFileSync(countFile, String(count));
+console.log("minted-" + count + ":" + process.argv.slice(2).join("|"));
+`);
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `dynamic-resolve-${randomUUID()}`,
+      provider: "host_command",
+      managedMode: "dynamic_command",
+      dynamicCommand: {
+        provider: "host-command",
+        command: process.execPath,
+        ttlSeconds: 1,
+      },
+    });
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: "agent-1",
+      configPath: "env.GITHUB_TOKEN",
+      staticArgv: [scriptPath, "--installation", "12345"],
+    });
+    const config = { env: { GITHUB_TOKEN: { type: "secret_ref", secretId: secret.id } } };
+    const context = {
+      consumerType: "agent" as const,
+      consumerId: "agent-1",
+      actorType: "system" as const,
+      actorId: "system",
+      issueId: issue.id,
+    };
+
+    const first = await svc.resolveAdapterConfigForRuntime(companyId, config, context);
+    const second = await svc.resolveAdapterConfigForRuntime(companyId, config, context);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    const third = await svc.resolveAdapterConfigForRuntime(companyId, config, context);
+
+    expect(first.config.env).toMatchObject({ GITHUB_TOKEN: "minted-1:--installation|12345" });
+    expect(second.config.env).toMatchObject({ GITHUB_TOKEN: "minted-1:--installation|12345" });
+    expect(third.config.env).toMatchObject({ GITHUB_TOKEN: "minted-2:--installation|12345" });
+    expect(readFileSync(countFile, "utf8")).toBe("2");
+
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "secret.dynamic_command_resolved"));
+    expect(activities).toHaveLength(2);
+    const activityJson = JSON.stringify(activities.map((activity) => activity.details));
+    expect(activityJson).toContain("GITHUB_TOKEN");
+    expect(activityJson).toContain("***REDACTED***");
+    expect(activityJson).not.toContain(secret.id);
+    expect(activityJson).not.toContain("minted-");
+    expect(activityJson).not.toContain("--installation");
+    expect(activityJson).not.toContain("12345");
+    expect(activityJson).not.toContain(scriptPath);
+  });
+
+  it("runs dynamic command generators with a sanitized environment", async () => {
+    const previousEnv = {
+      DATABASE_URL: process.env.DATABASE_URL,
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+      PAPERCLIP_API_KEY: process.env.PAPERCLIP_API_KEY,
+      PAPERCLIP_TEST_TOKEN: process.env.PAPERCLIP_TEST_TOKEN,
+    };
+    process.env.DATABASE_URL = "postgres://paperclip:secret@example.test/paperclip";
+    process.env.OPENAI_API_KEY = "sk-should-not-leak";
+    process.env.PAPERCLIP_API_KEY = "paperclip-api-key";
+    process.env.PAPERCLIP_TEST_TOKEN = "token-should-not-leak";
+    try {
+      const companyId = await seedCompany();
+      await enableDynamicSecrets();
+      const scriptPath = writeGeneratorScript("dynamic-env", `
+const sensitive = ["DATABASE_URL", "OPENAI_API_KEY", "PAPERCLIP_API_KEY", "PAPERCLIP_TEST_TOKEN"];
+const visible = sensitive.filter((key) => process.env[key]).join(",");
+console.log(JSON.stringify({ visible, path: typeof process.env.PATH === "string" && process.env.PATH.length > 0 }));
+`);
+      const svc = secretService(db);
+      const secret = await svc.create(companyId, {
+        name: `dynamic-env-${randomUUID()}`,
+        provider: "host_command",
+        managedMode: "dynamic_command",
+        dynamicCommand: {
+          provider: "host-command",
+          command: process.execPath,
+          ttlSeconds: 60,
+        },
+      });
+      await svc.createBinding({
+        companyId,
+        secretId: secret.id,
+        targetType: "agent",
+        targetId: "agent-env",
+        configPath: "env.GITHUB_TOKEN",
+        staticArgv: [scriptPath],
+      });
+
+      const resolved = await svc.resolveAdapterConfigForRuntime(
+        companyId,
+        { env: { GITHUB_TOKEN: { type: "secret_ref", secretId: secret.id } } },
+        { consumerType: "agent", consumerId: "agent-env" },
+      );
+
+      expect(JSON.parse(resolved.config.env.GITHUB_TOKEN)).toEqual({ visible: "", path: true });
+    } finally {
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+    }
+  });
+
+  it("fails closed at runtime when dynamic secrets are disabled after creation", async () => {
+    const companyId = await seedCompany();
+    await enableDynamicSecrets();
+    const countFile = path.join(secretsTmpDir, `disabled-count-${randomUUID()}.txt`);
+    const scriptPath = writeGeneratorScript("dynamic-disabled-runtime", `
+const { writeFileSync } = require("node:fs");
+writeFileSync(${JSON.stringify(countFile)}, "invoked");
+console.log("should-not-run");
+`);
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `dynamic-runtime-disabled-${randomUUID()}`,
+      provider: "host_command",
+      managedMode: "dynamic_command",
+      dynamicCommand: {
+        provider: "host-command",
+        command: process.execPath,
+        ttlSeconds: 60,
+      },
+    });
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: "agent-runtime-disabled",
+      configPath: "env.RUNTIME_TOKEN",
+      staticArgv: [scriptPath],
+    });
+    await instanceSettingsService(db).updateExperimental({ enableDynamicSecrets: false });
+
+    await expect(
+      svc.resolveAdapterConfigForRuntime(
+        companyId,
+        { env: { RUNTIME_TOKEN: { type: "secret_ref", secretId: secret.id } } },
+        {
+          consumerType: "agent",
+          consumerId: "agent-runtime-disabled",
+          actorType: "system",
+          actorId: "system",
+        },
+      ),
+    ).rejects.toThrow(/not enabled/i);
+    expect(() => readFileSync(countFile, "utf8")).toThrow();
+  });
+
+  it("fails closed for dynamic command error, timeout, and empty output", async () => {
+    const companyId = await seedCompany();
+    await enableDynamicSecrets();
+    const svc = secretService(db);
+    const previousTimeout = process.env.PAPERCLIP_DYNAMIC_SECRET_COMMAND_TIMEOUT_MS;
+    process.env.PAPERCLIP_DYNAMIC_SECRET_COMMAND_TIMEOUT_MS = "50";
+
+    async function expectDynamicFailure(scriptBody: string, expectedMessage: RegExp) {
+      const scriptPath = writeGeneratorScript("dynamic-failure", scriptBody);
+      const targetId = `agent-${randomUUID()}`;
+      const secret = await svc.create(companyId, {
+        name: `dynamic-failure-${randomUUID()}`,
+        provider: "host_command",
+        managedMode: "dynamic_command",
+        dynamicCommand: {
+          provider: "host-command",
+          command: process.execPath,
+          ttlSeconds: 60,
+        },
+      });
+      await svc.createBinding({
+        companyId,
+        secretId: secret.id,
+        targetType: "agent",
+        targetId,
+        configPath: "env.RUNTIME_TOKEN",
+        staticArgv: [scriptPath],
+      });
+
+      await expect(
+        svc.resolveAdapterConfigForRuntime(
+          companyId,
+          { env: { RUNTIME_TOKEN: { type: "secret_ref", secretId: secret.id } } },
+          {
+            consumerType: "agent",
+            consumerId: targetId,
+            actorType: "system",
+            actorId: "system",
+          },
+        ),
+      ).rejects.toThrow(expectedMessage);
+    }
+
+    try {
+      await expectDynamicFailure("process.stderr.write('do-not-leak'); process.exit(3);", /generator failed/i);
+      await expectDynamicFailure("setTimeout(() => console.log('late-token'), 1000);", /timed out/i);
+      await expectDynamicFailure("console.log('   ');", /empty value/i);
+    } finally {
+      if (previousTimeout === undefined) {
+        delete process.env.PAPERCLIP_DYNAMIC_SECRET_COMMAND_TIMEOUT_MS;
+      } else {
+        process.env.PAPERCLIP_DYNAMIC_SECRET_COMMAND_TIMEOUT_MS = previousTimeout;
+      }
+    }
+
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "secret.dynamic_command_resolved"));
+    expect(activities).toHaveLength(0);
+  });
+
+  it("dry-runs a saved dynamic generator binding without returning the value", async () => {
+    const companyId = await seedCompany();
+    await enableDynamicSecrets();
+    const svc = secretService(db);
+    const scriptPath = writeGeneratorScript(
+      "dynamic-test-ok",
+      "console.log('minted:' + process.argv.slice(2).join('|'));",
+    );
+
+    const secret = await svc.create(companyId, {
+      name: `dynamic-test-${randomUUID()}`,
+      provider: "host_command",
+      managedMode: "dynamic_command",
+      dynamicCommand: {
+        provider: "host-command",
+        command: process.execPath,
+        ttlSeconds: 60,
+      },
+    });
+    const binding = await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: "agent-test",
+      configPath: "env.GITHUB_TOKEN",
+      staticArgv: [scriptPath, "--installation", "999"],
+    });
+
+    const ok = await svc.testDynamicCommand({ companyId, secretId: secret.id, bindingId: binding.id });
+    expect(ok.ok).toBe(true);
+    expect(ok.posture).toBe("soft");
+    expect(ok.bytes).toBe("minted:--installation|999".length);
+    expect(JSON.stringify(ok)).not.toContain("minted");
+
+    const failing = writeGeneratorScript(
+      "dynamic-test-fail",
+      "process.stderr.write('boom'); process.exit(2);",
+    );
+    const failingSecret = await svc.create(companyId, {
+      name: `dynamic-test-fail-${randomUUID()}`,
+      provider: "host_command",
+      managedMode: "dynamic_command",
+      dynamicCommand: {
+        provider: "host-command",
+        command: process.execPath,
+        ttlSeconds: 60,
+      },
+    });
+    const failingBinding = await svc.createBinding({
+      companyId,
+      secretId: failingSecret.id,
+      targetType: "agent",
+      targetId: "agent-test-fail",
+      configPath: "env.GITHUB_TOKEN",
+      staticArgv: [failing],
+    });
+    const failure = await svc.testDynamicCommand({
+      companyId,
+      secretId: failingSecret.id,
+      bindingId: failingBinding.id,
+    });
+    expect(failure.ok).toBe(false);
+    expect(failure.posture).toBe("soft");
+    expect(failure.errorCode).toBe("dynamic_secret_command_failed");
+    expect(failure.bytes).toBeUndefined();
+  });
+
+  it("rejects dynamic command dry-runs for bindings outside the secret company", async () => {
+    const companyA = await seedCompany("A");
+    const companyB = await seedCompany("B");
+    await enableDynamicSecrets();
+    const svc = secretService(db);
+    const scriptPath = writeGeneratorScript("dynamic-test-foreign", "console.log('minted');");
+    const secretA = await svc.create(companyA, {
+      name: `dynamic-company-a-${randomUUID()}`,
+      provider: "host_command",
+      managedMode: "dynamic_command",
+      dynamicCommand: {
+        provider: "host-command",
+        command: process.execPath,
+        ttlSeconds: 60,
+      },
+    });
+    const secretB = await svc.create(companyB, {
+      name: `dynamic-company-b-${randomUUID()}`,
+      provider: "host_command",
+      managedMode: "dynamic_command",
+      dynamicCommand: {
+        provider: "host-command",
+        command: process.execPath,
+        ttlSeconds: 60,
+      },
+    });
+    const foreignBinding = await svc.createBinding({
+      companyId: companyB,
+      secretId: secretB.id,
+      targetType: "agent",
+      targetId: "agent-foreign",
+      configPath: "env.GITHUB_TOKEN",
+      staticArgv: [scriptPath],
+    });
+
+    const result = await svc.testDynamicCommand({
+      companyId: companyA,
+      secretId: secretA.id,
+      bindingId: foreignBinding.id,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.errorCode).toBe("binding_missing");
+  });
+
+  it("threads operator static argv from env bindings into binding rows", async () => {
+    const companyId = await seedCompany();
+    await enableDynamicSecrets();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `dynamic-binding-${randomUUID()}`,
+      provider: "host_command",
+      managedMode: "dynamic_command",
+      dynamicCommand: {
+        provider: "host-command",
+        command: process.execPath,
+        ttlSeconds: 60,
+      },
+    });
+
+    await svc.syncEnvBindingsForTarget(
+      companyId,
+      { targetType: "agent", targetId: "agent-argv" },
+      {
+        GITHUB_TOKEN: {
+          type: "secret_ref",
+          secretId: secret.id,
+          version: "latest",
+          staticArgv: ["--installation", "12345"],
+        },
+      },
+    );
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, "agent-argv"));
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]?.staticArgv).toEqual(["***REDACTED***", "***REDACTED***"]);
+    expect(JSON.stringify(bindings[0]?.staticArgvMaterial)).not.toContain("--installation");
+    expect(JSON.stringify(bindings[0]?.staticArgvMaterial)).not.toContain("12345");
   });
 
   it("syncs top-level secret refs idempotently", async () => {

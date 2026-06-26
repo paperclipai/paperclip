@@ -292,6 +292,7 @@ describe("ImportFromVaultDialog", () => {
         status: "active",
         managedMode: "external_reference",
         externalRef: "arn:aws:secretsmanager:us-east-1:1:secret:other-XYZ",
+        dynamicCommand: null,
         providerConfigId: awsVault.id,
         providerMetadata: null,
         latestVersion: 1,

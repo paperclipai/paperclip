@@ -23,11 +23,16 @@ const mockSecretService = vi.hoisted(() => ({
   remove: vi.fn(),
   previewRemoteImport: vi.fn(),
   importRemoteSecrets: vi.fn(),
+  testDynamicCommand: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
 
 vi.mock("../services/index.js", () => ({
   secretService: () => mockSecretService,
+  instanceSettingsService: () => mockInstanceSettingsService,
   logActivity: mockLogActivity,
 }));
 
@@ -54,6 +59,8 @@ describe("secret routes", () => {
     for (const mock of Object.values(mockSecretService)) {
       mock.mockReset();
     }
+    mockInstanceSettingsService.getExperimental.mockReset();
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableDynamicSecrets: true });
     mockLogActivity.mockReset();
   });
 
@@ -93,6 +100,53 @@ describe("secret routes", () => {
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toMatch(/Managed secrets cannot set externalRef/);
     expect(mockSecretService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects arbitrary dynamic command tests before calling the service", async () => {
+    const res = await request(createApp())
+      .post("/api/companies/company-1/secrets/dynamic-command/test")
+      .send({
+        command: process.execPath,
+        staticArgv: ["./mint-token.js"],
+      });
+
+    expect(res.status).toBe(400);
+    expect(mockInstanceSettingsService.getExperimental).not.toHaveBeenCalled();
+    expect(mockSecretService.testDynamicCommand).not.toHaveBeenCalled();
+  });
+
+  it("dry-runs only a saved dynamic command secret binding", async () => {
+    mockSecretService.testDynamicCommand.mockResolvedValue({
+      ok: true,
+      posture: "soft",
+      bytes: 24,
+    });
+
+    const res = await request(createApp())
+      .post("/api/companies/company-1/secrets/dynamic-command/test")
+      .send({
+        secretId: "11111111-1111-1111-1111-111111111111",
+        bindingId: "22222222-2222-2222-2222-222222222222",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, posture: "soft", bytes: 24 });
+    expect(mockSecretService.testDynamicCommand).toHaveBeenCalledWith({
+      companyId: "company-1",
+      secretId: "11111111-1111-1111-1111-111111111111",
+      bindingId: "22222222-2222-2222-2222-222222222222",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "secret.dynamic_command.tested",
+      entityType: "secret",
+      entityId: "11111111-1111-1111-1111-111111111111",
+      details: {
+        ok: true,
+        bindingId: "22222222-2222-2222-2222-222222222222",
+        errorCode: null,
+      },
+    }));
+    expect(JSON.stringify(res.body)).not.toContain("minted");
   });
 
   it("rejects provider vault routes for non-board actors", async () => {

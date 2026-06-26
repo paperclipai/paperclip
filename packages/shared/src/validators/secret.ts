@@ -4,6 +4,7 @@ import {
   SECRET_MANAGED_MODES,
   SECRET_PROVIDER_CONFIG_STATUSES,
   SECRET_PROVIDERS,
+  SECRET_STORAGE_PROVIDERS,
   SECRET_STATUSES,
 } from "../constants.js";
 
@@ -16,6 +17,9 @@ export const envBindingSecretRefSchema = z.object({
   type: z.literal("secret_ref"),
   secretId: z.string().uuid(),
   version: z.union([z.literal("latest"), z.number().int().positive()]).optional(),
+  // Operator-fixed argv for dynamic (host-command) generators, captured at
+  // attach time. Never agent-supplied. Optional/empty for static secrets.
+  staticArgv: z.array(z.string().max(4096)).max(64).optional(),
 });
 
 // Backward-compatible union that accepts legacy inline values.
@@ -27,6 +31,24 @@ export const envBindingSchema = z.union([
 
 export const envConfigSchema = z.record(z.string(), envBindingSchema);
 
+export const dynamicSecretCommandSchema = z.object({
+  provider: z.literal("host-command"),
+  command: z.string().trim().min(1).max(2048),
+  ttlSeconds: z.number().int().min(1).max(86_400),
+}).strict();
+
+export const staticArgvSchema = z.array(z.string().max(4096)).max(64).default([]);
+
+// Operator dry-run of a saved dynamic (host-command) generator. The route
+// never accepts arbitrary command text; it reuses persisted secret + binding
+// configuration and returns only pass/fail metadata.
+export const testDynamicSecretCommandSchema = z.object({
+  secretId: z.string().uuid(),
+  bindingId: z.string().uuid(),
+}).strict();
+
+export type TestDynamicSecretCommand = z.infer<typeof testDynamicSecretCommandSchema>;
+
 export const createSecretSchema = z.object({
   name: z.string().min(1),
   key: z.string().min(1).regex(/^[a-zA-Z0-9_.-]+$/).optional(),
@@ -34,12 +56,21 @@ export const createSecretSchema = z.object({
   providerConfigId: z.string().uuid().optional().nullable(),
   managedMode: z.enum(SECRET_MANAGED_MODES).optional(),
   value: z.string().min(1).optional().nullable(),
+  dynamicCommand: dynamicSecretCommandSchema.optional().nullable(),
   description: z.string().optional().nullable(),
   externalRef: z.string().optional().nullable(),
   providerMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
   providerVersionRef: z.string().optional().nullable(),
 }).superRefine((value, ctx) => {
-  if ((value.managedMode ?? "paperclip_managed") === "external_reference") {
+  const managedMode = value.managedMode ?? "paperclip_managed";
+  if (managedMode === "external_reference") {
+    if (value.provider === "host_command") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["provider"],
+        message: "Host command provider requires dynamic_command mode",
+      });
+    }
     if (!value.externalRef?.trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -48,6 +79,44 @@ export const createSecretSchema = z.object({
       });
     }
     return;
+  }
+  if (managedMode === "dynamic_command") {
+    if ((value.provider ?? "host_command") !== "host_command") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["provider"],
+        message: "Dynamic command secrets require host_command provider",
+      });
+    }
+    if (value.value?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["value"],
+        message: "Dynamic command secrets cannot set value",
+      });
+    }
+    if (value.externalRef?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["externalRef"],
+        message: "Dynamic command secrets cannot set externalRef",
+      });
+    }
+    if (!value.dynamicCommand) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["dynamicCommand"],
+        message: "Dynamic command secrets require generator command config",
+      });
+    }
+    return;
+  }
+  if (value.provider === "host_command") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["provider"],
+      message: "Host command provider requires dynamic_command mode",
+    });
   }
   if (value.externalRef?.trim()) {
     ctx.addIssue({
@@ -99,6 +168,7 @@ export const createSecretBindingSchema = secretBindingTargetSchema.extend({
   versionSelector: z.union([z.literal("latest"), z.number().int().positive()]).default("latest"),
   required: z.boolean().default(true),
   label: z.string().optional().nullable(),
+  staticArgv: staticArgvSchema,
 });
 
 export type CreateSecretBinding = z.infer<typeof createSecretBindingSchema>;
@@ -194,7 +264,7 @@ export const secretProviderConfigPayloadSchema = z.discriminatedUnion("provider"
 ]);
 
 export const createSecretProviderConfigSchema = z.object({
-  provider: z.enum(SECRET_PROVIDERS),
+  provider: z.enum(SECRET_STORAGE_PROVIDERS),
   displayName: z.string().trim().min(1).max(120),
   status: z.enum(SECRET_PROVIDER_CONFIG_STATUSES).optional(),
   isDefault: z.boolean().optional(),
@@ -263,7 +333,7 @@ export const remoteSecretImportPreviewSchema = z.object({
 export type RemoteSecretImportPreview = z.infer<typeof remoteSecretImportPreviewSchema>;
 
 export const secretProviderConfigDiscoveryPreviewSchema = z.object({
-  provider: z.enum(SECRET_PROVIDERS),
+  provider: z.enum(SECRET_STORAGE_PROVIDERS),
   config: z.record(z.unknown()).default({}),
   query: z.string().trim().max(200).optional().nullable(),
   nextToken: z.string().trim().min(1).max(4096).optional().nullable(),

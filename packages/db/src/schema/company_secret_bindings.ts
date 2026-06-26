@@ -1,4 +1,4 @@
-import { boolean, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { companySecrets } from "./company_secrets.js";
 
@@ -14,6 +14,8 @@ export const companySecretBindings = pgTable(
     versionSelector: text("version_selector").notNull().default("latest"),
     required: boolean("required").notNull().default(true),
     label: text("label"),
+    staticArgv: jsonb("static_argv").$type<string[]>().notNull().default([]),
+    staticArgvMaterial: jsonb("static_argv_material").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

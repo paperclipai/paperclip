@@ -126,6 +126,10 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   displayName: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
   supportsReusableLeases: z.boolean().optional(),
+  isolation: z.object({
+    kind: z.enum(["separate_uid", "namespace", "container", "vm", "remote"]),
+    hardBoundary: z.boolean().optional(),
+  }).optional(),
   configSchema: jsonSchemaSchema,
 });
 

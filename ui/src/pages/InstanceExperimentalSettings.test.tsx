@@ -44,6 +44,8 @@ const STREAMLINED_TOGGLE_SELECTOR =
   'button[aria-label="Toggle streamlined left navigation experimental setting"]';
 const TASK_WATCHDOGS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task watchdogs experimental setting"]';
+const DYNAMIC_SECRETS_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle dynamic secrets experimental setting"]';
 
 function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   return {
@@ -54,6 +56,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
+    enableDynamicSecrets: false,
     enableTaskWatchdogs: false,
     enableCloudSync: false,
     autoRestartDevServerWhenIdle: false,
@@ -190,6 +193,47 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
 
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
       enableTaskWatchdogs: false,
+    });
+  });
+
+  it("renders and patches the Dynamic Secrets experimental toggle on and off", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Dynamic Secrets");
+    expect(container.textContent).toContain(
+      "Enables experimental command-backed secret resolution. Review the dynamic secrets operator guide before attaching generator commands.",
+    );
+
+    const toggle = container.querySelector<HTMLButtonElement>(DYNAMIC_SECRETS_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableDynamicSecrets: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+
+    flushSync(() => {
+      root?.unmount();
+    });
+    root = null;
+    container.textContent = "";
+    await renderPage();
+
+    const enabledToggle = container.querySelector<HTMLButtonElement>(DYNAMIC_SECRETS_TOGGLE_SELECTOR);
+    expect(enabledToggle?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      enabledToggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
+      enableDynamicSecrets: false,
     });
   });
 });

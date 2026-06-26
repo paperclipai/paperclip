@@ -36,19 +36,27 @@ type Row = {
   plainValue: string;
   secretId: string;
   version: SecretVersionSelector;
+  // Operator-fixed argv for dynamic (host-command) generators. One entry per
+  // positional argument; never agent-supplied. Empty for non-dynamic secrets.
+  staticArgv: string[];
 };
 
 function emptyRow(): Row {
-  return { key: "", source: "plain", plainValue: "", secretId: "", version: "latest" };
+  return { key: "", source: "plain", plainValue: "", secretId: "", version: "latest", staticArgv: [] };
+}
+
+function readStaticArgv(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string");
 }
 
 function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
   if (!rec || typeof rec !== "object") {
     return [emptyRow()];
   }
-  const entries = Object.entries(rec).map(([key, binding]) => {
+  const entries = Object.entries(rec).map(([key, binding]): Row => {
     if (typeof binding === "string") {
-      return { key, source: "plain" as const, plainValue: binding, secretId: "", version: "latest" as const };
+      return { key, source: "plain", plainValue: binding, secretId: "", version: "latest", staticArgv: [] };
     }
     if (
       typeof binding === "object" &&
@@ -56,16 +64,17 @@ function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
       "type" in binding &&
       (binding as { type?: unknown }).type === "secret_ref"
     ) {
-      const record = binding as { secretId?: unknown; version?: unknown };
+      const record = binding as { secretId?: unknown; version?: unknown; staticArgv?: unknown };
       const version: SecretVersionSelector = typeof record.version === "number"
         ? record.version
         : "latest";
       return {
         key,
-        source: "secret" as const,
+        source: "secret",
         plainValue: "",
         secretId: typeof record.secretId === "string" ? record.secretId : "",
         version,
+        staticArgv: readStaticArgv(record.staticArgv),
       };
     }
     if (
@@ -77,13 +86,14 @@ function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
       const record = binding as { value?: unknown };
       return {
         key,
-        source: "plain" as const,
+        source: "plain",
         plainValue: typeof record.value === "string" ? record.value : "",
         secretId: "",
-        version: "latest" as const,
+        version: "latest",
+        staticArgv: [],
       };
     }
-    return { key, source: "plain" as const, plainValue: "", secretId: "", version: "latest" as const };
+    return { key, source: "plain", plainValue: "", secretId: "", version: "latest", staticArgv: [] };
   });
   return [...entries, emptyRow()];
 }
@@ -129,7 +139,15 @@ export function EnvVarEditor({
       if (!key) continue;
       if (row.source === "secret") {
         if (row.secretId) {
-          rec[key] = { type: "secret_ref", secretId: row.secretId, version: row.version };
+          const isDynamic =
+            secrets.find((s) => s.id === row.secretId)?.managedMode === "dynamic_command";
+          const argv = row.staticArgv.filter((arg) => arg.length > 0);
+          rec[key] = {
+            type: "secret_ref",
+            secretId: row.secretId,
+            version: row.version,
+            ...(isDynamic && argv.length > 0 ? { staticArgv: argv } : {}),
+          };
         } else {
           rec[key] = { type: "plain", value: row.plainValue };
         }
@@ -227,8 +245,14 @@ export function EnvVarEditor({
           !row.key &&
           !row.plainValue &&
           !row.secretId;
+        const boundSecret = row.secretId
+          ? secrets.find((s) => s.id === row.secretId)
+          : undefined;
+        const isDynamicBinding =
+          row.source === "secret" && boundSecret?.managedMode === "dynamic_command";
         return (
-          <div key={index} className="flex items-center gap-1.5">
+          <div key={index} className="space-y-1">
+          <div className="flex items-center gap-1.5">
             <input
               className={cn(inputClass, "flex-[2]")}
               placeholder="KEY"
@@ -355,6 +379,29 @@ export function EnvVarEditor({
             ) : (
               <div className="w-[26px] shrink-0" />
             )}
+          </div>
+          {isDynamicBinding ? (
+            <div className="ml-1 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5">
+              <label className="flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                <KeyRound className="h-3 w-3" />
+                Static args for generator (operator-fixed, one per line)
+              </label>
+              <textarea
+                className={cn(inputClass, "mt-1 min-h-[44px] resize-y")}
+                placeholder={"--repo\nacme/widgets"}
+                value={row.staticArgv.join("\n")}
+                onChange={(event) =>
+                  updateRow(index, {
+                    staticArgv: event.target.value.split("\n"),
+                  })
+                }
+              />
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                Passed verbatim to <span className="font-mono">{boundSecret?.name}</span> at injection.
+                Agents can never set or override these.
+              </p>
+            </div>
+          ) : null}
           </div>
         );
       })}

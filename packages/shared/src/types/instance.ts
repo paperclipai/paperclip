@@ -54,6 +54,7 @@ export interface InstanceExperimentalSettings {
   enableExperimentalFileViewer: boolean;
   enableCloudSync: boolean;
   enableExternalObjects: boolean;
+  enableDynamicSecrets: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
   issueGraphLivenessAutoRecoveryLookbackHours: number;

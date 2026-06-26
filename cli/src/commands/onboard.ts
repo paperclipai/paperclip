@@ -6,7 +6,7 @@ import {
   BIND_MODES,
   DEPLOYMENT_EXPOSURES,
   DEPLOYMENT_MODES,
-  SECRET_PROVIDERS,
+  SECRET_STORAGE_PROVIDERS,
   STORAGE_PROVIDERS,
   inferBindModeFromHost,
   resolveRuntimeBind,
@@ -14,7 +14,7 @@ import {
   type AuthBaseUrlMode,
   type DeploymentExposure,
   type DeploymentMode,
-  type SecretProvider,
+  type SecretStorageProvider,
   type StorageProvider,
 } from "@paperclipai/shared";
 import { configExists, readConfig, resolveConfigPath, writeConfig } from "../config/store.js";
@@ -197,7 +197,7 @@ function quickstartDefaultsFromEnv(opts?: { preferTrustedLocal?: boolean }): {
     parseEnumFromEnv<StorageProvider>(process.env.PAPERCLIP_STORAGE_PROVIDER, STORAGE_PROVIDERS) ??
     defaultStorage.provider;
   const secretsProvider =
-    parseEnumFromEnv<SecretProvider>(process.env.PAPERCLIP_SECRETS_PROVIDER, SECRET_PROVIDERS) ??
+    parseEnumFromEnv<SecretStorageProvider>(process.env.PAPERCLIP_SECRETS_PROVIDER, SECRET_STORAGE_PROVIDERS) ??
     defaultSecrets.provider;
   const databaseBackupEnabled = parseBooleanFromEnv(process.env.PAPERCLIP_DB_BACKUP_ENABLED) ?? true;
   const databaseBackupIntervalMinutes = Math.max(

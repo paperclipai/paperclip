@@ -192,7 +192,7 @@ import {
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
-import { environmentRuntimeService } from "./environment-runtime.js";
+import { environmentRuntimeService, type RuntimeSecretPosture } from "./environment-runtime.js";
 import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
@@ -504,6 +504,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
   projectEnv: unknown;
   routineEnv?: unknown;
   secretsSvc: RuntimeConfigSecretResolver;
+  secretPosture?: RuntimeSecretPosture;
   trustPreset?: TrustPresetResolution;
   requiredScopedEnvBinding?: {
     keys: string[];
@@ -728,6 +729,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
       secretKeys.add(key);
     }
   }
+  const secretPosture = input.secretPosture ?? "soft";
   return {
     resolvedConfig,
     secretKeys,
@@ -736,7 +738,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
       ...(manifest ?? []),
       ...(projectEnvResolution.manifest ?? []),
       ...(routineEnvResolution.manifest ?? []),
-    ],
+    ].map((entry) => ({ ...entry, posture: secretPosture })),
   };
 }
 
@@ -8905,6 +8907,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : selectedEnvironmentId
         ? await environmentsSvc.getById(selectedEnvironmentId)
         : null;
+    const runtimeSecretPosture = selectedEnvironmentForConfig
+      ? await environmentRuntime.resolveSecretPosture(selectedEnvironmentForConfig)
+      : "soft";
     const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
       db,
       companyId: agent.companyId,
@@ -8928,6 +8933,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectEnv: projectContext?.env ?? null,
       routineEnv: routineEnvContext.env,
       secretsSvc,
+      secretPosture: runtimeSecretPosture,
       trustPreset,
       requiredScopedEnvBinding: pushCapabilityPreflightRequired
         ? {

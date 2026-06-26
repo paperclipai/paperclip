@@ -546,11 +546,17 @@ export const APPROVAL_STATUSES = [
 ] as const;
 export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
 
-export const SECRET_PROVIDERS = [
+export const SECRET_STORAGE_PROVIDERS = [
   "local_encrypted",
   "aws_secrets_manager",
   "gcp_secret_manager",
   "vault",
+] as const;
+export type SecretStorageProvider = (typeof SECRET_STORAGE_PROVIDERS)[number];
+
+export const SECRET_PROVIDERS = [
+  ...SECRET_STORAGE_PROVIDERS,
+  "host_command",
 ] as const;
 export type SecretProvider = (typeof SECRET_PROVIDERS)[number];
 
@@ -575,7 +581,7 @@ export type SecretProviderConfigHealthStatus =
 export const SECRET_STATUSES = ["active", "disabled", "archived", "deleted"] as const;
 export type SecretStatus = (typeof SECRET_STATUSES)[number];
 
-export const SECRET_MANAGED_MODES = ["paperclip_managed", "external_reference"] as const;
+export const SECRET_MANAGED_MODES = ["paperclip_managed", "external_reference", "dynamic_command"] as const;
 export type SecretManagedMode = (typeof SECRET_MANAGED_MODES)[number];
 
 export const SECRET_VERSION_STATUSES = [

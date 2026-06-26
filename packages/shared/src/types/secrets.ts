@@ -31,12 +31,22 @@ export interface EnvSecretRefBinding {
   type: "secret_ref";
   secretId: string;
   version?: SecretVersionSelector;
+  // Operator-fixed positional arguments passed to a dynamic (host-command)
+  // generator at injection time. Never agent-supplied. Ignored for
+  // non-dynamic secrets.
+  staticArgv?: string[];
 }
 
 // Backward-compatible: legacy plaintext string values are still accepted.
 export type EnvBinding = string | EnvPlainBinding | EnvSecretRefBinding;
 
 export type AgentEnvConfig = Record<string, EnvBinding>;
+
+export interface DynamicSecretCommandConfig {
+  provider: "host-command";
+  command: string;
+  ttlSeconds: number;
+}
 
 export interface CompanySecret {
   id: string;
@@ -47,6 +57,7 @@ export interface CompanySecret {
   status: SecretStatus;
   managedMode: SecretManagedMode;
   externalRef: string | null;
+  dynamicCommand: DynamicSecretCommandConfig | null;
   providerConfigId: string | null;
   providerMetadata: Record<string, unknown> | null;
   latestVersion: number;
@@ -197,6 +208,7 @@ export interface CompanySecretBinding {
   versionSelector: SecretVersionSelector;
   required: boolean;
   label: string | null;
+  staticArgv: string[];
   createdAt: Date;
   updatedAt: Date;
 }

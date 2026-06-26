@@ -18,6 +18,9 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  ShieldAlert,
+  Clock,
+  TerminalSquare,
   Star,
   Trash2,
   X,
@@ -48,6 +51,7 @@ import {
   type SecretProviderHealthResponse,
   type UpdateSecretProviderConfigInput,
 } from "../api/secrets";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
@@ -77,7 +81,72 @@ import { cn } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { ImportFromVaultDialog } from "./secrets/ImportFromVaultDialog";
 
-type CreateMode = "managed" | "external";
+type CreateMode = "managed" | "external" | "dynamic";
+
+const DEFAULT_DYNAMIC_TTL_SECONDS = 3600;
+
+/**
+ * Trust-boundary posture for runtime-generated secrets (PRD §5). Driven by the
+ * Stage 5 capability flag — soft until a generator runs inside a hard-isolation
+ * (sandboxed) environment. We never render a hard-boundary claim when the flag
+ * resolves to soft.
+ */
+function RuntimePostureLabel({ posture }: { posture: "hard" | "soft" }) {
+  const isHard = posture === "hard";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium",
+        isHard
+          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+          : "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+      )}
+    >
+      {isHard ? <ShieldCheck className="h-3 w-3" /> : <ShieldAlert className="h-3 w-3" />}
+      {isHard ? "Hard boundary (sandboxed)" : "Soft boundary (same-UID / local-trusted)"}
+    </span>
+  );
+}
+
+/**
+ * PRD §5 explainer for runtime-generated secrets: (a) the value is produced at
+ * runtime under Paperclip's privileged control, (b) which trust posture applies,
+ * and (c) the operator owns generator trustworthiness.
+ */
+function RuntimePostureExplainer({ posture }: { posture: "hard" | "soft" }) {
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-muted/30 p-2.5 text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-medium text-foreground">Runtime trust posture</span>
+        <RuntimePostureLabel posture={posture} />
+      </div>
+      <ul className="list-disc space-y-1 pl-4">
+        <li>
+          The value is <span className="text-foreground">minted fresh at injection</span> by your
+          generator command, run under Paperclip's privileged control. It is never stored and never
+          re-displayed.
+        </li>
+        <li>
+          {posture === "hard" ? (
+            <>
+              This generator resolves inside a <span className="text-foreground">hard, sandboxed</span>{" "}
+              boundary isolating it from the host.
+            </>
+          ) : (
+            <>
+              This generator resolves under a <span className="text-foreground">soft boundary</span> —
+              it runs at the same UID as Paperclip on a local-trusted host, not in a sandbox.
+            </>
+          )}
+        </li>
+        <li>
+          You own the generator's trustworthiness: only attach commands you trust to produce the
+          intended value. Agents can never invoke it out-of-band or supply its arguments.
+        </li>
+      </ul>
+    </div>
+  );
+}
 type SecretsTab = "secrets" | "vaults";
 
 type ProviderVaultForm = {
@@ -247,13 +316,19 @@ function normalizeSecretKeyForPreview(input: string) {
 
 
 function modeLabel(managedMode: SecretManagedMode) {
-  return managedMode === "paperclip_managed" ? "Paperclip-managed" : "Linked external";
+  if (managedMode === "paperclip_managed") return "Paperclip-managed";
+  if (managedMode === "dynamic_command") return "Generated at runtime";
+  return "Linked external";
 }
 
 function modeDescription(managedMode: SecretManagedMode) {
-  return managedMode === "paperclip_managed"
-    ? "Paperclip owns create and rotation writes for this provider secret."
-    : "Paperclip resolves this provider reference but does not rotate the provider value.";
+  if (managedMode === "paperclip_managed") {
+    return "Paperclip owns create and rotation writes for this provider secret.";
+  }
+  if (managedMode === "dynamic_command") {
+    return "Paperclip mints a fresh value at injection time by running the generator command. Nothing is stored.";
+  }
+  return "Paperclip resolves this provider reference but does not rotate the provider value.";
 }
 
 function healthEntryForProvider(
@@ -415,6 +490,8 @@ export function Secrets() {
     externalRef: "",
     provider: "local_encrypted" as SecretProvider,
     providerConfigId: "",
+    command: "",
+    ttlSeconds: String(DEFAULT_DYNAMIC_TTL_SECONDS),
   });
   const [createError, setCreateError] = useState<string | null>(null);
   const [rotateOpen, setRotateOpen] = useState(false);
@@ -471,6 +548,14 @@ export function Secrets() {
     enabled: Boolean(selectedCompanyId),
     retry: false,
   });
+
+  const experimentalQuery = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  const dynamicSecretsEnabled = experimentalQuery.data?.enableDynamicSecrets === true;
 
   const secrets = secretsQuery.data ?? [];
   const providers = providersQuery.data ?? [];
@@ -567,8 +652,26 @@ export function Secrets() {
     }
   }
 
+  const dynamicTtlSeconds = Number.parseInt(createForm.ttlSeconds, 10);
+  const dynamicTtlValid = Number.isFinite(dynamicTtlSeconds) && dynamicTtlSeconds >= 1 && dynamicTtlSeconds <= 86_400;
+
   const createMutation = useMutation({
     mutationFn: () => {
+      if (createMode === "dynamic") {
+        const input: CreateSecretInput = {
+          name: createForm.name.trim(),
+          provider: "host_command",
+          managedMode: "dynamic_command",
+          description: createForm.description.trim() || null,
+          dynamicCommand: {
+            provider: "host-command",
+            command: createForm.command.trim(),
+            ttlSeconds: dynamicTtlSeconds,
+          },
+        };
+        if (createForm.key.trim()) input.key = createForm.key.trim();
+        return secretsApi.create(selectedCompanyId!, input);
+      }
       const input: CreateSecretInput = {
         name: createForm.name.trim(),
         provider: createForm.provider,
@@ -595,6 +698,8 @@ export function Secrets() {
         externalRef: "",
         provider: createForm.provider,
         providerConfigId: getDefaultProviderConfigId(providerConfigs, createForm.provider),
+        command: "",
+        ttlSeconds: String(DEFAULT_DYNAMIC_TTL_SECONDS),
       });
       setCreateError(null);
       setSelectedSecretId(created.id);
@@ -789,7 +894,7 @@ export function Secrets() {
   });
 
   useEffect(() => {
-    if (!createOpen || providers.length === 0) return;
+    if (!createOpen || createMode === "dynamic" || providers.length === 0) return;
     const currentBlockReason = getCreateProviderBlockReason(
       providers.find((provider) => provider.id === createForm.provider) ?? null,
       createMode,
@@ -810,14 +915,14 @@ export function Secrets() {
   }, [createForm.provider, createMode, createOpen, providerConfigs, providerHealthQuery.data, providers]);
 
   useEffect(() => {
-    if (!createOpen) return;
+    if (!createOpen || createMode === "dynamic") return;
     const current = providerConfigs.find((config) => config.id === createForm.providerConfigId);
     if (current?.provider === createForm.provider) return;
     setCreateForm((form) => ({
       ...form,
       providerConfigId: getDefaultProviderConfigId(providerConfigs, form.provider),
     }));
-  }, [createForm.provider, createForm.providerConfigId, createOpen, providerConfigs]);
+  }, [createForm.provider, createForm.providerConfigId, createMode, createOpen, providerConfigs]);
 
   useEffect(() => {
     if (!rotateOpen || !selectedSecret) return;
@@ -1068,23 +1173,25 @@ export function Secrets() {
                 </SheetDescription>
               </SheetHeader>
               <div className="flex flex-wrap gap-2 px-4 pb-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setRotateOpen(true);
-                    setRotateValue("");
-                    setRotateExternalRef("");
-                    setRotateProviderConfigId(
-                      selectedSecret.providerConfigId ??
-                        getDefaultProviderConfigId(providerConfigs, selectedSecret.provider),
-                    );
-                    setRotateError(null);
-                  }}
-                >
-                  <RefreshCw className="h-3.5 w-3.5 mr-1" />
-                  {selectedSecret.managedMode === "external_reference" ? "Update reference" : "Update value"}
-                </Button>
+                {selectedSecret.managedMode !== "dynamic_command" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setRotateOpen(true);
+                      setRotateValue("");
+                      setRotateExternalRef("");
+                      setRotateProviderConfigId(
+                        selectedSecret.providerConfigId ??
+                          getDefaultProviderConfigId(providerConfigs, selectedSecret.provider),
+                      );
+                      setRotateError(null);
+                    }}
+                  >
+                    <RefreshCw className="h-3.5 w-3.5 mr-1" />
+                    {selectedSecret.managedMode === "external_reference" ? "Update reference" : "Update value"}
+                  </Button>
+                )}
                 {selectedSecret.status === "active" ? (
                   <Button
                     size="sm"
@@ -1201,19 +1308,44 @@ export function Secrets() {
         />
       )}
 
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+      <Dialog
+        open={createOpen}
+        onOpenChange={(open) => {
+          setCreateOpen(open);
+        }}
+      >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Create secret</DialogTitle>
             <DialogDescription>
-              Choose whether Paperclip should own future provider writes, or only resolve an existing
-              provider reference at runtime.
+              {createMode === "dynamic"
+                ? "Define a generator command Paperclip runs at injection time to mint a fresh value. The value is never stored."
+                : "Choose whether Paperclip should own future provider writes, or only resolve an existing provider reference at runtime."}
             </DialogDescription>
           </DialogHeader>
-          <Tabs value={createMode} onValueChange={(value) => setCreateMode(value as CreateMode)}>
-            <TabsList className="w-full grid grid-cols-2">
-              <TabsTrigger value="managed">Managed value</TabsTrigger>
-              <TabsTrigger value="external">External reference</TabsTrigger>
+          <Tabs
+            value={createMode}
+            onValueChange={(value) => {
+              setCreateMode(value as CreateMode);
+            }}
+          >
+            <TabsList
+              className={cn("w-full grid", dynamicSecretsEnabled ? "grid-cols-3" : "grid-cols-2")}
+            >
+              <TabsTrigger value="managed" className="truncate">
+                <span className="sm:hidden">Managed</span>
+                <span className="hidden sm:inline">Managed value</span>
+              </TabsTrigger>
+              <TabsTrigger value="external" className="truncate">
+                <span className="sm:hidden">External</span>
+                <span className="hidden sm:inline">External reference</span>
+              </TabsTrigger>
+              {dynamicSecretsEnabled ? (
+                <TabsTrigger value="dynamic" className="truncate">
+                  <span className="sm:hidden">At runtime</span>
+                  <span className="hidden sm:inline">Generate at runtime</span>
+                </TabsTrigger>
+              ) : null}
             </TabsList>
           </Tabs>
           <div className="space-y-3">
@@ -1244,6 +1376,8 @@ export function Secrets() {
                 />
               </div>
             </div>
+            {createMode !== "dynamic" ? (
+            <>
             <div>
               <label className="text-xs font-medium" htmlFor="new-secret-provider">Provider</label>
               <select
@@ -1317,6 +1451,8 @@ export function Secrets() {
                 </p>
               )}
             </div>
+            </>
+            ) : null}
             {createMode === "managed" ? (
               <>
                 <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 p-2 text-[11px] text-emerald-700 dark:text-emerald-300">
@@ -1345,7 +1481,7 @@ export function Secrets() {
                   />
                 </div>
               </>
-            ) : (
+            ) : createMode === "external" ? (
               <div>
                 <label className="text-xs font-medium" htmlFor="new-secret-ref">External reference</label>
                 <Input
@@ -1362,6 +1498,68 @@ export function Secrets() {
                   then update this reference only if the path, ARN, or version changes.
                 </p>
               </div>
+            ) : (
+              <>
+                <div>
+                  <label className="text-xs font-medium" htmlFor="new-secret-command">
+                    Generator command
+                  </label>
+                  <div className="relative">
+                    <TerminalSquare className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/70" />
+                    <Input
+                      id="new-secret-command"
+                      value={createForm.command}
+                      onChange={(event) => {
+                        const command = event.target.value;
+                        setCreateForm((current) => ({ ...current, command }));
+                      }}
+                      placeholder="/usr/local/bin/mint-github-token"
+                      className="pl-7 font-mono text-xs"
+                    />
+                  </div>
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Absolute path or command on the Paperclip host. Run with no shell. Operator-fixed
+                    arguments are set per binding when you attach this secret.
+                  </p>
+                </div>
+                <div className="w-40">
+                  <label className="text-xs font-medium" htmlFor="new-secret-ttl">
+                    Cache TTL (seconds)
+                  </label>
+                  <div className="relative">
+                    <Clock className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/70" />
+                    <Input
+                      id="new-secret-ttl"
+                      type="number"
+                      min={1}
+                      max={86_400}
+                      value={createForm.ttlSeconds}
+                      onChange={(event) =>
+                        setCreateForm((current) => ({ ...current, ttlSeconds: event.target.value }))
+                      }
+                      className="pl-7 font-mono text-xs"
+                    />
+                  </div>
+                  {!dynamicTtlValid ? (
+                    <p className="mt-1 flex items-center gap-1 text-[11px] text-destructive">
+                      <AlertCircle className="h-3 w-3" />1–86400 seconds
+                    </p>
+                  ) : null}
+                </div>
+                <RuntimePostureExplainer posture="soft" />
+                <p className="text-[11px] text-muted-foreground">
+                  Saved generators are tested from an existing secret binding so Paperclip can reuse
+                  the persisted command and operator-fixed arguments.
+                </p>
+                <div className="flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-300">
+                  <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    Fail-closed: if the generator errors, times out, or returns nothing at injection
+                    time, the run fails and no value is injected — agents never receive a stale or
+                    empty secret.
+                  </span>
+                </div>
+              </>
             )}
             <div>
               <label className="text-xs font-medium" htmlFor="new-secret-description">
@@ -1389,13 +1587,19 @@ export function Secrets() {
               }}
               disabled={
                 createMutation.isPending ||
-                Boolean(createProviderBlockReason) ||
                 !createForm.name.trim() ||
-                (createMode === "managed" ? !createForm.value : !createForm.externalRef.trim())
+                (createMode === "dynamic"
+                  ? !createForm.command.trim() || !dynamicTtlValid
+                  : Boolean(createProviderBlockReason) ||
+                    (createMode === "managed" ? !createForm.value : !createForm.externalRef.trim()))
               }
             >
               {createMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
-              {createMode === "managed" ? "Create secret" : "Link reference"}
+              {createMode === "managed"
+                ? "Create secret"
+                : createMode === "external"
+                  ? "Link reference"
+                  : "Create generator"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2470,6 +2674,22 @@ function SecretDetailsTab({
             <ExternalLink className="h-3 w-3" /> {secret.externalRef}
           </dd>
         </div>
+      ) : null}
+      {secret.managedMode === "dynamic_command" && secret.dynamicCommand ? (
+        <>
+          <div className="col-span-2">
+            <dt className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
+              Generator command
+            </dt>
+            <dd className="font-mono text-xs break-all flex items-center gap-1">
+              <TerminalSquare className="h-3 w-3 shrink-0" /> {secret.dynamicCommand.command}
+            </dd>
+          </div>
+          <DetailRow label="Cache TTL">{secret.dynamicCommand.ttlSeconds}s</DetailRow>
+          <div className="col-span-2">
+            <RuntimePostureExplainer posture="soft" />
+          </div>
+        </>
       ) : null}
       <div className="col-span-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-300">
         {modeDescription(secret.managedMode)} Paperclip never re-displays stored values.
