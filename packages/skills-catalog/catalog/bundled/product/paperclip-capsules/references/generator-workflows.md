@@ -6,9 +6,9 @@ Use this reference when the request is to generate Paperclip capsule graphics, c
 
 1. Brand authority: app, website brand guide, feature-video references, and hero-bank spec.
 2. Deterministic identicon/profile-pill prototype:
-   - `paperclip-content/design/PAP-11825/paperclip-capsule-identicon-prototyper/README.md`
-   - `src/identicon.ts`
-   - `src/App.tsx`
+   - `identicon-prototyper.md`
+   - Seeded renderer contract
+   - UI control and artifact record contract
 3. Website embedded generator:
    - `paperclip-website/public/brand/generator.js`
    - `paperclip-website/src/components/brand/sections/08-imagery.html`
@@ -21,7 +21,7 @@ The mirrored contract below was source-mined from the external prototype at comm
 | Need | Preferred workflow |
 | --- | --- |
 | Canonical hero brand image | Hero capsule bank reference |
-| One agent's profile mark | Seeded identicon/profile-pill prototype |
+| One agent's profile mark | Seeded identicon/profile-pill prototype; read `identicon-prototyper.md` |
 | Repeatable marketing motif | External graphic-generator with explicit seed |
 | Quick public-doc example | Website embedded generator |
 | Product UI state | Existing `AgentCapsule` and status helpers |
@@ -88,40 +88,7 @@ Palette caution:
 
 ## Deterministic Identicon / Profile Pill
 
-Use this when generating a reproducible capsule identity for one agent.
-
-Determinism key:
-
-```txt
-seed + variant + density + theme
-```
-
-Variant families:
-
-- Gradient: `Smooth`, `Soft Sheen`, `Mesh`, `Aurora`
-- Dither: `Floyd-Steinberg`, `Atkinson`, `Jarvis-Judice-Ninke`, `Bayer 4x4`, `Bayer 8x8`, `Blue Noise`
-
-Color spaces and themes:
-
-- Color spaces: `hsl`, `oklch`
-- Themes: `charcoal`, `paper`, `ink`
-- Gradient angle can be seeded or manually overridden.
-
-Export/share affordances:
-
-- SVG
-- PNG
-- data URI
-- React snippet
-- standalone card view
-- URL hash restore
-- clipboard sharing
-
-Smoke checks to perform when using the prototype:
-
-- Same seed/config produces the same output.
-- Changing the seed visibly changes the output.
-- SVG or PNG export is non-empty and inspectable.
+Use `identicon-prototyper.md` when generating a reproducible capsule identity for one agent. That reference carries the detailed variant ids, HSL/OKLCH color schemes, dither algorithms, density/tone behavior, motion, share/export controls, and recommended combinations from the portable identicon prototype contract.
 
 ## Artifact Record Template
 
@@ -136,7 +103,9 @@ Capsule artifact
 - Seed:
 - Template / variant:
 - Palette / theme:
+- Color space / color scheme:
 - Density / count / dimensions:
+- Motion / gradient angle:
 - Output: SVG | PNG | HTML | MP4 | WebM
 - Divergence from canonical Paperclip rendering:
 ```
