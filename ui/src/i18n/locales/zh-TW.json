@@ -214,7 +214,8 @@
       "goals": "選擇一家公司以檢視目標。",
       "activity": "選擇一家公司以檢視活動。",
       "projects": "選擇一家公司以檢視專案。",
-      "routines": "選擇一家公司以檢視排程。"
+      "routines": "選擇一家公司以檢視排程。",
+      "inbox": "選擇一家公司以檢視收件匣。"
     },
     "sort": {
       "name": "名稱",
@@ -413,6 +414,31 @@
     },
     "status": {
       "paused": "已暫停"
+    }
+  },
+  "inbox": {
+    "errors": {
+      "approve": "審批失敗",
+      "approveJoin": "審批加入請求失敗",
+      "archive": "封存任務失敗",
+      "reject": "拒絕失敗",
+      "rejectJoin": "拒絕加入請求失敗",
+      "undoArchive": "撤銷收件匣封存失敗"
+    },
+    "labels": {
+      "dismiss": "忽略",
+      "dismissFromInbox": "從收件匣忽略",
+      "markAsRead": "標記為已讀",
+      "blocked": "已阻塞",
+      "inbox": "收件匣",
+      "mine": "我的",
+      "recent": "最近",
+      "unread": "未讀"
+    },
+    "placeholders": {
+      "approvalStatus": "審批狀態",
+      "category": "類別",
+      "search": "搜尋收件匣……"
     }
   }
 }

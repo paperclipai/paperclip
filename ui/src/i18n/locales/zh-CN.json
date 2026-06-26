@@ -214,7 +214,8 @@
       "goals": "选择一家公司以查看目标。",
       "activity": "选择一家公司以查看活动。",
       "projects": "选择一家公司以查看项目。",
-      "routines": "选择一家公司以查看例程。"
+      "routines": "选择一家公司以查看例程。",
+      "inbox": "选择一家公司以查看收件箱。"
     },
     "sort": {
       "name": "名称",
@@ -413,6 +414,31 @@
     },
     "status": {
       "paused": "已暂停"
+    }
+  },
+  "inbox": {
+    "errors": {
+      "approve": "审批失败",
+      "approveJoin": "审批加入请求失败",
+      "archive": "归档任务失败",
+      "reject": "拒绝失败",
+      "rejectJoin": "拒绝加入请求失败",
+      "undoArchive": "撤销收件箱归档失败"
+    },
+    "labels": {
+      "dismiss": "忽略",
+      "dismissFromInbox": "从收件箱忽略",
+      "markAsRead": "标记为已读",
+      "blocked": "已阻塞",
+      "inbox": "收件箱",
+      "mine": "我的",
+      "recent": "最近",
+      "unread": "未读"
+    },
+    "placeholders": {
+      "approvalStatus": "审批状态",
+      "category": "类别",
+      "search": "搜索收件箱……"
     }
   }
 }

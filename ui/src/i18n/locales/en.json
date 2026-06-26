@@ -188,7 +188,8 @@
       "goals": "Select a company to view goals.",
       "activity": "Select a company to view activity.",
       "projects": "Select a company to view projects.",
-      "routines": "Select a company to view routines."
+      "routines": "Select a company to view routines.",
+      "inbox": "Select a company to view inbox."
     },
     "sort": {
       "name": "Name",
@@ -413,6 +414,31 @@
     },
     "status": {
       "paused": "Paused"
+    }
+  },
+  "inbox": {
+    "errors": {
+      "approve": "Failed to approve",
+      "approveJoin": "Failed to approve join request",
+      "archive": "Failed to archive task",
+      "reject": "Failed to reject",
+      "rejectJoin": "Failed to reject join request",
+      "undoArchive": "Failed to undo inbox archive"
+    },
+    "labels": {
+      "dismiss": "Dismiss",
+      "dismissFromInbox": "Dismiss from inbox",
+      "markAsRead": "Mark as read",
+      "blocked": "Blocked",
+      "inbox": "Inbox",
+      "mine": "Mine",
+      "recent": "Recent",
+      "unread": "Unread"
+    },
+    "placeholders": {
+      "approvalStatus": "Approval status",
+      "category": "Category",
+      "search": "Search inbox…"
     }
   }
 }
