@@ -1120,6 +1120,55 @@ describeEmbeddedPostgres("pipelineService", () => {
     expect(rootEvents.map((event) => event.type)).toEqual(["ingested", "claimed", "children_terminal", "transitioned"]);
   });
 
+  it("keeps child completion committed when parent children-terminal auto-advance is gated", async () => {
+    const company = await seedCompany();
+    const pipeline = await svc.createPipeline({
+      companyId: company.id,
+      key: "auto-children-blocked",
+      name: "Auto children blocked",
+      actor: userActor,
+      stages: [
+        { key: "intake", name: "Intake", kind: "open", config: { autoAdvanceOnChildrenTerminal: "done" } },
+        { key: "done", name: "Done", kind: "done" },
+        { key: "cancelled", name: "Cancelled", kind: "cancelled" },
+      ],
+    });
+    const root = await svc.ingestCase({ companyId: company.id, pipelineId: pipeline.id, caseKey: "blocked-root", title: "Root", actor: userActor });
+    const child = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "blocked-child",
+      title: "Child",
+      parentCaseId: root.case.id,
+      actor: userActor,
+    });
+    const blocker = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "open-blocker",
+      title: "Open blocker",
+      actor: userActor,
+    });
+    await svc.replaceBlockers({
+      companyId: company.id,
+      caseId: root.case.id,
+      blockedByCaseIds: [blocker.case.id],
+      actor: userActor,
+    });
+
+    await expect(
+      svc.transitionCase({ companyId: company.id, caseId: child.case.id, toStageKey: "done", expectedVersion: 1, actor: userActor }),
+    ).resolves.toMatchObject({ case: { terminalKind: "done" } });
+
+    const [freshRoot] = await db.select().from(pipelineCases).where(eq(pipelineCases.id, root.case.id));
+    const [freshChild] = await db.select().from(pipelineCases).where(eq(pipelineCases.id, child.case.id));
+    expect(freshRoot!.terminalKind).toBeNull();
+    expect(freshRoot!.terminalChildCount).toBe(1);
+    expect(freshChild!.terminalKind).toBe("done");
+    const rootEvents = await svc.listCaseEvents(company.id, root.case.id);
+    expect(rootEvents.map((event) => event.type)).toEqual(["ingested", "blockers_set", "children_terminal"]);
+  });
+
   it("records suggestion supersede, accept, and dismiss lifecycles", async () => {
     const { company, pipeline } = await seedPipeline();
     const created = await svc.ingestCase({

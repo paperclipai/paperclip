@@ -3394,19 +3394,25 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       if (!toStageKey || isTerminalKind(ancestor.case.terminalKind)) {
         continue;
       }
-      const toStage = await getStageByKeyOrThrow(tx, ancestor.case.pipelineId, toStageKey);
-      assertStageEnabled(toStage, "auto_advance");
-      if (toStage.id === ancestor.stage.id) continue;
-      await transitionCaseInTransaction(tx, {
-        companyId,
-        caseId: ancestor.case.id,
-        toStageKey,
-        expectedVersion: ancestor.case.version,
-        actor: { type: "system" },
-        transitionClass: "auto",
-        reason: "children_terminal",
-        automationLedgers,
-      });
+      try {
+        const toStage = await getStageByKeyOrThrow(tx, ancestor.case.pipelineId, toStageKey);
+        assertStageEnabled(toStage, "auto_advance");
+        if (toStage.id === ancestor.stage.id) continue;
+        await transitionCaseInTransaction(tx, {
+          companyId,
+          caseId: ancestor.case.id,
+          toStageKey,
+          expectedVersion: ancestor.case.version,
+          actor: { type: "system" },
+          transitionClass: "auto",
+          reason: "children_terminal",
+          automationLedgers,
+        });
+      } catch (error) {
+        // Best-effort: an unsatisfied gate (drift, approval, blocker) on the
+        // parent advance must not roll back the child transition that triggered it.
+        if (!(error instanceof HttpError)) throw error;
+      }
     }
   }
 
