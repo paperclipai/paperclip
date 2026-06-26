@@ -3305,6 +3305,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                   userLabelMap={userLabelMap}
                   userProfileMap={userProfileMap}
                   draftKey={`paperclip:pipeline-item-conversation-draft:${activeConversationIssue.id}`}
+                  autoScrollToLatestOnInitialLoad={false}
                   enableReassign
                   reassignOptions={commentReassignOptions}
                   currentAssigneeValue={actualAssigneeValue}
