@@ -4,7 +4,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import type { DeploymentMode } from "@paperclipai/shared";
+import { isUuidLike, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
@@ -12,6 +12,36 @@ import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compa
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+/**
+ * Coerce an `X-Paperclip-Run-Id` header (or the JWT-embedded `run_id` claim)
+ * to a value safe to write into Postgres UUID columns. Three columns are
+ * affected today: `activity_log.run_id`, `issue_comments.created_by_run_id`,
+ * and `heartbeat_runs.id` (detached-run cleanup spam). Non-UUID strings are
+ * discarded with a warn-level log so callers can be tracked down and fixed,
+ * while the request itself is allowed to proceed unblocked.
+ *
+ * Exported only so unit tests can exercise both the header source and the
+ * JWT-claim source without spinning up the full middleware.
+ */
+export function coerceRunId(
+  value: string | null | undefined,
+  source: "header" | "jwt",
+  req: Pick<Request, "method" | "originalUrl">,
+): string | undefined {
+  if (value == null || value === "") return undefined;
+  if (isUuidLike(value)) return value;
+  logger.warn(
+    {
+      runIdSource: source,
+      runIdSample: value.length > 64 ? `${value.slice(0, 64)}…` : value,
+      method: req.method,
+      url: req.originalUrl,
+    },
+    "Discarded non-UUID run id; downstream activity log + comment writes will record null",
+  );
+  return undefined;
 }
 
 interface ActorMiddlewareOptions {
@@ -34,7 +64,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const runIdHeader = coerceRunId(req.header("x-paperclip-run-id"), "header", req);
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
@@ -164,7 +194,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         agentId: claims.sub,
         companyId: claims.company_id,
         keyId: undefined,
-        runId: runIdHeader || claims.run_id || undefined,
+        runId: runIdHeader || coerceRunId(claims.run_id, "jwt", req),
         source: "agent_jwt",
       };
       next();
