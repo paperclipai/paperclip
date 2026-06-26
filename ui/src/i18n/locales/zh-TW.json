@@ -605,5 +605,53 @@
       "storedOnce": "仅存储一次,永不再次顯示",
       "whatIsThisFor": "此密鑰用于什么?(不含值)"
     }
+  },
+  "teamCatalog": {
+    "toasts": {
+      "teamInstalled": "團隊已安裝"
+    },
+    "errors": {
+      "loadPreview": "載入安裝预览失敗。",
+      "installFailed": "安裝失敗。"
+    },
+    "description": {
+      "resolveSources": "在安裝时解析 github/url 技能和團隊來源。"
+    },
+    "actions": {
+      "resetFilters": "重設篩選"
+    },
+    "labelsJsx": {
+      "agents": "智慧代理",
+      "agentsImported": "智慧代理已导入",
+      "allowExternal": "允許外部來源",
+      "allowLocalPath": "允許本機路徑來源",
+      "allowUnpinned": "允許未固定的可选來源",
+      "projects": "專案",
+      "projectsImported": "專案已导入",
+      "requiredSkills": "所需技能",
+      "routines": "排程",
+      "skillsResolved": "技能已解析",
+      "starterTasks": "初始任务",
+      "updateAvailable": "有可用更新"
+    },
+    "labelsObj": {
+      "assets": "資產",
+      "blocked": "已阻塞",
+      "bundledInPackage": "隨包捆綁",
+      "compatible": "相容",
+      "externalSources": "外部來源",
+      "invalid": "無效",
+      "markdownOnly": "仅 Markdown",
+      "orgChart": "組織架構",
+      "scripts": "指令碼",
+      "teams": "團隊",
+      "unknownCompat": "未知相容性",
+      "willImportFromSource": "将从來源导入",
+      "willInstallFromCatalog": "将从目錄安裝"
+    },
+    "placeholders": {
+      "searchAgents": "搜尋智慧代理……",
+      "searchTeams": "搜尋團隊"
+    }
   }
 }

@@ -605,5 +605,53 @@
       "storedOnce": "Stored once, never re-displayed",
       "whatIsThisFor": "What is this secret used for? (no values)"
     }
+  },
+  "teamCatalog": {
+    "toasts": {
+      "teamInstalled": "Team installed"
+    },
+    "errors": {
+      "loadPreview": "Failed to load install preview.",
+      "installFailed": "Install failed."
+    },
+    "description": {
+      "resolveSources": "Resolve github/url skill and team sources at install time."
+    },
+    "actions": {
+      "resetFilters": "Reset filters"
+    },
+    "labelsJsx": {
+      "agents": "Agents",
+      "agentsImported": "Agents imported",
+      "allowExternal": "Allow external sources",
+      "allowLocalPath": "Allow local-path sources",
+      "allowUnpinned": "Allow unpinned optional sources",
+      "projects": "Projects",
+      "projectsImported": "Projects imported",
+      "requiredSkills": "Required skills",
+      "routines": "Routines",
+      "skillsResolved": "Skills resolved",
+      "starterTasks": "Starter tasks",
+      "updateAvailable": "Update available"
+    },
+    "labelsObj": {
+      "assets": "Assets",
+      "blocked": "Blocked",
+      "bundledInPackage": "Bundled in package",
+      "compatible": "Compatible",
+      "externalSources": "External sources",
+      "invalid": "Invalid",
+      "markdownOnly": "Markdown only",
+      "orgChart": "Org Chart",
+      "scripts": "Scripts",
+      "teams": "Teams",
+      "unknownCompat": "Unknown compat",
+      "willImportFromSource": "Will import from source",
+      "willInstallFromCatalog": "Will install from catalog"
+    },
+    "placeholders": {
+      "searchAgents": "Search agents…",
+      "searchTeams": "Search teams"
+    }
   }
 }

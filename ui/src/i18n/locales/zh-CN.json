@@ -605,5 +605,53 @@
       "storedOnce": "仅存储一次,永不再次显示",
       "whatIsThisFor": "此密钥用于什么?(不含值)"
     }
+  },
+  "teamCatalog": {
+    "toasts": {
+      "teamInstalled": "团队已安装"
+    },
+    "errors": {
+      "loadPreview": "加载安装预览失败。",
+      "installFailed": "安装失败。"
+    },
+    "description": {
+      "resolveSources": "在安装时解析 github/url 技能和团队来源。"
+    },
+    "actions": {
+      "resetFilters": "重置筛选"
+    },
+    "labelsJsx": {
+      "agents": "智能体",
+      "agentsImported": "智能体已导入",
+      "allowExternal": "允许外部来源",
+      "allowLocalPath": "允许本地路径来源",
+      "allowUnpinned": "允许未固定的可选来源",
+      "projects": "项目",
+      "projectsImported": "项目已导入",
+      "requiredSkills": "所需技能",
+      "routines": "例程",
+      "skillsResolved": "技能已解析",
+      "starterTasks": "初始任务",
+      "updateAvailable": "有可用更新"
+    },
+    "labelsObj": {
+      "assets": "资产",
+      "blocked": "已阻塞",
+      "bundledInPackage": "随包捆绑",
+      "compatible": "兼容",
+      "externalSources": "外部来源",
+      "invalid": "无效",
+      "markdownOnly": "仅 Markdown",
+      "orgChart": "组织架构",
+      "scripts": "脚本",
+      "teams": "团队",
+      "unknownCompat": "未知兼容性",
+      "willImportFromSource": "将从来源导入",
+      "willInstallFromCatalog": "将从目录安装"
+    },
+    "placeholders": {
+      "searchAgents": "搜索智能体……",
+      "searchTeams": "搜索团队"
+    }
   }
 }

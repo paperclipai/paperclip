@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
@@ -212,25 +213,25 @@ const TRUST_META: Record<
   { label: string; tip: string; tone: string; Icon: typeof ShieldCheck }
 > = {
   markdown_only: {
-    label: "Markdown only",
+    label: t("teamCatalog.labelsObj.markdownOnly"),
     tip: "Contains only markdown and references. No executable content.",
     tone: "text-emerald-600 dark:text-emerald-300 border-emerald-500/30",
     Icon: ShieldCheck,
   },
   assets: {
-    label: "Assets",
+    label: t("teamCatalog.labelsObj.assets"),
     tip: "Includes static assets (images, fixtures). No executable content.",
     tone: "text-emerald-600 dark:text-emerald-300 border-emerald-500/30",
     Icon: ShieldCheck,
   },
   scripts_executables: {
-    label: "Scripts",
+    label: t("teamCatalog.labelsObj.scripts"),
     tip: "Includes executable scripts that were security-reviewed before bundling.",
     tone: "text-amber-600 dark:text-amber-300 border-amber-500/30",
     Icon: AlertTriangle,
   },
   external_sources: {
-    label: "External sources",
+    label: t("teamCatalog.labelsObj.externalSources"),
     tip: "References external sources resolved at install time.",
     tone: "text-amber-600 dark:text-amber-300 border-amber-500/30",
     Icon: AlertTriangle,
@@ -262,9 +263,9 @@ const COMPAT_META: Record<
   CatalogTeamCompatibility,
   { label: string; tone: string }
 > = {
-  compatible: { label: "Compatible", tone: "text-emerald-600 dark:text-emerald-300 border-emerald-500/30" },
-  unknown: { label: "Unknown compat", tone: "text-muted-foreground border-border" },
-  invalid: { label: "Invalid", tone: "text-rose-600 dark:text-rose-300 border-rose-500/30" },
+  compatible: { label: t("teamCatalog.labelsObj.compatible"), tone: "text-emerald-600 dark:text-emerald-300 border-emerald-500/30" },
+  unknown: { label: t("teamCatalog.labelsObj.unknownCompat"), tone: "text-muted-foreground border-border" },
+  invalid: { label: t("teamCatalog.labelsObj.invalid"), tone: "text-rose-600 dark:text-rose-300 border-rose-500/30" },
 };
 
 function CompatChip({ compatibility }: { compatibility: CatalogTeamCompatibility }) {
@@ -749,10 +750,10 @@ export function TeamDetailPane({
 
         {/* Summary grid */}
         <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-          <MetricTile label="Agents" value={team.counts.agents} Icon={Users2} />
-          <MetricTile label="Projects" value={team.counts.projects} Icon={FolderKanban} />
-          <MetricTile label="Routines" value={team.counts.routines} Icon={Repeat} />
-          <MetricTile label="Required skills" value={skillCount(team)} Icon={Boxes} />
+          <MetricTile label={t("teamCatalog.labelsJsx.agents")} value={team.counts.agents} Icon={Users2} />
+          <MetricTile label={t("teamCatalog.labelsJsx.projects")} value={team.counts.projects} Icon={FolderKanban} />
+          <MetricTile label={t("teamCatalog.labelsJsx.routines")} value={team.counts.routines} Icon={Repeat} />
+          <MetricTile label={t("teamCatalog.labelsJsx.requiredSkills")} value={skillCount(team)} Icon={Boxes} />
         </div>
 
         {/* Agent hierarchy */}
@@ -984,7 +985,7 @@ export function useInstallTeamCatalogEntry({
       setPreviewError(null);
     },
     onError: (error) => {
-      setPreviewError(error instanceof Error ? error.message : "Failed to load install preview.");
+      setPreviewError(error instanceof Error ? error.message : t("teamCatalog.errors.loadPreview"));
     },
   });
 
@@ -1002,7 +1003,7 @@ export function useInstallTeamCatalogEntry({
     },
     onError: (error) => {
       setPhase("error");
-      setApplyError(error instanceof Error ? error.message : "Install failed.");
+      setApplyError(error instanceof Error ? error.message : t("teamCatalog.errors.installFailed"));
     },
   });
 
@@ -1135,7 +1136,7 @@ function TeamInstallerDialog({
       setPreviewError(null);
     },
     onError: (error) => {
-      setPreviewError(error instanceof Error ? error.message : "Failed to load install preview.");
+      setPreviewError(error instanceof Error ? error.message : t("teamCatalog.errors.loadPreview"));
     },
   });
 
@@ -1152,7 +1153,7 @@ function TeamInstallerDialog({
     },
     onError: (error) => {
       setPhase("error");
-      setApplyError(error instanceof Error ? error.message : "Install failed.");
+      setApplyError(error instanceof Error ? error.message : t("teamCatalog.errors.installFailed"));
     },
   });
 
@@ -1429,7 +1430,7 @@ export function StepTargetManager({
         <div className="space-y-1.5" aria-describedby="target-manager-help">
           <SectionHeader>Target manager</SectionHeader>
           <Command className="rounded-md border border-border">
-            <CommandInput placeholder="Search agents…" />
+            <CommandInput placeholder={t("teamCatalog.placeholders.searchAgents")} />
             <CommandList>
               <CommandEmpty>No agents found.</CommandEmpty>
               <CommandGroup>
@@ -1524,19 +1525,19 @@ export function StepSourcePolicy({
 
       <div className="space-y-2.5 rounded-md border border-border p-3">
         <PolicyToggle
-          label="Allow external sources"
-          description="Resolve github/url skill and team sources at install time."
+          label={t("teamCatalog.labelsJsx.allowExternal")}
+          description={t("teamCatalog.description.resolveSources")}
           checked={allowExternalSources}
           onChange={(v) => onChange("external", v)}
         />
         <PolicyToggle
-          label="Allow unpinned optional sources"
+          label={t("teamCatalog.labelsJsx.allowUnpinned")}
           description="Permit optional sources that are not pinned to a ref or checksum."
           checked={allowUnpinnedOptionalSources}
           onChange={(v) => onChange("unpinned", v)}
         />
         <PolicyToggle
-          label="Allow local-path sources"
+          label={t("teamCatalog.labelsJsx.allowLocalPath")}
           description="Required for local_path / agent_package sources. Development use only."
           checked={allowLocalPathSources}
           onChange={(v) => onChange("localPath", v)}
@@ -1579,10 +1580,10 @@ const SKILL_ACTION_META: Record<
   CatalogTeamSkillPreparation["action"],
   { label: string; tone: string }
 > = {
-  already_in_package: { label: "Bundled in package", tone: "text-emerald-600 dark:text-emerald-300 border-emerald-500/30" },
-  catalog_install_required: { label: "Will install from catalog", tone: "text-blue-600 dark:text-blue-300 border-blue-500/30" },
-  external_import_required: { label: "Will import from source", tone: "text-amber-600 dark:text-amber-300 border-amber-500/30" },
-  blocked: { label: "Blocked", tone: "text-rose-600 dark:text-rose-300 border-rose-500/30" },
+  already_in_package: { label: t("teamCatalog.labelsObj.bundledInPackage"), tone: "text-emerald-600 dark:text-emerald-300 border-emerald-500/30" },
+  catalog_install_required: { label: t("teamCatalog.labelsObj.willInstallFromCatalog"), tone: "text-blue-600 dark:text-blue-300 border-blue-500/30" },
+  external_import_required: { label: t("teamCatalog.labelsObj.willImportFromSource"), tone: "text-amber-600 dark:text-amber-300 border-amber-500/30" },
+  blocked: { label: t("teamCatalog.labelsObj.blocked"), tone: "text-rose-600 dark:text-rose-300 border-rose-500/30" },
 };
 
 export function StepSkillPlan({
@@ -1751,10 +1752,10 @@ export function StepPreview({
       <div className="space-y-2">
         <SectionHeader>Summary</SectionHeader>
         <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-          <SummaryCount label="Agents" value={plan.agentPlans.length} />
-          <SummaryCount label="Projects" value={plan.projectPlans.length} />
-          <SummaryCount label="Starter tasks" value={plan.issuePlans.length} />
-          <SummaryCount label="Required skills" value={result.skillPreparations.length} />
+          <SummaryCount label={t("teamCatalog.labelsJsx.agents")} value={plan.agentPlans.length} />
+          <SummaryCount label={t("teamCatalog.labelsJsx.projects")} value={plan.projectPlans.length} />
+          <SummaryCount label={t("teamCatalog.labelsJsx.starterTasks")} value={plan.issuePlans.length} />
+          <SummaryCount label={t("teamCatalog.labelsJsx.requiredSkills")} value={result.skillPreparations.length} />
         </div>
       </div>
 
@@ -2001,9 +2002,9 @@ export function ApplySuccess({
       </p>
       {result && (
         <ul className="divide-y divide-border/60 rounded-md border border-border px-3">
-          <ResultRow label="Agents imported" count={agentsCreated} />
-          <ResultRow label="Projects imported" count={projectsCreated} />
-          <ResultRow label="Skills resolved" count={skillsResolved} />
+          <ResultRow label={t("teamCatalog.labelsJsx.agentsImported")} count={agentsCreated} />
+          <ResultRow label={t("teamCatalog.labelsJsx.projectsImported")} count={projectsCreated} />
+          <ResultRow label={t("teamCatalog.labelsJsx.skillsResolved")} count={skillsResolved} />
         </ul>
       )}
       {warnings.length > 0 && (
@@ -2061,7 +2062,7 @@ export function TeamRow({
           <Tooltip>
             <TooltipTrigger asChild>
               <span
-                aria-label="Update available"
+                aria-label={t("teamCatalog.labelsJsx.updateAvailable")}
                 className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-300"
               >
                 <ChevronUp className="h-3 w-3" />
@@ -2167,6 +2168,7 @@ function matchesSearch(team: CatalogTeam, q: string): boolean {
 }
 
 export function TeamCatalog() {
+  const { t } = useTranslation();
   const { "*": routePath } = useParams<{ "*": string }>();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -2200,8 +2202,8 @@ export function TeamCatalog() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Org Chart", href: "/org" },
-      { label: "Teams", href: TEAM_CATALOG_ROUTE_ROOT },
+      { label: t("teamCatalog.labelsObj.orgChart"), href: "/org" },
+      { label: t("teamCatalog.labelsObj.teams"), href: TEAM_CATALOG_ROUTE_ROOT },
     ]);
   }, [setBreadcrumbs]);
 
@@ -2312,7 +2314,7 @@ export function TeamCatalog() {
           <Input
             value={q}
             onChange={(e) => setFilterParam("search", e.target.value)}
-            placeholder="Search teams"
+            placeholder={t("teamCatalog.placeholders.searchTeams")}
             className="h-8 w-56 pl-8"
           />
         </div>
@@ -2421,7 +2423,7 @@ export function TeamCatalog() {
             <EmptyState
               icon={Search}
               message="No teams match this filter."
-              action="Reset filters"
+              action={t("teamCatalog.actions.resetFilters")}
               onAction={() => setSearchParams(new URLSearchParams())}
             />
           ) : (
@@ -2522,7 +2524,7 @@ export function TeamCatalog() {
           open={installOpen}
           onClose={() => setInstallOpen(false)}
           onInstalled={() => {
-            pushToast({ tone: "success", title: "Team installed", body: `${selectedTeam.name} was imported.` });
+            pushToast({ tone: "success", title: t("teamCatalog.toasts.teamInstalled"), body: `${selectedTeam.name} was imported.` });
             // Provenance now lives on the new agents — refresh installed/out-of-date state.
             void queryClient.invalidateQueries({
               queryKey: queryKeys.teamCatalog.installed(selectedCompanyId),
