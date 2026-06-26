@@ -53,6 +53,7 @@ export interface HeartbeatRun {
   lastUsefulActionAt: Date | null;
   nextAction: string | null;
   contextSnapshot: Record<string, unknown> | null;
+  authContext: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
   outputSilence?: HeartbeatRunOutputSilence;

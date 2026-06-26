@@ -701,6 +701,13 @@
       "when": 1782518400000,
       "tag": "0099_neo28_identity_auth_framework",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1782604800000,
+      "tag": "0100_neo259_heartbeat_runs_auth_context",
+      "breakpoints": true
     }
   ]
 }
