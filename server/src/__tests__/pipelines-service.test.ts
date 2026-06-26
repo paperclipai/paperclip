@@ -183,6 +183,49 @@ describeEmbeddedPostgres("pipelineService", () => {
     expect(moved!.stageId).toBe(byKey.get("in_progress")!.id);
   });
 
+  it("updates parent terminal counts when deleting a stage moves child cases to done", async () => {
+    const { company, pipeline, byKey } = await seedPipeline();
+    const parent = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      stageKey: "in_progress",
+      caseKey: "delete-stage-parent",
+      title: "Delete stage parent",
+      actor: userActor,
+    });
+    const child = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "delete-stage-child",
+      title: "Delete stage child",
+      parentCaseId: parent.case.id,
+      actor: userActor,
+    });
+
+    await svc.deleteStage({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      stageId: byKey.get("intake")!.id,
+      moveCasesToStageId: byKey.get("done")!.id,
+    });
+
+    const [freshParent] = await db.select().from(pipelineCases).where(eq(pipelineCases.id, parent.case.id));
+    const [freshChild] = await db.select().from(pipelineCases).where(eq(pipelineCases.id, child.case.id));
+    expect(freshParent!.childCount).toBe(1);
+    expect(freshParent!.terminalChildCount).toBe(1);
+    expect(freshChild!.terminalKind).toBe("done");
+
+    await expect(
+      svc.transitionCase({
+        companyId: company.id,
+        caseId: parent.case.id,
+        toStageKey: "done",
+        expectedVersion: parent.case.version,
+        actor: userActor,
+      }),
+    ).resolves.toMatchObject({ case: { terminalKind: "done" } });
+  });
+
   it("implements idempotent single and batch ingest", async () => {
     const { company, pipeline } = await seedPipeline();
 

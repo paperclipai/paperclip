@@ -3771,6 +3771,14 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
             .returning();
           for (const movedCase of movedCases) {
             const previous = casesInStage.find((row) => row.id === movedCase.id);
+            const wasTerminal = isTerminalKind(previous?.terminalKind);
+            const isTerminal = isTerminalKind(movedCase.terminalKind);
+            if (previous?.parentCaseId && wasTerminal !== isTerminal) {
+              await adjustParentCounts(tx, {
+                parentCaseId: previous.parentCaseId,
+                terminalChildDelta: isTerminal ? 1 : -1,
+              });
+            }
             await writeCaseEvent(tx, {
               companyId: input.companyId,
               caseId: movedCase.id,
@@ -3784,6 +3792,12 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
                 version: movedCase.version,
               },
             });
+            if (!wasTerminal && movedCase.terminalKind === "done") {
+              await handleBlockersResolved(tx, input.companyId, movedCase.id);
+            }
+            if (!wasTerminal && isTerminal) {
+              await handleChildrenTerminal(tx, input.companyId, previous?.parentCaseId);
+            }
           }
         }
         await tx.delete(pipelineTransitions).where(or(eq(pipelineTransitions.fromStageId, stage.id), eq(pipelineTransitions.toStageId, stage.id)));
