@@ -65,6 +65,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Validate skills-catalog manifest
+        run: pnpm --filter @paperclipai/skills-catalog run validate
+
   publish_canary:
     if: github.event_name == 'push'
     needs: verify_canary
@@ -159,6 +162,9 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Validate skills-catalog manifest
+        run: pnpm --filter @paperclipai/skills-catalog run validate
 
   preview_stable:
     if: github.event_name == 'workflow_dispatch' && inputs.dry_run
