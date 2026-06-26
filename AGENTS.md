@@ -87,7 +87,21 @@ When you are creating a plan file in the repository itself, new plan documents b
 6. Attach inspectable generated artifacts.
 When your task produces a user-inspectable deliverable file, follow the Paperclip skill's "Generated Artifacts and Work Products" workflow before final disposition. In this repo, prefer the self-contained skill helper at `skills/paperclip/scripts/paperclip-upload-artifact.sh` so the file is available through the Paperclip API, create/update an artifact work product when the file is the deliverable, link the uploaded artifact in the final issue comment, and then set status. Do not rely on local filesystem paths as the only access path. If an important file intentionally remains workspace-only, create/update a work product with `metadata.resourceRef.kind: "workspace_file"` and a workspace-relative path, then name that work product and path in the final comment. Treat browse/search as a fallback for recovering workspace files, not the preferred deliverable path. See `doc/AGENT-ARTIFACTS.md` for details and `.mp4`/`.webm` examples.
 
-## 6. Database Change Workflow
+## 6. Software Delivery Workflow
+
+When an AI agent or Paperclip-managed worker modifies code, use an isolated branch/worktree and a reviewable PR. Do not modify the canonical/shared checkout directly for feature work.
+
+Required sequence for code-bearing work:
+
+1. **Plan the workspace first.** Before implementation starts, the planner/manager names the repo, base branch, task branch, worktree/execution workspace, PR requirement, preview requirement, preview command/port, reviewer, and acceptance evidence.
+2. **Implement only inside the assigned worktree.** The executor must verify `git status --short --branch`, `git rev-parse --show-toplevel`, and `git worktree list` before editing. If they are on the base branch or in the canonical checkout, they must stop and ask for workspace repair.
+3. **Open a PR for review.** Code changes do not count as complete until a branch is pushed and a PR following `.github/PULL_REQUEST_TEMPLATE.md` exists, unless the board explicitly waives the PR.
+4. **Expose a private preview when the result is user-visible.** UI, dashboard, report, and data-review work needs a running preview URL plus verification evidence. Bind servers to loopback and expose only through the approved private preview route.
+5. **QA verifies the PR and preview before merge.** The reviewer checks the diff, tests, preview, screenshots/logs, and data evidence. Do not mark work `done` with only a local path or unverifiable claim.
+
+If the canonical repo is already dirty from prior agent work, create a cleanup/migration task before continuing: inventory the diff, preserve useful changes, move them onto a proper worktree branch, then resume the normal PR/preview flow.
+
+## 7. Database Change Workflow
 
 When changing data model:
 
@@ -109,7 +123,7 @@ Notes:
 - `packages/db/drizzle.config.ts` reads compiled schema from `dist/schema/*.js`
 - `pnpm db:generate` compiles `packages/db` first
 
-## 7. Verification Before Hand-off
+## 8. Verification Before Hand-off
 
 Default local/agent test path:
 
@@ -138,7 +152,7 @@ pnpm build
 
 If anything cannot be run, explicitly report what was not run and why.
 
-## 8. API and Auth Expectations
+## 9. API and Auth Expectations
 
 - Base path: `/api`
 - Board access is treated as full-control operator context
@@ -152,13 +166,13 @@ When adding endpoints:
 - write activity log entries for mutations
 - return consistent HTTP errors (`400/401/403/404/409/422/500`)
 
-## 9. UI Expectations
+## 10. UI Expectations
 
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
 
-## 10. Pull Request Requirements
+## 11. Pull Request Requirements
 
 When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
 
@@ -169,7 +183,7 @@ When creating a pull request (via `gh pr create` or any other method), you **mus
 - **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
 - **Checklist** — all items checked
 
-## 11. Definition of Done
+## 12. Definition of Done
 
 A change is done when all are true:
 
@@ -179,7 +193,7 @@ A change is done when all are true:
 4. Docs updated when behavior or commands change
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
-## 11. Fork-Specific: HenkDz/paperclip
+## 13. Fork-Specific: HenkDz/paperclip
 
 This is a fork of `paperclipai/paperclip` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/paperclip/tree/feat/externalize-hermes-adapter)).
 

@@ -22,6 +22,7 @@ tags:
   - code-review
 requiredSkills:
   - paperclipai/bundled/software-development/github-pr-workflow
+  - paperclipai/bundled/software-development/engineering-delivery-flow
   - paperclipai/bundled/quality/qa-acceptance
   - paperclipai/bundled/paperclip-operations/task-planning
   - paperclipai/bundled/docs/doc-maintenance
@@ -42,6 +43,7 @@ An optional drop-in engineering pod for companies that want a working software-d
 ## Skill rationale
 
 - `github-pr-workflow` keeps logical commits, branch hygiene, and merge discipline consistent across the pod.
+- `engineering-delivery-flow` prevents canonical-checkout edits by requiring a worktree, PR, preview URL, and QA evidence for software work.
 - `qa-acceptance` gives QA a structured pass/fail format coders can act on.
 - `task-planning` lets the CTO turn larger asks into well-scoped child issues.
 - `doc-maintenance` keeps docs aligned with shipped changes — install if the company has any user-facing docs surface.
