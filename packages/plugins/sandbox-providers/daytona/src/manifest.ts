@@ -23,6 +23,7 @@ const manifest: PaperclipPluginManifestV1 = {
       displayName: "Daytona Sandbox",
       description:
         "Provisions Daytona sandboxes with configurable image or snapshot selection, startup timeouts, and lease reuse.",
+      supportsReusableLeases: true,
       configSchema: {
         type: "object",
         properties: {
@@ -83,16 +84,21 @@ const manifest: PaperclipPluginManifestV1 = {
           },
           autoStopInterval: {
             type: "number",
-            description: "Optional Daytona auto-stop interval in minutes. `0` disables auto-stop.",
+            description:
+              "Daytona auto-stop interval in minutes. `0` disables auto-stop. Defaults to 15 when unset.",
+            default: 15,
           },
           autoArchiveInterval: {
             type: "number",
-            description: "Optional Daytona auto-archive interval in minutes. `0` uses Daytona's max interval.",
+            description:
+              "Daytona auto-archive interval in minutes. Stopped sandboxes still count against the storage quota until archived, so this defaults to 60 when unset. `0` uses Daytona's max interval.",
+            default: 60,
           },
           autoDeleteInterval: {
             type: "number",
             description:
-              "Optional Daytona auto-delete interval in minutes. `-1` disables auto-delete and `0` deletes immediately after stop.",
+              "Daytona auto-delete interval in minutes. Backstop reaper for sandboxes nobody resumes; defaults to 10080 (7 days) when unset. `-1` disables auto-delete and `0` deletes immediately after stop.",
+            default: 10080,
           },
           reuseLease: {
             type: "boolean",

@@ -32,7 +32,7 @@ const baseAgent: AgentDetail = {
   spentMonthlyCents: 123,
   pauseReason: null,
   pausedAt: null,
-  permissions: { canCreateAgents: true },
+  permissions: { canCreateAgents: true, canCreateSkills: true },
   lastHeartbeatAt: null,
   metadata: { source: "test" },
   createdAt: new Date("2026-05-10T00:00:00.000Z"),
@@ -72,7 +72,7 @@ describe("duplicate agent payload", () => {
       runtimeConfig: { heartbeat: { enabled: true } },
       defaultEnvironmentId: "environment-1",
       budgetMonthlyCents: 500,
-      permissions: { canCreateAgents: true },
+      permissions: { canCreateAgents: true, canCreateSkills: true },
       metadata: { source: "test" },
       instructionsBundle: {
         entryFile: "AGENTS.md",
