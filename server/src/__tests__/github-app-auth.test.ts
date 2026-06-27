@@ -186,6 +186,33 @@ describe("githubHasReviewerEvidenceForPr", () => {
     });
   });
 
+  it("BLO-12280: credits a post-merge review comment even when it omits the head SHA", async () => {
+    setCreds();
+    stubGithub({
+      reviews: [],
+      comments: [
+        {
+          user: { login: "allyblockcast[bot]" },
+          body: "@ally please review the networking/load-balancing domain wiring",
+        },
+        {
+          user: { login: "allyblockcast[bot]" },
+          body: [
+            "## Review: Networking/Load-balancing Argo Domains",
+            "",
+            "**Status**: LOOKS GOOD 0C/0I/2S (post-merge)",
+            "",
+            "The AppProject blast radius is bounded and manual-sync/no-finalizer safety is preserved.",
+          ].join("\n"),
+        },
+      ],
+    });
+    await expect(githubHasReviewerEvidenceForPr({ repoFullName, prNumber, headSha })).resolves.toEqual({
+      found: true,
+      via: "comment",
+    });
+  });
+
   it("BLO-10878: matches a comment-mode review when the head SHA is wrapped in markdown italics (trailing _)", async () => {
     setCreds();
     // Real paperclip#458 shape: Ally's consolidated review embeds the head SHA in

@@ -193,6 +193,14 @@ function extractCandidateShas(text: string): string[] {
   return out;
 }
 
+function isPostMergeReviewCommentWithoutHeadRef(body: string): boolean {
+  return (
+    /\bpost[-\s]?merge\b/i.test(body) &&
+    /(?:^|\n)\s*#{1,3}\s*(?:ally\s*[—-]\s*)?(?:consolidated\s+)?(?:pr\s+)?review\b/i.test(body) &&
+    /\bstatus\b\*{0,2}\s*[:：]\s*(?:LOOKS\s+GOOD|APPROVED|COMMENTED|CHANGES\s+REQUESTED|NEEDS\s+CHANGES|BLOCKED)\b/i.test(body)
+  );
+}
+
 /**
  * Authoritatively check whether the reviewer bot left a review or comment for
  * THIS PR head on GitHub. Used to rescue a false `pr_review_output_missing`.
@@ -281,8 +289,16 @@ export async function githubHasReviewerEvidenceForPr(input: {
         const batch = (await res.json()) as Array<{ user?: { login?: string }; body?: string }>;
         for (const comment of batch) {
           if (normalizeGithubLogin(comment.user?.login ?? "") !== botLogin) continue;
-          const body = (comment.body ?? "").toLowerCase();
+          const rawBody = comment.body ?? "";
+          const body = rawBody.toLowerCase();
           if (headRefPattern.test(body)) return { found: true, via: "comment" };
+          // BLO-12280: post-merge PR-review runs can only leave an issue comment.
+          // Older Ally comments did not include `_reviewed head: <sha>_`, but did
+          // carry a review heading, status line, and explicit `(post-merge)`
+          // marker. Credit that narrow shape so merged PR reviews do not become
+          // false `pr_review_output_missing` failures, while request comments
+          // like "@ally please review" still do not satisfy the gate.
+          if (isPostMergeReviewCommentWithoutHeadRef(rawBody)) return { found: true, via: "comment" };
           for (const sha of extractCandidateShas(body)) commentCandidates.push(sha);
         }
         if (batch.length < 100) break;
