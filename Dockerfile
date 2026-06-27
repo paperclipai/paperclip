@@ -1,6 +1,4 @@
 # syntax=docker/dockerfile:1.20
-FROM nousresearch/hermes-agent:latest AS hermes_runtime
-
 FROM node:lts-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
@@ -24,6 +22,8 @@ COPY packages/shared/package.json packages/shared/
 COPY packages/db/package.json packages/db/
 COPY packages/adapter-utils/package.json packages/adapter-utils/
 COPY packages/mcp-server/package.json packages/mcp-server/
+COPY packages/skills-catalog/package.json packages/skills-catalog/
+COPY packages/teams-catalog/package.json packages/teams-catalog/
 COPY packages/adapters/acpx-local/package.json packages/adapters/acpx-local/
 COPY packages/adapters/claude-local/package.json packages/adapters/claude-local/
 COPY packages/adapters/codex-local/package.json packages/adapters/codex-local/
@@ -31,6 +31,8 @@ COPY packages/adapters/cursor-cloud/package.json packages/adapters/cursor-cloud/
 COPY packages/adapters/cursor-local/package.json packages/adapters/cursor-local/
 COPY packages/adapters/gemini-local/package.json packages/adapters/gemini-local/
 COPY packages/adapters/grok-local/package.json packages/adapters/grok-local/
+COPY packages/adapters/hermes/package.json packages/adapters/hermes/
+COPY packages/adapters/hermes-gateway/package.json packages/adapters/hermes-gateway/
 COPY packages/adapters/openclaw-gateway/package.json packages/adapters/openclaw-gateway/
 COPY packages/adapters/opencode-local/package.json packages/adapters/opencode-local/
 COPY packages/adapters/pi-local/package.json packages/adapters/pi-local/
@@ -40,7 +42,7 @@ COPY packages/plugins/paperclip-plugin-fake-sandbox/package.json packages/plugin
 COPY packages/plugins/plugin-llm-wiki/package.json packages/plugins/plugin-llm-wiki/
 COPY packages/plugins/plugin-workspace-diff/package.json packages/plugins/plugin-workspace-diff/
 COPY patches/ patches/
-COPY scripts/ scripts/
+COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
 RUN pnpm install --frozen-lockfile
 
@@ -51,43 +53,19 @@ COPY . .
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 RUN pnpm --filter @paperclipai/server build
-RUN pnpm --filter @paperclipai/mcp-server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
-RUN test -f packages/mcp-server/dist/stdio.js || (echo "ERROR: mcp-server build output missing" && exit 1)
 
 FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-
-# Hermes local runtime: keep the official Hermes image as the source of truth,
-# but expose its CLI inside the Paperclip container so adapters can invoke
-# `hermes` exactly like `claude`, `codex`, and `opencode`.
-COPY --from=hermes_runtime /opt/hermes /opt/hermes
-COPY --from=hermes_runtime /usr/local/bin/uv /usr/local/bin/uv
-COPY --from=hermes_runtime /usr/local/bin/uvx /usr/local/bin/uvx
-RUN chmod -R a+rX /opt/hermes \
-  && chmod +x /usr/local/bin/uv /usr/local/bin/uvx \
-  && ln -sf /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes \
-  && ln -sf /opt/hermes/.venv/bin/hermes-agent /usr/local/bin/hermes-agent \
-  && ln -sf /opt/hermes/.venv/bin/hermes-acp /usr/local/bin/hermes-acp \
-  && ln -sf /app/packages/mcp-server/dist/stdio.js /usr/local/bin/paperclip-mcp-server \
-  && chmod +x /usr/local/bin/paperclip-mcp-server \
-  && if [ ! -x /opt/hermes/.venv/bin/python ]; then \
-       echo "ERROR: Hermes venv python not found at /opt/hermes/.venv/bin/python" >&2; \
-       exit 1; \
-     fi \
-  && if ! /opt/hermes/.venv/bin/python -c "import anthropic" >/dev/null 2>&1; then \
-       uv pip install --python /opt/hermes/.venv/bin/python --no-cache-dir "anthropic>=0.39.0"; \
-     fi
-
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
+RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest \
   && apt-get update \
-  && apt-get install -y --no-install-recommends openssh-client jq ffmpeg procps \
+  && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \
-  && mkdir -p /paperclip /paperclip/hermes /paperclip/hermes/agents \
-  && chown -R node:node /paperclip
+  && mkdir -p /paperclip \
+  && chown node:node /paperclip
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
@@ -105,14 +83,8 @@ ENV NODE_ENV=production \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
   OPENCODE_ALLOW_ALL_MODELS=true \
-  PYTHONUNBUFFERED=1 \
-  HERMES_HOME=/paperclip/hermes \
-  HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist \
-  PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright \
-  API_SERVER_ENABLED=false \
-  PATH=/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}
+  GEMINI_SANDBOX=false
 
-VOLUME ["/paperclip"]
 EXPOSE 3100
 
 ENTRYPOINT ["docker-entrypoint.sh"]

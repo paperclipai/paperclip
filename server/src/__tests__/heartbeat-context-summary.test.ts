@@ -55,6 +55,41 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(acceptedConfirmation).not.toContain("Make the plan only.");
   });
 
+  it("adds accepted-plan continuation guidance for standard-work issues when the wake is flagged as a plan continuation", () => {
+    const acceptedConfirmation = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-2",
+        identifier: "PAP-415",
+        title: "Implement the fix",
+        workMode: "standard",
+        description: null,
+      },
+      acceptedPlanContinuation: true,
+    });
+
+    expect(acceptedConfirmation).toContain("Accepted plan directive:");
+    expect(acceptedConfirmation).toContain("Create child issues from the approved plan only");
+    expect(acceptedConfirmation).not.toContain("- Work mode: \"planning\"");
+  });
+
+  it("adds answer-only guidance for ask-mode issues", () => {
+    const assignment = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-ask",
+        identifier: "PAP-416",
+        title: "Explain the tradeoff",
+        workMode: "ask",
+        description: null,
+      },
+    });
+
+    expect(assignment).toContain("- Work mode: \"ask\"");
+    expect(assignment).toContain("Ask mode directive:");
+    expect(assignment).toContain("Answer the question directly in the issue thread.");
+    expect(assignment).toContain("Do not write implementation code");
+    expect(assignment).toContain("do not produce an implementation plan");
+  });
+
   it("prefers ordinary comment planning guidance over stale accepted confirmation state", () => {
     const commentWake = buildPaperclipTaskMarkdown({
       issue: {

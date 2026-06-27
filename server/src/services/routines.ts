@@ -6,6 +6,8 @@ import {
   companySecretBindings,
   companySecretVersions,
   companySecrets,
+  documentRevisions,
+  documents,
   executionWorkspaces,
   goals,
   heartbeatRuns,
@@ -17,6 +19,7 @@ import {
   projects,
   routineRevisions,
   routineRuns,
+  routineDocuments,
   routines,
   routineTriggers,
 } from "@paperclipai/db";
@@ -25,6 +28,7 @@ import type {
   CreateRoutineTrigger,
   Routine,
   RoutineDetail,
+  RoutineDescriptionDocument,
   RoutineListItem,
   RoutineManagedByPlugin,
   RoutineRevision,
@@ -42,6 +46,7 @@ import {
   getBuiltinRoutineVariableValues,
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
+  isValidRoutineDateString,
   pluginOperationIssueOriginKind,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
@@ -52,6 +57,7 @@ import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
+import { assertAssignableAgent } from "./agent-assignability.js";
 import { secretService } from "./secrets.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { parseCron, validateCron } from "./cron.js";
@@ -79,6 +85,8 @@ type Actor = { agentId?: string | null; userId?: string | null; runId?: string |
 type RoutineRow = typeof routines.$inferSelect;
 type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
 
+const ROUTINE_DESCRIPTION_DOCUMENT_KEY = "description" as const;
+
 interface RoutineTriggerSecretRestoreMaterial extends RoutineTriggerSecretMaterial {
   triggerId: string;
 }
@@ -89,7 +97,7 @@ function routineWebhookSecretConfigPath(secretId: string) {
 
 function assertTimeZone(timeZone: string) {
   try {
-    new Intl.DateTimeFormat("en-US", { timeZone }).format(new Date());
+    getZonedMinuteFormatter(timeZone).format(new Date());
   } catch {
     throw unprocessable(`Invalid timezone: ${timeZone}`);
   }
@@ -101,17 +109,33 @@ function floorToMinute(date: Date) {
   return copy;
 }
 
+// Constructing an Intl.DateTimeFormat costs ~1ms of ICU work, and
+// computeNextRun calls getZonedMinuteParts once per minute-step (up to
+// 366*24*60*5 iterations for sparse schedules), which can block the event
+// loop for minutes per scheduler tick. Formatter instances are immutable,
+// so cache one per timezone. See #8033.
+const zonedMinuteFormatterCache = new Map<string, Intl.DateTimeFormat>();
+
+function getZonedMinuteFormatter(timeZone: string) {
+  let formatter = zonedMinuteFormatterCache.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour12: false,
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      weekday: "short",
+    });
+    zonedMinuteFormatterCache.set(timeZone, formatter);
+  }
+  return formatter;
+}
+
 function getZonedMinuteParts(date: Date, timeZone: string) {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hour12: false,
-    year: "numeric",
-    month: "numeric",
-    day: "numeric",
-    hour: "numeric",
-    minute: "numeric",
-    weekday: "short",
-  });
+  const formatter = getZonedMinuteFormatter(timeZone);
   const parts = formatter.formatToParts(date);
   const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   const weekday = WEEKDAY_INDEX[map.weekday ?? ""];
@@ -140,7 +164,7 @@ function matchesCronMinute(expression: string, timeZone: string, date: Date) {
   );
 }
 
-function nextCronTickInTimeZone(expression: string, timeZone: string, after: Date) {
+export function nextCronTickInTimeZone(expression: string, timeZone: string, after: Date) {
   const trimmed = expression.trim();
   assertTimeZone(timeZone);
   const error = validateCron(trimmed);
@@ -163,6 +187,7 @@ function nextCronTickInTimeZone(expression: string, timeZone: string, after: Dat
 function nextResultText(status: string, issueId?: string | null) {
   if (status === "issue_created" && issueId) return `Created execution issue ${issueId}`;
   if (status === "coalesced") return "Coalesced into an existing live execution issue";
+  if (status === "skipped_paused") return "Skipped because the project is paused";
   if (status === "skipped") return "Skipped because a live execution issue already exists";
   if (status === "completed") return "Execution issue completed";
   if (status === "failed") return "Execution failed";
@@ -199,10 +224,22 @@ function parseNumberVariableValue(name: string, raw: unknown) {
   throw unprocessable(`Variable "${name}" must be a number`);
 }
 
+function parseDateVariableValue(name: string, raw: unknown) {
+  if (typeof raw !== "string") {
+    throw unprocessable(`Variable "${name}" must be a YYYY-MM-DD date`);
+  }
+  const normalized = raw.trim();
+  if (!isValidRoutineDateString(normalized)) {
+    throw unprocessable(`Variable "${name}" must be a valid YYYY-MM-DD date`);
+  }
+  return normalized;
+}
+
 function normalizeRoutineVariableValue(variable: RoutineVariable, raw: unknown): string | number | boolean | null {
   if (raw == null) return null;
   if (variable.type === "boolean") return parseBooleanVariableValue(variable.name, raw);
   if (variable.type === "number") return parseNumberVariableValue(variable.name, raw);
+  if (variable.type === "date") return parseDateVariableValue(variable.name, raw);
 
   const normalized = stringifyRoutineVariableValue(raw);
   if (variable.type === "select") {
@@ -365,6 +402,7 @@ function normalizeRoutineDispatchFingerprintValue(value: unknown): unknown {
 function createRoutineDispatchFingerprint(input: {
   payload: Record<string, unknown> | null;
   projectId: string | null;
+  projectWorkspaceId: string | null;
   assigneeAgentId: string | null;
   routineRevisionId: string | null;
   routineEnvFingerprint: string | null;
@@ -470,6 +508,42 @@ function mapRoutineRevision(row: typeof routineRevisions.$inferSelect): RoutineR
   };
 }
 
+function mapRoutineDescriptionDocument(row: {
+  id: string;
+  companyId: string;
+  routineId: string;
+  key: string;
+  title: string | null;
+  format: string;
+  latestBody: string;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}): RoutineDescriptionDocument {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    routineId: row.routineId,
+    key: ROUTINE_DESCRIPTION_DOCUMENT_KEY,
+    title: row.title,
+    format: "markdown",
+    body: row.latestBody,
+    latestRevisionId: row.latestRevisionId,
+    latestRevisionNumber: row.latestRevisionNumber,
+    createdByAgentId: row.createdByAgentId,
+    createdByUserId: row.createdByUserId,
+    updatedByAgentId: row.updatedByAgentId,
+    updatedByUserId: row.updatedByUserId,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
 export function routineService(
   db: Db,
   deps: {
@@ -556,6 +630,169 @@ export function routineService(
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getRoutineDescriptionDocument(
+    routineId: string,
+    executor: Db | any = db,
+  ): Promise<RoutineDescriptionDocument | null> {
+    const row = await executor
+      .select({
+        id: documents.id,
+        companyId: documents.companyId,
+        routineId: routineDocuments.routineId,
+        key: routineDocuments.key,
+        title: documents.title,
+        format: documents.format,
+        latestBody: documents.latestBody,
+        latestRevisionId: documents.latestRevisionId,
+        latestRevisionNumber: documents.latestRevisionNumber,
+        createdByAgentId: documents.createdByAgentId,
+        createdByUserId: documents.createdByUserId,
+        updatedByAgentId: documents.updatedByAgentId,
+        updatedByUserId: documents.updatedByUserId,
+        createdAt: documents.createdAt,
+        updatedAt: documents.updatedAt,
+      })
+      .from(routineDocuments)
+      .innerJoin(documents, eq(routineDocuments.documentId, documents.id))
+      .where(and(
+        eq(routineDocuments.routineId, routineId),
+        eq(routineDocuments.key, ROUTINE_DESCRIPTION_DOCUMENT_KEY),
+      ))
+      .then((rows: any[]) => rows[0] ?? null);
+    return row ? mapRoutineDescriptionDocument(row) : null;
+  }
+
+  async function upsertRoutineDescriptionDocument(
+    executor: Db | any,
+    routine: RoutineRow,
+    actor: Actor,
+    options: { changeSummary?: string | null } = {},
+  ): Promise<RoutineDescriptionDocument> {
+    if (executor === db) {
+      return db.transaction(async (tx) => (
+        upsertRoutineDescriptionDocument(tx as unknown as Db, routine, actor, options)
+      ));
+    }
+
+    const now = new Date();
+    const body = routine.description ?? "";
+    const existing = await getRoutineDescriptionDocument(routine.id, executor);
+
+    if (existing) {
+      if (existing.body === body) return existing;
+      const nextRevisionNumber = existing.latestRevisionNumber + 1;
+      const [revision] = await executor
+        .insert(documentRevisions)
+        .values({
+          companyId: routine.companyId,
+          documentId: existing.id,
+          revisionNumber: nextRevisionNumber,
+          title: "Routine description",
+          format: "markdown",
+          body,
+          changeSummary: options.changeSummary ?? null,
+          createdByAgentId: actor.agentId ?? null,
+          createdByUserId: actor.userId ?? null,
+          createdByRunId: actor.runId ?? null,
+          createdAt: now,
+        })
+        .returning();
+
+      await executor
+        .update(documents)
+        .set({
+          title: "Routine description",
+          format: "markdown",
+          latestBody: body,
+          latestRevisionId: revision.id,
+          latestRevisionNumber: nextRevisionNumber,
+          updatedByAgentId: actor.agentId ?? null,
+          updatedByUserId: actor.userId ?? null,
+          updatedAt: now,
+        })
+        .where(eq(documents.id, existing.id));
+      await executor
+        .update(routineDocuments)
+        .set({ updatedAt: now })
+        .where(eq(routineDocuments.documentId, existing.id));
+
+      return {
+        ...existing,
+        title: "Routine description",
+        body,
+        latestRevisionId: revision.id,
+        latestRevisionNumber: nextRevisionNumber,
+        updatedByAgentId: actor.agentId ?? null,
+        updatedByUserId: actor.userId ?? null,
+        updatedAt: now,
+      };
+    }
+
+    const [document] = await executor
+      .insert(documents)
+      .values({
+        companyId: routine.companyId,
+        title: "Routine description",
+        format: "markdown",
+        latestBody: body,
+        latestRevisionId: null,
+        latestRevisionNumber: 1,
+        createdByAgentId: actor.agentId ?? null,
+        createdByUserId: actor.userId ?? null,
+        updatedByAgentId: actor.agentId ?? null,
+        updatedByUserId: actor.userId ?? null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning();
+    const [revision] = await executor
+      .insert(documentRevisions)
+      .values({
+        companyId: routine.companyId,
+        documentId: document.id,
+        revisionNumber: 1,
+        title: "Routine description",
+        format: "markdown",
+        body,
+        changeSummary: options.changeSummary ?? null,
+        createdByAgentId: actor.agentId ?? null,
+        createdByUserId: actor.userId ?? null,
+        createdByRunId: actor.runId ?? null,
+        createdAt: now,
+      })
+      .returning();
+    await executor
+      .update(documents)
+      .set({ latestRevisionId: revision.id })
+      .where(eq(documents.id, document.id));
+    await executor.insert(routineDocuments).values({
+      companyId: routine.companyId,
+      routineId: routine.id,
+      documentId: document.id,
+      key: ROUTINE_DESCRIPTION_DOCUMENT_KEY,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return {
+      id: document.id,
+      companyId: routine.companyId,
+      routineId: routine.id,
+      key: ROUTINE_DESCRIPTION_DOCUMENT_KEY,
+      title: document.title,
+      format: "markdown",
+      body,
+      latestRevisionId: revision.id,
+      latestRevisionNumber: 1,
+      createdByAgentId: document.createdByAgentId,
+      createdByUserId: document.createdByUserId,
+      updatedByAgentId: document.updatedByAgentId,
+      updatedByUserId: document.updatedByUserId,
+      createdAt: document.createdAt,
+      updatedAt: document.updatedAt,
+    };
+  }
+
   async function appendRoutineRevision(
     executor: Db,
     routine: RoutineRow,
@@ -596,8 +833,18 @@ export function routineService(
       .where(eq(routines.id, routine.id))
       .returning();
 
+    const routineForDocument = updatedRoutine ?? {
+      ...routine,
+      latestRevisionId: revision.id,
+      latestRevisionNumber: nextRevisionNumber,
+      updatedAt: now,
+    };
+    await upsertRoutineDescriptionDocument(executor, routineForDocument, actor, {
+      changeSummary: options.changeSummary ?? null,
+    });
+
     return {
-      routine: updatedRoutine ?? { ...routine, latestRevisionId: revision.id, latestRevisionNumber: nextRevisionNumber, updatedAt: now },
+      routine: routineForDocument,
       revision: mapRoutineRevision(revision),
     };
   }
@@ -609,25 +856,12 @@ export function routineService(
     return routine;
   }
 
-  async function assertAssignableAgent(companyId: string, agentId: string | null | undefined) {
-    if (!agentId) return;
-    const agent = await db
-      .select({ id: agents.id, companyId: agents.companyId, status: agents.status })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .then((rows) => rows[0] ?? null);
-    if (!agent) throw notFound("Assignee agent not found");
-    if (agent.companyId !== companyId) throw unprocessable("Assignee must belong to same company");
-    if (agent.status === "pending_approval") throw conflict("Cannot assign routines to pending approval agents");
-    if (agent.status === "terminated") throw conflict("Cannot assign routines to terminated agents");
-  }
-
   async function assertRestorableAssignee(
     companyId: string,
     assigneeAgentId: string | null | undefined,
     actor: Actor,
   ) {
-    await assertAssignableAgent(companyId, assigneeAgentId);
+    await assertAssignableAgent(db, companyId, assigneeAgentId, { kind: "routine" });
     if (actor.agentId && assigneeAgentId !== actor.agentId) {
       throw forbidden("Agents can only restore routine revisions assigned to themselves");
     }
@@ -877,6 +1111,66 @@ export function routineService(
     }
   }
 
+  // Records a skipped scheduled firing without creating an execution issue. Used when the
+  // routine's project is paused: the tick is still claimed/advanced upstream (no backfill),
+  // and run history + trigger audit reflect the pause-specific skip.
+  async function recordSuppressedScheduleRun(input: {
+    routine: typeof routines.$inferSelect;
+    trigger: typeof routineTriggers.$inferSelect;
+    reason: string;
+    nextRunAt: Date | null;
+  }) {
+    const triggeredAt = new Date();
+    const run = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const [createdRun] = await txDb
+        .insert(routineRuns)
+        .values({
+          companyId: input.routine.companyId,
+          routineId: input.routine.id,
+          triggerId: input.trigger.id,
+          source: "schedule",
+          status: "skipped",
+          triggeredAt,
+          failureReason: input.reason,
+          completedAt: triggeredAt,
+          linkedIssueId: null,
+          routineRevisionId: input.routine.latestRevisionId,
+        })
+        .returning();
+      await updateRoutineTouchedState({
+        routineId: input.routine.id,
+        triggerId: input.trigger.id,
+        triggeredAt,
+        status: "skipped_paused",
+        nextRunAt: input.nextRunAt,
+      }, txDb);
+      return createdRun;
+    });
+
+    try {
+      await logActivity(db, {
+        companyId: input.routine.companyId,
+        actorType: "system",
+        actorId: "routine-scheduler",
+        action: "routine.run_skipped",
+        entityType: "routine_run",
+        entityId: run.id,
+        details: {
+          routineId: input.routine.id,
+          triggerId: input.trigger.id,
+          source: "schedule",
+          status: "skipped",
+          reason: input.reason,
+        },
+      });
+    } catch (err) {
+      logger.warn({ err, routineId: input.routine.id, runId: run.id }, "failed to log skipped routine run");
+    }
+
+    return run;
+  }
+
   function routineExecutionFingerprintCondition(dispatchFingerprint?: string | null) {
     if (!dispatchFingerprint) return null;
     // The "default" arm preserves coalescing against pre-migration open issues.
@@ -1097,18 +1391,22 @@ export function routineService(
     payload?: Record<string, unknown> | null;
     variables?: Record<string, unknown> | null;
     projectId?: string | null;
+    projectWorkspaceId?: string | null;
     assigneeAgentId?: string | null;
     idempotencyKey?: string | null;
     executionWorkspaceId?: string | null;
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
+    descriptionAppendix?: string | null;
     actor?: Actor;
   }) {
     const projectId = input.projectId ?? input.routine.projectId ?? null;
+    const projectWorkspaceId = input.projectWorkspaceId ?? null;
     const assigneeAgentId = input.assigneeAgentId ?? input.routine.assigneeAgentId ?? null;
     if (!assigneeAgentId) {
       throw unprocessable("Default agent required");
     }
+    await assertAssignableAgent(db, input.routine.companyId, assigneeAgentId, { kind: "routine" });
     const automaticVariables: Record<string, string | number | boolean> = {};
     if (input.executionWorkspaceId && routineUsesWorkspaceBranch(input.routine)) {
       const workspace = await db
@@ -1135,7 +1433,10 @@ export function routineService(
     });
     const allVariables = { ...getBuiltinRoutineVariableValues(), ...automaticVariables, ...resolvedVariables };
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
-    const description = interpolateRoutineTemplate(input.routine.description, allVariables);
+    const baseDescription = interpolateRoutineTemplate(input.routine.description, allVariables);
+    const description = [baseDescription, input.descriptionAppendix]
+      .filter((part): part is string => Boolean(part && part.trim()))
+      .join("\n\n");
     const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
     const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
     const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
@@ -1147,6 +1448,7 @@ export function routineService(
     const dispatchFingerprint = createRoutineDispatchFingerprint({
       payload: triggerPayload,
       projectId,
+      projectWorkspaceId,
       assigneeAgentId,
       routineRevisionId: input.routine.latestRevisionId,
       routineEnvFingerprint: createRoutineEnvFingerprint(input.routine.env),
@@ -1239,6 +1541,7 @@ export function routineService(
         try {
           createdIssue = await issueSvc.create(input.routine.companyId, {
             projectId,
+            projectWorkspaceId,
             goalId: input.routine.goalId,
             parentId: input.routine.parentIssueId,
             title,
@@ -1422,7 +1725,7 @@ export function routineService(
     getDetail: async (id: string): Promise<RoutineDetail | null> => {
       const row = await getRoutineById(id);
       if (!row) return null;
-      const [project, assignee, parentIssue, triggers, recentRuns, activeIssue, managedByRoutine] = await Promise.all([
+      const [project, assignee, parentIssue, descriptionDocument, triggers, recentRuns, activeIssue, managedByRoutine] = await Promise.all([
         row.projectId
           ? db.select().from(projects).where(eq(projects.id, row.projectId)).then((rows) => rows[0] ?? null)
           : null,
@@ -1430,6 +1733,7 @@ export function routineService(
           ? db.select().from(agents).where(eq(agents.id, row.assigneeAgentId)).then((rows) => rows[0] ?? null)
           : null,
         row.parentIssueId ? issueSvc.getById(row.parentIssueId) : null,
+        getRoutineDescriptionDocument(row.id),
         db.select().from(routineTriggers).where(eq(routineTriggers.routineId, row.id)).orderBy(asc(routineTriggers.createdAt)),
         db
           .select({
@@ -1512,15 +1816,18 @@ export function routineService(
         project,
         assignee,
         parentIssue,
+        descriptionDocument,
         triggers: triggers as RoutineTrigger[],
         recentRuns,
         activeIssue,
       };
     },
 
+    getDescriptionDocument: async (routineId: string) => getRoutineDescriptionDocument(routineId),
+
     create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
       await assertProject(companyId, input.projectId ?? null);
-      await assertAssignableAgent(companyId, input.assigneeAgentId ?? null);
+      await assertAssignableAgent(db, companyId, input.assigneeAgentId ?? null, { kind: "routine" });
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
       const env = input.env === undefined || input.env === null
@@ -1602,7 +1909,9 @@ export function routineService(
         patch.variables === undefined ? existing.variables : sanitizeRoutineVariableInputs(patch.variables),
       );
       if (patch.projectId !== undefined) await assertProject(existing.companyId, nextProjectId);
-      if (patch.assigneeAgentId !== undefined) await assertAssignableAgent(existing.companyId, nextAssigneeAgentId);
+      if (patch.assigneeAgentId !== undefined || patch.status === "active") {
+        await assertAssignableAgent(db, existing.companyId, nextAssigneeAgentId, { kind: "routine" });
+      }
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
       assertRoutineVariableDefinitions(nextVariables);
@@ -1880,6 +2189,16 @@ export function routineService(
         });
         return { deleted: true, revision: appended.revision };
       });
+      if (result.deleted && existing.secretId) {
+        try {
+          await secretsSvc.remove(existing.secretId);
+        } catch (err) {
+          logger.warn(
+            { err, routineId: existing.routineId, triggerId: existing.id, secretId: existing.secretId },
+            "failed to remove routine trigger webhook secret after trigger deletion",
+          );
+        }
+      }
       return result;
     },
 
@@ -2116,7 +2435,8 @@ export function routineService(
       if (!routine) throw notFound("Routine not found");
       if (routine.status === "archived") throw conflict("Routine is archived");
       await assertProject(routine.companyId, input.projectId ?? null);
-      await assertAssignableAgent(routine.companyId, input.assigneeAgentId ?? null);
+      const assigneeAgentId = input.assigneeAgentId ?? routine.assigneeAgentId ?? null;
+      await assertAssignableAgent(db, routine.companyId, assigneeAgentId, { kind: "routine" });
       const trigger = input.triggerId ? await getTriggerById(input.triggerId) : null;
       if (trigger && trigger.routineId !== routine.id) throw forbidden("Trigger does not belong to routine");
       if (trigger && !trigger.enabled) throw conflict("Routine trigger is not active");
@@ -2127,12 +2447,39 @@ export function routineService(
         payload: input.payload as Record<string, unknown> | null | undefined,
         variables: input.variables as Record<string, unknown> | null | undefined,
         projectId: input.projectId ?? null,
+        projectWorkspaceId: input.projectWorkspaceId ?? null,
         assigneeAgentId: input.assigneeAgentId ?? null,
         idempotencyKey: input.idempotencyKey,
         executionWorkspaceId: input.executionWorkspaceId ?? null,
         executionWorkspacePreference: input.executionWorkspacePreference ?? null,
         executionWorkspaceSettings:
           (input.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null,
+        actor,
+      });
+    },
+
+    runPipelineStageEntryRoutine: async (id: string, input: RunRoutine & { descriptionAppendix?: string | null }, actor?: Actor) => {
+      const routine = await getRoutineById(id);
+      if (!routine) throw notFound("Routine not found");
+      if (routine.status === "archived") throw conflict("Routine is archived");
+      await assertProject(routine.companyId, input.projectId ?? null);
+      const assigneeAgentId = input.assigneeAgentId ?? routine.assigneeAgentId ?? null;
+      await assertAssignableAgent(db, routine.companyId, assigneeAgentId, { kind: "routine" });
+      return dispatchRoutineRun({
+        routine,
+        trigger: null,
+        source: "api",
+        payload: input.payload as Record<string, unknown> | null | undefined,
+        variables: input.variables as Record<string, unknown> | null | undefined,
+        projectId: input.projectId ?? null,
+        projectWorkspaceId: input.projectWorkspaceId ?? null,
+        assigneeAgentId: input.assigneeAgentId ?? null,
+        idempotencyKey: input.idempotencyKey,
+        executionWorkspaceId: input.executionWorkspaceId ?? null,
+        executionWorkspacePreference: input.executionWorkspacePreference ?? null,
+        executionWorkspaceSettings:
+          (input.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null,
+        descriptionAppendix: input.descriptionAppendix ?? null,
         actor,
       });
     },
@@ -2305,9 +2652,11 @@ export function routineService(
         .select({
           trigger: routineTriggers,
           routine: routines,
+          projectPausedAt: projects.pausedAt,
         })
         .from(routineTriggers)
         .innerJoin(routines, eq(routineTriggers.routineId, routines.id))
+        .leftJoin(projects, eq(routines.projectId, projects.id))
         .where(
           and(
             eq(routineTriggers.kind, "schedule"),
@@ -2323,10 +2672,16 @@ export function routineService(
       for (const row of due) {
         if (!row.trigger.nextRunAt || !row.trigger.cronExpression || !row.trigger.timezone) continue;
 
+        // Suppress scheduled firings while the routine's project is paused. The tick is still
+        // claimed and advanced to the next single cron tick (no backfill), so resume continues
+        // at the next cron boundary instead of replaying missed firings. Routines with no
+        // project are never suppressed here.
+        const projectPaused = !!(row.routine.projectId && row.projectPausedAt);
+
         let runCount = 1;
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
 
-        if (row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
+        if (!projectPaused && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
           let cursor: Date | null = row.trigger.nextRunAt;
           runCount = 0;
           while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
@@ -2352,6 +2707,16 @@ export function routineService(
           .returning({ id: routineTriggers.id })
           .then((rows) => rows[0] ?? null);
         if (!claimed) continue;
+
+        if (projectPaused) {
+          await recordSuppressedScheduleRun({
+            routine: row.routine,
+            trigger: row.trigger,
+            reason: "paused",
+            nextRunAt: claimedNextRunAt,
+          });
+          continue;
+        }
 
         for (let i = 0; i < runCount; i += 1) {
           await dispatchRoutineRun({

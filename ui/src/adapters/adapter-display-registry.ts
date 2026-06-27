@@ -16,7 +16,6 @@ import {
   Cpu,
 } from "lucide-react";
 import { OpenCodeLogoIcon } from "@/components/OpenCodeLogoIcon";
-import { HermesIcon } from "@/components/HermesIcon";
 
 // ---------------------------------------------------------------------------
 // Type suffix parsing
@@ -83,15 +82,21 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Local Grok Build agent",
     icon: Bot,
   },
+  hermes_gateway: {
+    label: "Hermes",
+    description: "Remote Hermes API server",
+    icon: Bot,
+    hideFromVisualSelection: true,
+  },
+  hermes_local: {
+    label: "Hermes",
+    description: "Local Hermes agent",
+    icon: Bot,
+  },
   opencode_local: {
     label: "OpenCode",
     description: "Local multi-provider agent",
     icon: OpenCodeLogoIcon,
-  },
-  hermes_local: {
-    label: "Hermes Agent",
-    description: "Local Hermes CLI agent",
-    icon: HermesIcon,
   },
   pi_local: {
     label: "Pi",
@@ -110,10 +115,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
   },
   openclaw_gateway: {
     label: "OpenClaw Gateway",
-    description: "Invoke OpenClaw via gateway protocol",
+    description: "External gateway adapter",
     icon: Bot,
     comingSoon: true,
-    disabledLabel: "Configure OpenClaw within the App",
+    disabledLabel: "Invite external agents from the add-agent modal",
+    hideFromVisualSelection: true,
   },
   process: {
     label: "Process",

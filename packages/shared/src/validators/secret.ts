@@ -262,6 +262,30 @@ export const remoteSecretImportPreviewSchema = z.object({
 
 export type RemoteSecretImportPreview = z.infer<typeof remoteSecretImportPreviewSchema>;
 
+export const secretProviderConfigDiscoveryPreviewSchema = z.object({
+  provider: z.enum(SECRET_PROVIDERS),
+  config: z.record(z.unknown()).default({}),
+  query: z.string().trim().max(200).optional().nullable(),
+  nextToken: z.string().trim().min(1).max(4096).optional().nullable(),
+  pageSize: z.number().int().min(1).max(100).optional(),
+}).superRefine((value, ctx) => {
+  rejectSensitiveProviderConfigKeys(value.config, ctx);
+  const parsed = secretProviderConfigPayloadSchema.safeParse({
+    provider: value.provider,
+    config: value.config,
+  });
+  if (!parsed.success) {
+    for (const issue of parsed.error.issues) {
+      ctx.addIssue({
+        ...issue,
+        path: issue.path[0] === "config" ? issue.path : ["config", ...issue.path],
+      });
+    }
+  }
+});
+
+export type SecretProviderConfigDiscoveryPreview = z.infer<typeof secretProviderConfigDiscoveryPreviewSchema>;
+
 export const remoteSecretImportSelectionSchema = z.object({
   externalRef: z.string().trim().min(1).max(2048),
   name: z.string().trim().min(1).max(160).optional().nullable(),

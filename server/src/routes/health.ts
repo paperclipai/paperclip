@@ -4,8 +4,9 @@ import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
-import { readPersistedDevServerStatus, toDevServerHealthStatus } from "../dev-server-status.js";
+import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
 import { logger } from "../middleware/logger.js";
+import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../server-info.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
 
@@ -35,6 +36,7 @@ export function healthRoutes(
     deploymentExposure: DeploymentExposure;
     authReady: boolean;
     companyDeletionEnabled: boolean;
+    serverInfo?: ServerInfoSnapshot;
   } = {
     deploymentMode: "local_trusted",
     deploymentExposure: "private",
@@ -44,19 +46,59 @@ export function healthRoutes(
 ) {
   const router = Router();
 
+  router.post("/dev-server/restart", async (req, res) => {
+    const actorType = "actor" in req ? req.actor?.type : null;
+    if (opts.deploymentMode === "authenticated" && actorType !== "board") {
+      res.status(403).json({ error: "board_access_required" });
+      return;
+    }
+
+    const persistedDevServerStatus = readPersistedDevServerStatus();
+    if (!persistedDevServerStatus) {
+      res.status(404).json({ error: "dev_server_supervisor_unavailable" });
+      return;
+    }
+
+    const restartRequired =
+      persistedDevServerStatus.dirty ||
+      persistedDevServerStatus.changedPathCount > 0 ||
+      persistedDevServerStatus.pendingMigrations.length > 0;
+    if (!restartRequired) {
+      res.status(409).json({ error: "restart_not_required" });
+      return;
+    }
+
+    const written = writeDevServerRestartRequest({
+      requestedAt: new Date().toISOString(),
+      reason: "manual_restart_now",
+    });
+    if (!written) {
+      res.status(404).json({ error: "dev_server_supervisor_unavailable" });
+      return;
+    }
+
+    res.status(202).json({ status: "restart_requested" });
+  });
+
   router.get("/", async (req, res) => {
     const actorType = "actor" in req ? req.actor?.type : null;
     const exposeFullDetails = shouldExposeFullHealthDetails(
       actorType,
       opts.deploymentMode,
     );
+    // serverInfo (git SHA + process start) rides on the full-details responses
+    // only, so it reaches board/agent actors in authenticated mode or any caller
+    // in local_trusted dev — never anonymous authenticated callers. The
+    // enableServerInfoDebugView experimental flag gates the UI surface, not this
+    // already access-controlled field.
+    const serverInfo = opts.serverInfo ?? getServerInfoSnapshot();
     const exposeDevServerDetails =
       exposeFullDetails || hasDevServerStatusToken(req.get("x-paperclip-dev-server-status-token"));
 
     if (!db) {
       res.json(
         exposeFullDetails
-          ? { status: "ok", version: serverVersion }
+          ? { status: "ok", version: serverVersion, serverInfo }
           : { status: "ok", deploymentMode: opts.deploymentMode },
       );
       return;
@@ -69,7 +111,8 @@ export function healthRoutes(
       res.status(503).json({
         status: "unhealthy",
         version: serverVersion,
-        error: "database_unreachable"
+        error: "database_unreachable",
+        ...(exposeFullDetails ? { serverInfo } : {}),
       });
       return;
     }
@@ -123,6 +166,7 @@ export function healthRoutes(
       res.json({
         status: "ok",
         deploymentMode: opts.deploymentMode,
+        deploymentExposure: opts.deploymentExposure,
         bootstrapStatus,
         bootstrapInviteActive,
         ...(devServer ? { devServer } : {}),
@@ -141,6 +185,7 @@ export function healthRoutes(
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
+      serverInfo,
       ...(devServer ? { devServer } : {}),
     });
   });

@@ -38,6 +38,7 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
 }));
 
@@ -103,6 +104,7 @@ vi.mock("../services/index.js", () => ({
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => mockDocumentsService,
   environmentService: () => mockEnvironmentService,
   executionWorkspaceService: () => mockExecutionWorkspaceService,
@@ -186,6 +188,12 @@ const projectGoal = {
 describe.sequential("issue goal context routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "issue:read",
+      reason: "allow_test",
+      explanation: "Allowed by test mock.",
+    });
     mockIssueService.getById.mockResolvedValue(legacyProjectLinkedIssue);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
@@ -204,11 +212,21 @@ describe.sequential("issue goal context routes", () => {
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
     mockDb.select.mockReturnValue({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          orderBy: vi.fn(async () => []),
-        })),
-      })),
+      from: vi.fn(() => {
+        let hasJoin = false;
+        const query = {
+          innerJoin: vi.fn(() => {
+            hasJoin = true;
+            return query;
+          }),
+          where: vi.fn(() => hasJoin
+            ? Promise.resolve([])
+            : {
+              orderBy: vi.fn(async () => []),
+            }),
+        };
+        return query;
+      }),
     });
     mockDb.execute.mockResolvedValue([]);
     mockProjectService.getById.mockResolvedValue({

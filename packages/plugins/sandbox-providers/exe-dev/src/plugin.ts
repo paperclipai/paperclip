@@ -68,6 +68,8 @@ const SSH_SIGKILL_GRACE_MS = 250;
 const MAX_VM_RECORD_DEPTH = 4;
 const EXE_DEV_SSH_ONBOARDING_MARKER = "Please complete registration by running: ssh exe.dev";
 const EXE_DEV_SSH_EMAIL_PROMPT = "Please enter your email address:";
+const EXE_DEV_SSH_INVALID_KEY_FORMAT = /Load key [^\n]*invalid format/i;
+const UUID_SECRET_REF_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // exe.dev's `--setup-script` runs at VM init as the unprivileged `exedev` user, which
 // has passwordless sudo. The Paperclip sandbox callback bridge is a Node script, so
@@ -137,6 +139,74 @@ function isValidUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isSecretRef(value: string): boolean {
+  return UUID_SECRET_REF_RE.test(value);
+}
+
+// Catch the SSH-key paste failure modes we've seen in the wild (wrong file,
+// PPK export, truncated paste) before the user pays the cost of provisioning a
+// VM and getting a cryptic SSH error. Inline parse — no `ssh-keygen` dependency
+// — so this also works on hosts where openssh-client isn't installed.
+export function validateSshPrivateKey(rawKey: string): string | null {
+  const trimmed = rawKey.trim();
+  if (!trimmed) return null;
+
+  if (/^PuTTY-User-Key-File-\d/m.test(trimmed)) {
+    return "sshPrivateKey looks like a PuTTY .ppk file. Convert it to OpenSSH format (PuTTYgen → Conversions → Export OpenSSH key) and paste the resulting PEM.";
+  }
+
+  if (
+    /^(?:ssh-(?:rsa|dss|ed25519)|ecdsa-sha2-[a-z0-9-]+|sk-(?:ssh-ed25519|ecdsa-sha2-[a-z0-9-]+)@openssh\.com)\s+\S/.test(
+      trimmed,
+    )
+  ) {
+    return "sshPrivateKey looks like a PUBLIC key. Paste the matching private key (the file without the .pub extension).";
+  }
+
+  const headerMatch = trimmed.match(/^-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----/m);
+  if (!headerMatch) {
+    return "sshPrivateKey must be a PEM-encoded private key starting with a line like '-----BEGIN OPENSSH PRIVATE KEY-----'.";
+  }
+
+  const footerMatch = trimmed.match(/^-----END ([A-Z0-9 ]*)PRIVATE KEY-----\s*$/m);
+  if (!footerMatch) {
+    return "sshPrivateKey is missing its '-----END … PRIVATE KEY-----' footer. Make sure you copied the whole file, including the final line.";
+  }
+
+  const headerLabel = headerMatch[1].trim();
+  const footerLabel = footerMatch[1].trim();
+  if (headerLabel !== footerLabel) {
+    return `sshPrivateKey header/footer mismatch (BEGIN ${headerLabel || "(none)"} vs END ${footerLabel || "(none)"}). The file is likely truncated or two keys are concatenated.`;
+  }
+
+  const headerLineEnd = trimmed.indexOf("\n", headerMatch.index ?? 0);
+  const footerStart = trimmed.lastIndexOf(footerMatch[0]);
+  if (headerLineEnd < 0 || footerStart <= headerLineEnd) {
+    return "sshPrivateKey appears to be empty between its BEGIN and END markers.";
+  }
+
+  const bodyLines = trimmed
+    .slice(headerLineEnd + 1, footerStart)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (bodyLines.length === 0) {
+    return "sshPrivateKey appears to be empty between its BEGIN and END markers.";
+  }
+
+  // PEM bodies are base64 lines, optionally preceded by `Header: value` lines
+  // on encrypted PKCS#1 keys (`Proc-Type:`, `DEK-Info:`).
+  const base64Line = /^[A-Za-z0-9+/=]+$/;
+  const pemHeaderLine = /^[A-Za-z][A-Za-z0-9-]*:\s.+$/;
+  for (const line of bodyLines) {
+    if (!base64Line.test(line) && !pemHeaderLine.test(line)) {
+      return "sshPrivateKey body contains non-base64 characters. The key may have been corrupted by line-wrapping or copy-paste.";
+    }
+  }
+
+  return null;
 }
 
 function normalizeApiUrl(value: string | null): string {
@@ -498,6 +568,13 @@ function formatSshFailure(
     ].join(" ");
   }
 
+  if (EXE_DEV_SSH_INVALID_KEY_FORMAT.test(combinedOutput)) {
+    return [
+      `Failed to ${action} exe.dev VM ${vmName}: the configured SSH private key isn't an OpenSSH-format private key.`,
+      "Confirm the secret starts with `-----BEGIN … PRIVATE KEY-----` and isn't the `.pub` file or a PuTTY `.ppk` export.",
+    ].join(" ");
+  }
+
   return `Failed to ${action} exe.dev VM ${vmName}: ${result.stderr.trim() || result.stdout.trim() || "unknown error"}`;
 }
 
@@ -685,6 +762,10 @@ const plugin = definePlugin({
       params.config.strictHostKeyChecking.trim().length === 0
     ) {
       errors.push("strictHostKeyChecking cannot be empty.");
+    }
+    if (config.sshPrivateKey && !isSecretRef(config.sshPrivateKey)) {
+      const sshKeyError = validateSshPrivateKey(config.sshPrivateKey);
+      if (sshKeyError) errors.push(sshKeyError);
     }
 
     warnings.push(

@@ -27,6 +27,7 @@ import {
   resolveWorktreeReseedSource,
   resolveWorktreeReseedTargetPaths,
   resolveGitWorktreeAddArgs,
+  resolvePnpmInstallInvocation,
   resolveWorktreeMakeTargetPath,
   worktreeRepairCommand,
   worktreeInitCommand,
@@ -148,6 +149,36 @@ describe("worktree helpers", () => {
     expect(() => resolveWorktreeMakeTargetPath("paperclip/pr-432")).toThrow(
       "Worktree name must contain only letters, numbers, dots, underscores, or dashes.",
     );
+  });
+
+  it("reuses the current pnpm executable for worktree dependency installation", () => {
+    expect(
+      resolvePnpmInstallInvocation(
+        { npm_execpath: "/Users/test/.pnpm/pnpm/9.15.4/bin/pnpm.cjs" },
+        "/usr/local/bin/node",
+      ),
+    ).toEqual({
+      command: "/usr/local/bin/node",
+      argsPrefix: ["/Users/test/.pnpm/pnpm/9.15.4/bin/pnpm.cjs"],
+    });
+    expect(
+      resolvePnpmInstallInvocation(
+        { npm_execpath: "/Users/test/.pnpm/pnpm/9.15.4/bin/pnpm" },
+        "/usr/local/bin/node",
+      ),
+    ).toEqual({
+      command: "/Users/test/.pnpm/pnpm/9.15.4/bin/pnpm",
+      argsPrefix: [],
+    });
+    expect(
+      resolvePnpmInstallInvocation(
+        { npm_execpath: "/Users/test/.npm/npm-cli.js" },
+        "/usr/local/bin/node",
+      ),
+    ).toEqual({
+      command: "pnpm",
+      argsPrefix: [],
+    });
   });
 
   it("builds git worktree add args for new and existing branches", () => {
@@ -843,7 +874,7 @@ describe("worktree helpers", () => {
     }
   });
 
-  it("reseed preserves the current worktree ports, instance id, and branding", async () => {
+  itEmbeddedPostgres("reseed preserves the current worktree ports, instance id, and branding", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-"));
     const repoRoot = path.join(tempRoot, "repo");
     const sourceRoot = path.join(tempRoot, "source");

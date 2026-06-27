@@ -89,6 +89,72 @@
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
+  --paperclip-doc-annotation-highlight-open: #fef08a;
+  --paperclip-doc-annotation-highlight-focused: #fde047;
+  --paperclip-doc-annotation-highlight-stale: #fef08a;
+  --paperclip-doc-annotation-highlight-resolved: #fef9c3;
+
+  /* Brand agent-capsule gradient stops (paperclip.ing/brand/).
+     "The capsule is the agent" — each agent gets a 2-stop gradient,
+     --agent-Na (top) → --agent-Nb (bottom). Brand-fixed hex, identical
+     across themes. Indices 1–10; consumed by AgentCapsule. */
+  --agent-1a: #f7cfdc;
+  --agent-1b: #1f7a3a;
+  --agent-2a: #c9a9e8;
+  --agent-2b: #ee79a1;
+  --agent-3a: #28164b;
+  --agent-3b: #7a1530;
+  --agent-4a: #f3e6c4;
+  --agent-4b: #e3a21a;
+  --agent-5a: #1f4dd6;
+  --agent-5b: #3aa35c;
+  --agent-6a: #e94b27;
+  --agent-6b: #5a1122;
+  --agent-7a: #7eb6e3;
+  --agent-7b: #ee79a1;
+  --agent-8a: #9ce8a7;
+  --agent-8b: #bd7ff0;
+  --agent-9a: #f3b49e;
+  --agent-9b: #1f4ed4;
+  --agent-10a: #f2d95f;
+  --agent-10b: #4fbcba;
+
+  /* Status colors — one base hue per status, consumed by the agent / task
+     status chips and the task status icons. Mode-independent: the `.status-chip`,
+     `.status-fill` and inline icon helpers derive the light vs dark
+     fill/text/border from these via color-mix, so a single hue covers both
+     modes. Values mirror the PAP-75 brand palette (gray inert, blue liveness,
+     amber queued, violet review, green done, red blocked). */
+  --status-agent-idle: #a8aeb2;
+  --status-agent-running: #2563eb;
+  --status-agent-paused: #f59e0b;
+  --status-agent-error: #dc2626;
+  --status-task-backlog: #a8aeb2;
+  --status-task-todo: #f59e0b;
+  --status-task-in_progress: #2563eb;
+  --status-task-in_review: #7c3aed;
+  --status-task-done: #22c55e;
+  --status-task-blocked: #dc2626;
+  --status-task-cancelled: #a8aeb2;
+
+  /* Task status ICON hues (PAP-238 3b) — AA-tuned (every glyph ≥ 3:1 against
+     its surface, WCAG 2.1 AA, both modes). Distinct from the
+     `--status-task-*` chip base hues: a status chip carries its own bg/text
+     tint, but a bare glyph sitting next to text on the page needs a stronger
+     hue to clear 3:1. Where the chip base already passes (blue liveness, red
+     blocked, light violet review) the icon var simply re-points at it; the
+     gray / amber / green statuses are pinned to the board-approved AA hexes.
+     `in_queue` is the BLOCKED shape recoloured to the in_progress blue
+     (replaces the bespoke teal "covered" state). Light values here; the
+     `.dark` block below overrides the four that need a mode-specific hue. */
+  --status-task-icon-backlog: #52585d;   /* gray darkened — 7.21:1 on paper */
+  --status-task-icon-todo: #cc7a00;       /* amber darkened — clears 3:1 */
+  --status-task-icon-in_progress: var(--status-task-in_progress); /* #2563eb both modes */
+  --status-task-icon-in_review: var(--status-task-in_review);     /* #7c3aed (light) */
+  --status-task-icon-done: #16a34a;       /* green darkened — clears 3:1 */
+  --status-task-icon-blocked: var(--status-task-blocked);         /* #dc2626 both modes */
+  --status-task-icon-cancelled: #52585d;
+  --status-task-icon-in_queue: var(--status-task-in_progress);    /* blocked shape, blue */
 }
 
 .dark {
@@ -136,6 +202,39 @@
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
+  --paperclip-doc-annotation-highlight-open: #a16207;
+  --paperclip-doc-annotation-highlight-focused: #ca8a04;
+  --paperclip-doc-annotation-highlight-stale: #854d0e;
+  --paperclip-doc-annotation-highlight-resolved: #713f12;
+
+  /* Dark-mode AA overrides for the status-icon hues that need a mode-specific
+     value (PAP-238). in_progress / blocked stay identical (same blue / red both
+     modes) and in_queue tracks in_progress, so they need no override. */
+  --status-task-icon-backlog: #9a958a;
+  --status-task-icon-todo: #fbbf24;
+  --status-task-icon-in_review: #9474f0;  /* deeper than violet-400, reads purple */
+  --status-task-icon-done: #34d06f;
+  --status-task-icon-cancelled: #9a958a;
+}
+
+::highlight(paperclip-doc-annotation-open) {
+  background-color: var(--paperclip-doc-annotation-highlight-open);
+  color: inherit;
+}
+
+::highlight(paperclip-doc-annotation-focused) {
+  background-color: var(--paperclip-doc-annotation-highlight-focused);
+  color: inherit;
+}
+
+::highlight(paperclip-doc-annotation-stale) {
+  background-color: var(--paperclip-doc-annotation-highlight-stale);
+  color: inherit;
+}
+
+::highlight(paperclip-doc-annotation-resolved) {
+  background-color: var(--paperclip-doc-annotation-highlight-resolved);
+  color: inherit;
 }
 
 @layer base {
@@ -183,7 +282,22 @@
     min-height: 44px;
   }
 
-  [data-slot="toggle"] {
+  /* Small inline widgets keep their design size on touch devices —
+     forcing 44px here stretches checkboxes, chip menus, and icon buttons
+     that live inside dense rows (sidebar headers, issue rows, filter
+     popovers). The surrounding row provides the touch area. */
+  [data-slot="toggle"],
+  [data-slot="checkbox"],
+  [data-slot="icon-button"],
+  [data-size="xs"],
+  [data-size="icon-xs"],
+  [data-size="icon-sm"],
+  input[type="checkbox"],
+  input[type="radio"],
+  /* Auto-resizing title fields are vertically centered inside their own bar,
+     which already provides the touch area; the 44px floor would top-align the
+     single line of text and push it too high (notably on mobile Safari). */
+  textarea[data-autosize-title] {
     min-height: 0;
   }
 }
@@ -255,6 +369,45 @@
 }
 .dark .scrollbar-auto-hide:hover::-webkit-scrollbar-thumb:hover {
   background: oklch(0.5 0 0) !important;
+}
+
+/* Typing indicator — three bouncing dots, used inside an agent chat bubble */
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 0;
+}
+.typing-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--muted-foreground);
+  animation: typing-bounce 1.2s ease-in-out infinite;
+}
+.typing-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typing-dots span {
+    animation: none;
+    opacity: 0.6;
+  }
 }
 
 /* Expandable dialog transition for max-width changes */
@@ -362,6 +515,113 @@
     animation: none;
     -webkit-text-fill-color: unset;
     background: none;
+  }
+}
+
+/* Agent heartbeat capsule motion (PAP-75).
+   `hb-pulse` marks a running agent (live); `hb-blink` marks a broken agent
+   (error). The blink alternates the fill between brand red and the page
+   background so the capsule reads as a faltering heartbeat. */
+@keyframes hb-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes hb-blink {
+  0%, 49.9% { background-color: #DC2626; }
+  50%, 100% { background-color: var(--background); }
+}
+
+.hb-pulse {
+  animation: hb-pulse 1.6s ease-in-out infinite;
+}
+
+.hb-blink {
+  animation: hb-blink 1.2s step-end infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hb-pulse,
+  .hb-blink {
+    animation: none;
+  }
+}
+
+/* Agent capsule motif (PAP-119) — "the capsule is the agent".
+   Three states realized in the AgentCapsule component:
+   - slot:       dashed outline gently pulsing (an empty agent slot)
+   - configured: solid stroke (named/model picked, not yet live)
+   - online:     brand agent-gradient liquid rises to fill + green online-pulse
+   prefers-reduced-motion skips the liquid rise + pulses and renders the
+   final state. */
+@keyframes agent-cap-slot-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+@keyframes agent-cap-rise {
+  0% { height: 0; }
+  100% { height: 100%; }
+}
+
+@keyframes agent-cap-online-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, #22c55e 0%, transparent);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in oklab, #22c55e 18%, transparent);
+    transform: scale(1.03);
+  }
+}
+
+.agent-cap-slot {
+  animation: agent-cap-slot-pulse 1.6s ease-in-out infinite;
+}
+
+.agent-cap-liquid {
+  animation: agent-cap-rise 1.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.agent-cap-online {
+  animation: agent-cap-online-pulse 1.8s ease-in-out infinite;
+}
+
+/* Blue online-glow variant (PAP-125) — the Option 4 wizard's review step.
+   Same breathing ring as the green pulse, recoloured to brand blue (#2563eb). */
+@keyframes agent-cap-online-pulse-blue {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, #2563eb 0%, transparent);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in oklab, #2563eb 22%, transparent);
+    transform: scale(1.03);
+  }
+}
+
+.agent-cap-online-blue {
+  animation: agent-cap-online-pulse-blue 1.8s ease-in-out infinite;
+}
+
+/* Cross-fade the stacked dashed/solid border layers as the capsule evolves
+   in place (border-style itself is not animatable). */
+.agent-cap-layer {
+  transition: opacity 0.5s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-cap-slot,
+  .agent-cap-online,
+  .agent-cap-online-blue {
+    animation: none;
+  }
+  .agent-cap-layer {
+    transition: none;
+  }
+  .agent-cap-liquid {
+    animation: none;
+    height: 100%;
   }
 }
 
@@ -706,18 +966,28 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   background: none;
 }
 
-/* Copy-to-clipboard button on fenced code blocks */
+/* Actions for fenced and indented preformatted markdown blocks */
 .paperclip-markdown-codeblock {
   position: relative;
 }
 
-.paperclip-markdown-codeblock-copy {
+.paperclip-markdown-codeblock-actions {
   position: absolute;
   top: 0.4rem;
   right: 0.4rem;
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.paperclip-markdown-codeblock-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  min-height: 1.55rem;
   padding: 0.2rem 0.4rem;
   border-radius: calc(var(--radius) - 4px);
   border: 1px solid color-mix(in oklab, var(--foreground) 14%, transparent);
@@ -726,30 +996,31 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   font-size: 0.7rem;
   line-height: 1;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
-.paperclip-markdown-codeblock:hover .paperclip-markdown-codeblock-copy,
-.paperclip-markdown-codeblock-copy:focus-visible,
-.paperclip-markdown-codeblock-copy[data-copied] {
+.paperclip-markdown-codeblock:hover .paperclip-markdown-codeblock-actions,
+.paperclip-markdown-codeblock-actions:focus-within,
+.paperclip-markdown-codeblock-actions[data-active] {
   opacity: 1;
 }
 
-.paperclip-markdown-codeblock-copy:hover {
+.paperclip-markdown-codeblock-action:hover {
   background-color: var(--accent);
   color: var(--accent-foreground);
 }
 
-.paperclip-markdown-codeblock-copy[data-copied] {
+.paperclip-markdown-codeblock-action[data-active],
+.paperclip-markdown-codeblock-action[data-copied] {
+  border-color: color-mix(in oklab, var(--primary) 38%, transparent);
   color: var(--primary);
 }
 
-.paperclip-markdown-codeblock-copy[data-failed] {
+.paperclip-markdown-codeblock-action[data-failed] {
   color: var(--destructive);
 }
 
-.paperclip-markdown-codeblock-copy-label {
+.paperclip-markdown-codeblock-action-label {
   font-weight: 500;
 }
 
@@ -872,6 +1143,13 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   white-space: nowrap;
 }
 
+/* External object URL decorations follow the same pattern: the host renders
+   the icon prefix, the link text is left untouched (Postel's Law). */
+.paperclip-markdown-external-ref {
+  display: inline;
+  white-space: nowrap;
+}
+
 .dark .paperclip-markdown a {
   color: color-mix(in oklab, var(--foreground) 80%, #58a6ff 20%);
 }
@@ -981,6 +1259,25 @@ span.paperclip-project-mention-chip {
   white-space: nowrap;
 }
 
+/* Touch target floor: WCAG 2.5.5 expects ≥24px on coarse pointers. The base
+   chip is 22px; bump it on touch viewports without disturbing inline metrics. */
+@media (pointer: coarse) {
+  a.paperclip-mention-chip,
+  a.paperclip-project-mention-chip,
+  span.paperclip-mention-chip,
+  span.paperclip-project-mention-chip {
+    min-height: 24px;
+  }
+}
+
+/* External object pills: variant marker the host renders for known-resolved
+   external URLs. Inline status icon is rendered by ExternalObjectStatusIcon. */
+a.paperclip-mention-chip[data-mention-kind="external-object"],
+span.paperclip-mention-chip[data-mention-kind="external-object"] {
+  /* Inherit base chip styling; status colour comes from inline classes so the
+     host can vary tone per category without defining a CSS variant per state. */
+}
+
 /* When the identifier inside a chip is backtick-wrapped in markdown, strip the
    inline-code monospace/gray styling so the pill label reads cleanly. */
 .paperclip-markdown a.paperclip-mention-chip code,
@@ -1011,4 +1308,25 @@ span.paperclip-project-mention-chip {
 [class*="_toolbarButtonDropdownContainer_"],
 [class*="_toolbarNodeKindSelectContainer_"] {
   z-index: 81 !important;
+}
+
+/* Status chip/fill helpers.
+   Each consumer sets a local `--sc` to the status' base hue (e.g.
+   `--sc: var(--status-task-in_progress)`); these rules derive the rendered
+   fill / text / border from it. `.status-chip` is the bordered chip (agent +
+   task chips); `.status-fill` a solid swatch (heartbeat capsule). Light mixes
+   the hue toward white for a soft fill; dark layers the hue at low alpha so it
+   reads on dark surfaces. A single hue covers both modes. */
+.status-chip {
+  background-color: color-mix(in srgb, var(--sc) 15%, white);
+  color: color-mix(in srgb, var(--sc) 82%, black);
+  border-color: var(--sc);
+}
+.dark .status-chip {
+  background-color: color-mix(in srgb, var(--sc) 22%, transparent);
+  color: color-mix(in srgb, var(--sc) 80%, white);
+  border-color: color-mix(in srgb, var(--sc) 48%, transparent);
+}
+.status-fill {
+  background-color: var(--sc);
 }

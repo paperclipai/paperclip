@@ -4,16 +4,12 @@ import type {
   AdapterRuntimeCommandSpec,
   ServerAdapterModule,
 } from "./types.js";
+import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
+import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
 } from "@paperclipai/adapter-utils";
-import {
-  DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
-  joinPromptSections,
-  renderPaperclipWakePrompt,
-  stringifyPaperclipWakePayload,
-} from "@paperclipai/adapter-utils/server-utils";
 import {
   execute as acpxExecute,
   testEnvironment as acpxTestEnvironment,
@@ -31,6 +27,7 @@ import {
   listClaudeSkills,
   syncClaudeSkills,
   listClaudeModels,
+  refreshClaudeModels,
   testEnvironment as claudeTestEnvironment,
   sessionCodec as claudeSessionCodec,
   getQuotaWindows as claudeGetQuotaWindows,
@@ -96,6 +93,10 @@ import {
   models as grokModels,
 } from "@paperclipai/adapter-grok-local";
 import {
+  createHermesGatewayServerAdapter,
+  createHermesLocalServerAdapter,
+} from "@paperclipai/hermes-paperclip-adapter";
+import {
   execute as openCodeExecute,
   listOpenCodeSkills,
   syncOpenCodeSkills,
@@ -130,27 +131,11 @@ import {
   agentConfigurationDoc as piAgentConfigurationDoc,
   modelProfiles as piModelProfiles,
 } from "@paperclipai/adapter-pi-local";
-import {
-  executeHermesWrapper,
-  testEnvironmentHermesWrapper,
-  hermesSessionCodec,
-  listHermesSkillsWrapper,
-  syncHermesSkillsWrapper,
-  detectModelFromHermesWrapper,
-  prepareHermesPaperclipSkills,
-} from "./hermes-wrapper.js";
-import { resolveHermesRuntimeConfig } from "./hermes-runtime-config.js";
-import {
-  agentConfigurationDoc as hermesAgentConfigurationDoc,
-  models as hermesModels,
-} from "hermes-paperclip-adapter";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
-import { getHermesAgentConfigVersion } from "../services/hermes-config-sync.js";
-import { parseObject, renderTemplate, asString } from "./utils.js";
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -191,150 +176,6 @@ function buildCursorRuntimeCommandSpec(config: Record<string, unknown>): Adapter
   };
 }
 
-
-
-function normalizeHermesContextTask(ctx: {
-  agent?: { adapterConfig?: unknown };
-  config?: Record<string, unknown>;
-  context?: Record<string, unknown>;
-}): {
-  taskId: string | null;
-  taskTitle: string | null;
-  taskBody: string | null;
-  commentId: string | null;
-  wakeReason: string | null;
-  workspaceDir: string | null;
-} {
-  const context = parseObject(ctx.context);
-  const paperclipIssue = parseObject(context.paperclipIssue);
-  const taskId =
-    asString(paperclipIssue.id, "") ||
-    asString(context.taskId, "") ||
-    asString(context.issueId, "") ||
-    null;
-  const taskTitle = asString(paperclipIssue.title, "") || null;
-  const taskBody = asString(paperclipIssue.description, "") || null;
-  const commentId =
-    asString(context.wakeCommentId, "") ||
-    asString(context.commentId, "") ||
-    null;
-  const wakeReason = asString(context.wakeReason, "") || null;
-  const paperclipWorkspace = parseObject(context.paperclipWorkspace);
-  const workspaceDir = asString(paperclipWorkspace.cwd, "") || null;
-  return { taskId, taskTitle, taskBody, commentId, wakeReason, workspaceDir };
-}
-
-
-
-function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(ctx: T): T {
-  const config =
-    ctx && typeof ctx === "object" && "config" in ctx && ctx.config && typeof ctx.config === "object"
-      ? (ctx.config as Record<string, unknown>)
-      : null;
-  const agent =
-    ctx && typeof ctx === "object" && "agent" in ctx && ctx.agent && typeof ctx.agent === "object"
-      ? (ctx.agent as Record<string, unknown>)
-      : null;
-  const agentAdapterConfig =
-    agent?.adapterConfig && typeof agent.adapterConfig === "object"
-      ? (agent.adapterConfig as Record<string, unknown>)
-      : null;
-
-  const configCommand =
-    typeof config?.command === "string" && config.command.length > 0 ? config.command : undefined;
-  const agentCommand =
-    typeof agentAdapterConfig?.command === "string" && agentAdapterConfig.command.length > 0
-      ? agentAdapterConfig.command
-      : undefined;
-
-  if (config && !config.hermesCommand && configCommand) {
-    config.hermesCommand = configCommand;
-  }
-  if (agentAdapterConfig && !agentAdapterConfig.hermesCommand && agentCommand) {
-    agentAdapterConfig.hermesCommand = agentCommand;
-  }
-
-  return ctx;
-}
-
-function withHermesPaperclipSkillArgs(value: unknown, preloadedSkillNames: string[]): string[] {
-  const args = Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-    : [];
-  const joined = args.join(" ");
-  const hasSkillsArg = /(?:^|\s)(?:--skills|-s)(?:\s|=|$)/.test(joined);
-  if (hasSkillsArg) return args;
-  if (preloadedSkillNames.length === 0) return args;
-  return [...args, "--skills", preloadedSkillNames.join(",")];
-}
-
-function buildHermesNativePaperclipPrompt(input: {
-  agentName: string;
-  agentRole: string;
-  customPrompt: string | null;
-  taskMarkdown: string | null;
-  wakePrompt: string | null;
-  preloadedSkillNames: string[];
-  missingSkillNames: string[];
-}): string {
-  const skillStatus = input.missingSkillNames.length === 0
-    ? `Hermes preloaded these Paperclip skills for this run: ${input.preloadedSkillNames.join(", ")}. Use them for Paperclip coordination when useful.`
-    : `Hermes skill preload is not active for this run because these skills were not discoverable: ${input.missingSkillNames.join(", ")}. Follow the native API workflow in this prompt directly instead of trying to invoke missing slash commands.`;
-  const nativeContract = [
-    `You are ${input.agentName}, a Paperclip ${input.agentRole || "agent"} powered by Hermes.`,
-    "You are not a generic chat assistant. You are running inside a Paperclip heartbeat and must operate the Paperclip control plane when asked.",
-    "",
-    "Native Paperclip operating rules:",
-    "- Use the Paperclip HTTP API directly for Paperclip coordination and mutations.",
-    "- Base URL is PAPERCLIP_API_URL. It already includes /api in normal Paperclip runs; do not append another /api unless the value lacks it.",
-    "- Authenticate every request with Authorization: Bearer $PAPERCLIP_API_KEY.",
-    "- Include X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID on every mutating request.",
-    "- If a request mutates Paperclip state, actually call the API. Do not replace the action with a local report, markdown file, plan, or Hermes-only skill unless the user explicitly asked only for a plan.",
-    "- Never pipe curl output to python, node, bash, or any interpreter. Inspect JSON directly or save it only when necessary.",
-    "",
-    "Identity and runtime environment:",
-    "- PAPERCLIP_AGENT_ID: your agent id",
-    "- PAPERCLIP_COMPANY_ID: your company id",
-    "- PAPERCLIP_RUN_ID: current heartbeat run id",
-    "- PAPERCLIP_TASK_ID: current issue/task id when scoped",
-    "- PAPERCLIP_WAKE_REASON: why this heartbeat started",
-    "- PAPERCLIP_WAKE_COMMENT_ID: triggering comment id when present",
-    "- PAPERCLIP_WAKE_PAYLOAD_JSON: compact wake payload when present",
-    "",
-    "Core API workflow:",
-    "- Identify yourself: GET $PAPERCLIP_API_URL/agents/me",
-    "- Read assigned work: GET $PAPERCLIP_API_URL/agents/me/inbox-lite",
-    "- Read an issue: GET $PAPERCLIP_API_URL/issues/$PAPERCLIP_TASK_ID or /issues/{id}/heartbeat-context",
-    "- Checkout before deliverable work: POST $PAPERCLIP_API_URL/issues/{id}/checkout with {\"agentId\":\"$PAPERCLIP_AGENT_ID\"}",
-    "- Comment: POST $PAPERCLIP_API_URL/issues/{id}/comments with {\"body\":\"...\"}",
-    "- Update status: PATCH $PAPERCLIP_API_URL/issues/{id} with {\"status\":\"done|in_review|blocked|...\",\"comment\":\"...\"}",
-    "- Create/delegate work: POST $PAPERCLIP_API_URL/companies/$PAPERCLIP_COMPANY_ID/issues",
-    "",
-    "Hiring and company building:",
-    "- If the user asks you to hire, create, staff, recruit, or set up employees/agents, use the paperclip-create-agent skill and submit real Paperclip hire requests.",
-    "- Preferred endpoint: POST $PAPERCLIP_API_URL/companies/$PAPERCLIP_COMPANY_ID/agent-hires.",
-    "- Direct create endpoint, when governance allows it: POST $PAPERCLIP_API_URL/companies/$PAPERCLIP_COMPANY_ID/agents.",
-    "- First inspect existing conventions with GET $PAPERCLIP_API_URL/companies/$PAPERCLIP_COMPANY_ID/agent-configurations and GET $PAPERCLIP_API_URL/llms/agent-configuration.txt.",
-    "- A correct response to 'hire employees' is an API-created hire request or agent plus a Paperclip comment/summary, not a local report in HERMES_HOME.",
-    "",
-    "Skills:",
-    `- ${skillStatus}`,
-    "- When the paperclip-create-agent skill is available and the request is about hiring, use it. Otherwise, use the hiring API workflow in this prompt directly.",
-    "- Do not create Hermes-only skills as a substitute for Paperclip company skills or agents. Use the Paperclip company skills API when the user asks to install/assign company skills.",
-    "",
-    "Final disposition:",
-    "- End each heartbeat with real Paperclip state: done, in_review with a real review/approval path, blocked with owner/action, or delegated child issues.",
-    "- If you cannot complete a requested Paperclip mutation, explain the blocker in a Paperclip issue/comment or approval thread when possible.",
-  ].join("\n");
-
-  return joinPromptSections([
-    nativeContract,
-    input.wakePrompt,
-    input.taskMarkdown,
-    input.customPrompt ?? DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
-  ]);
-}
-
 function dedupeAdapterModels(models: AdapterModel[]): AdapterModel[] {
   const seen = new Set<string>();
   const result: AdapterModel[] = [];
@@ -369,7 +210,7 @@ async function listAcpxModels(): Promise<AdapterModel[]> {
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
-  execute: claudeExecute,
+  execute: stampClaudeAgentIdHeader(claudeExecute),
   testEnvironment: claudeTestEnvironment,
   listSkills: listClaudeSkills,
   syncSkills: syncClaudeSkills,
@@ -378,6 +219,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
   models: claudeModels,
   modelProfiles: claudeModelProfiles,
   listModels: listClaudeModels,
+  refreshModels: refreshClaudeModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
@@ -504,6 +346,10 @@ const grokLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: grokAgentConfigurationDoc,
 };
 
+const hermesGatewayAdapter = createHermesGatewayServerAdapter();
+
+const hermesLocalAdapter = createHermesLocalServerAdapter();
+
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
   execute: openclawGatewayExecute,
@@ -554,176 +400,6 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
-// hermes-paperclip-adapter v0.3.0 delegates to the wrapper for config/env wiring.
-const hermesLocalAdapter: ServerAdapterModule = {
-  type: "hermes_local",
-  execute: async (ctx) => {
-    const normalizedCtx = normalizeHermesConfig(ctx);
-
-    const existingConfig = (normalizedCtx.agent?.adapterConfig ?? {}) as Record<string, unknown>;
-    const configSource = (normalizedCtx.config ?? {}) as Record<string, unknown>;
-    const existingEnv = {
-      ...parseObject(existingConfig.env),
-      ...parseObject(configSource.env),
-    } as Record<string, string>;
-    const sharedHermesHome =
-      typeof configSource.hermesHome === "string" && configSource.hermesHome.trim().length > 0
-        ? configSource.hermesHome.trim()
-        : typeof existingConfig.hermesHome === "string" && existingConfig.hermesHome.trim().length > 0
-          ? existingConfig.hermesHome.trim()
-          : process.env.HERMES_HOME ?? "/paperclip/hermes";
-
-    const explicitApiKey =
-      typeof existingEnv.PAPERCLIP_API_KEY === "string" && existingEnv.PAPERCLIP_API_KEY.trim().length > 0;
-    const hasCustomPrompt =
-      typeof configSource.promptTemplate === "string" && configSource.promptTemplate.trim().length > 0;
-    const detectedHermesModel = await detectModelFromHermesWrapper(sharedHermesHome).catch(() => null);
-    const resolvedHermesModel =
-      asString(configSource.model, "") || asString(existingConfig.model, "") || detectedHermesModel?.model || "";
-    const resolvedHermesProvider =
-      asString(configSource.provider, "") || asString(existingConfig.provider, "") || detectedHermesModel?.provider || "";
-
-    const taskCtx = normalizeHermesContextTask({
-      agent: normalizedCtx.agent,
-      config: normalizedCtx.config,
-      context: normalizedCtx.context,
-    });
-    const wakePayloadJson = stringifyPaperclipWakePayload(normalizedCtx.context?.paperclipWake);
-    const wakePrompt = renderPaperclipWakePrompt(normalizedCtx.context?.paperclipWake, {
-      resumedSession: Boolean(normalizedCtx.runtime?.sessionParams || normalizedCtx.runtime?.sessionId),
-    });
-    const wakeRecord = parseObject(normalizedCtx.context?.paperclipWake);
-    const wakeReason = taskCtx.wakeReason || asString(wakeRecord.reason, "").trim() || null;
-    const wakeCommentId = taskCtx.commentId || asString(wakeRecord.latestCommentId, "").trim() || null;
-    const taskMarkdown = asString(normalizedCtx.context?.paperclipTaskMarkdown, "").trim();
-    const linkedIssueIds = Array.isArray(normalizedCtx.context?.issueIds)
-      ? normalizedCtx.context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-      : [];
-
-    const paperclipApiUrl =
-      typeof configSource.paperclipApiUrl === "string" && configSource.paperclipApiUrl.trim().length > 0
-        ? configSource.paperclipApiUrl.trim()
-        : typeof existingConfig.paperclipApiUrl === "string" && existingConfig.paperclipApiUrl.trim().length > 0
-          ? existingConfig.paperclipApiUrl.trim()
-          : "http://localhost:3100/api";
-
-    const pushedConfigVersion = getHermesAgentConfigVersion(normalizedCtx.agent.id);
-    const patchedConfig: Record<string, unknown> = {
-      ...existingConfig,
-      ...(pushedConfigVersion ? { paperclipConfigVersion: pushedConfigVersion } : {}),
-      hermesHome: sharedHermesHome,
-      ...(resolvedHermesModel ? { model: resolvedHermesModel } : {}),
-      ...(resolvedHermesProvider ? { provider: resolvedHermesProvider } : {}),
-      paperclipApiUrl,
-      env: {
-        ...existingEnv,
-        ...(!explicitApiKey && normalizedCtx.authToken ? { PAPERCLIP_API_KEY: normalizedCtx.authToken } : {}),
-        PAPERCLIP_AGENT_ID: normalizedCtx.agent.id,
-        PAPERCLIP_COMPANY_ID: normalizedCtx.agent.companyId,
-        PAPERCLIP_API_URL: paperclipApiUrl,
-        PAPERCLIP_RUN_ID: normalizedCtx.runId ?? "",
-        HERMES_HOME: sharedHermesHome,
-        ...(taskCtx.taskId ? { PAPERCLIP_TASK_ID: taskCtx.taskId } : {}),
-        ...(taskCtx.taskTitle ? { PAPERCLIP_TASK_TITLE: taskCtx.taskTitle } : {}),
-        ...(taskCtx.taskBody ? { PAPERCLIP_TASK_BODY: taskCtx.taskBody } : {}),
-        ...(wakeReason ? { PAPERCLIP_WAKE_REASON: wakeReason } : {}),
-        ...(wakeCommentId ? { PAPERCLIP_WAKE_COMMENT_ID: wakeCommentId } : {}),
-        ...(wakePayloadJson ? { PAPERCLIP_WAKE_PAYLOAD_JSON: wakePayloadJson } : {}),
-        ...(linkedIssueIds.length > 0 ? { PAPERCLIP_LINKED_ISSUE_IDS: linkedIssueIds.join(",") } : {}),
-      },
-    };
-
-    const preparedSkills = await prepareHermesPaperclipSkills(patchedConfig).catch(async (err) => {
-      const message = err instanceof Error ? err.message : String(err);
-      await normalizedCtx.onLog("stderr", `[adapter:hermes_local] Paperclip skill preload disabled: ${message}\n`);
-      return null;
-    });
-    const preloadedSkillNames = preparedSkills && preparedSkills.missingSkillNames.length === 0
-      ? preparedSkills.preloadedSkillNames
-      : [];
-    patchedConfig.extraArgs = withHermesPaperclipSkillArgs(
-      configSource.extraArgs ?? existingConfig.extraArgs,
-      preloadedSkillNames,
-    );
-    if (preparedSkills) {
-      for (const warning of preparedSkills.warnings) {
-        await normalizedCtx.onLog("stderr", `[adapter:hermes_local] ${warning}\n`);
-      }
-      if (preparedSkills.missingSkillNames.length > 0) {
-        await normalizedCtx.onLog(
-          "stdout",
-          `[adapter:hermes_local] Running without Hermes skill preload; missing skills: ${preparedSkills.missingSkillNames.join(", ")}. Falling back to native Paperclip prompt instructions.\n`,
-        );
-      }
-    }
-
-    if (taskCtx.taskId) {
-      patchedConfig.taskId = taskCtx.taskId;
-      if (taskCtx.taskTitle) patchedConfig.taskTitle = taskCtx.taskTitle;
-      if (taskCtx.taskBody) patchedConfig.taskBody = taskCtx.taskBody;
-      if (wakeCommentId) patchedConfig.commentId = wakeCommentId;
-      if (wakeReason) patchedConfig.wakeReason = wakeReason;
-      if (taskCtx.workspaceDir) patchedConfig.workspaceDir = taskCtx.workspaceDir;
-    }
-
-    patchedConfig.promptTemplate = buildHermesNativePaperclipPrompt({
-      agentName: normalizedCtx.agent.name,
-      agentRole: asString(parseObject(normalizedCtx.agent).role, ""),
-      customPrompt: hasCustomPrompt ? configSource.promptTemplate as string : null,
-      wakePrompt: wakePrompt || null,
-      taskMarkdown: taskMarkdown || null,
-      preloadedSkillNames,
-      missingSkillNames: preparedSkills?.missingSkillNames ?? ["paperclip", "paperclip-create-agent"],
-    });
-
-    const runtimeConfig = resolveHermesRuntimeConfig(normalizedCtx.agent.companyId, normalizedCtx.agent.id, patchedConfig);
-    console.info("[adapter:hermes_local] runtime-config-applied", {
-      companyId: normalizedCtx.agent.companyId,
-      agentId: normalizedCtx.agent.id,
-      runId: normalizedCtx.runId,
-      model: runtimeConfig.model,
-      capabilities: runtimeConfig.capabilities,
-      configHash: runtimeConfig.configHash,
-      hermesHome: sharedHermesHome,
-      hermesSkillsHome: preparedSkills?.skillsHome ?? null,
-      preloadedSkills: preloadedSkillNames,
-      missingSkills: preparedSkills?.missingSkillNames ?? [],
-      resolvedAt: runtimeConfig.resolvedAt,
-      cacheState: runtimeConfig.cacheState,
-    });
-
-    const patchedCtx = {
-      ...normalizedCtx,
-      config: patchedConfig,
-      agent: {
-        ...normalizedCtx.agent,
-        adapterConfig: patchedConfig,
-      },
-    };
-
-    return executeHermesWrapper(patchedCtx);
-  },
-  testEnvironment: testEnvironmentHermesWrapper,
-  sessionCodec: hermesSessionCodec,
-  listSkills: listHermesSkillsWrapper,
-  syncSkills: syncHermesSkillsWrapper,
-  models: hermesModels,
-  supportsLocalAgentJwt: true,
-  supportsInstructionsBundle: false,
-  requiresMaterializedRuntimeSkills: false,
-  agentConfigurationDoc: hermesAgentConfigurationDoc,
-  detectModel: async () => {
-    const detected = await detectModelFromHermesWrapper();
-    if (!detected) return detected;
-    console.info("[adapter:hermes_local] detect-model", {
-      provider: detected.provider,
-      model: detected.model,
-      source: detected.source,
-    });
-    return detected;
-  },
-};
-
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -746,8 +422,9 @@ function registerBuiltInAdapters() {
     cursorLocalAdapter,
     geminiLocalAdapter,
     grokLocalAdapter,
-    openclawGatewayAdapter,
+    hermesGatewayAdapter,
     hermesLocalAdapter,
+    openclawGatewayAdapter,
     processAdapter,
     httpAdapter,
   ]) {
@@ -791,16 +468,12 @@ function getDisabledAdapterTypesFromStore(): string[] {
 export function resolveExternalAdapterRegistration(
   externalAdapter: ServerAdapterModule,
 ): ServerAdapterModule {
-  const adapterType = externalAdapter.type;
   return {
     ...externalAdapter,
     sessionManagement:
-      adapterType
-        ? (externalAdapter.sessionManagement
-          ?? getAdapterSessionManagement(adapterType)
-          ?? undefined)
-        : externalAdapter.sessionManagement
-          ?? undefined,
+      externalAdapter.sessionManagement
+        ?? getAdapterSessionManagement(externalAdapter.type)
+        ?? undefined,
   };
 }
 
@@ -814,24 +487,19 @@ const externalAdaptersReady: Promise<void> = (async () => {
   try {
     const externalAdapters = await buildExternalAdapters();
     for (const externalAdapter of externalAdapters) {
-      const adapterType = externalAdapter.type;
-      if (!adapterType) {
-        console.warn("[paperclip] Skipping external adapter with missing type:", externalAdapter);
-        continue;
-      }
-      const overriding = BUILTIN_ADAPTER_TYPES.has(adapterType);
+      const overriding = BUILTIN_ADAPTER_TYPES.has(externalAdapter.type);
       if (overriding) {
         console.log(
-          `[paperclip] External adapter "${adapterType}" overrides built-in adapter`,
+          `[paperclip] External adapter "${externalAdapter.type}" overrides built-in adapter`,
         );
         // Save the original builtin for later restoration.
-        const existing = adaptersByType.get(adapterType);
-        if (existing && !builtinFallbacks.has(adapterType)) {
-          builtinFallbacks.set(adapterType, existing);
+        const existing = adaptersByType.get(externalAdapter.type);
+        if (existing && !builtinFallbacks.has(externalAdapter.type)) {
+          builtinFallbacks.set(externalAdapter.type, existing);
         }
       }
       adaptersByType.set(
-        adapterType,
+        externalAdapter.type,
         resolveExternalAdapterRegistration(externalAdapter),
       );
     }
@@ -851,18 +519,13 @@ export function waitForExternalAdapters(): Promise<void> {
 }
 
 export function registerServerAdapter(adapter: ServerAdapterModule): void {
-  const adapterType = adapter.type;
-  if (!adapterType) {
-    console.warn("[paperclip] registerServerAdapter called with missing type:", adapter);
-    return;
-  }
-  if (BUILTIN_ADAPTER_TYPES.has(adapterType) && !builtinFallbacks.has(adapterType)) {
-    const existing = adaptersByType.get(adapterType);
+  if (BUILTIN_ADAPTER_TYPES.has(adapter.type) && !builtinFallbacks.has(adapter.type)) {
+    const existing = adaptersByType.get(adapter.type);
     if (existing) {
-      builtinFallbacks.set(adapterType, existing);
+      builtinFallbacks.set(adapter.type, existing);
     }
   }
-  adaptersByType.set(adapterType, adapter);
+  adaptersByType.set(adapter.type, adapter);
 }
 
 export function unregisterServerAdapter(type: string): void {
@@ -893,7 +556,42 @@ export function getServerAdapter(type: string): ServerAdapterModule {
   return findActiveServerAdapter(type) ?? processAdapter;
 }
 
+/**
+ * Memoized view of PAPERCLIP_ADAPTER_MODELS, keyed by the raw env string so
+ * tests (and live env mutation) that change the variable are still observed.
+ * Parsing happens at most once per distinct raw value instead of per
+ * `listAdapterModels` request, and malformed values fail SOFT here: we log the
+ * parse error once (per distinct raw value) and fall back to adapter-discovered
+ * models rather than throwing at request time.
+ */
+let adapterModelsEnvCache: {
+  raw: string | undefined;
+  value: ReturnType<typeof parseAdapterModelsEnv>;
+} | null = null;
+
+function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
+  const raw = process.env.PAPERCLIP_ADAPTER_MODELS;
+  if (adapterModelsEnvCache && adapterModelsEnvCache.raw === raw) {
+    return adapterModelsEnvCache.value;
+  }
+  let value: ReturnType<typeof parseAdapterModelsEnv> = null;
+  try {
+    value = parseAdapterModelsEnv(process.env);
+  } catch (err) {
+    console.error(
+      "[paperclip] Invalid PAPERCLIP_ADAPTER_MODELS; ignoring declared model lists:",
+      err,
+    );
+  }
+  adapterModelsEnvCache = { raw, value };
+  return value;
+}
+
 export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+  const declaredModels = getDeclaredAdapterModels();
+  if (declaredModels && declaredModels[type]?.length) {
+    return declaredModels[type].map((m) => ({ id: m.id, label: m.label ?? m.id }));
+  }
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
   if (adapter.listModels) {

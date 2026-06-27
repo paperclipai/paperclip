@@ -10,6 +10,7 @@ import {
   usePluginToast,
   type PluginCommentAnnotationProps,
   type PluginCommentContextMenuItemProps,
+  type PluginCompanySettingsPageProps,
   type PluginDetailTabProps,
   type PluginPageProps,
   type PluginProjectSidebarItemProps,
@@ -2233,6 +2234,33 @@ export function KitchenSinkSettingsPage({ context }: PluginSettingsPageProps) {
         {savedMessage ? <span style={{ fontSize: "12px", opacity: 0.7 }}>{savedMessage}</span> : null}
       </div>
     </form>
+  );
+}
+
+export function KitchenSinkCompanySettingsPage({ context }: PluginCompanySettingsPageProps) {
+  const hostNavigation = useHostNavigation();
+  const overview = usePluginOverview(context.companyId);
+  const href = hostNavigation.resolveHref("/company/settings/kitchen-sink");
+
+  return (
+    <div style={layoutStack}>
+      <Section title="Company Settings Slot">
+        <div style={subtleCardStyle}>
+          <div style={{ display: "grid", gap: "8px" }}>
+            <strong>Mounted inside company settings</strong>
+            <div style={mutedTextStyle}>
+              This fixture proves a ready plugin can add a settings sidebar item and render with company context.
+            </div>
+            <JsonBlock value={{
+              companyId: context.companyId,
+              companyPrefix: context.companyPrefix,
+              route: href,
+              pluginId: overview.data?.pluginId ?? PLUGIN_ID,
+            }} />
+          </div>
+        </div>
+      </Section>
+    </div>
   );
 }
 

@@ -28,6 +28,9 @@ import {
 } from "./server-utils.js";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
+import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
+
+export type { RuntimeProgressSink } from "./runtime-progress.js";
 
 export interface AdapterLocalExecutionTarget {
   kind: "local";
@@ -70,7 +73,7 @@ export interface PreparedAdapterExecutionTargetRuntime {
   workspaceRemoteDir: string | null;
   runtimeRootDir: string | null;
   assetDirs: Record<string, string>;
-  restoreWorkspace(): Promise<void>;
+  restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
 export interface AdapterExecutionTargetProcessOptions {
@@ -80,6 +83,7 @@ export interface AdapterExecutionTargetProcessOptions {
   timeoutSec: number;
   graceSec: number;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   terminalResultCleanup?: TerminalResultCleanupOptions;
 }
@@ -404,6 +408,10 @@ export async function runAdapterExecutionTargetProcess(
   if (target?.kind === "remote" && target.transport === "sandbox") {
     const runner = requireSandboxRunner(target);
     const env = sanitizeRemoteExecutionEnv(options.env);
+    await options.onRuntimeProgress?.({
+      phase: "adapter_startup",
+      message: "Starting adapter in sandbox",
+    });
     return await runner.execute({
       command,
       args,
@@ -930,6 +938,12 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   installCommand?: string | null;
   /** When provided alongside `installCommand`, skip the install if the binary is already on PATH. */
   detectCommand?: string | null;
+  // Optional progress sink for the workspace/asset upload. The returned
+  // `restoreWorkspace(onProgress?)` accepts its own sink for teardown. Both are
+  // forwarded down to the transport so the sandbox/SSH children can attach byte
+  // counters without further changes here.
+  onProgress?: RuntimeProgressSink;
+  onRuntimeProgress?: RuntimeStatusSink;
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
   const target = input.target ?? { kind: "local" as const };
   if (target.kind === "local") {
@@ -950,6 +964,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
       assets: input.assets,
+      onProgress: input.onProgress,
     });
     return {
       target,
@@ -980,6 +995,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     assets: input.assets,
     installCommand: input.installCommand,
     detectCommand: input.detectCommand,
+    onProgress: input.onProgress,
+    onRuntimeProgress: input.onRuntimeProgress,
   });
   return {
     target,

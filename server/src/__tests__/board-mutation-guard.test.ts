@@ -5,7 +5,7 @@ import { boardMutationGuard } from "../middleware/board-mutation-guard.js";
 
 function createApp(
   actorType: "board" | "agent",
-  boardSource: "session" | "local_implicit" | "board_key" = "session",
+  boardSource: "session" | "local_implicit" | "board_key" | "cloud_tenant" = "session",
 ) {
   const app = express();
   app.use(express.json());
@@ -62,6 +62,12 @@ describe("boardMutationGuard", () => {
 
   it("allows board bearer-key mutations without origin", async () => {
     const app = createApp("board", "board_key");
+    const res = await request(app).post("/mutate").send({ ok: true });
+    expect([200, 204]).toContain(res.status);
+  });
+
+  it("allows trusted Cloud tenant mutations without origin", async () => {
+    const app = createApp("board", "cloud_tenant");
     const res = await request(app).post("/mutate").send({ ok: true });
     expect([200, 204]).toContain(res.status);
   });

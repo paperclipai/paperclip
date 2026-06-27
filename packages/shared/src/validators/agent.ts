@@ -7,10 +7,15 @@ import {
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
+import { trustAuthorizationPolicySchema, trustPresetSchema } from "./trust-policy.js";
+import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
 
 export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
-});
+  canCreateSkills: z.boolean().optional().default(true),
+  trustPreset: trustPresetSchema.optional(),
+  authorizationPolicy: trustAuthorizationPolicySchema.optional(),
+}).catchall(z.unknown());
 
 export const agentInstructionsBundleModeSchema = z.enum(["managed", "external"]);
 
@@ -70,7 +75,7 @@ export const createAgentSchema = z.object({
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
   reportsTo: z.string().uuid().optional().nullable(),
   capabilities: z.string().optional().nullable(),
-  desiredSkills: z.array(z.string().min(1)).optional(),
+  desiredSkills: z.array(agentDesiredSkillSelectionSchema).optional(),
   adapterType: agentAdapterTypeSchema,
   adapterConfig: adapterConfigSchema.optional().default({}),
   instructionsBundle: createAgentInstructionsBundleSchema.optional(),
@@ -109,8 +114,45 @@ export const updateAgentInstructionsPathSchema = z.object({
 
 export type UpdateAgentInstructionsPath = z.infer<typeof updateAgentInstructionsPathSchema>;
 
+export const taskBridgeAgentKeyScopeSchema = z.object({
+  kind: z.literal("task_bridge"),
+  projectId: z.string().uuid().optional().nullable(),
+  projectIds: z.array(z.string().uuid()).max(50).optional(),
+  parentIssueId: z.string().uuid().optional().nullable(),
+  parentIssueIds: z.array(z.string().uuid()).max(50).optional(),
+  allowedAssigneeAgentIds: z.array(z.string().uuid()).max(50).optional(),
+}).strict().superRefine((value, ctx) => {
+  const hasProjectBoundary = Boolean(value.projectId) || Boolean(value.projectIds?.length);
+  const hasParentBoundary = Boolean(value.parentIssueId) || Boolean(value.parentIssueIds?.length);
+  if (!hasProjectBoundary && !hasParentBoundary) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "task_bridge keys require at least one project or parent issue boundary",
+      path: ["projectId"],
+    });
+  }
+});
+
+export const standardAgentKeyScopeSchema = z.object({
+  kind: z.literal("standard"),
+}).strict();
+
+export const agentApiKeyScopeSchema = z.union([
+  standardAgentKeyScopeSchema,
+  taskBridgeAgentKeyScopeSchema,
+]);
+
+export type AgentApiKeyScope = z.infer<typeof agentApiKeyScopeSchema>;
+export type TaskBridgeAgentKeyScope = z.infer<typeof taskBridgeAgentKeyScopeSchema>;
+
+export function normalizeAgentApiKeyScope(value: unknown): AgentApiKeyScope {
+  const parsed = agentApiKeyScopeSchema.safeParse(value);
+  return parsed.success ? parsed.data : { kind: "standard" };
+}
+
 export const createAgentKeySchema = z.object({
   name: z.string().min(1).default("default"),
+  scope: agentApiKeyScopeSchema.optional().default({ kind: "standard" }),
 });
 
 export type CreateAgentKey = z.infer<typeof createAgentKeySchema>;
@@ -157,7 +199,10 @@ export type TestAdapterEnvironment = z.infer<typeof testAdapterEnvironmentSchema
 
 export const updateAgentPermissionsSchema = z.object({
   canCreateAgents: z.boolean(),
+  canCreateSkills: z.boolean().optional(),
   canAssignTasks: z.boolean(),
+  trustPreset: trustPresetSchema.optional(),
+  authorizationPolicy: trustAuthorizationPolicySchema.optional(),
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;

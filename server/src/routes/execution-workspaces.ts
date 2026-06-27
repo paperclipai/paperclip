@@ -6,11 +6,12 @@ import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
   updateExecutionWorkspaceSchema,
+  workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { executionWorkspaceService, logActivity, workspaceOperationService } from "../services/index.js";
+import { accessService, executionWorkspaceService, logActivity, workspaceOperationService } from "../services/index.js";
 import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
@@ -30,17 +31,46 @@ import {
 } from "./workspace-command-authz.js";
 import { assertCanManageExecutionWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 import { appendWithCap } from "../adapters/utils.js";
+import { environmentRuntimeService } from "../services/environment-runtime.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 
-export function executionWorkspaceRoutes(db: Db) {
+export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
   const router = Router();
   const svc = executionWorkspaceService(db);
+  const access = accessService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
+  const environmentRuntime = environmentRuntimeService(db, {
+    pluginWorkerManager: opts.pluginWorkerManager,
+  });
+
+  async function assertExecutionWorkspaceReadAllowed(req: Request, res: Response, companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) return true;
+    res.status(403).json({ error: "Execution workspaces are outside this actor's authorization boundary" });
+    return false;
+  }
+
+  async function assertRuntimeManageAllowed(req: Request, res: Response, companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "runtime:manage",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) return true;
+    res.status(403).json({ error: "Runtime service control is outside this actor's authorization boundary" });
+    return false;
+  }
 
   router.get("/companies/:companyId/execution-workspaces", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (!(await assertExecutionWorkspaceReadAllowed(req, res, companyId))) return;
     const filters = {
       projectId: req.query.projectId as string | undefined,
       projectWorkspaceId: req.query.projectWorkspaceId as string | undefined,
@@ -54,6 +84,24 @@ export function executionWorkspaceRoutes(db: Db) {
     res.json(workspaces);
   });
 
+  router.get("/companies/:companyId/workspace-overview", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertExecutionWorkspaceReadAllowed(req, res, companyId))) return;
+
+    const parsed = workspaceOverviewQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(422).json({
+        error: "Invalid workspace overview query",
+        details: parsed.error.flatten(),
+      });
+      return;
+    }
+
+    const overview = await svc.listOverview(companyId, parsed.data);
+    res.json(overview);
+  });
+
   router.get("/execution-workspaces/:id", async (req, res) => {
     const id = req.params.id as string;
     const workspace = await svc.getById(id);
@@ -62,6 +110,7 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, workspace.companyId);
+    if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     res.json(workspace);
   });
 
@@ -73,6 +122,7 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, workspace.companyId);
+    if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     const readiness = await svc.getCloseReadiness(id);
     if (!readiness) {
       res.status(404).json({ error: "Execution workspace not found" });
@@ -89,6 +139,7 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, workspace.companyId);
+    if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     const operations = await workspaceOperationsSvc.listForExecutionWorkspace(id);
     res.json(operations);
   });
@@ -107,6 +158,7 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
 
     await assertCanManageExecutionWorkspaceRuntimeServices(db, req, {
       companyId: existing.companyId,
@@ -250,6 +302,7 @@ export function executionWorkspaceRoutes(db: Db) {
               repoUrl: existing.repoUrl,
               baseRef: existing.baseRef,
               branchName: existing.branchName,
+              metadata: existing.metadata as Record<string, unknown> | null,
               config: {
                 ...existing.config,
                 provisionCommand:
@@ -446,6 +499,7 @@ export function executionWorkspaceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectExecutionWorkspaceCommandPaths({
@@ -507,6 +561,12 @@ export function executionWorkspaceRoutes(db: Db) {
         return;
       }
       workspace = archivedWorkspace;
+
+      await environmentRuntime.destroyReusableSandboxLeases({
+        companyId: existing.companyId,
+        executionWorkspaceId: existing.id,
+        failureReason: "execution_workspace_closed",
+      });
 
       if (existing.mode === "shared_workspace") {
         await db

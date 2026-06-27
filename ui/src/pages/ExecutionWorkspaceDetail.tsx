@@ -40,6 +40,7 @@ import { cn, formatDateTime, issueUrl, projectRouteRef, projectWorkspaceUrl } fr
 import {
   getWorkspaceSpecificRoutineVariableNames,
   routineHasWorkspaceSpecificVariables,
+  sortWorkspaceRoutinesByName,
 } from "../lib/workspace-routines";
 
 type WorkspaceFormState = {
@@ -67,7 +68,7 @@ type OrderedExecutionWorkspaceTabItem = {
 
 const DEFAULT_PLUGIN_DETAIL_TAB_ORDER = 100;
 const EXECUTION_WORKSPACE_BASE_TAB_ITEMS: OrderedExecutionWorkspaceTabItem[] = [
-  { value: "issues", label: "Issues", order: 10 },
+  { value: "issues", label: "Tasks", order: 10 },
   { value: "services", label: "Services", order: 20 },
   { value: "configuration", label: "Configuration", order: 30 },
   { value: "runtime_logs", label: "Runtime logs", order: 40 },
@@ -445,7 +446,7 @@ function ExecutionWorkspaceRoutinesList({
   });
 
   const workspaceRoutines = useMemo(
-    () => (routines ?? []).filter(routineHasWorkspaceSpecificVariables),
+    () => sortWorkspaceRoutinesByName((routines ?? []).filter(routineHasWorkspaceSpecificVariables)),
     [routines],
   );
 
@@ -703,6 +704,7 @@ export function ExecutionWorkspaceDetail() {
       executionWorkspacesApi.controlRuntimeCommands(workspace!.id, request.action, request),
     onSuccess: (result, request) => {
       queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(result.workspace.companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
       setRuntimeActionErrorMessage(null);
@@ -1077,7 +1079,7 @@ export function ExecutionWorkspaceDetail() {
                   "None"
                 )}
               </DetailRow>
-              <DetailRow label="Source issue">
+              <DetailRow label="Source task">
                 {sourceIssue ? (
                   <Link to={issueUrl(sourceIssue)} className="hover:underline">
                     {sourceIssue.identifier ?? sourceIssue.id} · {sourceIssue.title}
@@ -1218,7 +1220,7 @@ export function ExecutionWorkspaceDetail() {
         ) : isExecutionWorkspacePluginTab(activeTab) ? (
           <MissingPluginTabPlaceholder
             defaultTabHref={executionWorkspaceTabPath(workspace.id, "issues")}
-            defaultTabLabel="Back to issues"
+            defaultTabLabel="Back to tasks"
           />
         ) : activeTab === "routines" ? (
           <ExecutionWorkspaceRoutinesList
@@ -1237,6 +1239,7 @@ export function ExecutionWorkspaceDetail() {
         onOpenChange={setCloseDialogOpen}
         onClosed={(nextWorkspace) => {
           queryClient.setQueryData(queryKeys.executionWorkspaces.detail(nextWorkspace.id), nextWorkspace);
+          queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(nextWorkspace.companyId) });
           queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.closeReadiness(nextWorkspace.id) });
           queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(nextWorkspace.id) });
           if (project) {

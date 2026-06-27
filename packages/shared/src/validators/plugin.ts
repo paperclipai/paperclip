@@ -6,6 +6,7 @@ import {
   PLUGIN_UI_SLOT_TYPES,
   PLUGIN_UI_SLOT_ENTITY_TYPES,
   PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS,
+  PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS,
   PLUGIN_LAUNCHER_PLACEMENT_ZONES,
   PLUGIN_LAUNCHER_ACTIONS,
   PLUGIN_LAUNCHER_BOUNDS,
@@ -24,6 +25,7 @@ import {
   ISSUE_SURFACE_VISIBILITIES,
 } from "../constants.js";
 import { routineVariableSchema } from "./routine.js";
+import { externalObjectProviderKeySchema, externalObjectTypeSchema } from "./external-object.js";
 
 // ---------------------------------------------------------------------------
 // JSON Schema placeholder – a permissive validator for JSON Schema objects
@@ -123,6 +125,7 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   kind: z.enum(["environment_driver", "sandbox_provider"]).optional(),
   displayName: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
+  supportsReusableLeases: z.boolean().optional(),
   configSchema: jsonSchemaSchema,
 });
 
@@ -322,10 +325,10 @@ export const pluginUiSlotDeclarationSchema = z.object({
       path: ["entityTypes"],
     });
   }
-  if (value.routePath && value.type !== "page" && value.type !== "routeSidebar") {
+  if (value.routePath && value.type !== "page" && value.type !== "routeSidebar" && value.type !== "companySettingsPage") {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "routePath is only supported for page and routeSidebar slots",
+      message: "routePath is only supported for page, routeSidebar, and companySettingsPage slots",
       path: ["routePath"],
     });
   }
@@ -336,10 +339,28 @@ export const pluginUiSlotDeclarationSchema = z.object({
       path: ["routePath"],
     });
   }
+  if (value.type === "companySettingsPage" && !value.routePath) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "companySettingsPage slots require routePath",
+      path: ["routePath"],
+    });
+  }
   if (value.routePath && PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS.includes(value.routePath as (typeof PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS)[number])) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: `routePath "${value.routePath}" is reserved by the host`,
+      path: ["routePath"],
+    });
+  }
+  if (
+    value.type === "companySettingsPage"
+    && value.routePath
+    && PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS.includes(value.routePath as (typeof PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS)[number])
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `company settings routePath "${value.routePath}" is reserved by the host`,
       path: ["routePath"],
     });
   }
@@ -548,6 +569,55 @@ export const pluginApiRouteDeclarationSchema = z.object({
 
 export type PluginApiRouteDeclarationInput = z.infer<typeof pluginApiRouteDeclarationSchema>;
 
+export const pluginObjectReferenceRefreshPolicySchema = z.object({
+  defaultTtlSeconds: z.number().int().positive().max(86_400).optional(),
+  staleAfterSeconds: z.number().int().positive().max(604_800).optional(),
+}).superRefine((value, ctx) => {
+  if (
+    value.defaultTtlSeconds != null &&
+    value.staleAfterSeconds != null &&
+    value.staleAfterSeconds < value.defaultTtlSeconds
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "staleAfterSeconds must be greater than or equal to defaultTtlSeconds",
+      path: ["staleAfterSeconds"],
+    });
+  }
+});
+
+export const pluginObjectReferenceProviderDeclarationSchema = z.object({
+  providerKey: externalObjectProviderKeySchema,
+  displayName: z.string().min(1).max(100),
+  objectTypes: z.array(externalObjectTypeSchema).min(1),
+  urlPatterns: z.array(z.string().trim().min(1).max(500)).optional(),
+  refreshPolicy: pluginObjectReferenceRefreshPolicySchema.optional(),
+  webhookEndpointKeys: z.array(z.string().min(1)).optional(),
+}).superRefine((value, ctx) => {
+  const duplicateObjectTypes = value.objectTypes.filter((type, i) => value.objectTypes.indexOf(type) !== i);
+  if (duplicateObjectTypes.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Duplicate objectTypes: ${[...new Set(duplicateObjectTypes)].join(", ")}`,
+      path: ["objectTypes"],
+    });
+  }
+
+  const webhookKeys = value.webhookEndpointKeys ?? [];
+  const duplicateWebhookKeys = webhookKeys.filter((key, i) => webhookKeys.indexOf(key) !== i);
+  if (duplicateWebhookKeys.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Duplicate webhookEndpointKeys: ${[...new Set(duplicateWebhookKeys)].join(", ")}`,
+      path: ["webhookEndpointKeys"],
+    });
+  }
+});
+
+export type PluginObjectReferenceProviderDeclarationInput = z.infer<
+  typeof pluginObjectReferenceProviderDeclarationSchema
+>;
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1 schema
 // ---------------------------------------------------------------------------
@@ -627,6 +697,7 @@ export const pluginManifestV1Schema = z.object({
   routines: z.array(pluginManagedRoutineDeclarationSchema).optional(),
   skills: z.array(pluginManagedSkillDeclarationSchema).optional(),
   localFolders: z.array(pluginLocalFolderDeclarationSchema).optional(),
+  objectReferences: z.array(pluginObjectReferenceProviderDeclarationSchema).optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   ui: z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
@@ -764,6 +835,31 @@ export const pluginManifestV1Schema = z.object({
         message: "Capability 'api.routes.register' is required when apiRoutes are declared",
         path: ["capabilities"],
       });
+    }
+  }
+
+  if (manifest.objectReferences && manifest.objectReferences.length > 0) {
+    for (const capability of ["external.objects.detect", "external.objects.read"] as const) {
+      if (!manifest.capabilities.includes(capability)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Capability '${capability}' is required when objectReferences are declared`,
+          path: ["capabilities"],
+        });
+      }
+    }
+
+    const declaredWebhookKeys = new Set((manifest.webhooks ?? []).map((webhook) => webhook.endpointKey));
+    for (const [providerIndex, provider] of manifest.objectReferences.entries()) {
+      for (const endpointKey of provider.webhookEndpointKeys ?? []) {
+        if (!declaredWebhookKeys.has(endpointKey)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `objectReferences webhookEndpointKey "${endpointKey}" must match a declared webhook endpoint`,
+            path: ["objectReferences", providerIndex, "webhookEndpointKeys"],
+          });
+        }
+      }
     }
   }
 
@@ -926,6 +1022,18 @@ export const pluginManifestV1Schema = z.object({
         code: z.ZodIssueCode.custom,
         message: `Duplicate managed skill keys: ${[...new Set(duplicates)].join(", ")}`,
         path: ["skills"],
+      });
+    }
+  }
+
+  if (manifest.objectReferences) {
+    const providerKeys = manifest.objectReferences.map((provider) => provider.providerKey);
+    const duplicateProviders = providerKeys.filter((key, i) => providerKeys.indexOf(key) !== i);
+    if (duplicateProviders.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate object reference provider keys: ${[...new Set(duplicateProviders)].join(", ")}`,
+        path: ["objectReferences"],
       });
     }
   }
