@@ -9,7 +9,7 @@ const serverPackageJson = JSON.parse(
   await readFile(new URL("../server/package.json", import.meta.url), "utf8"),
 );
 
-test("production audit overrides keep high-risk dependency paths on patched ranges", () => {
+test("PEN-1198 production audit overrides keep high-risk dependency paths patched", () => {
   assert.equal(
     rootPackageJson.pnpm.overrides["@connectrpc/connect-node>undici"],
     ">=6.27.0 <7",
