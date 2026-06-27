@@ -33,7 +33,7 @@ Before making changes, read in this order:
 
 ## 4. Dev Setup (Auto DB)
 
-Use embedded PGlite in dev by leaving `DATABASE_URL` unset.
+Use embedded PostgreSQL in dev by leaving `DATABASE_URL` unset.
 
 ```sh
 pnpm install
@@ -55,7 +55,7 @@ curl http://localhost:3100/api/companies
 Reset local dev DB:
 
 ```sh
-rm -rf data/pglite
+rm -rf ~/.paperclip/instances/default/db
 pnpm dev
 ```
 
@@ -179,44 +179,34 @@ A change is done when all are true:
 4. Docs updated when behavior or commands change
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
-## 11. Fork-Specific: HenkDz/paperclip
+## 12. Fork-Specific: MDominicRQ/paperclip
 
-This is a fork of `paperclipai/paperclip` with QoL patches and a **built-in** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/paperclip/tree/feat/externalize-hermes-adapter)).
+This is a fork of `paperclipai/paperclip` that tracks upstream `master` at stable release tags.
+Canonical remote: `upstream` = `https://github.com/paperclipai/paperclip.git`.
+Fork remote: `origin` = `https://github.com/MDominicRQ/paperclip.git`.
 
-### Branch Strategy
+### Upstream Sync
 
-- `feat/externalize-hermes-adapter` now ships `hermes_local` and `hermes_gateway` as built-in core adapters.
-- Older fork branches may still document plugin-only Hermes; treat this file as authoritative for the current branch.
+- The fork tracks `paperclipai/paperclip:master` at stable tags (currently `v2026.626.0`).
+- Re-sync: `git fetch upstream master --tags`, then `git merge --no-ff <stable-tag>`.
+- Open a sync PR for every upstream stable release, or weekly if releases are frequent.
 
 ### Hermes (built-in)
 
-- `hermes_local` is available without Adapter manager installation and runs the local Hermes CLI.
-- `hermes_gateway` is available without Adapter manager installation and calls an already-running Hermes API server.
-- Operators may still install external Hermes packages through Adapter manager to override/shadow the built-ins.
-- Optional: `file:` entry in `~/.paperclip/adapter-plugins.json` remains useful for local development of override packages.
+Hermes is a built-in adapter via upstream `@paperclipai/hermes-paperclip-adapter`.
+
+- `hermes_local` runs the local Hermes CLI (`hermes` on `PATH`).
+- `hermes_gateway` calls an already-running Hermes API server.
+- Both types appear in `GET /api/adapters` with `source: builtin` — no Adapter manager installation needed.
+- The Hermes CLI runtime is installed in Paperclip agent-running Docker images (root and untrusted-review). See `doc/DOCKER.md` for details.
+- No default Hermes agent is auto-created — hire one explicitly from the board.
+- External plugin manager remains available for non-Hermes adapters.
+- To bump the Hermes runtime: update `HERMES_AGENT_IMAGE` ARG defaults in both Dockerfiles, update `doc/DOCKER.md`, rebuild, and probe `hermes --version`.
 
 ### Local Dev
 
-- Fork runs on port 3101+ (auto-detects if 3100 is taken by upstream instance)
-- `npx vite build` hangs on NTFS — use `node node_modules/vite/bin/vite.js build` instead
-- Server startup from NTFS takes 30-60s — don't assume failure immediately
-- Kill ALL paperclip processes before starting: `pkill -f "paperclip"; pkill -f "tsx.*index.ts"`
-- Vite cache survives `rm -rf dist` — delete both: `rm -rf ui/dist ui/node_modules/.vite`
-
-### Fork QoL Patches (not in upstream)
-
-These are local modifications in the fork's UI. If re-copying source, these must be re-applied:
-
-1. **stderr_group** — amber accordion for MCP init noise in `RunTranscriptView.tsx`
-2. **tool_group** — accordion for consecutive non-terminal tools (write, read, search, browser)
-3. **Dashboard excerpt** — `LatestRunCard` strips markdown, shows first 3 lines/280 chars
-
-### Plugin System
-
-PR #2218 (`feat/external-adapter-phase1`) adds external adapter support. See root `AGENTS.md` for full details.
-
-- Adapters can be loaded as external plugins via `~/.paperclip/adapter-plugins.json`
-- The plugin-loader should have ZERO hardcoded adapter imports — pure dynamic loading
-- `createServerAdapter()` must include ALL optional fields (especially `detectModel`)
-- Built-in UI adapters can shadow external plugin parsers; external override pause/resume should restore the built-in parser.
-- Reference external adapters: Droid (npm); Hermes can also be tested as an override package.
+- Fork runs on port 3101+ (auto-detects if 3100 is taken by upstream instance).
+- `npx vite build` hangs on NTFS — use `node node_modules/vite/bin/vite.js build` instead.
+- Server startup from NTFS takes 30-60s — don't assume failure immediately.
+- Kill ALL paperclip processes before starting: `pkill -f "paperclip"; pkill -f "tsx.*index.ts"`.
+- Vite cache survives `rm -rf dist` — delete both: `rm -rf ui/dist ui/node_modules/.vite`.

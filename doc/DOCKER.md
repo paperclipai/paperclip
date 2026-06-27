@@ -50,7 +50,7 @@ All persisted under your bind mount (`./data/docker-paperclip` in the example ab
 
 ## Docker Compose
 
-### Quickstart (embedded SQLite)
+### Quickstart (embedded PostgreSQL)
 
 Single container, no external database. Data persists via a bind mount.
 

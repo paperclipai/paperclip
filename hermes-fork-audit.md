@@ -94,7 +94,7 @@ Call sites to prune (imports, mounts, invocations):
 
 Preserve:
 - `ui/src/components/HermesIcon.tsx` — generic Hermes branding icon, not fork-specific
-- `doc/HERMES_DASHBOARD_DEPLOYMENT.md` — handled in PR #3 Task 3.3 (doc sweep, not code deletion)
+- `doc/HERMES_DASHBOARD_DEPLOYMENT.md` — removed in PR #1 (fork-only Spanish doc; upstream has no equivalent; removal confirmed by Sub-run 1B)
 
 ## Conclusion
 
