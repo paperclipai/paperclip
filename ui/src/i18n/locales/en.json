@@ -573,7 +573,12 @@
     },
     "errors": {
       "rotate": "Rotate failed",
-      "tryAgain": "Try again"
+      "tryAgain": "Try again",
+      "unexpectedError": "Unexpected error",
+      "selectAProvider": "Select a provider.",
+      "thisProviderVaultIsDisabled": "This provider vault is disabled.",
+      "thisProviderVaultIsSavedAsDraftMetadataOnly": "This provider vault is saved as draft metadata only.",
+      "deploymentDefault": "Deployment default"
     },
     "labels": {
       "newSecret": "New secret",
@@ -613,7 +618,74 @@
       "productionLocalVault": "Production local vault",
       "searchByName": "Search by name, key, ref",
       "storedOnce": "Stored once, never re-displayed",
-      "whatIsThisFor": "What is this secret used for? (no values)"
+      "whatIsThisFor": "What is this secret used for? (no values)",
+      "autoFromName": "auto from name"
+    },
+    "text": {
+      "selectACompanyToManageSecrets": "Select a company to manage secrets.",
+      "newSecret": "New secret",
+      "failedToLoadSecrets": "Failed to load secrets:",
+      "lastRotated": "Last rotated",
+      "lastResolved": "Last resolved",
+      "open": "Open",
+      "delete": "Delete",
+      "secretReferences": "Secret references",
+      "createSecret": "Create secret",
+      "chooseWhetherPaperclipShouldOwnFutureProviderWrite": "Choose whether Paperclip should own future provider writes, or only resolve an existing\n              provider reference at runtime.",
+      "managedValue": "Managed value",
+      "externalReference": "External reference",
+      "providerVault": "Provider vault",
+      "deploymentDefault": "Deployment default",
+      "existingDeploymentLevelProviderSettingsStayAvailab": "Existing deployment-level provider settings stay available for backwards compatibility.",
+      "paperclipManagedSecretsAreCreatedInTheSelectedProv": "Paperclip-managed secrets are created in the selected provider and future rotations\n                  write a new provider version through Paperclip.",
+      "existingProviderSecretsAreResolveOnlyInPaperclipRo": "Existing provider secrets are resolve-only in Paperclip. Rotate the value in the provider,\n                  then update this reference only if the path, ARN, or version changes.",
+      "cancel": "Cancel",
+      "saveOnlyNonSensitiveRoutingMetadataCredentialsStay": "Save only non-sensitive routing metadata. Credentials stay in the runtime environment or provider identity.",
+      "displayName": "Display name",
+      "warning": "Warning",
+      "comingSoon": "Coming soon",
+      "defaultFor": "Default for",
+      "thisProviderCanSaveDraftRoutingMetadataButRuntimeW": "This provider can save draft routing metadata, but runtime writes and resolution stay disabled until\n                the provider module is implemented and reviewed.",
+      "rotatingWithTheDeploymentDefaultPreservesCurrentFa": "Rotating with the deployment default preserves current fallback behavior.",
+      "rotateTheActualValueInTheProviderBeforeChangingThi": "Rotate the actual value in the provider before changing this Paperclip reference.",
+      "newValue": "New value",
+      "deleteSecret": "Delete secret",
+      "permanentlyRemoves": "Permanently removes",
+      "activeBindingsWillFailUntilYouRemapThem": ". Active bindings will fail until you remap them.",
+      "removeProviderVault": "Remove provider vault",
+      "fromPaperclipOnly": "from Paperclip only.",
+      "secretsUsingThisVaultWillLoseTheVaultAssociationUn": "Secrets using this vault will lose the vault association until you assign another one.",
+      "removeFromPaperclip": "Remove from Paperclip",
+      "useSecretsByBindingThemToRuntimeEnvironmentVariabl": "Use secrets by binding them to runtime environment variables.",
+      "createOrLinkASecretHereThenOpenAnAgentAposSEnviron": "Create or link a secret here, then open an agent&apos;s Environment variables or a project&apos;s Env field.\n          Add the env key the process expects, for example",
+      "andSelectTheStoredSecretVersion": ", and select the stored secret version.",
+      "paperclipResolvesTheValueServerSideWhenTheRunStart": "Paperclip resolves the value server-side when the run starts and injects it as that env var. Project env\n          applies to every task in the project and overrides agent env on matching keys.",
+      "allProviders": "All providers",
+      "importFromVault": "Import from vault",
+      "loadingProviderVaults": "Loading provider vaults",
+      "failedToLoadProviderVaults": "Failed to load provider vaults:",
+      "addVault": "Add vault",
+      "healthNotChecked": "Health not checked",
+      "checkHealth": "Check health",
+      "refreshSecrets": "Refresh secrets",
+      "makeDefault": "Make default",
+      "remove": "Remove",
+      "iUnderstandBackupAndRestoreRequireBothTheDatabaseM": "I understand backup and restore require both the database metadata and the local encrypted master key file.",
+      "usesTheCurrentDraftRoutingFieldsToInspectAwsSecret": "Uses the current draft routing fields to inspect AWS Secrets Manager metadata. Values are not read.",
+      "findExistingAwsValues": "Find existing AWS values",
+      "enterAnAwsRegionBeforeDiscovery": "Enter an AWS region before discovery.",
+      "searchingAwsSecretsManagerMetadata": "Searching AWS Secrets Manager metadata",
+      "noAwsVaultMetadataCandidatesFoundManualEntryIsStil": "No AWS vault metadata candidates found. Manual entry is still available.",
+      "vaultContext": "Vault context",
+      "safeRequestErrorDetails": "Safe request/error details",
+      "useValues": "Use values",
+      "paperclipNeverReDisplaysStoredValues": "Paperclip never re-displays stored values.",
+      "loading": "Loading…",
+      "noActiveBindingsAddThisSecretInAgentProjectEnviron": "No active bindings. Add this secret in agent, project, environment, or plugin config to start using it.",
+      "noAccessEventsRecordedYetEachRuntimeResolutionWrit": "No access events recorded yet. Each runtime resolution writes a redacted entry here."
+    },
+    "labelsJsx": {
+      "configureAnAwsProviderVaultToEnableRemoteImport": "Configure an AWS provider vault to enable remote import"
     }
   },
   "teamCatalog": {
@@ -2946,6 +3018,176 @@
     "labelsJsx": {
       "payloadTemplate": "Payload template JSON",
       "runtimeServices": "Runtime services JSON"
+    }
+  },
+  "stagesecretspanel": {
+    "text": {
+      "theseEnvVarsAreInjectedWhen": "These env vars are injected when",
+      "runsThisStepTheyOverrideMatchingProjectAndAgentEnv": "runs this step. They override\n          matching project and agent env on collisions.",
+      "namesAreReserved": "names\n          are reserved.",
+      "loadingSecrets": "Loading secrets…",
+      "unsavedChanges": "Unsaved changes"
+    }
+  },
+  "importfromvaultdialog": {
+    "text": {
+      "failed": "Failed",
+      "importFromAwsSecretsManager": "Import from AWS Secrets Manager",
+      "bringAwsManagedSecretsIntoPaperclipAsExternalRefer": "Bring AWS-managed secrets into Paperclip as external references.",
+      "cancel": "Cancel",
+      "notVisibleWithCurrentSearch": "not visible with current search",
+      "remoteName": "Remote name",
+      "lastChanged": "Last changed",
+      "suggestedName": "Suggested name",
+      "alreadyImported": "Already imported",
+      "loading": "Loading…",
+      "paperclipName": "Paperclip name"
+    },
+    "errors": {
+      "unexpectedError": "Unexpected error",
+      "nameIsRequired": "Name is required.",
+      "nameMustBe160CharactersOrFewer": "Name must be 160 characters or fewer.",
+      "keyIsRequired": "Key is required.",
+      "keyMayOnlyContainLowercaseLettersNumbersDotUndersc": "Key may only contain lowercase letters, numbers, dot, underscore, or hyphen.",
+      "keyMustBe120CharactersOrFewer": "Key must be 120 characters or fewer.",
+      "descriptionMustBe500CharactersOrFewer": "Description must be 500 characters or fewer.",
+      "aPaperclipSecretAlreadyUsesThisName": "A Paperclip secret already uses this name.",
+      "aPaperclipSecretAlreadyUsesThisKey": "A Paperclip secret already uses this key.",
+      "anotherRowInThisBatchAlreadyUsesThisName": "Another row in this batch already uses this name.",
+      "anotherRowInThisBatchAlreadyUsesThisKey": "Another row in this batch already uses this key."
+    },
+    "labels": {
+      "importFailed": "Import failed",
+      "couldNotLoadMoreResults": "Could not load more results"
+    },
+    "aria": {
+      "closeImportDialog": "Close import dialog",
+      "selectAwsVault": "Select AWS vault",
+      "searchRemoteSecrets": "Search remote secrets",
+      "refreshRemoteSecrets": "Refresh remote secrets"
+    },
+    "placeholders": {
+      "selectAnAwsVault": "Select an AWS vault",
+      "searchByNameArnTag": "Search by name, ARN, tag"
+    },
+    "labelsJsx": {
+      "failed": "Failed"
+    }
+  },
+  "issuedetail": {
+    "errors": {
+      "onlyBoardUsersCanPreviewSubtreeControls": "Only board users can preview subtree controls.",
+      "previewIsStaleBecauseSubtreeHoldStateChangedRetryT": "Preview is stale because subtree hold state changed. Retry to refresh.",
+      "thisSubtreeActionIsCurrentlyInvalidForTheSelectedT": "This subtree action is currently invalid for the selected tasks."
+    },
+    "text": {
+      "noProject": "No project",
+      "copyAsMarkdown": "Copy as markdown",
+      "hideThisTask": "Hide this task",
+      "costSummary": "Cost Summary",
+      "noCostDataYet": "No cost data yet.",
+      "thisTask": "This task",
+      "noDirectCostData": "No direct cost data.",
+      "includingSubTasks": "Including sub-tasks",
+      "uploadAttachment": "Upload attachment",
+      "thisTaskIsHidden": "This task is hidden",
+      "viewAffected": "View affected (",
+      "cancelSubtree": "Cancel subtree...",
+      "thisTaskIsPausedByAncestor": "This task is paused by ancestor",
+      "resumeFromTheRootTaskToDeliverDeferredWork": ". Resume from the root task to deliver deferred work.",
+      "productivityReview": "Productivity review",
+      "blockedByParkedWork": "Blocked by parked work",
+      "pauseWork": "Pause work...",
+      "resumeWork": "Resume work",
+      "pauseSubtree": "Pause subtree...",
+      "resumeSubtree": "Resume subtree",
+      "restoreSubtree": "Restore subtree...",
+      "newSubTask": "New Sub-task",
+      "relatedWork": "Related work",
+      "cancellingASubtreeIsDestructiveNonTerminalTasksWil": "Cancelling a subtree is destructive. Non-terminal tasks will be marked cancelled, and running or queued work will be interrupted where possible.",
+      "wakeAffectedAgents": "Wake affected agents (",
+      "iUnderstandThisWillCancel": "I understand this will cancel",
+      "retryPreview": "Retry preview",
+      "previewUnavailable": "Preview unavailable.",
+      "close": "Close"
+    },
+    "toasts": {
+      "theActiveRunIsStoppingSoQueuedCommentsCanContinueN": "The active run is stopping so queued comments can continue next.",
+      "theQueuedMessageWasRestoredToTheComposer": "The queued message was restored to the composer.",
+      "theThreadNowShowsADeletedCommentMarker": "The thread now shows a deleted-comment marker."
+    },
+    "labels": {
+      "theActiveRunIsStoppingSoQueuedCommentsCanContinueN": "The active run is stopping so queued comments can continue next.",
+      "theQueuedMessageWasRestoredToTheComposer": "The queued message was restored to the composer.",
+      "theThreadNowShowsADeletedCommentMarker": "The thread now shows a deleted-comment marker."
+    },
+    "labelsJsx": {
+      "thisTaskIsAProductivityReview": "This task is a productivity review.",
+      "thisTaskIsAGeneratedWatchdogTaskItVerifiesWhetherS": "This task is a generated watchdog task. It verifies whether stopped work in the watched task tree is legitimate.",
+      "blockedByParkedWorkAtLeastOneAssignedBlockerIsInBa": "Blocked by parked work — at least one assigned blocker is in backlog and will not wake its assignee.",
+      "copyTaskAsMarkdown": "Copy task as markdown",
+      "archiveFromInbox": "Archive from inbox",
+      "openFileGF": "Open file... (g f)",
+      "showProperties": "Show properties",
+      "moreTaskActions": "More task actions"
+    },
+    "placeholders": {
+      "addADescription": "Add a description...",
+      "explainWhyThisSubtreeControlIsBeingApplied": "Explain why this subtree control is being applied..."
+    }
+  },
+  "issueproperties": {
+    "errors": {
+      "githubPullRequest": "Github Pull Request",
+      "githubIssue": "Github Issue",
+      "notScheduled": "Not scheduled",
+      "pendingSchedule": "Pending schedule"
+    },
+    "text": {
+      "remove": "Remove",
+      "asABlockerForThisTask": "as a blocker for this task.",
+      "removeBlocker": "Remove blocker",
+      "usesTheAgentAposSConfiguredCheapProfile": "· uses the agent&apos;s configured cheap profile",
+      "fallsBackToThePrimaryModelIfNoCheapProfileIsConfig": "· falls back to the primary model if no cheap profile is configured",
+      "enableChromeChrome": "Enable Chrome (--chrome)",
+      "clearAdapterOptions": "Clear adapter options",
+      "watchdogTask": "Watchdog task:",
+      "retryNow": "Retry now",
+      "assignToMe": "Assign to me",
+      "noParent": "No parent",
+      "noBlockers": "No blockers",
+      "addBlocker": "Add blocker",
+      "addSubTask": "Add sub-task",
+      "viewWorkspace": "View workspace"
+    },
+    "placeholders": {
+      "whatShouldTheWatchdogWatchForAndHowShouldItKeepWor": "What should the watchdog watch for and how should it keep work moving?"
+    },
+    "labelsJsx": {
+      "addLabel": "Add label",
+      "clearAdapterOptions": "Clear adapter options",
+      "openWatchdogTask": "Open watchdog task"
+    }
+  },
+  "issueslist": {
+    "text": {
+      "noActiveSubTasks": "No active sub-tasks",
+      "allSubTasksDone": "All sub-tasks done",
+      "noActionableSubTasks": "No actionable sub-tasks",
+      "showingUpTo": "Showing up to",
+      "matchesRefineTheSearchToNarrowFurther": "matches. Refine the search to narrow further.",
+      "someBoardColumnsAreShowingUpTo": "Some board columns are showing up to",
+      "tasksRefineFiltersOrSearchToRevealTheRest": "tasks. Refine filters or search to reveal the rest.",
+      "needsNextStep": "Needs next step",
+      "noAssignee": "No assignee"
+    },
+    "labelsJsx": {
+      "listView": "List view",
+      "boardView": "Board view",
+      "cardsPerColumn": "Cards per column",
+      "resetBoardDensity": "Reset board density",
+      "chooseWhichTaskColumnsStayVisible": "Choose which task columns stay visible",
+      "thisTaskNeedsANextStep": "This task needs a next step"
     }
   }
 }

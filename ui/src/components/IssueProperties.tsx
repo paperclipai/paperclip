@@ -213,8 +213,8 @@ function externalObjectRowDisplayKey(group: IssueExternalObjectGroup): string {
   const displayKey = pill.displayKey?.trim();
   if (displayKey) return displayKey;
   if (pill.providerKey === "github") {
-    if (pill.objectType === "pull_request") return "Github Pull Request";
-    if (pill.objectType === "issue") return "Github Issue";
+    if (pill.objectType === "pull_request") return t("issueproperties.errors.githubPullRequest");
+    if (pill.objectType === "issue") return t("issueproperties.errors.githubIssue");
   }
   return externalObjectDisplayLabel(pill.providerKey, pill.objectType);
 }
@@ -487,16 +487,14 @@ function RemovableIssueReferencePill({
           <DialogHeader>
             <DialogTitle>{t("issueProperties.text.removeBlocker")}</DialogTitle>
             <DialogDescription>
-              Remove {confirmLabel} as a blocker for this task.
-            </DialogDescription>
+              {t("issueproperties.text.remove")}{confirmLabel} {t("issueproperties.text.asABlockerForThisTask")}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <DialogClose asChild>
               <Button type="button" variant="outline">{t("issueProperties.text.cancel")}</Button>
             </DialogClose>
             <Button type="button" variant="destructive" onClick={confirmRemove}>
-              Remove blocker
-            </Button>
+              {t("issueproperties.text.removeBlocker")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -995,8 +993,8 @@ export function IssueProperties({
             {assigneeCheapProfile?.adapterConfig && typeof (assigneeCheapProfile.adapterConfig as Record<string, unknown>).model === "string"
               ? <>· adapter default <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
               : assigneeCheapProfile
-                ? <>· uses the agent&apos;s configured cheap profile</>
-                : <>· falls back to the primary model if no cheap profile is configured</>}
+                ? <>{t("issueproperties.text.usesTheAgentAposSConfiguredCheapProfile")}</>
+                : <>{t("issueproperties.text.fallsBackToThePrimaryModelIfNoCheapProfileIsConfig")}</>}
           </p>
         ) : null}
       </div>
@@ -1034,7 +1032,7 @@ export function IssueProperties({
           </div>
           {assigneeAdapterType === "claude_local" ? (
             <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
-              <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>
+              <div className="text-xs text-muted-foreground">{t("issueproperties.text.enableChromeChrome")}</div>
               <ToggleSwitch
                 checked={assigneeOverrideChrome}
                 onCheckedChange={(next) => updateAssigneeOverrideConfig({ chrome: next ? true : undefined })}
@@ -1056,8 +1054,7 @@ export function IssueProperties({
         className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
         onClick={() => updateAssigneeAdapterOverrides(null)}
       >
-        Clear adapter options
-      </button>
+        {t("issueproperties.text.clearAdapterOptions")}</button>
     </div>
   );
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
@@ -1309,14 +1306,14 @@ export function IssueProperties({
         <Textarea
           value={watchdogInstructionsInput}
           onChange={(event) => setWatchdogInstructionsInput(event.target.value)}
-          placeholder="What should the watchdog watch for and how should it keep work moving?"
+          placeholder={t("issueproperties.placeholders.whatShouldTheWatchdogWatchForAndHowShouldItKeepWor")}
           rows={4}
           className="text-xs"
         />
       </div>
       {watchdogIssueRef ? (
         <div className="text-xs text-muted-foreground">
-          Watchdog task:{" "}
+          {t("issueproperties.text.watchdogTask")}{" "}
           <Link to={`/issues/${watchdogIssueRef.id}`} className="text-primary hover:underline">
             {watchdogIssueRef.identifier ?? "View task"}
           </Link>
@@ -1401,7 +1398,7 @@ export function IssueProperties({
     if (issue.monitorLastTriggeredAt) {
       return `Last triggered ${timeAgo(issue.monitorLastTriggeredAt)}`;
     }
-    return "Not scheduled";
+    return t("issueproperties.errors.notScheduled");
   })();
   const monitorNextCheckAt = issue.executionPolicy?.monitor?.nextCheckAt ?? null;
   const monitorTrigger = (
@@ -1456,7 +1453,7 @@ export function IssueProperties({
   const scheduledRetryIsContinuation =
     scheduledRetry?.scheduledRetryReason === "max_turns_continuation";
   const scheduledRetryRelativeLabel = (() => {
-    if (!scheduledRetryRelative) return "Pending schedule";
+    if (!scheduledRetryRelative) return t("issueproperties.errors.pendingSchedule");
     const action = scheduledRetryIsContinuation ? "Continuation" : "Retry";
     if (scheduledRetryRelative === "now") return `${action} due now`;
     return `${action} ${scheduledRetryRelative}`;
@@ -1575,8 +1572,7 @@ export function IssueProperties({
           ) : (
             <span className="inline-flex items-center gap-1.5">
               <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-              Retry now
-            </span>
+              {t("issueproperties.text.retryNow")}</span>
           )}
         </Button>
         <span className="text-right text-xs text-muted-foreground">
@@ -1685,7 +1681,7 @@ export function IssueProperties({
       className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
       onClick={() => setLabelsOpen(true)}
       aria-label={t("issueProperties.labelsJsx.addLabel")}
-      title="Add label"
+      title={t("issueproperties.labelsJsx.addLabel")}
     >
       <Plus className="h-3 w-3" />
     </button>
@@ -1950,8 +1946,7 @@ export function IssueProperties({
             onClick={() => toggleExecutionParticipant(stageType, `user:${currentUserId}`)}
           >
             <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-            Assign to me
-          </button>
+            {t("issueproperties.text.assignToMe")}</button>
         )}
         {issue.createdByUserId && issue.createdByUserId !== currentUserId && (
           <button
@@ -2187,8 +2182,7 @@ export function IssueProperties({
             setParentOpen(false);
           }}
         >
-          No parent
-        </button>
+          {t("issueproperties.text.noParent")}</button>
         {parentOptions.map((candidate) => (
           <button
             key={candidate.id}
@@ -2261,8 +2255,7 @@ export function IssueProperties({
             setBlockedBySearch("");
           }}
         >
-          No blockers
-        </button>
+          {t("issueproperties.text.noBlockers")}</button>
         {blockerOptions.map((candidate) => {
           const selected = blockedByIds.includes(candidate.id);
           return (
@@ -2298,8 +2291,7 @@ export function IssueProperties({
       onClick={onClick}
     >
       <Plus className="h-3 w-3" />
-      Add blocker
-    </button>
+      {t("issueproperties.text.addBlocker")}</button>
   );
 
   return (
@@ -2371,7 +2363,7 @@ export function IssueProperties({
                 className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
                 onClick={() => updateAssigneeAdapterOverrides(null)}
                 aria-label={t("issueProperties.labelsJsx.clearAdapterOptions")}
-                title="Clear adapter options"
+                title={t("issueproperties.labelsJsx.clearAdapterOptions")}
               >
                 <X className="h-3 w-3" />
               </button>
@@ -2533,8 +2525,7 @@ export function IssueProperties({
                 onClick={onAddSubIssue}
               >
                 <Plus className="h-3 w-3" />
-              Add sub-task
-              </button>
+              {t("issueproperties.text.addSubTask")}</button>
             ) : null}
           </div>
         </PropertyRow>
@@ -2635,7 +2626,7 @@ export function IssueProperties({
                 <Link
                   to={`/issues/${watchdogIssueRef.id}`}
                   className="ml-1 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-                  title="Open watchdog task"
+                  title={t("issueproperties.labelsJsx.openWatchdogTask")}
                 >
                   <ScanEye className="h-3 w-3" />
                   {watchdogIssueRef.identifier ?? "Task"}
@@ -2665,8 +2656,7 @@ export function IssueProperties({
                   className="text-sm text-primary hover:underline inline-flex min-w-0 items-center gap-1.5"
                 >
                   <Hexagon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  View workspace
-                  <ExternalLink className="h-3 w-3 shrink-0" />
+                  {t("issueproperties.text.viewWorkspace")}<ExternalLink className="h-3 w-3 shrink-0" />
                 </Link>
               </PropertyRow>
             )}

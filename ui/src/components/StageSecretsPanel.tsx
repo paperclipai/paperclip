@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "./EmptyState";
 import { EnvVarEditor } from "./EnvVarEditor";
 import { AgentIcon } from "./AgentIconPicker";
+import { t } from "@/i18n";
 
 export interface StageSecretsPanelProps {
   /** Whether the stage has a backing automation routine with an assignee. */
@@ -70,15 +71,12 @@ export function StageSecretsPanel({
           <KeyRound className="h-3.5 w-3.5 mt-0.5 shrink-0" />
         )}
         <p>
-          These env vars are injected when{" "}
-          <span className="font-medium text-foreground">{displayName}</span> runs this step. They override
-          matching project and agent env on collisions. <span className="font-mono">PAPERCLIP_*</span> names
-          are reserved.
-        </p>
+          {t("stagesecretspanel.text.theseEnvVarsAreInjectedWhen")}{" "}
+          <span className="font-medium text-foreground">{displayName}</span> {t("stagesecretspanel.text.runsThisStepTheyOverrideMatchingProjectAndAgentEnv")}<span className="font-mono">PAPERCLIP_*</span> {t("stagesecretspanel.text.namesAreReserved")}</p>
       </div>
 
       {secretsLoading ? (
-        <p className="text-sm text-muted-foreground">Loading secrets…</p>
+        <p className="text-sm text-muted-foreground">{t("stagesecretspanel.text.loadingSecrets")}</p>
       ) : (
         <EnvVarEditor
           value={value}
@@ -93,7 +91,7 @@ export function StageSecretsPanel({
           <Save className="h-4 w-4 mr-1.5" />
           {saving ? "Saving…" : "Save secrets"}
         </Button>
-        {dirty && !saving ? <span className="text-xs text-muted-foreground">Unsaved changes</span> : null}
+        {dirty && !saving ? <span className="text-xs text-muted-foreground">{t("stagesecretspanel.text.unsavedChanges")}</span> : null}
       </div>
     </div>
   );

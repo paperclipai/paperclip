@@ -239,10 +239,10 @@
     "emptyCreate": "创建你的第一个智能体以开始。",
     "runHeartbeat": "运行心跳",
     "text": {
-      "runHeartbeat": "Run Heartbeat"
+      "runHeartbeat": "运行心跳"
     },
     "aria": {
-      "invalidReportingChain": "Invalid reporting chain"
+      "invalidReportingChain": "汇报链无效"
     }
   },
   "goals": {
@@ -573,7 +573,12 @@
     },
     "errors": {
       "rotate": "轮换失败",
-      "tryAgain": "重试"
+      "tryAgain": "重试",
+      "unexpectedError": "意外错误",
+      "selectAProvider": "请选择提供商。",
+      "thisProviderVaultIsDisabled": "此提供商保险库已禁用。",
+      "thisProviderVaultIsSavedAsDraftMetadataOnly": "此提供商保险库仅保存为草稿元数据。",
+      "deploymentDefault": "部署默认值"
     },
     "labels": {
       "newSecret": "新建密钥",
@@ -613,7 +618,74 @@
       "productionLocalVault": "生产环境本地保管库",
       "searchByName": "按名称、键、引用搜索",
       "storedOnce": "仅存储一次,永不再次显示",
-      "whatIsThisFor": "此密钥用于什么?(不含值)"
+      "whatIsThisFor": "此密钥用于什么?(不含值)",
+      "autoFromName": "从名称自动生成"
+    },
+    "text": {
+      "selectACompanyToManageSecrets": "选择一家公司来管理密钥。",
+      "newSecret": "新建密钥",
+      "failedToLoadSecrets": "加载密钥失败:",
+      "lastRotated": "上次轮换",
+      "lastResolved": "上次解析",
+      "open": "打开",
+      "delete": "删除",
+      "secretReferences": "密钥引用",
+      "createSecret": "创建密钥",
+      "chooseWhetherPaperclipShouldOwnFutureProviderWrite": "选择 Paperclip 是否应拥有未来的提供商写入权限,或仅在运行时解析现有的提供商引用。",
+      "managedValue": "托管值",
+      "externalReference": "外部引用",
+      "providerVault": "提供商保险库",
+      "deploymentDefault": "部署默认",
+      "existingDeploymentLevelProviderSettingsStayAvailab": "现有的部署级提供商设置仍可用于向后兼容。",
+      "paperclipManagedSecretsAreCreatedInTheSelectedProv": "Paperclip 托管的密钥在选定的提供商中创建,未来的轮换通过 Paperclip 写入新的提供商版本。",
+      "existingProviderSecretsAreResolveOnlyInPaperclipRo": "现有的提供商密钥在 Paperclip 中仅为只读解析。请在提供商中轮换值,然后仅当路径、ARN 或版本更改时才更新此引用。",
+      "cancel": "取消",
+      "saveOnlyNonSensitiveRoutingMetadataCredentialsStay": "仅保存非敏感路由元数据。凭据保留在运行时环境或提供商身份中。",
+      "displayName": "显示名称",
+      "warning": "警告",
+      "comingSoon": "即将推出",
+      "defaultFor": "默认用于",
+      "thisProviderCanSaveDraftRoutingMetadataButRuntimeW": "此提供商可以保存草稿路由元数据,但在提供商模块实现并审核之前,运行时写入和解析保持禁用。",
+      "rotatingWithTheDeploymentDefaultPreservesCurrentFa": "使用部署默认值轮换可保留当前回退行为。",
+      "rotateTheActualValueInTheProviderBeforeChangingThi": "在更改此 Paperclip 引用之前,请先轮换提供商中的实际值。",
+      "newValue": "新值",
+      "deleteSecret": "删除密钥",
+      "permanentlyRemoves": "永久移除",
+      "activeBindingsWillFailUntilYouRemapThem": "。活跃绑定将失败,直到您重新映射它们。",
+      "removeProviderVault": "移除提供商保险库",
+      "fromPaperclipOnly": "仅从 Paperclip 中移除。",
+      "secretsUsingThisVaultWillLoseTheVaultAssociationUn": "使用此保险库的密钥将失去保险库关联,直到您分配另一个。",
+      "removeFromPaperclip": "从 Paperclip 移除",
+      "useSecretsByBindingThemToRuntimeEnvironmentVariabl": "通过将密钥绑定到运行时环境变量来使用它们。",
+      "createOrLinkASecretHereThenOpenAnAgentAposSEnviron": "在此创建或链接密钥,然后打开智能体的环境变量或项目的环境字段。添加进程期望的环境键,例如",
+      "andSelectTheStoredSecretVersion": ",并选择存储的密钥版本。",
+      "paperclipResolvesTheValueServerSideWhenTheRunStart": "Paperclip 在运行启动时在服务端解析值,并将其注入为该环境变量。项目环境应用于项目中的每个任务,并在匹配键上覆盖智能体环境。",
+      "allProviders": "所有提供商",
+      "importFromVault": "从保险库导入",
+      "loadingProviderVaults": "加载提供商保险库",
+      "failedToLoadProviderVaults": "加载提供商保险库失败:",
+      "addVault": "添加保险库",
+      "healthNotChecked": "未检查健康状态",
+      "checkHealth": "检查健康状态",
+      "refreshSecrets": "刷新密钥",
+      "makeDefault": "设为默认",
+      "remove": "移除",
+      "iUnderstandBackupAndRestoreRequireBothTheDatabaseM": "我了解备份和恢复需要数据库元数据和本地加密主密钥文件。",
+      "usesTheCurrentDraftRoutingFieldsToInspectAwsSecret": "使用当前草稿路由字段检查 AWS Secrets Manager 元数据。不会读取值。",
+      "findExistingAwsValues": "查找现有 AWS 值",
+      "enterAnAwsRegionBeforeDiscovery": "请在发现之前输入 AWS 区域。",
+      "searchingAwsSecretsManagerMetadata": "正在搜索 AWS Secrets Manager 元数据",
+      "noAwsVaultMetadataCandidatesFoundManualEntryIsStil": "未找到 AWS 保险库元数据候选。仍可手动输入。",
+      "vaultContext": "保险库上下文",
+      "safeRequestErrorDetails": "安全请求/错误详情",
+      "useValues": "使用值",
+      "paperclipNeverReDisplaysStoredValues": "Paperclip 永远不会重新显示已存储的值。",
+      "loading": "加载中…",
+      "noActiveBindingsAddThisSecretInAgentProjectEnviron": "无活跃绑定。在智能体、项目、环境或插件配置中添加此密钥即可开始使用。",
+      "noAccessEventsRecordedYetEachRuntimeResolutionWrit": "尚无访问事件记录。每次运行时解析都会在此写入一条脱敏记录。"
+    },
+    "labelsJsx": {
+      "configureAnAwsProviderVaultToEnableRemoteImport": "配置 AWS 提供商保险库以启用远程导入"
     }
   },
   "teamCatalog": {
@@ -827,8 +899,8 @@
       "taskReassignment": "任务重新分配",
       "unset": "未设置",
       "userAccount": "用户账号",
-      "humans": "Humans",
-      "selectCompany": "Select a company"
+      "humans": "人类成员",
+      "selectCompany": "选择一家公司"
     }
   },
   "companyEnvironments": {
@@ -1949,9 +2021,9 @@
       "newDocument": "新建文档",
       "noRevisionsYet": "尚无历史版本",
       "outOfDate": "已过期",
-      "revisionHistory": "Revision history",
-      "currentRevision": "Current",
-      "updated": "updated"
+      "revisionHistory": "修订历史",
+      "currentRevision": "当前",
+      "updated": "更新于"
     },
     "labelsJsx": {
       "locked": "已锁定文档"
@@ -2057,19 +2129,19 @@
       "status": "状态",
       "visibility": "可见性",
       "workspace": "工作区",
-      "assignee": "Assignee",
-      "creator": "Creator",
-      "externalObjectStatus": "External object status",
-      "filters": "Quick filters",
-      "hideRoutineRuns": "Hide routine runs",
-      "labels": "Labels",
-      "liveRunsOnly": "Live runs only",
-      "noAssignee": "No assignee",
-      "noCreatorsMatch": "No creators match",
-      "priority": "Priority"
+      "assignee": "负责人",
+      "creator": "创建者",
+      "externalObjectStatus": "外部对象状态",
+      "filters": "快速筛选",
+      "hideRoutineRuns": "隐藏例程运行",
+      "labels": "标签",
+      "liveRunsOnly": "仅显示运行中",
+      "noAssignee": "无负责人",
+      "noCreatorsMatch": "无匹配的创建者",
+      "priority": "优先级"
     },
     "placeholders": {
-      "searchCreators": "Search creators..."
+      "searchCreators": "搜索创建者..."
     }
   },
   "issuesList": {
@@ -2191,19 +2263,19 @@
       "secretName": "密钥名称"
     },
     "errors": {
-      "createSecret": "Failed to create secret"
+      "createSecret": "创建密钥失败"
     },
     "labelsJsx": {
-      "bindingMode": "Binding mode",
-      "secret": "Secret",
-      "version": "Version"
+      "bindingMode": "绑定模式",
+      "secret": "密钥",
+      "version": "版本"
     },
     "placeholders": {
-      "selectSecret": "Select a secret"
+      "selectSecret": "选择密钥"
     },
     "text": {
-      "plain": "Plain",
-      "secret": "Secret"
+      "plain": "纯文本",
+      "secret": "密钥"
     }
   },
   "commentThread": {
@@ -2254,22 +2326,22 @@
       "enterFive": "输入 5 字段 Cron 表达式。"
     },
     "labelsJsx": {
-      "cronExpression": "Cron expression",
-      "scheduleFrequency": "Schedule frequency"
+      "cronExpression": "Cron 表达式",
+      "scheduleFrequency": "调度频率"
     },
     "placeholders": {
-      "chooseFrequency": "Choose frequency..."
+      "chooseFrequency": "选择频率..."
     },
     "status": {
-      "custom": "Custom (cron)",
-      "everyDay": "Every day",
-      "everyHour": "Every hour"
+      "custom": "自定义 (cron)",
+      "everyDay": "每天",
+      "everyHour": "每小时"
     },
     "tabs": {
-      "everyMinute": "Every minute",
-      "monthly": "Monthly",
-      "weekdays": "Weekdays",
-      "weekly": "Weekly"
+      "everyMinute": "每分钟",
+      "monthly": "每月",
+      "weekdays": "工作日",
+      "weekly": "每周"
     }
   },
   "agentActionButtons": {
@@ -2369,16 +2441,16 @@
       "promotionTarget": "晋升目标",
       "rawOutput": "原始输出",
       "trustPreset": "信任预设",
-      "issue": "Issue",
-      "project": "Project",
-      "trust": "Trust preset"
+      "issue": "任务",
+      "project": "项目",
+      "trust": "信任预设"
     },
     "labelsJsx": {
-      "allowedAgents": "Allowed agents",
-      "allowedSecrets": "Allowed secrets",
-      "allowedTools": "Allowed tools",
-      "boundaryType": "Boundary type",
-      "eeFields": "EE fields"
+      "allowedAgents": "允许的智能体",
+      "allowedSecrets": "允许的密钥",
+      "allowedTools": "允许的工具",
+      "boundaryType": "边界类型",
+      "eeFields": "EE 字段"
     }
   },
   "approvalPayload": {
@@ -2400,18 +2472,18 @@
   "agentBubbleActionRow": {
     "text": {
       "savePreference": "保存你的反馈分享偏好",
-      "alwaysAllow": "Always allow",
-      "alwaysSavedLocally": "Always saved locally",
-      "whatBetter": "What could be better?"
+      "alwaysAllow": "始终允许",
+      "alwaysSavedLocally": "始终本地保存",
+      "whatBetter": "有什么可以改进的?"
     },
     "labelsJsx": {
-      "copyMessage": "Copy message",
-      "helpful": "Helpful",
-      "moreActions": "More actions",
-      "needsWork": "Needs work"
+      "copyMessage": "复制消息",
+      "helpful": "有帮助",
+      "moreActions": "更多操作",
+      "needsWork": "需要改进"
     },
     "placeholders": {
-      "shortNote": "Short note..."
+      "shortNote": "简短备注..."
     }
   },
   "activityCharts": {
@@ -2499,9 +2571,9 @@
       "medium": "中"
     },
     "tabs": {
-      "critical": "Critical",
-      "high": "High",
-      "medium": "Medium"
+      "critical": "紧急",
+      "high": "高",
+      "medium": "中"
     }
   },
   "instanceSidebar": {
@@ -2678,7 +2750,7 @@
       "goalTitle": "目标标题"
     },
     "placeholders": {
-      "goalTitle": "Goal title"
+      "goalTitle": "目标标题"
     }
   },
   "productivityReviewBadge": {
@@ -2751,7 +2823,7 @@
       "searchIcons": "搜索图标..."
     },
     "placeholders": {
-      "searchIcons": "Search icons..."
+      "searchIcons": "搜索图标..."
     }
   },
   "approvalCard": {
@@ -2946,6 +3018,176 @@
     "labelsJsx": {
       "payloadTemplate": "负载模板 JSON",
       "runtimeServices": "运行时服务 JSON"
+    }
+  },
+  "stagesecretspanel": {
+    "text": {
+      "theseEnvVarsAreInjectedWhen": "以下环境变量将在",
+      "runsThisStepTheyOverrideMatchingProjectAndAgentEnv": "运行此步骤时注入。冲突时它们将覆盖匹配的项目和智能体环境变量。",
+      "namesAreReserved": "名称已保留。",
+      "loadingSecrets": "加载密钥中…",
+      "unsavedChanges": "未保存的更改"
+    }
+  },
+  "importfromvaultdialog": {
+    "text": {
+      "failed": "失败",
+      "importFromAwsSecretsManager": "从 AWS Secrets Manager 导入",
+      "bringAwsManagedSecretsIntoPaperclipAsExternalRefer": "将 AWS 管理的密钥作为外部引用导入 Paperclip。",
+      "cancel": "取消",
+      "notVisibleWithCurrentSearch": "在当前搜索中不可见",
+      "remoteName": "远程名称",
+      "lastChanged": "上次更改",
+      "suggestedName": "建议名称",
+      "alreadyImported": "已导入",
+      "loading": "加载中…",
+      "paperclipName": "Paperclip 名称"
+    },
+    "errors": {
+      "unexpectedError": "意外错误",
+      "nameIsRequired": "名称为必填项。",
+      "nameMustBe160CharactersOrFewer": "名称不能超过 160 个字符。",
+      "keyIsRequired": "键为必填项。",
+      "keyMayOnlyContainLowercaseLettersNumbersDotUndersc": "键只能包含小写字母、数字、点、下划线或连字符。",
+      "keyMustBe120CharactersOrFewer": "键不能超过 120 个字符。",
+      "descriptionMustBe500CharactersOrFewer": "描述不能超过 500 个字符。",
+      "aPaperclipSecretAlreadyUsesThisName": "已有 Paperclip 密钥使用了此名称。",
+      "aPaperclipSecretAlreadyUsesThisKey": "已有 Paperclip 密钥使用了此键。",
+      "anotherRowInThisBatchAlreadyUsesThisName": "此批次中已有另一行使用了此名称。",
+      "anotherRowInThisBatchAlreadyUsesThisKey": "此批次中已有另一行使用了此键。"
+    },
+    "labels": {
+      "importFailed": "导入失败",
+      "couldNotLoadMoreResults": "无法加载更多结果"
+    },
+    "aria": {
+      "closeImportDialog": "关闭导入对话框",
+      "selectAwsVault": "选择 AWS 保险库",
+      "searchRemoteSecrets": "搜索远程密钥",
+      "refreshRemoteSecrets": "刷新远程密钥"
+    },
+    "placeholders": {
+      "selectAnAwsVault": "选择 AWS 保险库",
+      "searchByNameArnTag": "按名称、ARN、标签搜索"
+    },
+    "labelsJsx": {
+      "failed": "失败"
+    }
+  },
+  "issuedetail": {
+    "errors": {
+      "onlyBoardUsersCanPreviewSubtreeControls": "仅 Board 用户可预览子树控制。",
+      "previewIsStaleBecauseSubtreeHoldStateChangedRetryT": "预览已过期,因为子树保持状态已更改。请重试以刷新。",
+      "thisSubtreeActionIsCurrentlyInvalidForTheSelectedT": "此子树操作对所选任务当前无效。"
+    },
+    "text": {
+      "noProject": "无项目",
+      "copyAsMarkdown": "复制为 Markdown",
+      "hideThisTask": "隐藏此任务",
+      "costSummary": "费用汇总",
+      "noCostDataYet": "暂无费用数据。",
+      "thisTask": "此任务",
+      "noDirectCostData": "无直接费用数据。",
+      "includingSubTasks": "包含子任务",
+      "uploadAttachment": "上传附件",
+      "thisTaskIsHidden": "此任务已隐藏",
+      "viewAffected": "查看受影响 (",
+      "cancelSubtree": "取消子树...",
+      "thisTaskIsPausedByAncestor": "此任务被上级暂停",
+      "resumeFromTheRootTaskToDeliverDeferredWork": "。从根任务恢复以交付延迟的工作。",
+      "productivityReview": "生产力审查",
+      "blockedByParkedWork": "被搁置的工作阻塞",
+      "pauseWork": "暂停工作...",
+      "resumeWork": "恢复工作",
+      "pauseSubtree": "暂停子树...",
+      "resumeSubtree": "恢复子树",
+      "restoreSubtree": "恢复子树...",
+      "newSubTask": "新建子任务",
+      "relatedWork": "相关工作",
+      "cancellingASubtreeIsDestructiveNonTerminalTasksWil": "取消子树是破坏性操作。非终态任务将被标记为已取消,运行中或排队的工作将尽可能被中断。",
+      "wakeAffectedAgents": "唤醒受影响的智能体 (",
+      "iUnderstandThisWillCancel": "我了解这将取消",
+      "retryPreview": "重试预览",
+      "previewUnavailable": "预览不可用。",
+      "close": "关闭"
+    },
+    "toasts": {
+      "theActiveRunIsStoppingSoQueuedCommentsCanContinueN": "活跃运行正在停止,排队的评论可以继续下一步。",
+      "theQueuedMessageWasRestoredToTheComposer": "排队的消息已恢复到编辑器。",
+      "theThreadNowShowsADeletedCommentMarker": "对话现在显示已删除评论标记。"
+    },
+    "labels": {
+      "theActiveRunIsStoppingSoQueuedCommentsCanContinueN": "活跃运行正在停止,排队的评论可以继续下一步。",
+      "theQueuedMessageWasRestoredToTheComposer": "排队的消息已恢复到编辑器。",
+      "theThreadNowShowsADeletedCommentMarker": "对话现在显示已删除评论标记。"
+    },
+    "labelsJsx": {
+      "thisTaskIsAProductivityReview": "此任务是生产力审查。",
+      "thisTaskIsAGeneratedWatchdogTaskItVerifiesWhetherS": "此任务是自动生成的看门狗任务。它验证被监视任务树中停止的工作是否合理。",
+      "blockedByParkedWorkAtLeastOneAssignedBlockerIsInBa": "被搁置工作阻塞 — 至少一个分配的阻塞项在待办列表中,不会唤醒其负责人。",
+      "copyTaskAsMarkdown": "复制任务为 Markdown",
+      "archiveFromInbox": "从收件箱归档",
+      "openFileGF": "打开文件... (g f)",
+      "showProperties": "显示属性",
+      "moreTaskActions": "更多任务操作"
+    },
+    "placeholders": {
+      "addADescription": "添加描述...",
+      "explainWhyThisSubtreeControlIsBeingApplied": "说明为什么应用此子树控制..."
+    }
+  },
+  "issueproperties": {
+    "errors": {
+      "githubPullRequest": "GitHub Pull Request",
+      "githubIssue": "GitHub Issue",
+      "notScheduled": "未调度",
+      "pendingSchedule": "等待调度"
+    },
+    "text": {
+      "remove": "移除",
+      "asABlockerForThisTask": "作为此任务的阻塞项。",
+      "removeBlocker": "移除阻塞项",
+      "usesTheAgentAposSConfiguredCheapProfile": "· 使用智能体配置的经济模型",
+      "fallsBackToThePrimaryModelIfNoCheapProfileIsConfig": "· 如未配置经济模型则回退到主模型",
+      "enableChromeChrome": "启用 Chrome (--chrome)",
+      "clearAdapterOptions": "清除适配器选项",
+      "watchdogTask": "看门狗任务:",
+      "retryNow": "立即重试",
+      "assignToMe": "分配给我",
+      "noParent": "无父任务",
+      "noBlockers": "无阻塞项",
+      "addBlocker": "添加阻塞项",
+      "addSubTask": "添加子任务",
+      "viewWorkspace": "查看工作区"
+    },
+    "placeholders": {
+      "whatShouldTheWatchdogWatchForAndHowShouldItKeepWor": "看门狗应监视什么?如何保持工作推进?"
+    },
+    "labelsJsx": {
+      "addLabel": "添加标签",
+      "clearAdapterOptions": "清除适配器选项",
+      "openWatchdogTask": "打开看门狗任务"
+    }
+  },
+  "issueslist": {
+    "text": {
+      "noActiveSubTasks": "无活跃子任务",
+      "allSubTasksDone": "所有子任务已完成",
+      "noActionableSubTasks": "无可操作的子任务",
+      "showingUpTo": "最多显示",
+      "matchesRefineTheSearchToNarrowFurther": "个匹配项。优化搜索以进一步缩小范围。",
+      "someBoardColumnsAreShowingUpTo": "部分看板列最多显示",
+      "tasksRefineFiltersOrSearchToRevealTheRest": "个任务。优化筛选或搜索以显示其余。",
+      "needsNextStep": "需要下一步",
+      "noAssignee": "无负责人"
+    },
+    "labelsJsx": {
+      "listView": "列表视图",
+      "boardView": "看板视图",
+      "cardsPerColumn": "每列卡片数",
+      "resetBoardDensity": "重置看板密度",
+      "chooseWhichTaskColumnsStayVisible": "选择哪些任务列保持可见",
+      "thisTaskNeedsANextStep": "此任务需要下一步"
     }
   }
 }
