@@ -91,6 +91,9 @@
       "brace-expansion@5": "^5.0.6",
       "@tootallnate/once": "^2.0.1",
       "form-data": ">=4.0.6",
+      "@connectrpc/connect-node>undici": ">=6.27.0 <7",
+      "jsdom>undici": ">=7.28.0 <8",
+      "multer": ">=2.2.0 <3",
       "react": "^19.2.7",
       "react-dom": "^19.2.7"
     }
