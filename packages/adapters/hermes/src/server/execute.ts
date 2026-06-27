@@ -76,8 +76,12 @@ export function resolveHermesCommand(config: Record<string, unknown>): string {
 }
 
 function resolvePaperclipApiUrl(config: Record<string, unknown>): string {
+  const configEnv = config.env as Record<string, unknown> | undefined;
   let paperclipApiUrl =
     cfgString(config.paperclipApiUrl) ||
+    cfgString(configEnv?.PAPERCLIP_API_URL) ||
+    cfgString(configEnv?.PAPERCLIP_API_BASE_URL) ||
+    cfgString(configEnv?.PAPERCLIP_BASE_URL) ||
     process.env.PAPERCLIP_API_URL ||
     "http://127.0.0.1:3100/api";
   paperclipApiUrl = paperclipApiUrl.replace(/\/+$/, "");
@@ -546,16 +550,9 @@ export async function execute(
   // BUG FIX: Inject authToken as PAPERCLIP_API_KEY (matches adapter-claude-local behavior)
   if ((ctx as any).authToken) env.PAPERCLIP_API_KEY = (ctx as any).authToken;
   const paperclipApiUrl = resolvePaperclipApiUrl(config);
-  const envPaperclipApiUrl = resolvePaperclipApiUrl({
-    paperclipApiUrl:
-      env.PAPERCLIP_API_URL ||
-      env.PAPERCLIP_API_BASE_URL ||
-      env.PAPERCLIP_BASE_URL ||
-      paperclipApiUrl,
-  });
-  env.PAPERCLIP_API_URL = envPaperclipApiUrl;
-  env.PAPERCLIP_BASE_URL = envPaperclipApiUrl;
-  env.PAPERCLIP_API_BASE_URL = envPaperclipApiUrl;
+  env.PAPERCLIP_API_URL = paperclipApiUrl;
+  env.PAPERCLIP_BASE_URL = paperclipApiUrl;
+  env.PAPERCLIP_API_BASE_URL = paperclipApiUrl;
   env.PAPERCLIP_WRITE_HELPER = paperclipWriteHelper;
 
   // BUG FIX: Read task context from ctx.context (wake context), not ctx.config (adapter config)
@@ -573,7 +570,7 @@ export async function execute(
   if (env.PAPERCLIP_API_KEY && env.PAPERCLIP_RUN_ID) {
     await writePaperclipHelper({
       path: paperclipWriteHelper,
-      apiUrl: envPaperclipApiUrl,
+      apiUrl: paperclipApiUrl,
       apiKey: env.PAPERCLIP_API_KEY,
       runId: env.PAPERCLIP_RUN_ID,
     });
