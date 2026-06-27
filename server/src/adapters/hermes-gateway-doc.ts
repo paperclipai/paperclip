@@ -53,6 +53,7 @@ Network examples:
 
 Security notes:
 - Treat API_SERVER_KEY and PAPERCLIP_BRIDGE_API_KEY as secrets.
+- When claiming the normal Paperclip agent API key, store the parsed token field from the raw claim response before printing or summarizing it. Hermes/tool displays may redact secrets with literal ... or [redacted]; those previews are not valid keys.
 - Never use a normal claimed Paperclip agent API key for internet-facing Hermes-originated task bridge calls; task_bridge keys cannot use company-wide issue list/search/read surfaces and can only mutate bridge-created or assigned issues.
 - Prefer private network or TLS for non-loopback gateway access.
 - Use placeholders such as <same-value-as-API_SERVER_KEY> in docs and tests.

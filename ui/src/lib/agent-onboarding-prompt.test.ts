@@ -30,5 +30,8 @@ describe("buildAgentOnboardingPrompt", () => {
     expect(prompt).toContain("`hermes_local` runs Hermes on the Paperclip host");
     expect(prompt).toContain("Hermes-originated Paperclip API calls");
     expect(prompt).toContain("Do not rotate or invent a Paperclip key manually");
+    expect(prompt).toContain("parsed `token` field from the raw HTTP JSON response");
+    expect(prompt).toContain("A token value containing literal `...` or `[redacted]`");
+    expect(prompt).toContain("never persist a displayed preview that contains `...`");
   });
 });
