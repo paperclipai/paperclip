@@ -40,6 +40,10 @@ tmp/
 feedback-export-*
 diagnostics/
 
+# Secret scratch files agents may create (NEO-263)
+server/.env_paperclip
+.env_paperclip
+
 # Editor / tool temp files
 *.tmp
 .vscode/
