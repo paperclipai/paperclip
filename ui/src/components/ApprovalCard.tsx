@@ -1,6 +1,6 @@
 import { CheckCircle2, XCircle, Clock } from "lucide-react";
 import { Link } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Identity } from "./Identity";
@@ -24,7 +24,6 @@ function statusIcon(status: string) {
 }
 
 export function ApprovalCard({
-  const { t } = useTranslation();
   approval,
   requesterAgent,
   onApprove,

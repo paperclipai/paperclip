@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
+import { t } from "@/i18n";
 function issueHref(identifier: string | null, issueId: string) {
   if (!identifier) return `/issues/${issueId}`;
   const prefix = identifier.split("-")[0] || "PAP";
@@ -123,7 +124,6 @@ function RecoveryPreviewDialog({
 }
 
 export function InstanceExperimentalSettings() {
-  const { t } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [actionError, setActionError] = useState<string | null>(null);

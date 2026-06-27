@@ -1,12 +1,12 @@
 import { Rocket, Zap } from "lucide-react";
 import { cn } from "../lib/utils";
 
+import { t } from "@/i18n";
 interface FrontDoorProps {
   onChoose: (path: "create" | "grow") => void;
 }
 
 export function FrontDoor({ onChoose }: FrontDoorProps) {
-  const { t } = useTranslation();
   return (
     <div className="flex flex-col items-center justify-center min-h-[60vh] px-8">
       <div className="text-center mb-10">

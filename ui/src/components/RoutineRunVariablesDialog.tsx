@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
+import { t } from "@/i18n";
 function buildInitialValues(variables: RoutineVariable[]) {
   return Object.fromEntries(variables.map((variable) => [variable.name, variable.defaultValue ?? ""]));
 }
@@ -165,7 +166,6 @@ export function routineRunNeedsConfiguration(input: {
   project: Project | null | undefined;
   isolatedWorkspacesEnabled: boolean;
 }) {
-  const { t } = useTranslation();
   return input.variables.length > 0
     || supportsRoutineRunWorkspaceSelection(input.project, input.isolatedWorkspacesEnabled);
 }

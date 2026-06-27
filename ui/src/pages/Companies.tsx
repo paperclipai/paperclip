@@ -28,8 +28,8 @@ import {
   Calendar,
 } from "lucide-react";
 
+import { t } from "@/i18n";
 export function Companies() {
-  const { t } = useTranslation();
   const {
     companies,
     selectedCompanyId,

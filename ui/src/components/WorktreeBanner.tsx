@@ -1,8 +1,8 @@
 import { useCallback, useState } from "react";
 import { getWorktreeUiBranding } from "../lib/worktree-branding";
 
+import { t } from "@/i18n";
 export function WorktreeBanner() {
-  const { t } = useTranslation();
   const branding = getWorktreeUiBranding();
   const [copied, setCopied] = useState(false);
 

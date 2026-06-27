@@ -19,6 +19,7 @@ import {
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 
+import { t } from "@/i18n";
 interface IssueAttachmentsSectionProps {
   attachments: IssueAttachment[];
   uploadButton?: ReactNode;
@@ -188,7 +189,6 @@ function GenericAttachmentRow({
 }
 
 export function IssueAttachmentsSection({
-  const { t } = useTranslation();
   attachments,
   uploadButton,
   error,

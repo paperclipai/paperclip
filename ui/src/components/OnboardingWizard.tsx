@@ -25,7 +25,7 @@ import {
 } from "../lib/model-utils";
 import { getUIAdapter } from "../adapters";
 import { listUIAdapters } from "../adapters";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import { isVisualAdapterChoice } from "../adapters/metadata";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
@@ -101,7 +101,6 @@ function loadSavedState(): Record<string, unknown> | null {
 }
 
 export function OnboardingWizard() {
-  const { t } = useTranslation();
   const {
     onboardingOpen,
     onboardingOptions,

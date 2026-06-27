@@ -13,6 +13,7 @@ import {
 } from "@/lib/document-annotation-selection";
 import type { DocumentAnnotationAnchorSelector } from "@paperclipai/shared";
 
+import { t } from "@/i18n";
 export interface AnnotationOverlayThread {
   id: string;
   selectedText: string;
@@ -202,7 +203,6 @@ function nativeHighlightKind(input: {
 }
 
 export function DocumentAnnotationLayer({
-  const { t } = useTranslation();
   containerRef,
   markdown,
   threads,

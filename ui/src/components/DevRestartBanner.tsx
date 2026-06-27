@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, RotateCcw, TimerReset } from "lucide-react";
 import { healthApi, type DevServerHealthStatus } from "../api/health";
 
+import { t } from "@/i18n";
 const RESTART_PENDING_RESET_MS = 30_000;
 
 function formatRelativeTimestamp(value: string | null): string | null {
@@ -30,7 +31,6 @@ function describeReason(devServer: DevServerHealthStatus): string {
 }
 
 export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthStatus }) {
-  const { t } = useTranslation();
   const [restartPending, setRestartPending] = useState(false);
   useEffect(() => {
     if (!restartPending) return;

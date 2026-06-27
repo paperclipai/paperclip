@@ -49,6 +49,7 @@ import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
 
+import { t } from "@/i18n";
 /* ---- Mention types ---- */
 
 export interface MentionOption {
@@ -426,7 +427,6 @@ function isSelectionInsideCodeLikeElement(container: HTMLElement | null) {
 
 /** The human title of an issue mention — `name` minus its leading identifier. */
 export function issueMentionTitle(option: MentionOption): string {
-  const { t } = useTranslation();
   const name = option.name.trim();
   const identifier = option.issueIdentifier?.trim();
   if (identifier && name.toLowerCase().startsWith(identifier.toLowerCase())) {
@@ -544,7 +544,6 @@ export function findClosestAutocompleteAnchor(
 }
 
 export function placeCaretAfterMentionAnchor(target: HTMLAnchorElement): boolean {
-  const { t } = useTranslation();
   const selection = window.getSelection();
   if (!selection) return false;
 

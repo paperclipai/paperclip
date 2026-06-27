@@ -19,7 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { History } from "lucide-react";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 
 const ACTIVITY_PAGE_LIMIT = 200;
 
@@ -45,7 +45,6 @@ function activityEntityTitle(event: ActivityEvent) {
 }
 
 export function Activity() {
-  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [filter, setFilter] = useState("all");

@@ -38,6 +38,7 @@ import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./Ma
 import { StatusBadge } from "./StatusBadge";
 import { ChoosePathButton } from "./PathInstructionsModal";
 
+import { t } from "@/i18n";
 const projectStatuses = [
   { value: "backlog", label: t("newProjectDialog.labelsObj.backlog") },
   { value: "planned", label: t("newProjectDialog.labelsObj.planned") },
@@ -47,7 +48,6 @@ const projectStatuses = [
 ];
 
 export function NewProjectDialog() {
-  const { t } = useTranslation();
   const { newProjectOpen, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();

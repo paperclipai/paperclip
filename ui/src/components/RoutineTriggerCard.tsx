@@ -16,6 +16,7 @@ import { ScheduleEditor } from "./ScheduleEditor";
 import { buildRoutineTriggerPatch } from "../lib/routine-trigger-patch";
 import { describeCron } from "../lib/cron-readable";
 
+import { t } from "@/i18n";
 const signingModes = ["bearer", "hmac_sha256", "github_hmac", "none"];
 const SIGNING_MODES_WITHOUT_REPLAY_WINDOW = new Set(["github_hmac", "none"]);
 
@@ -32,7 +33,6 @@ function getLocalTimezone(): string {
  * from the previous inline `TriggerEditor` in `RoutineDetail.tsx` — same logic.
  */
 export function RoutineTriggerCard({
-  const { t } = useTranslation();
   trigger,
   onSave,
   onRotate,

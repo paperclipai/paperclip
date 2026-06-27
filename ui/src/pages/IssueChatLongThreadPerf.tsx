@@ -15,6 +15,7 @@ import {
   LONG_THREAD_MARKDOWN_COMMENT_COUNT,
 } from "../fixtures/issueChatLongThreadFixture";
 
+import { t } from "@/i18n";
 const noop = async () => {};
 
 type RenderMetrics = {
@@ -52,7 +53,6 @@ function MetricTile({ label, value, testId }: { label: string; value: string; te
 }
 
 export function IssueChatLongThreadPerf() {
-  const { t } = useTranslation();
   const [metrics, setMetrics] = useState<RenderMetrics>(initialMetrics);
   const metricsRef = useRef<RenderMetrics>(initialMetrics);
   const renderStartedAtRef = useRef(performance.now());

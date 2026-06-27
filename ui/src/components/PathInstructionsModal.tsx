@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
+import { t } from "@/i18n";
 type Platform = "mac" | "windows" | "linux";
 
 const platforms: { id: Platform; label: string; icon: typeof Apple }[] = [
@@ -58,7 +59,6 @@ interface PathInstructionsModalProps {
 }
 
 export function PathInstructionsModal({
-  const { t } = useTranslation();
   open,
   onOpenChange,
 }: PathInstructionsModalProps) {
@@ -125,7 +125,6 @@ export function PathInstructionsModal({
  * Drop-in replacement for the old showDirectoryPicker buttons.
  */
 export function ChoosePathButton({ className }: { className?: string }) {
-  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <>

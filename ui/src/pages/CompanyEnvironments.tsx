@@ -29,6 +29,7 @@ import {
   ToggleField,
 } from "../components/agent-config-primitives";
 
+import { t } from "@/i18n";
 type EnvironmentFormState = {
   name: string;
   description: string;
@@ -165,7 +166,6 @@ function summarizeSandboxConfig(config: Record<string, unknown>): string | null 
 }
 
 export function CompanyEnvironments() {
-  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();

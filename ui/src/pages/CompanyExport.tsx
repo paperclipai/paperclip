@@ -9,7 +9,7 @@ import type {
   Project,
 } from "@paperclipai/shared";
 import { useNavigate, useLocation } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
@@ -579,7 +579,6 @@ function expandAncestors(filePath: string): string[] {
 }
 
 export function CompanyExport() {
-  const { t } = useTranslation();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();

@@ -148,6 +148,7 @@ import {
 } from "@/pages/TeamCatalog.fixtures";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 
+import { t } from "@/i18n";
 /* ------------------------------------------------------------------ */
 /*  Sample data for the Issue Output surface showcase                  */
 /* ------------------------------------------------------------------ */
@@ -283,7 +284,6 @@ function Swatch({ name, cssVar }: { name: string; cssVar: string }) {
 /* ------------------------------------------------------------------ */
 
 export function DesignGuide() {
-  const { t } = useTranslation();
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
   const [selectValue, setSelectValue] = useState("in_progress");

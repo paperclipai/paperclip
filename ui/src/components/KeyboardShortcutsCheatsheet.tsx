@@ -1,5 +1,6 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
+import { t } from "@/i18n";
 interface ShortcutEntry {
   keys: string[];
   label: string;
@@ -71,7 +72,6 @@ function KeyCap({ children }: { children: string }) {
 }
 
 export function KeyboardShortcutsCheatsheetContent() {
-  const { t } = useTranslation();
   return (
     <>
       <div className="divide-y divide-border border-t border-border">

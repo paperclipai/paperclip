@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
+import { t } from "@/i18n";
 const variableTypes: RoutineVariable["type"][] = ["text", "textarea", "number", "boolean", "select"];
 
 function serializeVariables(value: RoutineVariable[]) {
@@ -252,7 +253,6 @@ const BUILTIN_VARIABLE_DOCS: BuiltinVariableDoc[] = [
 ];
 
 export function RoutineVariablesHint() {
-  const { t } = useTranslation();
   const [helpOpen, setHelpOpen] = useState(false);
 
   return (

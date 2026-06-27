@@ -1,5 +1,5 @@
 import { Link } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { CopyText } from "./CopyText";
@@ -38,7 +38,6 @@ interface ProjectWorkspaceSummaryCardProps {
 }
 
 export function ProjectWorkspaceSummaryCard({
-  const { t } = useTranslation();
   projectRef,
   summary,
   runtimeActionKey,

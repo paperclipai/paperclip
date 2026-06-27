@@ -12,6 +12,7 @@ import {
 } from "react";
 import { cn } from "@/lib/utils";
 
+import { t } from "@/i18n";
 const DEFAULT_SIDEBAR_WIDTH = 240;
 const MIN_SIDEBAR_WIDTH = 208;
 const MAX_SIDEBAR_WIDTH = 420;
@@ -89,7 +90,6 @@ type SidebarShellProps = {
  * slide. Resizing the drag handle is likewise direct.
  */
 export function SidebarShell({
-  const { t } = useTranslation();
   children,
   open,
   collapsed = false,

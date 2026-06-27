@@ -24,7 +24,7 @@ import type {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useLocation } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 
 type FixtureStateKey =
   | "settings-pane"
@@ -94,7 +94,6 @@ const PARSE_ORDER: FixtureStateKey[] = [
 ];
 
 export function CloudUpstreamUxLab() {
-  const { t } = useTranslation();
   const location = useLocation();
   const { state, showChrome } = useMemo(() => {
     const params = new URLSearchParams(location.search);

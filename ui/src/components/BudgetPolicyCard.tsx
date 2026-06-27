@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
+import { t } from "@/i18n";
 function centsInputValue(value: number) {
   return (value / 100).toFixed(2);
 }

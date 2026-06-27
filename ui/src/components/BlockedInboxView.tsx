@@ -23,6 +23,7 @@ import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
 import { Button } from "@/components/ui/button";
 
+import { t } from "@/i18n";
 interface BlockedInboxViewProps {
   companyId: string;
   searchQuery: string;
@@ -43,7 +44,6 @@ interface BlockedInboxViewProps {
 const BLOCKED_LIST_LIMIT = 200;
 
 export function BlockedInboxView({
-  const { t } = useTranslation();
   companyId,
   searchQuery,
   agentNameById,

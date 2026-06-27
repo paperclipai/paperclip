@@ -33,6 +33,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+import { t } from "@/i18n";
 const NO_COMPANY = "__none__";
 
 function currentWeekRange(): { from: string; to: string } {
@@ -147,7 +148,6 @@ function FinanceSummaryCard({
 }
 
 export function Costs() {
-  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();

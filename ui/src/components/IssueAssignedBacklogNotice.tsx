@@ -2,6 +2,7 @@ import { Flag } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 
+import { t } from "@/i18n";
 interface IssueAssignedBacklogNoticeProps {
   issueStatus: string;
   assigneeAgent: Agent | null;
@@ -11,7 +12,6 @@ interface IssueAssignedBacklogNoticeProps {
 }
 
 export function IssueAssignedBacklogNotice({
-  const { t } = useTranslation();
   issueStatus,
   assigneeAgent,
   assigneeUserId,

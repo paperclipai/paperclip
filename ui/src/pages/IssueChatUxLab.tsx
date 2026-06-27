@@ -20,6 +20,7 @@ import {
 import { cn } from "../lib/utils";
 import { Bot, Brain, FlaskConical, Loader2, MessagesSquare, Route, Sparkles, WandSparkles } from "lucide-react";
 
+import { t } from "@/i18n";
 const noop = async () => {};
 
 const highlights = [
@@ -132,7 +133,6 @@ function RotatingReasoningDemo({ intervalMs = 2200 }: { intervalMs?: number }) {
 }
 
 export function IssueChatUxLab() {
-  const { t } = useTranslation();
   const [showComposer, setShowComposer] = useState(true);
 
   return (

@@ -4,6 +4,7 @@ import { ExternalObjectPill } from "./ExternalObjectPill";
 import type { IssueExternalObjectGroup } from "../hooks/useIssueExternalObjects";
 import { externalObjectToneSeverity } from "../lib/external-objects";
 
+import { t } from "@/i18n";
 type GroupedSource = {
   label: string;
   count: number;
@@ -170,7 +171,6 @@ function ExternalObjectsSection({
 }
 
 export function IssueRelatedWorkPanel({
-  const { t } = useTranslation();
   relatedWork,
   externalObjectsEnabled = true,
   externalObjects,

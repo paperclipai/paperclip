@@ -1,5 +1,5 @@
 import { Navigate, Outlet, useLocation } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
@@ -26,7 +26,6 @@ function NoBoardAccessPage() {
 }
 
 export function CloudAccessGate() {
-  const { t } = useTranslation();
   const location = useLocation();
   const queryClient = useQueryClient();
   const healthQuery = useQuery({

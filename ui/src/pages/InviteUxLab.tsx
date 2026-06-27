@@ -19,6 +19,7 @@ import {
   Users,
 } from "lucide-react";
 
+import { t } from "@/i18n";
 const inviteRoleOptions = [
   {
     value: "viewer",
@@ -695,7 +696,6 @@ function CompanyInvitesPreview() {
 }
 
 export function InviteUxLab() {
-  const { t } = useTranslation();
   return (
     <div className="space-y-6">
       <div className="overflow-hidden rounded-[32px] border border-border/70 bg-[linear-gradient(135deg,rgba(8,145,178,0.10),transparent_28%),linear-gradient(180deg,rgba(245,158,11,0.10),transparent_44%),var(--background)] shadow-[0_30px_80px_rgba(15,23,42,0.10)]">

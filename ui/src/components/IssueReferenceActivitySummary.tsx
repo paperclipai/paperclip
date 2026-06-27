@@ -51,7 +51,6 @@ function Section({
 }
 
 export function IssueReferenceActivitySummary({ event }: { event: Pick<ActivityEvent, "details"> }) {
-  const { t } = useTranslation();
   const added = readIssueReferences(event.details, "addedReferencedIssues");
   const removed = readIssueReferences(event.details, "removedReferencedIssues");
   if (added.length === 0 && removed.length === 0) return null;

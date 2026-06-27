@@ -13,6 +13,7 @@ import {
   Sparkles,
 } from "lucide-react";
 
+import { t } from "@/i18n";
 function LabSection({
   id,
   eyebrow,
@@ -125,7 +126,6 @@ const checklist = [
 ];
 
 export function SystemNoticeUxLab() {
-  const { t } = useTranslation();
   const fixtureById = new Map(systemNoticeFixtures.map((f) => [f.id, f] as const));
 
   const warningCollapsed = fixtureById.get("warning-collapsed")!;

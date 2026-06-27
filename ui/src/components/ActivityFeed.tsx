@@ -27,6 +27,7 @@ import { ListFilter, Layers, ChevronDown, ChevronRight, User, Settings } from "l
 import { AgentIcon } from "./AgentIconPicker";
 import { timeAgo } from "../lib/timeAgo";
 
+import { t } from "@/i18n";
 /* ------------------------------------------------------------------ */
 /*  Event Tier Classification                                          */
 /* ------------------------------------------------------------------ */
@@ -318,7 +319,6 @@ interface ActivityFeedProps {
 }
 
 export function ActivityFeed({ className }: ActivityFeedProps) {
-  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const [filter, setFilter] = useState<FilterValue>("all");
   const [groupMode, setGroupMode] = useState<GroupMode>("flat");

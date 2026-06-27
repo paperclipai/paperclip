@@ -24,6 +24,7 @@ import type {
   WorkspaceFileSelector,
 } from "@paperclipai/shared";
 
+import { t } from "@/i18n";
 type BrowserSource = "current" | "other";
 
 // Hard list cap. The spec called out ~50 to keep reads cheap; 100 trades a bit
@@ -477,7 +478,6 @@ export function WorkspaceFileBrowser({
   selectedWorkspaceId: activeWorkspaceId,
   className,
 }: WorkspaceFileBrowserProps) {
-  const { t } = useTranslation();
   const source: BrowserSource =
     initialProjectId && initialWorkspaceId ? "other" : "current";
   const workspace: WorkspaceFileSelector = "auto";

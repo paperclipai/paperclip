@@ -77,6 +77,7 @@ import { cn } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { ImportFromVaultDialog } from "./secrets/ImportFromVaultDialog";
 
+import { t } from "@/i18n";
 type CreateMode = "managed" | "external";
 type SecretsTab = "secrets" | "vaults";
 
@@ -393,7 +394,6 @@ export function getAwsManagedPathPreview(input: {
 }
 
 export function Secrets() {
-  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();

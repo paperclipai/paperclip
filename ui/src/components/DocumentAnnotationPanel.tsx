@@ -33,6 +33,7 @@ import type { PendingAnchor } from "./DocumentAnnotationLayer";
 import type { Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "@/lib/company-members";
 
+import { t } from "@/i18n";
 export interface AnnotationPanelProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -65,7 +66,6 @@ export interface AnnotationPanelProps {
 }
 
 export function DocumentAnnotationPanel(props: AnnotationPanelProps) {
-  const { t } = useTranslation();
   if (props.isMobile) {
     return (
       <Sheet open={props.open} onOpenChange={props.onOpenChange}>

@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { CompanyPatternIcon } from "@/components/CompanyPatternIcon";
 import { useCompany } from "@/context/CompanyContext";
 import { Link, useNavigate, useParams } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { companiesListQueryOptions } from "../api/companies-query";
@@ -214,7 +214,6 @@ function AwaitingJoinApprovalPanel({
 }
 
 export function InviteLandingPage() {
-  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { setSelectedCompanyId } = useCompany();

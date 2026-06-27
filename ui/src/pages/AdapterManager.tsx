@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 /**
  * @fileoverview Adapter Manager page — install, view, and manage external adapters.
  *
@@ -252,7 +253,6 @@ function ReinstallDialog({
 }
 
 export function AdapterManager() {
-  const { t } = useTranslation();
   const { selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();

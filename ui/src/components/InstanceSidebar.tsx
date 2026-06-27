@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Clock3, Cpu, FlaskConical, MonitorCog, Puzzle, Settings, Shield, SlidersHorizontal, UserRoundPen } from "lucide-react";
 import type { PluginRecord } from "@paperclipai/shared";
 import { NavLink } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import { pluginsApi } from "@/api/plugins";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { queryKeys } from "@/lib/queryKeys";
@@ -22,7 +22,6 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
 }
 
 export function InstanceSidebar() {
-  const { t } = useTranslation();
   const { data: plugins } = useQuery({
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),

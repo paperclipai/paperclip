@@ -8,6 +8,7 @@ import { RunTranscriptView, type TranscriptDensity, type TranscriptMode } from "
 import { runTranscriptFixtureEntries, runTranscriptFixtureMeta } from "../fixtures/runTranscriptFixtures";
 import { ExternalLink, FlaskConical, LayoutPanelLeft, MonitorCog, PanelsTopLeft, RadioTower } from "lucide-react";
 
+import { t } from "@/i18n";
 type SurfaceId = "detail" | "live" | "dashboard";
 
 const surfaceOptions: Array<{
@@ -191,7 +192,6 @@ function DashboardPreview({
 }
 
 export function RunTranscriptUxLab() {
-  const { t } = useTranslation();
   const [selectedSurface, setSelectedSurface] = useState<SurfaceId>("detail");
   const [detailMode, setDetailMode] = useState<TranscriptMode>("nice");
   const [streaming, setStreaming] = useState(true);

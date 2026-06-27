@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import type { Issue, IssueLabel, Project } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterModel } from "../api/agents";
@@ -587,7 +587,6 @@ function PropertyPicker({
 }
 
 export function IssueProperties({
-  const { t } = useTranslation();
   issue,
   childIssues = [],
   onAddSubIssue,

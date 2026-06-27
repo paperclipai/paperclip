@@ -26,6 +26,7 @@ import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
 
+import { t } from "@/i18n";
 const levelLabels: Record<string, string> = {
   company: "Company",
   team: "Team",
@@ -34,7 +35,6 @@ const levelLabels: Record<string, string> = {
 };
 
 export function NewGoalDialog() {
-  const { t } = useTranslation();
   const { newGoalOpen, newGoalDefaults, closeNewGoal } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();

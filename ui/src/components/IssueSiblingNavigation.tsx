@@ -4,7 +4,7 @@ import type { IssueSiblingNavigation as IssueSiblingNavigationState } from "@/li
 import { createIssueDetailPath, withIssueDetailHeaderSeed } from "@/lib/issueDetailBreadcrumb";
 import { cn } from "@/lib/utils";
 import { Link } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import { StatusIcon } from "./StatusIcon";
 
 type IssueSiblingNavigationProps = {
@@ -13,7 +13,6 @@ type IssueSiblingNavigationProps = {
 };
 
 export function IssueSiblingNavigation({ navigation, linkState }: IssueSiblingNavigationProps) {
-  const { t } = useTranslation();
   if (!navigation) return null;
 
   return (

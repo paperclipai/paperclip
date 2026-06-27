@@ -48,6 +48,7 @@ import {
 import { readZipArchive } from "../lib/zip";
 import { getPortableFileDataUrl, getPortableFileText, isPortableImageFile } from "../lib/portable-files";
 
+import { t } from "@/i18n";
 // ── Import-specific helpers ───────────────────────────────────────────
 
 /** Build a map from file path → planned action (create/update/skip) using the manifest + plan */
@@ -645,7 +646,6 @@ async function readLocalPackageZip(file: File): Promise<{
 // ── Main page ─────────────────────────────────────────────────────────
 
 export function CompanyImport() {
-  const { t } = useTranslation();
   const {
     selectedCompanyId,
     selectedCompany,

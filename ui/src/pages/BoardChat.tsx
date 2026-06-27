@@ -34,6 +34,7 @@ import { cn, formatDateTime } from "../lib/utils";
 import type { FeedbackVoteValue } from "@paperclipai/shared";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 
+import { t } from "@/i18n";
 /**
  * Board Concierge Chat — a chat interface powered by the board-member skill.
  * Uses /board/chat/stream to invoke Claude with the board skill as system prompt.
@@ -101,7 +102,6 @@ function TypingBubble() {
 }
 
 export function BoardChat() {
-  const { t } = useTranslation();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();

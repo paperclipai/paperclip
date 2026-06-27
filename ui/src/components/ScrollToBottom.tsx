@@ -3,6 +3,7 @@ import { ArrowDown } from "lucide-react";
 import { usePanel } from "../context/PanelContext";
 import { cn } from "../lib/utils";
 
+import { t } from "@/i18n";
 function resolveScrollTarget() {
   const mainContent = document.getElementById("main-content");
 
@@ -34,7 +35,6 @@ function distanceFromBottom(target: ReturnType<typeof resolveScrollTarget>) {
  * On desktop that is `#main-content`; on mobile it falls back to window/page scroll.
  */
 export function ScrollToBottom() {
-  const { t } = useTranslation();
   const [visible, setVisible] = useState(false);
   const { panelVisible, panelContent } = usePanel();
 

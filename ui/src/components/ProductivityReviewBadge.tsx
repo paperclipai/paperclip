@@ -5,6 +5,7 @@ import { cn } from "../lib/utils";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
+import { t } from "@/i18n";
 const TRIGGER_LABELS: Record<string, string> = {
   no_comment_streak: "No-comment streak",
   long_active_duration: "Long active duration",
@@ -27,7 +28,6 @@ export function productivityReviewTriggerLabel(
 }
 
 export function ProductivityReviewBadge({
-  const { t } = useTranslation();
   review,
   className,
   hideLabel = false,

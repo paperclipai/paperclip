@@ -12,6 +12,7 @@ import {
 import { AlertTriangle, Check, Loader2, Paperclip, Send } from "lucide-react";
 import { cn } from "../lib/utils";
 
+import { t } from "@/i18n";
 /**
  * Shared chat composer (PAP-95a / PAP-96).
  *

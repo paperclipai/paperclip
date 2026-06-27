@@ -13,8 +13,8 @@ import {
 import { ThumbsDown, ThumbsUp } from "lucide-react";
 import { cn } from "../lib/utils";
 
+import { t } from "@/i18n";
 export function OutputFeedbackButtons({
-  const { t } = useTranslation();
   activeVote,
   disabled = false,
   sharingPreference = "prompt",

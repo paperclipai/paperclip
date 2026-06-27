@@ -11,6 +11,7 @@ import { Activity, ExternalLink, Loader2, Play, RotateCcw, Square } from "lucide
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+import { t } from "@/i18n";
 export type WorkspaceRuntimeAction = "start" | "stop" | "restart" | "run";
 
 export type WorkspaceRuntimeControlRequest = WorkspaceRuntimeControlTarget & {
@@ -75,7 +76,6 @@ type WorkspaceRuntimeControlsProps = {
 export function hasRunningRuntimeServices(
   runtimeServices: Array<{ status: string }> | null | undefined,
 ) {
-  const { t } = useTranslation();
   return (runtimeServices ?? []).some((service) => service.status === "starting" || service.status === "running");
 }
 
@@ -196,7 +196,6 @@ export function buildWorkspaceRuntimeControlItems(input: {
 export function getRunningRuntimeServiceUrl(
   sections: WorkspaceRuntimeControlSections,
 ) {
-  const { t } = useTranslation();
   const runningService = [...sections.services, ...sections.otherServices].find(
     (item) => (item.statusLabel === "running" || item.statusLabel === "starting") && item.url,
   );
@@ -389,7 +388,6 @@ export function WorkspaceRuntimeControls({
   className,
   square,
 }: WorkspaceRuntimeControlsProps) {
-  const { t } = useTranslation();
   const resolvedSections = sections ?? {
     services: (items ?? []).map((item) => ({
       ...item,

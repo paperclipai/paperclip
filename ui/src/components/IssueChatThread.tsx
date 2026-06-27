@@ -30,7 +30,7 @@ import {
   type ReactNode,
 } from "react";
 import { Link, useLocation } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import type {
   Agent,
   FeedbackDataSharingPreference,
@@ -247,7 +247,6 @@ export function resolveAssistantMessageFoldedState(args: {
   previousMessageId: string | null;
   previousIsFoldable: boolean;
 }) {
-  const { t } = useTranslation();
   const {
     messageId,
     currentFolded,
@@ -267,7 +266,6 @@ export function canStopIssueChatRun(args: {
   runStatus: string | null;
   activeRunIds: ReadonlySet<string>;
 }) {
-  const { t } = useTranslation();
   const { runId, runStatus, activeRunIds } = args;
   if (!runId) return false;
   if (activeRunIds.has(runId)) return true;
@@ -807,7 +805,6 @@ export function resolveIssueChatHumanAuthor(args: {
   currentUserId?: string | null;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
 }) {
-  const { t } = useTranslation();
   const { authorName, authorUserId, currentUserId, userProfileMap } = args;
   const profile = authorUserId ? userProfileMap?.get(authorUserId) ?? null : null;
   const isCurrentUser = Boolean(authorUserId && currentUserId && authorUserId === currentUserId);
@@ -2981,7 +2978,6 @@ export function getVirtualizedMeasurementScrollAdjustment(args: {
   nextSize: number;
   viewportStart: number;
 }) {
-  const { t } = useTranslation();
   const { itemStart, previousSize, nextSize, viewportStart } = args;
   const previousEnd = itemStart + previousSize;
   if (previousEnd > viewportStart) return 0;
@@ -4175,7 +4171,6 @@ export function IssueChatThread({
   resumeFromBacklogPending = false,
   externalReferences,
 }: IssueChatThreadProps) {
-  const { t } = useTranslation();
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
   const virtualizedThreadRef = useRef<VirtualizedIssueChatThreadListHandle | null>(null);

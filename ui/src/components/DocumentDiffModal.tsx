@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+import { t } from "@/i18n";
 function getRevisionLabel(revision: DocumentRevision) {
   const actor = revision.createdByUserId
     ? "board"
@@ -29,7 +30,6 @@ function getRevisionLabel(revision: DocumentRevision) {
 }
 
 export function DocumentDiffModal({
-  const { t } = useTranslation();
   issueId,
   documentKey,
   latestRevisionNumber,

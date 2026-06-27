@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
+import { t } from "@/i18n";
 interface ArtifactsPanelProps {
   taskId: string;
   isAgentWorking?: boolean;
@@ -84,7 +85,6 @@ function statusBadge(status: string) {
 }
 
 export function ArtifactsPanel({ taskId, isAgentWorking, openDocKey, openDocTitle, onClearOpenDoc, onApprove, onReject }: ArtifactsPanelProps) {
-  const { t } = useTranslation();
   const [filter, setFilter] = useState<FilterValue>("all");
   const [viewingDoc, setViewingDoc] = useState<{ key: string; title: string } | null>(null);
 

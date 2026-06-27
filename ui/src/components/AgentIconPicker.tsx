@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { AGENT_ICONS, getAgentIcon } from "../lib/agent-icons";
 
+import { t } from "@/i18n";
 const DEFAULT_ICON: AgentIconName = "bot";
 
 interface AgentIconProps {
@@ -20,7 +21,6 @@ interface AgentIconProps {
 }
 
 export function AgentIcon({ icon, className }: AgentIconProps) {
-  const { t } = useTranslation();
   const Icon = getAgentIcon(icon);
   return <Icon className={className} />;
 }
@@ -32,7 +32,6 @@ interface AgentIconPickerProps {
 }
 
 export function AgentIconPicker({ value, onChange, children }: AgentIconPickerProps) {
-  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import { X } from "lucide-react";
 import {
   useToastActions,
@@ -81,7 +81,6 @@ function AnimatedToast({
 }
 
 export function ToastViewport() {
-  const { t } = useTranslation();
   const toasts = useToastState();
   const { dismissToast } = useToastActions();
 

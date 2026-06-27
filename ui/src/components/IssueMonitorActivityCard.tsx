@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { formatMonitorOffset } from "@/lib/issue-monitor";
 import { formatDateTime } from "@/lib/utils";
 
+import { t } from "@/i18n";
 function resolveScheduledMonitor(issue: Issue) {
   const nextCheckAt =
     issue.monitorNextCheckAt ??
@@ -26,7 +27,6 @@ interface IssueMonitorActivityCardProps {
 }
 
 export function IssueMonitorActivityCard({
-  const { t } = useTranslation();
   issue,
   onCheckNow = null,
   checkingNow = false,

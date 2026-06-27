@@ -1,6 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { useLocation, useNavigate } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 
 type RouteErrorBoundaryInnerProps = {
@@ -62,7 +62,6 @@ class RouteErrorBoundaryInner extends Component<RouteErrorBoundaryInnerProps, Ro
 }
 
 export function RouteErrorBoundary({ children }: { children: ReactNode }) {
-  const { t } = useTranslation();
   const location = useLocation();
   const navigate = useNavigate();
   const resetKey = `${location.pathname}${location.search}`;

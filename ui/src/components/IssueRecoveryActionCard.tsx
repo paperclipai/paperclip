@@ -8,7 +8,7 @@ import type {
 } from "@paperclipai/shared";
 import { Eye, OctagonAlert, RefreshCw, Sparkles, TriangleAlert } from "lucide-react";
 import { Link } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -340,7 +340,6 @@ export function IssueRecoveryActionCard({
   canFalsePositive = false,
   className,
 }: IssueRecoveryActionCardProps) {
-  const { t } = useTranslation();
   const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action);
   const tone = STATE_TONE[cardState];
   const ToneIcon = tone.Icon;

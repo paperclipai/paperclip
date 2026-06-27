@@ -23,6 +23,7 @@ import { externalObjectIconForCategory } from "../lib/external-objects";
 import { externalObjectStatusIcon } from "../lib/status-colors";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 
+import { t } from "@/i18n";
 type AgentOption = {
   id: string;
   name: string;
@@ -52,7 +53,6 @@ type CreatorOption = {
 };
 
 export function IssueFiltersPopover({
-  const { t } = useTranslation();
   state,
   onChange,
   activeFilterCount,

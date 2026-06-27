@@ -3,6 +3,7 @@ import { Loader2, ShieldCheck, Terminal, TriangleAlert } from "lucide-react";
 import { BOOTSTRAP_FALLBACK_COMMAND } from "@/bootstrapSetup";
 import { Button } from "@/components/ui/button";
 
+import { t } from "@/i18n";
 type LabFixtureKey =
   | "signed-out-private"
   | "signed-in-private"
@@ -205,7 +206,6 @@ const FIXTURE_BODIES: Record<LabFixtureKey, ReactElement> = {
 };
 
 export function BootstrapSetupUxLab() {
-  const { t } = useTranslation();
   return (
     <div className="bg-background min-h-screen pb-16">
       <header className="border-b border-border bg-muted/20">

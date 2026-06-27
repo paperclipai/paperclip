@@ -9,13 +9,13 @@ import {
   providerDisplayName,
 } from "@/lib/utils";
 
+import { t } from "@/i18n";
 interface FinanceTimelineCardProps {
   rows: FinanceEvent[];
   emptyMessage?: string;
 }
 
 export function FinanceTimelineCard({
-  const { t } = useTranslation();
   rows,
   emptyMessage = "No financial events in this period.",
 }: FinanceTimelineCardProps) {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import {
   DndContext,
   DragOverlay,
@@ -49,7 +49,6 @@ function statusLabel(status: string): string {
 }
 
 export function resolveKanbanTargetStatus(overId: string, issues: Issue[]): IssueStatus | null {
-  const { t } = useTranslation();
   if ((boardStatuses as readonly string[]).includes(overId)) {
     return overId as IssueStatus;
   }
@@ -292,7 +291,6 @@ function KanbanCard({
 /* ── Main Board ── */
 
 export function KanbanBoard({
-  const { t } = useTranslation();
   issues,
   agents,
   liveIssueIds,

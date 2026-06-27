@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Check, Copy, MoreHorizontal, ThumbsDown, ThumbsUp } from "lucide-react";
 
+import { t } from "@/i18n";
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
@@ -33,7 +34,6 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
  * surfaces read identically.
  */
 export function agentBubbleDateLabel(date: Date | string | undefined): string {
-  const { t } = useTranslation();
   if (!date) return "";
   const then = new Date(date).getTime();
   if (Date.now() - then < WEEK_MS) return timeAgo(date);
@@ -50,7 +50,6 @@ export function agentBubbleDateLabel(date: Date | string | undefined): string {
  * view-run on the task side).
  */
 export function AgentBubbleActionRow({
-  const { t } = useTranslation();
   copyText,
   dateLabel,
   dateTitle,
@@ -155,7 +154,6 @@ export function AgentBubbleActionRow({
  * thread and the conference room via {@link AgentBubbleActionRow}.
  */
 export function IssueChatFeedbackButtons({
-  const { t } = useTranslation();
   activeVote,
   sharingPreference = "prompt",
   termsUrl,

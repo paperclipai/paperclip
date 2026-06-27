@@ -3,7 +3,7 @@ import { Loader2, ShieldCheck, Terminal, TriangleAlert } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { BOOTSTRAP_FALLBACK_COMMAND } from "@/bootstrapSetup";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import type { AuthSession } from "@paperclipai/shared";
 
 type BootstrapPendingPageProps = {
@@ -75,7 +75,6 @@ export function BootstrapPendingPage({
   claimError,
   onClaim,
 }: BootstrapPendingPageProps) {
-  const { t } = useTranslation();
 
   if (!claimAvailable) {
     return (

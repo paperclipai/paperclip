@@ -1,13 +1,12 @@
 import { useEffect, useMemo } from "react";
 import { useParams } from "@/lib/router";
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { NotFoundPage } from "./NotFound";
 
 export function CompanySettingsPluginPage() {
-  const { t } = useTranslation();
   const params = useParams<{
     companyPrefix?: string;
     settingsRoutePath?: string;
