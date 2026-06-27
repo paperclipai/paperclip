@@ -737,6 +737,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
   });
 
   it("does not file when adapter handoff is followed by later run event output", async () => {
+    // Regression for external adapter handoff: the output cursor can stay on
+    // the initial adapter line while durable tool/log events continue later.
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId } = await seedRunningRun({
       now,
