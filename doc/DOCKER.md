@@ -131,6 +131,44 @@ Granular overrides remain available if needed (`PAPERCLIP_AUTH_PUBLIC_BASE_URL`,
 
 Set `PAPERCLIP_ALLOWED_HOSTNAMES` explicitly only when you need additional hostnames beyond the public URL host (for example Tailscale/LAN aliases or multiple private hostnames).
 
+## Hermes Local Adapter in Docker
+
+The production Paperclip image includes the Hermes CLI (`hermes`, `hermes-agent`, `hermes-acp`) from the pinned `nousresearch/hermes-agent:v2026.6.19` image via a multi-stage build.
+
+- **Binary**: `/usr/local/bin/hermes` (symlink to `/opt/hermes/.venv/bin/hermes`)
+- **Home**: `HERMES_HOME=/paperclip/hermes`
+- **Web dist**: `HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist`
+- **Playwright**: `PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright`
+- **PATH**: includes `/opt/hermes/.venv/bin` so `hermes` resolves at runtime.
+
+No separate Hermes service or port is published — the Hermes CLI is invoked by Paperclip's built-in `hermes_local` adapter inside the same container.
+
+### Hermes in the untrusted-review image
+
+The `docker/untrusted-review/Dockerfile` uses the same pinned Hermes source image.
+`HERMES_HOME` defaults to `/home/reviewer/.hermes` and is exposed via compose env.
+
+### Images that do NOT include Hermes
+
+These images are intentionally excluded because they do not run Paperclip local agents:
+
+| Image | Reason |
+|-------|--------|
+| `docker/Dockerfile.onboard-smoke` | npm onboarding smoke only; uses `npx paperclipai` |
+| `docker/openclaw-smoke/Dockerfile` | OpenClaw webhook fixture |
+| `packages/plugins/sandbox-providers/cloudflare/bridge-template/Dockerfile` | Plugin sandbox bridge |
+| `docker/agent-runtime/Dockerfile.hermes` | Cloud agent runtime stub; out of scope for this PR (follow-up) |
+| `docker/hermes-gateway-smoke/Dockerfile` | Already installs Hermes via pip+npm for gateway smoke |
+
+### Hermes image pin
+
+The Hermes source image tag is pinned in both `Dockerfile` and `docker/untrusted-review/Dockerfile` via `ARG HERMES_AGENT_IMAGE=nousresearch/hermes-agent:v2026.6.19`.
+
+To bump Hermes:
+1. Update the `HERMES_AGENT_IMAGE` ARG default in both Dockerfiles.
+2. Update the recorded tag in this doc section.
+3. Rebuild and run `hermes --version` to confirm.
+
 ## Claude + Codex Local Adapters in Docker
 
 The image pre-installs:
