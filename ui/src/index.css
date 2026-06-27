@@ -1042,10 +1042,19 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   background-color: #ffffff0f;
 }
 
+.paperclip-markdown.paperclip-markdown-on-accent :not(pre) > code {
+  background-color: color-mix(in oklab, var(--primary-foreground) 24%, transparent);
+  color: var(--primary-foreground);
+}
+
 .paperclip-markdown {
   color: var(--foreground);
   font-size: 0.9375rem;
   line-height: 1.6;
+}
+
+.paperclip-markdown.paperclip-markdown-on-accent {
+  color: var(--primary-foreground);
 }
 
 .paperclip-markdown > :first-child {
@@ -1087,6 +1096,10 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   color: var(--muted-foreground);
 }
 
+.paperclip-markdown.paperclip-markdown-on-accent li::marker {
+  color: color-mix(in oklab, var(--primary-foreground) 76%, transparent);
+}
+
 .paperclip-markdown h1,
 .paperclip-markdown h2,
 .paperclip-markdown h3,
@@ -1115,6 +1128,10 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   font-size: 0.95rem;
 }
 
+.paperclip-markdown.paperclip-markdown-on-accent :where(h1, h2, h3, h4, strong, b) {
+  color: var(--primary-foreground);
+}
+
 .paperclip-markdown :where(strong, b) {
   color: var(--foreground);
   font-weight: 600;
@@ -1125,6 +1142,11 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   text-decoration: underline;
   text-underline-offset: 0.15em;
   cursor: pointer;
+}
+
+.paperclip-markdown.paperclip-markdown-on-accent a {
+  color: var(--primary-foreground);
+  text-decoration-color: color-mix(in oklab, var(--primary-foreground) 72%, transparent);
 }
 
 .paperclip-markdown a.paperclip-mention-chip {
@@ -1154,11 +1176,20 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   color: color-mix(in oklab, var(--foreground) 80%, #58a6ff 20%);
 }
 
+.dark .paperclip-markdown.paperclip-markdown-on-accent a {
+  color: var(--primary-foreground);
+}
+
 .paperclip-markdown blockquote {
   margin-left: 0;
   padding-left: 0.95rem;
   border-left: 0.24rem solid color-mix(in oklab, var(--border) 84%, var(--muted-foreground) 16%);
   color: var(--muted-foreground);
+}
+
+.paperclip-markdown.paperclip-markdown-on-accent blockquote {
+  border-left-color: color-mix(in oklab, var(--primary-foreground) 56%, transparent);
+  color: color-mix(in oklab, var(--primary-foreground) 88%, transparent);
 }
 
 .paperclip-markdown hr {

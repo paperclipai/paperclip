@@ -90,9 +90,9 @@ vi.mock("../lib/issue-chat-scroll", async (importOriginal) => {
 });
 
 vi.mock("./MarkdownBody", () => ({
-  MarkdownBody: ({ children }: { children: ReactNode }) => {
-    markdownBodyRenderMock(children);
-    return <div>{children}</div>;
+  MarkdownBody: ({ children, className }: { children: ReactNode; className?: string }) => {
+    markdownBodyRenderMock({ children, className });
+    return <div className={className}>{children}</div>;
   },
 }));
 
@@ -348,6 +348,48 @@ describe("IssueChatThread", () => {
     expect(viewport).not.toBeNull();
     expect(viewport?.className).not.toContain("overflow-y-auto");
     expect(viewport?.className).not.toContain("max-h-[70vh]");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses accent-safe markdown color in the current user's blue message bubble", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[{
+              id: "comment-current-user",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-board",
+              authorType: "user",
+              body: "1. **Readable** markdown on blue",
+              presentation: null,
+              metadata: null,
+              createdAt: new Date("2026-04-06T12:00:00.000Z"),
+              updatedAt: new Date("2026-04-06T12:00:00.000Z"),
+            }]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(markdownBodyRenderMock).toHaveBeenCalledWith(expect.objectContaining({
+      children: "1. **Readable** markdown on blue",
+      className: expect.stringContaining("paperclip-markdown-on-accent"),
+    }));
 
     act(() => {
       root.unmount();

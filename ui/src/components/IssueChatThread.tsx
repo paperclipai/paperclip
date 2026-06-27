@@ -721,9 +721,7 @@ const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed, onAc
   }
   return (
     <WorkspaceFileMarkdownBody
-      // `prose-invert` flips typography colours (body, links, code) to light so
-      // markdown stays legible on the saturated liveness-blue human bubble.
-      className={cn("text-sm leading-6", onAccent && "prose-invert")}
+      className={cn("text-sm leading-6", onAccent && "paperclip-markdown-on-accent")}
       style={recessed ? { opacity: 0.55 } : undefined}
       softBreaks
       onImageClick={onImageClick}
