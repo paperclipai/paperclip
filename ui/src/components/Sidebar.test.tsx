@@ -160,6 +160,20 @@ describe("Sidebar", () => {
     });
   });
 
+  it("links the MCP Map top-level nav item to the MCP visualizer page", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    const link = [...container.querySelectorAll("nav a")].find(
+      (anchor) => anchor.textContent?.trim() === "MCP Map",
+    );
+    expect(link?.getAttribute("href")).toBe("/mcp-visualizer");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
   it("renders plugin sidebar launchers inside the Work section", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,

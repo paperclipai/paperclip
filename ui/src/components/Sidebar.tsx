@@ -161,6 +161,7 @@ export function Sidebar() {
           })()}
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem to="/micro-board-review" label="Board Review" icon={ClipboardCheck} />
+          <SidebarNavItem to="/mcp-visualizer" label="MCP Map" icon={Network} />
           <SidebarNavItem
             to="/inbox"
             label="Inbox"
