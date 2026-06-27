@@ -1163,11 +1163,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     );
   }
 
-  function silenceStartedAtForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">) {
-    return run.lastOutputAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
+  function silenceStartedAtForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "lastUsefulActionAt" | "processStartedAt" | "startedAt" | "createdAt">) {
+    const progressAt = [run.lastOutputAt, run.lastUsefulActionAt]
+      .filter((value): value is Date => value instanceof Date)
+      .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+    return progressAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
   }
 
-  function silenceAgeMsForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">, now = new Date()) {
+  function silenceAgeMsForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "lastUsefulActionAt" | "processStartedAt" | "startedAt" | "createdAt">, now = new Date()) {
     const startedAt = silenceStartedAtForRun(run);
     return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
   }
@@ -1462,7 +1465,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function buildRunOutputSilence(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
-      "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
+      "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "lastUsefulActionAt" | "processStartedAt" | "startedAt" | "createdAt"
     >,
     now = new Date(),
   ): Promise<RunOutputSilenceSummary> {
@@ -2468,7 +2471,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined,
           eq(heartbeatRuns.status, "running"),
-          sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${suspicionBefore.toISOString()}::timestamptz`,
+          sql`coalesce(
+            nullif(
+              greatest(
+                coalesce(${heartbeatRuns.lastOutputAt}, 'epoch'::timestamptz),
+                coalesce(${heartbeatRuns.lastUsefulActionAt}, 'epoch'::timestamptz)
+              ),
+              'epoch'::timestamptz
+            ),
+            ${heartbeatRuns.processStartedAt},
+            ${heartbeatRuns.startedAt},
+            ${heartbeatRuns.createdAt}
+          ) <= ${suspicionBefore.toISOString()}::timestamptz`,
+          sql`not exists (
+            select 1
+            from ${heartbeatRunEvents}
+            where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
+              and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id}
+              and ${heartbeatRunEvents.eventType} not in ('lifecycle', 'adapter.invoke', 'error')
+              and ${heartbeatRunEvents.createdAt} > ${suspicionBefore.toISOString()}::timestamptz
+          )`,
         ),
       )
       .orderBy(asc(heartbeatRuns.createdAt))
