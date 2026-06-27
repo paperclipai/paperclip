@@ -78,6 +78,7 @@ import {
 import { processPendingImageBumpForAgent } from "./agent-image-bump.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
 import type {
+  AdapterRunIsolationDescriptor,
   AdapterExecutionResult,
   AdapterInvocationMeta,
   AdapterModelProfileDefinition,
@@ -615,6 +616,7 @@ const EXTERNAL_LIFECYCLE_PRE_ADAPTER_STALE_MS = 5 * 60 * 1000;
 // still be awaiting/synchronizing the Job and should be allowed to finish.
 const EXTERNAL_LIFECYCLE_RECENT_RUN_GRACE_MS = 5 * 60 * 1000;
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
+const SESSION_ISOLATION_KEY_PARAM = "paperclipIsolationKey";
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
@@ -2847,6 +2849,76 @@ export function resolveRuntimeSessionParamsForWorkspace(input: {
       `Project workspace "${projectCwd}" is now available. ` +
       `Attempting to resume session "${previousSessionId}" that was previously saved in fallback workspace "${previousCwd}".`,
   };
+}
+
+function isK8sAdapter(adapterType: string | null | undefined) {
+  return adapterType === "claude_k8s" || adapterType === "opencode_k8s";
+}
+
+function readK8sIsolationKeyFromContext(context: Record<string, unknown> | null | undefined) {
+  return readNonEmptyString(parseObject(context?.paperclipK8sIsolation).isolationKey);
+}
+
+export function buildK8sRunIsolationDescriptor(input: {
+  adapterType: string | null | undefined;
+  companyId: string;
+  agentId: string;
+  taskKey: string | null;
+  executionWorkspace: {
+    cwd: string;
+    source: string;
+    strategy?: string | null;
+  };
+  persistedExecutionWorkspaceId?: string | null;
+  effectiveExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode>;
+}): AdapterRunIsolationDescriptor | null {
+  if (!isK8sAdapter(input.adapterType)) return null;
+
+  const workspaceRoot = input.executionWorkspace.cwd;
+  const homeRoot = resolveDefaultAgentWorkspaceDir(input.agentId);
+  const cacheRoot = path.join(homeRoot, ".cache");
+  const isWorkspaceIsolated =
+    input.effectiveExecutionWorkspaceMode === "isolated_workspace" ||
+    input.effectiveExecutionWorkspaceMode === "operator_branch" ||
+    input.executionWorkspace.source === "task_session" ||
+    input.executionWorkspace.strategy === "git_worktree";
+  const isolationMode = isWorkspaceIsolated ? "workspace" : "shared";
+  const isolationKey = isWorkspaceIsolated
+    ? `workspace:${input.companyId}:${input.agentId}:${input.persistedExecutionWorkspaceId ?? workspaceRoot}`
+    : `shared:${input.companyId}:${input.agentId}`;
+
+  return {
+    isolationMode,
+    isolationKey,
+    workspaceRoot,
+    homeRoot,
+    cacheRoot,
+    sessionScope: {
+      taskKey: input.taskKey,
+      isolationKey,
+    },
+  };
+}
+
+export function scopeSessionParamsToIsolation(
+  sessionParams: Record<string, unknown> | null,
+  isolation: AdapterRunIsolationDescriptor | null,
+): Record<string, unknown> | null {
+  if (!sessionParams || !isolation) return sessionParams;
+  return {
+    ...sessionParams,
+    [SESSION_ISOLATION_KEY_PARAM]: isolation.isolationKey,
+  };
+}
+
+export function sessionParamsMatchIsolation(
+  sessionParams: Record<string, unknown> | null,
+  isolation: AdapterRunIsolationDescriptor | null,
+) {
+  if (!sessionParams || !isolation) return true;
+  const savedIsolationKey = readNonEmptyString(sessionParams[SESSION_ISOLATION_KEY_PARAM]);
+  if (!savedIsolationKey) return isolation.isolationMode === "shared";
+  return savedIsolationKey === isolation.isolationKey;
 }
 
 function parseIssueAssigneeAdapterOverrides(
@@ -5785,7 +5857,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueId: readNonEmptyString(resumeContext.issueId),
       taskId: readNonEmptyString(resumeContext.taskId) ?? readNonEmptyString(resumeContext.issueId),
       sessionDisplayId: sessionOverride.sessionDisplayId,
-      sessionParams: sessionOverride.sessionParams,
+      sessionParams: (() => {
+        const sourceIsolationKey = readK8sIsolationKeyFromContext(resumeContext);
+        if (!isK8sAdapter(agent.adapterType) || !sessionOverride.sessionParams || !sourceIsolationKey) {
+          return sessionOverride.sessionParams;
+        }
+        return {
+          ...sessionOverride.sessionParams,
+          [SESSION_ISOLATION_KEY_PARAM]: sourceIsolationKey,
+        };
+      })(),
     };
   }
 
@@ -11462,7 +11543,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
       versionSelections: skillVersionSelectionMap(runtimeSkillPreference.desiredSkillEntries),
     });
-    let runtimeConfig = {
+    let runtimeConfig: Record<string, unknown> = {
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
@@ -11767,6 +11848,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         updatedAt: new Date(),
       })
       .where(eq(heartbeatRuns.id, run.id));
+    const k8sRunIsolation = buildK8sRunIsolationDescriptor({
+      adapterType: agent.adapterType,
+      companyId: agent.companyId,
+      agentId: agent.id,
+      taskKey,
+      executionWorkspace,
+      persistedExecutionWorkspaceId: persistedExecutionWorkspace?.id ?? null,
+      effectiveExecutionWorkspaceMode,
+    });
+    if (k8sRunIsolation) {
+      context.paperclipK8sIsolation = k8sRunIsolation;
+      runtimeConfig = {
+        ...runtimeConfig,
+        paperclipK8sIsolation: k8sRunIsolation,
+      };
+    } else {
+      delete context.paperclipK8sIsolation;
+    }
+
     const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
       agentId: agent.id,
       previousSessionParams,
@@ -11775,11 +11875,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         cwd: executionWorkspace.cwd,
       },
     });
-    const runtimeSessionParams = runtimeSessionResolution.sessionParams;
+    const unscopedRuntimeSessionParams = runtimeSessionResolution.sessionParams;
+    const isolationSessionMismatch = !sessionParamsMatchIsolation(
+      unscopedRuntimeSessionParams,
+      k8sRunIsolation,
+    );
+    const isolationScopedRuntimeSessionParams = isolationSessionMismatch
+      ? null
+      : unscopedRuntimeSessionParams;
+    const runtimeSessionParams = scopeSessionParamsToIsolation(
+      isolationScopedRuntimeSessionParams,
+      k8sRunIsolation,
+    );
     const runtimeWorkspaceWarnings = [
       ...resolvedWorkspace.warnings,
       ...executionWorkspace.warnings,
       ...(runtimeSessionResolution.warning ? [runtimeSessionResolution.warning] : []),
+      ...(isolationSessionMismatch && k8sRunIsolation
+        ? [
+            `Skipping saved session resume because it belongs to a different K8s isolation workspace (${k8sRunIsolation.isolationKey}).`,
+          ]
+        : []),
       ...(resetTaskSession && sessionResetReason
         ? [
             taskKey
@@ -11836,21 +11952,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       explicitResumeSessionDisplayId ??
         taskSessionForRun?.sessionDisplayId ??
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(runtimeSessionParams) : null) ??
-        readNonEmptyString(runtimeSessionParams?.sessionId) ??
+        readNonEmptyString(runtimeSessionParams?.["sessionId"]) ??
         runtimeSessionFallback,
     );
     let previousSessionDisplayId = requiresCanonicalSessionIds(agent.adapterType)
       ? truncateDisplayId(
-          readNonEmptyString(previousSessionParams?.sessionId) ??
+          readNonEmptyString(previousSessionParams?.["sessionId"]) ??
             (isCanonicalSessionIdForAdapter(agent.adapterType, runtimeSessionDisplayId) ? runtimeSessionDisplayId : null) ??
             runtimeSessionFallback,
         )
       : runtimeSessionDisplayId;
     let runtimeSessionIdForAdapter =
-      readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
+      readNonEmptyString(runtimeSessionParams?.["sessionId"]) ?? runtimeSessionFallback;
     let runtimeSessionParamsForAdapter = normalizeSessionParams(
       stripConfiguredModelFromSessionParams(runtimeSessionParams),
     );
+    if (isolationSessionMismatch) {
+      previousSessionDisplayId = null;
+      runtimeSessionIdForAdapter = null;
+      runtimeSessionParamsForAdapter = null;
+    }
 
     const sessionCompaction = await evaluateSessionCompaction({
       agent,
@@ -11881,6 +12002,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       sessionParams: runtimeSessionParamsForAdapter,
       sessionDisplayId: previousSessionDisplayId,
       taskKey,
+      isolation: k8sRunIsolation,
     };
 
     let seq = await nextRunEventSeq(run.id);
@@ -12772,7 +12894,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               agentId: agent.id,
               adapterType: agent.adapterType,
               taskKey,
-              sessionParamsJson: attachConfiguredModelToSessionParams(nextSessionState.params, configuredModel),
+              sessionParamsJson: attachConfiguredModelToSessionParams(
+                scopeSessionParamsToIsolation(nextSessionState.params, k8sRunIsolation),
+                configuredModel,
+              ),
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
               lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
@@ -12884,13 +13009,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           legacySessionId: runtimeForAdapter.sessionId,
         });
 
-        if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
+        if (taskKey && !isolationSessionMismatch && (runtimeSessionParams || previousSessionDisplayId || taskSession)) {
+          // Persist the current run's scoped params so failure-path resumes keep the isolation key.
           await upsertTaskSession({
             companyId: agent.companyId,
             agentId: agent.id,
             adapterType: agent.adapterType,
             taskKey,
-            sessionParamsJson: attachConfiguredModelToSessionParams(previousSessionParams, configuredModel),
+            sessionParamsJson: attachConfiguredModelToSessionParams(runtimeSessionParams, configuredModel),
             sessionDisplayId: previousSessionDisplayId,
             lastRunId: failedRun.id,
             lastError: message,

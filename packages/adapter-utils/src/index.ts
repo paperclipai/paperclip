@@ -1,6 +1,7 @@
 export type {
   AdapterAgent,
   AdapterRuntime,
+  AdapterRunIsolationDescriptor,
   UsageSummary,
   AdapterBillingType,
   AdapterCostSource,

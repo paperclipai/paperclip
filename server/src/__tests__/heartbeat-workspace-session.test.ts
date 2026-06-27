@@ -13,6 +13,7 @@ import {
   assertPushCapabilityCheckoutValid,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
+  buildK8sRunIsolationDescriptor,
   deriveTaskKeyWithHeartbeatFallback,
   evaluatePreferredProjectWorkspaceRealization,
   isNonPrimaryWorkspaceTarget,
@@ -29,6 +30,8 @@ import {
   requiresPushCapabilityPreflight,
   resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
+  scopeSessionParamsToIsolation,
+  sessionParamsMatchIsolation,
   shouldDeferFollowupWakeForSameIssue,
   stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
@@ -1301,6 +1304,128 @@ describe("normalizeSessionParams", () => {
   it("preserves a non-empty object", () => {
     const params = { sessionId: "thread-1" };
     expect(normalizeSessionParams(params)).toBe(params);
+  });
+});
+
+describe("K8s session isolation metadata", () => {
+  const isolation = {
+    isolationMode: "workspace" as const,
+    isolationKey: "workspace:company-1:agent-1:workspace-1",
+    workspaceRoot: "/tmp/workspace-1",
+    homeRoot: "/tmp/home",
+    cacheRoot: "/tmp/home/.cache",
+    sessionScope: {
+      taskKey: "issue-1",
+      isolationKey: "workspace:company-1:agent-1:workspace-1",
+    },
+  };
+
+  it("returns null for non-K8s adapters", () => {
+    expect(
+      buildK8sRunIsolationDescriptor({
+        adapterType: "opencode_local",
+        companyId: "company-1",
+        agentId: "agent-1",
+        taskKey: "issue-1",
+        executionWorkspace: {
+          cwd: "/tmp/workspace-1",
+          source: "project_primary",
+          strategy: "project_primary",
+        },
+        effectiveExecutionWorkspaceMode: "shared_workspace",
+      }),
+    ).toBeNull();
+  });
+
+  it("builds deterministic workspace isolation metadata for K8s adapters", () => {
+    expect(
+      buildK8sRunIsolationDescriptor({
+        adapterType: "opencode_k8s",
+        companyId: "company-1",
+        agentId: "agent-1",
+        taskKey: "issue-1",
+        executionWorkspace: {
+          cwd: "/tmp/workspace-1",
+          source: "task_session",
+          strategy: "git_worktree",
+        },
+        persistedExecutionWorkspaceId: "execution-workspace-1",
+        effectiveExecutionWorkspaceMode: "isolated_workspace",
+      }),
+    ).toMatchObject({
+      isolationMode: "workspace",
+      isolationKey: "workspace:company-1:agent-1:execution-workspace-1",
+      workspaceRoot: "/tmp/workspace-1",
+      sessionScope: {
+        taskKey: "issue-1",
+        isolationKey: "workspace:company-1:agent-1:execution-workspace-1",
+      },
+    });
+  });
+
+  it("builds shared isolation metadata for shared K8s adapters", () => {
+    expect(
+      buildK8sRunIsolationDescriptor({
+        adapterType: "claude_k8s",
+        companyId: "company-1",
+        agentId: "agent-1",
+        taskKey: "issue-1",
+        executionWorkspace: {
+          cwd: "/tmp/shared-workspace",
+          source: "project_primary",
+          strategy: "project_primary",
+        },
+        effectiveExecutionWorkspaceMode: "shared_workspace",
+      }),
+    ).toMatchObject({
+      isolationMode: "shared",
+      isolationKey: "shared:company-1:agent-1",
+      workspaceRoot: "/tmp/shared-workspace",
+      sessionScope: {
+        taskKey: "issue-1",
+        isolationKey: "shared:company-1:agent-1",
+      },
+    });
+  });
+
+  it("stamps persisted session params with the isolation key", () => {
+    expect(scopeSessionParamsToIsolation({ sessionId: "session-1" }, isolation)).toEqual({
+      sessionId: "session-1",
+      paperclipIsolationKey: isolation.isolationKey,
+    });
+  });
+
+  it("rejects legacy session params without an isolation key for isolated workspaces", () => {
+    expect(sessionParamsMatchIsolation({ sessionId: "session-1" }, isolation)).toBe(false);
+  });
+
+  it("allows legacy session params without an isolation key for shared workspaces", () => {
+    expect(
+      sessionParamsMatchIsolation(
+        { sessionId: "session-1" },
+        {
+          ...isolation,
+          isolationMode: "shared",
+          isolationKey: "shared:company-1:agent-1",
+          sessionScope: {
+            taskKey: "issue-1",
+            isolationKey: "shared:company-1:agent-1",
+          },
+        },
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects saved session params from another isolation workspace", () => {
+    expect(
+      sessionParamsMatchIsolation(
+        {
+          sessionId: "session-1",
+          paperclipIsolationKey: "workspace:company-1:agent-1:workspace-2",
+        },
+        isolation,
+      ),
+    ).toBe(false);
   });
 });
 

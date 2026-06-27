@@ -21,6 +21,23 @@ export interface AdapterRuntime {
   sessionParams: Record<string, unknown> | null;
   sessionDisplayId: string | null;
   taskKey: string | null;
+  isolation?: AdapterRunIsolationDescriptor | null;
+}
+
+export interface AdapterRunIsolationDescriptor {
+  isolationMode: "shared" | "workspace";
+  /**
+   * Stable server-owned scope key, e.g. `shared:${companyId}:${agentId}`
+   * or `workspace:${companyId}:${agentId}:${workspaceId}`.
+   */
+  isolationKey: string;
+  workspaceRoot: string;
+  homeRoot: string;
+  cacheRoot: string;
+  sessionScope: {
+    taskKey: string | null;
+    isolationKey: string;
+  };
 }
 
 // ---------------------------------------------------------------------------
