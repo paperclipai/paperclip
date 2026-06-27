@@ -208,6 +208,20 @@ describe("parseReviewVerdict", () => {
   // Edge cases
   // ---------------------------------------------------------------------------
 
+  it("strips fenced code block containing inline backticks (template literals)", () => {
+    const body = [
+      "```typescript",
+      "const approve = (id: string) => `{id} is approved`;",
+      "const x = `REQUEST_CHANGES`;",
+      "```",
+      "",
+      "This is just helper code. Nothing to review here.",
+    ].join("\n");
+
+    const result = parseReviewVerdict(body);
+    expect(result.hasVerdict).toBe(false);
+  });
+
   it("strips fenced code blocks before parsing", () => {
     const body = [
       "```typescript",
@@ -308,15 +322,33 @@ describe("parseReviewVerdict", () => {
     expect(result.confidence).toBe("high");
   });
 
-  it("accepts body at exactly 50KB boundary", () => {
-    const filler = "x".repeat(PARSE_REVIEW_VERDICT_MAX_BODY_BYTES - 100);
-    const body = filler + "\n**APPROVE**\n\n| # | C | R |\n|---|---|---|\n| 1 | A | PASS |";
+  it("accepts body at exactly PARSE_REVIEW_VERDICT_MAX_BODY_BYTES", () => {
+    // Build a body of EXACTLY the max bytes with a verdict keyword
+    const verdictBlock = "\n**APPROVE**\n\n| # | C | R |\n|---|---|---|\n| 1 | A | PASS |";
+    const filler = "x".repeat(
+      PARSE_REVIEW_VERDICT_MAX_BODY_BYTES - Buffer.byteLength(verdictBlock, "utf-8")
+    );
+    const body = filler + verdictBlock;
+
+    expect(Buffer.byteLength(body, "utf-8")).toBe(PARSE_REVIEW_VERDICT_MAX_BODY_BYTES);
 
     const result = parseReviewVerdict(body);
-    // Should be under or at the limit (the filler + review content)
-    // The byte length might vary with the review content added
-    // Just verify it doesn't crash and processes normally
-    expect(result).toBeDefined();
+    expect(result.hasVerdict).toBe(true);
+    expect(result.verdict).toBe("APPROVE");
+  });
+
+  it("rejects body at PARSE_REVIEW_VERDICT_MAX_BODY_BYTES + 1", () => {
+    const verdictBlock = "\n**APPROVE**\n\n| # | C | R |\n|---|---|---|\n| 1 | A | PASS |";
+    const filler = "x".repeat(
+      PARSE_REVIEW_VERDICT_MAX_BODY_BYTES - Buffer.byteLength(verdictBlock, "utf-8") + 1
+    );
+    const body = filler + verdictBlock;
+
+    expect(Buffer.byteLength(body, "utf-8")).toBe(PARSE_REVIEW_VERDICT_MAX_BODY_BYTES + 1);
+
+    const result = parseReviewVerdict(body);
+    expect(result.hasVerdict).toBe(false);
+    expect(result.confidence).toBe("low");
   });
 
   it("handles **Verdict:** with APPROVED and normalises correctly", () => {
