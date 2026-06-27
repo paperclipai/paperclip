@@ -395,6 +395,79 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     ]);
   });
 
+  it("forwards full comment body + author on issue.comment.created via pluginEventPayloadExtra (regression: dormant Linear comment bridge, BLO-12216)", async () => {
+    // RCA BLO-12216: the comment routes log action "issue.comment_added"
+    // (→ issue.comment.created plugin event) with only a 120-char bodySnippet
+    // in details. paperclip-plugin-linear's handler reads payload.body and bails
+    // on `if (!body) return`, so Paperclip→Linear comment sync never fired —
+    // status synced but comments did not. The fix rides the FULL body + author
+    // on the emitted event only (via pluginEventPayloadExtra), never persisting
+    // them to the activity_log row (which keeps the snippet).
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    setPluginEventOutboxDb(db);
+    // Seeding may enqueue its own events; clear so only our comment event remains.
+    await db.delete(pluginEventOutbox);
+
+    const fullBody =
+      "Full comment body, well past the 120-char snippet — " + "x".repeat(400);
+
+    await logActivity(db, {
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: issueId,
+      details: {
+        commentId: "comment-xyz",
+        bodySnippet: fullBody.slice(0, 120),
+        identifier: `${issuePrefix(companyId)}-1`,
+      },
+      pluginEventPayloadExtra: {
+        issueId,
+        body: fullBody,
+        authorName: "Ally",
+      },
+    });
+
+    // publishPluginDomainEvent enqueues the outbox row fire-and-forget; poll
+    // until it lands. The stored row.payload IS the PluginEvent that the outbox
+    // poller hands verbatim to subscribers, so asserting it proves exactly what
+    // paperclip-plugin-linear's issue.comment.created handler will receive.
+    let eventRow: { eventType: string; payload: any } | null = null;
+    const deadline = Date.now() + 3000;
+    while (!eventRow && Date.now() < deadline) {
+      const outboxRows = await db.select().from(pluginEventOutbox);
+      eventRow = (outboxRows.find((r) => r.eventType === "issue.comment.created") as any) ?? null;
+      if (!eventRow) await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(eventRow).not.toBeNull();
+    const event = eventRow!.payload;
+    expect(event.eventType).toBe("issue.comment.created");
+    expect(event.entityId).toBe(issueId);
+    // Full body + author survive intact — not snippet-truncated, not redacted by
+    // the "authorName" → "auth" secret-key false positive.
+    expect(event.payload).toMatchObject({
+      issueId,
+      body: fullBody,
+      authorName: "Ally",
+    });
+
+    // The persisted activity_log row keeps only the snippet — full body + author
+    // are event-only and must NOT bloat or duplicate the activity log.
+    const rows = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId)));
+    expect(rows).toHaveLength(1);
+    const persistedDetails = rows[0].details as Record<string, unknown>;
+    expect(persistedDetails.bodySnippet).toBe(fullBody.slice(0, 120));
+    expect(persistedDetails.body).toBeUndefined();
+    expect(persistedDetails.authorName).toBeUndefined();
+  });
+
   it("enforces plugin origin namespaces", async () => {
     const { companyId } = await seedCompanyAndAgent();
     const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());

@@ -1119,6 +1119,23 @@ export function issueRoutes(
   const searchRateLimiter = opts.searchRateLimiter ?? defaultCompanySearchRateLimiter;
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
+  // Best-effort display name for a comment author, used to attribute Paperclip
+  // comments bridged to Linear (the issue.comment.created plugin event). Agents
+  // resolve to their name; users/board fall back to the subscribing plugin's
+  // own default ("Paperclip user"). Never throws — attribution is non-critical.
+  const resolveCommentAuthorName = async (
+    commentActor: ReturnType<typeof getActorInfo>,
+  ): Promise<string | undefined> => {
+    if (commentActor.actorType === "agent" && commentActor.agentId) {
+      try {
+        const authorAgent = await agentsSvc.getById(commentActor.agentId);
+        return authorAgent?.name ?? undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  };
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
@@ -6642,6 +6659,15 @@ export function issueRoutes(
             currentReferencedIssues: commentReferenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
           }),
         },
+        // Full body + author ride on the emitted issue.comment.created plugin
+        // event only (not the persisted activity_log row, which keeps the
+        // bodySnippet) so the Linear comment bridge can mirror Paperclip
+        // comments. The bridge handler reads payload.body / payload.authorName.
+        pluginEventPayloadExtra: {
+          issueId: issue.id,
+          body: comment.body,
+          authorName: await resolveCommentAuthorName(actor),
+        },
       });
 
       const expiredInteractions = await issueThreadInteractionService(db).expireRequestConfirmationsSupersededByComment(
@@ -8173,6 +8199,15 @@ export function issueRoutes(
           removedReferencedIssues: (commentReferenceDiff?.removedReferencedIssues ?? []).map(summarizeIssueRelationForActivity),
           currentReferencedIssues: (commentReferenceDiff?.currentReferencedIssues ?? []).map(summarizeIssueRelationForActivity),
         }),
+      },
+      // Full body + author ride on the emitted issue.comment.created plugin
+      // event only (not the persisted activity_log row, which keeps the
+      // bodySnippet) so the Linear comment bridge can mirror Paperclip
+      // comments. The bridge handler reads payload.body / payload.authorName.
+      pluginEventPayloadExtra: {
+        issueId: currentIssue.id,
+        body: comment.body,
+        authorName: await resolveCommentAuthorName(actor),
       },
     });
 

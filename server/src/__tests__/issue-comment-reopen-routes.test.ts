@@ -507,6 +507,63 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("rides the full comment body + author on the issue.comment.created event (POST /comments) — BLO-12216", async () => {
+    // The MCP comment_on_issue path. Pre-fix, the emitted event carried only a
+    // bodySnippet, so paperclip-plugin-linear's handler bailed on `!body` and
+    // Paperclip→Linear comment sync never fired. Guard the full body + author.
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockAgentService.getById.mockResolvedValue({
+      id: "22222222-2222-4222-8222-222222222222",
+      name: "Ally",
+    });
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "hello" });
+
+    expect(res.status).toBe(201);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.comment_added",
+        pluginEventPayloadExtra: {
+          issueId: "11111111-1111-4111-8111-111111111111",
+          body: "hello",
+          authorName: "Ally",
+        },
+      }),
+    );
+  });
+
+  it("rides the full comment body + author on the issue.comment.created event (PATCH comment) — BLO-12216", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("todo"),
+      ...patch,
+    }));
+    mockAgentService.getById.mockResolvedValue({
+      id: "22222222-2222-4222-8222-222222222222",
+      name: "Ally",
+    });
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "hello" });
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.comment_added",
+        pluginEventPayloadExtra: {
+          issueId: "11111111-1111-4111-8111-111111111111",
+          body: "hello",
+          authorName: "Ally",
+        },
+      }),
+    );
+  });
+
   it("implicitly reopens closed issues via POST comments when an agent is assigned", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({

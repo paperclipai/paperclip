@@ -94,6 +94,15 @@ export interface LogActivityInput {
   agentId?: string | null;
   runId?: string | null;
   details?: Record<string, unknown> | null;
+  /**
+   * Extra fields merged into the emitted plugin domain event payload ONLY — not
+   * persisted to the activity_log row. Use for data a subscribing plugin needs
+   * in full but that would bloat or duplicate the activity log, e.g. an issue
+   * comment's full `body` and `authorName` for the Linear comment bridge (the
+   * persisted row keeps only a `bodySnippet`). Current-user / PII redaction is
+   * applied; the key-based secret scrubber is not (see logActivity for why).
+   */
+  pluginEventPayloadExtra?: Record<string, unknown> | null;
 }
 
 export async function logActivity(db: Db, input: LogActivityInput) {
@@ -133,6 +142,20 @@ export async function logActivity(db: Db, input: LogActivityInput) {
 
   const pluginEventType = eventTypeForActivityAction(input.action);
   if (pluginEventType) {
+    // Event-only payload extras: merged into the emitted plugin event but never
+    // written to the activity_log row above. We apply the current-user / PII
+    // redactor but deliberately NOT the key-based secret scrubber
+    // (sanitizeRecord): it false-positives on legitimate field names such as
+    // "authorName" (the "auth" secret-key pattern) and would mangle the faithful
+    // comment body the Linear bridge exists to mirror. Comment-body secret
+    // scrubbing is not applied anywhere else in comment sync, so doing it only
+    // here would be both inconsistent and lossy.
+    const redactedEventExtra = input.pluginEventPayloadExtra
+      ? (redactCurrentUserValue(
+          input.pluginEventPayloadExtra,
+          currentUserRedactionOptions,
+        ) as Record<string, unknown>)
+      : null;
     const event: PluginEvent = {
       eventId: randomUUID(),
       eventType: pluginEventType,
@@ -144,6 +167,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       companyId: input.companyId,
       payload: {
         ...redactedDetails,
+        ...(redactedEventExtra ?? {}),
         agentId: input.agentId ?? null,
         runId: input.runId ?? null,
       },
