@@ -304,6 +304,23 @@ describe("sandbox callback bridge", () => {
     });
   });
 
+  it("allows read-only heartbeat run callback routes", () => {
+    for (const path of [
+      "/api/companies/company-1/heartbeat-runs",
+      "/api/heartbeat-runs/run-1",
+      "/api/heartbeat-runs/run-1/log",
+      "/api/heartbeat-runs/run-1/events",
+      "/api/heartbeat-runs/run-1/issues",
+    ]) {
+      expect(authorizeSandboxCallbackBridgeRequestWithRoutes({ method: "GET", path })).toBeNull();
+    }
+
+    expect(authorizeSandboxCallbackBridgeRequestWithRoutes({
+      method: "POST",
+      path: "/api/heartbeat-runs/run-1/cancel",
+    })).toBe("Route not allowed: POST /api/heartbeat-runs/run-1/cancel");
+  });
+
   it("drains already-queued requests on stop", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-drain-"));
     cleanupDirs.push(rootDir);

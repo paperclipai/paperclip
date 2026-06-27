@@ -2,10 +2,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { PaperclipApiClient } from "./client.js";
 import { readConfigFromEnv, type PaperclipExternalConfig } from "./config.js";
 import { createToolDefinitions } from "./tools.js";
+import { registerHeartbeatRunResources } from "./heartbeat-resources.js";
 
 export function createMcpServer(config: PaperclipExternalConfig = readConfigFromEnv()) {
   const server = new McpServer({ name: "paperclip", version: "0.1.0" });
   const client = new PaperclipApiClient(config);
+  registerHeartbeatRunResources(server, client);
   const tools = createToolDefinitions(client);
   for (const tool of tools) {
     // ToolDefinition uses loose arg types to stay transport-agnostic; the SDK's

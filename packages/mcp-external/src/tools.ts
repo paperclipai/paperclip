@@ -598,6 +598,24 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       },
     },
     {
+      name: "paperclipTailHeartbeatRunLog",
+      description: "Fallback log tail for MCP clients without resource subscription support.",
+      schema: z.object({
+        run_id: z.string().describe("Heartbeat run UUID."),
+        offset: z.number().int().default(0).describe("Byte offset to resume from. Default: 0."),
+        limit_bytes: z.number().int().default(16_384).describe("Max bytes to read (1-256000). Default: 16384."),
+      }),
+      execute: async (args) =>
+        runTool(() => {
+          const offset = Math.max(0, Math.trunc(Number(args.offset ?? 0)));
+          const limitBytes = Math.max(1, Math.min(Math.trunc(Number(args.limit_bytes ?? 16_384)), 256_000));
+          return client.requestJson(
+            "GET",
+            `/heartbeat-runs/${encodeURIComponent(String(args.run_id))}/log?offset=${offset}&limitBytes=${limitBytes}`,
+          );
+        }),
+    },
+    {
       name: "get_dashboard",
       description:
         "Get a high-level health summary for a company: agent count, open/in-progress/blocked issue counts, stale tasks, recent activity, current-period cost totals.",

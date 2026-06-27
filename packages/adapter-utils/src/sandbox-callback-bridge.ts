@@ -51,8 +51,15 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/companies\/[^/]+\/approvals$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/routines$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/skills$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/heartbeat-runs$/ },
   { method: "GET", path: /^\/api\/projects\/[^/]+$/ },
   { method: "GET", path: /^\/api\/goals\/[^/]+$/ },
+
+  // Read-only heartbeat run output used by MCP heartbeat resources/fallback tailing.
+  { method: "GET", path: /^\/api\/heartbeat-runs\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/heartbeat-runs\/[^/]+\/log$/ },
+  { method: "GET", path: /^\/api\/heartbeat-runs\/[^/]+\/events$/ },
+  { method: "GET", path: /^\/api\/heartbeat-runs\/[^/]+\/issues$/ },
 
   // Issue lifecycle: read context, checkout, update, comment, document, release
   { method: "GET", path: /^\/api\/issues\/[^/]+$/ },

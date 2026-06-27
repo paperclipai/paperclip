@@ -214,6 +214,12 @@ const waitForIssueWorkspaceServiceSchema = z.object({
   timeoutSeconds: z.number().int().positive().max(300).optional(),
 });
 
+const tailHeartbeatRunLogSchema = z.object({
+  runId: z.string().min(1),
+  offset: z.number().int().nonnegative().optional().default(0),
+  limitBytes: z.number().int().positive().max(256_000).optional().default(16_384),
+});
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -721,6 +727,16 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       z.object({ milestoneId: milestoneIdSchema }),
       async ({ milestoneId }) =>
         client.requestJson("DELETE", `/milestones/${encodeURIComponent(milestoneId)}`),
+    ),
+    makeTool(
+      "paperclipTailHeartbeatRunLog",
+      "Fallback log tail for MCP clients without resource subscription support",
+      tailHeartbeatRunLogSchema,
+      async ({ runId, offset, limitBytes }) =>
+        client.requestJson(
+          "GET",
+          `/heartbeat-runs/${encodeURIComponent(runId)}/log?offset=${offset}&limitBytes=${limitBytes}`,
+        ),
     ),
     makeTool(
       "paperclipApiRequest",

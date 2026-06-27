@@ -4,6 +4,7 @@ import { PaperclipApiClient } from "./client.js";
 import { readConfigFromEnv, type PaperclipMcpConfig } from "./config.js";
 import { createToolDefinitions } from "./tools.js";
 import { loadPluginToolDefinitions } from "./plugin-tools.js";
+import { registerHeartbeatRunResources } from "./heartbeat-resources.js";
 
 export function createPaperclipMcpServer(config: PaperclipMcpConfig = readConfigFromEnv()) {
   const server = new McpServer({
@@ -12,6 +13,7 @@ export function createPaperclipMcpServer(config: PaperclipMcpConfig = readConfig
   });
 
   const client = new PaperclipApiClient(config);
+  registerHeartbeatRunResources(server, client);
   const tools = createToolDefinitions(client);
   for (const tool of tools) {
     server.tool(tool.name, tool.description, tool.schema.shape, tool.execute);
