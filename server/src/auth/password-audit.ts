@@ -23,6 +23,10 @@ import { logger } from "../middleware/logger.js";
  * must never block the underlying auth request — they are logged and dropped.
  */
 
+// HTTP-exposed password-write endpoints in better-auth 1.6.20.
+// `/set-password` is currently server-only (createAuthEndpoint.serverOnly),
+// so the wrapper will not observe it today — kept as defense-in-depth in
+// case a future better-auth release exposes it.
 const PASSWORD_WRITE_PATHS = [
   "/api/auth/change-password",
   "/api/auth/reset-password",
