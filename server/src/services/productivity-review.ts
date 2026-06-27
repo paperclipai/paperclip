@@ -37,6 +37,118 @@ const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
 export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review evidence refreshed.";
+export const PARSE_REVIEW_VERDICT_MAX_BODY_BYTES = 50 * 1024;
+
+export interface ParsedVerdict {
+  hasVerdict: boolean;
+  verdict?: "APPROVE" | "REQUEST_CHANGES" | "LGTM";
+  hasStructuredElements: boolean;
+  confidence: "high" | "medium" | "low";
+}
+
+const VERDICT_AUTHORITY_ORDER: Array<ParsedVerdict["verdict"]> = ["REQUEST_CHANGES", "APPROVE", "LGTM"];
+
+function mostAuthoritativeVerdict(a?: ParsedVerdict["verdict"], b?: ParsedVerdict["verdict"]): ParsedVerdict["verdict"] | undefined {
+  if (!a) return b;
+  if (!b) return a;
+  const ia = VERDICT_AUTHORITY_ORDER.indexOf(a);
+  const ib = VERDICT_AUTHORITY_ORDER.indexOf(b);
+  return ia <= ib ? a : b;
+}
+
+function stripFencedCodeBlocks(body: string): string {
+  return body.replace(/```[^`]*?```/gs, "");
+}
+
+const VERDICT_KEYWORD_RE = /\*\*(?:APPROVE|REQUEST_CHANGES|LGTM|APPROVED)\*\*/g;
+const VERDICT_FIELD_RE = /\*\*Verdict:\*\*\s*(?:\*\*)?(?:APPROVE|REQUEST_CHANGES|LGTM|APPROVED)\b/;
+const VERDICT_HEADING_RE = /^#{1,6}\s+\*\*(?:APPROVE|REQUEST_CHANGES|LGTM|APPROVED)\*\*/m;
+
+function normaliseVerdict(raw: string): ParsedVerdict["verdict"] | undefined {
+  if (raw === "APPROVED") return "APPROVE";
+  if (raw === "APPROVE" || raw === "REQUEST_CHANGES" || raw === "LGTM") return raw;
+  return undefined;
+}
+
+function extractVerdictFromPattern(body: string): ParsedVerdict["verdict"] | undefined {
+  let best: ParsedVerdict["verdict"] | undefined;
+
+  // Field pattern: **Verdict:** **APPROVE** or **Verdict:** APPROVE
+  const fieldMatch = body.match(VERDICT_FIELD_RE);
+  if (fieldMatch) {
+    const verdictCapture = fieldMatch[0].match(/\b(?:APPROVE|REQUEST_CHANGES|LGTM|APPROVED)\b/);
+    if (verdictCapture) {
+      best = mostAuthoritativeVerdict(best, normaliseVerdict(verdictCapture[0]));
+    }
+  }
+
+  // Heading pattern: ## **APPROVE**
+  const headingMatch = body.match(VERDICT_HEADING_RE);
+  if (headingMatch) {
+    const heading = headingMatch[0] as string;
+    let headingVerdict: ParsedVerdict["verdict"] | undefined;
+    if (heading.includes("REQUEST_CHANGES")) headingVerdict = "REQUEST_CHANGES";
+    else if (heading.includes("APPROVE")) headingVerdict = "APPROVE";
+    else if (heading.includes("LGTM")) headingVerdict = "LGTM";
+    best = mostAuthoritativeVerdict(best, headingVerdict);
+  }
+
+  // Standalone bold keyword pattern (may appear multiple times)
+  const keywordRe = new RegExp(VERDICT_KEYWORD_RE.source, VERDICT_KEYWORD_RE.flags) as RegExp;
+  let keywordMatch: RegExpExecArray | null;
+  keywordRe.lastIndex = 0;
+  while ((keywordMatch = keywordRe.exec(body)) !== null) {
+    const raw = keywordMatch[0] as string;
+    let kw: ParsedVerdict["verdict"] | undefined;
+    if (raw.includes("REQUEST_CHANGES")) kw = "REQUEST_CHANGES";
+    else if (raw.includes("APPROVE")) kw = "APPROVE";
+    else if (raw.includes("LGTM")) kw = "LGTM";
+    best = mostAuthoritativeVerdict(best, kw);
+  }
+
+  return best;
+}
+
+const AC_TABLE_RE = /\|.{1,80}\|.{1,80}(?:\|.*?)*\|[\s\S]*?\|[-\s| :]+\|[\s\S]*?(?:PASS|FAIL)\b/;
+const FINDINGS_TABLE_RE = /\|.{1,80}\|.{1,80}(?:\|.*?)*\|[\s\S]*?\|[-\s| :]+\|[\s\S]*?(?:CRITICAL|HIGH|MEDIUM|LOW)\b/;
+const SEVERITY_BULLET_RE = /(?:[-*+])\s+\*\*(?:CRITICAL|HIGH|MEDIUM|LOW)\*\*/;
+const REVIEWER_IDENTITY_RE = /\*\*Reviewer:\*\*/;
+
+function detectStructuredElements(body: string): boolean {
+  if (AC_TABLE_RE.test(body)) return true;
+  if (FINDINGS_TABLE_RE.test(body)) return true;
+  if (SEVERITY_BULLET_RE.test(body)) return true;
+  if (REVIEWER_IDENTITY_RE.test(body)) return true;
+  return false;
+}
+
+export function parseReviewVerdict(body: string, authorType?: string): ParsedVerdict {
+  if (authorType === "user") {
+    return { hasVerdict: false, hasStructuredElements: false, confidence: "low" };
+  }
+
+  if (Buffer.byteLength(body, "utf-8") > PARSE_REVIEW_VERDICT_MAX_BODY_BYTES) {
+    return { hasVerdict: false, hasStructuredElements: false, confidence: "low" };
+  }
+
+  const stripped = stripFencedCodeBlocks(body);
+  const verdict = extractVerdictFromPattern(stripped);
+  const hasStructuredElements = detectStructuredElements(stripped);
+
+  if (!verdict && !hasStructuredElements) {
+    return { hasVerdict: false, hasStructuredElements: false, confidence: "low" };
+  }
+
+  if (verdict && hasStructuredElements) {
+    return { hasVerdict: true, verdict, hasStructuredElements, confidence: "high" };
+  }
+
+  if (verdict) {
+    return { hasVerdict: true, verdict, hasStructuredElements: false, confidence: "medium" };
+  }
+
+  return { hasVerdict: false, hasStructuredElements, confidence: "low" };
+}
 
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
