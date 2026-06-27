@@ -18,17 +18,18 @@ function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentT
 }
 
 const DEFAULT_HERMES_DASHBOARD_PORT = "9119";
+const HERMES_DASHBOARD_API_PATHS = new Set(["", "/", "/chat"]);
 
-function isDefaultDashboardRoot(url: URL): boolean {
-  const hasExplicitPath = url.pathname !== "" && url.pathname !== "/";
-  return !hasExplicitPath && url.port === DEFAULT_HERMES_DASHBOARD_PORT;
+function isDefaultDashboardApiEntry(url: URL): boolean {
+  const normalizedPath = url.pathname.replace(/\/+$/, "") || "/";
+  return url.port === DEFAULT_HERMES_DASHBOARD_PORT && HERMES_DASHBOARD_API_PATHS.has(normalizedPath);
 }
 
 function normalizeBaseUrl(value: string): URL | null {
   try {
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    if (isDefaultDashboardRoot(url)) {
+    if (isDefaultDashboardApiEntry(url)) {
       url.pathname = "/api";
     }
     return url;
@@ -71,7 +72,7 @@ export async function testEnvironment(
   }
 
   const parsed = apiBaseUrl ? normalizeBaseUrl(apiBaseUrl) : null;
-  const mappedDefaultDashboardRoot = Boolean(parsed && isDefaultDashboardRoot(new URL(apiBaseUrl)));
+  const mappedDefaultDashboardRoot = Boolean(parsed && isDefaultDashboardApiEntry(new URL(apiBaseUrl)));
   if (apiBaseUrl && !parsed) {
     checks.push({
       code: "hermes_gateway_api_base_url_invalid",

@@ -78,5 +78,7 @@ describe("HermesGatewayConfigFields", () => {
     const apiKeyInput = Array.from(result.container.querySelectorAll<HTMLInputElement>('input[type="password"]'))
       .find((input) => input.placeholder.includes("Stored secret"));
     expect(apiKeyInput).toBeTruthy();
+
+    expect(result.container.querySelector('button[aria-label="Show API key"]')).toBeTruthy();
   });
 });

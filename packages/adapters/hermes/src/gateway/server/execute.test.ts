@@ -585,6 +585,35 @@ describe("testEnvironment", () => {
       expect.objectContaining({ method: "GET" }),
     );
   });
+
+  it("tests a Hermes dashboard chat URL on port 9119 through the API prefix", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "hermes_gateway",
+      config: {
+        apiBaseUrl: "http://127.0.0.1:9119/chat",
+        apiKey: "secret-key",
+      },
+    });
+
+    expect(result.status).toBe("pass");
+    expect(result.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "hermes_gateway_dashboard_root_mapped",
+          level: "info",
+          message: "Default Hermes dashboard root mapped to API base http://127.0.0.1:9119/api.",
+        }),
+      ]),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:9119/api/health",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
 });
 
 describe("mapFinalResultForTest", () => {
