@@ -1,5 +1,6 @@
 import type {
   AlertmanagerPluginConfig,
+  IssueRouteMap,
   OwnerMap,
   PaperclipPriority,
 } from "./types.js";
@@ -45,6 +46,43 @@ export const DEFAULT_OWNER_MAP: OwnerMap = {
     physical_infra_ceph: "support@blockcast.net",
     physical_infra_bmc: "support@blockcast.net",
     physical_infra_disk: "support@blockcast.net",
+  },
+};
+
+export const BLOCKCAST_PHYSICAL_INFRA_PROJECT_ID =
+  "9a6f627e-0f16-4b46-acc1-811acd1f548e";
+export const BLOCKCAST_PHYSICAL_INFRA_GOAL_ID =
+  "94c9f942-7067-4fde-a313-b3ee30d72f70";
+export const BLOCKCAST_PHYSICAL_INFRA_AGENT_ID =
+  "d2ade02d-112c-4da2-b61f-2301254a154c";
+
+/** Default project/agent routes for Blockcast physical infrastructure alerts. */
+export const DEFAULT_ISSUE_ROUTE_MAP: IssueRouteMap = {
+  class: {
+    physical_infra_proxmox: {
+      projectId: BLOCKCAST_PHYSICAL_INFRA_PROJECT_ID,
+      goalId: BLOCKCAST_PHYSICAL_INFRA_GOAL_ID,
+      assigneeAgentId: BLOCKCAST_PHYSICAL_INFRA_AGENT_ID,
+      status: "todo",
+    },
+    physical_infra_ceph: {
+      projectId: BLOCKCAST_PHYSICAL_INFRA_PROJECT_ID,
+      goalId: BLOCKCAST_PHYSICAL_INFRA_GOAL_ID,
+      assigneeAgentId: BLOCKCAST_PHYSICAL_INFRA_AGENT_ID,
+      status: "todo",
+    },
+    physical_infra_bmc: {
+      projectId: BLOCKCAST_PHYSICAL_INFRA_PROJECT_ID,
+      goalId: BLOCKCAST_PHYSICAL_INFRA_GOAL_ID,
+      assigneeAgentId: BLOCKCAST_PHYSICAL_INFRA_AGENT_ID,
+      status: "todo",
+    },
+    physical_infra_disk: {
+      projectId: BLOCKCAST_PHYSICAL_INFRA_PROJECT_ID,
+      goalId: BLOCKCAST_PHYSICAL_INFRA_GOAL_ID,
+      assigneeAgentId: BLOCKCAST_PHYSICAL_INFRA_AGENT_ID,
+      status: "todo",
+    },
   },
 };
 
@@ -100,6 +138,7 @@ export const DEFAULT_CONFIG: AlertmanagerPluginConfig = {
   severityToPriority: DEFAULT_SEVERITY_TO_PRIORITY,
   autoCloseOnResolve: false,
   ownerMap: DEFAULT_OWNER_MAP,
+  issueRouteMap: DEFAULT_ISSUE_ROUTE_MAP,
 };
 
 /**

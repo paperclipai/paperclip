@@ -28,6 +28,33 @@ export type PaperclipPriority = "critical" | "high" | "medium" | "low";
  */
 export type OwnerMap = Record<string, Record<string, string>>;
 
+export type IssueRouteStatus =
+  | "backlog"
+  | "todo"
+  | "in_progress"
+  | "in_review"
+  | "done"
+  | "blocked"
+  | "cancelled";
+
+/**
+ * Optional Paperclip issue routing fields applied when an alert's labels match
+ * a configured label-key/value route.
+ */
+export interface IssueRoute {
+  projectId?: string;
+  goalId?: string;
+  status?: IssueRouteStatus;
+  assigneeAgentId?: string;
+  assigneeUserId?: string | null;
+}
+
+/**
+ * Per-label issue routing map. Shape mirrors ownerMap:
+ * `{ class: { physical_infra_bmc: { projectId, goalId, assigneeAgentId }}}`.
+ */
+export type IssueRouteMap = Record<string, Record<string, IssueRoute>>;
+
 /**
  * Plugin instance config. Validated by the host against the manifest's
  * `instanceConfigSchema` before being passed to the worker.
@@ -67,6 +94,11 @@ export interface AlertmanagerPluginConfig {
    * Per-instance owner map. e.g. `{ team: { platform: "alice@blockcast.net" }}`.
    */
   ownerMap?: OwnerMap;
+  /**
+   * Per-instance issue route map. Matches alert labels and applies project,
+   * goal, status, and queue defaults to created issues.
+   */
+  issueRouteMap?: IssueRouteMap;
 }
 
 // ---------------------------------------------------------------------------

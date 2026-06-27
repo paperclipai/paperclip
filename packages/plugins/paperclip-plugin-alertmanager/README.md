@@ -45,6 +45,7 @@ Configured per-instance via the host's plugin settings UI. Schema lives in
 | `severityToPriority` | object  | no       | Override the default severity map. |
 | `autoCloseOnResolve` | boolean | no       | Defaults to false (comment-only). |
 | `ownerMap`           | object  | no       | `{ <labelKey>: { <labelValue>: <email> } }`. |
+| `issueRouteMap`      | object  | no       | `{ <labelKey>: { <labelValue>: { projectId, goalId, assigneeAgentId, status } } }`. |
 
 ### Example `AlertmanagerConfig` YAML
 
@@ -88,6 +89,28 @@ ownerMap:
   team:
     platform:   alice@blockcast.net
     networking: ned@blockcast.net
+issueRouteMap:
+  class:
+    physical_infra_proxmox:
+      projectId: 9a6f627e-0f16-4b46-acc1-811acd1f548e
+      goalId: 94c9f942-7067-4fde-a313-b3ee30d72f70
+      assigneeAgentId: d2ade02d-112c-4da2-b61f-2301254a154c
+      status: todo
+    physical_infra_ceph:
+      projectId: 9a6f627e-0f16-4b46-acc1-811acd1f548e
+      goalId: 94c9f942-7067-4fde-a313-b3ee30d72f70
+      assigneeAgentId: d2ade02d-112c-4da2-b61f-2301254a154c
+      status: todo
+    physical_infra_bmc:
+      projectId: 9a6f627e-0f16-4b46-acc1-811acd1f548e
+      goalId: 94c9f942-7067-4fde-a313-b3ee30d72f70
+      assigneeAgentId: d2ade02d-112c-4da2-b61f-2301254a154c
+      status: todo
+    physical_infra_disk:
+      projectId: 9a6f627e-0f16-4b46-acc1-811acd1f548e
+      goalId: 94c9f942-7067-4fde-a313-b3ee30d72f70
+      assigneeAgentId: d2ade02d-112c-4da2-b61f-2301254a154c
+      status: todo
 ```
 
 The bundled Blockcast plugin ships these `class` routes as defaults so fresh
@@ -108,6 +131,16 @@ shipped map to match. Instance config is merged on top, so operators can
 override any shipped route or add more routes in the settings UI without
 losing the default map for other classes. Use that override path when a site
 has a narrower physical-infra owner than the broad support queue.
+
+The plugin also ships default `issueRouteMap` entries for the four
+`physical_infra_*` classes. Those entries create issues in the Blockcast
+Physical Infrastructure Telemetry & Alerting project, link the CDN+ goal,
+assign the Staff Engineer agent queue, and set the initial status to `todo`.
+Owner-map email routes still exist for notification ownership, but the issue
+route decides the project/goal queue when both maps match. A label
+`paperclip_assignee_email` override still wins for one-off assignment
+overrides; annotation overrides follow the existing owner-resolution chain
+below.
 
 ### Owner resolution chain (§7.7)
 

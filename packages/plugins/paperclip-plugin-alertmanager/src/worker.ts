@@ -20,9 +20,13 @@ import {
   type PluginContext,
   type PluginWebhookInput,
 } from "@paperclipai/plugin-sdk";
-import { DEFAULT_OWNER_MAP } from "./constants.js";
+import { DEFAULT_ISSUE_ROUTE_MAP, DEFAULT_OWNER_MAP } from "./constants.js";
 import { handleWebhook } from "./webhook-handler.js";
-import type { AlertmanagerPluginConfig, OwnerMap } from "./types.js";
+import type {
+  AlertmanagerPluginConfig,
+  IssueRouteMap,
+  OwnerMap,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Module-level worker state
@@ -47,6 +51,28 @@ function mergeOwnerMap(ownerMap: OwnerMap | undefined): OwnerMap {
   return merged;
 }
 
+function mergeIssueRouteMap(
+  issueRouteMap: IssueRouteMap | undefined,
+): IssueRouteMap {
+  const merged: IssueRouteMap = {};
+  for (const [labelKey, valueMap] of Object.entries(DEFAULT_ISSUE_ROUTE_MAP)) {
+    merged[labelKey] = {};
+    for (const [labelValue, route] of Object.entries(valueMap)) {
+      merged[labelKey][labelValue] = { ...route };
+    }
+  }
+  for (const [labelKey, valueMap] of Object.entries(issueRouteMap ?? {})) {
+    merged[labelKey] = { ...(merged[labelKey] ?? {}) };
+    for (const [labelValue, route] of Object.entries(valueMap)) {
+      merged[labelKey][labelValue] = {
+        ...(merged[labelKey][labelValue] ?? {}),
+        ...route,
+      };
+    }
+  }
+  return merged;
+}
+
 // ---------------------------------------------------------------------------
 // Internal: apply a freshly-resolved config snapshot to the worker's in-memory
 // state. Used by both setup() (first start) and onConfigChanged() (operator
@@ -60,6 +86,7 @@ async function applyConfig(
   pluginConfig = {
     ...config,
     ownerMap: mergeOwnerMap(config.ownerMap),
+    issueRouteMap: mergeIssueRouteMap(config.issueRouteMap),
   };
 
   if (!pluginConfig.defaultCompanyId) {

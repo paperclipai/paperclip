@@ -13,6 +13,12 @@ import {
   handleWebhook,
   verifyBearerToken,
 } from "../webhook-handler.js";
+import {
+  BLOCKCAST_PHYSICAL_INFRA_AGENT_ID,
+  BLOCKCAST_PHYSICAL_INFRA_GOAL_ID,
+  BLOCKCAST_PHYSICAL_INFRA_PROJECT_ID,
+  DEFAULT_ISSUE_ROUTE_MAP,
+} from "../constants.js";
 import { ORIGIN_KIND } from "../types.js";
 import type {
   AlertmanagerAlert,
@@ -332,6 +338,134 @@ describe("handleWebhook — firing first time", () => {
     await handleWebhook(ctx, config, TOKEN, baseInput({ parsedBody: envelope }));
     const createArgs = mocks.issues.create.mock.calls[0][0];
     expect(createArgs.billingCode).toBe("cost-ctr-7");
+  });
+
+  it("routes physical-infra class alerts into the physical-infra project queue", async () => {
+    const { ctx, mocks } = mkCtx();
+    const config = baseConfig({
+      issueRouteMap: DEFAULT_ISSUE_ROUTE_MAP,
+      ownerMap: {
+        class: {
+          physical_infra_bmc: "support@blockcast.net",
+        },
+      },
+    });
+    mocks.users.findByEmail.mockResolvedValueOnce({
+      id: "support-user",
+      email: "support@blockcast.net",
+      name: "Support",
+    });
+    const alert = baseAlert({
+      labels: {
+        alertname: "PhysicalInfraBmcPowerSupplyStateBad",
+        severity: "critical",
+        class: "physical_infra_bmc",
+        team: "platform",
+      },
+      fingerprint: "physical-bmc-1",
+    });
+    const envelope = baseEnvelope({ alerts: [alert] });
+
+    await handleWebhook(ctx, config, TOKEN, baseInput({ parsedBody: envelope }));
+
+    const createArgs = mocks.issues.create.mock.calls[0][0];
+    expect(createArgs.projectId).toBe(BLOCKCAST_PHYSICAL_INFRA_PROJECT_ID);
+    expect(createArgs.goalId).toBe(BLOCKCAST_PHYSICAL_INFRA_GOAL_ID);
+    expect(createArgs.status).toBe("todo");
+    expect(createArgs.assigneeAgentId).toBe(BLOCKCAST_PHYSICAL_INFRA_AGENT_ID);
+    expect(createArgs.assigneeUserId).toBeUndefined();
+    expect(mocks.state.set).toHaveBeenCalledWith(
+      { scopeKind: "instance", stateKey: "alert:physical-bmc-1" },
+      expect.objectContaining({
+        assigneeAgentId: BLOCKCAST_PHYSICAL_INFRA_AGENT_ID,
+        assigneeUserId: null,
+      }),
+    );
+  });
+
+  it("leaves non-routed alerts on the existing create path", async () => {
+    const { ctx, mocks } = mkCtx();
+    const config = baseConfig({ issueRouteMap: DEFAULT_ISSUE_ROUTE_MAP });
+    mocks.users.findByEmail.mockResolvedValueOnce({
+      id: "user-42",
+      email: "alice@example.com",
+      name: "Alice",
+    });
+
+    await handleWebhook(ctx, config, TOKEN, baseInput());
+
+    const createArgs = mocks.issues.create.mock.calls[0][0];
+    expect(createArgs.projectId).toBeUndefined();
+    expect(createArgs.goalId).toBeUndefined();
+    expect(createArgs.status).toBeUndefined();
+    expect(createArgs.assigneeUserId).toBe("user-42");
+    expect(createArgs.assigneeAgentId).toBeUndefined();
+  });
+
+  it("applies configured issue route overrides", async () => {
+    const { ctx, mocks } = mkCtx();
+    const config = baseConfig({
+      issueRouteMap: {
+        class: {
+          physical_infra_disk: {
+            projectId: "project-override",
+            goalId: "goal-override",
+            assigneeAgentId: "agent-override",
+            status: "todo",
+          },
+        },
+      },
+      ownerMap: {},
+    });
+    const alert = baseAlert({
+      labels: {
+        alertname: "PhysicalInfraDiskReallocatedSectorsHigh",
+        severity: "warning",
+        class: "physical_infra_disk",
+      },
+      fingerprint: "physical-disk-1",
+    });
+    const envelope = baseEnvelope({ alerts: [alert] });
+
+    await handleWebhook(ctx, config, TOKEN, baseInput({ parsedBody: envelope }));
+
+    const createArgs = mocks.issues.create.mock.calls[0][0];
+    expect(createArgs.projectId).toBe("project-override");
+    expect(createArgs.goalId).toBe("goal-override");
+    expect(createArgs.status).toBe("todo");
+    expect(createArgs.assigneeAgentId).toBe("agent-override");
+  });
+
+  it("lets explicit assignee overrides win over route assignees", async () => {
+    const { ctx, mocks } = mkCtx();
+    const config = baseConfig({
+      issueRouteMap: DEFAULT_ISSUE_ROUTE_MAP,
+      ownerMap: {},
+    });
+    mocks.users.findByEmail.mockResolvedValueOnce({
+      id: "user-bob",
+      email: "bob@example.com",
+      name: "Bob",
+    });
+    const alert = baseAlert({
+      labels: {
+        alertname: "PhysicalInfraProxmoxApiDown",
+        severity: "critical",
+        class: "physical_infra_proxmox",
+        paperclip_assignee_email: "bob@example.com",
+      },
+      fingerprint: "physical-proxmox-1",
+    });
+    const envelope = baseEnvelope({ alerts: [alert] });
+
+    await handleWebhook(ctx, config, TOKEN, baseInput({ parsedBody: envelope }));
+
+    const createArgs = mocks.issues.create.mock.calls[0][0];
+    expect(createArgs.projectId).toBe(BLOCKCAST_PHYSICAL_INFRA_PROJECT_ID);
+    expect(createArgs.goalId).toBe(BLOCKCAST_PHYSICAL_INFRA_GOAL_ID);
+    expect(createArgs.status).toBe("todo");
+    expect(createArgs.assigneeUserId).toBe("user-bob");
+    expect(createArgs.assigneeAgentId).toBeUndefined();
   });
 });
 

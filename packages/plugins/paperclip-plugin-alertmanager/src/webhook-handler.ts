@@ -17,6 +17,7 @@ import {
   effectiveAlertStatus,
   severityToPriority,
 } from "./issue-mapping.js";
+import { resolveIssueRoute } from "./issue-route-resolver.js";
 import { resolveAssigneeUserId } from "./owner-resolver.js";
 import {
   ORIGIN_KIND,
@@ -31,6 +32,12 @@ export class WebhookUnauthorizedError extends Error {
     super(message);
     this.name = "WebhookUnauthorizedError";
   }
+}
+
+function nonEmptyString(value: string | null | undefined): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 /**
@@ -185,15 +192,46 @@ export async function handleFiring(
 
   const { assigneeUserId, assigneeAgentId, resolution } =
     await resolveAssigneeUserId(ctx, alert, config.ownerMap);
+  const issueRouteResolution = resolveIssueRoute(alert, config.issueRouteMap);
+  const issueRoute = issueRouteResolution.route;
+  const ownerOverride =
+    resolution.source === "label-override" ||
+    resolution.source === "annotation-override";
+  const routeAssigneeAgentId = nonEmptyString(issueRoute?.assigneeAgentId);
+  const routeHasAssigneeUserId = Object.prototype.hasOwnProperty.call(
+    issueRoute ?? {},
+    "assigneeUserId",
+  );
+  const routeAssigneeUserId = routeHasAssigneeUserId
+    ? nonEmptyString(issueRoute?.assigneeUserId ?? undefined)
+    : undefined;
+  const createAssigneeAgentId = ownerOverride
+    ? assigneeAgentId
+    : routeAssigneeAgentId ?? assigneeAgentId;
+  const createAssigneeUserId = createAssigneeAgentId
+    ? undefined
+    : ownerOverride
+      ? assigneeUserId
+      : routeHasAssigneeUserId
+        ? routeAssigneeUserId
+        : assigneeUserId;
+  const routeProjectId = nonEmptyString(issueRoute?.projectId);
+  const routeGoalId = nonEmptyString(issueRoute?.goalId);
+  const routeStatus = issueRoute?.status;
   const resolvedTarget =
     resolution.agentId
       ? `agent:${resolution.agentId}`
       : resolution.email ?? "(none)";
   const resolvedAssignee =
-    assigneeAgentId ?? assigneeUserId ?? "(no assignee)";
+    createAssigneeAgentId ?? createAssigneeUserId ?? "(no assignee)";
   ctx.logger.debug(
     `Owner resolution for ${alertname}: ${resolution.source} → ${resolvedTarget} → ${resolvedAssignee}`,
   );
+  if (issueRouteResolution.source) {
+    ctx.logger.debug(
+      `Issue route for ${alertname}: ${issueRouteResolution.source.labelKey}=${issueRouteResolution.source.labelValue}`,
+    );
+  }
 
   const title = buildIssueTitle(alert);
   const description = buildIssueDescription(alert);
@@ -208,16 +246,19 @@ export async function handleFiring(
     priority,
     originKind: ORIGIN_KIND,
     originId: alert.fingerprint,
-    ...(assigneeUserId ? { assigneeUserId } : {}),
-    ...(assigneeAgentId ? { assigneeAgentId } : {}),
+    ...(routeProjectId ? { projectId: routeProjectId } : {}),
+    ...(routeGoalId ? { goalId: routeGoalId } : {}),
+    ...(routeStatus ? { status: routeStatus } : {}),
+    ...(createAssigneeUserId ? { assigneeUserId: createAssigneeUserId } : {}),
+    ...(createAssigneeAgentId ? { assigneeAgentId: createAssigneeAgentId } : {}),
     ...(billingCode ? { billingCode } : {}),
   });
 
   const record: AlertStateRecord = {
     paperclipIssueId: issue.id,
     paperclipCompanyId: companyId,
-    assigneeUserId: assigneeUserId ?? null,
-    assigneeAgentId: assigneeAgentId ?? null,
+    assigneeUserId: createAssigneeUserId ?? null,
+    assigneeAgentId: createAssigneeAgentId ?? null,
     alertname,
     severity,
     firstSeenAt: alert.startsAt || nowIso,
@@ -233,8 +274,8 @@ export async function handleFiring(
     labels: alert.labels,
     annotations: alert.annotations,
     paperclipIssueId: issue.id,
-    assigneeUserId: assigneeUserId ?? null,
-    assigneeAgentId: assigneeAgentId ?? null,
+    assigneeUserId: createAssigneeUserId ?? null,
+    assigneeAgentId: createAssigneeAgentId ?? null,
     reFired: false,
   });
 
@@ -246,6 +287,9 @@ export async function handleFiring(
     metadata: {
       fingerprint: alert.fingerprint,
       assigneeResolutionSource: resolution.source,
+      issueRouteSource: issueRouteResolution.source
+        ? `${issueRouteResolution.source.labelKey}=${issueRouteResolution.source.labelValue}`
+        : "no-match",
     },
   });
 

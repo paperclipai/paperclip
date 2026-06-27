@@ -93,6 +93,37 @@ const manifest: PaperclipPluginManifestV1 = {
         description:
           "Per-instance config. e.g. { team: { 'platform': 'alice@blockcast.net' } }. Resolution chain documented in the plugin spec §7.7.",
       },
+      issueRouteMap: {
+        type: "object",
+        title: "Issue route map (label-key → value → issue fields)",
+        description:
+          "Per-instance config. e.g. { class: { physical_infra_bmc: { projectId, goalId, assigneeAgentId, status: 'todo' } } }. Shipped defaults route Blockcast physical-infra alerts into the physical-infra project queue.",
+        additionalProperties: {
+          type: "object",
+          additionalProperties: {
+            type: "object",
+            properties: {
+              projectId: { type: "string" },
+              goalId: { type: "string" },
+              status: {
+                type: "string",
+                enum: [
+                  "backlog",
+                  "todo",
+                  "in_progress",
+                  "in_review",
+                  "done",
+                  "blocked",
+                  "cancelled",
+                ],
+              },
+              assigneeAgentId: { type: "string" },
+              assigneeUserId: { type: "string" },
+            },
+            additionalProperties: false,
+          },
+        },
+      },
     },
     // No fields are schema-required: the bootstrap auto-config endpoint
     // posts a partial config (e.g. only webhookTokenRef) and the worker
