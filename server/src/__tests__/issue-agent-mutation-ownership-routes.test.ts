@@ -1,7 +1,6 @@
 import { Readable } from "node:stream";
 import express from "express";
 import request from "supertest";
-import { conflict } from "../errors.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
@@ -1386,9 +1385,35 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("requires checkout ownership when a CEO transitions another agent's issue into in_progress", async () => {
-    mockIssueService.assertCheckoutOwner.mockRejectedValue(conflict("Issue checkout conflict"));
+  it("requires active-run ownership for a CEO transition into in_progress", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:mutate",
+      action: input.action,
+      reason: input.action === "issue:mutate" ? "allow_company_ceo" : "deny_missing_grant",
+      explanation:
+        input.action === "issue:mutate"
+          ? "Allowed because the actor is the company CEO."
+          : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor({ runId: undefined })))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_progress" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(401);
+    expect(res.body.error).toBe("Agent run id required");
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("checks checkout ownership for a CEO transition into in_progress", async () => {
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockIssueService.update.mockResolvedValue({
+      ...makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }),
+      status: "in_progress",
+    });
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:mutate",
       action: input.action,
@@ -1403,14 +1428,14 @@ describe("agent issue mutation checkout ownership", () => {
       .patch(`/api/issues/${issueId}`)
       .send({ status: "in_progress" });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(409);
-    expect(res.body.error).toBe("Issue checkout conflict");
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("in_progress");
     expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(
       issueId,
       peerAgentId,
       "66666666-6666-4666-8666-666666666666",
     );
-    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalled();
   });
 
   it.each([
