@@ -54,6 +54,25 @@ describe("extractBtcPrefixTokens", () => {
     const text = "first BTC-1234 then BTC-5678 finally BTC-1234 again";
     expect(extractBtcPrefixTokens(text)).toEqual(["BTC-1234", "BTC-5678", "BTC-1234"]);
   });
+
+  it("matches lowercase variants (btc-9999 is an issue reference)", () => {
+    expect(extractBtcPrefixTokens("see btc-9999 lowercase")).toEqual(["btc-9999"]);
+    expect(extractBtcPrefixTokens("mixed Btc-1234 case")).toEqual(["Btc-1234"]);
+  });
+
+  it("ignores BTC-N tokens inside inline code blocks", () => {
+    expect(extractBtcPrefixTokens("run `BTC-9999` in terminal")).toEqual([]);
+  });
+
+  it("ignores BTC-N tokens inside fenced code blocks", () => {
+    const text = "See the example:\n```\ncurl /issues/BTC-9999\n```\nFor more context.";
+    expect(extractBtcPrefixTokens(text)).toEqual([]);
+  });
+
+  it("catches BTC-N tokens outside of code blocks", () => {
+    const text = "Reference BTC-1234 but not `BTC-5678`";
+    expect(extractBtcPrefixTokens(text)).toEqual(["BTC-1234"]);
+  });
 });
 
 describe("suggestedFullForm", () => {
@@ -73,6 +92,11 @@ describe("suggestedFullForm", () => {
   it("normalizes short-number tokens like BTC-12 (early issues)", () => {
     expect(suggestedFullForm("BTC-12")).toBe("BTCAAAAA-12");
     expect(suggestedFullForm("BTC-1")).toBe("BTCAAAAA-1");
+  });
+
+  it("normalizes lowercase variants to full-prefix form", () => {
+    expect(suggestedFullForm("btc-9999")).toBe("BTCAAAAA-9999");
+    expect(suggestedFullForm("Btc-1234")).toBe("BTCAAAAA-1234");
   });
 });
 
@@ -204,6 +228,49 @@ describe("enforceBtcPrefixTokens", () => {
       text: "see BTC-9999",
       companyId: "target-company",
       lookup: async (_candidate, cid) => ({ exists: cid === "target-company" }),
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("allows token when it resolves in a non-primary actor company (multi-company board user)", async () => {
+    // Board actor has two companies; token only exists in the second one.
+    const boardActor = { type: "board", companyIds: ["c-primary", "c-secondary"] };
+    const result = await enforceBtcPrefixTokens({
+      text: "see BTC-9999",
+      actor: boardActor,
+      lookup: async (_candidate, cid) => ({ exists: cid === "c-secondary" }),
+    });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("rejects token when it resolves in NONE of the actor companies", async () => {
+    const boardActor = { type: "board", companyIds: ["c1", "c2"] };
+    const result = await enforceBtcPrefixTokens({
+      text: "see BTC-9999",
+      actor: boardActor,
+      lookup: async () => ({ exists: false }),
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("catches lowercase BTC-N tokens (case-insensitive enforcement)", async () => {
+    const result = await enforceBtcPrefixTokens({
+      text: "see btc-9999 lowercase",
+      actor,
+      lookup: async () => null,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.offendingToken).toBe("btc-9999");
+      expect(result.suggestedFull).toBe("BTCAAAAA-9999");
+    }
+  });
+
+  it("does not reject BTC-N tokens inside inline code blocks", async () => {
+    const result = await enforceBtcPrefixTokens({
+      text: "Run `BTC-9999` in the terminal",
+      actor,
+      lookup: async () => null,
     });
     expect(result).toEqual({ ok: true });
   });
