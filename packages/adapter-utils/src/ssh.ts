@@ -438,7 +438,7 @@ async function clearLocalDirectory(
   );
 }
 
-async function copyDirectoryContents(sourceDir: string, targetDir: string): Promise<void> {
+export async function copyDirectoryContents(sourceDir: string, targetDir: string): Promise<void> {
   await fs.mkdir(targetDir, { recursive: true });
   const entries = await fs.readdir(sourceDir);
   await Promise.all(entries.map(async (entry) => {
@@ -446,6 +446,16 @@ async function copyDirectoryContents(sourceDir: string, targetDir: string): Prom
       recursive: true,
       force: true,
       preserveTimestamps: true,
+      // Copy symlinks byte-for-byte. With the default (verbatimSymlinks:false)
+      // Node resolves each relative symlink target against the *source* dir and
+      // writes the resulting absolute path into the copy. For an SSH sync-back
+      // the source is an ephemeral /tmp staging dir, so every repo node_modules
+      // symlink (pnpm store links are relative) would be rewritten to point at
+      // /tmp/paperclip-ssh-sync-back-*/... and dangle the moment staging is
+      // cleaned up — bricking the service on its next restart. The staging tree
+      // mirrors the repo layout 1:1, so the original relative targets stay valid
+      // in place. (NEO-274)
+      verbatimSymlinks: true,
     });
   }));
 }

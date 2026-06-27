@@ -27,6 +27,7 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -77,7 +78,38 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
   "plugins",
 );
 
-const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
+const require = createRequire(import.meta.url);
+
+/**
+ * Resolve the tsx ESM loader used to run repo-local plugin workers against
+ * TypeScript workspace sources.
+ *
+ * Prefers Node's module resolver (which walks the server package's own
+ * node_modules / pnpm store and survives store-relative symlink layouts) over
+ * the legacy single hardcoded `cli/node_modules/tsx` symlink, which is brittle:
+ * an SSH sync-back once repointed it at an ephemeral /tmp path, leaving every
+ * plugin worker crash-looping on `--import <missing loader>`. Returns null when
+ * tsx cannot be located so callers spawn workers without the loader (graceful
+ * degradation) instead of bricking on a dangling --import target. (NEO-274)
+ */
+function resolveTsxLoaderPath(): string | null {
+  const candidates: string[] = [];
+  try {
+    // tsx ships the ESM loader at dist/loader.mjs; resolve the package root via
+    // its package.json so we don't depend on tsx exposing that subpath export.
+    const pkgJsonPath = require.resolve("tsx/package.json");
+    candidates.push(path.join(path.dirname(pkgJsonPath), "dist", "loader.mjs"));
+  } catch {
+    // tsx not resolvable from the server package; fall through to legacy path.
+  }
+  candidates.push(
+    path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs"),
+  );
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
 
 const ADAPTER_ENV_PASSTHROUGH = [
   "ANTHROPIC_API_KEY",
@@ -1857,8 +1889,13 @@ export function pluginLoader(
       // Repo-local plugin installs can resolve workspace TS sources at runtime
       // (for example @paperclipai/shared exports). Run those workers through
       // the tsx loader so first-party example plugins work in development.
-      if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
-        workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+      // If tsx can't be resolved we omit the loader rather than spawn with a
+      // dangling --import target; the worker manager also re-validates the
+      // loader on every (re)spawn so a vanished loader degrades gracefully
+      // instead of crash-looping. (NEO-274)
+      const tsxLoaderPath = activePlugin.packagePath ? resolveTsxLoaderPath() : null;
+      if (tsxLoaderPath) {
+        workerOptions.execArgv = ["--import", tsxLoaderPath];
       }
 
       await workerManager.startWorker(pluginId, workerOptions);
