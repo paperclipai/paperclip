@@ -4,6 +4,7 @@ import {
   AGENT_ROLES,
   AGENT_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
+  MODEL_PROFILE_KEYS,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
@@ -62,9 +63,7 @@ const agentModelProfileConfigSchema = z.object({
 }).strict();
 
 export const agentRuntimeConfigSchema = z.object({
-  modelProfiles: z.object({
-    cheap: agentModelProfileConfigSchema.optional(),
-  }).strict().optional(),
+  modelProfiles: z.record(z.enum(MODEL_PROFILE_KEYS), agentModelProfileConfigSchema.optional()).optional(),
 }).catchall(z.unknown());
 
 export const createAgentSchema = z.object({
