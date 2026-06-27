@@ -1030,9 +1030,35 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("returns a contextual 500 when recovery checkout authorization lookup fails", async () => {
+  it("falls back to task assignment authorization when recovery checkout authorization lookup fails", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
     mockIssueRecoveryActionService.getActiveForIssue.mockRejectedValue(new Error("database timeout"));
+
+    const actor = peerActor();
+    const res = await request(await createApp(actor))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId: peerAgentId, expectedStatuses: ["blocked"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "tasks:assign" }));
+    expect(mockIssueService.checkout).toHaveBeenCalledWith(
+      issueId,
+      peerAgentId,
+      ["blocked"],
+      actor.runId,
+      { allowSourceScopedRecoveryOwner: false },
+    );
+  });
+
+  it("returns a contextual 500 when recovery checkout lookup fails and assignment fallback is denied", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockRejectedValue(new Error("database timeout"));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action !== "tasks:assign",
+      action: input.action,
+      reason: input.action === "tasks:assign" ? "deny_missing_grant" : "allow_test_default",
+      explanation: input.action === "tasks:assign" ? "Missing assignment grant." : "Allowed by test default.",
+    }));
 
     const res = await request(await createApp(peerActor()))
       .post(`/api/issues/${issueId}/checkout`)
@@ -1055,6 +1081,7 @@ describe("agent issue mutation checkout ownership", () => {
         .send({ agentId: peerAgentId, expectedStatuses: ["blocked"] });
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.assigneeAgentId).toBe(peerAgentId);
       expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "tasks:assign" }));
       expect(mockIssueService.checkout).toHaveBeenCalledWith(
         issueId,

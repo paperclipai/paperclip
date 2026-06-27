@@ -6990,16 +6990,16 @@ export function issueRoutes(
     }
 
     let activeRecoveryActionForCheckout: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>> = null;
+    let recoveryCheckoutLookupError: unknown = null;
     if (issue.assigneeAgentId !== req.body.agentId) {
       try {
         activeRecoveryActionForCheckout = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
       } catch (err) {
+        recoveryCheckoutLookupError = err;
         logger.error(
           { err, issueId: issue.id, companyId: issue.companyId, agentId: req.body.agentId },
           "failed to load active recovery action for issue checkout authorization",
         );
-        res.status(500).json({ error: "Failed to verify recovery checkout authorization" });
-        return;
       }
     }
     const allowSourceScopedRecoveryOwnerCheckout =
@@ -7011,13 +7011,31 @@ export function issueRoutes(
       activeRecoveryActionForCheckout.ownerAgentId === req.body.agentId;
 
     if (issue.assigneeAgentId !== req.body.agentId && !allowSourceScopedRecoveryOwnerCheckout) {
-      await assertCanAssignTasks(req, issue.companyId, {
-        issueId: issue.id,
-        projectId: issue.projectId ?? null,
-        parentIssueId: issue.parentId ?? null,
-        assigneeAgentId: req.body.agentId,
-        assigneeUserId: null,
-      });
+      try {
+        await assertCanAssignTasks(req, issue.companyId, {
+          issueId: issue.id,
+          projectId: issue.projectId ?? null,
+          parentIssueId: issue.parentId ?? null,
+          assigneeAgentId: req.body.agentId,
+          assigneeUserId: null,
+        });
+      } catch (err) {
+        if (recoveryCheckoutLookupError) {
+          logger.error(
+            {
+              err: recoveryCheckoutLookupError,
+              assignmentErr: err,
+              issueId: issue.id,
+              companyId: issue.companyId,
+              agentId: req.body.agentId,
+            },
+            "failed to verify recovery checkout authorization and assignment fallback was denied",
+          );
+          res.status(500).json({ error: "Failed to verify recovery checkout authorization" });
+          return;
+        }
+        throw err;
+      }
     }
 
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
