@@ -59,6 +59,9 @@ vi.mock("../services/index.js", async (importOriginal) => {
     issueReferenceService: () => ({
       listForIssue: vi.fn(async () => []),
     }),
+    issueRecoveryActionService: () => ({
+      listActiveForIssues: vi.fn(async () => new Map()),
+    }),
     issueService: () => mockIssueService,
     logActivity: vi.fn(async () => undefined),
     projectService: () => ({
@@ -76,6 +79,15 @@ vi.mock("../services/index.js", async (importOriginal) => {
 
 function createApp() {
   const app = express();
+  const db = {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          orderBy: vi.fn(async () => []),
+        })),
+      })),
+    })),
+  };
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = {
@@ -87,7 +99,7 @@ function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -117,6 +129,50 @@ describe("issue list route routine-execution visibility", () => {
         status: "todo,in_progress,blocked",
         assigneeAgentId: agentId,
         includeRoutineExecutions: true,
+      }),
+    );
+  });
+
+  it("returns 200 for a large project-filtered backlog list that excludes routine executions", async () => {
+    const app = createApp();
+    const largeProjectIssues = Array.from({ length: 1000 }, (_, index) => ({
+      id: `issue-${index}`,
+      companyId: "company-1",
+      projectId: "project-large",
+      title: `Backlog issue ${index}`,
+      description: null,
+      status: "backlog",
+      priority: "medium",
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+      lastActivityAt: new Date("2026-06-01T00:00:00.000Z"),
+      labels: [],
+      labelIds: [],
+      activeRun: null,
+    }));
+    mockIssueService.list.mockResolvedValueOnce(largeProjectIssues);
+
+    const res = await request(app)
+      .get("/api/companies/company-1/issues")
+      .query({
+        status: "backlog",
+        projectId: "project-large",
+        includeRoutineExecutions: "false",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1000);
+    expect(res.body[0]).toMatchObject({
+      id: "issue-0",
+      projectId: "project-large",
+      status: "backlog",
+    });
+    expect(mockIssueService.list).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        status: "backlog",
+        projectId: "project-large",
+        includeRoutineExecutions: false,
       }),
     );
   });

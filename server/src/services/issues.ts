@@ -1287,6 +1287,19 @@ function shouldIncludePluginOperationIssues(filters: IssueFilters | undefined) {
   );
 }
 
+function shouldExcludeRoutineExecutionIssues(filters: IssueFilters | undefined) {
+  return Boolean(
+    !filters?.includeRoutineExecutions &&
+    !filters?.originKind &&
+    !filters?.originKindPrefix &&
+    !filters?.originId,
+  );
+}
+
+function nonRoutineExecutionIssueCondition() {
+  return or(isNull(issues.originKind), ne(issues.originKind, "routine_execution"))!;
+}
+
 /** Named entities commonly emitted in saved issue bodies; unknown `&name;` sequences are left unchanged. */
 const WELL_KNOWN_NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = {
   amp: "&",
@@ -3444,8 +3457,11 @@ async function blockedInboxIssueConditions(
     if (labeledIssueIds.length === 0) return { conditions: [sql<boolean>`false`], contextUserId };
     conditions.push(inArray(issues.id, labeledIssueIds.map((row: { issueId: string }) => row.issueId)));
   }
-  if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
-    conditions.push(ne(issues.originKind, "routine_execution"));
+  if (
+    (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originKindPrefix && !filters?.originId) ||
+    shouldExcludeRoutineExecutionIssues(filters)
+  ) {
+    conditions.push(nonRoutineExecutionIssueCondition());
   }
 
   return { conditions, contextUserId };
@@ -4799,8 +4815,11 @@ export function issueService(db: Db) {
           )!,
         );
       }
-      if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
-        conditions.push(ne(issues.originKind, "routine_execution"));
+      if (
+        (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originKindPrefix && !filters?.originId) ||
+        shouldExcludeRoutineExecutionIssues(filters)
+      ) {
+        conditions.push(nonRoutineExecutionIssueCondition());
       }
       conditions.push(isNull(issues.hiddenAt));
 
@@ -4946,6 +4965,12 @@ export function issueService(db: Db) {
         conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
       }
       if (!shouldIncludePluginOperationIssues(filters)) conditions.push(nonPluginOperationIssueCondition());
+      if (
+        (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originKindPrefix && !filters?.originId) ||
+        shouldExcludeRoutineExecutionIssues(filters)
+      ) {
+        conditions.push(nonRoutineExecutionIssueCondition());
+      }
       const [row] = await db
         .select({ count: sql<number>`count(*)` })
         .from(issues)

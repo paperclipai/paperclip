@@ -4,6 +4,7 @@
 
 ### Patch Changes
 
+- Fix project-filtered issue lists so backlog audits can exclude routine execution issues without 500s while preserving explicit routine filters.
 - Stable release preparation for 0.3.1
 - Updated dependencies
   - @paperclipai/adapter-utils@0.3.1

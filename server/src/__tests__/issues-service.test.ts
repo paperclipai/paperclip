@@ -1523,6 +1523,68 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(advancedIssueIds).toContain(legacyContentMachineOperationIssueId);
   });
 
+  it("excludes routine execution issues from project-filtered backlog lists unless explicitly included", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const backlogIssueId = randomUUID();
+    const routineExecutionIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "CDN+ Infrastructure",
+      status: "in_progress",
+    });
+    await db.insert(issues).values([
+      {
+        id: backlogIssueId,
+        companyId,
+        projectId,
+        title: "Backlog issue",
+        status: "backlog",
+        priority: "medium",
+      },
+      {
+        id: routineExecutionIssueId,
+        companyId,
+        projectId,
+        title: "Routine execution issue",
+        status: "backlog",
+        priority: "medium",
+        originKind: "routine_execution",
+        originId: "routine-1",
+      },
+    ]);
+
+    const defaultProjectIds = (await svc.list(companyId, {
+      status: "backlog",
+      projectId,
+      includeRoutineExecutions: false,
+    })).map((issue) => issue.id);
+    expect(defaultProjectIds).toEqual([backlogIssueId]);
+    await expect(svc.count(companyId, {
+      status: "backlog",
+      projectId,
+      includeRoutineExecutions: false,
+    })).resolves.toBe(1);
+
+    const includedProjectIds = (await svc.list(companyId, {
+      status: "backlog",
+      projectId,
+      includeRoutineExecutions: true,
+    })).map((issue) => issue.id);
+    expect(new Set(includedProjectIds)).toEqual(new Set([backlogIssueId, routineExecutionIssueId]));
+
+    await expect(svc.list(companyId, { originKind: "routine_execution" }))
+      .resolves.toEqual([expect.objectContaining({ id: routineExecutionIssueId })]);
+  });
+
   it("excludes plugin operation issues from unread inbox counts", async () => {
     const companyId = randomUUID();
     const userId = "board-user";
