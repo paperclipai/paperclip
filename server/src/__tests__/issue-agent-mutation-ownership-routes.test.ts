@@ -14,6 +14,7 @@ const recoveryActionId = "77777777-7777-4777-8777-777777777777";
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  checkout: vi.fn(),
   create: vi.fn(),
   createChild: vi.fn(),
   decomposeAcceptedPlan: vi.fn(),
@@ -437,6 +438,13 @@ describe("agent issue mutation checkout ownership", () => {
     mockCompanyService.getById.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
+    mockIssueService.checkout.mockReset();
+    mockIssueService.checkout.mockResolvedValue(makeIssue({
+      status: "in_progress",
+      assigneeAgentId: peerAgentId,
+      checkoutRunId: "66666666-6666-4666-8666-666666666666",
+      executionRunId: "66666666-6666-4666-8666-666666666666",
+    }));
     mockIssueService.create.mockReset();
     mockIssueService.createChild.mockReset();
     mockIssueService.decomposeAcceptedPlan.mockReset();
@@ -1020,6 +1028,61 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("returns a contextual 500 when recovery checkout authorization lookup fails", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockRejectedValue(new Error("database timeout"));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId: peerAgentId, expectedStatuses: ["blocked"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(500);
+    expect(res.body.error).toBe("Failed to verify recovery checkout authorization");
+    expect(mockIssueService.checkout).not.toHaveBeenCalled();
+  });
+
+  it.each(["active", "escalated"])(
+    "allows source-scoped recovery owner checkout when recovery action is %s",
+    async (status) => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+      mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(makeRecoveryAction({ status }));
+
+      const actor = peerActor();
+      const res = await request(await createApp(actor))
+        .post(`/api/issues/${issueId}/checkout`)
+        .send({ agentId: peerAgentId, expectedStatuses: ["blocked"] });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "tasks:assign" }));
+      expect(mockIssueService.checkout).toHaveBeenCalledWith(
+        issueId,
+        peerAgentId,
+        ["blocked"],
+        actor.runId,
+        { allowSourceScopedRecoveryOwner: true },
+      );
+    },
+  );
+
+  it("rejects source-scoped recovery checkout for non-active recovery action status", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(makeRecoveryAction({ status: "resolved" }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action !== "tasks:assign",
+      action: input.action,
+      reason: input.action === "tasks:assign" ? "deny_missing_grant" : "allow_test_default",
+      explanation: input.action === "tasks:assign" ? "Missing assignment grant." : "Allowed by test default.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId: peerAgentId, expectedStatuses: ["blocked"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Missing assignment grant.");
+    expect(mockIssueService.checkout).not.toHaveBeenCalled();
   });
 
   it("denies cross-company agents before comment authorization is evaluated", async () => {

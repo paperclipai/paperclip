@@ -6989,13 +6989,25 @@ export function issueRoutes(
       return;
     }
 
-    const activeRecoveryActionForCheckout = issue.assigneeAgentId !== req.body.agentId
-      ? await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id)
-      : null;
+    let activeRecoveryActionForCheckout: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>> = null;
+    if (issue.assigneeAgentId !== req.body.agentId) {
+      try {
+        activeRecoveryActionForCheckout = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+      } catch (err) {
+        logger.error(
+          { err, issueId: issue.id, companyId: issue.companyId, agentId: req.body.agentId },
+          "failed to load active recovery action for issue checkout authorization",
+        );
+        res.status(500).json({ error: "Failed to verify recovery checkout authorization" });
+        return;
+      }
+    }
     const allowSourceScopedRecoveryOwnerCheckout =
       req.actor.type === "agent" &&
       req.actor.agentId === req.body.agentId &&
-      activeRecoveryActionForCheckout?.sourceIssueId === issue.id &&
+      activeRecoveryActionForCheckout !== null &&
+      activeRecoveryActionForCheckout.sourceIssueId === issue.id &&
+      (activeRecoveryActionForCheckout.status === "active" || activeRecoveryActionForCheckout.status === "escalated") &&
       activeRecoveryActionForCheckout.ownerAgentId === req.body.agentId;
 
     if (issue.assigneeAgentId !== req.body.agentId && !allowSourceScopedRecoveryOwnerCheckout) {

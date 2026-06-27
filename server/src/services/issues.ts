@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, exists, gt, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -49,6 +49,7 @@ import type {
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
+  IssueRecoveryActionStatus,
   IssueWatchdogSummary,
   LowTrustBoundary,
   SuccessfulRunHandoffState,
@@ -103,6 +104,7 @@ import {
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const ACTIVE_RECOVERY_ACTION_STATUSES = ["active", "escalated"] as const satisfies readonly IssueRecoveryActionStatus[];
 const OPEN_ROUTINE_EXECUTION_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
@@ -6809,13 +6811,19 @@ export function issueService(db: Db) {
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
       const activeRecoveryOwnerCondition = options.allowSourceScopedRecoveryOwner
-        ? sql`exists (
-          select 1 from ${issueRecoveryActions}
-          where ${issueRecoveryActions.companyId} = ${issues.companyId}
-            and ${issueRecoveryActions.sourceIssueId} = ${issues.id}
-            and ${issueRecoveryActions.ownerAgentId} = ${agentId}
-            and ${issueRecoveryActions.status} in ('active', 'escalated')
-        )`
+        ? exists(
+          db
+            .select({ id: issueRecoveryActions.id })
+            .from(issueRecoveryActions)
+            .where(
+              and(
+                eq(issueRecoveryActions.companyId, issues.companyId),
+                eq(issueRecoveryActions.sourceIssueId, issues.id),
+                eq(issueRecoveryActions.ownerAgentId, agentId),
+                inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+              ),
+            ),
+        )
         : undefined;
       const updated = await db
         .update(issues)
@@ -6846,6 +6854,13 @@ export function issueService(db: Db) {
         return enriched;
       }
 
+      if (options.allowSourceScopedRecoveryOwner) {
+        logger.warn(
+          { issueId: id, agentId, expectedStatuses },
+          "source-scoped recovery owner checkout update matched no rows",
+        );
+      }
+
       const current = await db
         .select({
           id: issues.id,
@@ -6859,6 +6874,16 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw notFound("Issue not found");
+
+      if (options.allowSourceScopedRecoveryOwner && current.assigneeAgentId !== agentId) {
+        throw conflict("Issue checkout failed — authorization or status mismatch", {
+          issueId: current.id,
+          status: current.status,
+          assigneeAgentId: current.assigneeAgentId,
+          checkoutRunId: current.checkoutRunId,
+          executionRunId: current.executionRunId,
+        });
+      }
 
       if (
         current.assigneeAgentId === agentId &&
