@@ -234,6 +234,42 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("rejects explicit invalid project ids on issue create with a controlled error", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const missingProjectId = randomUUID();
+
+    await expect(svc.create(companyId, {
+      title: "Bad project reference",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      projectId: missingProjectId,
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "Project not found",
+      details: { projectId: missingProjectId },
+    });
+  });
+
+  it("rejects explicit invalid project ids on issue update with a controlled error", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const missingProjectId = randomUUID();
+    const issue = await svc.create(companyId, {
+      title: "Existing issue",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(svc.update(issue.id, {
+      projectId: missingProjectId,
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "Project not found",
+      details: { projectId: missingProjectId },
+    });
+  });
+
   it("rejects invalid ancestor-chain assignees and preserves the existing assignment", async () => {
     const companyId = await seedAssignableAgentCompany();
     const activeAgentId = randomUUID();

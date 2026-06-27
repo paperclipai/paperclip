@@ -3375,6 +3375,101 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
   });
 
+  it("treats raced execution-lock duplicate-key conflicts as an idempotent queued-run claim", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const issueId = randomUUID();
+    const conflictingIssueId = randomUUID();
+    const routineRunOriginId = randomUUID();
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "queued",
+      runId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId,
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Claim raced queued run",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        executionRunId: null,
+        originKind: "routine_execution",
+        originId: routineRunOriginId,
+        originFingerprint: "same-routine-trigger",
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: conflictingIssueId,
+        companyId,
+        title: "Already owns raced execution lock",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        executionRunId: runId,
+        originKind: "routine_execution",
+        originId: routineRunOriginId,
+        originFingerprint: "same-routine-trigger",
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+
+    const heartbeat = heartbeatService(db);
+    await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
+
+    const sourceIssue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.executionRunId).toBeNull();
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).not.toBe("queued");
+  });
+
   it("blocks stranded recovery issues in place instead of creating nested recovery issues", async () => {
     const sourceIssueId = randomUUID();
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({

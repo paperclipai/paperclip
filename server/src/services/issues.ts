@@ -414,6 +414,36 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   return checkoutRunId == null;
 }
 
+function isUniqueConstraintConflict(error: unknown, constraintName: string) {
+  const queue: unknown[] = [error];
+  const messages: string[] = [];
+  let hasUniqueCode = false;
+  let hasConstraint = false;
+
+  for (const candidate of queue) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const typed = candidate as {
+      code?: string;
+      constraint?: string;
+      constraint_name?: string;
+      cause?: unknown;
+      message?: string;
+    };
+    if (typed.code === "23505") hasUniqueCode = true;
+    if (typed.constraint === constraintName || typed.constraint_name === constraintName) hasConstraint = true;
+    if (typed.message) messages.push(typed.message);
+    if (typed.cause) queue.push(typed.cause);
+  }
+
+  const message = messages.join("\n");
+  return (hasUniqueCode || message.includes("duplicate key value violates unique constraint")) &&
+    (hasConstraint || message.includes(constraintName));
+}
+
+function isOpenRoutineExecutionUniqueConflict(error: unknown) {
+  return isUniqueConstraintConflict(error, "issues_open_routine_execution_uq");
+}
+
 export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
@@ -906,6 +936,19 @@ async function getProjectDefaultGoalId(
     .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
     .then((rows) => rows[0] ?? null);
   return row?.goalId ?? null;
+}
+
+async function getProjectRef(
+  db: ProjectGoalReader,
+  companyId: string,
+  projectId: string | null | undefined,
+) {
+  if (!projectId) return null;
+  return db
+    .select({ id: projects.id })
+    .from(projects)
+    .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
 }
 
 async function getWorkspaceInheritanceIssue(
@@ -5084,6 +5127,23 @@ export function issueService(db: Db) {
           const workspace = await assertValidExecutionWorkspace(companyId, null, executionWorkspaceId, tx);
           issueData.projectId = workspace.projectId;
         }
+        // Guard against dangling project references. projectId can be inherited
+        // from a parent issue or workspace whose project row no longer exists.
+        // Validate existence before insert so this returns a controlled error
+        // instead of surfacing the FK violation as a 500.
+        if (issueData.projectId) {
+          const projectExists = await getProjectRef(tx, companyId, issueData.projectId);
+          if (!projectExists) {
+            if (data.projectId) {
+              throw unprocessable("Project not found", { projectId: issueData.projectId });
+            }
+            logger.warn(
+              { companyId, projectId: issueData.projectId },
+              "dropping dangling projectId on issue create: no matching project row (orphaned FK)",
+            );
+            issueData.projectId = null;
+          }
+        }
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
         // Cache the project policy lookup for this insert so the default
         // workspace-settings block does not re-query the project row.
@@ -5333,6 +5393,20 @@ export function issueService(db: Db) {
         nextProjectId = workspace.projectId;
         patch.projectId = workspace.projectId;
       }
+      if (nextProjectId) {
+        const projectExists = await getProjectRef(dbOrTx, existing.companyId, nextProjectId);
+        if (!projectExists) {
+          if (issueData.projectId !== undefined) {
+            throw unprocessable("Project not found", { projectId: nextProjectId });
+          }
+          logger.warn(
+            { companyId: existing.companyId, issueId: existing.id, projectId: nextProjectId },
+            "clearing dangling projectId on issue update: no matching project row (orphaned FK)",
+          );
+          nextProjectId = null;
+          patch.projectId = null;
+        }
+      }
       if (nextProjectWorkspaceId) {
         if (!validatedProjectWorkspace) {
           await assertValidProjectWorkspace(existing.companyId, nextProjectId, nextProjectWorkspaceId);
@@ -5572,27 +5646,37 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
-      const updated = await db
-        .update(issues)
-        .set({
-          assigneeAgentId: agentId,
-          assigneeUserId: null,
+      let updated: typeof issues.$inferSelect | null = null;
+      try {
+        updated = await db
+          .update(issues)
+          .set({
+            assigneeAgentId: agentId,
+            assigneeUserId: null,
+            checkoutRunId,
+            executionRunId: checkoutRunId,
+            status: "in_progress",
+            startedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, id),
+              inArray(issues.status, expectedStatuses),
+              or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+              executionLockCondition,
+            ),
+          )
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      } catch (error) {
+        if (!isOpenRoutineExecutionUniqueConflict(error)) throw error;
+        throw conflict("Issue checkout conflict", {
+          issueId: id,
           checkoutRunId,
-          executionRunId: checkoutRunId,
-          status: "in_progress",
-          startedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.id, id),
-            inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
-            executionLockCondition,
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
+          constraint: "issues_open_routine_execution_uq",
+        });
+      }
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
@@ -5620,24 +5704,34 @@ export function issueService(db: Db) {
         (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
         checkoutRunId
       ) {
-        const adopted = await db
-          .update(issues)
-          .set({
+        let adopted: typeof issues.$inferSelect | null = null;
+        try {
+          adopted = await db
+            .update(issues)
+            .set({
+              checkoutRunId,
+              executionRunId: checkoutRunId,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(issues.id, id),
+                eq(issues.status, "in_progress"),
+                eq(issues.assigneeAgentId, agentId),
+                isNull(issues.checkoutRunId),
+                or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+        } catch (error) {
+          if (!isOpenRoutineExecutionUniqueConflict(error)) throw error;
+          throw conflict("Issue checkout conflict", {
+            issueId: id,
             checkoutRunId,
-            executionRunId: checkoutRunId,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(issues.id, id),
-              eq(issues.status, "in_progress"),
-              eq(issues.assigneeAgentId, agentId),
-              isNull(issues.checkoutRunId),
-              or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
-            ),
-          )
-          .returning()
-          .then((rows) => rows[0] ?? null);
+            constraint: "issues_open_routine_execution_uq",
+          });
+        }
         if (adopted) return adopted;
       }
 

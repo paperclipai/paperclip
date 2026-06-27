@@ -206,6 +206,32 @@ const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
 
+function isUniqueConstraintConflict(error: unknown, constraintName: string) {
+  const queue: unknown[] = [error];
+  const messages: string[] = [];
+  let hasUniqueCode = false;
+  let hasConstraint = false;
+
+  for (const candidate of queue) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const typed = candidate as {
+      code?: string;
+      constraint?: string;
+      constraint_name?: string;
+      cause?: unknown;
+      message?: string;
+    };
+    if (typed.code === "23505") hasUniqueCode = true;
+    if (typed.constraint === constraintName || typed.constraint_name === constraintName) hasConstraint = true;
+    if (typed.message) messages.push(typed.message);
+    if (typed.cause) queue.push(typed.cause);
+  }
+
+  const message = messages.join("\n");
+  return (hasUniqueCode || message.includes("duplicate key value violates unique constraint")) &&
+    (hasConstraint || message.includes(constraintName));
+}
+
 export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   summary: string,
   currentUserRedactionOptions?: CurrentUserRedactionOptions,
@@ -7365,30 +7391,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
 
     // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
-    // not at queue time. Guard is idempotent — safe if called more than once.
+    // not at queue time. Guard is idempotent and safe if called more than once.
     const claimedContext = parseObject(claimed.contextSnapshot);
     const claimedIssueId = readNonEmptyString(claimedContext.issueId);
     const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
     if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
       const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
+      try {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: claimed.id,
+            executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
+            executionLockedAt: claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(
+            and(
+              eq(issues.id, claimedIssueId),
+              eq(issues.companyId, claimed.companyId),
+              // Mention/context runs can touch an issue, but only the current assignee
+              // owns the issue execution lock shown as the active run.
+              eq(issues.assigneeAgentId, claimed.agentId),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+            ),
+          );
+      } catch (error) {
+        // Two concurrent heartbeat-recovery claims can race this conditional
+        // lazy-lock UPDATE: both observe execution_run_id IS NULL and the loser
+        // trips unique constraint issues_open_routine_execution_uq. The stamp is
+        // best-effort and idempotent (another live run already owns the lock), so
+        // treat the duplicate-key as a no-op rather than failing the claim.
+        const isOpenExecutionConflict = isUniqueConstraintConflict(error, "issues_open_routine_execution_uq");
+        if (!isOpenExecutionConflict) throw error;
+        logger.debug(
+          { issueId: claimedIssueId, runId: claimed.id },
+          "skipped lazy execution-lock stamp: concurrent recovery already holds the lock",
         );
+      }
     }
 
     return claimed;

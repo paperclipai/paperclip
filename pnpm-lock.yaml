@@ -96,6 +96,15 @@ importers:
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
+      ws:
+        specifier: ^8.19.0
+        version: 8.21.0
+      zod:
+        specifier: ^3.24.2
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^22.19.21
@@ -120,7 +129,7 @@ importers:
     dependencies:
       '@agentclientprotocol/claude-agent-acp':
         specifier: ^0.48.0
-        version: 0.48.0(@anthropic-ai/sdk@0.81.0(zod@4.3.6))(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))
+        version: 0.48.0(@anthropic-ai/sdk@0.81.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
@@ -8159,9 +8168,6 @@ packages:
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
-  zod@4.3.6:
-    resolution: {integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==}
-
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
@@ -8192,18 +8198,18 @@ snapshots:
 
   '@adobe/css-tools@4.5.0': {}
 
-  '@agentclientprotocol/claude-agent-acp@0.48.0(@anthropic-ai/sdk@0.81.0(zod@4.3.6))(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))':
+  '@agentclientprotocol/claude-agent-acp@0.48.0(@anthropic-ai/sdk@0.81.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))':
     dependencies:
       '@agentclientprotocol/sdk': 0.28.1(zod@3.25.76)
-      '@anthropic-ai/claude-agent-sdk': 0.3.183(@anthropic-ai/sdk@0.81.0(zod@4.3.6))(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))(zod@3.25.76)
+      '@anthropic-ai/claude-agent-sdk': 0.3.183(@anthropic-ai/sdk@0.81.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(zod@3.25.76)
       zod: 3.25.76
     transitivePeerDependencies:
       - '@anthropic-ai/sdk'
       - '@modelcontextprotocol/sdk'
 
-  '@agentclientprotocol/sdk@0.20.0(zod@4.3.6)':
+  '@agentclientprotocol/sdk@0.20.0(zod@4.4.3)':
     dependencies:
-      zod: 4.3.6
+      zod: 4.4.3
 
   '@agentclientprotocol/sdk@0.28.1(zod@3.25.76)':
     dependencies:
@@ -8238,10 +8244,10 @@ snapshots:
   '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.183':
     optional: true
 
-  '@anthropic-ai/claude-agent-sdk@0.3.183(@anthropic-ai/sdk@0.81.0(zod@4.3.6))(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))(zod@3.25.76)':
+  '@anthropic-ai/claude-agent-sdk@0.3.183(@anthropic-ai/sdk@0.81.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))(zod@3.25.76)':
     dependencies:
-      '@anthropic-ai/sdk': 0.81.0(zod@4.3.6)
-      '@modelcontextprotocol/sdk': 1.29.0(zod@4.3.6)
+      '@anthropic-ai/sdk': 0.81.0(zod@4.4.3)
+      '@modelcontextprotocol/sdk': 1.29.0(zod@4.4.3)
       zod: 3.25.76
     optionalDependencies:
       '@anthropic-ai/claude-agent-sdk-darwin-arm64': 0.3.183
@@ -8253,11 +8259,11 @@ snapshots:
       '@anthropic-ai/claude-agent-sdk-win32-arm64': 0.3.183
       '@anthropic-ai/claude-agent-sdk-win32-x64': 0.3.183
 
-  '@anthropic-ai/sdk@0.81.0(zod@4.3.6)':
+  '@anthropic-ai/sdk@0.81.0(zod@4.4.3)':
     dependencies:
       json-schema-to-ts: 3.1.1
     optionalDependencies:
-      zod: 4.3.6
+      zod: 4.4.3
 
   '@asamuzakjp/css-color@5.0.1':
     dependencies:
@@ -10178,7 +10184,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/sdk@1.29.0(zod@4.3.6)':
+  '@modelcontextprotocol/sdk@1.29.0(zod@4.4.3)':
     dependencies:
       '@hono/node-server': 1.19.13(hono@4.12.12)
       ajv: 8.18.0
@@ -10195,8 +10201,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.3.6
-      zod-to-json-schema: 3.25.2(zod@4.3.6)
+      zod: 4.4.3
+      zod-to-json-schema: 3.25.2(zod@4.4.3)
     transitivePeerDependencies:
       - supports-color
 
@@ -12224,11 +12230,11 @@ snapshots:
 
   acpx@0.6.1:
     dependencies:
-      '@agentclientprotocol/sdk': 0.20.0(zod@4.3.6)
+      '@agentclientprotocol/sdk': 0.20.0(zod@4.4.3)
       commander: 14.0.3
       skillflag: 0.1.4
       tsx: 4.22.4
-      zod: 4.3.6
+      zod: 4.4.3
     transitivePeerDependencies:
       - bare-abort-controller
       - bare-buffer
@@ -16182,13 +16188,11 @@ snapshots:
     dependencies:
       zod: 3.25.76
 
-  zod-to-json-schema@3.25.2(zod@4.3.6):
+  zod-to-json-schema@3.25.2(zod@4.4.3):
     dependencies:
-      zod: 4.3.6
+      zod: 4.4.3
 
   zod@3.25.76: {}
-
-  zod@4.3.6: {}
 
   zod@4.4.3: {}
 
