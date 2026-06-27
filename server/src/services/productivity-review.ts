@@ -115,9 +115,16 @@ const REVIEWER_IDENTITY_RE = /\*\*Reviewer:\*\*/;
 // Pre-scan for excessive pipe characters to bound ReDoS surface on
 // untrusted input. Real markdown tables rarely exceed 200 pipe characters;
 // this cheap O(n) guard prevents exponential backtracking in the table regexes.
-const MAX_TABLE_PIPE_CHARS = 200;// Bound: real tables rarely exceed 200 pipes per comment.
+const MAX_TABLE_PIPE_CHARS = 200;
 
 function detectStructuredElements(body: string): boolean {
+  // Non-table checks have no ReDoS risk — run them unconditionally first.
+  if (SEVERITY_BULLET_RE.test(body)) return true;
+  if (REVIEWER_IDENTITY_RE.test(body)) return true;
+
+  // Pre-scan for excessive pipe characters to bound ReDoS surface on
+  // untrusted input. Real markdown tables rarely exceed 200 pipe characters;
+  // this cheap O(n) guard prevents exponential backtracking in the table regexes.
   let pipeCount = 0;
   for (let i = 0; i < body.length; i++) {
     if (body.charCodeAt(i) === 124 /* '|' */) {
@@ -127,8 +134,6 @@ function detectStructuredElements(body: string): boolean {
   }
   if (AC_TABLE_RE.test(body)) return true;
   if (FINDINGS_TABLE_RE.test(body)) return true;
-  if (SEVERITY_BULLET_RE.test(body)) return true;
-  if (REVIEWER_IDENTITY_RE.test(body)) return true;
   return false;
 }
 
