@@ -21,7 +21,9 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
   JSONRPC_VERSION,
@@ -53,6 +55,76 @@ import type {
   InitializeParams,
 } from "@paperclipai/plugin-sdk";
 import { logger } from "../middleware/logger.js";
+
+// ---------------------------------------------------------------------------
+// execArgv hardening
+// ---------------------------------------------------------------------------
+
+/** Node flags whose value is a module path loaded at process startup. */
+const LOADER_EXEC_FLAGS = new Set([
+  "--import",
+  "--loader",
+  "--experimental-loader",
+  "--require",
+]);
+
+function loaderTargetExists(value: string): boolean {
+  let target = value;
+  if (target.startsWith("file://")) {
+    try {
+      target = fileURLToPath(target);
+    } catch {
+      return false;
+    }
+  }
+  return existsSync(target);
+}
+
+/**
+ * Drop loader/import exec flags whose target file no longer exists, re-evaluated
+ * on every (re)spawn. A loader path is typically captured once when the worker
+ * is registered; if that file later vanishes (e.g. an SSH sync-back repoints the
+ * tsx loader symlink at an ephemeral /tmp dir that is then cleaned up), every
+ * autoRestart would otherwise re-fork with the same `--import <missing>` and
+ * crash-loop on ERR_MODULE_NOT_FOUND. Dropping the dead flag lets the worker
+ * spawn without the loader (graceful degradation). (NEO-274)
+ */
+export function sanitizeWorkerExecArgv(
+  argv: readonly string[],
+  onDrop?: (flag: string, value: string) => void,
+): string[] {
+  const result: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    // Two-token form: "--import" "<path>"
+    if (LOADER_EXEC_FLAGS.has(arg)) {
+      const value = argv[i + 1];
+      if (value !== undefined && !value.startsWith("-")) {
+        if (!loaderTargetExists(value)) {
+          onDrop?.(arg, value);
+          i++; // skip the consumed value token
+          continue;
+        }
+        result.push(arg, value);
+        i++;
+        continue;
+      }
+      result.push(arg);
+      continue;
+    }
+    // Inline form: "--import=<path>"
+    const eq = arg.indexOf("=");
+    if (eq > 0 && LOADER_EXEC_FLAGS.has(arg.slice(0, eq))) {
+      const value = arg.slice(eq + 1);
+      if (!loaderTargetExists(value)) {
+        onDrop?.(arg.slice(0, eq), value);
+        continue;
+      }
+    }
+    result.push(arg);
+  }
+  return result;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -727,9 +799,18 @@ export function createPluginWorkerHandle(
       TZ: process.env.TZ ?? "UTC",
     };
 
+    const execArgv = sanitizeWorkerExecArgv(
+      options.execArgv ?? [],
+      (flag, value) =>
+        log.warn(
+          { flag, value },
+          "dropping plugin worker exec flag: loader target missing (NEO-274)",
+        ),
+    );
+
     const child = fork(options.entrypointPath, [], {
       stdio: ["pipe", "pipe", "pipe", "ipc"],
-      execArgv: options.execArgv ?? [],
+      execArgv,
       env: workerEnv,
       // Don't let the child keep the parent alive
       detached: false,
