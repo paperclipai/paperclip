@@ -112,7 +112,19 @@ const FINDINGS_TABLE_RE = /\|.{1,80}\|.{1,80}(?:\|.*?)*\|[\s\S]*?\|[-\s| :]+\|[\
 const SEVERITY_BULLET_RE = /(?:[-*+])\s+\*\*(?:CRITICAL|HIGH|MEDIUM|LOW)\*\*/;
 const REVIEWER_IDENTITY_RE = /\*\*Reviewer:\*\*/;
 
+// Pre-scan for excessive pipe characters to bound ReDoS surface on
+// untrusted input. Real markdown tables rarely exceed 200 pipe characters;
+// this cheap O(n) guard prevents exponential backtracking in the table regexes.
+const MAX_TABLE_PIPE_CHARS = 200;
+
 function detectStructuredElements(body: string): boolean {
+  let pipeCount = 0;
+  for (let i = 0; i < body.length; i++) {
+    if (body.charCodeAt(i) === 124 /* '|' */) {
+      pipeCount++;
+      if (pipeCount > MAX_TABLE_PIPE_CHARS) return false;
+    }
+  }
   if (AC_TABLE_RE.test(body)) return true;
   if (FINDINGS_TABLE_RE.test(body)) return true;
   if (SEVERITY_BULLET_RE.test(body)) return true;
