@@ -29,6 +29,16 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - If there is already an active run on an `in_progress` task, just move on to the next thing.
 - If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize that task.
 
+## 4a. Goal Anchors -- Shape vs Pursue
+
+Some assigned issues are **goal anchors**, not execution tasks: a goal's standing conversation (title `Goal chat`, with `goalId` set). Engage these by the **goal's status** -- `GET /api/goals/{goalId}` to read it:
+
+- **`planned`** (a captured idea): run the **initial shaping conversation** -- discuss, reframe, and pressure-test the idea with the board/user toward a decision. The outcome is **activate or cancel**: when it's ready, propose activating it (`PATCH /api/goals/{goalId}` to `active`) or, if it isn't worth pursuing, cancelling it. Do *not* drive the anchor to `done`.
+- **`active`** (being pursued): **pursue it** -- break the goal into tasks (subtasks with `parentId` = the anchor and `goalId` set, in the goal's linked project), and drive them. Keep the anchor `in_progress`.
+- **`achieved` / `cancelled`** (terminal): the anchor is unassigned; no action.
+
+A goal anchor is **never** marked `done` to "complete" it -- it is the goal's living conversation. It closes only when the goal itself reaches `achieved` or `cancelled`.
+
 ## 5. Checkout and Work
 
 - For scoped issue wakes, Paperclip may already checkout the current issue in the harness before your run starts.
