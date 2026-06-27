@@ -3174,9 +3174,9 @@
       "noActiveSubTasks": "No active sub-tasks",
       "allSubTasksDone": "All sub-tasks done",
       "noActionableSubTasks": "No actionable sub-tasks",
-      "showingUpTo": "Showing up to",
+      "showingUpTo": "Showing up to ",
       "matchesRefineTheSearchToNarrowFurther": "matches. Refine the search to narrow further.",
-      "someBoardColumnsAreShowingUpTo": "Some board columns are showing up to",
+      "someBoardColumnsAreShowingUpTo": "Some board columns are showing up to ",
       "tasksRefineFiltersOrSearchToRevealTheRest": "tasks. Refine filters or search to reveal the rest.",
       "needsNextStep": "Needs next step",
       "noAssignee": "No assignee"

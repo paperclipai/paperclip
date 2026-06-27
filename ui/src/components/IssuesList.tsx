@@ -1605,11 +1605,11 @@ export function IssuesList({
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {!searchWithinLoadedIssues && normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
-          {t("issueslist.text.showingUpTo")}{ISSUE_SEARCH_RESULT_LIMIT} {t("issueslist.text.matchesRefineTheSearchToNarrowFurther")}</p>
+          {t("issueslist.text.showingUpTo")} {ISSUE_SEARCH_RESULT_LIMIT} {t("issueslist.text.matchesRefineTheSearchToNarrowFurther")}</p>
       )}
       {boardColumnLimitReached && (
         <p className="text-xs text-muted-foreground">
-          {t("issueslist.text.someBoardColumnsAreShowingUpTo")}{ISSUE_BOARD_COLUMN_RESULT_LIMIT} {t("issueslist.text.tasksRefineFiltersOrSearchToRevealTheRest")}</p>
+          {t("issueslist.text.someBoardColumnsAreShowingUpTo")} {ISSUE_BOARD_COLUMN_RESULT_LIMIT} {t("issueslist.text.tasksRefineFiltersOrSearchToRevealTheRest")}</p>
       )}
       {!isLoading && !externalObjectFilterLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
