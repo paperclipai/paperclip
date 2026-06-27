@@ -5640,6 +5640,9 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
     if (typeof req.body?.comment === "string" && req.body.comment.length > 0) {
       const btcGuardResult = await enforceBtcPrefixTokens({
         text: req.body.comment,
@@ -5654,9 +5657,6 @@ export function issueRoutes(
         return;
       }
     }
-    assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
-    if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
@@ -7497,6 +7497,8 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
+    if (!commentAccessDecision) return;
     if (typeof req.body?.body === "string" && req.body.body.length > 0) {
       const btcGuardResult = await enforceBtcPrefixTokens({
         text: req.body.body,
@@ -7511,8 +7513,6 @@ export function issueRoutes(
         return;
       }
     }
-    const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
-    if (!commentAccessDecision) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
