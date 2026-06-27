@@ -7006,6 +7006,7 @@ export function issueRoutes(
       req.actor.type === "agent" &&
       req.actor.agentId === req.body.agentId &&
       activeRecoveryActionForCheckout !== null &&
+      // Keep this belt-and-suspenders source check alongside the service-level atomic revalidation.
       activeRecoveryActionForCheckout.sourceIssueId === issue.id &&
       (activeRecoveryActionForCheckout.status === "active" || activeRecoveryActionForCheckout.status === "escalated") &&
       activeRecoveryActionForCheckout.ownerAgentId === req.body.agentId;
