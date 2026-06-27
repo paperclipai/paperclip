@@ -166,6 +166,7 @@ describe("heartbeat run resource subscriptions", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     await vi.advanceTimersByTimeAsync(1_000);
 
+    // Initial validation plus one failed poll; the second timer tick should not run after cleanup.
     expect(readSnapshot).toHaveBeenCalledTimes(2);
     expect(onError).toHaveBeenCalledWith(expect.any(Error), { uri: "paperclip://heartbeat-runs/run-1/log" });
     expect(server.server.sendResourceUpdated).not.toHaveBeenCalled();
