@@ -80,16 +80,34 @@ autoCloseOnResolve: false
 ownerMap:
   class:
     paperclip_claude_k8s: support@blockcast.net
+    paperclip_data_volume: support@blockcast.net
+    physical_infra_proxmox: support@blockcast.net
+    physical_infra_ceph: support@blockcast.net
+    physical_infra_bmc: support@blockcast.net
+    physical_infra_disk: support@blockcast.net
   team:
     platform:   alice@blockcast.net
     networking: ned@blockcast.net
 ```
 
-The bundled Blockcast plugin ships `class.paperclip_claude_k8s -> support@blockcast.net`
-as a default route so `ClaudeK8sConcurrentRunBlockedRate` alerts remain owned after
-a fresh deploy or plugin reinstall. Instance config is merged on top, so operators
-can override that route or add more routes in the settings UI without losing the
-default.
+The bundled Blockcast plugin ships these `class` routes as defaults so fresh
+deploys and plugin reinstalls keep alerts owned instead of unassigned. The
+physical infrastructure routes were added for BLO-12202:
+
+| Class | Default owner | Escalation policy |
+|-------|---------------|-------------------|
+| `paperclip_claude_k8s` | `support@blockcast.net` | Paperclip platform incident support queue. |
+| `paperclip_data_volume` | `support@blockcast.net` | Paperclip shared storage support queue. |
+| `physical_infra_proxmox` | `support@blockcast.net` | Physical infrastructure operations support queue for Proxmox node/API/cluster alerts. |
+| `physical_infra_ceph` | `support@blockcast.net` | Physical infrastructure operations support queue for Ceph health/quorum/OSD alerts. |
+| `physical_infra_bmc` | `support@blockcast.net` | Physical infrastructure operations support queue for iDRAC/BMC sensor and reachability alerts. |
+| `physical_infra_disk` | `support@blockcast.net` | Physical infrastructure operations support queue for SMART/NVMe/RAID/disk-wear alerts. |
+
+Alert rules must set `labels.class` to one of these exact values for the
+shipped map to match. Instance config is merged on top, so operators can
+override any shipped route or add more routes in the settings UI without
+losing the default map for other classes. Use that override path when a site
+has a narrower physical-infra owner than the broad support queue.
 
 ### Owner resolution chain (§7.7)
 

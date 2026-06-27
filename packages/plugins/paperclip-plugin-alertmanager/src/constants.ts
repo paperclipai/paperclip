@@ -38,6 +38,13 @@ export const DEFAULT_OWNER_MAP: OwnerMap = {
     // CephFS PVC (PaperclipDataVolumeNearlyFull/Critical). Routes to support
     // so a filling shared HOME is owned, not unassigned.
     paperclip_data_volume: "support@blockcast.net",
+    // BLO-12202: physical infrastructure alert classes. Keep the shipped
+    // default broad so fresh installs route to the operational support queue;
+    // instance ownerMap config can override any class to a narrower queue.
+    physical_infra_proxmox: "support@blockcast.net",
+    physical_infra_ceph: "support@blockcast.net",
+    physical_infra_bmc: "support@blockcast.net",
+    physical_infra_disk: "support@blockcast.net",
   },
 };
 

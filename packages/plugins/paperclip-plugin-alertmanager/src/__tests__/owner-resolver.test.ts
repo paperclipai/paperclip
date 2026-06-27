@@ -117,6 +117,27 @@ describe("resolveOwnerEmail — pure resolution chain", () => {
     });
   });
 
+  it.each([
+    ["physical_infra_proxmox", "ProxmoxApiDown"],
+    ["physical_infra_ceph", "CephHealthCritical"],
+    ["physical_infra_bmc", "BmcSensorCritical"],
+    ["physical_infra_disk", "PhysicalDiskWearCritical"],
+  ])("ships a durable default route for %s alert class", (className, alertname) => {
+    const a = alert({
+      labels: {
+        alertname,
+        severity: "critical",
+        class: className,
+      },
+    });
+
+    expect(resolveOwnerEmail(a, DEFAULT_OWNER_MAP)).toEqual({
+      email: "support@blockcast.net",
+      agentId: null,
+      source: "owner-map",
+    });
+  });
+
   it("falls back to annotation override when neither label nor owner-map matches", () => {
     const a = alert({
       labels: { alertname: "X", severity: "info" },
