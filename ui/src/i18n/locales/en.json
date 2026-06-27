@@ -3136,39 +3136,6 @@
       "explainWhyThisSubtreeControlIsBeingApplied": "Explain why this subtree control is being applied..."
     }
   },
-  "issueproperties": {
-    "errors": {
-      "githubPullRequest": "Github Pull Request",
-      "githubIssue": "Github Issue",
-      "notScheduled": "Not scheduled",
-      "pendingSchedule": "Pending schedule"
-    },
-    "text": {
-      "remove": "Remove",
-      "asABlockerForThisTask": "as a blocker for this task.",
-      "removeBlocker": "Remove blocker",
-      "usesTheAgentAposSConfiguredCheapProfile": "· uses the agent&apos;s configured cheap profile",
-      "fallsBackToThePrimaryModelIfNoCheapProfileIsConfig": "· falls back to the primary model if no cheap profile is configured",
-      "enableChromeChrome": "Enable Chrome (--chrome)",
-      "clearAdapterOptions": "Clear adapter options",
-      "watchdogTask": "Watchdog task:",
-      "retryNow": "Retry now",
-      "assignToMe": "Assign to me",
-      "noParent": "No parent",
-      "noBlockers": "No blockers",
-      "addBlocker": "Add blocker",
-      "addSubTask": "Add sub-task",
-      "viewWorkspace": "View workspace"
-    },
-    "placeholders": {
-      "whatShouldTheWatchdogWatchForAndHowShouldItKeepWor": "What should the watchdog watch for and how should it keep work moving?"
-    },
-    "labelsJsx": {
-      "addLabel": "Add label",
-      "clearAdapterOptions": "Clear adapter options",
-      "openWatchdogTask": "Open watchdog task"
-    }
-  },
   "issueslist": {
     "text": {
       "noActiveSubTasks": "No active sub-tasks",

@@ -3136,39 +3136,6 @@
       "explainWhyThisSubtreeControlIsBeingApplied": "说明为什么应用此子树控制..."
     }
   },
-  "issueproperties": {
-    "errors": {
-      "githubPullRequest": "GitHub Pull Request",
-      "githubIssue": "GitHub Issue",
-      "notScheduled": "未调度",
-      "pendingSchedule": "等待调度"
-    },
-    "text": {
-      "remove": "移除",
-      "asABlockerForThisTask": "作为此任务的阻塞项。",
-      "removeBlocker": "移除阻塞项",
-      "usesTheAgentAposSConfiguredCheapProfile": "· 使用智能体配置的经济模型",
-      "fallsBackToThePrimaryModelIfNoCheapProfileIsConfig": "· 如未配置经济模型则回退到主模型",
-      "enableChromeChrome": "启用 Chrome (--chrome)",
-      "clearAdapterOptions": "清除适配器选项",
-      "watchdogTask": "看门狗任务:",
-      "retryNow": "立即重试",
-      "assignToMe": "分配给我",
-      "noParent": "无父任务",
-      "noBlockers": "无阻塞项",
-      "addBlocker": "添加阻塞项",
-      "addSubTask": "添加子任务",
-      "viewWorkspace": "查看工作区"
-    },
-    "placeholders": {
-      "whatShouldTheWatchdogWatchForAndHowShouldItKeepWor": "看门狗应监视什么?如何保持工作推进?"
-    },
-    "labelsJsx": {
-      "addLabel": "添加标签",
-      "clearAdapterOptions": "清除适配器选项",
-      "openWatchdogTask": "打开看门狗任务"
-    }
-  },
   "issueslist": {
     "text": {
       "noActiveSubTasks": "无活跃子任务",
