@@ -3141,9 +3141,9 @@
       "noActiveSubTasks": "无活跃子任务",
       "allSubTasksDone": "所有子任务已完成",
       "noActionableSubTasks": "无可操作的子任务",
-      "showingUpTo": "最多显示 ",
+      "showingUpTo": "最多显示",
       "matchesRefineTheSearchToNarrowFurther": "个匹配项。优化搜索以进一步缩小范围。",
-      "someBoardColumnsAreShowingUpTo": "部分看板列最多显示 ",
+      "someBoardColumnsAreShowingUpTo": "部分看板列最多显示",
       "tasksRefineFiltersOrSearchToRevealTheRest": "个任务。优化筛选或搜索以显示其余。",
       "needsNextStep": "需要下一步",
       "noAssignee": "无负责人"

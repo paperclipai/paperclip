@@ -3141,9 +3141,9 @@
       "noActiveSubTasks": "No active sub-tasks",
       "allSubTasksDone": "All sub-tasks done",
       "noActionableSubTasks": "No actionable sub-tasks",
-      "showingUpTo": "Showing up to",
+      "showingUpTo": "最多顯示",
       "matchesRefineTheSearchToNarrowFurther": "matches. Refine the search to narrow further.",
-      "someBoardColumnsAreShowingUpTo": "Some board columns are showing up to",
+      "someBoardColumnsAreShowingUpTo": "部分看板列最多顯示",
       "tasksRefineFiltersOrSearchToRevealTheRest": "tasks. Refine filters or search to reveal the rest.",
       "needsNextStep": "Needs next step",
       "noAssignee": "No assignee"
