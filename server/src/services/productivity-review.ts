@@ -115,7 +115,7 @@ const REVIEWER_IDENTITY_RE = /\*\*Reviewer:\*\*/;
 // Pre-scan for excessive pipe characters to bound ReDoS surface on
 // untrusted input. Real markdown tables rarely exceed 200 pipe characters;
 // this cheap O(n) guard prevents exponential backtracking in the table regexes.
-const MAX_TABLE_PIPE_CHARS = 200;
+const MAX_TABLE_PIPE_CHARS = 200;// Bound: real tables rarely exceed 200 pipes per comment.
 
 function detectStructuredElements(body: string): boolean {
   let pipeCount = 0;
