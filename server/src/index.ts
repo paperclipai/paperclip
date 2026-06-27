@@ -1053,7 +1053,16 @@ export async function startServer(): Promise<StartedServer> {
         clearInterval(interval);
       }
 
-      await new Promise<void>((resolveClose) => {
+      // Stop accepting new connections immediately. server.close() refuses new
+      // connections synchronously; the callback only fires once existing
+      // connections drain, which can block indefinitely on long-running
+      // requests (long-polls, WebSockets). Capture the close promise here —
+      // before the heartbeat drain — so:
+      //   1. The drain always runs even if a long-lived request is in flight
+      //      (otherwise SIGKILL from the process manager skips it).
+      //   2. No new HTTP request can come in between drain completion and
+      //      server.close() to spawn a fresh heartbeat run we'd miss.
+      const serverClosed = new Promise<void>((resolveClose) => {
         server.close(() => resolveClose());
       });
 
@@ -1069,6 +1078,8 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err, signal }, "failed to drain heartbeat runs during shutdown");
         }
       }
+
+      await serverClosed;
 
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
