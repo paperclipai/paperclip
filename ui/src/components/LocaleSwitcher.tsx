@@ -10,7 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
-import { LOCALE_NATIVE_NAMES, getLocale, setLocale, supportedLocales } from "@/i18n";
+import { LOCALE_NATIVE_NAMES, setLocale, supportedLocales, useTranslation } from "@/i18n";
 
 import { t } from "@/i18n";
 type LocaleSwitcherVariant = "icon" | "menu-action";
@@ -41,7 +41,8 @@ const MENU_ACTION_DESCRIPTION = "Choose the interface language.";
  * inside the in-app account menu (menu-action).
  */
 export function LocaleSwitcher({ className, variant = "icon", onAfterSelect }: LocaleSwitcherProps) {
-  const current = getLocale();
+  const { i18n } = useTranslation();
+  const current = i18n.language;
   const label = LOCALE_NATIVE_NAMES[current] ?? current;
 
   function handleSelect(locale: string) {

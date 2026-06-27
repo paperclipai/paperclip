@@ -237,7 +237,13 @@
   },
   "agents": {
     "emptyCreate": "创建你的第一个智能体以开始。",
-    "runHeartbeat": "运行心跳"
+    "runHeartbeat": "运行心跳",
+    "text": {
+      "runHeartbeat": "Run Heartbeat"
+    },
+    "aria": {
+      "invalidReportingChain": "Invalid reporting chain"
+    }
   },
   "goals": {
     "empty": "暂无目标。"
@@ -1942,7 +1948,10 @@
       "loadingRevisions": "正在加载历史版本……",
       "newDocument": "新建文档",
       "noRevisionsYet": "尚无历史版本",
-      "outOfDate": "已过期"
+      "outOfDate": "已过期",
+      "revisionHistory": "Revision history",
+      "currentRevision": "Current",
+      "updated": "updated"
     },
     "labelsJsx": {
       "locked": "已锁定文档"

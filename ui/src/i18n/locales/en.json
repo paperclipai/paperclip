@@ -211,7 +211,13 @@
   },
   "agents": {
     "emptyCreate": "Create your first agent to get started.",
-    "runHeartbeat": "Run Heartbeat"
+    "runHeartbeat": "Run Heartbeat",
+    "text": {
+      "runHeartbeat": "Run Heartbeat"
+    },
+    "aria": {
+      "invalidReportingChain": "Invalid reporting chain"
+    }
   },
   "command": {
     "placeholder": "Search tasks, agents, projects...",
@@ -1942,7 +1948,10 @@
       "loadingRevisions": "Loading revisions...",
       "newDocument": "New document",
       "noRevisionsYet": "No revisions yet",
-      "outOfDate": "Out of date"
+      "outOfDate": "Out of date",
+      "revisionHistory": "Revision history",
+      "currentRevision": "Current",
+      "updated": "updated"
     },
     "labelsJsx": {
       "locked": "Locked document"

@@ -237,7 +237,13 @@
   },
   "agents": {
     "emptyCreate": "建立你的第一個智慧代理以開始。",
-    "runHeartbeat": "執行心跳"
+    "runHeartbeat": "執行心跳",
+    "text": {
+      "runHeartbeat": "Run Heartbeat"
+    },
+    "aria": {
+      "invalidReportingChain": "Invalid reporting chain"
+    }
   },
   "goals": {
     "empty": "暫無目標。"
@@ -1942,7 +1948,10 @@
       "loadingRevisions": "正在載入歷史版本……",
       "newDocument": "新建文件",
       "noRevisionsYet": "尚無歷史版本",
-      "outOfDate": "已過期"
+      "outOfDate": "已過期",
+      "revisionHistory": "Revision history",
+      "currentRevision": "Current",
+      "updated": "updated"
     },
     "labelsJsx": {
       "locked": "已鎖定文件"

@@ -290,7 +290,7 @@ export function Agents() {
           resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "text-foreground/55" : "",
         )}
         leading={hasInvalidOrgChain ? (
-          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
+          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label={t("agents.aria.invalidReportingChain")} />
         ) : (
           <AgentStatusCapsule status={agent.status} />
         )}
@@ -339,7 +339,7 @@ export function Agents() {
               <AgentActionButtons
                 agent={agent}
                 companyId={selectedCompanyId}
-                runLabel="Run Heartbeat"
+                runLabel={t("agents.text.runHeartbeat")}
                 showStatus={false}
               />
             </div>
@@ -528,7 +528,7 @@ function OrgTreeNode({
         )}
       >
         {hasInvalidOrgChain ? (
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label={t("agents.aria.invalidReportingChain")} />
         ) : (
           <AgentStatusCapsule status={node.status} />
         )}

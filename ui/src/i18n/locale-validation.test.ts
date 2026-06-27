@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { t, i18n } from ".";
 import en from "./locales/en.json";
 import { localeMessages } from "./locales";
@@ -6,7 +6,13 @@ import { validateLocaleMessages } from "./locale-validation";
 
 describe("locale validation", () => {
   // Pin English so resolution assertions hold regardless of the ambient system locale picked up by detection.
-  i18n.changeLanguage("en");
+  const previousLanguage = i18n.language;
+  beforeAll(() => {
+    i18n.changeLanguage("en");
+  });
+  afterAll(() => {
+    i18n.changeLanguage(previousLanguage);
+  });
 
   it("resolves English messages with key and default fallbacks", () => {
     expect(t("app.noCompanies.title")).toBe(en.app.noCompanies.title);
