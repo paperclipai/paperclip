@@ -194,6 +194,62 @@ describe("normalizeAgentDefaultsForJoin (hermes_gateway)", () => {
       ]),
     );
   });
+
+  it("maps the default Hermes dashboard root to the API base path", () => {
+    const normalized = normalizeAgentDefaultsForJoin({
+      adapterType: "hermes_gateway",
+      defaultsPayload: {
+        apiBaseUrl: "http://127.0.0.1:9119",
+        apiKey: "hermes-key-1234567890",
+      },
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      bindHost: "127.0.0.1",
+      allowedHostnames: [],
+    });
+
+    expect(normalized.fatalErrors).toEqual([]);
+    expect(normalized.normalized?.apiBaseUrl).toBe("http://127.0.0.1:9119/api");
+    expect(normalized.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "hermes_gateway_dashboard_root_mapped",
+          level: "info",
+          hint: expect.stringContaining("/api/v1/runs"),
+        }),
+        expect.objectContaining({
+          code: "hermes_gateway_api_base_url_configured",
+          message: "Hermes gateway endpoint set to http://127.0.0.1:9119/api",
+        }),
+      ]),
+    );
+  });
+
+  it("maps the default Hermes dashboard chat URL to the API base path", () => {
+    const normalized = normalizeAgentDefaultsForJoin({
+      adapterType: "hermes_gateway",
+      defaultsPayload: {
+        apiBaseUrl: "http://127.0.0.1:9119/chat",
+        apiKey: "hermes-key-1234567890",
+      },
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      bindHost: "127.0.0.1",
+      allowedHostnames: [],
+    });
+
+    expect(normalized.fatalErrors).toEqual([]);
+    expect(normalized.normalized?.apiBaseUrl).toBe("http://127.0.0.1:9119/api");
+    expect(normalized.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "hermes_gateway_dashboard_root_mapped",
+          level: "info",
+          hint: expect.stringContaining("/api/v1/runs"),
+        }),
+      ]),
+    );
+  });
 });
 
 describeEmbeddedPostgres("prepareAgentDefaultsPayloadForJoinPersistence (hermes_gateway)", () => {

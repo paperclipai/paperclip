@@ -128,10 +128,17 @@ Then create an agent with adapter type `hermes_gateway`:
     "apiKey": "<same-value-as-API_SERVER_KEY>",
     "paperclipApiUrl": "http://127.0.0.1:3100",
     "sessionKeyStrategy": "issue",
-    "timeoutSec": 120
+    "timeoutSec": 600
   }
 }
 ```
+
+If the URL you have is the default Hermes dashboard at
+`http://127.0.0.1:9119` or the default chat URL at
+`http://127.0.0.1:9119/chat`, Paperclip maps it to
+`http://127.0.0.1:9119/api` before calling Hermes API routes. `/chat` and the
+dashboard root are browser UI routes; Paperclip tests `/api/health` and starts
+runs with `/api/v1/runs` after mapping them to the API base.
 
 This mode does not start Hermes. It creates runs with `POST /v1/runs`, streams
 Hermes events with SSE, polls run status as a fallback, and stops timed-out runs

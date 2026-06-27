@@ -1167,7 +1167,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {/* Adapter-specific fields are rendered inside Permissions & Configuration */}
+          {!isLocal && <uiAdapter.ConfigFields {...adapterFieldProps} />}
+
+          {/* Local adapter-specific fields are rendered inside Permissions & Configuration */}
         </div>
 
       </div>

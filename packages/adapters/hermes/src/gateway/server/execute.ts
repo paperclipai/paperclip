@@ -84,6 +84,8 @@ const TERMINAL_STATUSES = new Set([
 
 const FAILURE_STATUSES = new Set(["failed", "error"]);
 const CANCELLED_STATUSES = new Set(["cancelled", "canceled", "stopped", "interrupted"]);
+const DEFAULT_HERMES_DASHBOARD_PORT = "9119";
+const HERMES_DASHBOARD_API_PATHS = new Set(["", "/", "/chat"]);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -118,7 +120,15 @@ function normalizeBaseUrl(value: string): URL | null {
   try {
     const url = new URL(value);
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    url.pathname = url.pathname.replace(/\/+$/, "");
+    const normalizedPath = url.pathname.replace(/\/+$/, "") || "/";
+    if (
+      url.port === DEFAULT_HERMES_DASHBOARD_PORT &&
+      HERMES_DASHBOARD_API_PATHS.has(normalizedPath)
+    ) {
+      url.pathname = "/api";
+    } else {
+      url.pathname = url.pathname.replace(/\/+$/, "");
+    }
     url.search = "";
     url.hash = "";
     return url;
@@ -323,13 +333,24 @@ function classifyHttpError(status: number): { code: string; family: AdapterExecu
   return { code: "hermes_gateway_protocol_error", family: null };
 }
 
+function fetchFailureMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const cause = err instanceof Error ? (err as { cause?: unknown }).cause : null;
+  if (!cause || typeof cause !== "object") return message;
+
+  const causeRecord = cause as { code?: unknown; message?: unknown };
+  const causeMessage = typeof causeRecord.message === "string" ? causeRecord.message : "";
+  const causeCode = typeof causeRecord.code === "string" ? causeRecord.code : "";
+  if (!causeMessage || causeMessage === message) return causeCode ? `${message} (${causeCode})` : message;
+  return causeCode ? `${message} (${causeCode}: ${causeMessage})` : `${message} (${causeMessage})`;
+}
+
 async function fetchJson(input: RequestInfo | URL, init: RequestInit): Promise<unknown> {
   let response: Response;
   try {
     response = await fetch(input, init);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    const fetchErr = new Error(`Hermes gateway request failed: ${message}`) as HermesHttpError;
+    const fetchErr = new Error(`Hermes gateway request failed: ${fetchFailureMessage(err)}`) as HermesHttpError;
     fetchErr.code = "hermes_gateway_connect_failed";
     throw fetchErr;
   }
@@ -716,6 +737,9 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
   const hermesError = err as HermesHttpError;
   const code = hermesError.code ?? "hermes_gateway_protocol_error";
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
+  const errorMessage = code === "hermes_gateway_auth_failed"
+    ? `${redactErrorMessage(err, redactText)}. Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway.`
+    : redactErrorMessage(err, redactText);
   return {
     exitCode: 1,
     signal: null,
@@ -723,7 +747,7 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
     errorCode: code,
     errorFamily: classified?.family ?? (code === "hermes_gateway_connect_failed" ? "transient_upstream" : null),
     retryNotBefore: hermesError.retryNotBefore ?? null,
-    errorMessage: redactErrorMessage(err, redactText),
+    errorMessage,
     errorMeta: {
       ...(hermesError.status ? { status: hermesError.status } : {}),
       ...(hermesError.body ? { body: redactForLog(hermesError.body, [], 0, redactText) as Record<string, unknown> } : {}),
@@ -809,11 +833,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     runHeaders["X-Hermes-Session-Key"],
   ]);
   const body = buildRunBody(ctx, sessionKey);
+  const createRunUrl = apiUrl(baseUrl, "/v1/runs");
 
   await ctx.onMeta?.({
     adapterType: ADAPTER_TYPE,
     command: "POST /v1/runs",
-    commandArgs: [baseUrl.origin, "/v1/runs"],
+    commandArgs: [createRunUrl],
     context: {
       runId: ctx.runId,
       timeoutSec,
@@ -822,12 +847,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       hasSessionKey: Boolean(sessionKey),
     },
   });
-  await ctx.onLog("stdout", `[hermes-gateway] creating run at ${baseUrl.origin}/v1/runs (timeout=${timeoutSec}s, session=${strategy})\n`);
+  await ctx.onLog("stdout", `[hermes-gateway] creating run at ${createRunUrl} (timeout=${timeoutSec}s, session=${strategy})\n`);
   await ctx.onLog("stdout", `[hermes-gateway] request headers (redacted): ${stringifyForLog(redactForLog(runHeaders, [], 0, redactText), 3_000)}\n`);
 
   let runId: string | null = null;
   try {
-    const created = await fetchJson(apiUrl(baseUrl, "/v1/runs"), {
+    const created = await fetchJson(createRunUrl, {
       method: "POST",
       headers: runHeaders,
       body: JSON.stringify(body),
