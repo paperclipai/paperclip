@@ -6748,7 +6748,13 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
-    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+    checkout: async (
+      id: string,
+      agentId: string,
+      expectedStatuses: string[],
+      checkoutRunId: string | null,
+      options: { allowSourceScopedRecoveryOwner?: boolean } = {},
+    ) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -6802,6 +6808,15 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
+      const activeRecoveryOwnerCondition = options.allowSourceScopedRecoveryOwner
+        ? sql`exists (
+          select 1 from ${issueRecoveryActions}
+          where ${issueRecoveryActions.companyId} = ${issues.companyId}
+            and ${issueRecoveryActions.sourceIssueId} = ${issues.id}
+            and ${issueRecoveryActions.ownerAgentId} = ${agentId}
+            and ${issueRecoveryActions.status} in ('active', 'escalated')
+        )`
+        : undefined;
       const updated = await db
         .update(issues)
         .set({
@@ -6817,7 +6832,9 @@ export function issueService(db: Db) {
           and(
             eq(issues.id, id),
             inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+            activeRecoveryOwnerCondition
+              ? or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition, activeRecoveryOwnerCondition)
+              : or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,
           ),
         )

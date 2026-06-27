@@ -16,6 +16,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueComments,
+  issueRecoveryActions,
   issueThreadInteractions,
   issueInboxArchives,
   issueApprovals,
@@ -41,6 +42,7 @@ import {
   issueService,
   parseExecutiveHoldMarkerTimestamp,
 } from "../services/issues.js";
+import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -254,6 +256,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
   afterEach(async () => {
     await db.delete(issueComments);
+    await db.delete(issueRecoveryActions);
     await db.delete(issueRelations);
     await db.delete(issueDocuments);
     await db.delete(issueInboxArchives);
@@ -411,6 +414,89 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       assigneeAgentId: null,
       status: "todo",
     });
+  });
+
+  it("lets an active source-scoped recovery owner checkout the source issue", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const assigneeAgentId = randomUUID();
+    const recoveryOwnerAgentId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, { id: assigneeAgentId, name: "BlockedCoder" }),
+      agentRow(companyId, { id: recoveryOwnerAgentId, name: "RecoveryOwner" }),
+    ]);
+    const issue = await svc.create(companyId, {
+      title: "Recover source issue",
+      description: null,
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId,
+    });
+    await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId: issue.id,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: recoveryOwnerAgentId,
+      cause: "stranded_assigned_issue",
+      fingerprint: `recovery:${issue.id}`,
+      evidence: { latestRunId: "run-1" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "wake_owner" },
+    });
+
+    const checkoutRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId: recoveryOwnerAgentId,
+      status: "running",
+      invocationSource: "manual",
+    });
+    const checkedOut = await svc.checkout(
+      issue.id,
+      recoveryOwnerAgentId,
+      ["blocked"],
+      checkoutRunId,
+      { allowSourceScopedRecoveryOwner: true },
+    );
+
+    expect(checkedOut).toMatchObject({
+      id: issue.id,
+      assigneeAgentId: recoveryOwnerAgentId,
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+      status: "in_progress",
+    });
+  });
+
+  it("does not let unrelated non-assignees use the recovery-owner checkout path", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const assigneeAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, { id: assigneeAgentId, name: "BlockedCoder" }),
+      agentRow(companyId, { id: otherAgentId, name: "OtherCoder" }),
+    ]);
+    const issue = await svc.create(companyId, {
+      title: "Keep ownership scoped",
+      description: null,
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId,
+    });
+
+    const checkoutRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+      invocationSource: "manual",
+    });
+
+    await expect(
+      svc.checkout(issue.id, otherAgentId, ["blocked"], checkoutRunId, { allowSourceScopedRecoveryOwner: true }),
+    ).rejects.toMatchObject({ status: 409 });
   });
 
   it("rejects moving an existing terminated assignment into progress without clearing it", async () => {

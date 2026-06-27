@@ -6989,7 +6989,16 @@ export function issueRoutes(
       return;
     }
 
-    if (issue.assigneeAgentId !== req.body.agentId) {
+    const activeRecoveryActionForCheckout = issue.assigneeAgentId !== req.body.agentId
+      ? await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id)
+      : null;
+    const allowSourceScopedRecoveryOwnerCheckout =
+      req.actor.type === "agent" &&
+      req.actor.agentId === req.body.agentId &&
+      activeRecoveryActionForCheckout?.sourceIssueId === issue.id &&
+      activeRecoveryActionForCheckout.ownerAgentId === req.body.agentId;
+
+    if (issue.assigneeAgentId !== req.body.agentId && !allowSourceScopedRecoveryOwnerCheckout) {
       await assertCanAssignTasks(req, issue.companyId, {
         issueId: issue.id,
         projectId: issue.projectId ?? null,
@@ -7007,7 +7016,9 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
-    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId, {
+      allowSourceScopedRecoveryOwner: allowSourceScopedRecoveryOwnerCheckout,
+    });
     const actor = getActorInfo(req);
 
     await logActivity(db, {
