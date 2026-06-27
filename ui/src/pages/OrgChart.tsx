@@ -644,7 +644,7 @@ export function OrgChart() {
                       src={node.portraitUrl ?? null}
                       name={node.name}
                       state={liveState}
-                      size={44}
+                      size={56}
                       look={cad.look}
                       scan={cad.scan}
                       pip={false}
