@@ -976,6 +976,51 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("does not reap a just-claimed local run before process metadata is recorded", async () => {
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      includeIssue: false,
+      processPid: null,
+      processGroupId: null,
+    });
+    const now = new Date();
+    await db
+      .update(heartbeatRuns)
+      .set({ startedAt: now, updatedAt: now })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBeNull();
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("claimed");
+  });
+
+  it("still reaps stale local runs without process metadata", async () => {
+    const { runId } = await seedRunFixture({
+      includeIssue: false,
+      processPid: null,
+      processGroupId: null,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+  });
+
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
@@ -1037,6 +1082,62 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
+  });
+
+  it("reuses an existing live issue path instead of duplicating a process-loss retry", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+    });
+    const existingRunId = randomUUID();
+    const existingWakeupId = randomUUID();
+    const now = new Date("2026-03-19T00:01:00.000Z");
+
+    await db.insert(agentWakeupRequests).values({
+      id: existingWakeupId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId, retryOfRunId: runId },
+      status: "queued",
+      runId: existingRunId,
+      updatedAt: now,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: existingRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: existingWakeupId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        retryOfRunId: runId,
+      },
+      retryOfRunId: runId,
+      updatedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    expect(runs.filter((row) => row.retryOfRunId === runId)).toHaveLength(1);
+    expect(["queued", "running"]).toContain(runs.find((row) => row.id === existingRunId)?.status);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBe(existingRunId);
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {

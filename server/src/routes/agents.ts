@@ -107,6 +107,10 @@ import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
 
+type HeartbeatRunRouteRead =
+  | NonNullable<Awaited<ReturnType<ReturnType<typeof heartbeatService>["getRun"]>>>
+  | NonNullable<Awaited<ReturnType<ReturnType<typeof heartbeatService>["getRunIssueSummary"]>>>;
+
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
   if (!Number.isFinite(parsed)) return RUN_LOG_DEFAULT_LIMIT_BYTES;
@@ -3455,6 +3459,7 @@ export function agentRoutes(
     // padded in and renders bogus "live" counts.
     const minCount = readLiveRunsQueryInt(req.query.minCount, 50, 0);
     const limit = readLiveRunsQueryInt(req.query.limit, 50, 50);
+    await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0, companyId });
 
     const columns = {
       id: heartbeatRuns.id,
@@ -3531,7 +3536,10 @@ export function agentRoutes(
 
   router.get("/heartbeat-runs/:runId", async (req, res) => {
     const runId = req.params.runId as string;
-    const run = await heartbeat.getRun(runId);
+    let run: HeartbeatRunRouteRead | null = await heartbeat.getRun(runId).catch(() => null);
+    if (!run) {
+      run = await heartbeat.getRunIssueSummary(runId);
+    }
     if (!run) {
       res.status(404).json({ error: "Heartbeat run not found" });
       return;
@@ -3549,7 +3557,10 @@ export function agentRoutes(
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
     assertBoard(req);
     const runId = req.params.runId as string;
-    const existing = await heartbeat.getRun(runId);
+    let existing: HeartbeatRunRouteRead | null = await heartbeat.getRun(runId).catch(() => null);
+    if (!existing) {
+      existing = await heartbeat.getRunIssueSummary(runId);
+    }
     if (existing) {
       assertCompanyAccess(req, existing.companyId);
     }
@@ -3693,6 +3704,7 @@ export function agentRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
+    await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0, companyId: issue.companyId });
 
     const liveRuns = await db
       .select({

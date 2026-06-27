@@ -8,9 +8,12 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   buildRunOutputSilence: vi.fn(),
+  getRun: vi.fn(),
   getRunIssueSummary: vi.fn(),
+  getRetryExhaustedReason: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
   getRunLogAccess: vi.fn(),
+  reapOrphanedRuns: vi.fn(),
   readLog: vi.fn(),
   wakeup: vi.fn(),
 }));
@@ -194,8 +197,21 @@ describe("agent live run routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      status: "running",
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      startedAt: new Date("2026-04-10T09:30:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date("2026-04-10T09:29:59.000Z"),
+      agentId: "agent-1",
+      contextSnapshot: { issueId: "issue-1" },
+    });
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
       id: "run-1",
+      companyId: "company-1",
       status: "running",
       invocationSource: "on_demand",
       triggerDetail: "manual",
@@ -207,6 +223,7 @@ describe("agent live run routes", () => {
       agentId: "agent-1",
       issueId: "issue-1",
     });
+    mockHeartbeatService.getRetryExhaustedReason.mockResolvedValue(null);
     mockHeartbeatService.getActiveRunIssueSummaryForAgent.mockResolvedValue(null);
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
@@ -261,6 +278,38 @@ describe("agent live run routes", () => {
     expect(res.body).not.toHaveProperty("contextSnapshot");
     expect(res.body).not.toHaveProperty("logRef");
   }, 10_000);
+
+  it("falls back to compact run projection when full heartbeat run read fails", async () => {
+    mockHeartbeatService.getRun.mockRejectedValueOnce(new Error("full run projection failed"));
+    mockHeartbeatService.getRunIssueSummary.mockResolvedValueOnce({
+      id: "run-1",
+      companyId: "company-1",
+      status: "queued",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt: null,
+      finishedAt: null,
+      createdAt: new Date("2026-04-10T09:29:59.000Z"),
+      agentId: "agent-1",
+      issueId: "issue-1",
+    });
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.getRunIssueSummary).toHaveBeenCalledWith("run-1");
+    expect(res.body).toMatchObject({
+      id: "run-1",
+      companyId: "company-1",
+      status: "queued",
+      issueId: "issue-1",
+      outputSilence: null,
+    });
+  });
 
   it("ignores a stale execution run from another issue and falls back to the assignee's matching run", async () => {
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
@@ -363,6 +412,10 @@ describe("agent live run routes", () => {
     );
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.reapOrphanedRuns).toHaveBeenCalledWith({
+      staleThresholdMs: 0,
+      companyId: "company-1",
+    });
     expect(limit).toHaveBeenCalledWith(50);
     expect(res.body).toHaveLength(50);
     expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(50);

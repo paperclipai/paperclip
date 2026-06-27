@@ -205,6 +205,7 @@ const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
+const RUNNING_RUN_PROCESS_METADATA_GRACE_MS = 30 * 1000;
 
 function isUniqueConstraintConflict(error: unknown, constraintName: string) {
   const queue: unknown[] = [error];
@@ -1550,6 +1551,7 @@ const heartbeatRunLogAccessColumns = {
 
 const heartbeatRunIssueSummaryColumns = {
   id: heartbeatRuns.id,
+  companyId: heartbeatRuns.companyId,
   status: heartbeatRuns.status,
   invocationSource: heartbeatRuns.invocationSource,
   triggerDetail: heartbeatRuns.triggerDetail,
@@ -3538,17 +3540,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function getRun(runId: string, opts?: { unsafeFullResultJson?: boolean }) {
     const safeForLegacyEncoding = !opts?.unsafeFullResultJson && await hasUnsafeTextProjectionDatabase();
-    return db
-      .select(
-        opts?.unsafeFullResultJson
-          ? getTableColumns(heartbeatRuns)
-          : safeForLegacyEncoding
-            ? heartbeatRunSqlAsciiSafeColumns
-            : heartbeatRunSafeColumns,
-      )
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
+    try {
+      return await db
+        .select(
+          opts?.unsafeFullResultJson
+            ? getTableColumns(heartbeatRuns)
+            : safeForLegacyEncoding
+              ? heartbeatRunSqlAsciiSafeColumns
+              : heartbeatRunSafeColumns,
+        )
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+    } catch (err) {
+      if (opts?.unsafeFullResultJson) throw err;
+      return db
+        .select(heartbeatRunSqlAsciiSafeColumns)
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+    }
   }
 
   async function getRunLogAccess(runId: string) {
@@ -5942,7 +5953,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       retryReason: "process_lost",
     }, "normal_model");
 
-    const queued = await db.transaction(async (tx) => {
+    const retryResult = await db.transaction(async (tx) => {
+      if (issueId) {
+        await tx.execute(
+          sql`select id from issues where company_id = ${run.companyId} and id = ${issueId} for update`,
+        );
+
+        const existingExecutionPath = await tx
+          .select()
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, run.companyId),
+              eq(heartbeatRuns.agentId, run.agentId),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+              sql`${heartbeatRuns.id} <> ${run.id}`,
+            ),
+          )
+          .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+        if (existingExecutionPath) {
+          await tx
+            .update(issues)
+            .set({
+              checkoutRunId: null,
+              executionRunId: existingExecutionPath.id,
+              executionAgentNameKey: normalizeAgentNameKey(agent.name),
+              executionLockedAt: now,
+              updatedAt: now,
+            })
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+
+          return { run: existingExecutionPath, reusedExisting: true };
+        }
+      }
+
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -6002,22 +6050,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
       }
 
-      return retryRun;
+      return { run: retryRun, reusedExisting: false };
     });
 
+    if (retryResult.reusedExisting) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Process-loss retry reused an existing live execution path for this issue",
+        payload: {
+          existingRunId: retryResult.run.id,
+        },
+      });
+      return retryResult.run;
+    }
+
     publishLiveEvent({
-      companyId: queued.companyId,
+      companyId: retryResult.run.companyId,
       type: "heartbeat.run.queued",
       payload: {
-        runId: queued.id,
-        agentId: queued.agentId,
-        invocationSource: queued.invocationSource,
-        triggerDetail: queued.triggerDetail,
-        wakeupRequestId: queued.wakeupRequestId,
+        runId: retryResult.run.id,
+        agentId: retryResult.run.agentId,
+        invocationSource: retryResult.run.invocationSource,
+        triggerDetail: retryResult.run.triggerDetail,
+        wakeupRequestId: retryResult.run.wakeupRequestId,
       },
     });
 
-    await appendRunEvent(queued, 1, {
+    await appendRunEvent(retryResult.run, 1, {
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
@@ -6027,7 +6088,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
 
-    return queued;
+    return retryResult.run;
   }
 
   type ScheduledRetryGate =
@@ -7977,7 +8038,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; companyId?: string }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
 
@@ -7990,7 +8051,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-      .where(eq(heartbeatRuns.status, "running"));
+      .where(and(
+        eq(heartbeatRuns.status, "running"),
+        ...(opts?.companyId ? [eq(heartbeatRuns.companyId, opts.companyId)] : []),
+      ));
 
     const reaped: string[] = [];
 
@@ -8004,6 +8068,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      if (tracksLocalChild && !run.processPid && !run.processGroupId && !run.processStartedAt) {
+        const refTimes = [run.updatedAt, run.startedAt]
+          .map((value) => value ? new Date(value).getTime() : Number.NaN)
+          .filter((value) => Number.isFinite(value));
+        const newestRunMutation = refTimes.length > 0 ? Math.max(...refTimes) : 0;
+        if (newestRunMutation > 0 && now.getTime() - newestRunMutation < RUNNING_RUN_PROCESS_METADATA_GRACE_MS) {
+          continue;
+        }
+      }
+
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
