@@ -103,6 +103,7 @@ import json
 import sys
 import urllib.error
 import urllib.request
+from urllib.parse import quote
 
 API_URL = ${JSON.stringify(input.apiUrl)}
 API_KEY = ${JSON.stringify(input.apiKey)}
@@ -140,7 +141,8 @@ def main():
             print("usage: paperclip_write.py patch-issue ISSUE_ID STATUS COMMENT_FILE", file=sys.stderr)
             return 2
         _, _, issue_id, status, comment_file = sys.argv
-        return request("PATCH", f"/issues/{issue_id}", {
+        encoded_issue_id = quote(issue_id, safe="")
+        return request("PATCH", f"/issues/{encoded_issue_id}", {
             "status": status,
             "comment": read_text(comment_file),
         })
@@ -149,7 +151,8 @@ def main():
             print("usage: paperclip_write.py comment-issue ISSUE_ID COMMENT_FILE", file=sys.stderr)
             return 2
         _, _, issue_id, comment_file = sys.argv
-        return request("POST", f"/issues/{issue_id}/comments", {
+        encoded_issue_id = quote(issue_id, safe="")
+        return request("POST", f"/issues/{encoded_issue_id}/comments", {
             "body": read_text(comment_file),
         })
     print(f"unknown command: {cmd}", file=sys.stderr)
@@ -542,9 +545,16 @@ export async function execute(
   // BUG FIX: Inject authToken as PAPERCLIP_API_KEY (matches adapter-claude-local behavior)
   if ((ctx as any).authToken) env.PAPERCLIP_API_KEY = (ctx as any).authToken;
   const paperclipApiUrl = resolvePaperclipApiUrl(config);
-  env.PAPERCLIP_API_URL = env.PAPERCLIP_API_URL || paperclipApiUrl;
-  env.PAPERCLIP_BASE_URL = env.PAPERCLIP_BASE_URL || paperclipApiUrl;
-  env.PAPERCLIP_API_BASE_URL = env.PAPERCLIP_API_BASE_URL || paperclipApiUrl;
+  const envPaperclipApiUrl = resolvePaperclipApiUrl({
+    paperclipApiUrl:
+      env.PAPERCLIP_API_URL ||
+      env.PAPERCLIP_API_BASE_URL ||
+      env.PAPERCLIP_BASE_URL ||
+      paperclipApiUrl,
+  });
+  env.PAPERCLIP_API_URL = envPaperclipApiUrl;
+  env.PAPERCLIP_BASE_URL = envPaperclipApiUrl;
+  env.PAPERCLIP_API_BASE_URL = envPaperclipApiUrl;
   env.PAPERCLIP_WRITE_HELPER = paperclipWriteHelper;
 
   // BUG FIX: Read task context from ctx.context (wake context), not ctx.config (adapter config)
@@ -562,7 +572,7 @@ export async function execute(
   if (env.PAPERCLIP_API_KEY && env.PAPERCLIP_RUN_ID) {
     await writePaperclipHelper({
       path: paperclipWriteHelper,
-      apiUrl: paperclipApiUrl,
+      apiUrl: envPaperclipApiUrl,
       apiKey: env.PAPERCLIP_API_KEY,
       runId: env.PAPERCLIP_RUN_ID,
     });
