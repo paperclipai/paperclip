@@ -610,6 +610,37 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("rejects non-assignee checkout by default without source-scoped recovery authority", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const assigneeAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, { id: assigneeAgentId, name: "DefaultBlockedCoder" }),
+      agentRow(companyId, { id: otherAgentId, name: "DefaultOtherCoder" }),
+    ]);
+    const issue = await svc.create(companyId, {
+      title: "Keep default checkout ownership strict",
+      description: null,
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId,
+    });
+
+    const checkoutRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+      invocationSource: "manual",
+    });
+
+    await expect(svc.checkout(issue.id, otherAgentId, ["blocked"], checkoutRunId)).rejects.toMatchObject({
+      status: 409,
+      message: "Issue checkout conflict",
+    });
+  });
+
   it("rejects moving an existing terminated assignment into progress without clearing it", async () => {
     const companyId = await seedAssignableAgentCompany();
     const assigneeAgentId = randomUUID();
