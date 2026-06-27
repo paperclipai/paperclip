@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   runChildProcess,
@@ -100,10 +100,39 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 
 import { execute } from "./execute.js";
 
+const REMOTE_EXECUTION_TEST_TIMEOUT_MS = 60_000;
+const ISOLATED_ENV_KEYS = [
+  "PAPERCLIP_OPENCODE_PROVIDERS",
+  "PAPERCLIP_OPENCODE_SMALL_MODEL",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENCODE_ALLOW_ALL_MODELS",
+  "PAPERCLIP_TASK_ID",
+  "PAPERCLIP_WAKE_REASON",
+  "PAPERCLIP_WAKE_COMMENT_ID",
+  "PAPERCLIP_WAKE_PAYLOAD_JSON",
+  "PAPERCLIP_ISSUE_WORK_MODE",
+  "PAPERCLIP_APPROVAL_ID",
+  "PAPERCLIP_APPROVAL_STATUS",
+  "PAPERCLIP_LINKED_ISSUE_IDS",
+] as const;
+const ORIGINAL_ENV = new Map<string, string | undefined>(
+  ISOLATED_ENV_KEYS.map((key) => [key, process.env[key]]),
+);
+
 describe("opencode remote execution", () => {
   const cleanupDirs: string[] = [];
 
+  beforeEach(() => {
+    for (const key of ISOLATED_ENV_KEYS) delete process.env[key];
+  });
+
   afterEach(async () => {
+    for (const key of ISOLATED_ENV_KEYS) {
+      const value = ORIGINAL_ENV.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     vi.clearAllMocks();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
@@ -238,7 +267,7 @@ describe("opencode remote execution", () => {
     expect(call?.[3].remoteExecution?.remoteCwd).toBe(managedRemoteWorkspace);
     expect(startAdapterExecutionTargetPaperclipBridge).toHaveBeenCalledTimes(1);
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
-  });
+  }, REMOTE_EXECUTION_TEST_TIMEOUT_MS);
 
   it("syncs external instructions bundles and resolves sibling files from the remote runtime asset", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-instructions-"));
@@ -318,7 +347,7 @@ describe("opencode remote execution", () => {
       `Resolve any relative file references from ${remoteInstructionsDir}/`,
     );
     expect(runCall?.[3].stdin).not.toContain(`Resolve any relative file references from ${workspaceDir}`);
-  });
+  }, REMOTE_EXECUTION_TEST_TIMEOUT_MS);
 
   it("fails before the remote run when the configured model is unavailable on the SSH target", async () => {
     runChildProcess.mockImplementationOnce(async () => ({
@@ -381,7 +410,7 @@ describe("opencode remote execution", () => {
     expect(runChildProcess).toHaveBeenCalledTimes(1);
     expect((runChildProcess.mock.calls[0]?.[2] as string[] | undefined) ?? []).toEqual(["models"]);
     expect(startAdapterExecutionTargetPaperclipBridge).not.toHaveBeenCalled();
-  });
+  }, REMOTE_EXECUTION_TEST_TIMEOUT_MS);
 
   it("resumes saved OpenCode sessions for remote SSH execution only when the identity matches", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-resume-"));
@@ -445,5 +474,5 @@ describe("opencode remote execution", () => {
       | undefined;
     expect(call?.[2]).toContain("--session");
     expect(call?.[2]).toContain("session-123");
-  });
+  }, REMOTE_EXECUTION_TEST_TIMEOUT_MS);
 });

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { createToolDefinitions } from "./tools.js";
 import { runWithBearer } from "./auth-context.js";
 import { PaperclipApiError } from "./client.js";
+import { readHeartbeatRunResource } from "./resources.js";
 
 function clientReturning(body: unknown) {
   return { requestJson: vi.fn(async () => body) } as any;
@@ -208,6 +209,42 @@ describe("paperclip_search_issues", () => {
       query: { status: "todo,in_progress", limit: 10, q: "crash" },
       companyId: "co-default",
     });
+  });
+});
+
+describe("heartbeat run log tail fallback", () => {
+  it("is registered and tails from an explicit offset", async () => {
+    const client = okClient({ runId: "run-1", offset: 12, nextOffset: 17, content: "hello" });
+    const res = await tool(client, "paperclipTailHeartbeatRunLog").execute(
+      { runId: "run-1", offset: 12, limitBytes: 64 },
+      {} as any,
+    );
+    expect(client.requestJson).toHaveBeenCalledWith("GET", "/heartbeat-runs/run-1/log", {
+      query: { offset: 12, limitBytes: 64 },
+    });
+    expect(JSON.parse(res.content[0].text)).toEqual({ runId: "run-1", offset: 12, nextOffset: 17, content: "hello" });
+  });
+
+  it("defaults to offset 0 and the standard resource chunk size", async () => {
+    const client = okClient({ runId: "run-1", offset: 0, nextOffset: 0, content: "" });
+    await tool(client, "paperclipTailHeartbeatRunLog").execute({ runId: "run-1" }, {} as any);
+    expect(client.requestJson).toHaveBeenCalledWith("GET", "/heartbeat-runs/run-1/log", {
+      query: { offset: 0, limitBytes: 16_384 },
+    });
+  });
+});
+
+describe("heartbeat run resources", () => {
+  it("resumes log chunks from the requested offset", async () => {
+    const client = okClient({ runId: "run-1", offset: 12, nextOffset: 17, content: "hello" });
+    const result = await readHeartbeatRunResource(
+      client,
+      "paperclip://heartbeat-runs/run-1/log-chunks/12?limitBytes=64",
+    );
+    expect(client.requestJson).toHaveBeenCalledWith("GET", "/heartbeat-runs/run-1/log", {
+      query: { offset: 12, limitBytes: 64 },
+    });
+    expect(result).toEqual({ runId: "run-1", offset: 12, nextOffset: 17, content: "hello" });
   });
 });
 

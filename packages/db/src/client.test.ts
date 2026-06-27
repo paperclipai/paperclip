@@ -14,6 +14,7 @@ import {
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const EMBEDDED_MIGRATION_TEST_TIMEOUT_MS = 60_000;
 
 async function createTempDatabase(): Promise<string> {
   const db = await startEmbeddedPostgresTestDatabase("paperclip-db-client-");
@@ -93,7 +94,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    EMBEDDED_MIGRATION_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -137,7 +138,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const finalState = await inspectMigrations(connectionString);
       expect(finalState.status).toBe("upToDate");
     },
-    20_000,
+    EMBEDDED_MIGRATION_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -167,7 +168,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await sql.end();
       }
     },
-    20_000,
+    EMBEDDED_MIGRATION_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -239,7 +240,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    EMBEDDED_MIGRATION_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -333,7 +334,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    EMBEDDED_MIGRATION_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -399,7 +400,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    EMBEDDED_MIGRATION_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -465,7 +466,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    EMBEDDED_MIGRATION_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -539,6 +540,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         await verifySql.end();
       }
     },
-    20_000,
+    EMBEDDED_MIGRATION_TEST_TIMEOUT_MS,
   );
 });

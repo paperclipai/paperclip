@@ -1,12 +1,19 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { prepareCodexRuntimeConfig } from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
+const ORIGINAL_CODEX_PROVIDERS = process.env.PAPERCLIP_CODEX_PROVIDERS;
+
+beforeEach(() => {
+  delete process.env.PAPERCLIP_CODEX_PROVIDERS;
+});
 
 afterEach(async () => {
+  if (ORIGINAL_CODEX_PROVIDERS === undefined) delete process.env.PAPERCLIP_CODEX_PROVIDERS;
+  else process.env.PAPERCLIP_CODEX_PROVIDERS = ORIGINAL_CODEX_PROVIDERS;
   await Promise.all(
     [...cleanupPaths].map(async (filepath) => {
       await fs.rm(filepath, { recursive: true, force: true });

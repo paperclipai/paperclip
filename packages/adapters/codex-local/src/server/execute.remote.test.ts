@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   runChildProcess,
@@ -72,10 +72,22 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 
 import { execute } from "./execute.js";
 
+const ORIGINAL_CODEX_PROVIDERS = process.env.PAPERCLIP_CODEX_PROVIDERS;
+const ORIGINAL_CODEX_USE_HOST_HOME = process.env.PAPERCLIP_CODEX_USE_HOST_HOME;
+
 describe("codex remote execution", () => {
   const cleanupDirs: string[] = [];
 
+  beforeEach(() => {
+    delete process.env.PAPERCLIP_CODEX_PROVIDERS;
+    delete process.env.PAPERCLIP_CODEX_USE_HOST_HOME;
+  });
+
   afterEach(async () => {
+    if (ORIGINAL_CODEX_PROVIDERS === undefined) delete process.env.PAPERCLIP_CODEX_PROVIDERS;
+    else process.env.PAPERCLIP_CODEX_PROVIDERS = ORIGINAL_CODEX_PROVIDERS;
+    if (ORIGINAL_CODEX_USE_HOST_HOME === undefined) delete process.env.PAPERCLIP_CODEX_USE_HOST_HOME;
+    else process.env.PAPERCLIP_CODEX_USE_HOST_HOME = ORIGINAL_CODEX_USE_HOST_HOME;
     vi.clearAllMocks();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();

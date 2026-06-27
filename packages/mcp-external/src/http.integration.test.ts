@@ -10,6 +10,7 @@ let upstream: Server; // mock Paperclip REST API
 let mcp: Server;      // our external MCP server
 let mcpUrl: string;
 let heartbeatSnapshot = { id: "run-1", status: "running", logBytes: 32, lastOutputSeq: 3 };
+let heartbeatRunReadCount = 0;
 
 beforeAll(async () => {
   // Mock Paperclip API: GET /api/agents/me → identity derived from the bearer.
@@ -32,13 +33,21 @@ beforeAll(async () => {
       return;
     }
     if (req.url === "/api/heartbeat-runs/run-1" && req.method === "GET") {
+      heartbeatRunReadCount += 1;
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(heartbeatSnapshot));
       return;
     }
-    if (req.url === "/api/heartbeat-runs/run-1/log?offset=12&limitBytes=64" && req.method === "GET") {
+    if (req.url?.startsWith("/api/heartbeat-runs/run-1/log") && req.method === "GET") {
+      const reqUrl = new URL(req.url, "http://x");
+      const offset = Number(reqUrl.searchParams.get("offset") ?? 0);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ runId: "run-1", offset: 12, nextOffset: 17, content: "hello" }));
+      res.end(JSON.stringify({
+        runId: "run-1",
+        offset,
+        nextOffset: offset + 5,
+        content: offset === 32 ? "world" : "hello",
+      }));
       return;
     }
     res.writeHead(404).end();
@@ -89,12 +98,109 @@ describe("heartbeat run resources", () => {
       await client.subscribeResource({ uri: "paperclip://heartbeat-runs/run-1/log" });
       heartbeatSnapshot = { id: "run-1", status: "running", logBytes: 48, lastOutputSeq: 4 };
       await new Promise((resolve) => setTimeout(resolve, 1_200));
+      const chunk = await client.readResource({ uri: "paperclip://heartbeat-runs/run-1/log-chunks/32?limitBytes=64" });
       await client.unsubscribeResource({ uri: "paperclip://heartbeat-runs/run-1/log" });
+      const first = chunk.contents[0];
+      if (!first || !("text" in first)) throw new Error("Expected text resource");
+      expect(JSON.parse(first.text)).toEqual({ runId: "run-1", offset: 32, nextOffset: 37, content: "world" });
       expect(updates).toEqual(["paperclip://heartbeat-runs/run-1/log"]);
     } finally {
       await client.close();
     }
   }, 15000);
+
+  it("delivers resource update notifications on a standalone GET SSE stream", async () => {
+    heartbeatSnapshot = { id: "run-1", status: "running", logBytes: 32, lastOutputSeq: 3 };
+    heartbeatRunReadCount = 0;
+    const init = await fetch(mcpUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", Authorization: "Bearer pcp_X" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-03-26",
+          capabilities: {},
+          clientInfo: { name: "raw-test", version: "0.0.0" },
+        },
+      }),
+    });
+    expect(init.status).toBe(200);
+    const sessionId = init.headers.get("mcp-session-id");
+    expect(sessionId).toBeTruthy();
+
+    await fetch(mcpUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        Authorization: "Bearer pcp_X",
+        "mcp-session-id": sessionId!,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} }),
+    });
+
+    const abort = new AbortController();
+    const sse = await fetch(mcpUrl, {
+      method: "GET",
+      headers: { Accept: "text/event-stream", Authorization: "Bearer pcp_X", "mcp-session-id": sessionId! },
+      signal: abort.signal,
+    });
+    expect(sse.status).toBe(200);
+    const reader = sse.body?.getReader();
+    if (!reader) throw new Error("Expected SSE response body");
+    const decoder = new TextDecoder();
+
+    try {
+      const subscribe = await fetch(mcpUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+          Authorization: "Bearer pcp_X",
+          "mcp-session-id": sessionId!,
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "resources/subscribe",
+          params: { uri: "paperclip://heartbeat-runs/run-1/log" },
+        }),
+      });
+      expect(subscribe.status).toBe(200);
+      const deadlineForInitialRead = Date.now() + 5_000;
+      while (heartbeatRunReadCount === 0 && Date.now() < deadlineForInitialRead) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(heartbeatRunReadCount).toBeGreaterThan(0);
+      heartbeatSnapshot = { id: "run-1", status: "running", logBytes: 64, lastOutputSeq: 5 };
+
+      let buffered = "";
+      let pendingRead: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
+      const deadline = Date.now() + 12_000;
+      while (Date.now() < deadline && !buffered.includes("notifications/resources/updated")) {
+        const remaining = Math.max(1, deadline - Date.now());
+        pendingRead ??= reader.read();
+        const result = await Promise.race([
+          pendingRead,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), Math.min(remaining, 250))),
+        ]);
+        if (result === null) continue;
+        pendingRead = null;
+        const { value, done } = result;
+        if (done) break;
+        buffered += decoder.decode(value, { stream: true });
+      }
+      if (pendingRead) void pendingRead.catch(() => undefined);
+      buffered += decoder.decode();
+      expect(buffered).toContain("notifications/resources/updated");
+      expect(buffered).toContain("paperclip://heartbeat-runs/run-1/log");
+    } finally {
+      abort.abort();
+      await reader.cancel().catch(() => undefined);
+    }
+  }, 20000);
 });
 
 afterAll(async () => {
@@ -214,6 +320,7 @@ describe("company-scoped tool wiring (list_issues)", () => {
         "list_agents", "invoke_agent_heartbeat",
         "list_approvals", "approve", "reject", "request_approval_revision",
         "get_dashboard", "get_cost_summary", "list_activity",
+        "paperclipTailHeartbeatRunLog",
       ]) {
         expect(names).toContain(expected);
       }

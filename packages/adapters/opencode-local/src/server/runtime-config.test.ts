@@ -1,12 +1,30 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
+const ISOLATED_ENV_KEYS = [
+  "PAPERCLIP_OPENCODE_PROVIDERS",
+  "PAPERCLIP_OPENCODE_SMALL_MODEL",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+] as const;
+const ORIGINAL_ENV = new Map<string, string | undefined>(
+  ISOLATED_ENV_KEYS.map((key) => [key, process.env[key]]),
+);
+
+beforeEach(() => {
+  for (const key of ISOLATED_ENV_KEYS) delete process.env[key];
+});
 
 afterEach(async () => {
+  for (const key of ISOLATED_ENV_KEYS) {
+    const value = ORIGINAL_ENV.get(key);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   await Promise.all(
     [...cleanupPaths].map(async (filepath) => {
       await fs.rm(filepath, { recursive: true, force: true });

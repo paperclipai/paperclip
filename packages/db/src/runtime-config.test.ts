@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveDatabaseTarget } from "./runtime-config.js";
 
 const ORIGINAL_CWD = process.cwd();
@@ -29,6 +29,10 @@ afterEach(() => {
 });
 
 describe("resolveDatabaseTarget", () => {
+  beforeEach(() => {
+    delete process.env.DATABASE_URL;
+  });
+
   it("uses DATABASE_URL from process env first", () => {
     process.env.DATABASE_URL = "postgres://env-user:env-pass@db.example.com:5432/paperclip";
 
