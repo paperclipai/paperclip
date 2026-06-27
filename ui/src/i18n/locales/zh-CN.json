@@ -820,7 +820,9 @@
       "suspended": "已暂停",
       "taskReassignment": "任务重新分配",
       "unset": "未设置",
-      "userAccount": "用户账号"
+      "userAccount": "用户账号",
+      "humans": "Humans",
+      "selectCompany": "Select a company"
     }
   },
   "companyEnvironments": {
@@ -2045,7 +2047,20 @@
       "quickFilters": "快速筛选",
       "status": "状态",
       "visibility": "可见性",
-      "workspace": "工作区"
+      "workspace": "工作区",
+      "assignee": "Assignee",
+      "creator": "Creator",
+      "externalObjectStatus": "External object status",
+      "filters": "Quick filters",
+      "hideRoutineRuns": "Hide routine runs",
+      "labels": "Labels",
+      "liveRunsOnly": "Live runs only",
+      "noAssignee": "No assignee",
+      "noCreatorsMatch": "No creators match",
+      "priority": "Priority"
+    },
+    "placeholders": {
+      "searchCreators": "Search creators..."
     }
   },
   "issuesList": {
@@ -2165,6 +2180,21 @@
     },
     "prompts": {
       "secretName": "密钥名称"
+    },
+    "errors": {
+      "createSecret": "Failed to create secret"
+    },
+    "labelsJsx": {
+      "bindingMode": "Binding mode",
+      "secret": "Secret",
+      "version": "Version"
+    },
+    "placeholders": {
+      "selectSecret": "Select a secret"
+    },
+    "text": {
+      "plain": "Plain",
+      "secret": "Secret"
     }
   },
   "commentThread": {
@@ -2213,6 +2243,24 @@
     "errors": {
       "invalidCron": "Cron 字段必须使用有效数字、范围、列表、通配符或步长。",
       "enterFive": "输入 5 字段 Cron 表达式。"
+    },
+    "labelsJsx": {
+      "cronExpression": "Cron expression",
+      "scheduleFrequency": "Schedule frequency"
+    },
+    "placeholders": {
+      "chooseFrequency": "Choose frequency..."
+    },
+    "status": {
+      "custom": "Custom (cron)",
+      "everyDay": "Every day",
+      "everyHour": "Every hour"
+    },
+    "tabs": {
+      "everyMinute": "Every minute",
+      "monthly": "Monthly",
+      "weekdays": "Weekdays",
+      "weekly": "Weekly"
     }
   },
   "agentActionButtons": {
@@ -2311,7 +2359,17 @@
       "projects": "项目",
       "promotionTarget": "晋升目标",
       "rawOutput": "原始输出",
-      "trustPreset": "信任预设"
+      "trustPreset": "信任预设",
+      "issue": "Issue",
+      "project": "Project",
+      "trust": "Trust preset"
+    },
+    "labelsJsx": {
+      "allowedAgents": "Allowed agents",
+      "allowedSecrets": "Allowed secrets",
+      "allowedTools": "Allowed tools",
+      "boundaryType": "Boundary type",
+      "eeFields": "EE fields"
     }
   },
   "approvalPayload": {
@@ -2332,7 +2390,19 @@
   },
   "agentBubbleActionRow": {
     "text": {
-      "savePreference": "保存你的反馈分享偏好"
+      "savePreference": "保存你的反馈分享偏好",
+      "alwaysAllow": "Always allow",
+      "alwaysSavedLocally": "Always saved locally",
+      "whatBetter": "What could be better?"
+    },
+    "labelsJsx": {
+      "copyMessage": "Copy message",
+      "helpful": "Helpful",
+      "moreActions": "More actions",
+      "needsWork": "Needs work"
+    },
+    "placeholders": {
+      "shortNote": "Short note..."
     }
   },
   "activityCharts": {
@@ -2418,6 +2488,11 @@
       "critical": "关键",
       "high": "高",
       "medium": "中"
+    },
+    "tabs": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium"
     }
   },
   "instanceSidebar": {
@@ -2592,6 +2667,9 @@
     "text": {
       "addDescription": "添加描述...",
       "goalTitle": "目标标题"
+    },
+    "placeholders": {
+      "goalTitle": "Goal title"
     }
   },
   "productivityReviewBadge": {
@@ -2662,6 +2740,9 @@
     "text": {
       "noIconsMatch": "无匹配图标",
       "searchIcons": "搜索图标..."
+    },
+    "placeholders": {
+      "searchIcons": "Search icons..."
     }
   },
   "approvalCard": {

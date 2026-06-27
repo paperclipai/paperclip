@@ -1,3 +1,10 @@
+import { i18n } from "./src/i18n";
+
+// Pin locale to English for deterministic test assertions.
+// Auto-detection reads navigator.language which may differ on CI runners,
+// causing t() to return non-English text and breaking assertions.
+i18n.changeLanguage("en");
+
 const storageEntries = new Map<string, string>();
 
 function installStorageMock(target: Record<string, unknown>) {

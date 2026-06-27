@@ -820,7 +820,9 @@
       "suspended": "已暫停",
       "taskReassignment": "工作重新分配",
       "unset": "未設定",
-      "userAccount": "使用者帳號"
+      "userAccount": "使用者帳號",
+      "humans": "Humans",
+      "selectCompany": "Select a company"
     }
   },
   "companyEnvironments": {
@@ -2045,7 +2047,20 @@
       "quickFilters": "快速篩選",
       "status": "狀態",
       "visibility": "可見性",
-      "workspace": "工作區"
+      "workspace": "工作區",
+      "assignee": "Assignee",
+      "creator": "Creator",
+      "externalObjectStatus": "External object status",
+      "filters": "Quick filters",
+      "hideRoutineRuns": "Hide routine runs",
+      "labels": "Labels",
+      "liveRunsOnly": "Live runs only",
+      "noAssignee": "No assignee",
+      "noCreatorsMatch": "No creators match",
+      "priority": "Priority"
+    },
+    "placeholders": {
+      "searchCreators": "Search creators..."
     }
   },
   "issuesList": {
@@ -2165,6 +2180,21 @@
     },
     "prompts": {
       "secretName": "密鑰名稱"
+    },
+    "errors": {
+      "createSecret": "Failed to create secret"
+    },
+    "labelsJsx": {
+      "bindingMode": "Binding mode",
+      "secret": "Secret",
+      "version": "Version"
+    },
+    "placeholders": {
+      "selectSecret": "Select a secret"
+    },
+    "text": {
+      "plain": "Plain",
+      "secret": "Secret"
     }
   },
   "commentThread": {
@@ -2213,6 +2243,24 @@
     "errors": {
       "invalidCron": "Cron 欄位必須使用有效數字、範圍、清單、萬用字元或步長。",
       "enterFive": "輸入 5 欄位 Cron 運算式。"
+    },
+    "labelsJsx": {
+      "cronExpression": "Cron expression",
+      "scheduleFrequency": "Schedule frequency"
+    },
+    "placeholders": {
+      "chooseFrequency": "Choose frequency..."
+    },
+    "status": {
+      "custom": "Custom (cron)",
+      "everyDay": "Every day",
+      "everyHour": "Every hour"
+    },
+    "tabs": {
+      "everyMinute": "Every minute",
+      "monthly": "Monthly",
+      "weekdays": "Weekdays",
+      "weekly": "Weekly"
     }
   },
   "agentActionButtons": {
@@ -2311,7 +2359,17 @@
       "projects": "專案",
       "promotionTarget": "晉升目標",
       "rawOutput": "原始輸出",
-      "trustPreset": "信任預設"
+      "trustPreset": "信任預設",
+      "issue": "Issue",
+      "project": "Project",
+      "trust": "Trust preset"
+    },
+    "labelsJsx": {
+      "allowedAgents": "Allowed agents",
+      "allowedSecrets": "Allowed secrets",
+      "allowedTools": "Allowed tools",
+      "boundaryType": "Boundary type",
+      "eeFields": "EE fields"
     }
   },
   "approvalPayload": {
@@ -2332,7 +2390,19 @@
   },
   "agentBubbleActionRow": {
     "text": {
-      "savePreference": "儲存你的回饋分享偏好"
+      "savePreference": "儲存你的回饋分享偏好",
+      "alwaysAllow": "Always allow",
+      "alwaysSavedLocally": "Always saved locally",
+      "whatBetter": "What could be better?"
+    },
+    "labelsJsx": {
+      "copyMessage": "Copy message",
+      "helpful": "Helpful",
+      "moreActions": "More actions",
+      "needsWork": "Needs work"
+    },
+    "placeholders": {
+      "shortNote": "Short note..."
     }
   },
   "activityCharts": {
@@ -2418,6 +2488,11 @@
       "critical": "關鍵",
       "high": "高",
       "medium": "中"
+    },
+    "tabs": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium"
     }
   },
   "instanceSidebar": {
@@ -2592,6 +2667,9 @@
     "text": {
       "addDescription": "新增描述...",
       "goalTitle": "目標標題"
+    },
+    "placeholders": {
+      "goalTitle": "Goal title"
     }
   },
   "productivityReviewBadge": {
@@ -2662,6 +2740,9 @@
     "text": {
       "noIconsMatch": "無符合圖示",
       "searchIcons": "搜尋圖示..."
+    },
+    "placeholders": {
+      "searchIcons": "Search icons..."
     }
   },
   "approvalCard": {

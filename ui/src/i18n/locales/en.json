@@ -820,7 +820,9 @@
       "suspended": "Suspended",
       "taskReassignment": "Task reassignment",
       "unset": "Unset",
-      "userAccount": "User account"
+      "userAccount": "User account",
+      "humans": "Humans",
+      "selectCompany": "Select a company"
     }
   },
   "companyEnvironments": {
@@ -2045,7 +2047,20 @@
       "quickFilters": "Quick filters",
       "status": "Status",
       "visibility": "Visibility",
-      "workspace": "Workspace"
+      "workspace": "Workspace",
+      "assignee": "Assignee",
+      "creator": "Creator",
+      "externalObjectStatus": "External object status",
+      "filters": "Quick filters",
+      "hideRoutineRuns": "Hide routine runs",
+      "labels": "Labels",
+      "liveRunsOnly": "Live runs only",
+      "noAssignee": "No assignee",
+      "noCreatorsMatch": "No creators match",
+      "priority": "Priority"
+    },
+    "placeholders": {
+      "searchCreators": "Search creators..."
     }
   },
   "issuesList": {
@@ -2165,6 +2180,21 @@
     },
     "prompts": {
       "secretName": "Secret name"
+    },
+    "errors": {
+      "createSecret": "Failed to create secret"
+    },
+    "labelsJsx": {
+      "bindingMode": "Binding mode",
+      "secret": "Secret",
+      "version": "Version"
+    },
+    "placeholders": {
+      "selectSecret": "Select a secret"
+    },
+    "text": {
+      "plain": "Plain",
+      "secret": "Secret"
     }
   },
   "commentThread": {
@@ -2213,6 +2243,24 @@
     "errors": {
       "invalidCron": "Cron fields must use valid numbers, ranges, lists, wildcards, or steps.",
       "enterFive": "Enter a 5-field cron expression."
+    },
+    "labelsJsx": {
+      "cronExpression": "Cron expression",
+      "scheduleFrequency": "Schedule frequency"
+    },
+    "placeholders": {
+      "chooseFrequency": "Choose frequency..."
+    },
+    "status": {
+      "custom": "Custom (cron)",
+      "everyDay": "Every day",
+      "everyHour": "Every hour"
+    },
+    "tabs": {
+      "everyMinute": "Every minute",
+      "monthly": "Monthly",
+      "weekdays": "Weekdays",
+      "weekly": "Weekly"
     }
   },
   "agentActionButtons": {
@@ -2311,7 +2359,17 @@
       "promotionTarget": "Promotion target",
       "rawOutput": "Raw output",
       "rootIssue": "Root issue",
-      "trustPreset": "Trust preset"
+      "trustPreset": "Trust preset",
+      "issue": "Issue",
+      "project": "Project",
+      "trust": "Trust preset"
+    },
+    "labelsJsx": {
+      "allowedAgents": "Allowed agents",
+      "allowedSecrets": "Allowed secrets",
+      "allowedTools": "Allowed tools",
+      "boundaryType": "Boundary type",
+      "eeFields": "EE fields"
     }
   },
   "approvalPayload": {
@@ -2332,7 +2390,19 @@
   },
   "agentBubbleActionRow": {
     "text": {
-      "savePreference": "Save your feedback sharing preference"
+      "savePreference": "Save your feedback sharing preference",
+      "alwaysAllow": "Always allow",
+      "alwaysSavedLocally": "Always saved locally",
+      "whatBetter": "What could be better?"
+    },
+    "labelsJsx": {
+      "copyMessage": "Copy message",
+      "helpful": "Helpful",
+      "moreActions": "More actions",
+      "needsWork": "Needs work"
+    },
+    "placeholders": {
+      "shortNote": "Short note..."
     }
   },
   "activityCharts": {
@@ -2415,6 +2485,11 @@
   },
   "priorityIcon": {
     "labelsObj": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium"
+    },
+    "tabs": {
       "critical": "Critical",
       "high": "High",
       "medium": "Medium"
@@ -2569,7 +2644,7 @@
   "frontDoor": {
     "text": {
       "addAgents": "Add agents to your org",
-      "buildTeam": "Build a new team"
+      "buildTeam": "Build a new company"
     }
   },
   "issueReferenceActivitySummary": {
@@ -2591,6 +2666,9 @@
   "newGoalDialog": {
     "text": {
       "addDescription": "Add description...",
+      "goalTitle": "Goal title"
+    },
+    "placeholders": {
       "goalTitle": "Goal title"
     }
   },
@@ -2661,6 +2739,9 @@
   "agentIconPicker": {
     "text": {
       "noIconsMatch": "No icons match",
+      "searchIcons": "Search icons..."
+    },
+    "placeholders": {
       "searchIcons": "Search icons..."
     }
   },
