@@ -1,3 +1,6 @@
+ARG HERMES_AGENT_IMAGE=nousresearch/hermes-agent:v2026.6.19
+FROM ${HERMES_AGENT_IMAGE} AS hermes_runtime
+
 FROM node:lts-trixie-slim
 
 RUN apt-get update \
@@ -22,9 +25,21 @@ RUN corepack enable \
 
 RUN useradd --create-home --shell /bin/bash reviewer
 
+# Hermes runtime from pinned image
+COPY --from=hermes_runtime /opt/hermes /opt/hermes
+COPY --from=hermes_runtime /usr/local/bin/uv /usr/local/bin/uv
+COPY --from=hermes_runtime /usr/local/bin/uvx /usr/local/bin/uvx
+RUN ln -s /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes \
+  && ln -s /opt/hermes/.venv/bin/hermes-agent /usr/local/bin/hermes-agent \
+  && ln -s /opt/hermes/.venv/bin/hermes-acp /usr/local/bin/hermes-acp \
+  && mkdir -p /home/reviewer/.hermes \
+  && chown -R reviewer:reviewer /opt/hermes /home/reviewer/.hermes \
+  && hermes --version
+
 ENV HOME=/home/reviewer \
   CODEX_HOME=/home/reviewer/.codex \
   CLAUDE_HOME=/home/reviewer/.claude \
+  HERMES_HOME=/home/reviewer/.hermes \
   PAPERCLIP_HOME=/home/reviewer/.paperclip-review \
   PNPM_HOME=/home/reviewer/.local/share/pnpm \
   PATH=/home/reviewer/.local/share/pnpm:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
