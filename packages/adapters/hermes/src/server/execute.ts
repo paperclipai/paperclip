@@ -19,6 +19,7 @@
  */
 
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 import type {
@@ -74,6 +75,93 @@ export function resolveHermesCommand(config: Record<string, unknown>): string {
   return cfgString(config.hermesCommand) || cfgString(config.command) || HERMES_CLI;
 }
 
+function resolvePaperclipApiUrl(config: Record<string, unknown>): string {
+  let paperclipApiUrl =
+    cfgString(config.paperclipApiUrl) ||
+    process.env.PAPERCLIP_API_URL ||
+    "http://127.0.0.1:3100/api";
+  if (!paperclipApiUrl.endsWith("/api")) {
+    paperclipApiUrl = paperclipApiUrl.replace(/\/+$/, "") + "/api";
+  }
+  return paperclipApiUrl;
+}
+
+function paperclipWriteHelperPath(runId?: string): string {
+  const safeRunId = (runId || "no-run-id").replace(/[^a-zA-Z0-9_.-]/g, "_");
+  return path.join(os.tmpdir(), `hermes-paperclip-${safeRunId}`, "paperclip_write.py");
+}
+
+async function writePaperclipHelper(input: {
+  path: string;
+  apiUrl: string;
+  apiKey: string;
+  runId: string;
+}): Promise<void> {
+  await fs.mkdir(path.dirname(input.path), { recursive: true });
+  const script = `#!/usr/bin/env python3
+import json
+import sys
+import urllib.error
+import urllib.request
+
+API_URL = ${JSON.stringify(input.apiUrl)}
+API_KEY = ${JSON.stringify(input.apiKey)}
+RUN_ID = ${JSON.stringify(input.runId)}
+
+def request(method, path, body=None):
+    headers = {
+        "Authorization": "Bearer " + API_KEY,
+        "X-Paperclip-Run-Id": RUN_ID,
+    }
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(API_URL.rstrip("/") + path, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            print(resp.read().decode("utf-8", "replace"))
+            return 0
+    except urllib.error.HTTPError as exc:
+        print(exc.read().decode("utf-8", "replace"), file=sys.stderr)
+        return 1
+
+def read_text(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+def main():
+    if len(sys.argv) < 2:
+        print("usage: paperclip_write.py patch-issue ISSUE_ID STATUS COMMENT_FILE | comment-issue ISSUE_ID COMMENT_FILE", file=sys.stderr)
+        return 2
+    cmd = sys.argv[1]
+    if cmd == "patch-issue":
+        if len(sys.argv) != 5:
+            print("usage: paperclip_write.py patch-issue ISSUE_ID STATUS COMMENT_FILE", file=sys.stderr)
+            return 2
+        _, _, issue_id, status, comment_file = sys.argv
+        return request("PATCH", f"/issues/{issue_id}", {
+            "status": status,
+            "comment": read_text(comment_file),
+        })
+    if cmd == "comment-issue":
+        if len(sys.argv) != 4:
+            print("usage: paperclip_write.py comment-issue ISSUE_ID COMMENT_FILE", file=sys.stderr)
+            return 2
+        _, _, issue_id, comment_file = sys.argv
+        return request("POST", f"/issues/{issue_id}/comments", {
+            "body": read_text(comment_file),
+        })
+    print(f"unknown command: {cmd}", file=sys.stderr)
+    return 2
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+`;
+  await fs.writeFile(input.path, script, { encoding: "utf8", mode: 0o700 });
+  await fs.chmod(input.path, 0o700);
+}
+
 // ---------------------------------------------------------------------------
 // Wake-up prompt builder
 // ---------------------------------------------------------------------------
@@ -94,12 +182,10 @@ const HERMES_DEFAULT_PROMPT_TEMPLATE = [
   "- Include `-H \"Authorization: Bearer $PAPERCLIP_API_KEY\"` on API requests.",
   "- Include `-H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\"` on mutating issue requests.",
   "- For multiline comments or status updates, preserve newlines with `jq --arg` or a heredoc-fed helper rather than hand-escaping JSON.",
+  "- Prefer `$PAPERCLIP_WRITE_HELPER` for mutating issue writes. It already supplies Authorization and X-Paperclip-Run-Id, so you do not need to construct those headers.",
   "",
-  "Safe multiline update pattern:",
+  "Safe disposition update pattern:",
   "```bash",
-  "api=\"${PAPERCLIP_API_URL%/}\"",
-  "case \"$api\" in */api) ;; *) api=\"$api/api\" ;; esac",
-  "",
   "body=$(cat <<'MD'",
   "Summary line",
   "",
@@ -107,12 +193,8 @@ const HERMES_DEFAULT_PROMPT_TEMPLATE = [
   "- Detail two",
   "MD",
   ")",
-  "jq -n --arg status done --arg comment \"$body\" '{status:$status, comment:$comment}' | \\",
-  "  curl -sS -X PATCH \"$api/issues/{{context.issueId}}\" \\",
-  "    -H \"Authorization: Bearer $PAPERCLIP_API_KEY\" \\",
-  "    -H \"X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID\" \\",
-  "    -H \"Content-Type: application/json\" \\",
-  "    --data-binary @-",
+  "printf '%s\\n' \"$body\" > /tmp/paperclip-comment.txt",
+  "python3 \"$PAPERCLIP_WRITE_HELPER\" patch-issue \"{{context.issueId}}\" done /tmp/paperclip-comment.txt",
   "```",
   "",
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -148,15 +230,8 @@ export function buildPrompt(
   const companyName = cfgString(context.companyName) || cfgString(ctx.config?.companyName) || "";
   const projectName = cfgString(context.projectName) || cfgString(ctx.config?.projectName) || "";
 
-  // Build API URL — ensure it has the /api path
-  let paperclipApiUrl =
-    cfgString(config.paperclipApiUrl) ||
-    process.env.PAPERCLIP_API_URL ||
-    "http://127.0.0.1:3100/api";
-  // Ensure /api suffix
-  if (!paperclipApiUrl.endsWith("/api")) {
-    paperclipApiUrl = paperclipApiUrl.replace(/\/+$/, "") + "/api";
-  }
+  const paperclipApiUrl = resolvePaperclipApiUrl(config);
+  const paperclipWriteHelper = cfgString(config.paperclipWriteHelper) || paperclipWriteHelperPath(ctx.runId);
 
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
     resumedSession: options.resumedSession === true,
@@ -182,6 +257,7 @@ export function buildPrompt(
     wakeReason,
     projectName,
     paperclipApiUrl,
+    paperclipWriteHelper,
     paperclipWakePrompt: wakePrompt,
     paperclipTaskMarkdown,
     taskContext: paperclipTaskMarkdown,
@@ -400,7 +476,8 @@ export async function execute(
   }
 
   // ── Build prompt ───────────────────────────────────────────────────────
-  let prompt = buildPrompt(ctx, config, { resumedSession: Boolean(prevSessionId) });
+  const paperclipWriteHelper = paperclipWriteHelperPath(ctx.runId);
+  let prompt = buildPrompt(ctx, { ...config, paperclipWriteHelper }, { resumedSession: Boolean(prevSessionId) });
   if (agentInstructions) {
     prompt = agentInstructions + "\n\n---\n\n" + prompt;
   }
@@ -464,6 +541,11 @@ export async function execute(
 
   // BUG FIX: Inject authToken as PAPERCLIP_API_KEY (matches adapter-claude-local behavior)
   if ((ctx as any).authToken) env.PAPERCLIP_API_KEY = (ctx as any).authToken;
+  const paperclipApiUrl = resolvePaperclipApiUrl(config);
+  env.PAPERCLIP_API_URL = env.PAPERCLIP_API_URL || paperclipApiUrl;
+  env.PAPERCLIP_BASE_URL = env.PAPERCLIP_BASE_URL || paperclipApiUrl;
+  env.PAPERCLIP_API_BASE_URL = env.PAPERCLIP_API_BASE_URL || paperclipApiUrl;
+  env.PAPERCLIP_WRITE_HELPER = paperclipWriteHelper;
 
   // BUG FIX: Read task context from ctx.context (wake context), not ctx.config (adapter config)
   const ctxContext = (ctx as any).context || {};
@@ -475,6 +557,17 @@ export async function execute(
   if (envCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = envCommentId;
   const wakePayloadJson = stringifyPaperclipWakePayload(ctxContext.paperclipWake);
   if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
+
+  let paperclipWriteHelperCreated = false;
+  if (env.PAPERCLIP_API_KEY && env.PAPERCLIP_RUN_ID) {
+    await writePaperclipHelper({
+      path: paperclipWriteHelper,
+      apiUrl: paperclipApiUrl,
+      apiKey: env.PAPERCLIP_API_KEY,
+      runId: env.PAPERCLIP_RUN_ID,
+    });
+    paperclipWriteHelperCreated = true;
+  }
 
   // ── Resolve working directory ──────────────────────────────────────────
   const cwd =
@@ -495,6 +588,11 @@ export async function execute(
       "stdout",
       `[hermes] Resuming session: ${prevSessionId}\n`,
     );
+  }
+  if (paperclipWriteHelperCreated) {
+    await ctx.onLog("stdout", `[paperclip] Prepared write helper: ${paperclipWriteHelper}\n`);
+  } else {
+    await ctx.onLog("stdout", "[paperclip] Write helper unavailable: missing Paperclip API key or run ID\n");
   }
 
   // ── Execute ────────────────────────────────────────────────────────────
@@ -521,13 +619,20 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
-    cwd,
-    env,
-    timeoutSec,
-    graceSec,
-    onLog: wrappedOnLog,
-  });
+  let result: Awaited<ReturnType<typeof runChildProcess>>;
+  try {
+    result = await runChildProcess(ctx.runId, hermesCmd, args, {
+      cwd,
+      env,
+      timeoutSec,
+      graceSec,
+      onLog: wrappedOnLog,
+    });
+  } finally {
+    if (paperclipWriteHelperCreated) {
+      await fs.rm(path.dirname(paperclipWriteHelper), { recursive: true, force: true });
+    }
+  }
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");

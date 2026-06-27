@@ -202,7 +202,7 @@ test("keeps authoritative parent and ancestor context from task markdown", () =>
   expect(prompt).not.toContain("check the issue body or comments for references");
 });
 
-test("renders safe Paperclip API examples from environment variables with multiline update preservation", () => {
+test("renders safe Paperclip API examples from environment variables with helper-based write preservation", () => {
   const prompt = buildPrompt(baseContext(), {
     paperclipApiUrl: "http://paperclip.local/api",
   });
@@ -211,9 +211,12 @@ test("renders safe Paperclip API examples from environment variables with multil
   expect(prompt).toContain("Displayed command logs may redact secrets");
   expect(prompt).toContain('-H "Authorization: Bearer $PAPERCLIP_API_KEY"');
   expect(prompt).toContain('-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"');
+  expect(prompt).toContain("Prefer `$PAPERCLIP_WRITE_HELPER` for mutating issue writes");
   expect(prompt).toContain("body=$(cat <<'MD'");
-  expect(prompt).toContain("jq -n --arg status done --arg comment \"$body\"");
-  expect(prompt).toContain("--data-binary @-");
+  expect(prompt).toContain("printf '%s\\n' \"$body\" > /tmp/paperclip-comment.txt");
+  expect(prompt).toContain("python3 \"$PAPERCLIP_WRITE_HELPER\" patch-issue \"issue-1\" done /tmp/paperclip-comment.txt");
+  expect(prompt).not.toContain("jq -n --arg status done --arg comment \"$body\"");
+  expect(prompt).not.toContain("--data-binary @-");
   expect(prompt).not.toContain("Authorization: Bearer <");
 });
 
