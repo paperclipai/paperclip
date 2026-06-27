@@ -818,6 +818,16 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         result.skipped += 1;
         continue;
       }
+      // A paused assignee cannot act on an auto-reopened issue. When there is
+      // no queued/running/scheduled retry already in flight for that source
+      // issue, a productivity review has no productive outcome and can storm
+      // the manager (the manager may be unable to flip the source issue back).
+      // Still allow review creation if work is already pending/running, since
+      // that indicates the issue can make progress without unpausing first.
+      if (sourceAgent.status === "paused" && evidence.activeRunCount === 0) {
+        result.skipped += 1;
+        continue;
+      }
       let prefix = prefixCache.get(candidate.companyId);
       if (!prefix) {
         prefix = await getCompanyIssuePrefix(candidate.companyId);

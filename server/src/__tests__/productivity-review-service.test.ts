@@ -55,6 +55,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     startedAt?: Date;
     parentId?: string | null;
     originKind?: string;
+    agentStatus?: string;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
@@ -86,7 +87,7 @@ describeEmbeddedPostgres("productivity review service", () => {
         companyId,
         name: "Coder",
         role: "engineer",
-        status: "idle",
+        status: opts?.agentStatus ?? "idle",
         reportsTo: managerId,
         adapterType: "codex_local",
         adapterConfig: {},
@@ -358,6 +359,53 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(review?.description).toContain("Primary trigger: `long_active_duration`");
     expect(review?.priority).toBe("medium");
     expect(hold.held).toBe(false);
+  });
+
+  it("suppresses long-active productivity reviews for paused assignees with no active run pending", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+      agentStatus: "paused",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("allows productivity reviews for paused assignees when an active run is pending", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+      agentStatus: "paused",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      status: "queued",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      contextSnapshot: { issueId: seeded.issueId, taskId: seeded.issueId },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Active queued/running/scheduled runs: 1");
   });
 
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
