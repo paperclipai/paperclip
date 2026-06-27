@@ -80,8 +80,9 @@ function resolvePaperclipApiUrl(config: Record<string, unknown>): string {
     cfgString(config.paperclipApiUrl) ||
     process.env.PAPERCLIP_API_URL ||
     "http://127.0.0.1:3100/api";
+  paperclipApiUrl = paperclipApiUrl.replace(/\/+$/, "");
   if (!paperclipApiUrl.endsWith("/api")) {
-    paperclipApiUrl = paperclipApiUrl.replace(/\/+$/, "") + "/api";
+    paperclipApiUrl += "/api";
   }
   return paperclipApiUrl;
 }
