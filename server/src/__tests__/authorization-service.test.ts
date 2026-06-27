@@ -248,6 +248,81 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("simple mode");
   });
 
+  it("grants active non-admin board members the null-mapped company read surface (NEO-210/NEO-212)", async () => {
+    const company = await createCompany(db, "MemberVisibility");
+    const otherCompany = await createCompany(db, "MemberVisibilityOther");
+    const project = await createProject(db, company.id, "Visible");
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, { projectId: project.id });
+    const memberUserId = `user-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: memberUserId,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "board" as const, userId: memberUserId, source: "session" as const };
+
+    await expect(authorization.decide({
+      actor,
+      action: "agent:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "project:read",
+      resource: { type: "project", companyId: company.id, projectId: project.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "issue:read",
+      resource: { type: "issue", companyId: company.id, issueId: issue.id, projectId: project.id, status: issue.status },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+
+    // Cross-tenant isolation: a member of another company sees nothing here.
+    await expect(authorization.decide({
+      actor: { type: "board", userId: `user-${randomUUID()}`, source: "session" },
+      action: "agent:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_membership" });
+    void otherCompany;
+  });
+
+  it("keeps viewer board members read-only: visibility yes, privileged actions no (NEO-210/NEO-212)", async () => {
+    const company = await createCompany(db, "ViewerVisibility");
+    const project = await createProject(db, company.id, "Visible");
+    const viewerUserId = `user-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: viewerUserId,
+      status: "active",
+      membershipRole: "viewer",
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "board" as const, userId: viewerUserId, source: "session" as const };
+
+    await expect(authorization.decide({
+      actor,
+      action: "project:read",
+      resource: { type: "project", companyId: company.id, projectId: project.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "secrets:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+  });
+
   it("limits low-trust issue reads to the configured project and root issue boundary", async () => {
     const company = await createCompany(db, "LowTrustIssueReads");
     const project = await createProject(db, company.id, "Allowed");
