@@ -31,6 +31,8 @@ import {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  type IssueThreadInteraction,
+  type RequestConfirmationTarget,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
@@ -120,6 +122,137 @@ function executionPrincipalsEqual(
 ) {
   if (!left || !right || left.type !== right.type) return false;
   return left.type === "agent" ? left.agentId === right.agentId : left.userId === right.userId;
+}
+
+type HeartbeatPendingInteractionSummary = {
+  id: string;
+  kind: IssueThreadInteraction["kind"];
+  status: "pending";
+  continuationPolicy: IssueThreadInteraction["continuationPolicy"];
+  title: string | null;
+  summary: string | null;
+  idempotencyKey: string | null;
+  sourceCommentId: string | null;
+  sourceRunId: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+  authoritativeInteractionId: string;
+  isAuthoritative: boolean;
+  duplicatePendingCount: number;
+  target?: RequestConfirmationTarget | null;
+  questionCount?: number;
+  suggestedTaskCount?: number;
+};
+
+function normalizePendingInteractionText(value: string | null | undefined) {
+  if (!value) return null;
+  const normalized = value.trim().replace(/\s+/g, " ").toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function buildPendingInteractionGroupKey(interaction: IssueThreadInteraction) {
+  const base = `${interaction.kind}:${interaction.continuationPolicy}`;
+
+  switch (interaction.kind) {
+    case "request_confirmation": {
+      const target = interaction.payload.target ?? null;
+      if (target) {
+        if (target.type === "issue_document") {
+          return `${base}:target:issue_document:${target.issueId ?? ""}:${target.key}:${target.revisionId}`;
+        }
+        return `${base}:target:custom:${target.key}:${target.revisionId ?? ""}`;
+      }
+
+      const title = normalizePendingInteractionText(interaction.title);
+      if (title) return `${base}:title:${title}`;
+
+      const prompt = normalizePendingInteractionText(interaction.payload.prompt);
+      return prompt ? `${base}:prompt:${prompt}` : `${base}:id:${interaction.id}`;
+    }
+    case "ask_user_questions": {
+      const title = normalizePendingInteractionText(interaction.title ?? interaction.payload.title ?? null) ?? "";
+      const questionIds = interaction.payload.questions
+        .map((question) => normalizePendingInteractionText(question.id) ?? question.id)
+        .join(",");
+      return `${base}:title:${title}:questions:${questionIds}`;
+    }
+    case "suggest_tasks": {
+      const title = normalizePendingInteractionText(interaction.title) ?? "";
+      const clientKeys = interaction.payload.tasks
+        .map((task) => normalizePendingInteractionText(task.clientKey) ?? task.clientKey)
+        .join(",");
+      return `${base}:title:${title}:tasks:${clientKeys}`;
+    }
+  }
+
+  return `${base}:id:${(interaction as IssueThreadInteraction).id}`;
+}
+
+function summarizeHeartbeatPendingInteractions(
+  interactions: IssueThreadInteraction[],
+): HeartbeatPendingInteractionSummary[] {
+  const pending = interactions
+    .filter((interaction): interaction is IssueThreadInteraction & { status: "pending" } => interaction.status === "pending")
+    .slice()
+    .sort((left, right) => {
+      const leftCreatedAt = new Date(left.createdAt).getTime();
+      const rightCreatedAt = new Date(right.createdAt).getTime();
+      if (leftCreatedAt !== rightCreatedAt) return leftCreatedAt - rightCreatedAt;
+      return left.id.localeCompare(right.id);
+    });
+
+  const groupKeyById = new Map<string, string>();
+  const groupByKey = new Map<string, typeof pending>();
+
+  for (const interaction of pending) {
+    const groupKey = buildPendingInteractionGroupKey(interaction);
+    groupKeyById.set(interaction.id, groupKey);
+    const existing = groupByKey.get(groupKey) ?? [];
+    existing.push(interaction);
+    groupByKey.set(groupKey, existing);
+  }
+
+  return pending.map((interaction) => {
+    const groupKey = groupKeyById.get(interaction.id) ?? interaction.id;
+    const group = groupByKey.get(groupKey) ?? [interaction];
+    const authoritativeInteractionId = group[0]?.id ?? interaction.id;
+    const shared = {
+      id: interaction.id,
+      kind: interaction.kind,
+      status: "pending" as const,
+      continuationPolicy: interaction.continuationPolicy,
+      title: interaction.title ?? null,
+      summary: interaction.summary ?? null,
+      idempotencyKey: interaction.idempotencyKey ?? null,
+      sourceCommentId: interaction.sourceCommentId ?? null,
+      sourceRunId: interaction.sourceRunId ?? null,
+      createdAt: interaction.createdAt,
+      updatedAt: interaction.updatedAt,
+      authoritativeInteractionId,
+      isAuthoritative: authoritativeInteractionId === interaction.id,
+      duplicatePendingCount: Math.max(group.length - 1, 0),
+    };
+
+    switch (interaction.kind) {
+      case "request_confirmation":
+        return {
+          ...shared,
+          target: interaction.payload.target ?? null,
+        };
+      case "ask_user_questions":
+        return {
+          ...shared,
+          questionCount: interaction.payload.questions.length,
+        };
+      case "suggest_tasks":
+        return {
+          ...shared,
+          suggestedTaskCount: interaction.payload.tasks.length,
+        };
+      default:
+        return shared;
+    }
+  });
 }
 
 function buildExecutionStageWakeContext(input: {
@@ -1104,6 +1237,9 @@ export function issueRoutes(
     const currentExecutionWorkspacePromise = issue.executionWorkspaceId
       ? executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : Promise.resolve(null);
+    const pendingInteractionsPromise = issue.status === "in_review"
+      ? issueThreadInteractionService(db).listForIssue(issue.id)
+      : Promise.resolve([]);
     const [
       { project, goal },
       ancestors,
@@ -1115,6 +1251,7 @@ export function issueRoutes(
       attachments,
       continuationSummary,
       currentExecutionWorkspace,
+      interactionRows,
     ] =
       await Promise.all([
         resolveIssueProjectAndGoal(issue),
@@ -1127,7 +1264,10 @@ export function issueRoutes(
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
+        pendingInteractionsPromise,
       ]);
+
+    const pendingInteractions = summarizeHeartbeatPendingInteractions(interactionRows);
 
     res.json({
       issue: {
@@ -1187,6 +1327,8 @@ export function issueRoutes(
         contentPath: withContentPath(a).contentPath,
         createdAt: a.createdAt,
       })),
+      pendingInteractionCount: pendingInteractions.length,
+      pendingInteractions,
       continuationSummary: continuationSummary
         ? {
             key: continuationSummary.key,
