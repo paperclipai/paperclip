@@ -956,7 +956,7 @@ function allowIssueMentionGrant(action: AuthorizationAction): AuthorizationDecis
 }
 
 function isStaleIssueStatus(status: string | null | undefined) {
-  return status !== "in_progress";
+  return status !== null && status !== undefined && status !== "in_progress";
 }
 
   async function decide(input: {
