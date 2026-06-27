@@ -177,6 +177,18 @@ These are hard rules. Past Architect runs have wasted 60+ minutes wrestling with
 
 ## Landing: commit, push, and open the PR (ONE atomic block)
 
+> **LAND is now backstopped by the Coordinator (AA-1654).** The Coordinator
+> runs a decoupled §Landing sweep every fire and idempotently pushes + opens
+> the PR for any Verify branch that is cargo-green and clean-merges into
+> `origin/main`. So this block is the Architect's *best-effort fast path*, not
+> the only net: if your run dies before the push, the work is no longer
+> stranded — the next Coordinator fire lands it. Still run this block when you
+> reach a green sentinel (it saves a cadence of latency), but a missed push is
+> now a latency hit, not a lost PR needing an operator drain. (A genuine rebase
+> conflict is the one case the sweep cannot land — Coordinator routes that
+> straight to `blocked` for an operator merge, so do not loop trying to resolve
+> it here either.)
+
 On the wake where the sentinel reads `0` (cargo passed), land the work.
 **Commit, push, and PR are a SINGLE self-contained Bash block — never
 split across turns.** They were previously two sections ("commit your
