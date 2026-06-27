@@ -7052,6 +7052,8 @@ export function issueRoutes(
     if (req.actor.type === "agent" && !checkoutRunId) return;
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId, {
       allowSourceScopedRecoveryOwner: allowSourceScopedRecoveryOwnerCheckout,
+      recoveryActionId: activeRecoveryActionForCheckout?.id ?? null,
+      recoveryActionStatus: activeRecoveryActionForCheckout?.status ?? null,
     });
     const actor = getActorInfo(req);
 

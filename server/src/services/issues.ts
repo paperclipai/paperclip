@@ -6754,7 +6754,11 @@ export function issueService(db: Db) {
       agentId: string,
       expectedStatuses: string[],
       checkoutRunId: string | null,
-      options: { allowSourceScopedRecoveryOwner?: boolean } = {},
+      options: {
+        allowSourceScopedRecoveryOwner?: boolean;
+        recoveryActionId?: string | null;
+        recoveryActionStatus?: string | null;
+      } = {},
     ) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
@@ -6855,7 +6859,13 @@ export function issueService(db: Db) {
 
       if (options.allowSourceScopedRecoveryOwner) {
         logger.warn(
-          { issueId: id, agentId, expectedStatuses },
+          {
+            issueId: id,
+            agentId,
+            expectedStatuses,
+            recoveryActionId: options.recoveryActionId ?? null,
+            recoveryActionStatus: options.recoveryActionStatus ?? null,
+          },
           "source-scoped recovery owner checkout update matched no rows",
         );
       }
