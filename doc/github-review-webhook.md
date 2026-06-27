@@ -1,16 +1,20 @@
 # GitHub Review Webhook -> Paperclip
 
-This flow connects GitHub pull request reviews to Paperclip so review feedback can become actionable tasks.
+This flow connects GitHub pull request reviews to Paperclip so Codex feedback can drive a review/fix loop. It does not merge pull requests.
 
 ## Expected Flow
 
-1. A human asks the Hermes Agent to implement something.
-2. The Hermes Agent analyzes the request and delegates work to one or more capable agents.
-3. The agent or agents create a branch, complete the work, and open a pull request.
+1. A human asks the Hermes Agent to implement or adjust something.
+2. The Hermes Agent hands the work to Paperclip.
+3. Paperclip creates a branch, implements the change, commits, pushes, and opens a pull request.
 4. Codex on GitHub (`chatgpt-codex-connector[bot]` or another configured bot) reviews the pull request and writes comments or improvement suggestions.
 5. GitHub sends a webhook to Paperclip.
-6. Paperclip normalizes the review, applies allowlist/signature/idempotency rules, and creates or updates a task.
-7. The responsible agent receives the task and fixes the pull request on the same branch.
+6. Paperclip normalizes the review and applies allowlist/signature/idempotency rules.
+7. If the Codex review asks for a fix, correction, improvement, test, or follow-up, Paperclip creates or updates a task for the responsible agent to fix the same PR branch.
+8. The loop repeats from the next Codex review until Codex does not request any fix, correction, or improvement.
+9. When Codex does not request changes, Paperclip returns `completed`; Hermes reports that the review/fix loop is complete and translates the Codex message to Brazilian Portuguese for the human.
+
+Paperclip and Hermes must not merge automatically as part of this webhook flow. Merge remains a separate human/maintainer decision.
 
 ## Endpoint
 
@@ -65,3 +69,5 @@ For each actionable review, Paperclip records:
 - acceptance criteria for the fix
 
 If a task already exists for the same review or comment, Paperclip updates the task instead of creating another one.
+
+When a Codex review has no requested fixes or improvements, the webhook response is `kind: "completed"` and no Paperclip task is created for that review.

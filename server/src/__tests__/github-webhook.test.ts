@@ -174,7 +174,7 @@ describe("github webhook helpers", () => {
     });
   });
 
-  it("does not treat approval merge language as actionable", () => {
+  it("marks Codex reviews with no requested fixes or improvements as completed without merge semantics", () => {
     const normalized = normalizeGitHubWebhookEvent({
       event: "pull_request_review",
       deliveryId: "delivery-approved",
@@ -196,7 +196,7 @@ describe("github webhook helpers", () => {
         review: {
           id: 9002,
           state: "approved",
-          body: "LGTM, looks good, should merge.",
+          body: "LGTM, looks good. No corrections or improvements requested.",
           html_url: "https://github.com/acme/repo/pull/42#review-9002",
           user: { login: "chatgpt-codex-connector[bot]" },
         },
@@ -205,7 +205,8 @@ describe("github webhook helpers", () => {
     });
 
     expect(normalized).not.toBeNull();
-    expect(normalized).toMatchObject({ disposition: "ignored" });
+    expect(normalized).toMatchObject({ disposition: "completed" });
+    expect(normalized!.dispositionReason).not.toMatch(/merge/i);
   });
 
   it("ignores comments on regular issues", () => {

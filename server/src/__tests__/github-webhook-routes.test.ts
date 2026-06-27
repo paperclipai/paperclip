@@ -216,6 +216,51 @@ describe("github webhook route", () => {
     }));
   });
 
+  it("returns completed for Codex reviews without fixes or improvements and does not create a Paperclip task", async () => {
+    const payload = {
+      action: "submitted",
+      repository: {
+        full_name: "acme/repo",
+        html_url: "https://github.com/acme/repo",
+      },
+      pull_request: {
+        number: 7,
+        title: "Fix review flow",
+        body: "PR body",
+        html_url: "https://github.com/acme/repo/pull/7",
+        head: { ref: "feature/review-flow", sha: "deadbeef" },
+        base: { ref: "main" },
+        user: { login: "alice" },
+      },
+      review: {
+        id: 1002,
+        state: "approved",
+        body: "LGTM. No corrections or improvements requested.",
+        html_url: "https://github.com/acme/repo/pull/7#review-1002",
+        user: { login: "chatgpt-codex-connector[bot]" },
+      },
+      sender: { login: "chatgpt-codex-connector[bot]" },
+    };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const signature = `sha256=${createHmac("sha256", "github-secret").update(rawBody).digest("hex")}`;
+    const req = createRequest({ event: "pull_request_review", deliveryId: "delivery-completed", signature, body: payload });
+    const res = createResponse();
+
+    await handleGithubWebhookRequest({} as never, req, res, { issueStore: mockIssueStore });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({
+      ok: true,
+      processed: true,
+      kind: "completed",
+      disposition: "completed",
+      originId: "github:webhook|acme/repo|pull_request_review|submitted|pr:7|item:1002",
+    });
+    expect(JSON.stringify(res.body)).not.toMatch(/merge/i);
+    expect(mockIssueStore.create).not.toHaveBeenCalled();
+    expect(mockIssueStore.update).not.toHaveBeenCalled();
+  });
+
   it("updates an existing task with review comment path, line, and body", async () => {
     mockIssueStore.issues.set("github:webhook|acme/repo|pull_request_review_comment|created|pr:8|item:2001", {
       id: "issue-9",

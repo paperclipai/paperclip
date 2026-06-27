@@ -76,6 +76,18 @@ export async function handleGithubWebhookRequest(
       return;
     }
 
+    if (result.kind === "completed") {
+      res.status(200).json({
+        ok: true,
+        processed: true,
+        kind: result.kind,
+        disposition: result.normalized.disposition,
+        originId: result.normalized.originId,
+        message: result.normalized.dispositionReason,
+      });
+      return;
+    }
+
     res.status(result.kind === "created" ? 201 : 200).json({
       ok: true,
       processed: true,

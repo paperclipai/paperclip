@@ -14,7 +14,7 @@ export const GITHUB_WEBHOOK_ALLOWED_EVENTS = [
 export const DEFAULT_GITHUB_BOT_LOGINS = ["chatgpt-codex-connector[bot]"];
 
 export type GitHubWebhookEvent = (typeof GITHUB_WEBHOOK_ALLOWED_EVENTS)[number];
-export type GitHubWebhookDisposition = "actionable" | "triage" | "ignored";
+export type GitHubWebhookDisposition = "actionable" | "triage" | "completed" | "ignored";
 
 export type GitHubWebhookConfig = {
   secret: string;
@@ -269,20 +269,19 @@ function normalizeText(value: string | null | undefined): string {
   return (value ?? "").trim().replace(/\s+/g, " ");
 }
 
-function hasApprovalLanguage(text: string): boolean {
+function hasCompletionLanguage(text: string): boolean {
   const normalized = text.toLowerCase();
   return [
     "lgtm",
     "looks good",
     "approved",
     "ship it",
-    "ready to merge",
-    "good to merge",
-    "merge it",
-    "should merge",
     "good to go",
     "all good",
     "no blockers",
+    "no corrections",
+    "no improvements",
+    "no changes requested",
   ].some((needle) => normalized.includes(needle));
 }
 
@@ -404,7 +403,7 @@ function buildIssueBody(input: GitHubWebhookNormalizedEvent) {
     "Feedback body:",
     normalizeText(firstString(input.review?.body, input.comment?.body, input.pullRequest.body, "No content provided.") ?? "No content provided."),
     "",
-    `Disposition: ${input.disposition === "actionable" ? "actionable" : input.disposition === "triage" ? "triage" : "ignored"}`,
+    `Disposition: ${input.disposition === "actionable" ? "actionable" : input.disposition === "triage" ? "triage" : input.disposition === "completed" ? "completed" : "ignored"}`,
     `Reason: ${input.dispositionReason}`,
     "",
     "Acceptance criteria:",
@@ -476,7 +475,7 @@ function resolveDisposition(input: {
       if (hasActionableMarker(body)) {
         return { disposition: "actionable", reason: "Approved or dismissed review still includes a clear change request." };
       }
-      return { disposition: "ignored", reason: "Approved or dismissed review does not include a clear change request." };
+      return { disposition: "completed", reason: "Codex did not request fixes or improvements; the review loop is complete." };
     }
     if (state === "changes_requested") {
       return { disposition: "actionable", reason: "Review with changes_requested needs a change." };
@@ -493,8 +492,8 @@ function resolveDisposition(input: {
     if (hasActionableMarker(body)) {
       return { disposition: "actionable", reason: "Review comment includes clear change instructions." };
     }
-    if (hasApprovalLanguage(body)) {
-      return { disposition: "ignored", reason: "Review comment is approval or merge language, not a change request." };
+    if (hasCompletionLanguage(body)) {
+      return { disposition: "completed", reason: "Codex did not request fixes or improvements; the review loop is complete." };
     }
     return { disposition: "triage", reason: "Review comment is ambiguous and goes to triage." };
   }
@@ -503,8 +502,8 @@ function resolveDisposition(input: {
     if (hasActionableMarker(body)) {
       return { disposition: "actionable", reason: "PR comment includes clear change instructions." };
     }
-    if (hasApprovalLanguage(body)) {
-      return { disposition: "ignored", reason: "PR comment is approval or merge language, not a change request." };
+    if (hasCompletionLanguage(body)) {
+      return { disposition: "completed", reason: "Codex did not request fixes or improvements; the review loop is complete." };
     }
     return { disposition: "triage", reason: "PR comment is accepted as triage." };
   }
@@ -730,6 +729,10 @@ export type GitHubWebhookProcessResult =
       reason: string;
     }
   | {
+      kind: "completed";
+      normalized: GitHubWebhookNormalizedEvent;
+    }
+  | {
       kind: "created";
       issueId: string;
       normalized: GitHubWebhookNormalizedEvent;
@@ -775,6 +778,9 @@ export async function processGitHubWebhook(input: {
   }
   if (normalized.disposition === "ignored") {
     return { kind: "ignored", reason: normalized.dispositionReason };
+  }
+  if (normalized.disposition === "completed") {
+    return { kind: "completed", normalized };
   }
 
   const store = input.issueStore ?? createGitHubWebhookIssueStore(input.db);
