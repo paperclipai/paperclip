@@ -7032,7 +7032,10 @@ export function issueRoutes(
             },
             "failed to verify recovery checkout authorization and assignment fallback was denied",
           );
-          res.status(500).json({ error: "Failed to verify recovery checkout authorization" });
+          res.status(500).json({
+            error: "Failed to verify recovery checkout authorization",
+            reason: "recovery_lookup_failed",
+          });
           return;
         }
         throw err;

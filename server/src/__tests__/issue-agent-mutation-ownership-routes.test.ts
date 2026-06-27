@@ -1066,6 +1066,7 @@ describe("agent issue mutation checkout ownership", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(500);
     expect(res.body.error).toBe("Failed to verify recovery checkout authorization");
+    expect(res.body.reason).toBe("recovery_lookup_failed");
     expect(mockIssueService.checkout).not.toHaveBeenCalled();
   });
 
