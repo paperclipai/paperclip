@@ -2023,6 +2023,18 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
+      if (boundaryDecision.reason === "allow_company_ceo") {
+        if (issue.status !== "in_progress") return true;
+        res.status(409).json({
+          error: "Issue is checked out by another agent",
+          details: {
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            actorAgentId,
+          },
+        });
+        return false;
+      }
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
       }

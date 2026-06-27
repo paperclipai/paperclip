@@ -706,6 +706,35 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 
+  it("allows same-company CEO agents to comment and mutate assigned issues", async () => {
+    const company = await createCompany(db, "CeoIssueScope");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const ceoAgent = await createAgent(db, company.id, { role: "ceo" });
+    const issue = await createIssue(db, company.id, {
+      title: "CEO scoped issue",
+      assigneeAgentId: ownerAgent.id,
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "agent", agentId: ceoAgent.id, companyId: company.id, source: "agent_key" } as const;
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      assigneeAgentId: ownerAgent.id,
+      status: issue.status,
+    } as const;
+
+    await expect(authorization.decide({ actor, action: "issue:comment", resource })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_company_ceo",
+    });
+    await expect(authorization.decide({ actor, action: "issue:mutate", resource })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_company_ceo",
+    });
+  });
+
   it("allows a mentioned non-assignee to comment when the mention author is the issue assignee", async () => {
     const company = await createCompany(db, "MentionCommentAssigneeGrant");
     const allowedProject = await createProject(db, company.id, "MentionAssigneeAllowed");
