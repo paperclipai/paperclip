@@ -437,8 +437,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const rawModels = fetchedModels ?? externalModels ?? [];
-  const adapterCommandField =
-    adapterType === "hermes_local" ? "hermesCommand" : "command";
+  const adapterCommandField = "command";
   const acpxAgent =
     adapterType === "acpx_local"
       ? isCreate
@@ -529,17 +528,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     const next = { ...base, ...overlay.adapterConfig };
     if (adapterConfigPatch) {
       Object.assign(next, adapterConfigPatch);
-    }
-    if (adapterType === "hermes_local") {
-      const hermesCommand =
-        typeof next.hermesCommand === "string" && next.hermesCommand.length > 0
-          ? next.hermesCommand
-          : typeof next.command === "string" && next.command.length > 0
-            ? next.command
-            : undefined;
-      if (hermesCommand) {
-        next.hermesCommand = hermesCommand;
-      }
     }
     return next;
   }
@@ -1202,9 +1190,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                           "adapterConfig",
                           adapterCommandField,
                           String(
-                            (adapterType === "hermes_local"
-                              ? config.hermesCommand ?? config.command
-                              : config.command) ?? "",
+                            config.command ?? "",
                           ),
                         )
                   }

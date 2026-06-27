@@ -207,6 +207,10 @@ export {
   updateAgentInstructionsBundleSchema,
   upsertAgentInstructionsFileSchema,
   updateAgentInstructionsPathSchema,
+  agentApiKeyScopeSchema,
+  normalizeAgentApiKeyScope,
+  standardAgentKeyScopeSchema,
+  taskBridgeAgentKeyScopeSchema,
   createAgentKeySchema,
   agentMineInboxQuerySchema,
   wakeAgentSchema,
@@ -220,6 +224,8 @@ export {
   type UpdateAgentInstructionsBundle,
   type UpsertAgentInstructionsFile,
   type UpdateAgentInstructionsPath,
+  type AgentApiKeyScope,
+  type TaskBridgeAgentKeyScope,
   type CreateAgentKey,
   type AgentMineInboxQuery,
   type WakeAgent,
@@ -505,6 +511,27 @@ export {
   createAssetImageMetadataSchema,
   type CreateAssetImageMetadata,
 } from "./asset.js";
+
+export {
+  pipelineAutomationRetryCleanupOptionsSchema,
+  pipelineAutomationRetryRequestSchema,
+  pipelineAutomationRetryScopeSchema,
+  pipelineStageAutomationSchema,
+  pipelineStageApproverSchema,
+  pipelineStageConfigSchema,
+  pipelineStageKindSchema,
+  pipelineStageOnEnterSchema,
+  pipelineStageVariableSchema,
+  type PipelineAutomationRetryCleanupOptions,
+  type PipelineAutomationRetryRequest,
+  type PipelineAutomationRetryScope,
+  type PipelineStageAutomationConfig,
+  type PipelineStageApprover,
+  type PipelineStageConfig,
+  type PipelineStageKind,
+  type PipelineStageOnEnter,
+  type PipelineStageVariable,
+} from "./pipeline.js";
 
 export {
   createCompanyInviteSchema,

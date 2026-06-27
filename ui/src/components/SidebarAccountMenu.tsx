@@ -19,6 +19,7 @@ import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
 import { LocaleSwitcher } from "./LocaleSwitcher";
 import { t, useTranslation } from "@/i18n";
+import { SidebarServerInfo } from "./SidebarServerInfo";
 
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
@@ -241,6 +242,7 @@ export function SidebarAccountMenu({
                   </span>
                 </button>
               ) : null}
+              <SidebarServerInfo />
             </div>
           </div>
         </PopoverContent>

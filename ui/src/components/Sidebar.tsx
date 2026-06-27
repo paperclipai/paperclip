@@ -58,6 +58,12 @@ export function Sidebar() {
   });
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
+  const showPipelines = experimentalSettings?.enablePipelines === true;
+  // IA flag: branch the sidebar nav presentation. Default ON =
+  // streamlined (top-level Projects link). Users can opt out in experiments to
+  // get classic (per-project collapsible, no Projects nav link). Issue/Task
+  // wording is split to PR #7651. Gating is navigation-only; all routes stay
+  // registered in both modes.
   const streamlined = experimentalSettings?.enableStreamlinedLeftNavigation !== false;
   const conferenceRoomChatEnabled = experimentalSettings?.enableConferenceRoomChat === true;
 
@@ -158,6 +164,9 @@ export function Sidebar() {
         <SidebarSection label={t("nav.sections.work")}>
           <SidebarNavItem to="/issues" label={t("nav.items.tasks")} icon={CircleDot} />
           <SidebarNavItem to="/routines" label={t("nav.items.routines")} icon={Repeat} />
+          {showPipelines ? (
+            <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
+          ) : null}
           <SidebarNavItem to="/goals" label={t("nav.items.goals")} icon={Target} />
           <SidebarNavItem to="/artifacts" label={t("nav.items.artifacts")} icon={Package} />
           <SidebarNavItem to="/skills" label={t("nav.items.skills")} icon={Boxes} />

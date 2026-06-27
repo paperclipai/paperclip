@@ -1967,12 +1967,36 @@ describe("IssueProperties", () => {
             sourceLabels: ["Comment"],
           },
         },
+        {
+          mentionCount: 1,
+          sourceLabels: ["Comment"],
+          pill: {
+            providerKey: "url",
+            objectType: "link",
+            displayKey: null,
+            iconKey: null,
+            statusCategory: "unknown",
+            statusIconKey: null,
+            statusLabel: null,
+            liveness: "unknown",
+            displayTitle: "https://example.com/release-notes",
+            url: "https://example.com/release-notes",
+          },
+          group: {
+            object: null,
+            mentions: [],
+            mentionCount: 1,
+            sourceLabels: ["Comment"],
+          },
+        },
       ],
     });
     await flush();
 
     expect(container.textContent).toContain("Github Pull Request");
     expect(container.textContent).toContain("Github Issue");
+    expect(container.textContent).toContain("URL");
+    expect(container.textContent).not.toContain("URL link");
     expect(container.textContent).toContain("PR 241 - Merged");
     expect(container.textContent).toContain("Merged");
     expect(container.textContent).toContain("Open");

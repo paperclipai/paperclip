@@ -410,6 +410,7 @@ interface IssueChatThreadProps {
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
+  autoScrollToLatestOnInitialLoad?: boolean;
   emptyMessage?: string;
   footer?: ReactNode;
   variant?: "full" | "embedded";
@@ -4145,6 +4146,7 @@ export function IssueChatThread({
   composerHint = null,
   showComposer = true,
   showJumpToLatest,
+  autoScrollToLatestOnInitialLoad = true,
   emptyMessage,
   footer,
   variant = "full",
@@ -4481,6 +4483,7 @@ export function IssueChatThread({
   // mount, after messages first populate.
   useEffect(() => {
     if (didInitialLatestScrollRef.current) return;
+    if (!autoScrollToLatestOnInitialLoad) return;
     if (variant !== "full") return;
     if (messages.length === 0) return;
     const hash = location.hash || (typeof window !== "undefined" ? window.location.hash : "");
@@ -4498,7 +4501,7 @@ export function IssueChatThread({
     // we resolve and scroll to the latest comment's anchor.
     const frame = requestAnimationFrame(() => scrollToLatestCommentWithSettle(latestMessagesRef.current));
     return () => cancelAnimationFrame(frame);
-  }, [messages, variant, location.hash]);
+  }, [autoScrollToLatestOnInitialLoad, messages, variant, location.hash]);
 
   function jumpToLatestFallback() {
     if (useVirtualizedThread) {

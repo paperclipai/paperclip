@@ -998,6 +998,11 @@ describeEmbeddedPostgres("secretService", () => {
         version: 1,
       },
     }));
+
+    const persisted = await svc.getByName(companyId, "Create Rollback");
+    expect(persisted).toBeNull();
+    const versions = await db.select().from(companySecretVersions);
+    expect(versions).toHaveLength(0);
   });
 
   it("keeps a local cleanup handle when create rollback cleanup fails", async () => {

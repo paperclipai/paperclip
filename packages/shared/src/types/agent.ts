@@ -14,6 +14,7 @@ import type {
   TrustPreset,
 } from "../trust-policy.js";
 import type { AgentOrgChainHealth } from "../agent-eligibility.js";
+import type { AgentApiKeyScope } from "../validators/agent.js";
 
 export interface AgentPermissions extends Record<string, unknown> {
   canCreateAgents: boolean;
@@ -116,6 +117,7 @@ export type ClearAgentErrorResponse = Agent;
 export interface AgentKeyCreated {
   id: string;
   name: string;
+  scope: AgentApiKeyScope;
   token: string;
   createdAt: Date;
 }
