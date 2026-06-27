@@ -1,4 +1,9 @@
 # syntax=docker/dockerfile:1.20
+
+# ---------- Hermes runtime from pinned stable release ----------
+ARG HERMES_AGENT_IMAGE=nousresearch/hermes-agent:v2026.6.19
+FROM ${HERMES_AGENT_IMAGE} AS hermes_runtime
+
 FROM node:lts-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
@@ -67,6 +72,18 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
+# Hermes runtime from pinned image
+COPY --from=hermes_runtime /opt/hermes /opt/hermes
+COPY --from=hermes_runtime /usr/local/bin/uv /usr/local/bin/uv
+COPY --from=hermes_runtime /usr/local/bin/uvx /usr/local/bin/uvx
+RUN ln -s /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes \
+  && ln -s /opt/hermes/.venv/bin/hermes-agent /usr/local/bin/hermes-agent \
+  && ln -s /opt/hermes/.venv/bin/hermes-acp /usr/local/bin/hermes-acp \
+  && chown -R node:node /opt/hermes \
+  && mkdir -p /paperclip/hermes \
+  && chown node:node /paperclip/hermes \
+  && hermes --version
+
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
@@ -82,6 +99,11 @@ ENV NODE_ENV=production \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
+  HERMES_HOME=/paperclip/hermes \
+  HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist \
+  PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright \
+  PYTHONUNBUFFERED=1 \
+  PATH=/opt/hermes/.venv/bin:${PATH} \
   OPENCODE_ALLOW_ALL_MODELS=true \
   GEMINI_SANDBOX=false
 

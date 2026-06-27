@@ -11,6 +11,7 @@ services:
       HOME: "/home/reviewer"
       CODEX_HOME: "/home/reviewer/.codex"
       CLAUDE_HOME: "/home/reviewer/.claude"
+      HERMES_HOME: "/home/reviewer/.hermes"
       PAPERCLIP_HOME: "/home/reviewer/.paperclip-review"
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
