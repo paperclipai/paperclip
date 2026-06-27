@@ -57,7 +57,7 @@ function mostAuthoritativeVerdict(a?: ParsedVerdict["verdict"], b?: ParsedVerdic
 }
 
 function stripFencedCodeBlocks(body: string): string {
-  return body.replace(/```[^`]*?```/gs, "");
+  return body.replace(/```[\s\S]*?```/g, "");
 }
 
 const VERDICT_KEYWORD_RE = /\*\*(?:APPROVE|REQUEST_CHANGES|LGTM|APPROVED)\*\*/g;
@@ -86,10 +86,10 @@ function extractVerdictFromPattern(body: string): ParsedVerdict["verdict"] | und
   const headingMatch = body.match(VERDICT_HEADING_RE);
   if (headingMatch) {
     const heading = headingMatch[0] as string;
-    let headingVerdict: ParsedVerdict["verdict"] | undefined;
-    if (heading.includes("REQUEST_CHANGES")) headingVerdict = "REQUEST_CHANGES";
-    else if (heading.includes("APPROVE")) headingVerdict = "APPROVE";
-    else if (heading.includes("LGTM")) headingVerdict = "LGTM";
+    const headingVerdictCapture = heading.match(/\b(?:APPROVE|REQUEST_CHANGES|LGTM|APPROVED)\b/);
+    const headingVerdict = headingVerdictCapture
+      ? normaliseVerdict(headingVerdictCapture[0])
+      : undefined;
     best = mostAuthoritativeVerdict(best, headingVerdict);
   }
 
@@ -99,10 +99,8 @@ function extractVerdictFromPattern(body: string): ParsedVerdict["verdict"] | und
   keywordRe.lastIndex = 0;
   while ((keywordMatch = keywordRe.exec(body)) !== null) {
     const raw = keywordMatch[0] as string;
-    let kw: ParsedVerdict["verdict"] | undefined;
-    if (raw.includes("REQUEST_CHANGES")) kw = "REQUEST_CHANGES";
-    else if (raw.includes("APPROVE")) kw = "APPROVE";
-    else if (raw.includes("LGTM")) kw = "LGTM";
+    const kwCapture = raw.match(/\b(?:APPROVE|REQUEST_CHANGES|LGTM|APPROVED)\b/);
+    const kw = kwCapture ? normaliseVerdict(kwCapture[0]) : undefined;
     best = mostAuthoritativeVerdict(best, kw);
   }
 
