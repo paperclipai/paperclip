@@ -2957,6 +2957,8 @@ async function listIssueBlockedInboxAttentionMap(
                 return "Assign blocker";
               case "blocked_by_assigned_backlog_issue":
                 return "Resume parked blocker";
+              case "blocked_without_blocker_edge":
+                return "Create blocker edge";
               case "blocked_by_uninvokable_assignee":
                 return "Assign active owner";
               case "blocked_by_cancelled_issue":
