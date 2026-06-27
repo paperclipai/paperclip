@@ -10,11 +10,13 @@ const serverPackageJson = JSON.parse(
 
 describe("PEN-1198 audit dependency remediation", () => {
   it("keeps high-risk production dependency paths on patched ranges", () => {
-    expect(rootPackageJson.pnpm.overrides["@connectrpc/connect-node>undici"]).toBe(
+    const overrides = rootPackageJson.pnpm.overrides;
+
+    expect(overrides["@connectrpc/connect-node>undici"]).toBe(
       ">=6.27.0 <7",
     );
-    expect(rootPackageJson.pnpm.overrides["jsdom>undici"]).toBe(">=7.28.0 <8");
-    expect(rootPackageJson.pnpm.overrides.multer).toBe(">=2.2.0 <3");
+    expect(overrides["jsdom>undici"]).toBe(">=7.28.0 <8");
+    expect(overrides.multer).toBe(">=2.2.0 <3");
     expect(serverPackageJson.dependencies.multer).toBe("^2.2.0");
   });
 });
