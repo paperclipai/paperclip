@@ -511,18 +511,38 @@ export function agentRoutes(
 
   async function buildAgentDetail(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
-    options?: { restricted?: boolean },
+    options?: { restricted?: boolean; revealEnv?: boolean },
   ) {
     const [chainOfCommand, accessState] = await Promise.all([
       svc.getChainOfCommand(agent.id),
       buildAgentAccessState(agent),
     ]);
 
+    const baseAgent = options?.restricted
+      ? redactForRestrictedAgentView(agent)
+      : {
+          ...agent,
+          adapterConfig: redactAdapterConfigForResponse(agent.adapterConfig, {
+            revealEnv: options?.revealEnv === true,
+          }).adapterConfig,
+        };
+
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...baseAgent,
       chainOfCommand,
       access: accessState,
     };
+  }
+
+  async function buildAgentDetailForRequest(
+    req: Request,
+    agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+  ) {
+    const isSelf = req.actor.type === "agent" && req.actor.agentId === agent.id;
+    const canReadSecrets = isSelf
+      ? true
+      : await actorCanReadAgentSecrets(req, agent.companyId, agent.id);
+    return buildAgentDetail(agent, { revealEnv: canReadSecrets });
   }
 
   async function applyDefaultAgentTaskAssignGrant(
@@ -601,6 +621,41 @@ export function agentRoutes(
     if (!actorAgent || actorAgent.companyId !== companyId) return false;
     const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "agents:create");
     return allowedByGrant || canCreateAgents(actorAgent);
+  }
+
+  async function actorCanReadAgentSecrets(
+    req: Request,
+    companyId: string,
+    targetAgentId: string,
+  ): Promise<boolean> {
+    if (req.actor.type === "agent" && req.actor.agentId === targetAgentId) {
+      return true;
+    }
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") {
+      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+      if (await access.canUser(companyId, req.actor.userId, "secrets:read")) return true;
+      return false;
+    }
+    if (!req.actor.agentId) return false;
+    const actorAgent = await svc.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== companyId) return false;
+    return access.hasPermission(companyId, "agent", actorAgent.id, "secrets:read");
+  }
+
+  async function actorCanReadAgentSecretsGlobally(
+    req: Request,
+    companyId: string,
+  ): Promise<boolean> {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "board") {
+      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+      return access.canUser(companyId, req.actor.userId, "secrets:read");
+    }
+    if (!req.actor.agentId) return false;
+    const actorAgent = await svc.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== companyId) return false;
+    return access.hasPermission(companyId, "agent", actorAgent.id, "secrets:read");
   }
 
   async function buildSkippedWakeupResponse(
@@ -1279,8 +1334,91 @@ export function agentRoutes(
     };
   }
 
-  function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
+  function redactAgentEnvBindings(adapterConfig: unknown): Record<string, unknown> {
+    if (!adapterConfig || typeof adapterConfig !== "object" || Array.isArray(adapterConfig)) {
+      return {};
+    }
+    const { env } = redactAdapterConfigEnvForResponse(adapterConfig);
+    const next: Record<string, unknown> = { ...(adapterConfig as Record<string, unknown>) };
+    next.env = env;
+    return next;
+  }
+
+  function collectRevisionEnvKeys(...snapshots: unknown[]): string[] {
+    const envKeys = new Set<string>();
+    for (const snapshot of snapshots) {
+      if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) continue;
+      const adapterConfig = (snapshot as Record<string, unknown>).adapterConfig;
+      if (!adapterConfig || typeof adapterConfig !== "object" || Array.isArray(adapterConfig)) continue;
+      const envRec = (adapterConfig as Record<string, unknown>).env;
+      if (!envRec || typeof envRec !== "object" || Array.isArray(envRec)) continue;
+      for (const key of Object.keys(envRec as Record<string, unknown>)) {
+        envKeys.add(key);
+      }
+    }
+    return Array.from(envKeys);
+  }
+
+  function redactAdapterConfigForResponse(
+    adapterConfig: unknown,
+    options: { revealEnv: boolean },
+  ): { adapterConfig: Record<string, unknown>; envKeysRead: string[] } {
+    if (!adapterConfig || typeof adapterConfig !== "object" || Array.isArray(adapterConfig)) {
+      return { adapterConfig: {}, envKeysRead: [] };
+    }
+    const record = adapterConfig as Record<string, unknown>;
+    if (options.revealEnv) {
+      const envRecord = record.env;
+      const envKeysRead =
+        envRecord && typeof envRecord === "object" && !Array.isArray(envRecord)
+          ? Object.keys(envRecord)
+          : [];
+      return { adapterConfig: { ...record }, envKeysRead };
+    }
+    if (!("env" in record) || record.env === undefined) {
+      return { adapterConfig: { ...record }, envKeysRead: [] };
+    }
+    const { env, redactedPlainKeys } = redactAdapterConfigEnvForResponse(record);
+    return {
+      adapterConfig: { ...record, env },
+      envKeysRead: redactedPlainKeys,
+    };
+  }
+
+  async function recordAgentEnvRead(input: {
+    companyId: string;
+    agentId: string;
+    actor: ReturnType<typeof getActorInfo>;
+    envKeys: string[];
+  }) {
+    if (input.envKeys.length === 0) return;
+    if (input.actor.actorType === "agent" && input.actor.agentId === input.agentId) {
+      return;
+    }
+    await logActivity(db, {
+      companyId: input.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "agent.env.read",
+      entityType: "agent",
+      entityId: input.agentId,
+      details: {
+        envKeys: input.envKeys,
+        envKeyCount: input.envKeys.length,
+      },
+    });
+  }
+
+  function redactAgentConfiguration(
+    agent: Awaited<ReturnType<typeof svc.getById>>,
+    options: { revealEnv: boolean } = { revealEnv: false },
+  ) {
     if (!agent) return null;
+    const adapterConfig = options.revealEnv
+      ? redactAdapterConfigForResponse(agent.adapterConfig, { revealEnv: true }).adapterConfig
+      : redactAgentEnvBindings(redactEventPayload(agent.adapterConfig));
     return {
       id: agent.id,
       companyId: agent.companyId,
@@ -1290,23 +1428,30 @@ export function agentRoutes(
       status: agent.status,
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
-      adapterConfig: redactEventPayload(agent.adapterConfig),
+      adapterConfig,
       runtimeConfig: redactEventPayload(agent.runtimeConfig),
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,
     };
   }
 
-  function redactRevisionSnapshot(snapshot: unknown): Record<string, unknown> {
+  function redactRevisionSnapshot(
+    snapshot: unknown,
+    options: { revealEnv: boolean } = { revealEnv: false },
+  ): Record<string, unknown> {
     if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return {};
     const record = snapshot as Record<string, unknown>;
+    const adapterConfigRecord =
+      typeof record.adapterConfig === "object" && record.adapterConfig !== null
+        ? (record.adapterConfig as Record<string, unknown>)
+        : {};
+    const sanitizedAdapterConfig = redactEventPayload(adapterConfigRecord) as Record<string, unknown>;
+    const adapterConfig = options.revealEnv
+      ? sanitizedAdapterConfig
+      : redactAgentEnvBindings(sanitizedAdapterConfig);
     return {
       ...record,
-      adapterConfig: redactEventPayload(
-        typeof record.adapterConfig === "object" && record.adapterConfig !== null
-          ? (record.adapterConfig as Record<string, unknown>)
-          : {},
-      ),
+      adapterConfig,
       runtimeConfig: redactEventPayload(
         typeof record.runtimeConfig === "object" && record.runtimeConfig !== null
           ? (record.runtimeConfig as Record<string, unknown>)
@@ -1321,11 +1466,12 @@ export function agentRoutes(
 
   function redactConfigRevision(
     revision: Record<string, unknown> & { beforeConfig: unknown; afterConfig: unknown },
+    options: { revealEnv: boolean } = { revealEnv: false },
   ) {
     return {
       ...revision,
-      beforeConfig: redactRevisionSnapshot(revision.beforeConfig),
-      afterConfig: redactRevisionSnapshot(revision.afterConfig),
+      beforeConfig: redactRevisionSnapshot(revision.beforeConfig, options),
+      afterConfig: redactRevisionSnapshot(revision.afterConfig, options),
     };
   }
 
@@ -1613,11 +1759,27 @@ export function agentRoutes(
     }
     const result = await svc.list(companyId);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    if (canReadConfigs) {
-      res.json(result);
+    if (!canReadConfigs) {
+      res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
       return;
     }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+    const canReadSecrets = await actorCanReadAgentSecretsGlobally(req, companyId);
+    const actor = getActorInfo(req);
+    const redactedResult = result.map((agent) => {
+      const { adapterConfig, envKeysRead } = redactAdapterConfigForResponse(agent.adapterConfig, {
+        revealEnv: canReadSecrets,
+      });
+      if (canReadSecrets && envKeysRead.length > 0) {
+        void recordAgentEnvRead({
+          companyId,
+          agentId: agent.id,
+          actor,
+          envKeys: envKeysRead,
+        });
+      }
+      return { ...agent, adapterConfig };
+    });
+    res.json(redactedResult);
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
@@ -1719,7 +1881,26 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     await assertCanReadConfigurations(req, companyId);
     const rows = await svc.list(companyId);
-    res.json(rows.map((row) => redactAgentConfiguration(row)));
+    const canReadSecrets = await actorCanReadAgentSecretsGlobally(req, companyId);
+    const actor = getActorInfo(req);
+    res.json(
+      rows.map((row) => {
+        if (canReadSecrets && row.adapterConfig) {
+          const { envKeysRead } = redactAdapterConfigForResponse(row.adapterConfig, {
+            revealEnv: true,
+          });
+          if (envKeysRead.length > 0) {
+            void recordAgentEnvRead({
+              companyId,
+              agentId: row.id,
+              actor,
+              envKeys: envKeysRead,
+            });
+          }
+        }
+        return redactAgentConfiguration(row, { revealEnv: canReadSecrets });
+      }),
+    );
   });
 
   router.get("/agents/me", async (req, res) => {
@@ -1743,7 +1924,7 @@ export function agentRoutes(
       adapterConfig: { ...baseAdapterConfig, env: safeEnv },
       runtimeConfig: baseRuntimeConfig,
     } as NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
-    res.json(await buildAgentDetail(safeAgent));
+    res.json(await buildAgentDetail(safeAgent, { revealEnv: true }));
   });
 
   router.get("/agents/me/inbox-lite", async (req, res) => {
@@ -1831,7 +2012,22 @@ export function agentRoutes(
       adapterConfig: { ...baseAdapterConfig, env: safeEnv },
       runtimeConfig: baseRuntimeConfig,
     } as NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
-    res.json(await buildAgentDetail(safeAgent));
+    const canReadSecrets = isSelf
+      ? true
+      : await actorCanReadAgentSecrets(req, agent.companyId, agent.id);
+    const detail = await buildAgentDetail(safeAgent, { revealEnv: canReadSecrets });
+    if (canReadSecrets) {
+      const envKeysRead = collectRevisionEnvKeys(safeAgent);
+      if (envKeysRead.length > 0) {
+        void recordAgentEnvRead({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          actor: getActorInfo(req),
+          envKeys: envKeysRead,
+        });
+      }
+    }
+    res.json(detail);
   });
 
   router.get("/agents/:id/configuration", async (req, res) => {
@@ -1842,7 +2038,19 @@ export function agentRoutes(
       return;
     }
     await assertCanReadConfigurations(req, agent.companyId);
-    res.json(redactAgentConfiguration(agent));
+    const canReadSecrets = await actorCanReadAgentSecrets(req, agent.companyId, agent.id);
+    if (canReadSecrets) {
+      const envKeysRead = collectRevisionEnvKeys(agent);
+      if (envKeysRead.length > 0) {
+        void recordAgentEnvRead({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          actor: getActorInfo(req),
+          envKeys: envKeysRead,
+        });
+      }
+    }
+    res.json(redactAgentConfiguration(agent, { revealEnv: canReadSecrets }));
   });
 
   router.get("/agents/:id/config-revisions", async (req, res) => {
@@ -1854,7 +2062,28 @@ export function agentRoutes(
     }
     await assertCanReadConfigurations(req, agent.companyId);
     const revisions = await svc.listConfigRevisions(id);
-    res.json(revisions.map((revision) => redactConfigRevision(revision)));
+    const canReadSecrets = await actorCanReadAgentSecrets(req, agent.companyId, agent.id);
+    const actor = getActorInfo(req);
+    res.json(
+      revisions.map((revision) => {
+        if (canReadSecrets) {
+          const envKeysRead = [
+            ...collectRevisionEnvKeys(revision.beforeConfig),
+            ...collectRevisionEnvKeys(revision.afterConfig),
+          ];
+          const deduped = Array.from(new Set(envKeysRead));
+          if (deduped.length > 0) {
+            void recordAgentEnvRead({
+              companyId: agent.companyId,
+              agentId: agent.id,
+              actor,
+              envKeys: deduped,
+            });
+          }
+        }
+        return redactConfigRevision(revision, { revealEnv: canReadSecrets });
+      }),
+    );
   });
 
   router.get("/agents/:id/config-revisions/:revisionId", async (req, res) => {
@@ -1871,7 +2100,23 @@ export function agentRoutes(
       res.status(404).json({ error: "Revision not found" });
       return;
     }
-    res.json(redactConfigRevision(revision));
+    const canReadSecrets = await actorCanReadAgentSecrets(req, agent.companyId, agent.id);
+    if (canReadSecrets) {
+      const envKeysRead = [
+        ...collectRevisionEnvKeys(revision.beforeConfig),
+        ...collectRevisionEnvKeys(revision.afterConfig),
+      ];
+      const deduped = Array.from(new Set(envKeysRead));
+      if (deduped.length > 0) {
+        void recordAgentEnvRead({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          actor: getActorInfo(req),
+          envKeys: deduped,
+        });
+      }
+    }
+    res.json(redactConfigRevision(revision, { revealEnv: canReadSecrets }));
   });
 
   router.post("/agents/:id/config-revisions/:revisionId/rollback", async (req, res) => {
@@ -2144,7 +2389,10 @@ export function agentRoutes(
       });
     }
 
-    res.status(201).json({ agent, approval });
+    res.status(201).json({
+      agent: await buildAgentDetailForRequest(req, agent),
+      approval,
+    });
   });
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
@@ -2264,7 +2512,7 @@ export function agentRoutes(
       );
     }
 
-    res.status(201).json(agent);
+    res.status(201).json(await buildAgentDetailForRequest(req, agent));
   });
 
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
@@ -2324,7 +2572,7 @@ export function agentRoutes(
       },
     });
 
-    res.json(await buildAgentDetail(agent));
+    res.json(await buildAgentDetailForRequest(req, agent));
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {
@@ -2720,7 +2968,7 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    res.json(await buildAgentDetailForRequest(req, agent));
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
@@ -2746,7 +2994,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(await buildAgentDetailForRequest(req, agent));
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
@@ -2770,7 +3018,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(await buildAgentDetailForRequest(req, agent));
   });
 
   router.post("/agents/:id/approve", async (req, res) => {
@@ -2805,7 +3053,7 @@ export function agentRoutes(
       details: { source: "agent_detail" },
     });
 
-    res.json(agent);
+    res.json(await buildAgentDetailForRequest(req, agent));
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
@@ -2831,7 +3079,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(await buildAgentDetailForRequest(req, agent));
   });
 
   router.delete("/agents/:id", async (req, res) => {
