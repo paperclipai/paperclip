@@ -1732,7 +1732,17 @@ export function agentRoutes(
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    res.json(await buildAgentDetail(agent));
+    const baseAdapterConfig =
+      agent.adapterConfig && typeof agent.adapterConfig === "object" && !Array.isArray(agent.adapterConfig)
+        ? (agent.adapterConfig as Record<string, unknown>)
+        : {};
+    const baseRuntimeConfig = redactEventPayload(agent.runtimeConfig) ?? {};
+    const safeAgent = {
+      ...agent,
+      adapterConfig: { ...baseAdapterConfig, env: {} },
+      runtimeConfig: baseRuntimeConfig,
+    } as NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
+    res.json(await buildAgentDetail(safeAgent));
   });
 
   router.get("/agents/me/inbox-lite", async (req, res) => {
