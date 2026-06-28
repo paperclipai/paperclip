@@ -153,6 +153,10 @@ function isMissingRequiredValue(value: unknown) {
   return value == null || (typeof value === "string" && value.trim().length === 0);
 }
 
+function shouldUseDateInput(variable: RoutineVariable) {
+  return variable.type === "date";
+}
+
 function supportsRoutineRunWorkspaceSelection(
   project: Project | null | undefined,
   isolatedWorkspacesEnabled: boolean,
@@ -497,6 +501,12 @@ export function RoutineRunVariablesDialog({
                     ))}
                   </SelectContent>
                 </Select>
+              ) : shouldUseDateInput(variable) ? (
+                <Input
+                  type="date"
+                  value={values[variable.name] == null ? "" : String(values[variable.name])}
+                  onChange={(event) => setValues((current) => ({ ...current, [variable.name]: event.target.value }))}
+                />
               ) : (
                 <Input
                   type={variable.type === "number" ? "number" : "text"}

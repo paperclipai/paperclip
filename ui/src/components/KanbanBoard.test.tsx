@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
+import { flushSync } from "react-dom";
 import type { Issue, IssueStatus } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { KanbanBoard, resolveKanbanTargetStatus } from "./KanbanBoard";
+import { getKanbanColumnTone, KanbanBoard, resolveKanbanTargetStatus } from "./KanbanBoard";
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -22,6 +22,12 @@ vi.mock("@/lib/router", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+const mountedRoots: Root[] = [];
+
+function act(callback: () => void): void {
+  flushSync(callback);
+}
 
 function createIssue(index: number, status: IssueStatus): Issue {
   return {
@@ -77,6 +83,7 @@ function renderBoard(
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
+  mountedRoots.push(root);
 
   const render = (nextProps: Partial<React.ComponentProps<typeof KanbanBoard>> & { issues: Issue[] }) => {
     act(() => {
@@ -102,6 +109,12 @@ describe("KanbanBoard", () => {
   });
 
   afterEach(() => {
+    while (mountedRoots.length > 0) {
+      const root = mountedRoots.pop();
+      if (root) {
+        act(() => root.unmount());
+      }
+    }
     document.body.innerHTML = "";
   });
 
@@ -171,6 +184,25 @@ describe("KanbanBoard", () => {
     expect(container.textContent).toContain("Done");
     expect(container.textContent).toContain("3");
     expect(container.textContent).not.toContain("Issue 1");
+  });
+
+  it("uses distinct review, done, and cancelled column tones", () => {
+    expect(getKanbanColumnTone("in_progress").body).toBe("bg-muted/20");
+    expect(getKanbanColumnTone("in_review").body).toContain("violet");
+    expect(getKanbanColumnTone("done").body).toContain("green");
+    expect(getKanbanColumnTone("cancelled").body).toContain("bg-muted/25");
+    expect(getKanbanColumnTone("cancelled").card).toContain("opacity-80");
+  });
+
+  it("ghosts cancelled lane cards", () => {
+    const { container } = renderBoard({
+      issues: createIssues(1, "cancelled"),
+    });
+
+    const card = container.querySelector('a[href="/issues/PAP-1"]')?.parentElement;
+
+    expect(card?.className).toContain("bg-muted/35");
+    expect(card?.className).toContain("opacity-80");
   });
 
   it("keeps core issue signals in compact cards", () => {

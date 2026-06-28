@@ -170,11 +170,23 @@ const OBJECT_TYPE_LABELS: Record<string, string> = {
   workflow_run: "workflow run",
   ticket: "ticket",
   lead: "lead",
+  url_link: "URL",
 };
 
 export function externalObjectTypeLabel(objectType: string | null | undefined): string {
   if (!objectType) return "object";
   return OBJECT_TYPE_LABELS[objectType] ?? objectType.replace(/_/g, " ");
+}
+
+export function externalObjectDisplayLabel(
+  providerKey: string | null | undefined,
+  objectType: string | null | undefined,
+  displayKey?: string | null,
+): string {
+  const trimmedDisplayKey = displayKey?.trim();
+  if (trimmedDisplayKey) return trimmedDisplayKey;
+  if (providerKey === "url" && objectType === "link") return "URL";
+  return `${externalObjectProviderLabel(providerKey)} ${externalObjectTypeLabel(objectType)}`;
 }
 
 /**

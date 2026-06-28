@@ -32,6 +32,8 @@ import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
 import {
+  applyMainContentScrollTop,
+  NavigationScrollMemory,
   resetNavigationScroll,
   shouldResetScrollOnNavigation,
 } from "../lib/navigation-scroll";
@@ -87,6 +89,8 @@ export function Layout() {
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
   const mainContentRef = useRef<HTMLElement | null>(null);
+  const scrollMemory = useRef(new NavigationScrollMemory());
+  const activeScrollKey = useRef<string>(location.key);
   const [mobileNavVisible, setMobileNavVisible] = useState(true);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const matchedCompany = useMemo(() => {
@@ -450,7 +454,20 @@ export function Layout() {
     return scheduleMainContentFocus(mainContent);
   }, [location.pathname]);
 
+  // Continuously record the scroll offset of the active history entry so a
+  // later back/forward navigation can restore it (see NavigationScrollMemory).
   useEffect(() => {
+    const main = mainContentRef.current;
+    if (!main) return;
+    const recordScroll = () => {
+      scrollMemory.current.remember(activeScrollKey.current, main.scrollTop);
+    };
+    main.addEventListener("scroll", recordScroll, { passive: true });
+    return () => main.removeEventListener("scroll", recordScroll);
+  }, []);
+
+  useLayoutEffect(() => {
+    const main = mainContentRef.current;
     const shouldResetScroll = shouldResetScrollOnNavigation({
       previousPathname: previousPathname.current,
       pathname: location.pathname,
@@ -460,9 +477,22 @@ export function Layout() {
 
     previousPathname.current = location.pathname;
 
-    if (!shouldResetScroll) return;
-    resetNavigationScroll(mainContentRef.current);
-  }, [location.pathname, navigationType]);
+    const isHistoryPop = navigationType === "POP";
+    const restoredScrollTop = isHistoryPop ? scrollMemory.current.recall(location.key) : 0;
+    activeScrollKey.current = location.key;
+
+    if (isHistoryPop) {
+      applyMainContentScrollTop(main, restoredScrollTop);
+      // Cached page content can finish laying out a frame after commit; re-apply
+      // once it has so the restored offset isn't clamped to a shorter interim height.
+      const raf = requestAnimationFrame(() => applyMainContentScrollTop(main, restoredScrollTop));
+      return () => cancelAnimationFrame(raf);
+    }
+
+    if (shouldResetScroll) {
+      resetNavigationScroll(main);
+    }
+  }, [location.key, location.pathname, location.state, navigationType]);
 
   return (
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>

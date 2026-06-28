@@ -68,6 +68,7 @@ import {
   upsertSidebarOrderPreferenceSchema,
   // Execution workspaces
   updateExecutionWorkspaceSchema,
+  workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
   // Environments
   createEnvironmentSchema,
@@ -767,6 +768,22 @@ registry.registerPath({
       deploymentMode: z.string().optional(),
       bootstrapStatus: z.enum(["ready", "bootstrap_pending"]).optional(),
       bootstrapInviteActive: z.boolean().optional(),
+      serverInfo: z.object({
+        processStartedAt: z.string().datetime(),
+        git: z.union([
+          z.object({
+            available: z.literal(true),
+            fullSha: z.string(),
+            shortSha: z.string(),
+            subject: z.string(),
+            committedAt: z.string().datetime().nullable(),
+          }).strict(),
+          z.object({
+            available: z.literal(false),
+            unavailableReason: z.enum(["git_unavailable", "invalid_git_metadata"]),
+          }).strict(),
+        ]),
+      }).strict().optional(),
     })),
     503: { description: "Service unavailable", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -3276,6 +3293,18 @@ registry.registerPath({
   summary: "List execution workspaces for a company",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/workspace-overview",
+  tags: ["execution-workspaces"],
+  summary: "List bounded execution workspace overview rows for a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: workspaceOverviewQuerySchema,
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 422: r.unprocessable },
 });
 
 registry.registerPath({

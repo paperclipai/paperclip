@@ -12,6 +12,7 @@ import {
   GIT_ARCHIVE_EXCLUDES,
   integrateImportedGitHead,
   readGitWorkspaceSnapshot,
+  resetLocalGitIndexToHead,
   withShallowGitWorkspaceClone,
 } from "./git-workspace-sync.js";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
@@ -20,6 +21,8 @@ import {
   type RuntimeProgressDirection,
   type RuntimeProgressPhase,
   type RuntimeProgressSink,
+  type RuntimeStatusPhase,
+  type RuntimeStatusSink,
 } from "./runtime-progress.js";
 import { isRelativePathOrDescendant, shouldExcludePath } from "./exclude-patterns.js";
 
@@ -320,6 +323,15 @@ function tarExcludeFlags(exclude: string[] | undefined): string {
   return ["._*", ...(exclude ?? [])].map((entry) => `--exclude ${shellQuote(entry)}`).join(" ");
 }
 
+async function emitRuntimeStatus(
+  sink: RuntimeStatusSink | undefined,
+  phase: RuntimeStatusPhase,
+  message: string,
+): Promise<void> {
+  if (!sink) return;
+  await Promise.resolve(sink({ phase, message })).catch(() => undefined);
+}
+
 function mergeExcludes(...groups: Array<string[] | undefined>): string[] {
   return [...new Set(groups.flatMap((group) => group ?? []))];
 }
@@ -384,6 +396,7 @@ export async function prepareSandboxManagedRuntime(input: {
   // Upload progress sink. Threaded for the byte-counting transport rewrite; the
   // child task wires it into writeFile/readFile.
   onProgress?: RuntimeProgressSink;
+  onRuntimeProgress?: RuntimeStatusSink;
 }): Promise<PreparedSandboxManagedRuntime> {
   const workspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
@@ -414,6 +427,7 @@ export async function prepareSandboxManagedRuntime(input: {
       ...(input.preserveAbsentOnRestore ?? []),
     ]);
     if (gitSnapshot) {
+      await emitRuntimeStatus(input.onRuntimeProgress, "git_sync", "Syncing git history to sandbox");
       await withShallowGitWorkspaceClone({
         localDir: input.workspaceLocalDir,
         snapshot: gitSnapshot,
@@ -444,6 +458,7 @@ export async function prepareSandboxManagedRuntime(input: {
 
     const workspaceTarPath = path.join(tempDir, "workspace.tar");
     const workspaceArchiveDir = gitSnapshot ? path.join(tempDir, "workspace-overlay") : input.workspaceLocalDir;
+    await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing workspace to sandbox");
     if (gitSnapshot) {
       await copySelectedWorkspaceEntries({
         sourceDir: input.workspaceLocalDir,
@@ -489,6 +504,7 @@ export async function prepareSandboxManagedRuntime(input: {
     }
 
     for (const asset of input.assets ?? []) {
+      await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing runtime assets to sandbox");
       const assetTarPath = path.join(tempDir, `${asset.key}.tar`);
       await createTarballFromDirectory({
         localDir: asset.localDir,
@@ -529,10 +545,13 @@ export async function prepareSandboxManagedRuntime(input: {
       await withTempDir("paperclip-sandbox-restore-", async (tempDir) => {
         let importedRef: string | null = null;
         let importedHead: string | null = null;
+        let remoteWorkspaceStatus = "dirty";
         try {
           if (gitSnapshot) {
+            await emitRuntimeStatus(input.onRuntimeProgress, "export", "Exporting git changes from sandbox");
             importedRef = createImportedGitRef("sandbox");
             const remoteGitBundle = path.posix.join(runtimeRootDir, "git-delta.bundle");
+            const remoteWorkspaceStatusPath = path.posix.join(runtimeRootDir, "workspace-status.txt");
             const exportRef = createRemoteGitExportRef("sandbox");
             await input.client.run(
               `sh -c ${shellQuote(buildRemoteGitDeltaBundleScript({
@@ -540,6 +559,7 @@ export async function prepareSandboxManagedRuntime(input: {
                 baseSha: gitSnapshot.headCommit,
                 exportRef,
                 bundlePath: remoteGitBundle,
+                statusPath: remoteWorkspaceStatusPath,
               }))}`,
               { timeoutMs: input.spec.timeoutMs },
             );
@@ -547,6 +567,11 @@ export async function prepareSandboxManagedRuntime(input: {
             const bundleBytes = await input.client.readFile(remoteGitBundle, gitExport.options);
             await gitExport.finish();
             await input.client.remove(remoteGitBundle).catch(() => undefined);
+            remoteWorkspaceStatus = await input.client.readFile(remoteWorkspaceStatusPath)
+              .then((bytes) => toBuffer(bytes).toString("utf8").trim())
+              .catch(() => "dirty");
+            remoteWorkspaceStatus = remoteWorkspaceStatus === "clean" ? "clean" : "dirty";
+            await input.client.remove(remoteWorkspaceStatusPath).catch(() => undefined);
             const bundlePath = path.join(tempDir, "git-delta.bundle");
             await fs.writeFile(bundlePath, toBuffer(bundleBytes));
             importedHead = await fetchGitBundleIntoLocalRef({
@@ -559,6 +584,7 @@ export async function prepareSandboxManagedRuntime(input: {
           }
 
           const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-download.tar");
+          await emitRuntimeStatus(input.onRuntimeProgress, "restore", "Restoring workspace from sandbox");
           await input.client.run(
             `sh -c ${shellQuote(
               `mkdir -p ${shellQuote(runtimeRootDir)} && ` +
@@ -585,14 +611,23 @@ export async function prepareSandboxManagedRuntime(input: {
             targetDir: input.workspaceLocalDir,
             beforeApply: gitHeadToIntegrate
               ? async () => {
-                await integrateImportedGitHead({
-                  localDir: input.workspaceLocalDir,
-                  importedHead: gitHeadToIntegrate,
-                });
-              }
+                  await integrateImportedGitHead({
+                    localDir: input.workspaceLocalDir,
+                    importedHead: gitHeadToIntegrate,
+                  });
+                }
+              : undefined,
+            afterApply: gitSnapshot
+              ? async () => {
+                  await resetLocalGitIndexToHead({
+                    localDir: input.workspaceLocalDir,
+                    checkWorkingTreeClean: remoteWorkspaceStatus === "clean",
+                  });
+                }
               : undefined,
           });
         } finally {
+          await emitRuntimeStatus(input.onRuntimeProgress, "finalize", "Finalizing sandbox workspace");
           if (importedRef) {
             await deleteLocalGitRef({ localDir: input.workspaceLocalDir, ref: importedRef });
           }

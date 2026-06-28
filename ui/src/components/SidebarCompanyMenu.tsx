@@ -33,7 +33,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useCompany } from "@/context/CompanyContext";
-import { useConferenceRoomChatEnabled } from "@/hooks/useConferenceRoomChatEnabled";
 import { useDialogActions } from "@/context/DialogContext";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
 import { queryKeys } from "@/lib/queryKeys";
@@ -134,9 +133,6 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
   const [isEditingOrder, setIsEditingOrder] = useState(false);
   const queryClient = useQueryClient();
   const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
-  // Team-centric copy (PAP-67) ships behind the Conference Room Chat flag
-  // (PAP-139); OFF keeps master's "Add company...".
-  const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
   const { openOnboarding } = useDialogActions();
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
@@ -235,12 +231,12 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           // svg present (expanded) it was already 12px but without it (rail) it fell
           // back to 8px — a 4px horizontal jump on collapse (PAP-10676).
           className="h-9 flex-1 justify-start gap-2 px-3 text-left"
-          aria-label={selectedCompany ? `Open ${selectedCompany.name} workspace switcher` : "Open workspace switcher"}
+          aria-label={selectedCompany ? `Open ${selectedCompany.name} company switcher` : "Open company switcher"}
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
             {selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
             <span className={cn("truncate text-sm font-bold text-foreground", rail && SIDEBAR_RAIL_HIDDEN_LABEL)}>
-              {selectedCompany?.name ?? "Select workspace"}
+              {selectedCompany?.name ?? "Select company"}
             </span>
           </span>
           {!rail && <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />}
@@ -249,7 +245,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       <DropdownMenuContent align="start" sideOffset={8} className="w-64 p-1">
         <div className="flex items-center justify-between gap-2 px-2 py-1.5">
           <DropdownMenuLabel className="p-0 text-[11px] font-semibold uppercase text-muted-foreground">
-            Switch workspace
+            Switch company
           </DropdownMenuLabel>
           <button
             type="button"
@@ -285,7 +281,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             </SortableContext>
           </DndContext>
           {orderedCompanies.length === 0 ? (
-            <DropdownMenuItem disabled>No workspaces</DropdownMenuItem>
+            <DropdownMenuItem disabled>No companies</DropdownMenuItem>
           ) : null}
         </div>
         <DropdownMenuSeparator />
@@ -295,7 +291,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           disabled={isEditingOrder}
         >
           <Plus className="size-4" />
-          <span>{conferenceRoomChatEnabled ? "Create new team..." : "Add company..."}</span>
+          <span>Create new company...</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem asChild disabled={isEditingOrder}>

@@ -20,8 +20,10 @@ import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   getAgentWorkEligibility,
   isUuidLike,
+  normalizeAgentApiKeyScope,
   normalizeAgentUrlKey,
   type AgentEligibilityAgent,
+  type AgentApiKeyScope,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { syncAgentAdapterEnvBindings } from "./agent-secret-bindings.js";
@@ -428,6 +430,16 @@ export function agentService(db: Db) {
       const role = (data.role ?? existing.role) as string;
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
     }
+    if (
+      Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig") &&
+      isPlainRecord(normalizedPatch.adapterConfig)
+    ) {
+      normalizedPatch.adapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+        existing.companyId,
+        normalizedPatch.adapterConfig,
+        { adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string },
+      );
+    }
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
@@ -503,11 +515,24 @@ export function agentService(db: Db) {
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
+      const adapterType = data.adapterType ?? "process";
+      const adapterConfig = isPlainRecord(data.adapterConfig)
+        ? await secretsSvc.normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
+        : {};
       return db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         const created = await tx
           .insert(agents)
-          .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions, runtimeConfig })
+          .values({
+            ...data,
+            name: uniqueName,
+            companyId,
+            role,
+            adapterType,
+            adapterConfig,
+            permissions: normalizedPermissions,
+            runtimeConfig,
+          })
           .returning()
           .then((rows) => rows[0]);
         await syncAgentSecretBindings(created, txDb);
@@ -733,7 +758,7 @@ export function agentService(db: Db) {
       });
     },
 
-    createApiKey: async (id: string, name: string) => {
+    createApiKey: async (id: string, name: string, scope: AgentApiKeyScope = { kind: "standard" }) => {
       const existing = await getById(id);
       if (!existing) throw notFound("Agent not found");
       if (existing.status === "pending_approval") {
@@ -752,6 +777,7 @@ export function agentService(db: Db) {
           companyId: existing.companyId,
           name,
           keyHash,
+          scopeConfig: scope.kind === "standard" ? null : scope,
         })
         .returning()
         .then((rows) => rows[0]);
@@ -759,6 +785,7 @@ export function agentService(db: Db) {
       return {
         id: created.id,
         name: created.name,
+        scope: normalizeAgentApiKeyScope(created.scopeConfig),
         token,
         createdAt: created.createdAt,
       };
@@ -769,11 +796,19 @@ export function agentService(db: Db) {
         .select({
           id: agentApiKeys.id,
           name: agentApiKeys.name,
+          scopeConfig: agentApiKeys.scopeConfig,
           createdAt: agentApiKeys.createdAt,
           revokedAt: agentApiKeys.revokedAt,
         })
         .from(agentApiKeys)
-        .where(eq(agentApiKeys.agentId, id)),
+        .where(eq(agentApiKeys.agentId, id))
+        .then((rows) => rows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          scope: normalizeAgentApiKeyScope(row.scopeConfig),
+          createdAt: row.createdAt,
+          revokedAt: row.revokedAt,
+        }))),
 
     getKeyById: async (keyId: string) =>
       db
@@ -782,12 +817,21 @@ export function agentService(db: Db) {
           agentId: agentApiKeys.agentId,
           companyId: agentApiKeys.companyId,
           name: agentApiKeys.name,
+          scopeConfig: agentApiKeys.scopeConfig,
           createdAt: agentApiKeys.createdAt,
           revokedAt: agentApiKeys.revokedAt,
         })
         .from(agentApiKeys)
         .where(eq(agentApiKeys.id, keyId))
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row
+            ? {
+              ...row,
+              scope: normalizeAgentApiKeyScope(row.scopeConfig),
+            }
+            : null;
+        }),
 
     revokeKey: async (agentId: string, keyId: string) => {
       const rows = await db

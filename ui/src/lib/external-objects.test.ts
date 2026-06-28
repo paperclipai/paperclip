@@ -8,6 +8,7 @@ import {
 import {
   dominantExternalObjectTone,
   externalObjectCategoryLabel,
+  externalObjectDisplayLabel,
   externalObjectDominantCount,
   externalObjectFallbackTone,
   externalObjectIconForCategory,
@@ -103,7 +104,14 @@ describe("external-objects helpers", () => {
     expect(externalObjectProviderLabel("hubspot_marketing")).toBe("Hubspot Marketing");
     expect(externalObjectProviderLabel(null)).toBe("External");
     expect(externalObjectTypeLabel("workflow_run")).toBe("workflow run");
+    expect(externalObjectTypeLabel("url_link")).toBe("URL");
     expect(externalObjectTypeLabel(null)).toBe("object");
+  });
+
+  it("labels generic URL link objects as URL", () => {
+    expect(externalObjectDisplayLabel("url", "link")).toBe("URL");
+    expect(externalObjectDisplayLabel("url", "link", "Canonical URL")).toBe("Canonical URL");
+    expect(externalObjectDisplayLabel("github", "pull_request")).toBe("GitHub pull request");
   });
 
   it("orders tones from danger down to muted", () => {
