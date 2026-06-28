@@ -10610,7 +10610,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 })
                 .from(issueComments)
                 .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, issueComments.createdByRunId))
-                .where(inArray(issueComments.id, deferredCommentIds))
+                // Keep the same tenant/issue scoping the prior predicate carried: a
+                // stale or corrupted comment ID from the wake context seed must return
+                // zero rows (tripping the length-mismatch guard) rather than silently
+                // resolving a comment that belongs to another issue or company.
+                .where(
+                  and(
+                    eq(issueComments.companyId, issue.companyId),
+                    eq(issueComments.issueId, issue.id),
+                    inArray(issueComments.id, deferredCommentIds),
+                  ),
+                )
             : [];
         const deferredWakeIsExclusivelySelfAuthored = issueIsTerminalForReopen
           ? isExclusivelySelfAuthoredDeferredCommentWake({
