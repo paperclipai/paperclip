@@ -75,6 +75,7 @@ import {
   getMessageContext,
   getPaired,
   isAuthorizedApprover,
+  isChatPairedToCompany,
   isPairingOperator,
   isHandshakeExpired,
   isPairedFor,
@@ -1274,6 +1275,16 @@ async function handleCallbackQuery(
         });
         return;
       }
+      // Guard stale buttons: only act if this chat is still paired to the
+      // context's company (it may have been unpaired or re-paired since).
+      if (!isChatPairedToCompany(await readPairing(ctx), chatId, context.companyId)) {
+        await client.answerCallbackQuery({
+          callbackQueryId: query.id,
+          text: "This chat is no longer paired to that company.",
+          showAlert: true,
+        });
+        return;
+      }
       const target = context.agents[idx]!;
       try {
         await ctx.issues.update(
@@ -1899,6 +1910,9 @@ const plugin = definePlugin({
           chatLabel: state.pairing.candidateLabel,
           pairedAt: new Date().toISOString(),
           companyName: state.pairing.targetCompanyName,
+          // Capture the operator id here too — the agent-tool path must enforce
+          // the same approver/unpair gating as the UI confirm path.
+          pairedByTelegramUserId: state.pairing.candidateUserId,
         };
         await setPairedChat(ctx, targetCompanyId, paired);
         await clearHandshake(ctx);

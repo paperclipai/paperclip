@@ -83,6 +83,21 @@ export function listPairedCompanies(
 }
 
 /**
+ * Whether `chatId` is the chat currently paired to `companyId`. Guards
+ * callbacks fired from old inline messages: if a chat was unpaired (or
+ * re-paired to a different company) after a message was sent, its stale
+ * buttons must not act on the original company.
+ */
+export function isChatPairedToCompany(
+  state: PairingState,
+  chatId: string,
+  companyId: string,
+): boolean {
+  const paired = state.pairedByCompany?.[companyId];
+  return !!paired && paired.chatId === chatId;
+}
+
+/**
  * Reverse lookup: given a Telegram chat ID, find which company (if any)
  * currently has that chat paired.
  */

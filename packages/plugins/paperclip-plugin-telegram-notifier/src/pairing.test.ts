@@ -6,6 +6,7 @@ import {
   generateVerificationCode,
   getMessageContext,
   isAuthorizedApprover,
+  isChatPairedToCompany,
   isHandshakeExpired,
   isPairingOperator,
   newHandshakeExpiry,
@@ -208,5 +209,24 @@ describe("isPairingOperator", () => {
   it("allows anyone for legacy chats with no recorded operator", () => {
     expect(isPairingOperator(pairedChat(), 123)).toBe(true);
     expect(isPairingOperator(undefined, 123)).toBe(true);
+  });
+});
+
+describe("isChatPairedToCompany", () => {
+  const state = {
+    pairedByCompany: { "company-1": pairedChat({ chatId: "100" }) },
+  };
+
+  it("is true only for the chat currently paired to the company", () => {
+    expect(isChatPairedToCompany(state, "100", "company-1")).toBe(true);
+  });
+
+  it("is false for a different chat (stale button after re-pair)", () => {
+    expect(isChatPairedToCompany(state, "200", "company-1")).toBe(false);
+  });
+
+  it("is false for a company that is not paired", () => {
+    expect(isChatPairedToCompany(state, "100", "company-2")).toBe(false);
+    expect(isChatPairedToCompany({}, "100", "company-1")).toBe(false);
   });
 });
