@@ -273,7 +273,8 @@ describe("x mention poller", () => {
 
     expect(result).toMatchObject({ status: "budget_paused", reason: "per_run_budget_exceeded:hydrate_media", hydrated: 0 });
     expect(adapter.hydrateMention).not.toHaveBeenCalled();
-    expect(memory.ledger.map((row) => row.operation)).toEqual(["poll", "hydrate_thread", "hydrate_replies", "hydrate_media"]);
+    expect(memory.ledger.map((row) => row.operation)).toEqual(["poll", "hydrate_media"]);
+    expect(memory.ledger.filter((row) => row.status === "recorded")).toHaveLength(1);
     expect(memory.ledger.at(-1)).toMatchObject({ status: "rejected", failureReason: "per_run_budget_exceeded:hydrate_media" });
   });
 });

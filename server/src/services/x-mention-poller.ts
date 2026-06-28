@@ -180,11 +180,12 @@ export function createXMentionPoller(options: {
   const { store, adapter } = options;
   const now = options.now ?? (() => new Date());
 
-  async function reserveBudget(input: {
+  async function checkBudget(input: {
     source: XMentionSource;
     operation: XMentionOperation;
     mention?: StoredXMention | null;
     runSpendCents: number;
+    unrecordedSpendCents?: number;
   }) {
     const at = now();
     const estimate = await adapter.estimateOperation({
@@ -229,7 +230,7 @@ export function createXMentionPoller(options: {
       sourceId: input.source.id,
       since: monthStartUtc(at),
     });
-    if (monthSpend + estimatedCostCents > input.source.monthlyBudgetCents) {
+    if (monthSpend + (input.unrecordedSpendCents ?? 0) + estimatedCostCents > input.source.monthlyBudgetCents) {
       const reason = `monthly_budget_exceeded:${input.operation}`;
       await store.recordBudget({
         companyId: input.source.companyId,
@@ -245,15 +246,34 @@ export function createXMentionPoller(options: {
       throw new XBudgetPausedError(reason);
     }
 
+    return estimatedCostCents;
+  }
+
+  async function recordSuccessfulBudget(input: {
+    source: XMentionSource;
+    operation: XMentionOperation;
+    estimatedCostCents: number;
+    mention?: StoredXMention | null;
+  }) {
     await store.recordBudget({
       companyId: input.source.companyId,
       sourceId: input.source.id,
       mentionId: input.mention?.id ?? null,
       operation: input.operation,
-      estimatedCostCents,
-      actualCostCents: estimatedCostCents,
-      now: at,
+      estimatedCostCents: input.estimatedCostCents,
+      actualCostCents: input.estimatedCostCents,
+      now: now(),
     });
+  }
+
+  async function reserveBudget(input: {
+    source: XMentionSource;
+    operation: XMentionOperation;
+    mention?: StoredXMention | null;
+    runSpendCents: number;
+  }) {
+    const estimatedCostCents = await checkBudget(input);
+    await recordSuccessfulBudget({ ...input, estimatedCostCents });
     return estimatedCostCents;
   }
 
@@ -387,10 +407,24 @@ export function createXMentionPoller(options: {
     let hydrated = 0;
     try {
       for (const mention of queued) {
+        const budgets: Array<{ operation: Exclude<XMentionOperation, "poll">; estimatedCostCents: number }> = [];
+        let pendingSpendCents = 0;
         for (const operation of operations) {
-          runSpendCents += await reserveBudget({ source, operation, mention, runSpendCents });
+          const estimatedCostCents = await checkBudget({
+            source,
+            operation,
+            mention,
+            runSpendCents: runSpendCents + pendingSpendCents,
+            unrecordedSpendCents: pendingSpendCents,
+          });
+          budgets.push({ operation, estimatedCostCents });
+          pendingSpendCents += estimatedCostCents;
         }
         const data = await adapter.hydrateMention({ tweetId: mention.tweetId, operations });
+        for (const budget of budgets) {
+          await recordSuccessfulBudget({ source, mention, ...budget });
+        }
+        runSpendCents += pendingSpendCents;
         await store.markHydrated({ mentionId: mention.id, now: now(), data: data as Record<string, unknown> });
         hydrated += 1;
       }
