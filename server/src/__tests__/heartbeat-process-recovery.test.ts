@@ -2354,6 +2354,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(settledRun?.stderrExcerpt ?? "").toContain(
         "Skipped opencode_k8s shared docs materialization: failed to read instructions entry",
       );
+      expect(settledRun?.stderrExcerpt ?? "").toContain("EISDIR");
     } finally {
       await fs.rm(instructionsRoot, { recursive: true, force: true });
     }
