@@ -648,6 +648,7 @@ const ACCEPTED_OPERATIONS = new Set([
   "POST /api/health/dev-server/restart",
   "POST /api/invites/{token}/accept",
   "POST /api/metrics/claude-k8s/concurrent-run-blocked",
+  "POST /api/metrics/claude-k8s/isolated-run-started",
 ]);
 
 const FORBIDDEN_RESPONSE = {
@@ -4343,6 +4344,7 @@ registerCurrentRoute({
 for (const route of [
   ["get", "/api/ccrotate/status", "Get ccrotate pool status"],
   ["post", "/api/metrics/claude-k8s/concurrent-run-blocked", "Record a Claude Kubernetes concurrent-run block metric"],
+  ["post", "/api/metrics/claude-k8s/isolated-run-started", "Record a Claude Kubernetes isolated-run start metric"],
   ["post", "/api/workspace/scan", "Scan a local workspace"],
   ["post", "/api/workspace/browse", "Browse local workspace directories"],
 ] as const) {
