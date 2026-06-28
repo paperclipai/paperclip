@@ -27,6 +27,7 @@ function createMemoryStore(options: {
     budgetPauseReason: null,
     rateLimitResetAt: null,
   };
+  const sources = new Map<string, XMentionSource>([[`${source.companyId}:${source.sourceKey}`, source]]);
   const allowlist = new Set(options.allowlistedUserIds ?? []);
   const mentions = new Map<string, StoredXMention & { raw?: Record<string, unknown> }>();
   const ledger: Array<{
@@ -36,26 +37,47 @@ function createMemoryStore(options: {
     status: string;
     failureReason: string | null;
   }> = [];
+  const getSourceById = (sourceId: string) => {
+    const current = [...sources.values()].find((candidate) => candidate.id === sourceId);
+    if (!current) throw new Error(`Unknown source ${sourceId}`);
+    return current;
+  };
 
   const store: XMentionStore = {
     async getOrCreateSource(input) {
-      source.companyId = input.companyId;
-      source.sourceKey = input.sourceKey;
-      source.accountUserId = input.accountUserId;
-      source.accountHandle = input.accountHandle ?? null;
-      if (input.monthlyBudgetCents !== undefined) source.monthlyBudgetCents = input.monthlyBudgetCents;
-      if (input.perRunBudgetCents !== undefined) source.perRunBudgetCents = input.perRunBudgetCents;
-      return source;
+      const key = `${input.companyId}:${input.sourceKey}`;
+      let current = sources.get(key);
+      if (!current) {
+        current = {
+          ...source,
+          id: `source-${sources.size + 1}`,
+          companyId: input.companyId,
+          sourceKey: input.sourceKey,
+          sinceId: null,
+          budgetPausedAt: null,
+          budgetPauseReason: null,
+          rateLimitResetAt: null,
+        };
+        sources.set(key, current);
+      }
+      current.companyId = input.companyId;
+      current.sourceKey = input.sourceKey;
+      current.accountUserId = input.accountUserId;
+      current.accountHandle = input.accountHandle ?? null;
+      if (input.monthlyBudgetCents !== undefined) current.monthlyBudgetCents = input.monthlyBudgetCents;
+      if (input.perRunBudgetCents !== undefined) current.perRunBudgetCents = input.perRunBudgetCents;
+      return current;
     },
     async updateSourceCursor(input) {
-      source.sinceId = input.sinceId;
+      getSourceById(input.sourceId).sinceId = input.sinceId;
     },
     async pauseSourceForBudget(input) {
-      source.budgetPausedAt = input.now;
-      source.budgetPauseReason = input.reason;
+      const current = getSourceById(input.sourceId);
+      current.budgetPausedAt = input.now;
+      current.budgetPauseReason = input.reason;
     },
     async markSourceRateLimited(input) {
-      source.rateLimitResetAt = input.resetAt;
+      getSourceById(input.sourceId).rateLimitResetAt = input.resetAt;
     },
     async isAuthorAllowlisted(input) {
       return allowlist.has(input.xUserId);
@@ -64,6 +86,7 @@ function createMemoryStore(options: {
       const existing = mentions.get(input.mention.tweetId);
       if (existing) {
         const approvedByExistingManualApproval = existing.manualApprovedAt !== null;
+        existing.sourceId = input.sourceId;
         existing.authorUserId = input.mention.authorUserId;
         existing.authorHandle = input.mention.authorHandle ?? null;
         existing.gateStatus = approvedByExistingManualApproval ? "approved" : input.gateStatus;
@@ -112,7 +135,7 @@ function createMemoryStore(options: {
     },
   };
 
-  return { store, source, mentions, ledger, allowlist };
+  return { store, source, sources, mentions, ledger, allowlist };
 }
 
 function createAdapter(input: {
@@ -176,6 +199,36 @@ describe("x mention poller", () => {
 
     expect(memory.mentions).toHaveLength(1);
     expect(adapter.fetchMentions).toHaveBeenLastCalledWith(expect.objectContaining({ sinceId: "100" }));
+  });
+
+  it("moves duplicate tweets to the latest source so queued hydration can find them", async () => {
+    const memory = createMemoryStore({ allowlistedUserIds: ["42"] });
+    const firstAdapter = createAdapter({
+      mentions: [{ tweetId: "100", authorUserId: "42", text: "@paperclip @support please hydrate" }],
+    });
+    const secondAdapter = createAdapter({
+      mentions: [{ tweetId: "100", authorUserId: "42", text: "@paperclip @support please hydrate" }],
+    });
+    const firstPoller = createXMentionPoller({ store: memory.store, adapter: firstAdapter });
+    const secondPoller = createXMentionPoller({ store: memory.store, adapter: secondAdapter });
+    const supportInput = {
+      ...pollInput,
+      sourceKey: "support",
+      accountUserId: "998",
+      accountHandle: "support",
+    };
+
+    await expect(firstPoller.pollMentions(pollInput)).resolves.toMatchObject({ stored: 1, queued: 1 });
+    expect(memory.mentions.get("100")).toMatchObject({ sourceId: "source-1", hydrationStatus: "queued" });
+
+    await expect(secondPoller.pollMentions(supportInput)).resolves.toMatchObject({ stored: 0, duplicates: 1, queued: 1 });
+    expect(memory.mentions.get("100")).toMatchObject({ sourceId: "source-2", hydrationStatus: "queued" });
+
+    await expect(secondPoller.hydrateQueuedMentions(supportInput)).resolves.toMatchObject({ status: "ok", hydrated: 1 });
+    expect(secondAdapter.hydrateMention).toHaveBeenCalledWith({
+      tweetId: "100",
+      operations: ["hydrate_thread", "hydrate_replies", "hydrate_media"],
+    });
   });
 
   it("does not advance since_id when a fetch fails so the next run retries the same cursor", async () => {

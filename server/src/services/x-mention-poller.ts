@@ -523,6 +523,7 @@ export function createDbXMentionStore(db: Db): XMentionStore {
         .onConflictDoUpdate({
           target: [xMentions.companyId, xMentions.tweetId],
           set: {
+            sourceId: input.sourceId,
             authorUserId: input.mention.authorUserId,
             authorHandle: input.mention.authorHandle ?? null,
             text: input.mention.text ?? "",
