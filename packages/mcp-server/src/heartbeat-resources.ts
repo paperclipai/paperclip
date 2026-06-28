@@ -5,26 +5,12 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { PaperclipApiClient } from "./client.js";
+import { createHeartbeatRunSubscriptions, type HeartbeatRunSnapshot } from "./resource-subscriptions.js";
 
 const HEARTBEAT_RUN_SCHEME = "paperclip:";
 const HEARTBEAT_RUN_HOST = "heartbeat-runs";
 const DEFAULT_LOG_CHUNK_LIMIT_BYTES = 16_384;
 const DEFAULT_EVENT_LIMIT = 200;
-const SUBSCRIPTION_POLL_MS = 1_000;
-
-interface HeartbeatRunSnapshot {
-  status?: string | null;
-  updatedAt?: string | null;
-  finishedAt?: string | null;
-  logBytes?: number | null;
-  lastOutputSeq?: number | null;
-  lastOutputAt?: string | null;
-}
-
-interface SubscriptionState {
-  timer: NodeJS.Timeout;
-  lastSignature: string;
-}
 
 function jsonContents(uri: string, value: unknown) {
   return {
@@ -112,21 +98,6 @@ async function readHeartbeatRunResource(client: PaperclipApiClient, uri: string)
   throw new Error(`Unsupported heartbeat run resource URI: ${uri}`);
 }
 
-function isTerminalRunStatus(status: unknown): boolean {
-  return typeof status === "string" && status !== "queued" && status !== "running";
-}
-
-function snapshotSignature(snapshot: HeartbeatRunSnapshot): string {
-  return JSON.stringify({
-    status: snapshot.status ?? null,
-    updatedAt: snapshot.updatedAt ?? null,
-    finishedAt: snapshot.finishedAt ?? null,
-    logBytes: snapshot.logBytes ?? 0,
-    lastOutputSeq: snapshot.lastOutputSeq ?? null,
-    lastOutputAt: snapshot.lastOutputAt ?? null,
-  });
-}
-
 async function readSubscriptionSnapshot(client: PaperclipApiClient, uri: string): Promise<HeartbeatRunSnapshot | null> {
   const parsed = parseHeartbeatRunUri(uri);
   if (!parsed) return null;
@@ -134,49 +105,14 @@ async function readSubscriptionSnapshot(client: PaperclipApiClient, uri: string)
 }
 
 export function registerHeartbeatRunResources(server: McpServer, client: PaperclipApiClient) {
-  const subscriptions = new Map<string, SubscriptionState>();
-
-  const unsubscribe = (uri: string) => {
-    const existing = subscriptions.get(uri);
-    if (!existing) return;
-    clearInterval(existing.timer);
-    subscriptions.delete(uri);
-  };
-
-  const subscribe = async (uri: string) => {
-    if (subscriptions.has(uri)) return;
-    const snapshot = await readSubscriptionSnapshot(client, uri);
-    if (!snapshot) throw new Error(`Unsupported heartbeat run resource URI: ${uri}`);
-    const state: SubscriptionState = {
-      lastSignature: snapshotSignature(snapshot),
-      timer: setInterval(() => {
-        void (async () => {
-          try {
-            const next = await readSubscriptionSnapshot(client, uri);
-            if (!next) {
-              unsubscribe(uri);
-              return;
-            }
-            const nextSignature = snapshotSignature(next);
-            if (nextSignature !== state.lastSignature) {
-              state.lastSignature = nextSignature;
-              await server.server.sendResourceUpdated({ uri });
-            }
-            if (isTerminalRunStatus(next.status)) unsubscribe(uri);
-          } catch {
-            unsubscribe(uri);
-          }
-        })();
-      }, SUBSCRIPTION_POLL_MS),
-    };
-    state.timer.unref?.();
-    subscriptions.set(uri, state);
-    if (isTerminalRunStatus(snapshot.status)) unsubscribe(uri);
-  };
+  const subscriptions = createHeartbeatRunSubscriptions({
+    server,
+    readSnapshot: (uri) => readSubscriptionSnapshot(client, uri),
+  });
 
   const previousOnClose = server.server.onclose;
   server.server.onclose = () => {
-    for (const uri of [...subscriptions.keys()]) unsubscribe(uri);
+    subscriptions.close();
     previousOnClose?.();
   };
 
@@ -213,11 +149,11 @@ export function registerHeartbeatRunResources(server: McpServer, client: Papercl
 
   server.server.registerCapabilities({ resources: { subscribe: true, listChanged: true } });
   server.server.setRequestHandler(SubscribeRequestSchema, async (request) => {
-    await subscribe(request.params.uri);
+    await subscriptions.subscribe(request.params.uri);
     return {};
   });
   server.server.setRequestHandler(UnsubscribeRequestSchema, async (request) => {
-    unsubscribe(request.params.uri);
+    subscriptions.unsubscribe(request.params.uri);
     return {};
   });
 }
