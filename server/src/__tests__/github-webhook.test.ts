@@ -110,13 +110,37 @@ describe("github-webhook pure helpers", () => {
     ).toBeNull();
   });
 
-  it("ignores pull_request synchronize to avoid push-thrash", () => {
-    expect(
-      __test_resolveEventContext("pull_request", {
-        action: "synchronize",
-        pull_request: { head: { ref: "fix/BLO-3182" } },
-      }),
-    ).toBeNull();
+  it("resolves pull_request synchronize as a reviewer wake with a debounced (head-sha-independent) idempotency key", () => {
+    const ctx = __test_resolveEventContext("pull_request", {
+      action: "synchronize",
+      pull_request: {
+        number: 318,
+        title: "Fix BLO-3182 webflow blog",
+        body: null,
+        html_url: "https://github.com/Blockcast/paperclip/pull/318",
+        head: { ref: "fix/BLO-3182", sha: "push2sha" },
+      },
+      repository: { full_name: "Blockcast/paperclip" },
+    });
+    expect(ctx).toMatchObject({
+      identifiers: ["BLO-3182"],
+      wakeReason: "github_pr_synchronized",
+      prNumber: 318,
+      repoFullName: "Blockcast/paperclip",
+      headSha: "push2sha",
+    });
+    // synchronize drives the reviewer wake (debounced re-review on push).
+    expect(__test_shouldFirePrReviewerWake(ctx)).toBe(true);
+    if (!ctx || !ctx.prNumber) {
+      throw new Error("expected synchronize pull_request context with PR number");
+    }
+    // Debounce: the key omits head sha + delivery id, so a burst of rapid
+    // pushes (each a distinct head sha / delivery) collapses onto one key and
+    // dedups against the still-pending wake.
+    // @ts-expect-error – test fixture omits the prNumber field required by the narrow union
+    expect(__test_buildPrReviewerWakeIdempotencyKey(ctx, "delivery-push-2")).toBe(
+      "pr_review:Blockcast/paperclip:318:github_pr_synchronized",
+    );
   });
 
   it("resolves a wake reason for pull_request opened", () => {
