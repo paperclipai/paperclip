@@ -106,43 +106,46 @@ const plugin = definePlugin({
       }));
     });
 
-    ctx.data.register(
-      "fileList",
-      async (params: Record<string, unknown>) => {
-        const projectId = params.projectId as string;
-        const companyId = typeof params.companyId === "string" ? params.companyId : "";
-        const workspaceId = params.workspaceId as string;
-        const directoryPath = typeof params.directoryPath === "string" ? params.directoryPath : "";
-        if (!projectId || !companyId || !workspaceId) return { entries: [] };
-        const workspaces = await ctx.projects.listWorkspaces(projectId, companyId);
-        const workspace = workspaces.find((w) => w.id === workspaceId);
-        if (!workspace) return { entries: [] };
-        const workspacePath = sanitizeWorkspacePath(workspace.path);
-        if (!workspacePath) return { entries: [] };
-        const dirPath = resolveWorkspace(workspacePath, directoryPath);
-        if (!dirPath) {
-          return { entries: [] };
-        }
-        if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
-          return { entries: [] };
-        }
-        const names = fs.readdirSync(dirPath).sort((a, b) => a.localeCompare(b));
-        const entries = names.map((name) => {
-          const full = path.join(dirPath, name);
-          const stat = fs.lstatSync(full);
-          const relativePath = path.relative(workspacePath, full);
-          return {
-            name,
-            path: relativePath,
-            isDirectory: stat.isDirectory(),
-          };
-        }).sort((a, b) => {
-          if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        });
-        return { entries };
-      },
-    );
+    async function readFileList(params: Record<string, unknown>) {
+      const projectId = params.projectId as string;
+      const companyId = typeof params.companyId === "string" ? params.companyId : "";
+      const workspaceId = params.workspaceId as string;
+      const directoryPath = typeof params.directoryPath === "string" ? params.directoryPath : "";
+      if (!projectId || !companyId || !workspaceId) return { entries: [] };
+      const workspaces = await ctx.projects.listWorkspaces(projectId, companyId);
+      const workspace = workspaces.find((w) => w.id === workspaceId);
+      if (!workspace) return { entries: [] };
+      const workspacePath = sanitizeWorkspacePath(workspace.path);
+      if (!workspacePath) return { entries: [] };
+      const dirPath = resolveWorkspace(workspacePath, directoryPath);
+      if (!dirPath) {
+        return { entries: [] };
+      }
+      if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) {
+        return { entries: [] };
+      }
+      const names = fs.readdirSync(dirPath).sort((a, b) => a.localeCompare(b));
+      const entries = names.map((name) => {
+        const full = path.join(dirPath, name);
+        const stat = fs.lstatSync(full);
+        const relativePath = path.relative(workspacePath, full);
+        return {
+          name,
+          path: relativePath,
+          isDirectory: stat.isDirectory(),
+        };
+      }).sort((a, b) => {
+        if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      return { entries };
+    }
+
+    ctx.data.register("fileList", readFileList);
+
+    // Mirror `fileList` as an action so the UI can lazily fetch directory
+    // children on tree expand without spawning a usePluginData hook per dir.
+    ctx.actions.register("loadFileList", readFileList);
 
     ctx.data.register(
       "fileContent",

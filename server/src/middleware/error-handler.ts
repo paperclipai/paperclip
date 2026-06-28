@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 import { HttpError } from "../errors.js";
 import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
+import { COMPANY_IMPORT_API_PATH } from "../routes/company-import-paths.js";
 
 export interface ErrorContext {
   error: { message: string; stack?: string; name?: string; details?: unknown; raw?: unknown };
@@ -39,6 +40,9 @@ export function errorHandler(
   _next: NextFunction,
 ) {
   if (err instanceof HttpError) {
+    const details = err.details && typeof err.details === "object" && !Array.isArray(err.details)
+      ? err.details as Record<string, unknown>
+      : null;
     if (err.status >= 500) {
       attachErrorContext(
         req,
@@ -51,6 +55,7 @@ export function errorHandler(
     }
     res.status(err.status).json({
       error: err.message,
+      ...(typeof details?.code === "string" ? { code: details.code } : {}),
       ...(err.details ? { details: err.details } : {}),
     });
     return;
@@ -74,5 +79,14 @@ export function errorHandler(
   const tc = getTelemetryClient();
   if (tc) trackErrorHandlerCrash(tc, { errorCode: rootError.name });
 
-  res.status(500).json({ error: "Internal server error" });
+  res.status(500).json({
+    error: "Internal server error",
+    ...(shouldExposeTrustedCloudTenantImportError(req) ? { message: rootError.message } : {}),
+  });
+}
+
+function shouldExposeTrustedCloudTenantImportError(req: Request) {
+  return req.actor?.source === "cloud_tenant"
+    && req.method === "POST"
+    && req.originalUrl.split("?")[0] === COMPANY_IMPORT_API_PATH;
 }

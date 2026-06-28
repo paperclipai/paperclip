@@ -2,6 +2,8 @@ export const PROJECT_MENTION_SCHEME = "project://";
 export const AGENT_MENTION_SCHEME = "agent://";
 export const USER_MENTION_SCHEME = "user://";
 export const SKILL_MENTION_SCHEME = "skill://";
+export const ROUTINE_MENTION_SCHEME = "routine://";
+export const PIPELINE_MENTION_SCHEME = "pipeline://";
 
 const HEX_COLOR_RE = /^[0-9a-f]{6}$/i;
 const HEX_COLOR_SHORT_RE = /^[0-9a-f]{3}$/i;
@@ -11,6 +13,8 @@ const PROJECT_MENTION_LINK_RE = /\[[^\]]*]\((project:\/\/[^)\s]+)\)/gi;
 const AGENT_MENTION_LINK_RE = /\[[^\]]*]\((agent:\/\/[^)\s]+)\)/gi;
 const USER_MENTION_LINK_RE = /\[[^\]]*]\((user:\/\/[^)\s]+)\)/gi;
 const SKILL_MENTION_LINK_RE = /\[[^\]]*]\((skill:\/\/[^)\s]+)\)/gi;
+const ROUTINE_MENTION_LINK_RE = /\[[^\]]*]\((routine:\/\/[^)\s]+)\)/gi;
+const PIPELINE_MENTION_LINK_RE = /\[[^\]]*]\((pipeline:\/\/[^)\s]+)\)/gi;
 const AGENT_ICON_NAME_RE = /^[a-z0-9-]+$/i;
 const SKILL_SLUG_RE = /^[a-z0-9][a-z0-9-]*$/i;
 
@@ -31,6 +35,15 @@ export interface ParsedUserMention {
 export interface ParsedSkillMention {
   skillId: string;
   slug: string | null;
+}
+
+export interface ParsedRoutineMention {
+  routineId: string;
+}
+
+export interface ParsedPipelineMention {
+  pipelineId: string;
+  stageKey: string | null;
 }
 
 function normalizeHexColor(input: string | null | undefined): string | null {
@@ -169,6 +182,54 @@ export function parseSkillMentionHref(href: string): ParsedSkillMention | null {
   };
 }
 
+export function buildRoutineMentionHref(routineId: string): string {
+  return `${ROUTINE_MENTION_SCHEME}${routineId.trim()}`;
+}
+
+export function parseRoutineMentionHref(href: string): ParsedRoutineMention | null {
+  if (!href.startsWith(ROUTINE_MENTION_SCHEME)) return null;
+
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== "routine:") return null;
+
+  const routineId = `${url.hostname}${url.pathname}`.replace(/^\/+/, "").trim();
+  if (!routineId) return null;
+
+  return { routineId };
+}
+
+export function buildPipelineMentionHref(pipelineId: string, stageKey?: string | null): string {
+  const trimmedPipelineId = pipelineId.trim();
+  const normalizedStageKey = stageKey?.trim();
+  if (!normalizedStageKey) return `${PIPELINE_MENTION_SCHEME}${trimmedPipelineId}`;
+  return `${PIPELINE_MENTION_SCHEME}${trimmedPipelineId}?stage=${encodeURIComponent(normalizedStageKey)}`;
+}
+
+export function parsePipelineMentionHref(href: string): ParsedPipelineMention | null {
+  if (!href.startsWith(PIPELINE_MENTION_SCHEME)) return null;
+
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== "pipeline:") return null;
+
+  const pipelineId = `${url.hostname}${url.pathname}`.replace(/^\/+/, "").trim();
+  if (!pipelineId) return null;
+
+  const stageKey = url.searchParams.get("stage")?.trim() || null;
+  return { pipelineId, stageKey };
+}
+
 export function extractProjectMentionIds(markdown: string): string[] {
   if (!markdown) return [];
   const ids = new Set<string>();
@@ -215,6 +276,35 @@ export function extractSkillMentionIds(markdown: string): string[] {
     if (parsed) ids.add(parsed.skillId);
   }
   return [...ids];
+}
+
+export function extractRoutineMentionIds(markdown: string): string[] {
+  if (!markdown) return [];
+  const ids = new Set<string>();
+  const re = new RegExp(ROUTINE_MENTION_LINK_RE);
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(markdown)) !== null) {
+    const parsed = parseRoutineMentionHref(match[1]);
+    if (parsed) ids.add(parsed.routineId);
+  }
+  return [...ids];
+}
+
+export function extractPipelineMentions(markdown: string): ParsedPipelineMention[] {
+  if (!markdown) return [];
+  const seen = new Set<string>();
+  const mentions: ParsedPipelineMention[] = [];
+  const re = new RegExp(PIPELINE_MENTION_LINK_RE);
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(markdown)) !== null) {
+    const parsed = parsePipelineMentionHref(match[1]);
+    if (!parsed) continue;
+    const key = `${parsed.pipelineId}:${parsed.stageKey ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    mentions.push(parsed);
+  }
+  return mentions;
 }
 
 function normalizeAgentIcon(input: string | null | undefined): string | null {

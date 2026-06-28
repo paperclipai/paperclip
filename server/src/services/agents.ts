@@ -16,10 +16,20 @@ import {
   issues,
   issueComments,
 } from "@paperclipai/db";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import {
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  getAgentWorkEligibility,
+  isUuidLike,
+  normalizeAgentApiKeyScope,
+  normalizeAgentUrlKey,
+  type AgentEligibilityAgent,
+  type AgentApiKeyScope,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { syncAgentAdapterEnvBindings } from "./agent-secret-bindings.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+import { secretService } from "./secrets.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -212,6 +222,8 @@ export function deduplicateAgentName(
 }
 
 export function agentService(db: Db) {
+  const secretsSvc = secretService(db);
+
   function currentUtcMonthWindow(now = new Date()) {
     const year = now.getUTCFullYear();
     const month = now.getUTCMonth();
@@ -228,11 +240,43 @@ export function agentService(db: Db) {
     };
   }
 
-  function normalizeAgentRow(row: typeof agents.$inferSelect) {
+  function normalizeAgentBaseRow(row: typeof agents.$inferSelect) {
     return withUrlKey({
       ...row,
       permissions: normalizeAgentPermissions(row.permissions, row.role),
     });
+  }
+
+  function toEligibilityAgent(row: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "status" | "reportsTo">): AgentEligibilityAgent {
+    return {
+      id: row.id,
+      companyId: row.companyId,
+      name: row.name,
+      status: row.status,
+      reportsTo: row.reportsTo,
+    };
+  }
+
+  function normalizeAgentRows(rows: (typeof agents.$inferSelect)[], allCompanyRows = rows) {
+    const eligibilityAgents = allCompanyRows.map(toEligibilityAgent);
+    return rows.map((row) => {
+      const base = normalizeAgentBaseRow(row);
+      return {
+        ...base,
+        orgChainHealth: getAgentWorkEligibility({
+          agent: toEligibilityAgent(row),
+          agents: eligibilityAgents,
+        }).orgChainHealth,
+      };
+    });
+  }
+
+  function normalizeAgentRow(row: typeof agents.$inferSelect, allCompanyRows?: (typeof agents.$inferSelect)[]) {
+    return normalizeAgentRows([row], allCompanyRows)[0]!;
+  }
+
+  async function listCompanyAgentRows(companyId: string) {
+    return db.select().from(agents).where(eq(agents.companyId, companyId));
   }
 
   async function getMonthlySpendByAgentIds(companyId: string, agentIds: string[]) {
@@ -274,8 +318,17 @@ export function agentService(db: Db) {
       .where(eq(agents.id, id))
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
-    const [hydrated] = await hydrateAgentSpend([row]);
-    return normalizeAgentRow(hydrated);
+    const [companyRows, hydrated] = await Promise.all([
+      listCompanyAgentRows(row.companyId),
+      hydrateAgentSpend([row]).then((rows) => rows[0]!),
+    ]);
+    return normalizeAgentRow(hydrated, companyRows);
+  }
+
+  async function requireGetById(id: string) {
+    const agent = await getById(id);
+    if (!agent) throw notFound("Agent not found");
+    return agent;
   }
 
   async function ensureManager(companyId: string, managerId: string) {
@@ -324,6 +377,19 @@ export function agentService(db: Db) {
     }
   }
 
+  async function syncAgentSecretBindings(
+    agent: { id: string; companyId: string; adapterConfig: unknown },
+    dbClient: Db = db,
+  ) {
+    const scopedSecretsSvc = dbClient === db ? secretsSvc : secretService(dbClient);
+    await syncAgentAdapterEnvBindings({
+      secretsSvc: scopedSecretsSvc,
+      companyId: agent.companyId,
+      agentId: agent.id,
+      adapterConfig: agent.adapterConfig,
+    });
+  }
+
   async function updateAgent(
     id: string,
     data: Partial<typeof agents.$inferInsert>,
@@ -364,37 +430,59 @@ export function agentService(db: Db) {
       const role = (data.role ?? existing.role) as string;
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
     }
+    if (
+      Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig") &&
+      isPlainRecord(normalizedPatch.adapterConfig)
+    ) {
+      normalizedPatch.adapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
+        existing.companyId,
+        normalizedPatch.adapterConfig,
+        { adapterType: (normalizedPatch.adapterType ?? existing.adapterType) as string },
+      );
+    }
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
-    const updated = await db
-      .update(agents)
-      .set({ ...normalizedPatch, updatedAt: new Date() })
-      .where(eq(agents.id, id))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    const normalizedUpdated = updated ? normalizeAgentRow(updated) : null;
+    return db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const updated = await tx
+        .update(agents)
+        .set({ ...normalizedPatch, updatedAt: new Date() })
+        .where(eq(agents.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!updated) return null;
 
-    if (normalizedUpdated && shouldRecordRevision && beforeConfig) {
-      const afterConfig = buildConfigSnapshot(normalizedUpdated);
-      const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);
-      if (changedKeys.length > 0) {
-        await db.insert(agentConfigRevisions).values({
-          companyId: normalizedUpdated.companyId,
-          agentId: normalizedUpdated.id,
-          createdByAgentId: options?.recordRevision?.createdByAgentId ?? null,
-          createdByUserId: options?.recordRevision?.createdByUserId ?? null,
-          source: options?.recordRevision?.source ?? "patch",
-          rolledBackFromRevisionId: options?.recordRevision?.rolledBackFromRevisionId ?? null,
-          changedKeys,
-          beforeConfig: beforeConfig as unknown as Record<string, unknown>,
-          afterConfig: afterConfig as unknown as Record<string, unknown>,
-        });
+      if (Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig")) {
+        await syncAgentSecretBindings(updated, txDb);
       }
-    }
 
-    return normalizedUpdated;
+      const normalizedUpdated = await agentService(txDb).getById(updated.id);
+      if (!normalizedUpdated) {
+        throw notFound("Agent not found");
+      }
+
+      if (shouldRecordRevision && beforeConfig) {
+        const afterConfig = buildConfigSnapshot(normalizedUpdated);
+        const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);
+        if (changedKeys.length > 0) {
+          await tx.insert(agentConfigRevisions).values({
+            companyId: normalizedUpdated.companyId,
+            agentId: normalizedUpdated.id,
+            createdByAgentId: options?.recordRevision?.createdByAgentId ?? null,
+            createdByUserId: options?.recordRevision?.createdByUserId ?? null,
+            source: options?.recordRevision?.source ?? "patch",
+            rolledBackFromRevisionId: options?.recordRevision?.rolledBackFromRevisionId ?? null,
+            changedKeys,
+            beforeConfig: beforeConfig as unknown as Record<string, unknown>,
+            afterConfig: afterConfig as unknown as Record<string, unknown>,
+          });
+        }
+      }
+
+      return normalizedUpdated;
+    });
   }
 
   return {
@@ -403,9 +491,12 @@ export function agentService(db: Db) {
       if (!options?.includeTerminated) {
         conditions.push(ne(agents.status, "terminated"));
       }
-      const rows = await db.select().from(agents).where(and(...conditions));
+      const [rows, allCompanyRows] = await Promise.all([
+        db.select().from(agents).where(and(...conditions)),
+        listCompanyAgentRows(companyId),
+      ]);
       const hydrated = await hydrateAgentSpend(rows);
-      return hydrated.map(normalizeAgentRow);
+      return normalizeAgentRows(hydrated, allCompanyRows);
     },
 
     getById,
@@ -424,13 +515,33 @@ export function agentService(db: Db) {
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
       const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
-      const created = await db
-        .insert(agents)
-        .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions, runtimeConfig })
-        .returning()
-        .then((rows) => rows[0]);
-
-      return normalizeAgentRow(created);
+      const adapterType = data.adapterType ?? "process";
+      const adapterConfig = isPlainRecord(data.adapterConfig)
+        ? await secretsSvc.normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
+        : {};
+      return db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const created = await tx
+          .insert(agents)
+          .values({
+            ...data,
+            name: uniqueName,
+            companyId,
+            role,
+            adapterType,
+            adapterConfig,
+            permissions: normalizedPermissions,
+            runtimeConfig,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+        await syncAgentSecretBindings(created, txDb);
+        const normalizedCreated = await agentService(txDb).getById(created.id);
+        if (!normalizedCreated) {
+          throw notFound("Agent not found");
+        }
+        return normalizedCreated;
+      });
     },
 
     update: updateAgent,
@@ -446,12 +557,13 @@ export function agentService(db: Db) {
           status: "paused",
           pauseReason: reason,
           pausedAt: new Date(),
+          errorReason: null,
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
-      return updated ? normalizeAgentRow(updated) : null;
+      return updated ? getById(updated.id) : null;
     },
 
     resume: async (id: string) => {
@@ -468,12 +580,43 @@ export function agentService(db: Db) {
           status: "idle",
           pauseReason: null,
           pausedAt: null,
+          errorReason: null,
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
-      return updated ? normalizeAgentRow(updated) : null;
+      return updated ? getById(updated.id) : null;
+    },
+
+    clearError: async (id: string) => {
+      const existing = await getById(id);
+      if (!existing) return null;
+      if (existing.status === "terminated") throw conflict("Cannot clear error on terminated agent");
+      if (existing.status === "pending_approval") {
+        throw conflict("Pending approval agents cannot have errors cleared");
+      }
+      if (existing.status !== "error") {
+        throw conflict("Only agents in error status can have their error cleared");
+      }
+
+      const updated = await db
+        .update(agents)
+        .set({
+          status: "idle",
+          pauseReason: null,
+          pausedAt: null,
+          errorReason: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(agents.id, id), eq(agents.status, "error")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (!updated) {
+        throw conflict("Only agents in error status can have their error cleared");
+      }
+      return getById(updated.id);
     },
 
     terminate: async (id: string) => {
@@ -486,6 +629,7 @@ export function agentService(db: Db) {
           status: "terminated",
           pauseReason: null,
           pausedAt: null,
+          errorReason: null,
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id));
@@ -532,36 +676,46 @@ export function agentService(db: Db) {
     },
 
     activatePendingApproval: async (id: string) => {
-      const updated = await db
-        .update(agents)
-        .set({ status: "idle", updatedAt: new Date() })
-        .where(and(eq(agents.id, id), eq(agents.status, "pending_approval")))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const activatedAgent = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const updated = await tx
+          .update(agents)
+          .set({ status: "idle", updatedAt: new Date() })
+          .where(and(eq(agents.id, id), eq(agents.status, "pending_approval")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updated) return null;
+        await syncAgentSecretBindings(updated, txDb);
+        const agent = await agentService(txDb).getById(updated.id);
+        if (!agent) {
+          throw notFound("Agent not found");
+        }
+        return agent;
+      });
 
-      if (updated) {
-        return { agent: normalizeAgentRow(updated), activated: true };
+      if (activatedAgent) {
+        return { agent: activatedAgent, activated: true };
       }
 
       const existing = await getById(id);
       return existing ? { agent: existing, activated: false } : null;
     },
 
-    updatePermissions: async (id: string, permissions: { canCreateAgents: boolean }) => {
+    updatePermissions: async (id: string, permissions: Record<string, unknown> & { canCreateAgents: boolean }) => {
       const existing = await getById(id);
       if (!existing) return null;
 
       const updated = await db
         .update(agents)
         .set({
-          permissions: normalizeAgentPermissions(permissions, existing.role),
+          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }, existing.role),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
 
-      return updated ? normalizeAgentRow(updated) : null;
+      return updated ? getById(updated.id) : null;
     },
 
     listConfigRevisions: async (id: string) =>
@@ -604,7 +758,7 @@ export function agentService(db: Db) {
       });
     },
 
-    createApiKey: async (id: string, name: string) => {
+    createApiKey: async (id: string, name: string, scope: AgentApiKeyScope = { kind: "standard" }) => {
       const existing = await getById(id);
       if (!existing) throw notFound("Agent not found");
       if (existing.status === "pending_approval") {
@@ -623,6 +777,7 @@ export function agentService(db: Db) {
           companyId: existing.companyId,
           name,
           keyHash,
+          scopeConfig: scope.kind === "standard" ? null : scope,
         })
         .returning()
         .then((rows) => rows[0]);
@@ -630,6 +785,7 @@ export function agentService(db: Db) {
       return {
         id: created.id,
         name: created.name,
+        scope: normalizeAgentApiKeyScope(created.scopeConfig),
         token,
         createdAt: created.createdAt,
       };
@@ -640,11 +796,19 @@ export function agentService(db: Db) {
         .select({
           id: agentApiKeys.id,
           name: agentApiKeys.name,
+          scopeConfig: agentApiKeys.scopeConfig,
           createdAt: agentApiKeys.createdAt,
           revokedAt: agentApiKeys.revokedAt,
         })
         .from(agentApiKeys)
-        .where(eq(agentApiKeys.agentId, id)),
+        .where(eq(agentApiKeys.agentId, id))
+        .then((rows) => rows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          scope: normalizeAgentApiKeyScope(row.scopeConfig),
+          createdAt: row.createdAt,
+          revokedAt: row.revokedAt,
+        }))),
 
     getKeyById: async (keyId: string) =>
       db
@@ -653,12 +817,21 @@ export function agentService(db: Db) {
           agentId: agentApiKeys.agentId,
           companyId: agentApiKeys.companyId,
           name: agentApiKeys.name,
+          scopeConfig: agentApiKeys.scopeConfig,
           createdAt: agentApiKeys.createdAt,
           revokedAt: agentApiKeys.revokedAt,
         })
         .from(agentApiKeys)
         .where(eq(agentApiKeys.id, keyId))
-        .then((rows) => rows[0] ?? null),
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row
+            ? {
+              ...row,
+              scope: normalizeAgentApiKeyScope(row.scopeConfig),
+            }
+            : null;
+        }),
 
     revokeKey: async (agentId: string, keyId: string) => {
       const rows = await db
@@ -670,14 +843,12 @@ export function agentService(db: Db) {
     },
 
     orgForCompany: async (companyId: string) => {
-      const rows = await db
-        .select()
-        .from(agents)
-        .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
-      const normalizedRows = rows.map(normalizeAgentRow);
+      const allCompanyRows = await listCompanyAgentRows(companyId);
+      const rows = allCompanyRows.filter((row) => row.status !== "terminated");
+      const normalizedRows = normalizeAgentRows(rows, allCompanyRows);
       const byManager = new Map<string | null, typeof normalizedRows>();
       for (const row of normalizedRows) {
-        const key = row.reportsTo ?? null;
+        const key = row.reportsTo && rows.some((candidate) => candidate.id === row.reportsTo) ? row.reportsTo : null;
         const group = byManager.get(key) ?? [];
         group.push(row);
         byManager.set(key, group);
@@ -735,8 +906,7 @@ export function agentService(db: Db) {
       }
 
       const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
-      const matches = rows
-        .map(normalizeAgentRow)
+      const matches = normalizeAgentRows(rows, rows)
         .filter((agent) => agent.urlKey === urlKey && agent.status !== "terminated");
       if (matches.length === 1) {
         return { agent: matches[0] ?? null, ambiguous: false } as const;

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -128,12 +128,11 @@ async function createRuntimeSkill(root: string, input: {
   const key = input.key ?? `company/${runtimeName}`;
   const source = path.join(root, "skills", runtimeName);
   await fs.mkdir(source, { recursive: true });
-  await fs.writeFile(path.join(source, "SKILL.md"), input.body ?? "---\nrequired: false\n---\nUse the test skill.\n", "utf8");
+  await fs.writeFile(path.join(source, "SKILL.md"), input.body ?? "---\n---\nUse the test skill.\n", "utf8");
   return {
     key,
     runtimeName,
     source,
-    required: false,
   };
 }
 
@@ -215,6 +214,103 @@ describe("acpx_local execute", () => {
     }
   });
 
+  it("closes successful persistent runs by default while retaining session state", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-close-success-"));
+    try {
+      const runtime = new FakeRuntime({} as AcpRuntimeOptions);
+      const execute = createAcpxLocalExecutor({
+        createRuntime: () => runtime,
+      });
+      const result = await execute(buildContext(root));
+
+      expect(result.exitCode).toBe(0);
+      expect(result.sessionParams).toMatchObject({
+        mode: "persistent",
+        acpSessionId: "acp-1",
+      });
+      expect(runtime.closeInputs).toEqual([
+        expect.objectContaining({
+          reason: "paperclip completed turn cleanup",
+          discardPersistentState: false,
+        }),
+      ]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("applies requested Codex model, reasoning effort, and fast mode before starting the turn", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-codex-config-"));
+    try {
+      const runtime = new FakeRuntime({} as AcpRuntimeOptions);
+      const execute = createAcpxLocalExecutor({
+        createRuntime: () => runtime,
+      });
+      const result = await execute(buildContext(root, {
+        config: {
+          agent: "codex",
+          cwd: root,
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+          model: "gpt-5.4",
+          modelReasoningEffort: "xhigh",
+          fastMode: true,
+        },
+      }));
+
+      expect(result.exitCode).toBe(0);
+      expect(result.model).toBe("gpt-5.4");
+      expect(runtime.setConfigInputs).toEqual([
+        expect.objectContaining({ key: "model", value: "gpt-5.4" }),
+        expect.objectContaining({ key: "reasoning_effort", value: "xhigh" }),
+        expect.objectContaining({ key: "service_tier", value: "fast" }),
+        expect.objectContaining({ key: "features.fast_mode", value: "true" }),
+      ]);
+      expect(runtime.startInputs).toHaveLength(1);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("logs a clear error when configured session options need unsupported runtime controls", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-missing-config-controls-"));
+    try {
+      const runtime = new FakeRuntime({} as AcpRuntimeOptions);
+      Object.defineProperty(runtime, "setConfigOption", { value: undefined });
+      const logs: LogEntry[] = [];
+      const execute = createAcpxLocalExecutor({
+        createRuntime: () => runtime,
+      });
+      const result = await execute(buildContext(root, {
+        config: {
+          agent: "codex",
+          cwd: root,
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+          model: "gpt-5.4",
+        },
+        onLog: async (stream, chunk) => logs.push({ stream, chunk }),
+      }));
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorMessage).toContain("does not expose session config controls");
+      expect(logs).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          stream: "stderr",
+          chunk: expect.stringContaining("upgrade ACPX or remove configured model"),
+        }),
+      ]));
+      expect(runtime.closeInputs).toEqual([
+        expect.objectContaining({
+          reason: "paperclip config cleanup",
+          discardPersistentState: false,
+        }),
+      ]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("reuses a compatible warm session and starts fresh when cwd changes", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-reuse-"));
     const other = path.join(root, "other");
@@ -228,8 +324,15 @@ describe("acpx_local execute", () => {
           return runtime;
         },
       });
+      const warmConfig = {
+        agent: "claude",
+        cwd: root,
+        stateDir: path.join(root, "state"),
+        promptTemplate: "Do the assigned work.",
+        warmHandleIdleMs: 60_000,
+      };
 
-      const first = await execute(buildContext(root));
+      const first = await execute(buildContext(root, { config: warmConfig }));
       const second = await execute(buildContext(root, {
         runtime: {
           sessionId: first.sessionId ?? null,
@@ -237,6 +340,7 @@ describe("acpx_local execute", () => {
           sessionDisplayId: first.sessionDisplayId ?? null,
           taskKey: "PAP-1",
         },
+        config: warmConfig,
       }));
       const third = await execute(buildContext(root, {
         runtime: {
@@ -250,6 +354,7 @@ describe("acpx_local execute", () => {
           cwd: other,
           stateDir: path.join(root, "state"),
           promptTemplate: "Do the assigned work.",
+          warmHandleIdleMs: 60_000,
         },
       }));
 
@@ -279,8 +384,26 @@ describe("acpx_local execute", () => {
       });
 
       const [first, second] = await Promise.all([
-        execute(buildContext(root, { runId: "run-1" })),
-        execute(buildContext(root, { runId: "run-2" })),
+        execute(buildContext(root, {
+          runId: "run-1",
+          config: {
+            agent: "claude",
+            cwd: root,
+            stateDir: path.join(root, "state"),
+            promptTemplate: "Do the assigned work.",
+            warmHandleIdleMs: 60_000,
+          },
+        })),
+        execute(buildContext(root, {
+          runId: "run-2",
+          config: {
+            agent: "claude",
+            cwd: root,
+            stateDir: path.join(root, "state"),
+            promptTemplate: "Do the assigned work.",
+            warmHandleIdleMs: 60_000,
+          },
+        })),
       ]);
 
       expect(first.exitCode).toBe(0);
@@ -291,6 +414,47 @@ describe("acpx_local execute", () => {
         input.reason === "paperclip duplicate warm handle cleanup"
       )).toHaveLength(1);
     } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans configured warm handles after their idle window", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-warm-idle-"));
+    vi.useFakeTimers();
+    try {
+      let clock = 0;
+      const runtime = new FakeRuntime({} as AcpRuntimeOptions);
+      const warmHandles = new Map();
+      const execute = createAcpxLocalExecutor({
+        warmHandles,
+        now: () => clock,
+        createRuntime: () => runtime,
+      });
+
+      const result = await execute(buildContext(root, {
+        config: {
+          agent: "claude",
+          cwd: root,
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+          warmHandleIdleMs: 1_000,
+        },
+      }));
+
+      expect(result.exitCode).toBe(0);
+      expect(warmHandles.size).toBe(1);
+      clock = 1_000;
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(warmHandles.size).toBe(0);
+      expect(runtime.closeInputs).toEqual([
+        expect.objectContaining({
+          reason: "paperclip idle cleanup",
+          discardPersistentState: false,
+        }),
+      ]);
+    } finally {
+      vi.useRealTimers();
       await fs.rm(root, { recursive: true, force: true });
     }
   });
@@ -409,7 +573,7 @@ describe("acpx_local execute", () => {
       const execute = createAcpxLocalExecutor({ createRuntime: () => runtime });
       const result = await execute(buildContext(root));
       expect(result.exitCode).toBe(1);
-      expect(result.errorCode).toBe("acpx_protocol_error");
+      expect(result.errorCode).toBe("acpx_session_init_failed");
       expect(result.errorMeta).toMatchObject({
         category: "protocol",
         acpCode: "ACP_SESSION_INIT_FAILED",
@@ -469,7 +633,7 @@ describe("acpx_local execute", () => {
   it("includes skill content in the ACPX Claude session fingerprint", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-claude-fingerprint-"));
     try {
-      const skill = await createRuntimeSkill(root, { body: "---\nrequired: false\n---\nFirst version.\n" });
+      const skill = await createRuntimeSkill(root, { body: "---\n---\nFirst version.\n" });
       const runtimes: FakeRuntime[] = [];
       const execute = createAcpxLocalExecutor({
         createRuntime: (options) => {
@@ -492,7 +656,7 @@ describe("acpx_local execute", () => {
       });
 
       const first = await execute(context);
-      await fs.writeFile(path.join(skill.source, "SKILL.md"), "---\nrequired: false\n---\nSecond version.\n", "utf8");
+      await fs.writeFile(path.join(skill.source, "SKILL.md"), "---\n---\nSecond version.\n", "utf8");
       const second = await execute({
         ...context,
         runtime: {

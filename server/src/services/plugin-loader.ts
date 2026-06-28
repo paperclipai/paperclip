@@ -29,7 +29,7 @@ import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import type {
@@ -52,6 +52,11 @@ import { pluginDatabaseService } from "./plugin-database.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+export const REPO_ROOT = path.resolve(__dirname, "../../..");
+export const BUNDLED_LOCAL_PLUGIN_ROOT = path.join(REPO_ROOT, "packages", "plugins");
+export const STANDALONE_BUNDLED_PLUGIN_ROOT = path.join(BUNDLED_LOCAL_PLUGIN_ROOT, "sandbox-providers");
+export const LOCAL_PLUGIN_AUTOBUILD_TIMEOUT_MS = 120_000;
+const STANDALONE_BUNDLED_PLUGIN_SDK_PACKAGE = "@paperclipai/plugin-sdk";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -78,6 +83,62 @@ export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
 );
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
+
+/**
+ * Model-provider API keys that sandbox-provider plugins (e.g.
+ * `@paperclipai/plugin-kubernetes`) are allowed to read from the
+ * server's process environment so they can inject them into per-run
+ * pod Secrets. All other host env vars remain stripped from plugin
+ * workers (see `PluginWorkerManager.spawnProcess`). The passthrough
+ * is gated on the plugin manifest declaring
+ * `environment.drivers.register` — non-sandbox plugins never receive
+ * these keys.
+ */
+const ADAPTER_ENV_PASSTHROUGH = [
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GEMINI_API_KEY",
+  "OPENROUTER_API_KEY",
+];
+
+/**
+ * In-cluster Kubernetes service-discovery vars. A sandbox-provider plugin that
+ * runs in-cluster (e.g. `@paperclipai/plugin-kubernetes` with inCluster=true)
+ * builds its API client via `KubeConfig.loadFromCluster()`, which reads these
+ * to construct the apiserver URL. Without them the worker fails with "Invalid
+ * URL" at lease acquisition. The CA + token are files under
+ * /var/run/secrets/kubernetes.io/serviceaccount and are readable directly.
+ * Gated, like ADAPTER_ENV_PASSTHROUGH, on environment-driver registration.
+ */
+const K8S_IN_CLUSTER_ENV_PASSTHROUGH = [
+  "KUBERNETES_SERVICE_HOST",
+  "KUBERNETES_SERVICE_PORT",
+  "KUBERNETES_SERVICE_PORT_HTTPS",
+];
+
+export function buildPluginWorkerEnv(input: {
+  manifest: Pick<PaperclipPluginManifestV1, "capabilities">;
+  instanceInfo: { deploymentMode?: string | null; deploymentExposure?: string | null };
+  processEnv?: NodeJS.ProcessEnv;
+}): Record<string, string> {
+  const processEnv = input.processEnv ?? process.env;
+  const env: Record<string, string> = {
+    PAPERCLIP_DEPLOYMENT_MODE: input.instanceInfo.deploymentMode ?? "",
+    PAPERCLIP_DEPLOYMENT_EXPOSURE: input.instanceInfo.deploymentExposure ?? "",
+  };
+  const canRegisterEnvironmentDrivers = Array.isArray(input.manifest.capabilities)
+    && input.manifest.capabilities.includes("environment.drivers.register");
+  if (!canRegisterEnvironmentDrivers) return env;
+
+  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH]) {
+    const value = processEnv[key];
+    if (value && value.trim().length > 0) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
 
 // ---------------------------------------------------------------------------
 // Discovery result types
@@ -127,6 +188,19 @@ export interface PluginDiscoveryResult {
   /** Source(s) that were scanned. */
   sources: PluginSource[];
 }
+
+type PluginEntrypointKey = "manifest" | "worker" | "ui";
+
+type PluginEntrypointPath = {
+  key: PluginEntrypointKey;
+  absolutePath: string;
+};
+
+type LocalPluginBuildCommand = {
+  file: string;
+  args: string[];
+  cwd: string;
+};
 
 function getDeclaredPageRoutePaths(manifest: PaperclipPluginManifestV1): string[] {
   return (manifest.ui?.slots ?? [])
@@ -248,6 +322,8 @@ export interface PluginRuntimeServices {
   instanceInfo: {
     instanceId: string;
     hostVersion: string;
+    deploymentMode?: "local_trusted" | "authenticated";
+    deploymentExposure?: "private" | "public";
   };
 }
 
@@ -534,6 +610,263 @@ async function readPackageJson(
     return JSON.parse(raw) as Record<string, unknown>;
   } catch {
     return null;
+  }
+}
+
+function buildLocalPluginBuildCommand(pkgJson: Record<string, unknown>): string | null {
+  const packageName = pkgJson["name"];
+  if (typeof packageName !== "string" || packageName.trim().length === 0) return null;
+  return `pnpm --filter ${packageName} build`;
+}
+
+function readPackageDependencyNames(
+  pkgJson: Record<string, unknown>,
+  field: "dependencies" | "optionalDependencies",
+): string[] {
+  const deps = pkgJson[field];
+  if (deps === null || typeof deps !== "object" || Array.isArray(deps)) return [];
+  return Object.keys(deps as Record<string, unknown>);
+}
+
+function resolvePackageInstallPath(packageRoot: string, packageName: string): string {
+  return path.join(packageRoot, "node_modules", ...packageName.split("/"));
+}
+
+function isPathWithin(root: string, target: string): boolean {
+  const relativePath = path.relative(root, target);
+  return relativePath === "" || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+}
+
+export function isRepoBundledPluginPath(
+  packageRoot: string,
+  options: { repoRoot?: string } = {},
+): boolean {
+  const repoPluginsRoot = path.join(options.repoRoot ?? REPO_ROOT, "packages", "plugins");
+  return isPathWithin(repoPluginsRoot, packageRoot);
+}
+
+export function isStandaloneBundledPluginPath(
+  packageRoot: string,
+  options: { repoRoot?: string } = {},
+): boolean {
+  const repoRoot = options.repoRoot ?? REPO_ROOT;
+  return isPathWithin(path.join(repoRoot, "packages", "plugins", "sandbox-providers"), packageRoot);
+}
+
+export function resolveDeclaredPluginEntrypoints(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+): PluginEntrypointPath[] {
+  const paperclipPlugin = pkgJson["paperclipPlugin"];
+  if (
+    paperclipPlugin === null
+    || typeof paperclipPlugin !== "object"
+    || Array.isArray(paperclipPlugin)
+  ) {
+    return [];
+  }
+
+  const entrypoints: PluginEntrypointPath[] = [];
+  for (const key of ["manifest", "worker", "ui"] as const) {
+    const relativePath = (paperclipPlugin as Record<string, unknown>)[key];
+    if (typeof relativePath === "string" && relativePath.length > 0) {
+      entrypoints.push({
+        key,
+        absolutePath: path.resolve(packageRoot, relativePath),
+      });
+    }
+  }
+
+  return entrypoints;
+}
+
+export function listMissingDeclaredPluginEntrypoints(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+): PluginEntrypointPath[] {
+  return resolveDeclaredPluginEntrypoints(packageRoot, pkgJson).filter(
+    (entrypoint) => !existsSync(entrypoint.absolutePath),
+  );
+}
+
+function listMissingStandaloneBundledPluginRuntimeDependencies(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+): string[] {
+  // optionalDependencies are intentionally allowed to be absent (e.g.
+  // platform-specific packages), so they must not be treated as required here —
+  // otherwise post-build verification fails even when install/build succeeded.
+  const dependencyNames = new Set<string>([
+    STANDALONE_BUNDLED_PLUGIN_SDK_PACKAGE,
+    ...readPackageDependencyNames(pkgJson, "dependencies"),
+  ]);
+
+  return [...dependencyNames].filter(
+    (packageName) => !existsSync(resolvePackageInstallPath(packageRoot, packageName)),
+  );
+}
+
+function formatLocalPluginManualBuildHint(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+  options: { processEnv?: NodeJS.ProcessEnv; repoRoot?: string } = {},
+): string {
+  if (!isRepoBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })) return "";
+
+  const manualBuildCommand = buildLocalPluginRecoveryCommand(packageRoot, pkgJson, { repoRoot: options.repoRoot });
+  if (!manualBuildCommand) return "";
+
+  const autoBuildDisabled = (options.processEnv ?? process.env)["PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD"] === "1"
+    ? " Auto-build is disabled by PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD=1."
+    : "";
+
+  return `${autoBuildDisabled} Run \`${manualBuildCommand}\` from the repo root and retry.`;
+}
+
+function buildStandaloneBundledPluginInstallArgs(
+  packageRoot: string,
+): string[] {
+  const packageLockfilePath = path.join(packageRoot, "pnpm-lock.yaml");
+  return existsSync(packageLockfilePath)
+    ? ["install", "--ignore-workspace", "--frozen-lockfile"]
+    : ["install", "--ignore-workspace", "--no-lockfile"];
+}
+
+function buildStandaloneBundledPluginInstallCommand(
+  packageRoot: string,
+): string {
+  return `pnpm ${buildStandaloneBundledPluginInstallArgs(packageRoot).join(" ")}`;
+}
+
+function buildLocalPluginRecoveryCommand(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+  options: { repoRoot?: string } = {},
+): string | null {
+  if (isStandaloneBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })) {
+    const repoRoot = options.repoRoot ?? REPO_ROOT;
+    const relativePath = path.relative(repoRoot, packageRoot) || ".";
+    const installCommand = buildStandaloneBundledPluginInstallCommand(packageRoot);
+    return `cd ${relativePath} && ${installCommand} && pnpm build`;
+  }
+
+  return buildLocalPluginBuildCommand(pkgJson);
+}
+
+function buildLocalPluginBuildCommands(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+  options: {
+    repoRoot?: string;
+    needsBuild?: boolean;
+    needsStandaloneRuntimeBootstrap?: boolean;
+  } = {},
+): LocalPluginBuildCommand[] {
+  if (isStandaloneBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })) {
+    const commands: LocalPluginBuildCommand[] = [];
+    const shouldInstallStandaloneRuntime =
+      options.needsStandaloneRuntimeBootstrap === true
+      || (!existsSync(path.join(packageRoot, "node_modules")) && options.needsBuild !== false);
+
+    if (shouldInstallStandaloneRuntime) {
+      commands.push({
+        file: "pnpm",
+        args: buildStandaloneBundledPluginInstallArgs(packageRoot),
+        cwd: packageRoot,
+      });
+    }
+
+    if (options.needsBuild !== false) {
+      commands.push({
+        file: "pnpm",
+        args: ["build"],
+        cwd: packageRoot,
+      });
+    }
+    return commands;
+  }
+
+  const packageName = pkgJson["name"];
+  if (typeof packageName !== "string" || packageName.trim().length === 0) return [];
+  return [{
+    file: "pnpm",
+    args: ["--filter", packageName, "build"],
+    cwd: options.repoRoot ?? REPO_ROOT,
+  }];
+}
+
+export async function ensureLocalPluginBuilt(
+  packageRoot: string,
+  pkgJson: Record<string, unknown>,
+  options: {
+    processEnv?: NodeJS.ProcessEnv;
+    repoRoot?: string;
+    execFileAsyncImpl?: (
+      file: string,
+      args: readonly string[],
+      options: { cwd: string; timeout: number },
+    ) => Promise<{ stdout: string; stderr: string }>;
+  } = {},
+): Promise<void> {
+  const processEnv = options.processEnv ?? process.env;
+  if (processEnv["PAPERCLIP_DISABLE_PLUGIN_AUTOBUILD"] === "1") return;
+  if (!isRepoBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })) return;
+
+  const missingEntrypoints = listMissingDeclaredPluginEntrypoints(packageRoot, pkgJson);
+  const missingStandaloneRuntimeDeps = isStandaloneBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })
+    ? listMissingStandaloneBundledPluginRuntimeDependencies(packageRoot, pkgJson)
+    : [];
+  if (missingEntrypoints.length === 0 && missingStandaloneRuntimeDeps.length === 0) return;
+
+  const packageName = pkgJson["name"];
+  const manualBuildCommand = buildLocalPluginRecoveryCommand(packageRoot, pkgJson, { repoRoot: options.repoRoot });
+  if (typeof packageName !== "string" || packageName.trim().length === 0 || !manualBuildCommand) return;
+
+  const runExecFileAsync = options.execFileAsyncImpl ?? execFileAsync;
+  const buildCommands = buildLocalPluginBuildCommands(packageRoot, pkgJson, {
+    repoRoot: options.repoRoot,
+    needsBuild: missingEntrypoints.length > 0,
+    needsStandaloneRuntimeBootstrap: missingStandaloneRuntimeDeps.length > 0,
+  });
+
+  try {
+    for (const command of buildCommands) {
+      await runExecFileAsync(
+        command.file,
+        command.args,
+        { cwd: command.cwd, timeout: LOCAL_PLUGIN_AUTOBUILD_TIMEOUT_MS },
+      );
+    }
+  } catch (error) {
+    const stderr = typeof (error as { stderr?: unknown }).stderr === "string"
+      ? (error as { stderr: string }).stderr.trim()
+      : "";
+    const timeoutMessage = (error as { killed?: unknown }).killed === true
+      ? ` after timing out at ${LOCAL_PLUGIN_AUTOBUILD_TIMEOUT_MS}ms`
+      : "";
+    const stderrMessage = stderr.length > 0 ? ` stderr: ${stderr}` : "";
+    throw new Error(
+      `Failed to auto-build bundled local plugin ${packageName}${timeoutMessage}. ` +
+        `Run \`${manualBuildCommand}\` from the repo root and retry.${stderrMessage}`,
+    );
+  }
+
+  const stillMissingEntrypoints = listMissingDeclaredPluginEntrypoints(packageRoot, pkgJson);
+  const stillMissingStandaloneRuntimeDeps = isStandaloneBundledPluginPath(packageRoot, { repoRoot: options.repoRoot })
+    ? listMissingStandaloneBundledPluginRuntimeDependencies(packageRoot, pkgJson)
+    : [];
+  if (stillMissingEntrypoints.length > 0 || stillMissingStandaloneRuntimeDeps.length > 0) {
+    const missingDetails: string[] = [];
+    if (stillMissingEntrypoints.length > 0) {
+      missingDetails.push(`built entrypoints: ${stillMissingEntrypoints.map((entrypoint) => entrypoint.key).join(", ")}`);
+    }
+    if (stillMissingStandaloneRuntimeDeps.length > 0) {
+      missingDetails.push(`runtime dependencies: ${stillMissingStandaloneRuntimeDeps.join(", ")}`);
+    }
+    throw new Error(
+      `Bundled local plugin ${packageName} is still missing ${missingDetails.join("; ")} after auto-build. ` +
+        `Run \`${manualBuildCommand}\` from the repo root and retry.`,
+    );
   }
 }
 
@@ -870,10 +1203,17 @@ export function pluginLoader(
     const pkgJson = await readPackageJson(resolvedPackagePath);
     if (!pkgJson) throw new Error(`Missing package.json at ${resolvedPackagePath}`);
 
+    if (localPath) {
+      await ensureLocalPluginBuilt(resolvedPackagePath, pkgJson);
+    }
+
     const manifestPath = resolveManifestPath(resolvedPackagePath, pkgJson);
     if (!manifestPath || !existsSync(manifestPath)) {
+      const manualBuildHint = localPath
+        ? formatLocalPluginManualBuildHint(resolvedPackagePath, pkgJson)
+        : "";
       throw new Error(
-        `Package ${resolvedPackageName} at ${resolvedPackagePath} does not appear to be a Paperclip plugin (no manifest found).`,
+        `Package ${resolvedPackageName} at ${resolvedPackagePath} does not appear to be a Paperclip plugin (no manifest found).${manualBuildHint}`,
       );
     }
 
@@ -932,7 +1272,10 @@ export function pluginLoader(
 
     try {
       // Dynamic import works for both .js (ESM) and .cjs (CJS) manifests
-      const mod = await import(manifestPath) as Record<string, unknown>;
+      const manifestUrl = pathToFileURL(manifestPath);
+      const manifestStat = await stat(manifestPath);
+      manifestUrl.searchParams.set("mtime", String(Math.trunc(manifestStat.mtimeMs)));
+      const mod = await import(manifestUrl.href) as Record<string, unknown>;
       // The manifest may be the default export or the module itself
       raw = mod["default"] ?? mod;
     } catch (err) {
@@ -942,6 +1285,51 @@ export function pluginLoader(
     }
 
     return manifestValidator.parseOrThrow(raw);
+  }
+
+  async function loadManifestFromPackageRoot(
+    packageRoot: string,
+  ): Promise<PaperclipPluginManifestV1 | null> {
+    const pkgJson = await readPackageJson(packageRoot);
+    if (!pkgJson) return null;
+
+    const manifestPath = resolveManifestPath(packageRoot, pkgJson);
+    if (!manifestPath || !existsSync(manifestPath)) return null;
+
+    return loadManifestFromPath(manifestPath);
+  }
+
+  async function refreshPluginManifestFromPackage(
+    plugin: PluginRecord,
+    packageRoot: string,
+  ): Promise<PluginRecord> {
+    const manifest = await loadManifestFromPackageRoot(packageRoot);
+    if (!manifest) {
+      throw new Error(`Plugin package ${plugin.packageName} no longer exposes a Paperclip manifest`);
+    }
+    if (manifest.id !== plugin.pluginKey) {
+      throw new Error(
+        `Plugin manifest ID '${manifest.id}' does not match installed plugin '${plugin.pluginKey}'`,
+      );
+    }
+
+    if (JSON.stringify(manifest) === JSON.stringify(plugin.manifestJson)) {
+      return plugin;
+    }
+
+    await registry.update(plugin.id, {
+      packageName: plugin.packageName,
+      version: manifest.version,
+      manifest,
+    });
+
+    return {
+      ...plugin,
+      version: manifest.version,
+      apiVersion: manifest.apiVersion,
+      categories: manifest.categories,
+      manifestJson: manifest,
+    };
   }
 
   /**
@@ -1256,22 +1644,43 @@ export function pluginLoader(
 
     async installPlugin(installOptions: PluginInstallOptions): Promise<DiscoveredPlugin> {
       const discovered = await fetchAndValidate(installOptions);
+      const manifest = discovered.manifest!;
 
-      // Step 6: Persist install record in Postgres (include packagePath for local installs so the worker can be resolved)
-      await registry.install(
-        {
-          packageName: discovered.packageName,
-          packagePath: discovered.source === "local-filesystem" ? discovered.packagePath : undefined,
-        },
-        discovered.manifest!,
-      );
+      // Step 6: Persist install record and apply plugin-owned schema migrations
+      // in one database transaction. If migration validation fails, the plugin
+      // row, namespace record, migration ledger, and created schema all roll back.
+      const installDb = manifest.database ? migrationDb : db;
+      await installDb.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const txRegistry = pluginRegistryService(txDb);
+        const installed = await txRegistry.install(
+          {
+            packageName: discovered.packageName,
+            packagePath: discovered.source === "local-filesystem" ? discovered.packagePath : undefined,
+          },
+          manifest,
+        );
+
+        if (!installed) {
+          throw new Error(`Plugin install did not return a registry row: ${manifest.id}`);
+        }
+
+        if (manifest.database) {
+          await pluginDatabaseService(txDb).applyMigrations(
+            installed.id,
+            manifest,
+            discovered.packagePath,
+            { persistFailure: false },
+          );
+        }
+      });
 
       log.info(
         {
-          pluginId: discovered.manifest!.id,
+          pluginId: manifest.id,
           packageName: discovered.packageName,
           version: discovered.version,
-          capabilities: discovered.manifest!.capabilities,
+          capabilities: manifest.capabilities,
         },
         "plugin-loader: plugin installed successfully",
       );
@@ -1663,9 +2072,10 @@ export function pluginLoader(
    * `error` in the database when activation fails.
    */
   async function activatePlugin(plugin: PluginRecord): Promise<PluginLoadResult> {
-    const manifest = plugin.manifestJson;
     const pluginId = plugin.id;
     const pluginKey = plugin.pluginKey;
+    let activePlugin = plugin;
+    let manifest = activePlugin.manifestJson;
 
     const registered: PluginLoadResult["registered"] = {
       worker: false,
@@ -1705,8 +2115,10 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       // 1. Resolve worker entrypoint
       // ------------------------------------------------------------------
-      const workerEntrypoint = resolveWorkerEntrypoint(plugin, localPluginDir);
-      const packageRoot = resolvePluginPackageRoot(plugin, localPluginDir);
+      const packageRoot = resolvePluginPackageRoot(activePlugin, localPluginDir);
+      activePlugin = await refreshPluginManifestFromPackage(activePlugin, packageRoot);
+      manifest = activePlugin.manifestJson;
+      const workerEntrypoint = resolveWorkerEntrypoint(activePlugin, localPluginDir);
 
       // ------------------------------------------------------------------
       // 2. Apply restricted database migrations before worker startup
@@ -1746,12 +2158,13 @@ export function pluginLoader(
         databaseNamespace,
         hostHandlers,
         autoRestart: true,
+        env: buildPluginWorkerEnv({ manifest, instanceInfo }),
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
       // (for example @paperclipai/shared exports). Run those workers through
       // the tsx loader so first-party example plugins work in development.
-      if (plugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
+      if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
         workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
       }
 
@@ -1826,7 +2239,7 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       const toolDeclarations = manifest.tools ?? [];
       if (toolDeclarations.length > 0) {
-        toolDispatcher.registerPluginTools(pluginKey, manifest);
+        toolDispatcher.registerPluginTools(pluginKey, manifest, pluginId);
         registered.tools = toolDeclarations.length;
 
         log.info(
@@ -1842,13 +2255,13 @@ export function pluginLoader(
         {
           pluginId,
           pluginKey,
-          version: plugin.version,
+          version: activePlugin.version,
           registered,
         },
         "plugin-loader: plugin activated successfully",
       );
 
-      return { plugin, success: true, registered };
+      return { plugin: activePlugin, success: true, registered };
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
 
@@ -1872,7 +2285,7 @@ export function pluginLoader(
       }
 
       return {
-        plugin,
+        plugin: activePlugin,
         success: false,
         error: errorMessage,
         registered,

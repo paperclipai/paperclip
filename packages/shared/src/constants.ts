@@ -33,7 +33,10 @@ export const AGENT_ADAPTER_TYPES = [
   "acpx_local",
   "claude_local",
   "codex_local",
+  "cursor_cloud",
   "gemini_local",
+  "hermes_gateway",
+  "hermes_local",
   "opencode_local",
   "pi_local",
   "cursor",
@@ -123,6 +126,56 @@ export const AGENT_ICON_NAMES = [
 ] as const;
 export type AgentIconName = (typeof AGENT_ICON_NAMES)[number];
 
+/**
+ * Curated Lucide icon set for projects (PAP-68 part 3).
+ *
+ * The first entry, `"folder"`, is the default for any project without an
+ * explicit icon. The remaining entries reuse much of the agent icon set plus a
+ * handful of folder/structure icons that read well at small tile sizes.
+ */
+export const PROJECT_ICON_NAMES = [
+  "folder",
+  "rocket",
+  "code",
+  "terminal",
+  "database",
+  "globe",
+  "package",
+  "boxes",
+  "box",
+  "layers",
+  "briefcase",
+  "compass",
+  "target",
+  "flame",
+  "zap",
+  "star",
+  "bug",
+  "wrench",
+  "hammer",
+  "lightbulb",
+  "sparkles",
+  "shield",
+  "lock",
+  "search",
+  "cog",
+  "brain",
+  "cpu",
+  "git-branch",
+  "file-code",
+  "puzzle",
+  "gem",
+  "atom",
+  "heart",
+  "mail",
+  "message-square",
+  "crown",
+  "radar",
+  "telescope",
+  "hexagon",
+] as const;
+export type ProjectIconName = (typeof PROJECT_ICON_NAMES)[number];
+
 export const ISSUE_STATUSES = [
   "backlog",
   "todo",
@@ -146,7 +199,28 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
+export const ISSUE_WORK_MODES = ["standard", "ask", "planning"] as const;
+export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
+
+export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
+export type IssueCommentAuthorType = (typeof ISSUE_COMMENT_AUTHOR_TYPES)[number];
+
+export const ISSUE_COMMENT_PRESENTATION_KINDS = ["message", "system_notice"] as const;
+export type IssueCommentPresentationKind = (typeof ISSUE_COMMENT_PRESENTATION_KINDS)[number];
+
+export const ISSUE_COMMENT_PRESENTATION_TONES = ["neutral", "info", "success", "warning", "danger"] as const;
+export type IssueCommentPresentationTone = (typeof ISSUE_COMMENT_PRESENTATION_TONES)[number];
+
+export const ISSUE_COMMENT_METADATA_ROW_TYPES = [
+  "text",
+  "code",
+  "key_value",
+  "issue_link",
+  "agent_link",
+  "run_link",
+] as const;
+export type IssueCommentMetadataRowType = (typeof ISSUE_COMMENT_METADATA_ROW_TYPES)[number];
 
 export function clampIssueRequestDepth(value: number | null | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return 0;
@@ -157,8 +231,11 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
   "suggest_tasks",
   "ask_user_questions",
   "request_confirmation",
+  "request_checkbox_confirmation",
 ] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
+
+export const REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT = 200;
 
 export const ISSUE_THREAD_INTERACTION_STATUSES = [
   "pending",
@@ -179,6 +256,8 @@ export const ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES = [
 export type IssueThreadInteractionContinuationPolicy =
   (typeof ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES)[number];
 
+export const TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND = "task_watchdog_product_bug";
+
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
   "routine_execution",
@@ -186,10 +265,60 @@ export const ISSUE_ORIGIN_KINDS = [
   "harness_liveness_escalation",
   "issue_productivity_review",
   "stranded_issue_recovery",
+  "task_watchdog",
+  TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
 ] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
 export type IssueOriginKind = BuiltInIssueOriginKind | PluginIssueOriginKind;
+export const ISSUE_WATCHDOG_DISCOVERY_KINDS = ["product_bug", "platform_bug"] as const;
+export type IssueWatchdogDiscoveryKind = (typeof ISSUE_WATCHDOG_DISCOVERY_KINDS)[number];
+export const ISSUE_SURFACE_VISIBILITIES = ["default", "plugin_operation"] as const;
+export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number];
+
+export const ISSUE_RECOVERY_ACTION_KINDS = [
+  "missing_disposition",
+  "stranded_assigned_issue",
+  "workspace_validation",
+  "configuration_validation",
+  "active_run_watchdog",
+  "issue_graph_liveness",
+] as const;
+export type IssueRecoveryActionKind = (typeof ISSUE_RECOVERY_ACTION_KINDS)[number];
+
+export const ISSUE_RECOVERY_ACTION_STATUSES = [
+  "active",
+  "escalated",
+  "resolved",
+  "cancelled",
+] as const;
+export type IssueRecoveryActionStatus = (typeof ISSUE_RECOVERY_ACTION_STATUSES)[number];
+
+export const ISSUE_RECOVERY_ACTION_OWNER_TYPES = [
+  "agent",
+  "user",
+  "board",
+  "system",
+] as const;
+export type IssueRecoveryActionOwnerType = (typeof ISSUE_RECOVERY_ACTION_OWNER_TYPES)[number];
+
+export const ISSUE_RECOVERY_ACTION_OUTCOMES = [
+  "restored",
+  "delegated",
+  "false_positive",
+  "blocked",
+  "escalated",
+  "cancelled",
+] as const;
+export type IssueRecoveryActionOutcome = (typeof ISSUE_RECOVERY_ACTION_OUTCOMES)[number];
+
+export function pluginOperationIssueOriginKind(pluginKey: string): PluginIssueOriginKind {
+  return `plugin:${pluginKey}:operation`;
+}
+
+export function isPluginOperationIssueOriginKind(originKind: string | null | undefined): boolean {
+  return typeof originKind === "string" && /^plugin:[^:]+:operation(?::|$)/.test(originKind);
+}
 
 export const ISSUE_RELATION_TYPES = ["blocks"] as const;
 export type IssueRelationType = (typeof ISSUE_RELATION_TYPES)[number];
@@ -204,7 +333,11 @@ export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = ["manual", "after_activ
 export type IssueTreeHoldReleasePolicyStrategy = (typeof ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES)[number];
 
 export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY = "continuation-summary" as const;
-export const SYSTEM_ISSUE_DOCUMENT_KEYS = [ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY] as const;
+export const PIPELINE_CASE_BODY_DOCUMENT_KEY = "pipeline-case-body" as const;
+export const SYSTEM_ISSUE_DOCUMENT_KEYS = [
+  ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  PIPELINE_CASE_BODY_DOCUMENT_KEY,
+] as const;
 export type SystemIssueDocumentKey = (typeof SYSTEM_ISSUE_DOCUMENT_KEYS)[number];
 
 const SYSTEM_ISSUE_DOCUMENT_KEY_SET = new Set<string>(SYSTEM_ISSUE_DOCUMENT_KEYS);
@@ -214,6 +347,69 @@ export function isSystemIssueDocumentKey(key: string): key is SystemIssueDocumen
 }
 export const ISSUE_REFERENCE_SOURCE_KINDS = ["title", "description", "comment", "document"] as const;
 export type IssueReferenceSourceKind = (typeof ISSUE_REFERENCE_SOURCE_KINDS)[number];
+
+export const DOCUMENT_ANNOTATION_THREAD_STATUSES = ["open", "resolved"] as const;
+export type DocumentAnnotationThreadStatus = (typeof DOCUMENT_ANNOTATION_THREAD_STATUSES)[number];
+
+export const DOCUMENT_ANNOTATION_ANCHOR_STATES = ["active", "stale", "orphaned"] as const;
+export type DocumentAnnotationAnchorState = (typeof DOCUMENT_ANNOTATION_ANCHOR_STATES)[number];
+
+export const DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES = [
+  "exact",
+  "duplicate",
+  "fuzzy",
+  "ambiguous",
+  "missing",
+] as const;
+export type DocumentAnnotationAnchorConfidence =
+  (typeof DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES)[number];
+
+export const EXTERNAL_OBJECT_STATUS_CATEGORIES = [
+  "unknown",
+  "open",
+  "waiting",
+  "running",
+  "succeeded",
+  "failed",
+  "blocked",
+  "closed",
+  "archived",
+  "auth_required",
+  "unreachable",
+] as const;
+export type ExternalObjectStatusCategory = (typeof EXTERNAL_OBJECT_STATUS_CATEGORIES)[number];
+
+export const EXTERNAL_OBJECT_STATUS_TONES = [
+  "neutral",
+  "info",
+  "success",
+  "warning",
+  "danger",
+  "muted",
+] as const;
+export type ExternalObjectStatusTone = (typeof EXTERNAL_OBJECT_STATUS_TONES)[number];
+
+export const EXTERNAL_OBJECT_LIVENESS_STATES = [
+  "unknown",
+  "fresh",
+  "stale",
+  "auth_required",
+  "unreachable",
+] as const;
+export type ExternalObjectLivenessState = (typeof EXTERNAL_OBJECT_LIVENESS_STATES)[number];
+
+export const EXTERNAL_OBJECT_MENTION_SOURCE_KINDS = [
+  "title",
+  "description",
+  "comment",
+  "document",
+  "property",
+  "plugin",
+] as const;
+export type ExternalObjectMentionSourceKind = (typeof EXTERNAL_OBJECT_MENTION_SOURCE_KINDS)[number];
+
+export const EXTERNAL_OBJECT_MENTION_CONFIDENCES = ["exact", "likely", "possible"] as const;
+export type ExternalObjectMentionConfidence = (typeof EXTERNAL_OBJECT_MENTION_CONFIDENCES)[number];
 
 export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
 export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[number];
@@ -278,7 +474,7 @@ export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
 export const ENVIRONMENT_STATUSES = ["active", "archived"] as const;
 export type EnvironmentStatus = (typeof ENVIRONMENT_STATUSES)[number];
 
-export const ENVIRONMENT_LEASE_STATUSES = ["active", "released", "expired", "failed", "retained"] as const;
+export const ENVIRONMENT_LEASE_STATUSES = ["active", "released", "expired", "failed", "retained", "pending_cleanup"] as const;
 export type EnvironmentLeaseStatus = (typeof ENVIRONMENT_LEASE_STATUSES)[number];
 
 export const ENVIRONMENT_LEASE_POLICIES = [
@@ -307,7 +503,7 @@ export type RoutineTriggerKind = (typeof ROUTINE_TRIGGER_KINDS)[number];
 export const ROUTINE_TRIGGER_SIGNING_MODES = ["bearer", "hmac_sha256", "github_hmac", "none"] as const;
 export type RoutineTriggerSigningMode = (typeof ROUTINE_TRIGGER_SIGNING_MODES)[number];
 
-export const ROUTINE_VARIABLE_TYPES = ["text", "textarea", "number", "boolean", "select"] as const;
+export const ROUTINE_VARIABLE_TYPES = ["text", "textarea", "number", "boolean", "select", "date"] as const;
 export type RoutineVariableType = (typeof ROUTINE_VARIABLE_TYPES)[number];
 
 export const ROUTINE_RUN_STATUSES = [
@@ -323,7 +519,7 @@ export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 
-export const PAUSE_REASONS = ["manual", "budget", "system"] as const;
+export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
 
 export const PROJECT_COLORS = [
@@ -363,6 +559,54 @@ export const SECRET_PROVIDERS = [
   "vault",
 ] as const;
 export type SecretProvider = (typeof SECRET_PROVIDERS)[number];
+
+export const SECRET_PROVIDER_CONFIG_STATUSES = [
+  "ready",
+  "warning",
+  "coming_soon",
+  "disabled",
+] as const;
+export type SecretProviderConfigStatus = (typeof SECRET_PROVIDER_CONFIG_STATUSES)[number];
+
+export const SECRET_PROVIDER_CONFIG_HEALTH_STATUSES = [
+  "ready",
+  "warning",
+  "error",
+  "coming_soon",
+  "disabled",
+] as const;
+export type SecretProviderConfigHealthStatus =
+  (typeof SECRET_PROVIDER_CONFIG_HEALTH_STATUSES)[number];
+
+export const SECRET_STATUSES = ["active", "disabled", "archived", "deleted"] as const;
+export type SecretStatus = (typeof SECRET_STATUSES)[number];
+
+export const SECRET_MANAGED_MODES = ["paperclip_managed", "external_reference"] as const;
+export type SecretManagedMode = (typeof SECRET_MANAGED_MODES)[number];
+
+export const SECRET_VERSION_STATUSES = [
+  "current",
+  "previous",
+  "disabled",
+  "destroyed",
+  "failed",
+] as const;
+export type SecretVersionStatus = (typeof SECRET_VERSION_STATUSES)[number];
+
+export const SECRET_BINDING_TARGET_TYPES = [
+  "agent",
+  "project",
+  "environment",
+  "routine",
+  "plugin",
+  "issue",
+  "run",
+  "system",
+] as const;
+export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
+
+export const SECRET_ACCESS_OUTCOMES = ["success", "failure"] as const;
+export type SecretAccessOutcome = (typeof SECRET_ACCESS_OUTCOMES)[number];
 
 export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
@@ -482,10 +726,12 @@ export type RunLivenessState = (typeof RUN_LIVENESS_STATES)[number];
 export const LIVE_EVENT_TYPES = [
   "heartbeat.run.queued",
   "heartbeat.run.status",
+  "heartbeat.run.progress",
   "heartbeat.run.event",
   "heartbeat.run.log",
   "agent.status",
   "activity.logged",
+  "external_object.updated",
   "plugin.ui.updated",
   "plugin.worker.crashed",
   "plugin.worker.restarted",
@@ -539,12 +785,14 @@ export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
 export const PERMISSION_KEYS = [
   "agents:create",
+  "skills:create",
   "environments:manage",
   "users:invite",
   "users:manage_permissions",
   "tasks:assign",
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
+  "pipelines:write",
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -612,6 +860,7 @@ export const PLUGIN_CAPABILITIES = [
   "companies.read",
   "projects.read",
   "project.workspaces.read",
+  "execution.workspaces.read",
   "issues.read",
   "issue.relations.read",
   "issue.subtree.read",
@@ -624,6 +873,11 @@ export const PLUGIN_CAPABILITIES = [
   "activity.read",
   "costs.read",
   "issues.orchestration.read",
+  "access.members.read",
+  "access.invites.read",
+  "authorization.grants.read",
+  "authorization.policies.read",
+  "authorization.audit.read",
   "database.namespace.read",
   // Data Write
   "issues.create",
@@ -634,9 +888,17 @@ export const PLUGIN_CAPABILITIES = [
   "issue.comments.create",
   "issue.interactions.create",
   "issue.documents.write",
+  "projects.managed",
+  "routines.managed",
+  "skills.managed",
   "agents.pause",
   "agents.resume",
   "agents.invoke",
+  "agents.managed",
+  "access.members.write",
+  "access.invites.write",
+  "authorization.grants.write",
+  "authorization.policies.write",
   "agent.sessions.create",
   "agent.sessions.list",
   "agent.sessions.send",
@@ -646,6 +908,10 @@ export const PLUGIN_CAPABILITIES = [
   "telemetry.track",
   "database.namespace.migrate",
   "database.namespace.write",
+  "external.objects.detect",
+  "external.objects.read",
+  "external.objects.write",
+  "external.objects.refresh",
   // Plugin State
   "plugin.state.read",
   "plugin.state.write",
@@ -658,6 +924,7 @@ export const PLUGIN_CAPABILITIES = [
   "http.outbound",
   "secrets.read-ref",
   "environment.drivers.register",
+  "local.folders",
   // Agent Tools
   "agent.tools.register",
   // UI
@@ -728,6 +995,7 @@ export const PLUGIN_UI_SLOT_TYPES = [
   "taskDetailView",
   "dashboardWidget",
   "sidebar",
+  "routeSidebar",
   "sidebarPanel",
   "projectSidebarItem",
   "globalToolbarButton",
@@ -736,8 +1004,13 @@ export const PLUGIN_UI_SLOT_TYPES = [
   "commentAnnotation",
   "commentContextMenuItem",
   "settingsPage",
+  "companySettingsPage",
 ] as const;
 export type PluginUiSlotType = (typeof PLUGIN_UI_SLOT_TYPES)[number];
+
+export const WORKSPACE_OVERVIEW_DEFAULT_LIMIT = 50;
+export const WORKSPACE_OVERVIEW_MAX_LIMIT = 100;
+export const WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT = 4;
 
 /**
  * Reserved company-scoped route segments that plugin page routes may not claim.
@@ -760,11 +1033,28 @@ export const PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS = [
   "costs",
   "activity",
   "inbox",
+  "workspaces",
   "design-guide",
   "tests",
 ] as const;
 export type PluginReservedCompanyRouteSegment =
   (typeof PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS)[number];
+
+/**
+ * Reserved route segments under `/:companyPrefix/company/settings/...` that
+ * plugin company settings pages may not claim.
+ */
+export const PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS = [
+  "general",
+  "environments",
+  "access",
+  "members",
+  "invites",
+  "secrets",
+  "instance",
+] as const;
+export type PluginReservedCompanySettingsRouteSegment =
+  (typeof PLUGIN_RESERVED_COMPANY_SETTINGS_ROUTE_SEGMENTS)[number];
 
 /**
  * Launcher placement zones describe where a plugin-owned launcher can appear
@@ -841,6 +1131,8 @@ export const PLUGIN_UI_SLOT_ENTITY_TYPES = [
   "goal",
   "run",
   "comment",
+  "execution_workspace",
+  "project_workspace",
 ] as const;
 export type PluginUiSlotEntityType = (typeof PLUGIN_UI_SLOT_ENTITY_TYPES)[number];
 
@@ -924,6 +1216,7 @@ export const PLUGIN_EVENT_TYPES = [
   "agent.created",
   "agent.updated",
   "agent.status_changed",
+  "agent.error_cleared",
   "agent.run.started",
   "agent.run.finished",
   "agent.run.failed",
@@ -947,6 +1240,7 @@ export type PluginEventType = (typeof PLUGIN_EVENT_TYPES)[number];
 export const PLUGIN_BRIDGE_ERROR_CODES = [
   "WORKER_UNAVAILABLE",
   "CAPABILITY_DENIED",
+  "INVOCATION_SCOPE_DENIED",
   "WORKER_ERROR",
   "TIMEOUT",
   "UNKNOWN",

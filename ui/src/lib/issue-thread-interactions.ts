@@ -10,6 +10,10 @@ export type {
   IssueThreadInteractionBase,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionStatus,
+  RequestCheckboxConfirmationInteraction,
+  RequestCheckboxConfirmationOption,
+  RequestCheckboxConfirmationPayload,
+  RequestCheckboxConfirmationResult,
   RequestConfirmationInteraction,
   RequestConfirmationIssueDocumentTarget,
   RequestConfirmationPayload,
@@ -26,7 +30,10 @@ import type {
   AskUserQuestionsInteraction,
   AskUserQuestionsQuestion,
   IssueThreadInteraction,
+  RequestCheckboxConfirmationPayload,
+  RequestCheckboxConfirmationResult,
   RequestConfirmationInteraction,
+  RequestConfirmationTarget,
   SuggestedTaskDraft,
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
@@ -49,7 +56,47 @@ export function isIssueThreadInteraction(
       candidate.kind === "suggest_tasks"
       || candidate.kind === "ask_user_questions"
       || candidate.kind === "request_confirmation"
+      || candidate.kind === "request_checkbox_confirmation"
     );
+}
+
+export function getCheckboxConfirmationSelectedLabels(args: {
+  payload: RequestCheckboxConfirmationPayload;
+  result?: RequestCheckboxConfirmationResult | null;
+}): string[] {
+  const { payload, result } = args;
+  const selectedIds = result?.selectedOptionIds ?? [];
+  const optionLabelById = new Map(
+    payload.options.map((option) => [option.id, option.label] as const),
+  );
+  return selectedIds
+    .map((optionId) => optionLabelById.get(optionId))
+    .filter((label): label is string => typeof label === "string");
+}
+
+export function normalizeRequestConfirmationTargetHref(href: string) {
+  const value = href.trim();
+  if (value.startsWith("#")) return value;
+  if (value.startsWith("/")) return value.startsWith("//") ? null : value;
+  return /^https?:\/\//i.test(value) ? value : null;
+}
+
+export function getRequestConfirmationTargetHref({
+  issueId,
+  target,
+}: {
+  issueId: string;
+  target: RequestConfirmationTarget;
+}) {
+  if (target.href) {
+    const safeHref = normalizeRequestConfirmationTargetHref(target.href);
+    if (safeHref) return safeHref;
+  }
+  if (target.type === "issue_document") {
+    const targetIssueId = target.issueId ?? issueId;
+    return `/issues/${targetIssueId}#document-${encodeURIComponent(target.key)}`;
+  }
+  return null;
 }
 
 export function buildIssueThreadInteractionSummary(
@@ -81,6 +128,27 @@ export function buildIssueThreadInteractionSummary(
       return "Confirmation expired";
     }
     return "Requested confirmation";
+  }
+
+  if (interaction.kind === "request_checkbox_confirmation") {
+    const optionCount = interaction.payload.options.length;
+    if (interaction.status === "accepted") {
+      const selectedCount = interaction.result?.selectedOptionIds?.length ?? 0;
+      if (selectedCount === 0) return "Confirmed with no options selected";
+      return selectedCount === 1
+        ? `Confirmed 1 of ${optionCount} options`
+        : `Confirmed ${selectedCount} of ${optionCount} options`;
+    }
+    if (interaction.status === "rejected") return "Declined selection";
+    if (interaction.status === "expired") {
+      const outcome = interaction.result?.outcome;
+      if (outcome === "superseded_by_comment") return "Selection expired after comment";
+      if (outcome === "stale_target") return "Selection expired after target changed";
+      return "Selection expired";
+    }
+    return optionCount === 1
+      ? "Requested a selection from 1 option"
+      : `Requested a selection from ${optionCount} options`;
   }
 
   const count = interaction.payload.questions.length;
@@ -132,12 +200,15 @@ export function getQuestionAnswerLabels(args: {
   answers: readonly AskUserQuestionsAnswer[];
 }) {
   const { question, answers } = args;
-  const selectedIds =
-    answers.find((answer) => answer.questionId === question.id)?.optionIds ?? [];
+  const answer = answers.find((candidate) => candidate.questionId === question.id);
+  const selectedIds = answer?.optionIds ?? [];
   const optionLabelById = new Map(
     question.options.map((option) => [option.id, option.label] as const),
   );
-  return selectedIds
+  const labels = selectedIds
     .map((optionId) => optionLabelById.get(optionId))
     .filter((label): label is string => typeof label === "string");
+  const otherText = answer?.otherText?.trim();
+  if (otherText) labels.push(`Other: ${otherText}`);
+  return labels;
 }

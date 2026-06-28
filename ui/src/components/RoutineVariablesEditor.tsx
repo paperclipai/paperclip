@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, HelpCircle } from "lucide-react";
-import { syncRoutineVariablesWithTemplate, type RoutineVariable } from "@paperclipai/shared";
+import { isValidRoutineDateString, syncRoutineVariablesWithTemplate, type RoutineVariable } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
-const variableTypes: RoutineVariable["type"][] = ["text", "textarea", "number", "boolean", "select"];
+const variableTypes: RoutineVariable["type"][] = ["text", "textarea", "number", "boolean", "select", "date"];
 
 function serializeVariables(value: RoutineVariable[]) {
   return JSON.stringify(value);
@@ -40,6 +40,14 @@ function updateVariableList(
   mutate: (variable: RoutineVariable) => RoutineVariable,
 ) {
   return variables.map((variable) => (variable.name === name ? mutate(variable) : variable));
+}
+
+function defaultValueForType(type: RoutineVariable["type"], current: RoutineVariable["defaultValue"]) {
+  if (type === "boolean") return null;
+  if (type === "date") {
+    return typeof current === "string" && isValidRoutineDateString(current) ? current : null;
+  }
+  return current;
 }
 
 export function RoutineVariablesEditor({
@@ -114,7 +122,7 @@ export function RoutineVariablesEditor({
                   onValueChange={(type) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
                     ...current,
                     type: type as RoutineVariable["type"],
-                    defaultValue: type === "boolean" ? null : current.defaultValue,
+                    defaultValue: defaultValueForType(type as RoutineVariable["type"], current.defaultValue),
                     options: type === "select" ? current.options : [],
                   })))}
                 >
@@ -212,6 +220,15 @@ export function RoutineVariablesEditor({
                       </Select>
                     </div>
                   </div>
+                ) : variable.type === "date" ? (
+                  <Input
+                    type="date"
+                    value={typeof variable.defaultValue === "string" ? variable.defaultValue : ""}
+                    onChange={(event) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
+                      ...current,
+                      defaultValue: event.target.value || null,
+                    })))}
+                  />
                 ) : (
                   <Input
                     type={variable.type === "number" ? "number" : "text"}
@@ -295,7 +312,8 @@ export function RoutineVariablesHint() {
               </p>
               <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
                 <li>Names must start with a letter and may use letters, numbers, and underscores.</li>
-                <li>Pick a type (text, textarea, number, boolean, select), default value, and whether it is required.</li>
+                <li>Pick a type (text, textarea, number, boolean, select, date), default value, and whether it is required.</li>
+                <li>Variable names ending in capital Date, such as startDate, are created as date variables by default.</li>
                 <li>The same name reused across the title and instructions is treated as one variable.</li>
               </ul>
             </section>

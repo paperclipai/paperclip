@@ -1,17 +1,22 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import type { WorkspaceRuntimeService } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildWorkspaceRuntimeControlItems,
   buildWorkspaceRuntimeControlSections,
+  WorkspaceRuntimeQuickControls,
   WorkspaceRuntimeControls,
 } from "./WorkspaceRuntimeControls";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+function act(callback: () => void) {
+  flushSync(callback);
+}
 
 function createRuntimeService(overrides: Partial<WorkspaceRuntimeService> = {}): WorkspaceRuntimeService {
   return {
@@ -289,6 +294,41 @@ describe("WorkspaceRuntimeControls", () => {
     expect(buttons).toEqual(["Stop", "Restart", "Run"]);
     expect(container.textContent).toContain("Services");
     expect(container.textContent).toContain("Jobs");
+
+    act(() => root.unmount());
+  });
+
+  it("lets quick action buttons inherit the shared button shape tokens", () => {
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [
+          { id: "web", name: "web", kind: "service", command: "pnpm dev" },
+        ],
+      },
+      runtimeServices: [
+        createRuntimeService({ id: "service-web", serviceName: "web", status: "running" }),
+      ],
+      canStartServices: true,
+    });
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <WorkspaceRuntimeQuickControls
+          sections={sections}
+          onAction={vi.fn()}
+        />,
+      );
+    });
+
+    const buttons = Array.from(container.querySelectorAll("button"));
+    expect(buttons).toHaveLength(2);
+    for (const button of buttons) {
+      expect(button.className).toContain("rounded-md");
+      expect(button.className).not.toContain("rounded-none");
+      expect(button.className).not.toContain("rounded-xl");
+      expect(button.className).not.toContain("shadow-none");
+    }
 
     act(() => root.unmount());
   });

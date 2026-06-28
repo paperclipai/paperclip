@@ -80,7 +80,17 @@ vi.mock("../services/index.js", () => ({
     listApprovalsForIssue: vi.fn(),
     unlink: vi.fn(),
   }),
+  issueRecoveryActionService: () => ({
+    getActiveForIssue: vi.fn(async () => null),
+    listActiveForIssues: vi.fn(async () => new Map()),
+  }),
+  issueThreadInteractionService: () => ({
+    listForIssue: vi.fn(async () => []),
+    expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+    expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  }),
   documentService: () => ({}),
+  documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   routineService: () => ({}),
   workProductService: () => ({}),
 }));

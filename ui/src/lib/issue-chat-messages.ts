@@ -10,6 +10,7 @@ import type {
 import type { Agent, IssueComment } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { formatAssigneeUserLabel } from "./assignees";
+import { isOperatorInterruptedRun } from "./interrupt-handoff";
 import {
   buildIssueThreadInteractionSummary,
   type IssueThreadInteraction,
@@ -45,6 +46,7 @@ export interface IssueChatLinkedRun {
   finishedAt?: Date | string | null;
   hasStoredOutput?: boolean;
   logBytes?: number | null;
+  errorCode?: string | null;
   resultJson?: Record<string, unknown> | null;
 }
 
@@ -87,6 +89,11 @@ type MessageWithOrder = {
   createdAtMs: number;
   order: number;
   message: ThreadMessage;
+};
+
+type SortBoundaryItem = {
+  createdAtMs: number;
+  runId?: string | null;
 };
 
 export interface StableThreadMessageCacheEntry {
@@ -143,6 +150,64 @@ function sortByCreated<T extends { createdAt: Date | string; id: string }>(items
     if (diff !== 0) return diff;
     return a.id.localeCompare(b.id);
   });
+}
+
+function latestSameRunHandoffTimestamp(args: {
+  interactionCreatedAtMs: number;
+  sourceRunId: string;
+  comments: readonly IssueChatComment[];
+  timelineEvents: readonly IssueTimelineEvent[];
+  linkedRuns: readonly IssueChatLinkedRun[];
+  liveRuns: readonly LiveRunForIssue[];
+}) {
+  const {
+    interactionCreatedAtMs,
+    sourceRunId,
+    comments,
+    timelineEvents,
+    linkedRuns,
+    liveRuns,
+  } = args;
+  const handoffItems: SortBoundaryItem[] = [
+    ...comments.map((comment) => ({
+      createdAtMs: toTimestamp(comment.createdAt),
+      runId: comment.runId ?? null,
+    })),
+    ...timelineEvents.map((event) => ({
+      createdAtMs: toTimestamp(event.createdAt),
+      runId: event.runId ?? null,
+    })),
+  ];
+  const barrierItems: SortBoundaryItem[] = [
+    ...handoffItems,
+    ...linkedRuns.map((run) => ({
+      createdAtMs: toTimestamp(runTimestamp(run)),
+      runId: run.runId,
+    })),
+    ...liveRuns.map((run) => ({
+      createdAtMs: toTimestamp(run.startedAt ?? run.createdAt),
+      runId: run.id,
+    })),
+  ];
+  const barrierAtMs = barrierItems
+    .filter((item) => item.createdAtMs > interactionCreatedAtMs && item.runId !== sourceRunId)
+    .reduce<number | null>(
+      (earliest, item) =>
+        earliest === null ? item.createdAtMs : Math.min(earliest, item.createdAtMs),
+      null,
+    );
+
+  return handoffItems
+    .filter((item) =>
+      item.createdAtMs > interactionCreatedAtMs
+      && item.runId === sourceRunId
+      && (barrierAtMs === null || item.createdAtMs < barrierAtMs)
+    )
+    .reduce<number | null>(
+      (latest, item) =>
+        latest === null ? item.createdAtMs : Math.max(latest, item.createdAtMs),
+      null,
+    );
 }
 
 function normalizeJsonValue(input: unknown): JsonValue {
@@ -274,14 +339,32 @@ function createAssistantMetadata(custom: Record<string, unknown>) {
   } as const;
 }
 
+function effectiveCommentAuthorAgentId(comment: IssueChatComment) {
+  return comment.authorAgentId ?? comment.runAgentId ?? comment.derivedAuthorAgentId ?? null;
+}
+
+function effectiveCommentRunId(comment: IssueChatComment) {
+  return comment.runId ?? comment.derivedCreatedByRunId ?? null;
+}
+
+function effectiveCommentRunAgentId(comment: IssueChatComment) {
+  return comment.runAgentId ?? effectiveCommentAuthorAgentId(comment);
+}
+
+function effectiveCommentAuthorType(comment: IssueChatComment) {
+  return effectiveCommentAuthorAgentId(comment) ? "agent" : comment.authorType;
+}
+
 function authorNameForComment(
   comment: IssueChatComment,
   agentMap?: Map<string, Agent>,
   currentUserId?: string | null,
   userLabelMap?: ReadonlyMap<string, string> | null,
+  options?: { isSystemNotice?: boolean },
 ) {
-  if (comment.authorAgentId) {
-    return agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8);
+  const authorAgentId = effectiveCommentAuthorAgentId(comment);
+  if (authorAgentId) {
+    return agentMap?.get(authorAgentId)?.name ?? (options?.isSystemNotice ? "Paperclip" : authorAgentId.slice(0, 8));
   }
   const authorUserId = comment.authorUserId ?? null;
   if (!authorUserId) return "You";
@@ -304,32 +387,55 @@ function createCommentMessage(args: {
 }): ThreadMessage {
   const { comment, agentMap, currentUserId, userLabelMap, companyId, projectId } = args;
   const createdAt = toDate(comment.createdAt);
-  const authorName = authorNameForComment(comment, agentMap, currentUserId, userLabelMap);
+  const isSystemNotice = comment.authorType === "system";
+  const authorAgentId = effectiveCommentAuthorAgentId(comment);
+  const authorName = authorNameForComment(comment, agentMap, currentUserId, userLabelMap, { isSystemNotice });
   const custom = {
-    kind: "comment",
+    kind: isSystemNotice ? "system_notice" : "comment",
     commentId: comment.id,
     anchorId: `comment-${comment.id}`,
     authorName,
-    authorAgentId: comment.authorAgentId,
+    authorType: effectiveCommentAuthorType(comment),
+    authorAgentId,
     authorUserId: comment.authorUserId,
     companyId: companyId ?? comment.companyId,
     projectId: projectId ?? null,
-    runId: comment.runId ?? null,
-    runAgentId: comment.runAgentId ?? null,
+    runId: effectiveCommentRunId(comment),
+    runAgentId: effectiveCommentRunAgentId(comment),
     clientStatus: comment.clientStatus ?? null,
     queueState: comment.queueState ?? null,
     queueTargetRunId: comment.queueTargetRunId ?? null,
     queueReason: comment.queueReason ?? null,
     interruptedRunId: comment.interruptedRunId ?? null,
     followUpRequested: comment.followUpRequested === true,
+    presentation: comment.presentation ?? null,
+    commentMetadata: comment.metadata ?? null,
+    deletedAt: comment.deletedAt ? toDate(comment.deletedAt).toISOString() : null,
+    deletedByType: comment.deletedByType ?? null,
+    deletedByAgentId: comment.deletedByAgentId ?? null,
+    deletedByUserId: comment.deletedByUserId ?? null,
+    deletedByRunId: comment.deletedByRunId ?? null,
+    sourceTrust: comment.sourceTrust ?? null,
   };
+  const contentText = comment.deletedAt ? "" : comment.body;
 
-  if (comment.authorAgentId) {
+  if (isSystemNotice) {
+    const message: ThreadSystemMessage = {
+      id: comment.id,
+      role: "system",
+      createdAt,
+      content: [{ type: "text", text: contentText }],
+      metadata: { custom },
+    };
+    return message;
+  }
+
+  if (authorAgentId) {
     const message: ThreadAssistantMessage = {
       id: comment.id,
       role: "assistant",
       createdAt,
-      content: [{ type: "text", text: comment.body }],
+      content: [{ type: "text", text: contentText }],
       status: { type: "complete", reason: "stop" },
       metadata: createAssistantMetadata(custom),
     };
@@ -340,7 +446,7 @@ function createCommentMessage(args: {
     id: comment.id,
     role: "user",
     createdAt,
-    content: [{ type: "text", text: comment.body }],
+    content: [{ type: "text", text: contentText }],
     attachments: [],
     metadata: { custom },
   };
@@ -377,6 +483,11 @@ function createTimelineEventMessage(args: {
       : (formatAssigneeUserLabel(event.assigneeChange.to.userId, currentUserId, userLabelMap) ?? "Unassigned");
     lines.push(`Assignee: ${from} -> ${to}`);
   }
+  if (event.workspaceChange) {
+    lines.push(
+      `Workspace: ${event.workspaceChange.from.label ?? "none"} -> ${event.workspaceChange.to.label ?? "none"}`,
+    );
+  }
 
   const message: ThreadSystemMessage = {
     id: `activity:${event.id}`,
@@ -393,6 +504,7 @@ function createTimelineEventMessage(args: {
         actorId: event.actorId,
         statusChange: event.statusChange ?? null,
         assigneeChange: event.assigneeChange ?? null,
+        workspaceChange: event.workspaceChange ?? null,
         followUpRequested: event.followUpRequested === true,
       },
     },
@@ -424,6 +536,17 @@ function runTimestamp(run: IssueChatLinkedRun) {
 export interface SegmentTiming {
   startMs: number;
   endMs: number;
+}
+
+export function isCoTSegmentActive(args: {
+  isMessageRunning: boolean;
+  segmentIndex: number;
+  segmentCount: number;
+}) {
+  const { isMessageRunning, segmentIndex, segmentCount } = args;
+  if (!isMessageRunning) return false;
+  if (segmentCount <= 0 || segmentIndex < 0) return true;
+  return segmentIndex === segmentCount - 1;
 }
 
 function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): SegmentTiming[] {
@@ -485,6 +608,7 @@ function runDurationLabel(run: {
   createdAt: Date | string;
   startedAt: Date | string | null;
   finishedAt?: Date | string | null;
+  errorCode?: string | null;
   resultJson?: Record<string, unknown> | null;
 }) {
   const start = run.startedAt ?? run.createdAt;
@@ -501,6 +625,9 @@ function runDurationLabel(run: {
     case "timed_out":
       return durationText ? `Timed out after ${durationText}` : "Run timed out";
     case "cancelled":
+      if (isOperatorInterruptedRun(run.resultJson, run.errorCode)) {
+        return durationText ? `Interrupted by board after ${durationText}` : "Interrupted by board";
+      }
       if (stopReason === "paused") {
         return durationText ? `Paused by board after ${durationText}` : "Paused by board";
       }
@@ -529,6 +656,7 @@ function createHistoricalRunMessage(run: IssueChatLinkedRun, agentMap?: Map<stri
         runAgentId: run.agentId,
         runAgentName: agentName,
         runStatus: run.status,
+        runOperatorInterrupted: isOperatorInterruptedRun(run.resultJson, run.errorCode),
       },
     },
   };
@@ -565,6 +693,7 @@ function createHistoricalTranscriptMessage(args: {
       runAgentId: run.agentId,
       runAgentName: agentName,
       runStatus: run.status,
+      runOperatorInterrupted: isOperatorInterruptedRun(run.resultJson, run.errorCode),
       notices,
       waitingText,
       chainOfThoughtLabel: runDurationLabel(run),
@@ -721,13 +850,27 @@ function normalizeLiveRuns(
       status: activeRun.status,
       invocationSource: activeRun.invocationSource,
       triggerDetail: activeRun.triggerDetail,
+      contextCommentId: activeRun.contextCommentId,
+      contextWakeCommentId: activeRun.contextWakeCommentId,
       startedAt: activeRun.startedAt ? toDate(activeRun.startedAt).toISOString() : null,
       finishedAt: activeRun.finishedAt ? toDate(activeRun.finishedAt).toISOString() : null,
       createdAt: toDate(activeRun.createdAt).toISOString(),
       agentId: activeRun.agentId,
       agentName: activeRun.agentName,
       adapterType: activeRun.adapterType,
-      issueId,
+      logBytes: activeRun.logBytes,
+      lastOutputBytes: activeRun.lastOutputBytes,
+      issueId: activeRun.issueId ?? issueId,
+      livenessState: activeRun.livenessState,
+      livenessReason: activeRun.livenessReason,
+      continuationAttempt: activeRun.continuationAttempt,
+      lastUsefulActionAt: activeRun.lastUsefulActionAt ? toDate(activeRun.lastUsefulActionAt).toISOString() : null,
+      nextAction: activeRun.nextAction,
+      outputSilence: activeRun.outputSilence,
+      currentStatusMessage: activeRun.currentStatusMessage ?? null,
+      currentStatusUpdatedAt: activeRun.currentStatusUpdatedAt
+        ? toDate(activeRun.currentStatusUpdatedAt).toISOString()
+        : null,
     });
   }
   return [...deduped.values()].sort((a, b) => toTimestamp(a.createdAt) - toTimestamp(b.createdAt));
@@ -766,6 +909,8 @@ function createLiveRunMessage(args: {
       waitingText,
       chainOfThoughtLabel: runDurationLabel(run),
       chainOfThoughtSegments: segments,
+      currentStatusMessage: run.currentStatusMessage ?? null,
+      currentStatusUpdatedAt: run.currentStatusUpdatedAt ?? null,
     }),
   };
   return message;
@@ -817,8 +962,19 @@ export function buildIssueChatMessages(args: {
   }
 
   for (const interaction of sortByCreated(interactions)) {
+    const createdAtMs = toTimestamp(interaction.createdAt);
+    const handoffAtMs = interaction.kind === "request_confirmation" && interaction.sourceRunId
+      ? latestSameRunHandoffTimestamp({
+        interactionCreatedAtMs: createdAtMs,
+        sourceRunId: interaction.sourceRunId,
+        comments,
+        timelineEvents,
+        linkedRuns,
+        liveRuns,
+      })
+      : null;
     orderedMessages.push({
-      createdAtMs: toTimestamp(interaction.createdAt),
+      createdAtMs: handoffAtMs ?? createdAtMs,
       order: 2,
       message: createInteractionMessage(interaction),
     });
