@@ -114,6 +114,10 @@ import {
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import { githubHasReviewerEvidenceForPr } from "./github-app-auth.js";
 import {
+  ensureReferencedSharedDocsMaterialized,
+  normalizeInstructionsEntryFile,
+} from "@paperclipai/adapter-opencode-local/server";
+import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
@@ -2306,6 +2310,64 @@ export function isRateLimitExhausted(
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+async function materializeOpenCodeK8sSharedDocs(input: {
+  adapterType: string;
+  config: Record<string, unknown>;
+  cwd: string;
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}) {
+  if (input.adapterType !== "opencode_k8s") return;
+  const instructionsRootPath = readNonEmptyString(input.config.instructionsRootPath);
+  const instructionsFilePath = readNonEmptyString(input.config.instructionsFilePath);
+  if (!instructionsRootPath && !instructionsFilePath) {
+    await input.onLog(
+      "stdout",
+      "[paperclip] Skipped opencode_k8s shared docs materialization: no instructions bundle configured.\n",
+    );
+    return;
+  }
+
+  const sourceRootPath = instructionsRootPath
+    ? path.resolve(input.cwd, instructionsRootPath)
+    : path.dirname(path.resolve(input.cwd, instructionsFilePath!));
+  // External instruction roots are allowed to live outside the workspace; shared-doc writes stay bounded to cwd.
+  const entryFile = normalizeInstructionsEntryFile(
+    readNonEmptyString(input.config.instructionsEntryFile) ??
+      (instructionsFilePath ? path.basename(instructionsFilePath) : "AGENTS.md"),
+  );
+  if (!entryFile) return;
+  // External instruction bundles are optional; if the resolved entry is absent, skip doc materialization.
+  const instructionsEntryPath = path.resolve(sourceRootPath, entryFile);
+  let instructionsContents = "";
+  try {
+    instructionsContents = await fs.readFile(instructionsEntryPath, "utf8");
+  } catch (error) {
+    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+    if (code === "ENOENT") {
+      await input.onLog(
+        "stdout",
+        "[paperclip] Skipped opencode_k8s shared docs materialization: external instructions entry absent.\n",
+      );
+      return;
+    } else {
+      await input.onLog(
+        "stderr",
+        `[paperclip] Skipped opencode_k8s shared docs materialization: failed to read instructions entry (${code ?? "unknown"}).\n`,
+      );
+      return;
+    }
+  }
+  if (!instructionsContents) return;
+
+  await ensureReferencedSharedDocsMaterialized({
+    // opencode_k8s mounts this local execution workspace into the pod, so writes here are visible remotely.
+    cwd: input.cwd,
+    instructionsRootPath: sourceRootPath,
+    instructionsContents,
+    onLog: input.onLog,
+  });
 }
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
@@ -12231,8 +12293,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               id: issueRef.id,
               identifier: issueRef.identifier,
             }
-          : null,
+            : null,
         cwd: executionWorkspace.cwd,
+      });
+      await materializeOpenCodeK8sSharedDocs({
+        adapterType: agent.adapterType,
+        config: runtimeConfig,
+        cwd: executionWorkspace.cwd,
+        onLog,
       });
       const adapterEnv = Object.fromEntries(
         Object.entries(parseObject(resolvedConfig.env)).filter(

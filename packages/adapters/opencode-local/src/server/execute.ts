@@ -145,7 +145,7 @@ function resolveOpenCodeBiller(env: Record<string, string>, provider: string | n
   return inferOpenAiCompatibleBiller(env, null) ?? provider ?? "unknown";
 }
 
-function normalizeInstructionsEntryFile(candidate: string): string {
+export function normalizeInstructionsEntryFile(candidate: string): string {
   const normalized = path.posix.normalize(candidate.replaceAll("\\", "/")).replace(/^\/+/, "");
   if (
     normalized.length === 0 ||
