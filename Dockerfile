@@ -130,7 +130,10 @@ WORKDIR /vendor
 # upstream failures as transient_upstream instead of adapter_failed, so the
 # Paperclip scheduler can retry affected continuations instead of freezing
 # blocked chains behind a generic adapter failure.
-ARG CLAUDE_K8S_REF=3587afc1f0630cd8ec9d62ccfb0b9e66d59c4097
+# Bumped 2026-06-28 to ddbaa94: split pod scheduling and startup waits so
+# first pulls of large agent images after a bump are not killed as false
+# k8s_pod_schedule_failed errors after Kubernetes has already assigned a node.
+ARG CLAUDE_K8S_REF=ddbaa94a79799fbbda0f973863cae5b97195fe0a
 # Re-pinned 2026-06-14 to kkroo/paperclip-adapter-opencode-k8s master a533d11
 # (was 168688e): BLO-10448 — a transient k8s status-read error during the
 # completion poll was mislabeled as a deadline, surfacing as the bogus

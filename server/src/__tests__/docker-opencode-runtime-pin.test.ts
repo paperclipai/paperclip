@@ -19,11 +19,13 @@ describe("production Dockerfile k8s adapter runtime pins", () => {
   });
 
   it("vendors the claude_k8s adapter commit with shared MCP baseline injection and resume guard", () => {
-    expect(dockerfile).toContain("ARG CLAUDE_K8S_REF=3587afc1f0630cd8ec9d62ccfb0b9e66d59c4097");
+    expect(dockerfile).toContain("ARG CLAUDE_K8S_REF=ddbaa94a79799fbbda0f973863cae5b97195fe0a");
     expect(dockerfile).toContain("always materialize the shared MCP baseline");
     expect(dockerfile).toContain("Fixes BackendEngineerGo/Ally missing paperclip/hindsight/gbrain/linear/etc.");
     expect(dockerfile).toContain("only pass --resume to Claude when the");
     expect(dockerfile).toContain("No conversation found with session ID");
+    expect(dockerfile).toContain("split pod scheduling and startup waits");
+    expect(dockerfile).toContain("k8s_pod_schedule_failed");
   });
 
   it("vendors the opencode_k8s adapter commit with crash, runtime-cache, MCP header, pod-stderr, startup-wait, opencode-db, chunkTimeout, and budget-cap fixes", () => {
