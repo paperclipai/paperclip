@@ -215,6 +215,89 @@ describeEmbeddedPostgres("companySearchService", () => {
     expect(p95).toBeLessThan(500);
   });
 
+  it("keeps broad issue/comment/document search bounded on populated data", async () => {
+    const companyId = await createCompany();
+    const targetIssueId = await createIssue(companyId, {
+      identifier: "TST-9600",
+      title: "Latency candidate routing",
+      description: "Broad search should preselect candidates before scoring snippets.",
+    });
+    const targetDocumentId = randomUUID();
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: targetIssueId,
+      body: "The broad-search latency target needs candidate preselection evidence.",
+    });
+    await db.insert(documents).values({
+      id: targetDocumentId,
+      companyId,
+      title: "Broad search latency plan",
+      latestBody: "Candidate preselection should keep issue, comment, and document branches bounded.",
+      format: "markdown",
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId: targetIssueId,
+      documentId: targetDocumentId,
+      key: "latency-plan",
+    });
+
+    const noiseIssueValues: Array<typeof issues.$inferInsert> = [];
+    const noiseCommentValues: Array<typeof issueComments.$inferInsert> = [];
+    const noiseDocumentValues: Array<typeof documents.$inferInsert> = [];
+    const noiseIssueDocumentValues: Array<typeof issueDocuments.$inferInsert> = [];
+    for (let index = 0; index < 700; index += 1) {
+      const issueId = randomUUID();
+      const documentId = randomUUID();
+      noiseIssueValues.push({
+        id: issueId,
+        companyId,
+        identifier: `TST-${20_000 + index}`,
+        title: `Candidate routing noise ${index}`,
+        description: `Broad search latency noise description ${index}`,
+        status: "todo",
+        priority: "medium",
+      });
+      noiseCommentValues.push({
+        companyId,
+        issueId,
+        body: `Broad search latency noisy comment branch ${index}`,
+      });
+      noiseDocumentValues.push({
+        id: documentId,
+        companyId,
+        title: `Broad search latency noise document ${index}`,
+        latestBody: `Candidate preselection noisy document branch ${index}`,
+        format: "markdown",
+      });
+      noiseIssueDocumentValues.push({
+        companyId,
+        issueId,
+        documentId,
+        key: `broad-noise-${index}`,
+      });
+    }
+    await db.insert(issues).values(noiseIssueValues);
+    await db.insert(issueComments).values(noiseCommentValues);
+    await db.insert(documents).values(noiseDocumentValues);
+    await db.insert(issueDocuments).values(noiseIssueDocumentValues);
+
+    const parsedQuery = companySearchQuerySchema.parse({ q: "broad search latency", scope: "all", limit: "10" });
+    await svc.search(companyId, parsedQuery);
+
+    const timings: number[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      const startedAt = performance.now();
+      const result = await svc.search(companyId, parsedQuery);
+      timings.push(performance.now() - startedAt);
+      expect(result.results.length).toBeGreaterThan(0);
+      expect(result.results.some((row) => row.matchedFields.includes("comment") || row.matchedFields.includes("document"))).toBe(true);
+    }
+
+    const p95 = timings.toSorted((left, right) => left - right)[Math.floor((timings.length - 1) * 0.95)] ?? Infinity;
+    expect(p95).toBeLessThan(2_000);
+  }, 20_000);
+
   it("matches multiple tokens across the same issue thread and returns comment snippets", async () => {
     const companyId = await createCompany();
     const issueId = await createIssue(companyId, {

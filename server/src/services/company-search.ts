@@ -33,6 +33,7 @@ const FUZZY_PAIR_SHORT_MAX_EDITS = 0;
 const FUZZY_IDENTIFIER_SIMILARITY_THRESHOLD = 0.45;
 const SNIPPET_MAX_CHARS = 240;
 const ISSUE_IDENTIFIER_QUERY_PATTERN = /^[a-z][a-z0-9]*-\d+$/i;
+const COMPANY_SEARCH_MAX_ISSUE_CANDIDATES = 1000;
 export const COMPANY_SEARCH_BRANCH_FETCH_LIMIT = COMPANY_SEARCH_MAX_OFFSET + COMPANY_SEARCH_MAX_LIMIT + 1;
 
 type IssueSearchRow = {
@@ -99,6 +100,16 @@ function tokenMatchExpression(textExpression: SQL, tokenArray: SQL) {
       FROM unnest(${tokenArray}) AS search_token(value)
       WHERE lower(coalesce(${textExpression}, '')) LIKE '%' || search_token.value || '%' ESCAPE '\\'
     )
+  `;
+}
+
+function lowerLikeAnyExpression(textExpression: SQL, patterns: string[], options: { coalesce?: boolean } = {}) {
+  if (patterns.length === 0) return noMatchSql();
+  const lowered = options.coalesce
+    ? sql`lower(coalesce(${textExpression}, ''))`
+    : sql`lower(${textExpression})`;
+  return sql<boolean>`
+    (${sql.join(patterns.map((pattern) => sql`${lowered} LIKE ${pattern} ESCAPE '\\'`), sql` OR `)})
   `;
 }
 
@@ -391,6 +402,9 @@ export function companySearchService(db: Db) {
       const escapedQuery = escapeLikePattern(normalizedQuery);
       const containsPattern = `%${escapedQuery}%`;
       const startsWithPattern = `${escapedQuery}%`;
+      const tokenContainsPatterns = escapedTokens.map((token) => `%${token}%`);
+      const textSearchPatterns = [containsPattern, ...tokenContainsPatterns]
+        .filter((pattern, index, patterns) => patterns.indexOf(pattern) === index);
       const fuzzyEnabled = normalizedQuery.length >= MIN_FUZZY_QUERY_LENGTH && !/[\\%_]/.test(normalizedQuery);
       const fuzzyTokensEnabled = fuzzyEnabled && fuzzyTokens.length > 0;
 
@@ -447,9 +461,9 @@ export function companySearchService(db: Db) {
       const identifierPhraseMatch = sql<boolean>`lower(coalesce(${issues.identifier}, '')) LIKE ${containsPattern} ESCAPE '\\'`;
       const identifierStartsWith = sql<boolean>`lower(coalesce(${issues.identifier}, '')) LIKE ${startsWithPattern} ESCAPE '\\'`;
       const descriptionPhraseMatch = sql<boolean>`lower(coalesce(${issues.description}, '')) LIKE ${containsPattern} ESCAPE '\\'`;
-      const titleTokenMatch = tokenMatchExpression(sql`${issues.title}`, tokenArray);
-      const identifierTokenMatch = tokenMatchExpression(sql`${issues.identifier}`, tokenArray);
-      const descriptionTokenMatch = tokenMatchExpression(sql`${issues.description}`, tokenArray);
+      const titleTokenMatch = lowerLikeAnyExpression(sql`${issues.title}`, tokenContainsPatterns);
+      const identifierTokenMatch = lowerLikeAnyExpression(sql`${issues.identifier}`, tokenContainsPatterns, { coalesce: true });
+      const descriptionTokenMatch = lowerLikeAnyExpression(sql`${issues.description}`, tokenContainsPatterns, { coalesce: true });
       const issueTextMatch = sql<boolean>`
         ${titlePhraseMatch}
         OR ${identifierPhraseMatch}
@@ -466,8 +480,7 @@ export function companySearchService(db: Db) {
             AND search_comments.issue_id = issues.id
             AND search_comments.deleted_at IS NULL
             AND (
-              lower(search_comments.body) LIKE ${containsPattern} ESCAPE '\\'
-              OR ${tokenMatchExpression(sql`search_comments.body`, tokenArray)}
+              ${lowerLikeAnyExpression(sql`search_comments.body`, textSearchPatterns)}
             )
         )
       `;
@@ -481,10 +494,8 @@ export function companySearchService(db: Db) {
             AND search_documents.company_id = ${companyId}
             AND search_issue_documents.issue_id = issues.id
             AND (
-              lower(coalesce(search_documents.title, '')) LIKE ${containsPattern} ESCAPE '\\'
-              OR lower(search_documents.latest_body) LIKE ${containsPattern} ESCAPE '\\'
-              OR ${tokenMatchExpression(sql`search_documents.title`, tokenArray)}
-              OR ${tokenMatchExpression(sql`search_documents.latest_body`, tokenArray)}
+              ${lowerLikeAnyExpression(sql`search_documents.title`, textSearchPatterns, { coalesce: true })}
+              OR ${lowerLikeAnyExpression(sql`search_documents.latest_body`, textSearchPatterns)}
             )
         )
       `;
@@ -582,6 +593,86 @@ export function companySearchService(db: Db) {
           CASE WHEN ${documentMatch} THEN 'document' END
         ], NULL)::text[]
       `;
+      const candidateLimit = Math.min(COMPANY_SEARCH_MAX_ISSUE_CANDIDATES, Math.max(fetchLimit * 8, fetchLimit));
+      const candidateFuzzyTokenTitleMatch = fuzzyTokensEnabled
+        ? sql<boolean>`
+          coalesce((
+            SELECT bool_and(
+              EXISTS (
+                SELECT 1
+                FROM regexp_split_to_table(lower(candidate_issues.title), '[^a-z0-9]+') AS title_word(value)
+                WHERE length(title_word.value) >= ${fuzzyMinTitleWordLengthExpr}
+                  AND levenshtein_less_equal(qt.value, title_word.value, ${fuzzyMaxEditsExpr}) <= ${fuzzyMaxEditsExpr}
+              )
+            )
+            FROM unnest(${fuzzyTokenArray}) AS qt(value)
+          ), false)
+        `
+        : noMatchSql();
+      const candidateFuzzyIdentifierMatch = fuzzyEnabled
+        ? sql<boolean>`similarity(lower(coalesce(candidate_issues.identifier, '')), ${normalizedQuery}) >= ${FUZZY_IDENTIFIER_SIMILARITY_THRESHOLD}`
+        : noMatchSql();
+      const issueTextCandidateMatch = sql<boolean>`
+        ${lowerLikeAnyExpression(sql`candidate_issues.title`, textSearchPatterns)}
+        OR ${lowerLikeAnyExpression(sql`candidate_issues.identifier`, textSearchPatterns, { coalesce: true })}
+        OR ${lowerLikeAnyExpression(sql`candidate_issues.description`, textSearchPatterns, { coalesce: true })}
+        OR ${candidateFuzzyTokenTitleMatch}
+        OR ${candidateFuzzyIdentifierMatch}
+      `;
+      const commentCandidateMatch = lowerLikeAnyExpression(sql`candidate_comments.body`, textSearchPatterns);
+      const documentCandidateMatch = sql<boolean>`
+        ${lowerLikeAnyExpression(sql`candidate_documents.title`, textSearchPatterns, { coalesce: true })}
+        OR ${lowerLikeAnyExpression(sql`candidate_documents.latest_body`, textSearchPatterns)}
+      `;
+      const candidateSelects: SQL[] = [];
+      if (scope === "all" || scope === "issues") {
+        candidateSelects.push(sql`
+          SELECT candidate_issues.id AS issue_id
+          FROM issues candidate_issues
+          WHERE candidate_issues.company_id = ${companyId}
+            AND candidate_issues.hidden_at IS NULL
+            AND (${issueTextCandidateMatch})
+          ORDER BY candidate_issues.updated_at DESC, candidate_issues.id DESC
+          LIMIT ${candidateLimit}
+        `);
+      }
+      if (scope === "all" || scope === "comments") {
+        candidateSelects.push(sql`
+          SELECT candidate_comments.issue_id
+          FROM issue_comments candidate_comments
+          INNER JOIN issues candidate_comment_issues
+            ON candidate_comment_issues.id = candidate_comments.issue_id
+          WHERE candidate_comments.company_id = ${companyId}
+            AND candidate_comments.deleted_at IS NULL
+            AND candidate_comment_issues.company_id = ${companyId}
+            AND candidate_comment_issues.hidden_at IS NULL
+            AND (${commentCandidateMatch})
+          GROUP BY candidate_comments.issue_id
+          ORDER BY max(candidate_comments.updated_at) DESC, candidate_comments.issue_id DESC
+          LIMIT ${candidateLimit}
+        `);
+      }
+      if (scope === "all" || scope === "documents") {
+        candidateSelects.push(sql`
+          SELECT candidate_issue_documents.issue_id
+          FROM issue_documents candidate_issue_documents
+          INNER JOIN documents candidate_documents
+            ON candidate_documents.id = candidate_issue_documents.document_id
+          INNER JOIN issues candidate_document_issues
+            ON candidate_document_issues.id = candidate_issue_documents.issue_id
+          WHERE candidate_issue_documents.company_id = ${companyId}
+            AND candidate_documents.company_id = ${companyId}
+            AND candidate_document_issues.company_id = ${companyId}
+            AND candidate_document_issues.hidden_at IS NULL
+            AND (${documentCandidateMatch})
+          GROUP BY candidate_issue_documents.issue_id
+          ORDER BY max(candidate_documents.updated_at) DESC, candidate_issue_documents.issue_id DESC
+          LIMIT ${candidateLimit}
+        `);
+      }
+      const candidateIssueFilter = candidateSelects.length > 0
+        ? sql<boolean>`${issues.id} IN (${sql.join(candidateSelects.map((candidateSelect) => sql`(${candidateSelect})`), sql` UNION `)})`
+        : noMatchSql();
 
       const issueRows = scopeIncludesIssues(scope)
         ? await db
@@ -606,8 +697,7 @@ export function companySearchService(db: Db) {
                   AND search_comments.issue_id = issues.id
                   AND search_comments.deleted_at IS NULL
                   AND (
-                    lower(search_comments.body) LIKE ${containsPattern} ESCAPE '\\'
-                    OR ${tokenMatchExpression(sql`search_comments.body`, tokenArray)}
+                    ${lowerLikeAnyExpression(sql`search_comments.body`, textSearchPatterns)}
                   )
                 ORDER BY
                   CASE WHEN lower(search_comments.body) LIKE ${containsPattern} ESCAPE '\\' THEN 0 ELSE 1 END,
@@ -624,8 +714,7 @@ export function companySearchService(db: Db) {
                   AND search_comments.issue_id = issues.id
                   AND search_comments.deleted_at IS NULL
                   AND (
-                    lower(search_comments.body) LIKE ${containsPattern} ESCAPE '\\'
-                    OR ${tokenMatchExpression(sql`search_comments.body`, tokenArray)}
+                    ${lowerLikeAnyExpression(sql`search_comments.body`, textSearchPatterns)}
                   )
                 ORDER BY
                   CASE WHEN lower(search_comments.body) LIKE ${containsPattern} ESCAPE '\\' THEN 0 ELSE 1 END,
@@ -644,10 +733,8 @@ export function companySearchService(db: Db) {
                   AND search_documents.company_id = ${companyId}
                   AND search_issue_documents.issue_id = issues.id
                   AND (
-                    lower(coalesce(search_documents.title, '')) LIKE ${containsPattern} ESCAPE '\\'
-                    OR lower(search_documents.latest_body) LIKE ${containsPattern} ESCAPE '\\'
-                    OR ${tokenMatchExpression(sql`search_documents.title`, tokenArray)}
-                    OR ${tokenMatchExpression(sql`search_documents.latest_body`, tokenArray)}
+                    ${lowerLikeAnyExpression(sql`search_documents.title`, textSearchPatterns, { coalesce: true })}
+                    OR ${lowerLikeAnyExpression(sql`search_documents.latest_body`, textSearchPatterns)}
                   )
                 ORDER BY
                   CASE
@@ -670,10 +757,8 @@ export function companySearchService(db: Db) {
                   AND search_documents.company_id = ${companyId}
                   AND search_issue_documents.issue_id = issues.id
                   AND (
-                    lower(coalesce(search_documents.title, '')) LIKE ${containsPattern} ESCAPE '\\'
-                    OR lower(search_documents.latest_body) LIKE ${containsPattern} ESCAPE '\\'
-                    OR ${tokenMatchExpression(sql`search_documents.title`, tokenArray)}
-                    OR ${tokenMatchExpression(sql`search_documents.latest_body`, tokenArray)}
+                    ${lowerLikeAnyExpression(sql`search_documents.title`, textSearchPatterns, { coalesce: true })}
+                    OR ${lowerLikeAnyExpression(sql`search_documents.latest_body`, textSearchPatterns)}
                   )
                 ORDER BY search_documents.updated_at DESC, search_documents.id DESC
                 LIMIT 1
@@ -689,10 +774,8 @@ export function companySearchService(db: Db) {
                   AND search_documents.company_id = ${companyId}
                   AND search_issue_documents.issue_id = issues.id
                   AND (
-                    lower(coalesce(search_documents.title, '')) LIKE ${containsPattern} ESCAPE '\\'
-                    OR lower(search_documents.latest_body) LIKE ${containsPattern} ESCAPE '\\'
-                    OR ${tokenMatchExpression(sql`search_documents.title`, tokenArray)}
-                    OR ${tokenMatchExpression(sql`search_documents.latest_body`, tokenArray)}
+                    ${lowerLikeAnyExpression(sql`search_documents.title`, textSearchPatterns, { coalesce: true })}
+                    OR ${lowerLikeAnyExpression(sql`search_documents.latest_body`, textSearchPatterns)}
                   )
                 ORDER BY search_documents.updated_at DESC, search_documents.id DESC
                 LIMIT 1
@@ -703,6 +786,7 @@ export function companySearchService(db: Db) {
           .where(and(
             eq(issues.companyId, companyId),
             isNull(issues.hiddenAt),
+            candidateIssueFilter,
             issueSearchCondition(scope, { issueTextMatch, commentMatch, documentMatch, fuzzyMatch }),
           ))
           .orderBy(desc(score), desc(issues.updatedAt), desc(issues.id))
