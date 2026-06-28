@@ -420,7 +420,7 @@ describe.sequential("issue thread interaction routes", () => {
       ASSIGNEE_AGENT_ID,
       expect.objectContaining({
         source: "automation",
-        reason: "issue_commented",
+        reason: "interaction_resolved",
         payload: expect.objectContaining({
           issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           interactionId: "interaction-1",
@@ -446,7 +446,7 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
       expect.objectContaining({
-        reason: "issue_commented",
+        reason: "interaction_resolved",
         payload: expect.objectContaining({
           interactionId: "interaction-2",
           interactionKind: "ask_user_questions",
@@ -482,7 +482,7 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
       expect.objectContaining({
-        reason: "issue_commented",
+        reason: "interaction_resolved",
         payload: expect.objectContaining({
           interactionId: "interaction-2",
           interactionKind: "ask_user_questions",
@@ -537,7 +537,7 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
       expect.objectContaining({
-        reason: "issue_commented",
+        reason: "interaction_resolved",
         payload: expect.objectContaining({
           interactionId: "interaction-3",
           interactionKind: "request_confirmation",
@@ -782,7 +782,7 @@ describe.sequential("issue thread interaction routes", () => {
       CREATED_AGENT_ID,
       expect.objectContaining({
         source: "automation",
-        reason: "issue_commented",
+        reason: "interaction_resolved",
         payload: expect.objectContaining({
           issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           interactionId: "interaction-4",
