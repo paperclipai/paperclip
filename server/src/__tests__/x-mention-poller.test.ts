@@ -219,6 +219,42 @@ describe("x mention poller", () => {
     }));
   });
 
+  it("treats zero-cost estimates as unsafe so misconfigured adapters cannot bypass budgets", async () => {
+    const memory = createMemoryStore();
+    const adapter = createAdapter({ estimate: { poll: 0 } });
+    const poller = createXMentionPoller({ store: memory.store, adapter });
+
+    const result = await poller.pollMentions(pollInput);
+
+    expect(result).toMatchObject({ status: "budget_paused", reason: "missing_cost_estimate:poll" });
+    expect(adapter.fetchMentions).not.toHaveBeenCalled();
+    expect(memory.ledger).toContainEqual(expect.objectContaining({
+      operation: "poll",
+      status: "rejected",
+      estimatedCostCents: 0,
+      failureReason: "missing_cost_estimate:poll",
+    }));
+  });
+
+  it("does not hydrate while the source is inside an active rate-limit window", async () => {
+    const memory = createMemoryStore({ allowlistedUserIds: ["42"] });
+    const resetAt = new Date("2026-06-01T00:15:00Z");
+    memory.source.rateLimitResetAt = resetAt;
+    const adapter = createAdapter({
+      mentions: [{ tweetId: "100", authorUserId: "42", text: "@paperclip hydrate" }],
+    });
+    const poller = createXMentionPoller({
+      store: memory.store,
+      adapter,
+      now: () => new Date("2026-06-01T00:00:00Z"),
+    });
+
+    const result = await poller.hydrateQueuedMentions(pollInput);
+
+    expect(result).toMatchObject({ status: "rate_limited", rateLimitResetAt: resetAt, hydrated: 0 });
+    expect(adapter.hydrateMention).not.toHaveBeenCalled();
+  });
+
   it("applies per-run caps across hydration thread, replies, and media operations", async () => {
     const memory = createMemoryStore({ allowlistedUserIds: ["42"], perRunBudgetCents: 3 });
     const adapter = createAdapter({

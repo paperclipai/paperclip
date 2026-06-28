@@ -166,7 +166,7 @@ function compareTweetIds(a: string, b: string) {
 }
 
 function assertSafeEstimate(value: number | null, operation: XMentionOperation) {
-  if (value === null || !Number.isFinite(value) || value < 0) {
+  if (value === null || !Number.isFinite(value) || value <= 0) {
     return `missing_cost_estimate:${operation}`;
   }
   return null;
@@ -370,6 +370,9 @@ export function createXMentionPoller(options: {
     const source = await store.getOrCreateSource(input);
     if (source.budgetPausedAt) {
       return { status: "budget_paused" as const, reason: source.budgetPauseReason ?? "budget_paused", hydrated: 0 };
+    }
+    if (source.rateLimitResetAt && source.rateLimitResetAt > now()) {
+      return { status: "rate_limited" as const, rateLimitResetAt: source.rateLimitResetAt, hydrated: 0 };
     }
     if (!adapter.hydrateMention) {
       return { status: "ok" as const, hydrated: 0 };
