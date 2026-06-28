@@ -38,12 +38,6 @@ export { issueRecoveryActions } from "./issue_recovery_actions.js";
 export { issueReferenceMentions } from "./issue_reference_mentions.js";
 export { externalObjects } from "./external_objects.js";
 export { externalObjectMentions } from "./external_object_mentions.js";
-export {
-  xMentionAuthorAllowlist,
-  xMentionBudgetLedger,
-  xMentionSources,
-  xMentions,
-} from "./x_mentions.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";
 export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
