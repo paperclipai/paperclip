@@ -38,6 +38,7 @@
     "check:relay-ssl-multicert": "node scripts/check-relay-ssl-multicert.mjs",
     "check:no-git-push": "node scripts/check-no-git-push.mjs",
     "test:check-no-git-push": "node --test scripts/check-no-git-push.test.mjs",
+    "test:security-audit-overrides": "node scripts/security-audit-overrides.test.mjs",
     "docs:dev": "cd docs && npx mintlify dev",
     "smoke:openclaw-join": "./scripts/smoke/openclaw-join.sh",
     "smoke:openclaw-docker-ui": "./scripts/smoke/openclaw-docker-ui.sh",
@@ -66,6 +67,35 @@
     "node": ">=20"
   },
   "packageManager": "pnpm@9.15.4",
+  "securityAuditRemediations": {
+    "PEN-1198": {
+      "@connectrpc/connect-node>undici": {
+        "patchedRange": ">=6.27.0 <7",
+        "advisories": [
+          "GHSA-vrm6-8vpv-qv8q",
+          "GHSA-v9p9-hfj2-hcw8",
+          "GHSA-p88m-4jfj-68fv",
+          "GHSA-vxpw-j846-p89q"
+        ]
+      },
+      "jsdom>undici": {
+        "patchedRange": ">=7.28.0 <8",
+        "advisories": [
+          "GHSA-vmh5-mc38-953g",
+          "GHSA-hm92-r4w5-c3mj",
+          "GHSA-p88m-4jfj-68fv",
+          "GHSA-vxpw-j846-p89q"
+        ]
+      },
+      "multer": {
+        "patchedRange": ">=2.2.0 <3",
+        "advisories": [
+          "GHSA-72gw-mp4g-v24j",
+          "GHSA-3p4h-7m6x-2hcm"
+        ]
+      }
+    }
+  },
   "pnpm": {
     "patchedDependencies": {
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
