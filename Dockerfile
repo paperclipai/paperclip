@@ -126,7 +126,11 @@ WORKDIR /vendor
 # directly off an unmerged branch and was NOT on master; PR #9 ported it onto
 # master (cherry-pick), so f79ab9a carries BOTH the --resume guard and the
 # BrowserMetrics fix (verified present + 371 tests green). No --resume regress.
-ARG CLAUDE_K8S_REF=f79ab9a485006f1b4d31ffff063ab44198a5fe98
+# Bumped 2026-06-28 to 3587afc: classify Claude's malformed/empty HTTP 200
+# upstream failures as transient_upstream instead of adapter_failed, so the
+# Paperclip scheduler can retry affected continuations instead of freezing
+# blocked chains behind a generic adapter failure.
+ARG CLAUDE_K8S_REF=3587afc1f0630cd8ec9d62ccfb0b9e66d59c4097
 # Re-pinned 2026-06-14 to kkroo/paperclip-adapter-opencode-k8s master a533d11
 # (was 168688e): BLO-10448 — a transient k8s status-read error during the
 # completion poll was mislabeled as a deadline, surfacing as the bogus

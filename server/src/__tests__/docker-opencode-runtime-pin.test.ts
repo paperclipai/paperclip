@@ -19,7 +19,7 @@ describe("production Dockerfile k8s adapter runtime pins", () => {
   });
 
   it("vendors the claude_k8s adapter commit with shared MCP baseline injection and resume guard", () => {
-    expect(dockerfile).toContain("ARG CLAUDE_K8S_REF=f79ab9a485006f1b4d31ffff063ab44198a5fe98");
+    expect(dockerfile).toContain("ARG CLAUDE_K8S_REF=3587afc1f0630cd8ec9d62ccfb0b9e66d59c4097");
     expect(dockerfile).toContain("always materialize the shared MCP baseline");
     expect(dockerfile).toContain("Fixes BackendEngineerGo/Ally missing paperclip/hindsight/gbrain/linear/etc.");
     expect(dockerfile).toContain("only pass --resume to Claude when the");
