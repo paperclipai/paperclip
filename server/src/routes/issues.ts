@@ -879,7 +879,7 @@ async function shouldSuppressImplicitReopenForSentryLifecycleHeartbeat(input: {
 }) {
   if (!isSentryLifecycleMissingFixHeartbeatComment(input.commentBody)) return false;
   if (!issueLooksLikeSentryFamily(input.issue)) return false;
-  const priorComments = await input.svc.listComments(input.issue.id, { order: "desc", limit: 25 });
+  const priorComments = await input.svc.listComments(input.issue.id, { order: "desc" });
   const priorText = [
     input.issue.description ?? "",
     ...priorComments.map((comment) => comment.body ?? ""),

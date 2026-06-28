@@ -1201,6 +1201,51 @@ describe.sequential("issue comment reopen routes", () => {
       });
 
     expect(res.status).toBe(201);
+    expect(mockIssueService.listComments).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { order: "desc" },
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+  });
+
+  it("still suppresses POST lifecycle heartbeat reopen when the no-PR ignore decision is older than 25 later comments", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("done"),
+      title: "[Sentry] Grouped family follow-up",
+      description: "SentryFamily:abc123",
+    });
+    mockIssueService.listComments.mockResolvedValue([
+      ...Array.from({ length: 30 }, (_value, index) => ({
+        id: `comment-recent-${index + 1}`,
+        body: `Lifecycle note ${index + 1}`,
+      })),
+      {
+        id: "comment-old-ignore",
+        body: "Explicit ignore. No merged fix PR is expected for this grouped family. Reopen this grouped family only if new evidence shows contradictory recurrence.",
+      },
+    ]);
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+      runId: "run-different",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({
+        body: "## Sentry lifecycle heartbeat\n\nNo merged fix PR was found for this Sentry family yet.\n\nReason: stale > 24h without merged fix PR.",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.listComments).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { order: "desc" },
+    );
     expect(mockIssueService.update).not.toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({ status: "todo" }),
@@ -1269,6 +1314,56 @@ describe.sequential("issue comment reopen routes", () => {
       });
 
     expect(res.status).toBe(200);
+    expect(mockIssueService.listComments).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { order: "desc" },
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+  });
+
+  it("still suppresses PATCH lifecycle heartbeat reopen when the no-PR ignore decision is older than 25 later comments", async () => {
+    const issue = {
+      ...makeIssue("done"),
+      title: "[Sentry] Grouped family follow-up",
+      description: "SentryFamily:abc123",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.listComments.mockResolvedValue([
+      ...Array.from({ length: 30 }, (_value, index) => ({
+        id: `comment-recent-${index + 1}`,
+        body: `Lifecycle note ${index + 1}`,
+      })),
+      {
+        id: "comment-old-ignore",
+        body: "Ignored with reason. No PR is expected for this grouped family. Reopen only if contradictory recurrence or new evidence appears.",
+      },
+    ]);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+      runId: "run-different",
+    }))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        comment: "## Sentry lifecycle heartbeat\n\nNo merged fix PR was found for this Sentry family yet.\n\nReason: stale > 24h without merged fix PR.",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.listComments).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { order: "desc" },
+    );
     expect(mockIssueService.update).not.toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({ status: "todo" }),
