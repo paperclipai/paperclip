@@ -2,18 +2,20 @@
  * @fileoverview Control-plane Prometheus exposition (BLO-8328).
  *
  * Owns the process-local prom-client registry and the
- * `claude_k8s_concurrent_run_blocked_total{agent_id,reason}` counter. The
- * source event (a `claude_k8s` dispatch refusal) lives in the adapter lane;
- * this module is the D2 platform substrate that ingests those increments and
- * exposes them on `/metrics` so Prometheus can scrape them centrally
- * (see BLO-4296 for the lane split).
+ * `claude_k8s_concurrent_run_blocked_total{agent_id,reason,isolation_mode}`
+ * counter. The source event (a `claude_k8s` dispatch refusal) lives in the
+ * adapter lane; this module is the D2 platform substrate that ingests those
+ * increments and exposes them on `/metrics` so Prometheus can scrape them
+ * centrally (see BLO-4296 for the lane split).
  *
- * Cardinality guardrail: both labels are bounded before they ever reach the
- * registry. `reason` is coerced to a fixed allow-list and `agent_id` is coerced
+ * Cardinality guardrail: all three labels are bounded before they ever reach
+ * the registry. `reason` is coerced to a fixed allow-list, `isolation_mode` to
+ * the {@link KNOWN_ISOLATION_MODES} allow-list (else "unknown"), and `agent_id`
  * to "unknown" unless it is a member of the caller-supplied active agent
  * roster. Worst-case series count is therefore
- * `(roster_size + 1) * (KNOWN_BLOCKED_REASONS.length + 1)` — bounded by the
- * company's agent count, never by attacker- or typo-supplied ids.
+ * `(roster_size + 1) * (KNOWN_BLOCKED_REASONS.length + 1) * (KNOWN_ISOLATION_MODES.length + 1)`
+ * — bounded by the company's agent count, never by attacker- or typo-supplied
+ * ids.
  *
  * @module server/services/metrics
  */
