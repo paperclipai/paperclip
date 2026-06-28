@@ -307,6 +307,45 @@ describe("guard-decision log carries the high-card conflicting ids", () => {
     }
   });
 
+  it("null-coalesces empty-string conflicting ids (readString rejects \"\")", async () => {
+    const spy = vi.spyOn(logger, "info").mockImplementation(() => undefined as never);
+    try {
+      const app = buildApp({
+        actor: { type: "agent", agentId: "agent-a", companyId: "company-1" },
+        resolveKnownAgentIds: async () => new Set(["agent-a"]),
+      });
+
+      const res = await request(app)
+        .post(ENDPOINT)
+        .send({
+          agentId: "agent-a",
+          reason: "live_job_for_active_run",
+          // Empty strings are present-but-blank: readString() must reject them so
+          // they null-coalesce, not leak "" into the structured log.
+          isolationKey: "",
+          taskKey: "",
+          sessionId: "",
+        });
+
+      expect(res.status).toBe(202);
+      expect(spy).toHaveBeenCalledWith(
+        {
+          event: "k8s_concurrent_run_blocked",
+          decision: "blocked",
+          agent_id: "agent-a",
+          reason: "live_job_for_active_run",
+          isolation_mode: "unknown",
+          isolation_key: null,
+          task_key: null,
+          session_id: null,
+        },
+        "k8s guard: dispatch blocked",
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("null-coalesces the conflicting ids when the request omits them", async () => {
     const spy = vi.spyOn(logger, "info").mockImplementation(() => undefined as never);
     try {
@@ -366,6 +405,40 @@ describe("guard-decision logging is best-effort", () => {
       );
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it("still returns 202 when BOTH logger.info and the logger.warn fallback throw", async () => {
+    // Exercises the nested catch in logGuardDecision: the breadcrumb warn is
+    // itself guarded, so a transport that is fully down (both paths throw) must
+    // still not turn the 202 into a 500.
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => {
+      throw new Error("logger transport down");
+    });
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {
+      throw new Error("logger transport still down");
+    });
+    try {
+      const app = buildApp({
+        actor: { type: "agent", agentId: "agent-a", companyId: "company-1" },
+        resolveKnownAgentIds: async () => new Set(["agent-a"]),
+      });
+
+      const res = await request(app)
+        .post(ENDPOINT)
+        .send({ agentId: "agent-a", reason: "live_job_for_active_run", isolationMode: "shared" });
+
+      expect(res.status).toBe(202);
+      expect(res.body.recorded).toBe(true);
+      expect(warnSpy).toHaveBeenCalled();
+
+      const { body } = await renderMetrics();
+      expect(body).toContain(
+        `${CONCURRENT_RUN_BLOCKED_METRIC}{agent_id="agent-a",reason="live_job_for_active_run",isolation_mode="shared"} 1`,
+      );
+    } finally {
+      infoSpy.mockRestore();
+      warnSpy.mockRestore();
     }
   });
 
