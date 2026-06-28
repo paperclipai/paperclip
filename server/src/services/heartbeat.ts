@@ -2325,6 +2325,7 @@ async function materializeOpenCodeK8sSharedDocs(input: {
     : path.dirname(path.resolve(input.cwd, instructionsFilePath!));
   const entryFile = readNonEmptyString(input.config.instructionsEntryFile) ??
     (instructionsFilePath ? path.basename(instructionsFilePath) : "AGENTS.md");
+  // External instruction bundles are optional; if AGENTS.md is absent, skip doc materialization.
   const instructionsContents = await fs.readFile(path.resolve(sourceRootPath, entryFile), "utf8").catch(() => "");
   if (!instructionsContents) return;
 

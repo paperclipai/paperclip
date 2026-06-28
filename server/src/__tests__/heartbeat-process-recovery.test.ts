@@ -2296,6 +2296,39 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("does not materialize opencode_k8s shared docs when instructions do not reference them", async () => {
+    const instructionsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-k8s-docs-"));
+    await fs.writeFile(path.join(instructionsRoot, "AGENTS.md"), "No shared docs referenced here.\n", "utf8");
+
+    try {
+      const { agentId, runId } = await seedQueuedIssueRunFixture();
+      await db
+        .update(agents)
+        .set({
+          adapterType: "opencode_k8s",
+          adapterConfig: {
+            instructionsBundleMode: "external",
+            instructionsRootPath: instructionsRoot,
+            instructionsFilePath: path.join(instructionsRoot, "AGENTS.md"),
+            instructionsEntryFile: "AGENTS.md",
+          },
+        })
+        .where(eq(agents.id, agentId));
+
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId);
+
+      const adapterCall = mockAdapterExecute.mock.calls.find(([ctx]) => ctx.runId === runId)?.[0] as
+        | { context?: { paperclipWorkspace?: { cwd?: unknown } } }
+        | undefined;
+      const workspaceCwd = adapterCall?.context?.paperclipWorkspace?.cwd;
+      expect(workspaceCwd).toBeTypeOf("string");
+      await expect(fs.stat(path.join(workspaceCwd as string, "docs"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await fs.rm(instructionsRoot, { recursive: true, force: true });
+    }
+  });
+
   it("schedules a bounded retry for codex transient upstream failures instead of blocking the issue immediately", async () => {
     mockAdapterExecute.mockResolvedValueOnce({
       exitCode: 1,
