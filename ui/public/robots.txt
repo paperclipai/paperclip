@@ -1,0 +1,3 @@
+User-Agent: *
+Allow: /
+Sitemap: https://paperclip.ing/sitemap.xml
