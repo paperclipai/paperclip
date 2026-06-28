@@ -1,6 +1,30 @@
 import { createHmac } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+
+type AgentAuthJwtModule = typeof import("../agent-auth-jwt.js");
+
+const isPosix = process.platform !== "win32";
+
+// Env vars that influence secret resolution, for the auto-provision/describe
+// suites below. Saved/restored around each test so nothing leaks.
+const AUTO_ENV_KEYS = [
+  "PAPERCLIP_CONFIG",
+  "PAPERCLIP_AGENT_JWT_SECRET",
+  "BETTER_AUTH_SECRET",
+  "PAPERCLIP_DEPLOYMENT_MODE",
+] as const;
 
 describe("agent local JWT", () => {
   const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
@@ -9,6 +33,8 @@ describe("agent local JWT", () => {
   const issuerEnv = "PAPERCLIP_AGENT_JWT_ISSUER";
   const audienceEnv = "PAPERCLIP_AGENT_JWT_AUDIENCE";
   const disableLegacyFallbackEnv = "PAPERCLIP_AGENT_JWT_DISABLE_LEGACY_FALLBACK";
+  const configEnv = "PAPERCLIP_CONFIG";
+  const deploymentModeEnv = "PAPERCLIP_DEPLOYMENT_MODE";
 
   const originalEnv = {
     secret: process.env[secretEnv],
@@ -17,7 +43,12 @@ describe("agent local JWT", () => {
     issuer: process.env[issuerEnv],
     audience: process.env[audienceEnv],
     disableLegacyFallback: process.env[disableLegacyFallbackEnv],
+    config: process.env[configEnv],
+    deploymentMode: process.env[deploymentModeEnv],
   };
+
+  const tmpDirs: string[] = [];
+  let secretPath = "";
 
   beforeEach(() => {
     process.env[secretEnv] = "test-secret";
@@ -26,6 +57,17 @@ describe("agent local JWT", () => {
     delete process.env[issuerEnv];
     delete process.env[audienceEnv];
     delete process.env[disableLegacyFallbackEnv];
+    delete process.env[deploymentModeEnv];
+
+    // Isolate PAPERCLIP_CONFIG to a temp dir so any auto-provisioned secret
+    // lands in a throwaway location, never the real install.
+    const root = mkdtempSync(path.join(os.tmpdir(), "paperclip-agent-jwt-cfg-"));
+    tmpDirs.push(root);
+    const envDir = path.join(root, ".paperclip");
+    mkdirSync(envDir, { recursive: true });
+    process.env[configEnv] = path.join(envDir, "config.json");
+    secretPath = path.join(envDir, "agent-jwt-secret");
+
     vi.useFakeTimers();
   });
 
@@ -43,6 +85,11 @@ describe("agent local JWT", () => {
     else process.env[audienceEnv] = originalEnv.audience;
     if (originalEnv.disableLegacyFallback === undefined) delete process.env[disableLegacyFallbackEnv];
     else process.env[disableLegacyFallbackEnv] = originalEnv.disableLegacyFallback;
+    if (originalEnv.config === undefined) delete process.env[configEnv];
+    else process.env[configEnv] = originalEnv.config;
+    if (originalEnv.deploymentMode === undefined) delete process.env[deploymentModeEnv];
+    else process.env[deploymentModeEnv] = originalEnv.deploymentMode;
+    for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
   it("creates and verifies a token", () => {
@@ -61,11 +108,15 @@ describe("agent local JWT", () => {
     });
   });
 
-  it("returns null when secret is missing", () => {
+  it("returns null when no secret is available outside local_trusted", () => {
+    // Empty configured secret + a non-local deployment mode -> no fallback and
+    // no auto-provisioning, so no secret file is written.
     process.env[secretEnv] = "";
+    process.env[deploymentModeEnv] = "authenticated";
     const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
     expect(token).toBeNull();
     expect(verifyLocalAgentJwt("abc.def.ghi")).toBeNull();
+    expect(existsSync(secretPath)).toBe(false);
   });
 
   it("falls back to BETTER_AUTH_SECRET when PAPERCLIP_AGENT_JWT_SECRET is absent", () => {
@@ -217,5 +268,176 @@ describe("agent local JWT", () => {
       adapter_type: "claude_local",
       run_id: "run-1",
     });
+  });
+});
+
+describe("agent JWT secret auto-provisioning (local_trusted)", () => {
+  const saved: Record<string, string | undefined> = {};
+  const tmpDirs: string[] = [];
+  let secretPath: string;
+
+  beforeEach(() => {
+    for (const key of AUTO_ENV_KEYS) saved[key] = process.env[key];
+
+    const root = mkdtempSync(path.join(os.tmpdir(), "paperclip-agent-jwt-auto-"));
+    tmpDirs.push(root);
+    const envDir = path.join(root, ".paperclip");
+    mkdirSync(envDir, { recursive: true });
+    process.env.PAPERCLIP_CONFIG = path.join(envDir, "config.json");
+    secretPath = path.join(envDir, "agent-jwt-secret");
+
+    delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    delete process.env.BETTER_AUTH_SECRET;
+    delete process.env.PAPERCLIP_DEPLOYMENT_MODE;
+
+    // Drop the module-level cachedLocalFileSecret between tests.
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    for (const key of AUTO_ENV_KEYS) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+    for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    vi.resetModules();
+  });
+
+  async function loadModule(): Promise<AgentAuthJwtModule> {
+    return import("../agent-auth-jwt.js");
+  }
+
+  it("auto-provisions a persistent 0600 secret and signs a verifiable token", async () => {
+    // No configured secret, deployment mode unset -> defaults to local_trusted.
+    const mod = await loadModule();
+
+    const token = mod.createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    expect(token).toBeTruthy();
+
+    expect(existsSync(secretPath)).toBe(true);
+    const secret = readFileSync(secretPath, "utf8");
+    expect(secret.trim().length).toBeGreaterThan(0);
+    expect(secret.endsWith("\n")).toBe(true);
+
+    if (isPosix) {
+      expect(statSync(secretPath).mode & 0o777).toBe(0o600);
+    }
+
+    expect(mod.verifyLocalAgentJwt(token as string)).toMatchObject({
+      sub: "agent-1",
+      company_id: "company-1",
+      adapter_type: "claude_local",
+      run_id: "run-1",
+    });
+  });
+
+  it("generates the secret once and reuses it on subsequent calls", async () => {
+    const mod = await loadModule();
+
+    expect(mod.createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1")).toBeTruthy();
+    const secretAfterFirst = readFileSync(secretPath, "utf8");
+
+    expect(mod.createLocalAgentJwt("agent-2", "company-1", "claude_local", "run-2")).toBeTruthy();
+    expect(readFileSync(secretPath, "utf8")).toBe(secretAfterFirst);
+  });
+
+  it("reuses the secret file across a process restart (does not regenerate)", async () => {
+    const mod = await loadModule();
+    const token = mod.createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    expect(token).toBeTruthy();
+    const provisioned = readFileSync(secretPath, "utf8");
+
+    // Simulate a fresh process: clear in-memory cache, re-import the module.
+    vi.resetModules();
+    const reloaded = await loadModule();
+
+    expect(readFileSync(secretPath, "utf8")).toBe(provisioned);
+    // Token minted before the "restart" still verifies -> same secret reused.
+    expect(reloaded.verifyLocalAgentJwt(token as string)).toMatchObject({ sub: "agent-1" });
+  });
+
+  it("reads a pre-existing secret file rather than overwriting it", async () => {
+    const preset = "preset-secret-value-for-reuse-test";
+    writeFileSync(secretPath, `${preset}\n`, { mode: 0o600 });
+
+    const mod = await loadModule();
+    const token = mod.createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+
+    expect(token).toBeTruthy();
+    expect(readFileSync(secretPath, "utf8")).toBe(`${preset}\n`);
+    expect(mod.verifyLocalAgentJwt(token as string)).toMatchObject({ sub: "agent-1" });
+  });
+
+  it("returns null and writes no secret file for non-local_trusted without a configured secret", async () => {
+    process.env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";
+    const mod = await loadModule();
+
+    expect(mod.createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1")).toBeNull();
+    expect(mod.verifyLocalAgentJwt("a.b.c")).toBeNull();
+    expect(existsSync(secretPath)).toBe(false);
+  });
+});
+
+describe("describeAgentJwtSecret", () => {
+  const saved: Record<string, string | undefined> = {};
+  const tmpDirs: string[] = [];
+  let secretPath: string;
+
+  beforeEach(() => {
+    for (const key of AUTO_ENV_KEYS) saved[key] = process.env[key];
+
+    const root = mkdtempSync(path.join(os.tmpdir(), "paperclip-agent-jwt-desc-"));
+    tmpDirs.push(root);
+    const envDir = path.join(root, ".paperclip");
+    mkdirSync(envDir, { recursive: true });
+    process.env.PAPERCLIP_CONFIG = path.join(envDir, "config.json");
+    secretPath = path.join(envDir, "agent-jwt-secret");
+
+    delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    delete process.env.BETTER_AUTH_SECRET;
+    delete process.env.PAPERCLIP_DEPLOYMENT_MODE;
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    for (const key of AUTO_ENV_KEYS) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+    for (const dir of tmpDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    vi.resetModules();
+  });
+
+  it("reports 'set' when PAPERCLIP_AGENT_JWT_SECRET is configured", async () => {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "explicit";
+    const { describeAgentJwtSecret } = await import("../agent-auth-jwt.js");
+    expect(describeAgentJwtSecret()).toEqual({ status: "pass", message: "set" });
+    expect(existsSync(secretPath)).toBe(false);
+  });
+
+  it("reports 'set' when only BETTER_AUTH_SECRET is configured", async () => {
+    process.env.BETTER_AUTH_SECRET = "fallback";
+    const { describeAgentJwtSecret } = await import("../agent-auth-jwt.js");
+    expect(describeAgentJwtSecret()).toEqual({ status: "pass", message: "set" });
+    expect(existsSync(secretPath)).toBe(false);
+  });
+
+  it("reports auto-provisioned in local_trusted and creates the secret file", async () => {
+    const { describeAgentJwtSecret } = await import("../agent-auth-jwt.js");
+    expect(describeAgentJwtSecret()).toEqual({
+      status: "pass",
+      message: "auto-provisioned (local_trusted)",
+    });
+    expect(existsSync(secretPath)).toBe(true);
+  });
+
+  it("warns 'missing' for non-local_trusted without a configured secret", async () => {
+    process.env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";
+    const { describeAgentJwtSecret } = await import("../agent-auth-jwt.js");
+    expect(describeAgentJwtSecret()).toEqual({
+      status: "warn",
+      message: "missing (run `pnpm paperclipai onboard`)",
+    });
+    expect(existsSync(secretPath)).toBe(false);
   });
 });
