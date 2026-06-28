@@ -124,7 +124,7 @@ function makeVersion(revisionNumber: number, content: string): CompanySkillVersi
   };
 }
 
-function makeDetail(currentVersion: CompanySkillVersion): CompanySkillDetail {
+function makeDetail(currentVersion: CompanySkillVersion, overrides: Partial<CompanySkillDetail> = {}): CompanySkillDetail {
   return {
     id: "skill-1",
     companyId: "company-1",
@@ -165,20 +165,25 @@ function makeDetail(currentVersion: CompanySkillVersion): CompanySkillDetail {
     sourcePath: null,
     currentVersion,
     starredByCurrentActor: false,
+    ...overrides,
   };
 }
 
-async function renderSkillDetail(versions: CompanySkillVersion[]) {
+async function renderSkillDetail(
+  versions: CompanySkillVersion[],
+  props: Partial<ComponentProps<typeof SkillDetailPage>> = {},
+) {
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
+  const detail = props.detail ?? makeDetail(versions[0]!);
 
   await act(async () => {
     root?.render(
       <SkillDetailPage
-        detail={makeDetail(versions[0]!)}
+        detail={detail}
         loading={false}
-        activeTab="versions"
+        activeTab={props.activeTab ?? "versions"}
         onTabChange={vi.fn()}
         selectedPath="SKILL.md"
         file={null}
@@ -208,10 +213,11 @@ async function renderSkillDetail(versions: CompanySkillVersion[]) {
         onToggleStar={vi.fn()}
         starPending={false}
         onFork={vi.fn()}
-        onUpdateSharingScope={vi.fn()}
-        updateSharingPending={false}
+        onUpdateSettings={vi.fn()}
+        updateSettingsPending={false}
         onDelete={vi.fn()}
         deletePending={false}
+        {...props}
       />,
     );
   });
@@ -226,6 +232,22 @@ function buttonsNamed(node: ParentNode, name: string) {
 async function click(button: HTMLButtonElement) {
   await act(async () => {
     button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+}
+
+async function inputValue(input: HTMLInputElement, value: string) {
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+async function selectValue(select: HTMLSelectElement, value: string) {
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+    setter?.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
   });
 }
 
@@ -272,5 +294,143 @@ describe("SkillDetailPage versions tab", () => {
     expect(dialog.textContent).toContain("Initial");
     expect(dialog.textContent).toContain("First line");
     expect(dialog.textContent).not.toContain("Both sides are the same version");
+  });
+});
+
+describe("SkillDetailPage settings", () => {
+  it("saves normalized category edits from the settings dialog", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const onUpdateSettings = vi.fn();
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail: makeDetail(v1, {
+        categories: ["engineering"],
+        sharingScope: "company",
+      }),
+      onUpdateSettings,
+    });
+
+    await click(buttonsNamed(node, "Settings")[0] as HTMLButtonElement);
+    const dialog = node.querySelector('[role="dialog"]') as HTMLElement;
+    const categoryInput = dialog.querySelector("input") as HTMLInputElement;
+    const saveButton = buttonsNamed(dialog, "Save settings")[0] as HTMLButtonElement;
+
+    expect(categoryInput.value).toBe("engineering");
+
+    await inputValue(categoryInput, " Memory, review, memory ,,");
+    await click(saveButton);
+
+    expect(onUpdateSettings).toHaveBeenCalledWith({
+      sharingScope: "company",
+      categories: ["memory", "review"],
+    });
+  });
+
+  it("allows clearing categories and saving sharing together", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const onUpdateSettings = vi.fn();
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail: makeDetail(v1, {
+        categories: ["engineering"],
+        sharingScope: "company",
+      }),
+      onUpdateSettings,
+    });
+
+    await click(buttonsNamed(node, "Settings")[0] as HTMLButtonElement);
+    const dialog = node.querySelector('[role="dialog"]') as HTMLElement;
+
+    await inputValue(dialog.querySelector("input") as HTMLInputElement, "");
+    await selectValue(dialog.querySelector("select") as HTMLSelectElement, "private");
+    await click(buttonsNamed(dialog, "Save settings")[0] as HTMLButtonElement);
+
+    expect(onUpdateSettings).toHaveBeenCalledWith({
+      sharingScope: "private",
+      categories: [],
+    });
+  });
+
+  it("does not treat reordered categories as dirty", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail: makeDetail(v1, {
+        categories: ["memory", "review"],
+        sharingScope: "company",
+      }),
+    });
+
+    await click(buttonsNamed(node, "Settings")[0] as HTMLButtonElement);
+    const dialog = node.querySelector('[role="dialog"]') as HTMLElement;
+
+    await inputValue(dialog.querySelector("input") as HTMLInputElement, "review, memory");
+
+    expect((buttonsNamed(dialog, "Save settings")[0] as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("keeps the category draft visible while a failed save leaves detail unchanged", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const detail = makeDetail(v1, {
+      categories: ["engineering"],
+      sharingScope: "company",
+    });
+    const onUpdateSettings = vi.fn();
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail,
+      onUpdateSettings,
+    });
+
+    await click(buttonsNamed(node, "Settings")[0] as HTMLButtonElement);
+    const categoryInput = node.querySelector('[role="dialog"] input') as HTMLInputElement;
+
+    await inputValue(categoryInput, "memory");
+    await click(buttonsNamed(node.querySelector('[role="dialog"]') as HTMLElement, "Save settings")[0] as HTMLButtonElement);
+
+    await act(async () => {
+      root?.render(
+        <SkillDetailPage
+          detail={detail}
+          loading={false}
+          activeTab="overview"
+          onTabChange={vi.fn()}
+          selectedPath="SKILL.md"
+          file={null}
+          fileLoading={false}
+          viewMode="preview"
+          editMode={false}
+          draft=""
+          setViewMode={vi.fn()}
+          setEditMode={vi.fn()}
+          setDraft={vi.fn()}
+          onSave={vi.fn()}
+          savePending={false}
+          versions={[v1]}
+          versionsLoading={false}
+          attachAgents={[]}
+          onSubmitAttach={vi.fn()}
+          attachPending={false}
+          expandedDirs={new Set()}
+          onToggleDir={vi.fn()}
+          onSelectPath={vi.fn()}
+          updateStatus={null}
+          updateStatusLoading={false}
+          onCheckUpdates={vi.fn()}
+          checkUpdatesPending={false}
+          onInstallUpdate={vi.fn()}
+          installUpdatePending={false}
+          onToggleStar={vi.fn()}
+          starPending={false}
+          onFork={vi.fn()}
+          onUpdateSettings={onUpdateSettings}
+          updateSettingsPending={false}
+          onDelete={vi.fn()}
+          deletePending={false}
+        />,
+      );
+    });
+
+    expect((node.querySelector('[role="dialog"] input') as HTMLInputElement).value).toBe("memory");
   });
 });

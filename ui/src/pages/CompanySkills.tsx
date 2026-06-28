@@ -17,6 +17,7 @@ import type {
   CompanySkillSharingScope,
   CompanySkillSourceBadge,
   CompanySkillTrustLevel,
+  CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
   CompanySkillVersion,
 } from "@paperclipai/shared";
@@ -614,10 +615,22 @@ function normalizeSkillDraftSlug(value: string) {
 }
 
 function splitCategoryDraft(value: string) {
-  return value
-    .split(",")
-    .map((entry) => normalizeSkillDraftSlug(entry))
-    .filter(Boolean);
+  return Array.from(
+    new Set(value
+      .split(",")
+      .map((entry) => normalizeSkillDraftSlug(entry))
+      .filter(Boolean)),
+  );
+}
+
+function categorySetKey(categories: string[]) {
+  return [...categories].sort().join(",");
+}
+
+function skillSettingsToastBody(skill: Pick<CompanySkillDetail, "categories" | "sharingScope">) {
+  const sharing = skill.sharingScope === "private" ? "Sharing: private" : "Sharing: company";
+  const categories = skill.categories.length ? `Categories: ${skill.categories.join(", ")}` : "Categories: none";
+  return `${sharing} | ${categories}`;
 }
 
 function defaultSkillMarkdown(name: string, tagline: string) {
@@ -2577,8 +2590,8 @@ export function SkillDetailPage({
   onToggleStar,
   starPending,
   onFork,
-  onUpdateSharingScope,
-  updateSharingPending,
+  onUpdateSettings,
+  updateSettingsPending,
   onDelete,
   deletePending,
 }: {
@@ -2616,13 +2629,15 @@ export function SkillDetailPage({
   onToggleStar: () => void;
   starPending: boolean;
   onFork: () => void;
-  onUpdateSharingScope: (scope: Exclude<CompanySkillSharingScope, "public_link">) => void;
-  updateSharingPending: boolean;
+  onUpdateSettings: (payload: Pick<CompanySkillUpdateRequest, "categories" | "sharingScope">) => void;
+  updateSettingsPending: boolean;
   onDelete: () => void;
   deletePending: boolean;
 }) {
   const [diffOpen, setDiffOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSharingScope, setSettingsSharingScope] = useState<Exclude<CompanySkillSharingScope, "public_link">>("company");
+  const [settingsCategoryDraft, setSettingsCategoryDraft] = useState("");
   // Top-level description is clamped to four lines; "View all" expands it. We
   // only surface the toggle when the text actually overflows the clamp.
   const descriptionRef = useRef<HTMLParagraphElement | null>(null);
@@ -2636,6 +2651,11 @@ export function SkillDetailPage({
   useEffect(() => {
     setDescExpanded(false);
   }, [detail?.id]);
+  useEffect(() => {
+    if (!detail || settingsOpen) return;
+    setSettingsSharingScope(detail.sharingScope === "public_link" ? "company" : detail.sharingScope);
+    setSettingsCategoryDraft(detail.categories.join(", "));
+  }, [detail, settingsOpen]);
   const sortedVersions = [...versions].sort((a, b) => b.revisionNumber - a.revisionNumber);
   const [leftVersionId, setLeftVersionId] = useState<string | null>(null);
   const [rightVersionId, setRightVersionId] = useState<string | null>(null);
@@ -2673,6 +2693,10 @@ export function SkillDetailPage({
   const latestPin = shortRef(updateStatus?.latestRef);
   const selectedVersion = versions.find((version) => version.id === currentVersionSelection(skill)) ?? null;
   const subtitleText = resolveSkillSummaryText(skill) ?? source.label;
+  const settingsCategories = splitCategoryDraft(settingsCategoryDraft);
+  const settingsCategoriesDirty = categorySetKey(settingsCategories) !== categorySetKey(skill.categories);
+  const settingsSharingDirty = settingsSharingScope !== (skill.sharingScope === "public_link" ? "company" : skill.sharingScope);
+  const settingsDirty = settingsCategoriesDirty || settingsSharingDirty;
   // Look up the richer agent record (icon, paused) for agents using this skill.
   const attachAgentMetaById = new Map(attachAgents.map((agent) => [agent.id, agent]));
 
@@ -3221,7 +3245,11 @@ export function SkillDetailPage({
           <section>
             <button
               type="button"
-              onClick={() => setSettingsOpen(true)}
+              onClick={() => {
+                setSettingsSharingScope(detail.sharingScope === "public_link" ? "company" : detail.sharingScope);
+                setSettingsCategoryDraft(detail.categories.join(", "));
+                setSettingsOpen(true);
+              }}
               className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-accent/30 hover:text-foreground"
             >
               <Settings className="h-4 w-4 shrink-0" />
@@ -3258,21 +3286,55 @@ export function SkillDetailPage({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Skill settings</DialogTitle>
-            <DialogDescription>Manage how {detail.name} is shared.</DialogDescription>
+            <DialogDescription>Manage how {detail.name} is grouped and shared.</DialogDescription>
           </DialogHeader>
           <div className="space-y-5">
             <div className="space-y-1.5">
+              <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Categories</label>
+              <Input
+                value={settingsCategoryDraft}
+                onChange={(event) => setSettingsCategoryDraft(event.target.value)}
+                placeholder="engineering, review, memory"
+                className="h-9"
+                disabled={updateSettingsPending}
+              />
+              <p className="text-xs text-muted-foreground">Separate categories with commas. Leave empty to clear categories.</p>
+            </div>
+            <div className="space-y-1.5">
               <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Sharing</label>
               <select
-                value={detail.sharingScope === "public_link" ? "company" : detail.sharingScope}
-                onChange={(event) => onUpdateSharingScope(event.target.value as Exclude<CompanySkillSharingScope, "public_link">)}
-                disabled={updateSharingPending}
+                value={settingsSharingScope}
+                onChange={(event) => setSettingsSharingScope(event.target.value as Exclude<CompanySkillSharingScope, "public_link">)}
+                disabled={updateSettingsPending}
                 className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground"
               >
                 <option value="company">Company — visible inside this company</option>
                 <option value="private">Private — only visible in your library</option>
               </select>
               <p className="text-xs text-muted-foreground">Public link sharing is coming later.</p>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-border pt-4">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setSettingsSharingScope(skill.sharingScope === "public_link" ? "company" : skill.sharingScope);
+                  setSettingsCategoryDraft(skill.categories.join(", "));
+                }}
+                disabled={!settingsDirty || updateSettingsPending}
+              >
+                Reset
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => onUpdateSettings({ sharingScope: settingsSharingScope, categories: settingsCategories })}
+                disabled={!settingsDirty || updateSettingsPending}
+              >
+                <Save className="mr-1.5 h-3.5 w-3.5" />
+                {updateSettingsPending ? "Saving…" : "Save settings"}
+              </Button>
             </div>
             {detail.editable ? (
               <div className="rounded-md border border-destructive/40 p-3">
@@ -3672,7 +3734,7 @@ export function CompanySkills() {
     : "all";
   const detailTab: SkillDetailTab = (["overview", "files", "versions", "agents"] as SkillDetailTab[]).includes(tabParam as SkillDetailTab)
     ? (tabParam as SkillDetailTab)
-    : selectedPath !== "SKILL.md"
+    : parsedRoute.hasExplicitFilePath || selectedPath !== "SKILL.md"
       ? "files"
       : "overview";
   const discoveryCategory = searchParams.get("category");
@@ -4025,20 +4087,28 @@ export function CompanySkills() {
   });
 
   const updateSkillSettings = useMutation({
-    mutationFn: (payload: { skillId: string; sharingScope: Exclude<CompanySkillSharingScope, "public_link"> }) =>
-      companySkillsApi.update(selectedCompanyId!, payload.skillId, { sharingScope: payload.sharingScope }),
+    mutationFn: (payload: { skillId: string; updates: Pick<CompanySkillUpdateRequest, "categories" | "sharingScope"> }) =>
+      companySkillsApi.update(selectedCompanyId!, payload.skillId, payload.updates),
     onSuccess: async (skill) => {
+      queryClient.setQueryData<CompanySkillDetail | undefined>(
+        queryKeys.companySkills.detail(selectedCompanyId!, skill.id),
+        (current) => current ? { ...current, ...skill } : current,
+      );
+      queryClient.setQueryData<CompanySkillListItem[] | undefined>(
+        queryKeys.companySkills.list(selectedCompanyId!),
+        (current) => current?.map((entry) => entry.id === skill.id ? { ...entry, ...skill } : entry),
+      );
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.detail(selectedCompanyId!, skill.id) }),
       ]);
-      pushToast({ tone: "success", title: "Sharing updated", body: skill.sharingScope === "private" ? "Private" : "Company" });
+      pushToast({ tone: "success", title: "Skill settings updated", body: skillSettingsToastBody(skill) });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Sharing update failed",
-        body: error instanceof Error ? error.message : "Failed to update sharing scope.",
+        title: "Skill settings update failed",
+        body: error instanceof Error ? error.message : "Failed to update skill settings.",
       });
     },
   });
@@ -4624,8 +4694,8 @@ export function CompanySkills() {
           onToggleStar={() => toggleStar.mutate()}
           starPending={toggleStar.isPending}
           onFork={() => activeDetail && openCreateWizard(buildForkSkillDraft(activeDetail))}
-          onUpdateSharingScope={(sharingScope) => activeDetail && updateSkillSettings.mutate({ skillId: activeDetail.id, sharingScope })}
-          updateSharingPending={updateSkillSettings.isPending}
+          onUpdateSettings={(updates) => activeDetail && updateSkillSettings.mutate({ skillId: activeDetail.id, updates })}
+          updateSettingsPending={updateSkillSettings.isPending}
           onDelete={openDeleteDialog}
           deletePending={deleteSkill.isPending}
         />

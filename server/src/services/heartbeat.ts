@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -15,6 +15,7 @@ import {
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
+  type HeartbeatRunStatusPhase,
   type IssueExecutionMonitorClearReason,
   type IssueExecutionMonitorPolicy,
   type IssueExecutionMonitorRecoveryPolicy,
@@ -32,6 +33,7 @@ import {
   approvals,
   companySkills as companySkillsTable,
   companies,
+  costEvents,
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
@@ -71,7 +73,7 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
-import { secretService } from "./secrets.js";
+import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
@@ -158,11 +160,13 @@ import {
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
+import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
   shouldCancelRunsForNonInvokableAgent,
+  DIRECT_NON_INVOKABLE_STATUSES,
   type AgentOrgRow,
 } from "./agent-invokability.js";
 import {
@@ -178,6 +182,7 @@ import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
+  type RuntimeStatusUpdate,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
 import {
@@ -191,6 +196,12 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
+import {
+  clearHeartbeatRunRuntimeStatus,
+  getHeartbeatRunRuntimeStatus,
+  setHeartbeatRunRuntimeStatus,
+  sweepExpiredHeartbeatRunRuntimeStatuses,
+} from "./heartbeat-run-runtime-status.js";
 import {
   assertLowTrustRuntimeServicesAllowed,
   assertLowTrustWorkspaceIsolation,
@@ -236,6 +247,7 @@ const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_r
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -254,6 +266,11 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
+const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
+const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
+const GITHUB_PR_WORKFLOW_SKILL_KEY = "paperclipai/bundled/software-development/github-pr-workflow";
+const GITHUB_PR_WORKFLOW_SKILL_SLUG = "github-pr-workflow";
+const PUSH_CAPABILITY_ENV_KEYS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
 // Keep this in sync with local adapters that require a git workspace before launch.
 const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
   "acpx_local",
@@ -292,6 +309,20 @@ export class WorkspaceValidationFailure extends Error {
   constructor(message: string, resultJson: Record<string, unknown>) {
     super(message);
     this.name = "WorkspaceValidationFailure";
+    this.resultJson = resultJson;
+  }
+}
+
+// Pre-dispatch gate outcome: required secret/env bindings are missing, so the
+// run must not be dispatched. Surfaced as a configuration-incomplete blocker
+// routed to a human owner instead of N opaque dispatched-then-failed runs.
+export class ConfigurationIncompleteFailure extends Error {
+  code = CONFIGURATION_INCOMPLETE_FAILURE_CODE;
+  resultJson: Record<string, unknown>;
+
+  constructor(message: string, resultJson: Record<string, unknown>) {
+    super(message);
+    this.name = "ConfigurationIncompleteFailure";
     this.resultJson = resultJson;
   }
 }
@@ -381,8 +412,46 @@ const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64",
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
-  "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
+  | "resolveAdapterConfigForRuntime"
+  | "resolveEnvBindings"
+  | "collectMissingRuntimeBindings"
+  | "collectMissingAdapterConfigRuntimeBindings"
 >;
+
+function formatMissingBindingForOperator(missing: MissingRuntimeBinding): string {
+  const secretLabel = missing.secretName
+    ? `"${missing.secretName}"`
+    : missing.secretId;
+  return `secret ${secretLabel} not bound at ${missing.consumerType} ${missing.configPath}`;
+}
+
+function isConfiguredEnvBindingValue(binding: unknown) {
+  const parsed = envBindingSchema.safeParse(binding);
+  if (!parsed.success) return false;
+  const value = parsed.data;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (value.type === "plain") return value.value.trim().length > 0;
+  return true;
+}
+
+function hasGithubPrWorkflowSkill(desiredSkills: string[]) {
+  return desiredSkills.some((skill) => {
+    const normalized = skill.trim();
+    return normalized === GITHUB_PR_WORKFLOW_SKILL_KEY
+      || normalized === GITHUB_PR_WORKFLOW_SKILL_SLUG
+      || normalized.endsWith(`/${GITHUB_PR_WORKFLOW_SKILL_SLUG}`);
+  });
+}
+
+export function requiresPushCapabilityPreflight(input: {
+  adapterType: string;
+  issueId: string | null | undefined;
+  explicitRunScopedSkillKeys: string[];
+}) {
+  return Boolean(input.issueId)
+    && GIT_SENSITIVE_LOCAL_ADAPTER_TYPES.has(input.adapterType)
+    && hasGithubPrWorkflowSkill(input.explicitRunScopedSkillKeys);
+}
 
 const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
@@ -428,8 +497,11 @@ function assertLowTrustEnvConfigAllowed(envValue: unknown, source: string) {
 export async function resolveExecutionRunAdapterConfig(input: {
   companyId: string;
   agentId?: string | null;
+  adapterType?: string | null;
   issueId?: string | null;
   heartbeatRunId?: string | null;
+  environmentId?: string | null;
+  environmentEnv?: unknown;
   projectId?: string | null;
   routineId?: string | null;
   executionRunConfig: Record<string, unknown>;
@@ -437,18 +509,163 @@ export async function resolveExecutionRunAdapterConfig(input: {
   routineEnv?: unknown;
   secretsSvc: RuntimeConfigSecretResolver;
   trustPreset?: TrustPresetResolution;
+  requiredScopedEnvBinding?: {
+    keys: string[];
+    consumerScopes: Array<"agent" | "project">;
+    reason: string;
+    remediation: string;
+  };
 }) {
   const executionRunConfig = stripPaperclipRuntimeEnvFromAdapterConfig(input.executionRunConfig);
+  const environmentEnv = stripPaperclipRuntimeEnvBindings(input.environmentEnv);
   const projectEnv = stripPaperclipRuntimeEnvBindings(input.projectEnv);
   const routineEnv = stripPaperclipRuntimeEnvBindings(input.routineEnv);
+  const agentEnv = parseObject(executionRunConfig.env);
   const lowTrustAllowedBindingIds = input.trustPreset?.kind === "low_trust_review"
     ? input.trustPreset.boundary.allowedSecretBindingIds ?? []
     : undefined;
   if (input.trustPreset?.kind === "low_trust_review") {
+    assertLowTrustEnvConfigAllowed(environmentEnv, "environment.env");
     assertLowTrustEnvConfigAllowed(executionRunConfig.env, "agent.env");
     assertLowTrustEnvConfigAllowed(projectEnv, "project.env");
     assertLowTrustEnvConfigAllowed(routineEnv, "routine.env");
   }
+  const requiredScopedEnvBinding = input.requiredScopedEnvBinding ?? null;
+  const requiredScopedBindingsConfigured = requiredScopedEnvBinding
+    ? requiredScopedEnvBinding.keys.some((key) => (
+      requiredScopedEnvBinding.consumerScopes.includes("agent")
+      && isConfiguredEnvBindingValue(agentEnv[key])
+    ) || (
+      requiredScopedEnvBinding.consumerScopes.includes("project")
+      && isConfiguredEnvBindingValue(projectEnv?.[key])
+    ))
+    : false;
+  if (requiredScopedEnvBinding && !requiredScopedBindingsConfigured) {
+    throw new ConfigurationIncompleteFailure(`configuration incomplete: ${requiredScopedEnvBinding.remediation}`, {
+      configurationIncomplete: {
+        reason: requiredScopedEnvBinding.reason,
+        companyId: input.companyId,
+        agentId: input.agentId ?? null,
+        issueId: input.issueId ?? null,
+        projectId: input.projectId ?? null,
+        routineId: input.routineId ?? null,
+        requiredEnvKeys: requiredScopedEnvBinding.keys,
+        requiredScopes: requiredScopedEnvBinding.consumerScopes,
+        missingBindings: [],
+      },
+    });
+  }
+  // Pre-dispatch binding-validation gate: detect declared secret refs that have
+  // no binding before resolving any secret value. Missing bindings short-circuit
+  // to a configuration-incomplete blocker routed to a human owner instead of a
+  // dispatched-then-failed run (which previously surfaced as opaque setup_failed).
+  if (typeof input.secretsSvc.collectMissingRuntimeBindings === "function") {
+    const missingBindings: MissingRuntimeBinding[] = [];
+    if (environmentEnv && input.environmentId) {
+      missingBindings.push(
+        ...(await input.secretsSvc.collectMissingRuntimeBindings(
+          input.companyId,
+          environmentEnv,
+          { consumerType: "environment", consumerId: input.environmentId },
+        )),
+      );
+    }
+    if (input.agentId) {
+      missingBindings.push(
+        ...(await input.secretsSvc.collectMissingRuntimeBindings(
+          input.companyId,
+          parseObject(executionRunConfig.env),
+          { consumerType: "agent", consumerId: input.agentId },
+        )),
+      );
+      if (typeof input.secretsSvc.collectMissingAdapterConfigRuntimeBindings === "function") {
+        missingBindings.push(
+          ...(await input.secretsSvc.collectMissingAdapterConfigRuntimeBindings(
+            input.companyId,
+            executionRunConfig,
+            input.adapterType ?? null,
+            { consumerType: "agent", consumerId: input.agentId },
+          )),
+        );
+      }
+    }
+    if (projectEnv && input.projectId) {
+      missingBindings.push(
+        ...(await input.secretsSvc.collectMissingRuntimeBindings(
+          input.companyId,
+          projectEnv,
+          { consumerType: "project", consumerId: input.projectId },
+        )),
+      );
+    }
+    if (routineEnv && input.routineId) {
+      missingBindings.push(
+        ...(await input.secretsSvc.collectMissingRuntimeBindings(
+          input.companyId,
+          routineEnv,
+          { consumerType: "routine", consumerId: input.routineId },
+        )),
+      );
+    }
+    if (requiredScopedEnvBinding) {
+      const requiredEnvKeys = new Set(requiredScopedEnvBinding.keys);
+      const requiredScopes = new Set(requiredScopedEnvBinding.consumerScopes);
+      const requiredMissingBindings = missingBindings.filter((binding) =>
+        requiredScopes.has(binding.consumerType as "agent" | "project")
+        && requiredEnvKeys.has(binding.envKey),
+      );
+      if (requiredMissingBindings.length > 0) {
+        const detail = requiredMissingBindings.map(formatMissingBindingForOperator).join("; ");
+        throw new ConfigurationIncompleteFailure(
+          `configuration incomplete: ${requiredScopedEnvBinding.remediation}; ${detail}`,
+          {
+            configurationIncomplete: {
+              reason: requiredScopedEnvBinding.reason,
+              companyId: input.companyId,
+              agentId: input.agentId ?? null,
+              issueId: input.issueId ?? null,
+              projectId: input.projectId ?? null,
+              routineId: input.routineId ?? null,
+              requiredEnvKeys: requiredScopedEnvBinding.keys,
+              requiredScopes: requiredScopedEnvBinding.consumerScopes,
+              missingBindings: requiredMissingBindings,
+            },
+          },
+        );
+      }
+    }
+    if (missingBindings.length > 0) {
+      const detail = missingBindings.map(formatMissingBindingForOperator).join("; ");
+      throw new ConfigurationIncompleteFailure(`configuration incomplete: ${detail}`, {
+        configurationIncomplete: {
+          reason: "secret_binding_missing",
+          companyId: input.companyId,
+          agentId: input.agentId ?? null,
+          issueId: input.issueId ?? null,
+          projectId: input.projectId ?? null,
+          routineId: input.routineId ?? null,
+          missingBindings,
+        },
+      });
+    }
+  }
+  const environmentEnvResolution = environmentEnv
+    ? await input.secretsSvc.resolveEnvBindings(
+        input.companyId,
+        environmentEnv,
+        input.environmentId
+          ? {
+              consumerType: "environment",
+              consumerId: input.environmentId,
+              actorType: "agent",
+              actorId: input.agentId ?? null,
+              issueId: input.issueId ?? null,
+              heartbeatRunId: input.heartbeatRunId ?? null,
+              ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
+            }
+          : undefined,
+      )
+    : { env: {}, secretKeys: new Set<string>(), manifest: [] };
   const { config: resolvedConfig, secretKeys, manifest } = await input.secretsSvc.resolveAdapterConfigForRuntime(
     input.companyId,
     executionRunConfig,
@@ -463,7 +680,17 @@ export async function resolveExecutionRunAdapterConfig(input: {
           ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
         }
       : undefined,
+    { adapterType: input.adapterType ?? null },
   );
+  if (Object.keys(environmentEnvResolution.env).length > 0) {
+    resolvedConfig.env = {
+      ...environmentEnvResolution.env,
+      ...parseObject(resolvedConfig.env),
+    };
+    for (const key of environmentEnvResolution.secretKeys) {
+      secretKeys.add(key);
+    }
+  }
   const projectEnvResolution = projectEnv
     ? await input.secretsSvc.resolveEnvBindings(
         input.companyId,
@@ -520,6 +747,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
     resolvedConfig,
     secretKeys,
     secretManifest: [
+      ...(environmentEnvResolution.manifest ?? []),
       ...(manifest ?? []),
       ...(projectEnvResolution.manifest ?? []),
       ...(routineEnvResolution.manifest ?? []),
@@ -636,6 +864,7 @@ async function resolveRunScopedMentionedSkillKeys(input: {
 function leaseReleaseStatusForRunStatus(
   status: string | null | undefined,
 ): Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> {
+  if (status === "cancelled") return "expired";
   return status === "failed" || status === "timed_out" ? "failed" : "released";
 }
 
@@ -939,6 +1168,16 @@ function isWorkspaceValidationFailedRun(
   return run?.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
 }
 
+function isConfigurationIncompleteFailure(error: unknown): error is ConfigurationIncompleteFailure {
+  return error instanceof ConfigurationIncompleteFailure;
+}
+
+function isConfigurationIncompleteFailedRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
+) {
+  return run?.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE;
+}
+
 async function hasGitMetadata(cwd: string | null | undefined) {
   const normalized = readNonEmptyString(cwd);
   if (!normalized) return false;
@@ -953,6 +1192,53 @@ function sameResolvedPath(left: string | null | undefined, right: string | null 
   const rightPath = readNonEmptyString(right);
   if (!leftPath || !rightPath) return false;
   return path.resolve(leftPath) === path.resolve(rightPath);
+}
+
+async function hasGitPushRemote(cwd: string | null | undefined) {
+  const normalized = readNonEmptyString(cwd);
+  if (!normalized) return false;
+  const remoteNames = await execFile("git", ["remote"], { cwd: normalized })
+    .then((result) =>
+      result.stdout
+        .split(/\r?\n/)
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0),
+    )
+    .catch(() => []);
+
+  for (const remoteName of remoteNames) {
+    const pushUrl = await execFile("git", ["remote", "get-url", "--push", remoteName], { cwd: normalized })
+      .then((result) => readNonEmptyString(result.stdout))
+      .catch(() => null);
+    if (pushUrl) return true;
+  }
+  return false;
+}
+
+export async function assertPushCapabilityCheckoutValid(input: {
+  enabled: boolean;
+  issue: {
+    id: string;
+    identifier: string | null;
+  } | null;
+  cwd: string | null | undefined;
+}) {
+  if (!input.enabled || !input.issue) return;
+  const cwd = readNonEmptyString(input.cwd);
+  if (!cwd) return;
+  if (await hasGitPushRemote(cwd)) return;
+  throw new WorkspaceValidationFailure(
+    `Issue ${input.issue.identifier ?? input.issue.id} requested the GitHub PR workflow, but checkout "${cwd}" has no configured push remote. Bind the run to a writable repo checkout before dispatching the agent.`,
+    {
+      workspaceValidation: {
+        reason: "missing_git_push_remote",
+        issueId: input.issue.id,
+        issueIdentifier: input.issue.identifier,
+        executionWorkspaceCwd: cwd,
+        requiredEnvKeys: [...PUSH_CAPABILITY_ENV_KEYS],
+      },
+    },
+  );
 }
 
 export async function assertGitSensitiveAdapterWorkspaceValid(input: {
@@ -1154,6 +1440,20 @@ const heartbeatRunListColumns = {
   nextAction: heartbeatRuns.nextAction,
   createdAt: heartbeatRuns.createdAt,
   updatedAt: heartbeatRuns.updatedAt,
+} as const;
+
+const heartbeatRunSummaryListColumns = {
+  ...heartbeatRunListColumns,
+  usageJson: sql<Record<string, unknown> | null>`NULL`.as("usageJson"),
+  sessionIdBefore: sql<string | null>`NULL`.as("sessionIdBefore"),
+  sessionIdAfter: sql<string | null>`NULL`.as("sessionIdAfter"),
+  logStore: sql<string | null>`NULL`.as("logStore"),
+  logRef: sql<string | null>`NULL`.as("logRef"),
+  logSha256: sql<string | null>`NULL`.as("logSha256"),
+  externalRunId: sql<string | null>`NULL`.as("externalRunId"),
+  processPid: sql<number | null>`NULL`.as("processPid"),
+  processGroupId: sql<number | null>`NULL`.as("processGroupId"),
+  resultJson: sql<Record<string, unknown> | null>`NULL`.as("resultJson"),
 } as const;
 
 const heartbeatRunListContextColumns = {
@@ -2710,6 +3010,7 @@ export async function buildPaperclipWakePayload(input: {
       ? input.contextSnapshot.unresolvedBlockerSummaries
       : [],
     executionStage: Object.keys(executionStage).length > 0 ? executionStage : null,
+    taskWatchdog: (input.contextSnapshot.taskWatchdog ?? null) as unknown,
     continuationSummary: safeContinuationSummary
       ? {
           key: safeContinuationSummary.key,
@@ -2757,6 +3058,95 @@ function isHeartbeatRunTerminalStatus(
   );
 }
 
+function isHeartbeatRunRuntimeStatusActive(status: string | null | undefined): boolean {
+  return status === "queued" || status === "running";
+}
+
+type HeartbeatRunRuntimeStatusRunLike = {
+  id: string;
+  status?: string | null;
+  companyId?: string | null;
+  agentId?: string | null;
+  issueId?: string | null;
+  contextSnapshot?: Record<string, unknown> | null;
+};
+
+function readRuntimeStatusIssueIdCandidate(
+  run: HeartbeatRunRuntimeStatusRunLike,
+): string | null | undefined {
+  if ("issueId" in run) return readNonEmptyString(run.issueId) ?? null;
+  if ("contextSnapshot" in run) {
+    return readNonEmptyString(parseObject(run.contextSnapshot).issueId) ?? null;
+  }
+  return undefined;
+}
+
+function decorateHeartbeatRunRuntimeStatus<T extends HeartbeatRunRuntimeStatusRunLike>(
+  run: T,
+  expected: {
+    companyId?: string | null;
+    issueId?: string | null;
+    agentId?: string | null;
+  } = {},
+): T & {
+  currentStatusMessage: string | null;
+  currentStatusUpdatedAt: Date | null;
+} {
+  if (isHeartbeatRunTerminalStatus(run.status)) {
+    clearHeartbeatRunRuntimeStatus(run.id);
+  }
+
+  const companyId = expected.companyId ?? run.companyId ?? null;
+  const agentId = expected.agentId ?? run.agentId ?? null;
+  const issueId =
+    expected.issueId !== undefined ? expected.issueId : readRuntimeStatusIssueIdCandidate(run);
+  const currentStatus =
+    isHeartbeatRunRuntimeStatusActive(run.status) && companyId && agentId
+      ? getHeartbeatRunRuntimeStatus(run.id, {
+          companyId,
+          agentId,
+          ...(issueId !== undefined ? { issueId } : {}),
+        })
+      : null;
+
+  return {
+    ...run,
+    currentStatusMessage: currentStatus?.message ?? null,
+    currentStatusUpdatedAt: currentStatus?.updatedAt ?? null,
+  };
+}
+
+function recordHeartbeatRunRuntimeProgress(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "status" | "contextSnapshot">,
+  update: RuntimeStatusUpdate,
+  issueId: string | null,
+) {
+  if (!isHeartbeatRunRuntimeStatusActive(run.status)) return null;
+  const status = setHeartbeatRunRuntimeStatus({
+    companyId: run.companyId,
+    issueId,
+    agentId: run.agentId,
+    runId: run.id,
+    phase: update.phase as HeartbeatRunStatusPhase,
+    message: update.message,
+  });
+  if (!status) return null;
+
+  publishLiveEvent({
+    companyId: status.companyId,
+    type: "heartbeat.run.progress",
+    payload: {
+      runId: status.runId,
+      agentId: status.agentId,
+      issueId: status.issueId,
+      phase: status.phase,
+      message: status.message,
+      updatedAt: status.updatedAt.toISOString(),
+    },
+  });
+  return status;
+}
+
 export function buildPaperclipTaskMarkdown(input: {
   issue: {
     id: string;
@@ -2765,6 +3155,13 @@ export function buildPaperclipTaskMarkdown(input: {
     workMode?: string | null;
     description?: string | null;
   } | null;
+  ancestors?: Array<{
+    id: string;
+    identifier?: string | null;
+    title?: string | null;
+    status?: string | null;
+    priority?: string | null;
+  }> | null;
   wakeComment?: {
     id: string;
     body: string;
@@ -2785,6 +3182,7 @@ export function buildPaperclipTaskMarkdown(input: {
     return [fence + "text", value, fence].join("\n");
   };
   const issue = input.issue;
+  const ancestors = (input.ancestors ?? []).slice(0, 6);
   const wakeComment = input.wakeComment ?? null;
   const acceptedPlanContinuation =
     !wakeComment &&
@@ -2804,7 +3202,14 @@ export function buildPaperclipTaskMarkdown(input: {
       `- Issue: ${quoteTaskScalar(issue.identifier || issue.id)}`,
       `- Title: ${quoteTaskScalar(issue.title)}`,
     );
-    if (issue.workMode === "planning") {
+    if (issue.workMode === "ask") {
+      lines.push(
+        `- Work mode: ${quoteTaskScalar("ask")}`,
+        "",
+        "Ask mode directive:",
+        "Answer the question directly in the issue thread. Do not write implementation code, and do not produce an implementation plan. Use tools only for investigation or temporary scratch work when needed; the deliverable is the answer.",
+      );
+    } else if (issue.workMode === "planning") {
       let directive = "Make the plan only. Do not write code or perform implementation work.";
       if (wakeComment) {
         directive = "Update the plan only. Do not write code or perform implementation work.";
@@ -2828,6 +3233,19 @@ export function buildPaperclipTaskMarkdown(input: {
     const description = issue.description?.trim();
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
+    }
+  }
+  if (ancestors.length > 0) {
+    lines.push("", "Authoritative parent / ancestor context:");
+    for (const [index, ancestor] of ancestors.entries()) {
+      const label = ancestor.identifier || ancestor.id;
+      const status = ancestor.status ? ` (${ancestor.status})` : "";
+      const priority = ancestor.priority ? ` [${ancestor.priority}]` : "";
+      const title = ancestor.title ? ` ${ancestor.title}` : "";
+      lines.push(`- ${index === 0 ? "Parent" : `Ancestor ${index + 1}`}: ${label}${title}${status}${priority}`);
+    }
+    if ((input.ancestors ?? []).length > ancestors.length) {
+      lines.push(`- [ancestor context truncated after ${ancestors.length} entries]`);
     }
   }
   if (wakeComment?.body.trim()) {
@@ -3130,6 +3548,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
+  const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function releaseEnvironmentLeasesForRun(input: {
@@ -3237,6 +3656,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function recordCurrentHeartbeatRunRuntimeProgress(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "status" | "contextSnapshot">,
+    update: RuntimeStatusUpdate,
+    issueId: string | null,
+  ) {
+    if (!isHeartbeatRunRuntimeStatusActive(run.status)) {
+      clearHeartbeatRunRuntimeStatus(run.id);
+      return null;
+    }
+
+    const currentRun = await getRun(run.id);
+    if (!currentRun || !isHeartbeatRunRuntimeStatusActive(currentRun.status)) {
+      clearHeartbeatRunRuntimeStatus(run.id);
+      return null;
+    }
+
+    return recordHeartbeatRunRuntimeProgress(currentRun, update, issueId);
   }
 
   async function getRunLogAccess(runId: string) {
@@ -4626,6 +5064,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        clearHeartbeatRunRuntimeStatus(updated.id);
+      }
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -4660,6 +5101,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        clearHeartbeatRunRuntimeStatus(updated.id);
+      }
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -4987,6 +5431,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       existingWake,
       budgetBlock,
       pauseHold,
+      activeRoutineContinuation,
     ] = await Promise.all([
       issue
         ? db
@@ -5112,6 +5557,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issue
         ? treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id)
         : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: routines.id })
+          .from(routines)
+          .where(
+            and(
+              eq(routines.companyId, issue.companyId),
+              eq(routines.parentIssueId, issue.id),
+              eq(routines.status, "active"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -5127,6 +5586,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
+      hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });
@@ -6727,7 +7187,167 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      skipTimerWhenNoActionableWork: asBoolean(
+        heartbeat.skipTimerWhenNoActionableWork ??
+          heartbeat.requireActionableTimerWork ??
+          heartbeat.issueOnlyTimer,
+        false,
+      ),
+      maxDailyRuns: normalizeOptionalNonNegativeInteger(
+        heartbeat.maxDailyRuns ?? heartbeat.dailyRunLimit ?? heartbeat.dailyRunCap ?? heartbeat.maxRunsPerDay,
+      ),
+      maxDailyCostCents: normalizeOptionalNonNegativeInteger(
+        heartbeat.maxDailyCostCents ??
+          heartbeat.dailyCostCentsLimit ??
+          heartbeat.dailySpendCentsLimit ??
+          heartbeat.dailyBudgetCents,
+      ),
     };
+  }
+
+  function normalizeOptionalNonNegativeInteger(value: unknown) {
+    if (value === null || value === undefined || value === "") return null;
+    const normalized = Math.floor(asNumber(value, 0));
+    return normalized >= 0 ? normalized : null;
+  }
+
+  function currentUtcDayWindow(now = new Date()) {
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+    const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0));
+    return { start, end };
+  }
+
+  async function getHeartbeatDailyCapBlock(
+    agent: typeof agents.$inferSelect,
+    policy: ReturnType<typeof parseHeartbeatPolicy>,
+    options: { checkRunCap?: boolean; checkCostCap?: boolean; excludeRunId?: string | null } = {},
+    client: Pick<Db, "select"> = db,
+  ) {
+    const checkRunCap = options.checkRunCap ?? true;
+    const checkCostCap = options.checkCostCap ?? true;
+    const { start, end } = currentUtcDayWindow();
+    if (checkRunCap && policy.maxDailyRuns !== null) {
+      const conditions = [
+        eq(heartbeatRuns.companyId, agent.companyId),
+        eq(heartbeatRuns.agentId, agent.id),
+        gte(heartbeatRuns.startedAt, start),
+        lt(heartbeatRuns.startedAt, end),
+        notInArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+      ];
+      if (options.excludeRunId) {
+        conditions.push(sql`${heartbeatRuns.id} <> ${options.excludeRunId}`);
+      }
+      const [row] = await client
+        .select({ total: sql<number>`count(*)::integer` })
+        .from(heartbeatRuns)
+        .where(and(...conditions));
+      const observed = Number(row?.total ?? 0);
+      if (observed >= policy.maxDailyRuns) {
+        return {
+          reason: "heartbeat.daily_run_limit",
+          observed,
+          limit: policy.maxDailyRuns,
+        };
+      }
+    }
+
+    if (checkCostCap && policy.maxDailyCostCents !== null) {
+      const [row] = await client
+        .select({ total: sql<number>`coalesce(sum(${costEvents.costCents})::bigint, 0)` })
+        .from(costEvents)
+        .where(
+          and(
+            eq(costEvents.companyId, agent.companyId),
+            eq(costEvents.agentId, agent.id),
+            gte(costEvents.occurredAt, start),
+            lt(costEvents.occurredAt, end),
+          ),
+        );
+      const observed = Number(row?.total ?? 0);
+      if (observed >= policy.maxDailyCostCents) {
+        return {
+          reason: "heartbeat.daily_cost_limit",
+          observed,
+          limit: policy.maxDailyCostCents,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  async function cancelQueuedRunForHeartbeatDailyCap(
+    run: typeof heartbeatRuns.$inferSelect,
+    dailyCapBlock: NonNullable<Awaited<ReturnType<typeof getHeartbeatDailyCapBlock>>>,
+  ) {
+    const now = new Date();
+    const reason = "Cancelled because the agent reached a per-day heartbeat budget cap before adapter invocation";
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now,
+      error: reason,
+      errorCode: dailyCapBlock.reason,
+      resultJson: {
+        ...parseObject(run.resultJson),
+        stopReason: dailyCapBlock.reason,
+        observed: dailyCapBlock.observed,
+        limit: dailyCapBlock.limit,
+        effectiveTimeoutSec: 0,
+        timeoutConfigured: false,
+        timeoutSource: "heartbeat_daily_cap_gate",
+        timeoutFired: false,
+      },
+    });
+    if (!cancelled) return null;
+
+    await setWakeupStatus(run.wakeupRequestId, "skipped", {
+      finishedAt: now,
+      error: reason,
+    });
+
+    await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: reason,
+      payload: {
+        reason: dailyCapBlock.reason,
+        observed: dailyCapBlock.observed,
+        limit: dailyCapBlock.limit,
+      },
+    });
+
+    await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true });
+
+    return cancelled;
+  }
+
+  async function hasActionableTimerWork(agent: typeof agents.$inferSelect) {
+    const row = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, agent.companyId),
+          eq(issues.assigneeAgentId, agent.id),
+          isNull(issues.assigneeUserId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(row);
+  }
+
+  async function markTimerHeartbeatChecked(agentId: string, source: WakeupOptions["source"]) {
+    if (source !== "timer") return;
+    await db
+      .update(agents)
+      .set({
+        lastHeartbeatAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(agents.id, agentId));
   }
 
   function parseMaxTurnContinuationPolicy(agent: typeof agents.$inferSelect): MaxTurnContinuationPolicy {
@@ -6804,6 +7424,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     if (budgetBlock) {
       await cancelRunInternal(run.id, budgetBlock.reason);
+      return null;
+    }
+
+    const dailyCapBlock = await getHeartbeatDailyCapBlock(agent, parseHeartbeatPolicy(agent), {
+      excludeRunId: run.id,
+      checkRunCap: true,
+      checkCostCap: true,
+    });
+    if (dailyCapBlock) {
+      await cancelQueuedRunForHeartbeatDailyCap(run, dailyCapBlock);
       return null;
     }
 
@@ -7183,9 +7813,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
+  function truncateAgentErrorReason(reason: string | null | undefined): string | null {
+    if (!reason) return null;
+    const trimmed = reason.trim();
+    if (!trimmed) return null;
+    return trimmed.length > 500 ? `${trimmed.slice(0, 499)}…` : trimmed;
+  }
+
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
+    failureReason?: string | null,
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -7208,6 +7846,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .update(agents)
       .set({
         status: nextStatus,
+        // Persist a human-readable reason on the agent record when it enters
+        // error so operators see it on the agent page without digging into run
+        // events; clear it whenever the agent leaves error.
+        errorReason: nextStatus === "error" ? truncateAgentErrorReason(failureReason) : null,
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
       })
@@ -7570,7 +8212,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed");
+      await finalizeAgentStatus(run.agentId, "failed", baseMessage);
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
@@ -7625,6 +8267,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function reconcileProductivityReviews(opts?: { now?: Date; companyId?: string }) {
     return productivityReviews.reconcileProductivityReviews(opts);
+  }
+
+  async function reconcileTaskWatchdogs(opts?: { companyId?: string | null; runId?: string | null }) {
+    return taskWatchdogs.reconcileTaskWatchdogs(opts);
   }
 
   async function buildRunOutputSilence(
@@ -8037,6 +8683,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       wakeCommentContext && !exposeLowTrustRaw
         ? sanitizeQuarantinedCommentForHigherTrust(wakeCommentContext)
         : wakeCommentContext;
+    const issueAncestors = issueRef
+      ? await issuesSvc.getAncestors(issueRef.id)
+      : [];
     if (continuationSummary) {
       context.paperclipContinuationSummary = {
         key: safeContinuationSummary!.key,
@@ -8082,6 +8731,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             description: issueRef.description,
           }
         : null,
+      ancestors: issueAncestors,
       wakeComment: safeWakeCommentContext,
       interaction: {
         kind: readNonEmptyString(context.interactionKind),
@@ -8121,37 +8771,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const requestedReusableExecutionWorkspaceConfig = requestedShouldReuseExisting
       ? existingExecutionWorkspace?.config ?? null
       : null;
-    const defaultEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
+    const localEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
+    const resolvedInstanceSettings = await instanceSettings.get();
     const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
-      projectPolicy: projectExecutionWorkspacePolicy,
-      issueSettings: issueExecutionWorkspaceSettings,
-      workspaceConfig: requestedReusableExecutionWorkspaceConfig,
       agentDefaultEnvironmentId: agent.defaultEnvironmentId,
-      defaultEnvironmentId: defaultEnvironment.id,
+      instanceDefaultEnvironmentId: resolvedInstanceSettings.defaultEnvironmentId ?? null,
+      localDefaultEnvironmentId: localEnvironment.id,
     });
-    // PAPA-380 / PAPA-431: when the resolver refuses silent reuse of the
-    // persisted workspace environment, also force a fresh workspace
-    // realization on the assignee's intended env. Reusing the on-disk
-    // workspace while swapping the env underneath it would mismatch the cwd's
-    // runtime expectations (e.g. an SSH-targeted worktree running on the
-    // local default driver).
-    if (environmentResolution.conflict) {
-      logger.warn(
-        {
-          runId: run.id,
-          issueId,
-          agentId: agent.id,
-          adapterType: agent.adapterType,
-          existingExecutionWorkspaceId: existingExecutionWorkspace?.id ?? null,
-          workspaceEnvironmentId: environmentResolution.conflict.workspaceEnvironmentId,
-          assigneeIntendedEnvironmentId:
-            environmentResolution.conflict.assigneeIntendedEnvironmentId,
-          assigneeIntendedSource: environmentResolution.conflict.assigneeIntendedSource,
-        },
-        "Refusing silent reuse of execution workspace whose environment does not match the assignee's intended environment; forcing fresh realization",
-      );
-    }
-    const shouldReuseExisting = requestedShouldReuseExisting && !environmentResolution.conflict;
+    const shouldReuseExisting = requestedShouldReuseExisting;
     const reusableExecutionWorkspaceConfig = shouldReuseExisting
       ? requestedReusableExecutionWorkspaceConfig
       : null;
@@ -8249,7 +8876,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const preflightEnvironment = await envOrchestrator.resolveEnvironment({
           companyId: agent.companyId,
           selectedEnvironmentId,
-          defaultEnvironmentId: defaultEnvironment.id,
+          localEnvironmentId: localEnvironment.id,
         });
         return preflightEnvironment.driver;
       },
@@ -8313,11 +8940,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
+    const selectedEnvironmentForConfig = selectedEnvironmentId === localEnvironment.id
+      ? localEnvironment
+      : selectedEnvironmentId
+        ? await environmentsSvc.getById(selectedEnvironmentId)
+        : null;
+    const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
+      db,
+      companyId: agent.companyId,
+      issueId,
+    });
+    const pushCapabilityPreflightRequired = requiresPushCapabilityPreflight({
+      adapterType: agent.adapterType,
+      issueId,
+      explicitRunScopedSkillKeys: runScopedMentionedSkillKeys,
+    });
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,
+      adapterType: agent.adapterType,
       issueId,
       heartbeatRunId: run.id,
+      environmentId: selectedEnvironmentForConfig?.id ?? null,
+      environmentEnv: selectedEnvironmentForConfig?.envVars ?? null,
       projectId: projectContext?.id ?? null,
       routineId: routineEnvContext.routineId,
       executionRunConfig,
@@ -8325,6 +8970,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       routineEnv: routineEnvContext.env,
       secretsSvc,
       trustPreset,
+      requiredScopedEnvBinding: pushCapabilityPreflightRequired
+        ? {
+            keys: [...PUSH_CAPABILITY_ENV_KEYS],
+            consumerScopes: ["agent", "project"],
+            reason: "push_write_credential_missing",
+            remediation:
+              "GitHub PR workflow requires GH_TOKEN or GITHUB_TOKEN bound at project or agent scope.",
+          }
+        : undefined,
     });
     if (secretManifest.length > 0) {
       context.paperclipSecrets = {
@@ -8333,11 +8987,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipSecrets;
     }
-    const runScopedMentionedSkillKeys = await resolveRunScopedMentionedSkillKeys({
-      db,
-      companyId: agent.companyId,
-      issueId,
-    });
     const effectiveResolvedConfig = applyRunScopedMentionedSkillKeys(
       resolvedConfig,
       runScopedMentionedSkillKeys,
@@ -8359,6 +9008,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       companyId: agent.companyId,
       heartbeatRunId: run.id,
       executionWorkspaceId: existingExecutionWorkspace?.id ?? null,
+      issueId,
     });
     const executionWorkspaceBase = {
       baseCwd: resolvedWorkspace.cwd,
@@ -8553,17 +9203,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(heartbeatRuns.id, run.id));
     }
-    // When execution is forced to Kubernetes, `selectedEnvironmentId` is already
-    // pinned to the managed k8s environment above; ignore any persisted workspace
-    // environmentId (which could point at a stale local/ssh env) so a reused
-    // workspace can never downgrade us off the sandbox.
-    const persistedEnvironmentId = isExecutionForcedToKubernetes(executionPolicy)
-      ? selectedEnvironmentId
-      : persistedExecutionWorkspace?.config?.environmentId ?? selectedEnvironmentId;
     const acquiredEnvironment = await envOrchestrator.acquireForRun({
       companyId: agent.companyId,
-      selectedEnvironmentId: persistedEnvironmentId,
-      defaultEnvironmentId: defaultEnvironment.id,
+      selectedEnvironmentId,
+      localEnvironmentId: localEnvironment.id,
       adapterType: agent.adapterType,
       issueId: issueId ?? null,
       heartbeatRunId: run.id,
@@ -8817,24 +9460,50 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .then((rows) => rows[0] ?? null);
       if (runningWithSession) run = runningWithSession;
 
+      // Pause Durability: flip to "running" ONLY if the agent is still invokable.
+      // Atomic conditional UPDATE is the sole gate (no read-then-write); 0 rows => abort.
       const runningAgent = await db
         .update(agents)
         .set({ status: "running", updatedAt: new Date() })
-        .where(eq(agents.id, agent.id))
+        .where(and(eq(agents.id, agent.id), notInArray(agents.status, [...DIRECT_NON_INVOKABLE_STATUSES])))
         .returning()
         .then((rows) => rows[0] ?? null);
 
-      if (runningAgent) {
-        publishLiveEvent({
-          companyId: runningAgent.companyId,
-          type: "agent.status",
-          payload: {
-            agentId: runningAgent.id,
-            status: runningAgent.status,
-            outcome: "running",
-          },
+      if (!runningAgent) {
+        logger.warn(
+          { agentId: agent.id, runId: run.id, previousStatus: agent.status },
+          "execution-start aborted: agent not invokable",
+        );
+        const abortReason = "Cancelled: agent not invokable at execution-start";
+        await setRunStatus(run.id, "cancelled", {
+          finishedAt: new Date(),
+          error: abortReason,
+          errorCode: "agent_not_invokable",
+          ...(agent ? {
+            resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
+              resultJson: parseObject(run.resultJson),
+              errorCode: "agent_not_invokable",
+              errorMessage: abortReason,
+            }),
+          } : {}),
         });
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+          finishedAt: new Date(),
+          error: abortReason,
+        });
+        await releaseIssueExecutionAndPromote(run);
+        return;
       }
+
+      publishLiveEvent({
+        companyId: runningAgent.companyId,
+        type: "agent.status",
+        payload: {
+          agentId: runningAgent.id,
+          status: runningAgent.status,
+          outcome: "running",
+        },
+      });
 
       const currentRun = run;
       await appendRunEvent(currentRun, seq++, {
@@ -8931,6 +9600,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionTarget,
         environmentDriver: selectedEnvironment.driver,
         leaseMetadata: activeEnvironmentLease.lease.metadata,
+      });
+      await assertPushCapabilityCheckoutValid({
+        enabled: pushCapabilityPreflightRequired && executionTarget?.kind === "local",
+        issue: issueRef
+          ? {
+              id: issueRef.id,
+              identifier: issueRef.identifier,
+            }
+          : null,
+        cwd: executionWorkspace.cwd,
       });
       const adapterEnv = Object.fromEntries(
         Object.entries(parseObject(resolvedConfig.env)).filter(
@@ -9052,6 +9731,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : undefined,
           onLog,
           onMeta: onAdapterMeta,
+          onRuntimeProgress: async (progress) => {
+            await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
+          },
           onSpawn: async (meta) => {
             await persistRunProcessMetadata(run.id, {
               pid: meta.pid,
@@ -9423,14 +10105,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(agent.id, outcome);
+      await finalizeAgentStatus(
+        agent.id,
+        outcome,
+        outcome === "succeeded" ? null : (adapterResult.errorMessage ?? null),
+      );
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
       );
       const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
-      const failureErrorCode = workspaceValidationFailure?.code ?? "adapter_failed";
+      const configurationIncompleteFailure = isConfigurationIncompleteFailure(err) ? err : null;
+      const failureErrorCode =
+        workspaceValidationFailure?.code ?? configurationIncompleteFailure?.code ?? "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -9456,7 +10144,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
           errorCode: failureErrorCode,
           errorMessage: message,
-          resultJson: workspaceValidationFailure?.resultJson ?? null,
+          resultJson: workspaceValidationFailure?.resultJson ?? configurationIncompleteFailure?.resultJson ?? null,
         }),
         stdoutExcerpt,
         stderrExcerpt,
@@ -9491,7 +10179,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
         const livenessRun = await classifyAndPersistRunLiveness(failedRun) ?? failedRun;
         await refreshContinuationSummaryForRun(livenessRun, agent);
-        if (!isWorkspaceValidationFailedRun(livenessRun)) {
+        if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {
           await finalizeIssueCommentPolicy(livenessRun, agent);
         }
         await releaseIssueExecutionAndPromote(livenessRun);
@@ -9519,22 +10207,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed");
+      await finalizeAgentStatus(agent.id, "failed", message);
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
-          const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const message = redactCurrentUserText(
+            outerErr instanceof Error ? outerErr.message : "Unknown setup failure",
+            await getCurrentUserRedactionOptions(),
+          );
+          // A missing secret/env binding is a known pre-dispatch configuration gap,
+          // not an opaque setup crash. Surface it with its own errorCode so the
+          // recovery path routes it to a human owner instead of looping retries.
+          const configurationIncompleteSetupFailure = isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
+          const setupFailureErrorCode = configurationIncompleteSetupFailure?.code ?? "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
             error: message,
-            errorCode: "setup_failed",
+            errorCode: setupFailureErrorCode,
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
-                errorCode: "setup_failed",
+                errorCode: setupFailureErrorCode,
                 errorMessage: message,
+                resultJson: configurationIncompleteSetupFailure?.resultJson ?? null,
               }),
             } : {}),
           }).catch(() => ({ run: null, updated: false as const }));
@@ -9567,7 +10264,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             const failedAgent = setupFailureAgent ?? await getAgent(run.agentId).catch(() => null);
             if (failedAgent) {
               await refreshContinuationSummaryForRun(livenessRun, failedAgent).catch(() => undefined);
-              if (!isWorkspaceValidationFailedRun(livenessRun)) {
+              if (!isWorkspaceValidationFailedRun(livenessRun) && !isConfigurationIncompleteFailedRun(livenessRun)) {
                 await finalizeIssueCommentPolicy(livenessRun, failedAgent).catch(() => undefined);
               }
             }
@@ -9577,7 +10274,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // path owned the terminal transition. If another path already finalized
           // the run, keep that terminal outcome authoritative.
           if (setupFailureWrite.updated) {
-            await finalizeAgentStatus(run.agentId, "failed").catch(() => undefined);
+            await finalizeAgentStatus(run.agentId, "failed", message).catch(() => undefined);
           }
         } finally {
           const latestRun = await getRun(run.id).catch(() => null);
@@ -9625,7 +10322,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
   }
 
-  async function releaseIssueExecutionAndPromote(run: typeof heartbeatRuns.$inferSelect) {
+  function buildConfigurationIncompleteRecoveryComment(input: {
+    latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
+  }) {
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    return (
+      "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
+      `Resolving them as a runtime failure would only produce repeated opaque setup failures.${failureSummary ?? ""} ` +
+      "Moving it to `blocked` with a source-scoped recovery action so an operator can bind the missing secret(s) before resuming."
+    );
+  }
+
+  async function releaseIssueExecutionAndPromote(
+    run: typeof heartbeatRuns.$inferSelect,
+    options: { suppressImmediateRecovery?: boolean } = {},
+  ) {
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(runContext, null);
@@ -9745,17 +10456,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // Sibling lock cleanup is already done above; only the primary issue carries
       // the recovery surface because the comment is attached to a single issue.
       if (
-        isWorkspaceValidationFailedRun(run) &&
+        (isWorkspaceValidationFailedRun(run) || isConfigurationIncompleteFailedRun(run)) &&
         (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId
       ) {
+        const configurationIncomplete = isConfigurationIncompleteFailedRun(run);
         return {
           kind: "blocked" as const,
           issue,
           previousStatus: issue.status,
-          comment: buildWorkspaceValidationRecoveryComment({ latestRun: run }),
-          recoveryCause: WORKSPACE_VALIDATION_RECOVERY_CAUSE,
+          comment: configurationIncomplete
+            ? buildConfigurationIncompleteRecoveryComment({ latestRun: run })
+            : buildWorkspaceValidationRecoveryComment({ latestRun: run }),
+          recoveryCause: configurationIncomplete
+            ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+            : WORKSPACE_VALIDATION_RECOVERY_CAUSE,
         };
       }
 
@@ -10007,6 +10723,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!issueNeedsImmediateRecovery) {
         return { kind: "released" as const };
       }
+      if (options.suppressImmediateRecovery) {
+        return { kind: "released" as const };
+      }
 
       const existingExecutionPath = await tx
         .select({ id: heartbeatRuns.id })
@@ -10041,21 +10760,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         !recoveryAgentInvokable ||
         !recoveryAgent ||
         isWorkspaceValidationFailedRun(run) ||
+        isConfigurationIncompleteFailedRun(run) ||
         didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
       if (shouldBlockImmediately) {
         const workspaceValidationFailure = isWorkspaceValidationFailedRun(run);
+        const configurationIncompleteFailure = isConfigurationIncompleteFailedRun(run);
         const comment = workspaceValidationFailure
           ? buildWorkspaceValidationRecoveryComment({ latestRun: run })
-          : buildImmediateExecutionPathRecoveryComment({
-              status: issue.status as "todo" | "in_progress",
-              latestRun: run,
-            });
+          : configurationIncompleteFailure
+            ? buildConfigurationIncompleteRecoveryComment({ latestRun: run })
+            : buildImmediateExecutionPathRecoveryComment({
+                status: issue.status as "todo" | "in_progress",
+                latestRun: run,
+              });
         return {
           kind: "blocked" as const,
           issue,
           previousStatus: issue.status,
           comment,
-          recoveryCause: workspaceValidationFailure ? WORKSPACE_VALIDATION_RECOVERY_CAUSE : undefined,
+          recoveryCause: workspaceValidationFailure
+            ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
+            : configurationIncompleteFailure
+              ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+              : undefined,
         };
       }
 
@@ -10141,7 +10868,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         recoveryCause:
           promotionResult.recoveryCause === WORKSPACE_VALIDATION_RECOVERY_CAUSE
             ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
-            : undefined,
+            : promotionResult.recoveryCause === CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+              ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+              : undefined,
       });
       return;
     }
@@ -10217,6 +10946,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         idempotencyKey: opts.idempotencyKey ?? null,
         finishedAt: new Date(),
         ...patch,
+      });
+    };
+    const writeSkippedHeartbeatRequest = async (skipReason: string, details: Record<string, unknown>) => {
+      await writeSkippedRequest(skipReason, {
+        payload: {
+          ...(payload ?? {}),
+          heartbeatSkip: details,
+        },
       });
     };
 
@@ -10329,6 +11066,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
+      return null;
+    }
+
+    const genericTimerWake =
+      source === "timer" &&
+      !issueId &&
+      !wakeCommentId &&
+      !readNonEmptyString(enrichedContextSnapshot.taskId) &&
+      !readNonEmptyString(enrichedContextSnapshot.taskKey);
+    if (policy.skipTimerWhenNoActionableWork && genericTimerWake && !(await hasActionableTimerWork(agent))) {
+      await writeSkippedHeartbeatRequest("heartbeat.timer.no_actionable_work", {
+        reason: "No assigned todo or in_progress issue requires this agent before timer adapter invocation.",
+      });
+      await markTimerHeartbeatChecked(agentId, source);
       return null;
     }
 
@@ -10805,6 +11556,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
 
+        const dailyCapBlock = await getHeartbeatDailyCapBlock(agent, policy, {}, tx);
+        if (dailyCapBlock) {
+          const now = new Date();
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: dailyCapBlock.reason,
+            payload: {
+              ...(payload ?? {}),
+              heartbeatSkip: {
+                reason: "Per-agent heartbeat daily cap reached before adapter invocation.",
+                observed: dailyCapBlock.observed,
+                limit: dailyCapBlock.limit,
+              },
+            },
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: now,
+          });
+          if (source === "timer") {
+            await tx
+              .update(agents)
+              .set({
+                lastHeartbeatAt: now,
+                updatedAt: now,
+              })
+              .where(eq(agents.id, agentId));
+          }
+          return { kind: "skipped" as const };
+        }
+
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -10939,46 +11725,92 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return mergedRun;
     }
 
-    const wakeupRequest = await db
-      .insert(agentWakeupRequests)
-      .values({
-        companyId: agent.companyId,
-        agentId,
-        source,
-        triggerDetail,
-        reason,
-        payload,
-        status: "queued",
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
-      })
-      .returning()
-      .then((rows) => rows[0]);
+    const queueOutcome = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
+      );
 
-    const newRun = await db
-      .insert(heartbeatRuns)
-      .values({
-        companyId: agent.companyId,
-        agentId,
-        invocationSource: source,
-        triggerDetail,
-        status: "queued",
-        wakeupRequestId: wakeupRequest.id,
-        contextSnapshot: enrichedContextSnapshot,
-        sessionIdBefore: sessionBefore,
-        continuationAttempt,
-      })
-      .returning()
-      .then((rows) => rows[0]);
+      const dailyCapBlock = await getHeartbeatDailyCapBlock(agent, policy, {}, tx);
+      if (dailyCapBlock) {
+        const now = new Date();
+        await tx.insert(agentWakeupRequests).values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason: dailyCapBlock.reason,
+          payload: {
+            ...(payload ?? {}),
+            heartbeatSkip: {
+              reason: "Per-agent heartbeat daily cap reached before adapter invocation.",
+              observed: dailyCapBlock.observed,
+              limit: dailyCapBlock.limit,
+            },
+          },
+          status: "skipped",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+          finishedAt: now,
+        });
+        if (source === "timer") {
+          await tx
+            .update(agents)
+            .set({
+              lastHeartbeatAt: now,
+              updatedAt: now,
+            })
+            .where(eq(agents.id, agentId));
+        }
+        return { kind: "skipped" as const };
+      }
 
-    await db
-      .update(agentWakeupRequests)
-      .set({
-        runId: newRun.id,
-        updatedAt: new Date(),
-      })
-      .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason,
+          payload,
+          status: "queued",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const newRun = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          invocationSource: source,
+          triggerDetail,
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: enrichedContextSnapshot,
+          sessionIdBefore: sessionBefore,
+          continuationAttempt,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          runId: newRun.id,
+          updatedAt: new Date(),
+        })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      return { kind: "queued" as const, run: newRun };
+    });
+
+    if (queueOutcome.kind === "skipped") return null;
+    const newRun = queueOutcome.run;
 
     publishLiveEvent({
       companyId: newRun.companyId,
@@ -11167,7 +11999,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
-  async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause") {
+  async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause", errorCode = "cancelled") {
     const agent = await getAgent(agentId);
     const runs = await db
       .select()
@@ -11178,11 +12010,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
         error: reason,
-        errorCode: "cancelled",
+        errorCode,
         ...(agent ? {
           resultJson: mergeRunStopMetadataForAgent(agent, "cancelled", {
             resultJson: parseObject(run.resultJson),
-            errorCode: "cancelled",
+            errorCode,
             errorMessage: reason,
           }),
         } : {}),
@@ -11288,11 +12120,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   return {
-    list: async (companyId: string, agentId?: string, limit?: number) => {
+    list: async (
+      companyId: string,
+      agentId?: string,
+      limit?: number,
+      options: { summary?: boolean } = {},
+    ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
+      const summary = options.summary === true;
       const query = db
         .select(
-          safeForLegacyEncoding
+          summary
+            ? {
+                ...heartbeatRunSummaryListColumns,
+                ...heartbeatRunListContextColumns,
+              }
+            : safeForLegacyEncoding
             ? {
                 ...heartbeatRunListColumns,
                 error: sql<string | null>`NULL`.as("error"),
@@ -11353,7 +12196,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             wakeSource: contextWakeSource,
             wakeTriggerDetail: contextWakeTriggerDetail,
           }),
-          resultJson: safeForLegacyEncoding
+          resultJson: safeForLegacyEncoding || summary
             ? null
             : summarizeHeartbeatRunListResultJson({
                 summary: resultSummary,
@@ -11369,6 +12212,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     getRun,
+
+    decorateActiveRunStatus: decorateHeartbeatRunRuntimeStatus,
+    recordRuntimeProgress: recordCurrentHeartbeatRunRuntimeProgress,
+    sweepExpiredRuntimeStatuses: sweepExpiredHeartbeatRunRuntimeStatuses,
 
     getRunLogAccess,
 
@@ -11554,6 +12401,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     reconcileProductivityReviews,
 
+    reconcileTaskWatchdogs,
+
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
@@ -11605,7 +12454,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
 
-    cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason),
+    /**
+     * Pause-only. Emits errorCode "agent_paused" unconditionally; its sole caller is the
+     * agent pause route. For non-pause cancellations use cancelRun, or call the internal
+     * cancelActiveForAgentInternal(agentId, reason, errorCode) with an explicit errorCode.
+     */
+    cancelActiveForAgent: (agentId: string, reason?: string) => cancelActiveForAgentInternal(agentId, reason, "agent_paused"),
 
     cancelInvocationsForAgents: (agentIds: string[], reason: string) =>
       cancelInvocationsForAgentsInternal(agentIds, reason),

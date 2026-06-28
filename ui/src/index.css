@@ -118,6 +118,43 @@
   --agent-9b: #1f4ed4;
   --agent-10a: #f2d95f;
   --agent-10b: #4fbcba;
+
+  /* Status colors — one base hue per status, consumed by the agent / task
+     status chips and the task status icons. Mode-independent: the `.status-chip`,
+     `.status-fill` and inline icon helpers derive the light vs dark
+     fill/text/border from these via color-mix, so a single hue covers both
+     modes. Values mirror the PAP-75 brand palette (gray inert, blue liveness,
+     amber queued, violet review, green done, red blocked). */
+  --status-agent-idle: #a8aeb2;
+  --status-agent-running: #2563eb;
+  --status-agent-paused: #f59e0b;
+  --status-agent-error: #dc2626;
+  --status-task-backlog: #a8aeb2;
+  --status-task-todo: #f59e0b;
+  --status-task-in_progress: #2563eb;
+  --status-task-in_review: #7c3aed;
+  --status-task-done: #22c55e;
+  --status-task-blocked: #dc2626;
+  --status-task-cancelled: #a8aeb2;
+
+  /* Task status ICON hues (PAP-238 3b) — AA-tuned (every glyph ≥ 3:1 against
+     its surface, WCAG 2.1 AA, both modes). Distinct from the
+     `--status-task-*` chip base hues: a status chip carries its own bg/text
+     tint, but a bare glyph sitting next to text on the page needs a stronger
+     hue to clear 3:1. Where the chip base already passes (blue liveness, red
+     blocked, light violet review) the icon var simply re-points at it; the
+     gray / amber / green statuses are pinned to the board-approved AA hexes.
+     `in_queue` is the BLOCKED shape recoloured to the in_progress blue
+     (replaces the bespoke teal "covered" state). Light values here; the
+     `.dark` block below overrides the four that need a mode-specific hue. */
+  --status-task-icon-backlog: #52585d;   /* gray darkened — 7.21:1 on paper */
+  --status-task-icon-todo: #cc7a00;       /* amber darkened — clears 3:1 */
+  --status-task-icon-in_progress: var(--status-task-in_progress); /* #2563eb both modes */
+  --status-task-icon-in_review: var(--status-task-in_review);     /* #7c3aed (light) */
+  --status-task-icon-done: #16a34a;       /* green darkened — clears 3:1 */
+  --status-task-icon-blocked: var(--status-task-blocked);         /* #dc2626 both modes */
+  --status-task-icon-cancelled: #52585d;
+  --status-task-icon-in_queue: var(--status-task-in_progress);    /* blocked shape, blue */
 }
 
 .dark {
@@ -169,6 +206,15 @@
   --paperclip-doc-annotation-highlight-focused: #ca8a04;
   --paperclip-doc-annotation-highlight-stale: #854d0e;
   --paperclip-doc-annotation-highlight-resolved: #713f12;
+
+  /* Dark-mode AA overrides for the status-icon hues that need a mode-specific
+     value (PAP-238). in_progress / blocked stay identical (same blue / red both
+     modes) and in_queue tracks in_progress, so they need no override. */
+  --status-task-icon-backlog: #9a958a;
+  --status-task-icon-todo: #fbbf24;
+  --status-task-icon-in_review: #9474f0;  /* deeper than violet-400, reads purple */
+  --status-task-icon-done: #34d06f;
+  --status-task-icon-cancelled: #9a958a;
 }
 
 ::highlight(paperclip-doc-annotation-open) {
@@ -1097,6 +1143,13 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   white-space: nowrap;
 }
 
+/* External object URL decorations follow the same pattern: the host renders
+   the icon prefix, the link text is left untouched (Postel's Law). */
+.paperclip-markdown-external-ref {
+  display: inline;
+  white-space: nowrap;
+}
+
 .dark .paperclip-markdown a {
   color: color-mix(in oklab, var(--foreground) 80%, #58a6ff 20%);
 }
@@ -1206,6 +1259,25 @@ span.paperclip-project-mention-chip {
   white-space: nowrap;
 }
 
+/* Touch target floor: WCAG 2.5.5 expects ≥24px on coarse pointers. The base
+   chip is 22px; bump it on touch viewports without disturbing inline metrics. */
+@media (pointer: coarse) {
+  a.paperclip-mention-chip,
+  a.paperclip-project-mention-chip,
+  span.paperclip-mention-chip,
+  span.paperclip-project-mention-chip {
+    min-height: 24px;
+  }
+}
+
+/* External object pills: variant marker the host renders for known-resolved
+   external URLs. Inline status icon is rendered by ExternalObjectStatusIcon. */
+a.paperclip-mention-chip[data-mention-kind="external-object"],
+span.paperclip-mention-chip[data-mention-kind="external-object"] {
+  /* Inherit base chip styling; status colour comes from inline classes so the
+     host can vary tone per category without defining a CSS variant per state. */
+}
+
 /* When the identifier inside a chip is backtick-wrapped in markdown, strip the
    inline-code monospace/gray styling so the pill label reads cleanly. */
 .paperclip-markdown a.paperclip-mention-chip code,
@@ -1236,4 +1308,25 @@ span.paperclip-project-mention-chip {
 [class*="_toolbarButtonDropdownContainer_"],
 [class*="_toolbarNodeKindSelectContainer_"] {
   z-index: 81 !important;
+}
+
+/* Status chip/fill helpers.
+   Each consumer sets a local `--sc` to the status' base hue (e.g.
+   `--sc: var(--status-task-in_progress)`); these rules derive the rendered
+   fill / text / border from it. `.status-chip` is the bordered chip (agent +
+   task chips); `.status-fill` a solid swatch (heartbeat capsule). Light mixes
+   the hue toward white for a soft fill; dark layers the hue at low alpha so it
+   reads on dark surfaces. A single hue covers both modes. */
+.status-chip {
+  background-color: color-mix(in srgb, var(--sc) 15%, white);
+  color: color-mix(in srgb, var(--sc) 82%, black);
+  border-color: var(--sc);
+}
+.dark .status-chip {
+  background-color: color-mix(in srgb, var(--sc) 22%, transparent);
+  color: color-mix(in srgb, var(--sc) 80%, white);
+  border-color: color-mix(in srgb, var(--sc) 48%, transparent);
+}
+.status-fill {
+  background-color: var(--sc);
 }

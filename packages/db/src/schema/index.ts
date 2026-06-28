@@ -32,11 +32,24 @@ export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
 export { issues } from "./issues.js";
+export { issueWatchdogs } from "./issue_watchdogs.js";
 export { issuePlanDecompositions } from "./issue_plan_decompositions.js";
 export { issueRecoveryActions } from "./issue_recovery_actions.js";
 export { issueReferenceMentions } from "./issue_reference_mentions.js";
+export { externalObjects } from "./external_objects.js";
+export { externalObjectMentions } from "./external_object_mentions.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";
+export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
+export {
+  pipelineCases,
+  pipelineCaseIssueLinks,
+  pipelineCaseBlockers,
+  pipelineDocuments,
+  pipelineCaseDocuments,
+  pipelineAutomationExecutions,
+} from "./pipeline_cases.js";
+export { pipelineCaseEvents } from "./pipeline_case_events.js";
 export { issueWorkProducts } from "./issue_work_products.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
@@ -56,6 +69,7 @@ export { issueAttachments } from "./issue_attachments.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
 export { issueDocuments } from "./issue_documents.js";
+export { routineDocuments } from "./routine_documents.js";
 export { documentAnnotationThreads } from "./document_annotation_threads.js";
 export { documentAnnotationComments } from "./document_annotation_comments.js";
 export { documentAnnotationAnchorSnapshots } from "./document_annotation_anchor_snapshots.js";

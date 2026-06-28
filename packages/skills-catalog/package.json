@@ -14,6 +14,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./package.json": "./package.json",
     "./types": "./src/types.ts",
     "./catalog.json": "./generated/catalog.json"
   },
@@ -24,6 +25,7 @@
         "types": "./dist/src/index.d.ts",
         "import": "./dist/src/index.js"
       },
+      "./package.json": "./package.json",
       "./types": {
         "types": "./dist/src/types.d.ts",
         "import": "./dist/src/types.js"

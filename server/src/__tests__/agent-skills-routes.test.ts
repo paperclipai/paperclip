@@ -51,6 +51,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
 const mockSecretService = vi.hoisted(() => ({
   resolveAdapterConfigForRuntime: vi.fn(),
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
+  syncEnvBindingsForTarget: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -96,6 +97,10 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
 
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => mockSecretService,
+}));
+
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: vi.fn(() => mockAdapter),
   findActiveServerAdapter: vi.fn(() => mockAdapter),
@@ -127,6 +132,10 @@ function registerModuleMocks() {
     secretService: () => mockSecretService,
     syncInstructionsBundleConfigFromFilePath: mockSyncInstructionsBundleConfigFromFilePath,
     workspaceOperationService: () => mockWorkspaceOperationService,
+  }));
+
+  vi.doMock("../services/secrets.js", () => ({
+    secretService: () => mockSecretService,
   }));
 
   vi.doMock("../adapters/index.js", () => ({
@@ -249,13 +258,12 @@ describe.sequential("agent skill routes", () => {
       agent: makeAgent("claude_local"),
     });
     mockSecretService.resolveAdapterConfigForRuntime.mockResolvedValue({ config: { env: {} } });
+    mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([
       {
         key: "paperclipai/paperclip/paperclip",
         runtimeName: "paperclip",
         source: "/tmp/paperclip",
-        required: true,
-        requiredReason: "required",
       },
     ]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(

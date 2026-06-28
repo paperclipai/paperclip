@@ -3058,7 +3058,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const normalizedAdapterConfig = await secrets.normalizeAdapterConfigForPersistence(
       companyId,
       nextAdapterConfig,
-      { strictMode: strictSecretsMode },
+      { strictMode: strictSecretsMode, adapterType: effectiveAdapterType },
     );
     await assertImportAdapterConfigConstraints(effectiveAdapterType, normalizedAdapterConfig);
     return {

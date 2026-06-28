@@ -19,7 +19,11 @@ import {
 import { trackSkillImported } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, agentService, companySkillService, logActivity } from "../services/index.js";
-import { getCatalogSkillOrThrow, listCatalogSkills, readCatalogSkillFile } from "../services/skills-catalog.js";
+import {
+  getCatalogSkillOrThrow,
+  listCatalogSkillsOrEmpty,
+  readCatalogSkillFile,
+} from "../services/skills-catalog.js";
 import { forbidden } from "../errors.js";
 import { assertAuthenticated, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -38,9 +42,9 @@ export function companySkillRoutes(db: Db) {
   const access = accessService(db);
   const svc = companySkillService(db);
 
-  function canCreateAgents(agent: { permissions: Record<string, unknown> | null | undefined }) {
-    if (!agent.permissions || typeof agent.permissions !== "object") return false;
-    return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  function canCreateSkills(agent: { permissions: Record<string, unknown> | null | undefined }) {
+    if (!agent.permissions || typeof agent.permissions !== "object") return true;
+    return (agent.permissions as Record<string, unknown>).canCreateSkills !== false;
   }
 
   function asString(value: unknown): string | null {
@@ -90,9 +94,9 @@ export function companySkillRoutes(db: Db) {
 
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-      const allowed = await access.canUser(companyId, req.actor.userId, "agents:create");
+      const allowed = await access.canUser(companyId, req.actor.userId, "skills:create");
       if (!allowed) {
-        throw forbidden("Missing permission: agents:create");
+        throw forbidden("Missing permission: skills:create");
       }
       return;
     }
@@ -106,12 +110,16 @@ export function companySkillRoutes(db: Db) {
       throw forbidden("Agent key cannot access another company");
     }
 
-    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "agents:create");
-    if (allowedByGrant || canCreateAgents(actorAgent)) {
+    if (canCreateSkills(actorAgent)) {
       return;
     }
 
-    throw forbidden("Missing permission: can create agents");
+    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "skills:create");
+    if (allowedByGrant) {
+      return;
+    }
+
+    throw forbidden("Missing permission: skills:create");
   }
 
   router.get("/skills/catalog", async (req, res) => {
@@ -121,7 +129,7 @@ export function companySkillRoutes(db: Db) {
       category: firstQueryString(req.query.category),
       q: firstQueryString(req.query.q),
     });
-    res.json(listCatalogSkills(query));
+    res.json(listCatalogSkillsOrEmpty(query));
   });
 
   router.get("/skills/catalog/:catalogId/files", async (req, res) => {
@@ -438,6 +446,7 @@ export function companySkillRoutes(db: Db) {
         entityId: result.id,
         details: {
           slug: result.slug,
+          categories: result.categories,
           sharingScope: result.sharingScope,
         },
       });

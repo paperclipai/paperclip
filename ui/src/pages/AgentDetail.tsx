@@ -1640,6 +1640,7 @@ function ConfigurationTab({
   }, [onSavingChange, isConfigSaving]);
 
   const canCreateAgents = Boolean(agent.permissions?.canCreateAgents);
+  const canCreateSkills = agent.permissions?.canCreateSkills !== false;
   const canAssignTasks = Boolean(agent.access?.canAssignTasks);
   const taskAssignSource = agent.access?.taskAssignSource ?? "none";
   const taskAssignLocked = agent.role === "ceo" || canCreateAgents;
@@ -1659,7 +1660,7 @@ function ConfigurationTab({
       <AgentConfigForm
         mode="edit"
         agent={agent}
-        onSave={(patch) => updateAgent.mutate(patch)}
+        onSave={(patch) => updateAgent.mutateAsync(patch)}
         isSaving={isConfigSaving}
         adapterModels={adapterModels}
         onDirtyChange={onDirtyChange}
@@ -1687,6 +1688,7 @@ function ConfigurationTab({
         onChange={(nextPermissions) =>
           updatePermissions.mutate({
             canCreateAgents,
+            canCreateSkills,
             canAssignTasks,
             ...buildPermissionsForTrustPreset(nextPermissions, nextPermissions.trustPreset === "low_trust_review" ? "low_trust_review" : "standard"),
           })
@@ -1700,7 +1702,7 @@ function ConfigurationTab({
             <div className="space-y-1">
               <div>Can create new agents</div>
               <p className="text-xs text-muted-foreground">
-                Lets this agent create or hire agents and implicitly assign tasks.
+                Lets this agent create or hire agents. This also grants task assignment authority.
               </p>
             </div>
             <ToggleSwitch
@@ -1708,7 +1710,27 @@ function ConfigurationTab({
               onCheckedChange={() =>
                 updatePermissions.mutate({
                   canCreateAgents: !canCreateAgents,
+                  canCreateSkills,
                   canAssignTasks: !canCreateAgents ? true : canAssignTasks,
+                })
+              }
+              disabled={updatePermissions.isPending}
+            />
+          </div>
+          <div className="flex items-center justify-between gap-4 text-sm">
+            <div className="space-y-1">
+              <div>Can create/import skills</div>
+              <p className="text-xs text-muted-foreground">
+                Lets this agent install, import, create, and scan company skills without creating agents.
+              </p>
+            </div>
+            <ToggleSwitch
+              checked={canCreateSkills}
+              onCheckedChange={() =>
+                updatePermissions.mutate({
+                  canCreateAgents,
+                  canCreateSkills: !canCreateSkills,
+                  canAssignTasks,
                 })
               }
               disabled={updatePermissions.isPending}
@@ -1726,6 +1748,7 @@ function ConfigurationTab({
               onCheckedChange={() =>
                 updatePermissions.mutate({
                   canCreateAgents,
+                  canCreateSkills,
                   canAssignTasks: !canAssignTasks,
                 })
               }
@@ -2643,42 +2666,19 @@ export function AgentSkillsTab({
   );
   const optionalSkillRows = useMemo<SkillRow[]>(
     () =>
-      (companySkills ?? [])
-        .filter((skill) => !adapterEntryByKey.get(skill.key)?.required)
-        .map((skill) => ({
-          id: skill.id,
-          key: skill.key,
-          name: skill.name,
-          description: skill.description,
-          detail: adapterEntryByKey.get(skill.key)?.detail ?? null,
-          locationLabel: adapterEntryByKey.get(skill.key)?.locationLabel ?? null,
-          originLabel: adapterEntryByKey.get(skill.key)?.originLabel ?? null,
-          linkTo: `/skills/${skill.id}`,
-          readOnly: false,
-          adapterEntry: adapterEntryByKey.get(skill.key) ?? null,
-        })),
+      (companySkills ?? []).map((skill) => ({
+        id: skill.id,
+        key: skill.key,
+        name: skill.name,
+        description: skill.description,
+        detail: adapterEntryByKey.get(skill.key)?.detail ?? null,
+        locationLabel: adapterEntryByKey.get(skill.key)?.locationLabel ?? null,
+        originLabel: adapterEntryByKey.get(skill.key)?.originLabel ?? null,
+        linkTo: `/skills/${skill.id}`,
+        readOnly: false,
+        adapterEntry: adapterEntryByKey.get(skill.key) ?? null,
+      })),
     [adapterEntryByKey, companySkills],
-  );
-  const requiredSkillRows = useMemo<SkillRow[]>(
-    () =>
-      (skillSnapshot?.entries ?? [])
-        .filter((entry) => entry.required)
-        .map((entry) => {
-          const companySkill = companySkillByKey.get(entry.key);
-          return {
-            id: companySkill?.id ?? `required:${entry.key}`,
-            key: entry.key,
-            name: companySkill?.name ?? entry.key,
-            description: companySkill?.description ?? null,
-            detail: entry.detail ?? null,
-            locationLabel: entry.locationLabel ?? null,
-            originLabel: entry.originLabel ?? null,
-            linkTo: companySkill ? `/skills/${companySkill.id}` : null,
-            readOnly: false,
-            adapterEntry: entry,
-          };
-        }),
-    [companySkillByKey, skillSnapshot],
   );
   const unmanagedSkillRows = useMemo<SkillRow[]>(
     () =>
@@ -2780,8 +2780,6 @@ export function AgentSkillsTab({
         <>
           {(() => {
             const renderSkillRow = (skill: SkillRow) => {
-              const adapterEntry = skill.adapterEntry ?? adapterEntryByKey.get(skill.key);
-              const required = Boolean(adapterEntry?.required);
               const summaryText = resolveSkillSummaryText(skill, { fallbackKey: true });
               const rowClassName = cn(
                 "flex items-start gap-3 border-b border-border px-3 py-3 text-sm last:border-b-0",
@@ -2828,8 +2826,8 @@ export function AgentSkillsTab({
                 );
               }
 
-              const checked = required || skillDraft.includes(skill.key);
-              const disabled = required || skillSnapshot?.mode === "unsupported";
+              const checked = skillDraft.includes(skill.key);
+              const disabled = skillSnapshot?.mode === "unsupported";
               const checkbox = (
                 <input
                   type="checkbox"
@@ -2847,14 +2845,7 @@ export function AgentSkillsTab({
 
               return (
                 <label key={skill.id} className={rowClassName}>
-                  {required && adapterEntry?.requiredReason ? (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span>{checkbox}</span>
-                      </TooltipTrigger>
-                      <TooltipContent side="top">{adapterEntry.requiredReason}</TooltipContent>
-                    </Tooltip>
-                  ) : skillSnapshot?.mode === "unsupported" ? (
+                  {skillSnapshot?.mode === "unsupported" ? (
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <span>{checkbox}</span>
@@ -2895,7 +2886,7 @@ export function AgentSkillsTab({
               );
             };
 
-            if (optionalSkillRows.length === 0 && requiredSkillRows.length === 0 && unmanagedSkillRows.length === 0) {
+            if (optionalSkillRows.length === 0 && unmanagedSkillRows.length === 0) {
               return (
                 <section className="border-y border-border">
                   <div className="px-3 py-6 text-sm text-muted-foreground">
@@ -2917,7 +2908,6 @@ export function AgentSkillsTab({
 
                 {renderSkillSection("Other skills", otherSkillRows)}
 
-                {renderSkillSection("Required by Paperclip", requiredSkillRows)}
 
                 {unmanagedSkillRows.length > 0 && (
                   <section className="border-y border-border">

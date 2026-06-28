@@ -4,7 +4,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import { isUuidLike, type DeploymentMode } from "@paperclipai/shared";
+import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
@@ -215,6 +215,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       agentId: key.agentId,
       companyId: key.companyId,
       keyId: key.id,
+      keyScope: normalizeAgentApiKeyScope(key.scopeConfig),
       runId: runIdHeader || undefined,
       source: "agent_key",
     };
