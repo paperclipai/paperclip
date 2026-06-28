@@ -251,18 +251,23 @@ env:
         secretKeyRef:
           name: paperclip-penstock-org-key
           key: token
+          optional: true
     - name: ANTHROPIC_API_KEY
       valueFrom:
         secretKeyRef:
           name: paperclip-penstock-org-key
           key: token
+          optional: true
     # OpenAI-compatible clients read the base URL aliases directly. Codex also
     # needs PAPERCLIP_CODEX_PROVIDERS so the adapter writes the Penstock provider
     # into the managed CODEX_HOME/config.toml before invoking the CLI.
+    # OPENAI_BASE_URL is the standard OpenAI SDK / openai-compatible alias.
     - name: OPENAI_BASE_URL
       value: "https://api.penstock.run/v1"
+    # OPENAI_API_BASE covers older openai-python-style clients.
     - name: OPENAI_API_BASE
       value: "https://api.penstock.run/v1"
+    # OPENAI_API_BASE_URL covers LangChain and adapter-specific env readers.
     - name: OPENAI_API_BASE_URL
       value: "https://api.penstock.run/v1"
     - name: OPENAI_API_KEY
@@ -270,6 +275,7 @@ env:
         secretKeyRef:
           name: paperclip-penstock-org-key
           key: token
+          optional: true
     - name: PAPERCLIP_CODEX_PROVIDERS
       value: '{"providers":{"penstock":{"name":"Penstock OpenAI gateway","base_url":"https://api.penstock.run/v1","env_key":"OPENAI_API_KEY","wire_api":"responses"}},"model_provider":"penstock"}'
 
