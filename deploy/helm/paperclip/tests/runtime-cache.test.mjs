@@ -67,48 +67,73 @@ function countMatches(value, pattern) {
   return Array.from(value.matchAll(pattern)).length;
 }
 
+function extractEnvBlock(rendered, envName) {
+  const lines = rendered.split("\n");
+  const namePattern = new RegExp(`^(\\s*)- name: ${escapeRegExp(envName)}$`);
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const match = lines[i].match(namePattern);
+    if (!match) continue;
+
+    const indentLength = match[1].length;
+    let end = lines.length;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const nextEnv = lines[j].match(/^(\s*)- name: /);
+      if (nextEnv && nextEnv[1].length <= indentLength) {
+        end = j;
+        break;
+      }
+    }
+    return `${lines.slice(i, end).join("\n")}\n`;
+  }
+
+  assert.fail(`${envName} should render`);
+}
+
 function assertValueEnv(rendered, envName, value) {
   assert.match(
-    rendered,
-    new RegExp(
-      `- name: ${escapeRegExp(envName)}\\n` +
-        `\\s+value: "?${escapeRegExp(value)}"?`,
-    ),
+    extractEnvBlock(rendered, envName),
+    new RegExp(`\\n\\s+value: ["']?${escapeRegExp(value)}["']?\\n`),
     `${envName} should render as ${value}`,
   );
 }
 
 function extractValueEnv(rendered, envName) {
-  const match = rendered.match(
-    new RegExp(
-      `- name: ${escapeRegExp(envName)}\\n` +
-        "\\s+value: (?<quote>[\"']?)(?<value>.*?)(?:\\k<quote>)\\n",
-    ),
-  );
-  assert.ok(match?.groups?.value, `${envName} should render a literal value`);
-  return match.groups.value;
+  const envBlock = extractEnvBlock(rendered, envName);
+  const match = envBlock.match(/\n\s+value: (.+)\n/);
+  assert.ok(match?.[1], `${envName} should render a literal value`);
+
+  const rawValue = match[1].trim();
+  if (
+    (rawValue.startsWith('"') && rawValue.endsWith('"')) ||
+    (rawValue.startsWith("'") && rawValue.endsWith("'"))
+  ) {
+    return rawValue.slice(1, -1);
+  }
+  return rawValue;
 }
 
 function assertPenstockOrgKeySecretEnv(rendered, envName) {
+  const envBlock = extractEnvBlock(rendered, envName);
+
+  assert.match(envBlock, /\n\s+valueFrom:\n/, `${envName} should use valueFrom`);
+  assert.match(envBlock, /\n\s+secretKeyRef:\n/, `${envName} should use secretKeyRef`);
   assert.match(
-    rendered,
-    new RegExp(
-      `- name: ${escapeRegExp(envName)}\\n` +
-        "\\s+valueFrom:\\n" +
-        "\\s+secretKeyRef:\\n" +
-        "\\s+key: token\\n" +
-        "\\s+name: paperclip-penstock-org-key",
-    ),
+    envBlock,
+    /\n\s+name: paperclip-penstock-org-key\n/,
     `${envName} should inherit the Penstock org key secret`,
+  );
+  assert.match(envBlock, /\n\s+key: token\n/, `${envName} should read the token key`);
+  assert.match(
+    envBlock,
+    /\n\s+optional: true\n/,
+    `${envName} should not block pod startup when the Penstock org key is absent`,
   );
 }
 
 function assertNoLegacyProviderSecretEnv(rendered, envName) {
-  const envBlock = rendered.match(
-    new RegExp(`- name: ${escapeRegExp(envName)}\\n(?:\\s{12,}.+\\n)+`),
-  )?.[0];
+  const envBlock = extractEnvBlock(rendered, envName);
 
-  assert.ok(envBlock, `${envName} should render`);
   assert.doesNotMatch(
     envBlock,
     /paperclip-ccrotate-serve-secrets|paperclip-ccrotate-board-token/,
@@ -121,6 +146,7 @@ function assertCodexPenstockProvider(rendered) {
   const parsed = JSON.parse(value);
 
   assert.equal(parsed.model_provider, "penstock");
+  assert.deepEqual(Object.keys(parsed.providers ?? {}), ["penstock"]);
   assert.deepEqual(parsed.providers?.penstock, {
     name: "Penstock OpenAI gateway",
     base_url: "https://api.penstock.run/v1",
