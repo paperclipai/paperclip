@@ -2048,7 +2048,17 @@ export function agentRoutes(
       res.json(await buildAgentDetail(agent, { restricted: true }));
       return;
     }
-    res.json(await buildAgentDetail(agent));
+    const baseAdapterConfig =
+      agent.adapterConfig && typeof agent.adapterConfig === "object" && !Array.isArray(agent.adapterConfig)
+        ? (agent.adapterConfig as Record<string, unknown>)
+        : {};
+    const baseRuntimeConfig = redactEventPayload(agent.runtimeConfig) ?? {};
+    const safeAgent = {
+      ...agent,
+      adapterConfig: { ...baseAdapterConfig, env: {} },
+      runtimeConfig: baseRuntimeConfig,
+    } as NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
+    res.json(await buildAgentDetail(safeAgent));
   });
 
   router.get("/agents/:id/configuration", async (req, res) => {
