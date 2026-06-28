@@ -89,6 +89,7 @@ import {
   setApprovalConfig,
   setPairedChat,
 } from "./pairing.js";
+import { agentAssigneeChange, asRecord, asString } from "./events.js";
 import { createTelegramClient } from "./telegram-client.js";
 import type {
   ApprovalConfig,
@@ -101,16 +102,6 @@ import type {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
 
 /**
  * Mask a Telegram bot token for safe display.
@@ -491,25 +482,54 @@ async function onIssueUpdated(
 ): Promise<void> {
   if (!notifyEnabled(config, "assignedToYou")) return;
   const payload = asRecord(event.payload) ?? {};
-  const change = asRecord(payload.changes) ?? {};
-  const assigneeChange = asRecord(change.assigneeUserId);
-  if (!assigneeChange) return;
-  const newAssignee = asString(assigneeChange.to);
-  if (!newAssignee) return;
+  // The issue.updated payload spreads the PATCH'd fields at the top level —
+  // there is no `changes` wrapper, so an agent (re)assignment surfaces as a
+  // top-level `assigneeAgentId`. agentAssigneeChange returns the new assignee
+  // only when assignment actually changed in this update.
+  const newAssigneeAgentId = agentAssigneeChange(payload);
+  if (!newAssigneeAgentId) return;
   // entityId is the issue UUID (for deep-links); identifier is human-readable (e.g. PROJ-12).
   const issueId = asString(event.entityId);
+  // Title/status/identifier aren't all in an assignment-only payload — fetch
+  // the issue to render a complete notification (best-effort).
+  let title = "(no title)";
+  let identifier = asString(payload.identifier) ?? issueId?.slice(0, 8) ?? "?";
+  let status = asString(payload.status);
+  if (issueId) {
+    try {
+      const issue = await ctx.issues.get(issueId, event.companyId);
+      if (issue) {
+        title = issue.title ?? title;
+        identifier = issue.identifier ?? identifier;
+        status = issue.status ?? status;
+      }
+    } catch {
+      /* best-effort — fall through with payload values */
+    }
+  }
+  // "Handed off by" = the actor who performed the assignment.
+  let handedOffBy: string | undefined;
+  if (event.actorType === "agent" && event.actorId) {
+    try {
+      const agent = await ctx.agents.get(event.actorId, event.companyId);
+      if (agent?.name) handedOffBy = agent.name;
+    } catch {
+      /* best-effort */
+    }
+  } else if (event.actorType === "user" && event.actorId) {
+    handedOffBy = event.actorId;
+  }
   await sendToCompanyChat(
     ctx,
     config,
     event.companyId,
     buildIssueAssignedMessage({
       baseUrl: config.paperclipBaseUrl ?? "http://localhost:3100",
-      identifier:
-        asString(payload.identifier) ?? issueId ?? "?",
+      identifier,
       issueId,
-      title: asString(payload.title) ?? "(no title)",
-      status: asString(payload.status),
-      fromActor: asString(payload.assignedFromAgentName),
+      title,
+      status,
+      fromActor: handedOffBy,
     }),
   );
 }
