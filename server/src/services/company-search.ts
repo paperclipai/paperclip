@@ -32,6 +32,7 @@ const FUZZY_PAIR_MEDIUM_MAX_EDITS = 1;
 const FUZZY_PAIR_SHORT_MAX_EDITS = 0;
 const FUZZY_IDENTIFIER_SIMILARITY_THRESHOLD = 0.45;
 const SNIPPET_MAX_CHARS = 240;
+const ISSUE_IDENTIFIER_QUERY_PATTERN = /^[a-z][a-z0-9]*-\d+$/i;
 export const COMPANY_SEARCH_BRANCH_FETCH_LIMIT = COMPANY_SEARCH_MAX_OFFSET + COMPANY_SEARCH_MAX_LIMIT + 1;
 
 type IssueSearchRow = {
@@ -200,6 +201,10 @@ function makeCounts(results: CompanySearchResult[]) {
 
 function scopeIncludesIssues(scope: CompanySearchScope) {
   return scope === "all" || scope === "issues" || scope === "comments" || scope === "documents";
+}
+
+function scopeAllowsIdentifierFastPath(scope: CompanySearchScope) {
+  return scope === "all" || scope === "issues";
 }
 
 function scopeIncludesAgents(scope: CompanySearchScope) {
@@ -388,6 +393,54 @@ export function companySearchService(db: Db) {
       const startsWithPattern = `${escapedQuery}%`;
       const fuzzyEnabled = normalizedQuery.length >= MIN_FUZZY_QUERY_LENGTH && !/[\\%_]/.test(normalizedQuery);
       const fuzzyTokensEnabled = fuzzyEnabled && fuzzyTokens.length > 0;
+
+      if (scopeAllowsIdentifierFastPath(scope) && ISSUE_IDENTIFIER_QUERY_PATTERN.test(normalizedQuery)) {
+        const exactIdentifierRows = await db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            title: issues.title,
+            description: issues.description,
+            status: issues.status,
+            priority: issues.priority,
+            assigneeAgentId: issues.assigneeAgentId,
+            assigneeUserId: issues.assigneeUserId,
+            projectId: issues.projectId,
+            updatedAt: issues.updatedAt,
+          })
+          .from(issues)
+          .where(and(
+            eq(issues.companyId, companyId),
+            isNull(issues.hiddenAt),
+            sql<boolean>`lower(coalesce(${issues.identifier}, '')) = ${normalizedQuery}`,
+          ))
+          .orderBy(desc(issues.updatedAt), desc(issues.id))
+          .limit(offset + limit + 1);
+
+        if (exactIdentifierRows.length > 0) {
+          const exactIssueRows: IssueSearchRow[] = exactIdentifierRows.map((row) => ({
+            ...row,
+            score: 2000,
+            matchedFields: ["identifier"],
+            commentSnippet: null,
+            commentId: null,
+            documentSnippet: null,
+            documentTitle: null,
+            documentKey: null,
+          }));
+          const paged = exactIssueRows.slice(offset, offset + limit);
+          return {
+            query: query.q,
+            normalizedQuery,
+            scope,
+            limit,
+            offset,
+            results: paged.map((row) => issueResult(row, prefix, normalizedQuery, tokens)),
+            countsByType: { ...emptyCounts, issue: exactIssueRows.length },
+            hasMore: exactIssueRows.length > offset + limit,
+          };
+        }
+      }
 
       const titlePhraseMatch = sql<boolean>`lower(${issues.title}) LIKE ${containsPattern} ESCAPE '\\'`;
       const titleStartsWith = sql<boolean>`lower(${issues.title}) LIKE ${startsWithPattern} ESCAPE '\\'`;

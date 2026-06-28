@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -149,6 +150,69 @@ describeEmbeddedPostgres("companySearchService", () => {
 
     expect(result.results[0]?.id).toBe(exactId);
     expect(result.results[0]?.matchedFields).toContain("identifier");
+  });
+
+  it("uses a fast exact identifier path on populated issue/comment/document data", async () => {
+    const companyId = await createCompany();
+    const exactId = await createIssue(companyId, {
+      identifier: "TST-9535",
+      title: "Company search latency target",
+    });
+    const noiseIssueValues: Array<typeof issues.$inferInsert> = [];
+    const noiseCommentValues: Array<typeof issueComments.$inferInsert> = [];
+    const noiseDocumentValues: Array<typeof documents.$inferInsert> = [];
+    const noiseIssueDocumentValues: Array<typeof issueDocuments.$inferInsert> = [];
+
+    for (let index = 0; index < 700; index += 1) {
+      const issueId = randomUUID();
+      const documentId = randomUUID();
+      noiseIssueValues.push({
+        id: issueId,
+        companyId,
+        identifier: `TST-${10_000 + index}`,
+        title: `Noisy search issue ${index}`,
+        description: `Long issue description with generic search latency words ${index}`,
+        status: "todo",
+        priority: "medium",
+      });
+      noiseCommentValues.push({
+        companyId,
+        issueId,
+        body: `Noisy comment body with company search words and document branch terms ${index}`,
+      });
+      noiseDocumentValues.push({
+        id: documentId,
+        companyId,
+        title: `Noisy document ${index}`,
+        latestBody: `Noisy document body with company search latency words ${index}`,
+        format: "markdown",
+      });
+      noiseIssueDocumentValues.push({
+        companyId,
+        issueId,
+        documentId,
+        key: `noise-${index}`,
+      });
+    }
+
+    await db.insert(issues).values(noiseIssueValues);
+    await db.insert(issueComments).values(noiseCommentValues);
+    await db.insert(documents).values(noiseDocumentValues);
+    await db.insert(issueDocuments).values(noiseIssueDocumentValues);
+
+    await svc.search(companyId, companySearchQuerySchema.parse({ q: "TST-9535", scope: "all", limit: "10" }));
+
+    const timings: number[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      const startedAt = performance.now();
+      const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "TST-9535", scope: "all", limit: "10" }));
+      timings.push(performance.now() - startedAt);
+      expect(result.results.map((row) => row.id)).toEqual([exactId]);
+      expect(result.results[0]?.matchedFields).toEqual(["identifier"]);
+    }
+
+    const p95 = timings.toSorted((left, right) => left - right)[Math.floor((timings.length - 1) * 0.95)] ?? Infinity;
+    expect(p95).toBeLessThan(500);
   });
 
   it("matches multiple tokens across the same issue thread and returns comment snippets", async () => {
