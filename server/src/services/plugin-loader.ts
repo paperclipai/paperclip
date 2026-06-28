@@ -51,6 +51,39 @@ import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Resolve how to invoke the npm CLI for the current platform.
+ *
+ * On Windows the npm launcher is `npm.cmd`, which `execFile` cannot spawn
+ * without a shell (it is not a PE executable) — doing so throws
+ * `spawn npm ENOENT`. Use the `.cmd` launcher and run it through the shell on
+ * Windows; on POSIX use bare `npm` with no shell (avoids shell injection).
+ */
+export function resolveNpmInvocation(
+  platform: NodeJS.Platform = os.platform(),
+): { command: string; execOptions: { shell: true } | Record<string, never> } {
+  const isWindows = platform === "win32";
+  return {
+    command: isWindows ? "npm.cmd" : "npm",
+    execOptions: isWindows ? { shell: true } : {},
+  };
+}
+
+const { command: NPM_BIN, execOptions: NPM_EXEC_OPTS } = resolveNpmInvocation();
+
+/**
+ * Build the `execArgv` that runs a worker through the tsx dev loader.
+ *
+ * Node's `--import` expects a URL; a bare Windows path (e.g. `E:\...`) is
+ * parsed as a URL with scheme `e:` and rejected with
+ * ERR_UNSUPPORTED_ESM_URL_SCHEME, crashing the worker on init. Passing a
+ * `file://` URL works on every platform.
+ */
+export function buildDevLoaderExecArgv(loaderPath: string): string[] {
+  return ["--import", pathToFileURL(loaderPath).href];
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, "../../..");
 export const BUNDLED_LOCAL_PLUGIN_ROOT = path.join(REPO_ROOT, "packages", "plugins");
@@ -1171,9 +1204,9 @@ export function pluginLoader(
         // --ignore-scripts prevents preinstall/install/postinstall hooks from
         // executing arbitrary code on the host before manifest validation.
         await execFileAsync(
-          "npm",
+          NPM_BIN,
           ["install", spec, "--prefix", targetInstallDir, "--save", "--ignore-scripts"],
-          { timeout: 120_000 }, // 2 minute timeout for npm install
+          { timeout: 120_000, ...NPM_EXEC_OPTS }, // 2 minute timeout for npm install
         );
       } catch (err) {
         throw new Error(`npm install failed for ${spec}: ${String(err)}`);
@@ -1813,9 +1846,9 @@ export function pluginLoader(
       if (existsSync(packageJsonPath)) {
         try {
           await execFileAsync(
-            "npm",
+            NPM_BIN,
             ["uninstall", plugin.packageName, "--prefix", localPluginDir, "--ignore-scripts"],
-            { timeout: 120_000 },
+            { timeout: 120_000, ...NPM_EXEC_OPTS },
           );
         } catch (err) {
           log.warn(
@@ -2165,7 +2198,7 @@ export function pluginLoader(
       // (for example @paperclipai/shared exports). Run those workers through
       // the tsx loader so first-party example plugins work in development.
       if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
-        workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
+        workerOptions.execArgv = buildDevLoaderExecArgv(DEV_TSX_LOADER_PATH);
       }
 
       await workerManager.startWorker(pluginId, workerOptions);
