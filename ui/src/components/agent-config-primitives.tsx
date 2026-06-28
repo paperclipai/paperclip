@@ -18,6 +18,7 @@ import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
 import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
 
+import { t } from "@/i18n";
 /* ---- Help text for (?) tooltips ---- */
 export const help: Record<string, string> = {
   name: "Display name for this agent.",
@@ -399,7 +400,7 @@ export function ChoosePathButton() {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Specify path manually</DialogTitle>
+            <DialogTitle>{t("agentConfigPrimitives.text.specifyPath")}</DialogTitle>
             <DialogDescription>
               Browser security blocks apps from reading full local paths via a file picker.
               Copy the absolute path and paste it into the input.
@@ -410,7 +411,7 @@ export function ChoosePathButton() {
               <p className="font-medium">macOS (Finder)</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
                 <li>Find the folder in Finder.</li>
-                <li>Hold <kbd>Option</kbd> and right-click the folder.</li>
+                <li>Hold <kbd>{t("agentConfigPrimitives.text.option")}</kbd> and right-click the folder.</li>
                 <li>Click "Copy &lt;folder name&gt; as Pathname".</li>
                 <li>Paste the result into the path input.</li>
               </ol>
@@ -422,7 +423,7 @@ export function ChoosePathButton() {
               <p className="font-medium">Windows (File Explorer)</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
                 <li>Find the folder in File Explorer.</li>
-                <li>Hold <kbd>Shift</kbd> and right-click the folder.</li>
+                <li>Hold <kbd>{t("agentConfigPrimitives.text.shift")}</kbd> and right-click the folder.</li>
                 <li>Click "Copy as path".</li>
                 <li>Paste the result into the path input.</li>
               </ol>

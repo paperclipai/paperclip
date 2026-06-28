@@ -21,6 +21,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ArrowUpDown, Check, Hexagon, Plus } from "lucide-react";
+import { t, useTranslation } from "@/i18n";
 
 type ProjectSortField = "name" | "updated" | "created" | "targetDate";
 type ProjectSortDir = "asc" | "desc";
@@ -81,8 +82,8 @@ export function Projects() {
   const [sortDir, setSortDir] = useState<ProjectSortDir>("asc");
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Projects" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("nav.items.projects") }]);
+  }, [setBreadcrumbs, t]);
 
   const { data: allProjects, isLoading, error } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
@@ -113,10 +114,10 @@ export function Projects() {
 
     return groups;
   }, [membershipsQuery.data, sortedProjects]);
-  const sortLabel = PROJECT_SORT_OPTIONS.find((option) => option.field === sortField)?.label ?? "Name";
+  const sortLabel = t("common.sort." + sortField);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Hexagon} message="Select a company to view projects." />;
+    return <EmptyState icon={Hexagon} message={t("common.selectCompany.projects")} />;
   }
 
   if (isLoading) {
@@ -157,7 +158,7 @@ export function Projects() {
                   {sortField === option.field ? (
                     <span className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Check className="h-3 w-3" />
-                      {sortDir === "asc" ? "Asc" : "Desc"}
+                      {sortDir === "asc" ? t("common.sort.asc") : t("common.sort.desc")}
                     </span>
                   ) : null}
                 </button>
@@ -176,7 +177,7 @@ export function Projects() {
       {!isLoading && projects.length === 0 && (
         <EmptyState
           icon={Hexagon}
-          message="No projects yet."
+          message={t("projects.noProjects")}
           action="Add Project"
           onAction={openNewProject}
         />
@@ -185,7 +186,7 @@ export function Projects() {
       {projects.length > 0 && (
         <div className="space-y-6">
           {([
-            ["My Projects", groupedProjects.mine],
+            [t("projects.myProjects"), groupedProjects.mine],
             ["Other Projects", groupedProjects.other],
           ] as const).map(([label, sectionProjects]) => {
             if (sectionProjects.length === 0) return null;

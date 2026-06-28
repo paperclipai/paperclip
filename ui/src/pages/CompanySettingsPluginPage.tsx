@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { useParams } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
@@ -41,7 +42,7 @@ export function CompanySettingsPluginPage() {
   useEffect(() => {
     if (!pageSlot) return;
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
+      { label: t("companySettingsPluginPage.tabs.settings"), href: "/company/settings" },
       { label: pageSlot.displayName },
     ]);
   }, [pageSlot, setBreadcrumbs]);
@@ -50,11 +51,11 @@ export function CompanySettingsPluginPage() {
     if (hasInvalidCompanyPrefix) {
       return <NotFoundPage scope="invalid_company_prefix" requestedPrefix={routeCompanyPrefix} />;
     }
-    return <div className="text-sm text-muted-foreground">Select a company to view this page.</div>;
+    return <div className="text-sm text-muted-foreground">{t("companySettingsPluginPage.text.selectCompany")}</div>;
   }
 
   if (!settingsRoutePath || isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading...</div>;
+    return <div className="text-sm text-muted-foreground">{t("companySettingsPluginPage.text.loading")}</div>;
   }
 
   if (errorMessage) {

@@ -49,6 +49,7 @@ import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
 
+import { t } from "@/i18n";
 /* ---- Mention types ---- */
 
 export interface MentionOption {
@@ -794,7 +795,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }, 100);
             return src;
           } catch (err) {
-            const message = err instanceof Error ? err.message : "Image upload failed";
+            const message = err instanceof Error ? err.message : t("markdownEditor.errors.imageUpload");
             setUploadError(message);
             throw err;
           }

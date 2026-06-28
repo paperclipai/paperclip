@@ -13,6 +13,7 @@ import {
 import { ThumbsDown, ThumbsUp } from "lucide-react";
 import { cn } from "../lib/utils";
 
+import { t } from "@/i18n";
 export function OutputFeedbackButtons({
   activeVote,
   disabled = false,
@@ -191,7 +192,7 @@ export function OutputFeedbackButtons({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Save your feedback sharing preference</DialogTitle>
+            <DialogTitle>{t("outputFeedbackButtons.text.savePreference")}</DialogTitle>
             <DialogDescription>
               Choose whether voted AI outputs can be shared with Paperclip Labs. This
               answer becomes the default for future thumbs up and thumbs down votes.
@@ -202,7 +203,7 @@ export function OutputFeedbackButtons({
               This vote is always saved locally.
             </p>
             <p>
-              Choose <span className="font-medium text-foreground">Always allow</span> to share
+              Choose <span className="font-medium text-foreground">{t("outputFeedbackButtons.text.alwaysAllow")}</span> to share
               this vote and future voted AI outputs. Choose{" "}
               <span className="font-medium text-foreground">Don't allow</span> to keep this vote
               and future votes local.

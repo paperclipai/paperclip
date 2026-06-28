@@ -15,6 +15,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { ArtifactCard } from "../components/artifacts/ArtifactCard";
 import { ArtifactGroupCard } from "../components/artifacts/ArtifactGroupCard";
 import { useSearchParams, Link } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -31,15 +32,15 @@ const SEARCH_DEBOUNCE_MS = 250;
 
 export const ARTIFACT_KIND_FILTERS: { value: ArtifactKindFilter; label: string }[] = [
   { value: "all", label: "All" },
-  { value: "image", label: "Images" },
+  { value: "image", label: t("artifacts.labelsObj.images") },
   { value: "video", label: "Videos" },
-  { value: "document", label: "Documents" },
+  { value: "document", label: t("artifacts.labelsObj.documents") },
   { value: "text", label: "Text" },
-  { value: "file", label: "Files" },
+  { value: "file", label: t("artifacts.labelsObj.files") },
 ];
 
 export const ARTIFACT_GROUP_OPTIONS: { value: ArtifactGroupBy; label: string }[] = [
-  { value: "none", label: "None" },
+  { value: "none", label: t("artifacts.labelsObj.none") },
   { value: "task", label: "Task" },
   { value: "parent_task", label: "Parent task" },
 ];
@@ -218,11 +219,11 @@ export function Artifacts() {
   useEffect(() => {
     if (viewingSelectedStack && selectedGroup) {
       setBreadcrumbs([
-        { label: "Artifacts", href: "/artifacts" },
+        { label: t("artifacts.labelsObj.artifacts"), href: "/artifacts" },
         { label: `${selectedGroup.issue.identifier} · ${selectedGroup.title}` },
       ]);
     } else {
-      setBreadcrumbs([{ label: "Artifacts" }]);
+      setBreadcrumbs([{ label: t("artifacts.labelsObj.artifacts") }]);
     }
   }, [setBreadcrumbs, viewingSelectedStack, selectedGroup]);
 
@@ -254,14 +255,14 @@ export function Artifacts() {
             value={draftQuery}
             onChange={(event) => setDraftQuery(event.currentTarget.value)}
             placeholder="Search artifacts..."
-            aria-label="Search artifacts"
+            aria-label={t("artifacts.labelsJsx.search")}
             className="h-9 pl-9 pr-9 text-sm"
           />
           {draftQuery.length > 0 ? (
             <button
               type="button"
               onClick={() => setDraftQuery("")}
-              aria-label="Clear artifact search"
+              aria-label={t("artifacts.labelsJsx.clearSearch")}
               className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
             >
               <X className="h-3.5 w-3.5" />
@@ -286,7 +287,7 @@ export function Artifacts() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuLabel>Group by</DropdownMenuLabel>
+              <DropdownMenuLabel>{t("artifacts.text.groupBy")}</DropdownMenuLabel>
               {ARTIFACT_GROUP_OPTIONS.map((option) => (
                 <DropdownMenuItem
                   key={option.value}
@@ -302,7 +303,7 @@ export function Artifacts() {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label="Filter artifacts by type">
+          <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label={t("artifacts.labelsJsx.filterByType")}>
             {ARTIFACT_KIND_FILTERS.map((filter) => (
               <button
                 key={filter.value}

@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Check, Copy, MoreHorizontal, ThumbsDown, ThumbsUp } from "lucide-react";
 
+import { t } from "@/i18n";
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
@@ -86,7 +87,7 @@ export function AgentBubbleActionRow({
         type="button"
         className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         title="Copy message"
-        aria-label="Copy message"
+        aria-label={t("agentBubbleActionRow.labelsJsx.copyMessage")}
         onClick={() => {
           void navigator.clipboard.writeText(copyText).then(() => {
             setCopied(true);
@@ -126,7 +127,7 @@ export function AgentBubbleActionRow({
             size="icon-xs"
             className="text-muted-foreground hover:text-foreground"
             title="More actions"
-            aria-label="More actions"
+            aria-label={t("agentBubbleActionRow.labelsJsx.moreActions")}
           >
             <MoreHorizontal className="h-3.5 w-3.5" />
           </Button>
@@ -243,7 +244,7 @@ export function IssueChatFeedbackButtons({
             : "text-muted-foreground hover:bg-accent hover:text-foreground",
         )}
         title="Helpful"
-        aria-label="Helpful"
+        aria-label={t("agentBubbleActionRow.labelsJsx.helpful")}
         onClick={handleThumbsUp}
       >
         <ThumbsUp className="h-3.5 w-3.5" />
@@ -260,18 +261,18 @@ export function IssueChatFeedbackButtons({
                 : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
             title="Needs work"
-            aria-label="Needs work"
+            aria-label={t("agentBubbleActionRow.labelsJsx.needsWork")}
             onClick={handleThumbsDown}
           >
             <ThumbsDown className="h-3.5 w-3.5" />
           </button>
         </PopoverTrigger>
         <PopoverContent side="top" align="start" className="w-80 p-3">
-          <div className="mb-2 text-sm font-medium">What could have been better?</div>
+          <div className="mb-2 text-sm font-medium">{t("agentBubbleActionRow.text.whatBetter")}</div>
           <Textarea
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
-            placeholder="Add a short note"
+            placeholder={t("agentBubbleActionRow.placeholders.shortNote")}
             className="min-h-20 resize-y bg-background text-sm"
             disabled={isSaving}
           />
@@ -311,16 +312,16 @@ export function IssueChatFeedbackButtons({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Save your feedback sharing preference</DialogTitle>
+            <DialogTitle>{t("agentBubbleActionRow.text.savePreference")}</DialogTitle>
             <DialogDescription>
               Choose whether voted AI outputs can be shared with Paperclip Labs. This
               answer becomes the default for future thumbs up and thumbs down votes.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm text-muted-foreground">
-            <p>This vote is always saved locally.</p>
+            <p>{t("agentBubbleActionRow.text.alwaysSavedLocally")}</p>
             <p>
-              Choose <span className="font-medium text-foreground">Always allow</span> to share
+              Choose <span className="font-medium text-foreground">{t("agentBubbleActionRow.text.alwaysAllow")}</span> to share
               this vote and future voted AI outputs. Choose{" "}
               <span className="font-medium text-foreground">Don't allow</span> to keep this vote
               and future votes local.

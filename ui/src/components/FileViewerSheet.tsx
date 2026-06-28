@@ -52,6 +52,7 @@ import type {
   WorkspaceFileSelector,
 } from "@paperclipai/shared";
 
+import { t } from "@/i18n";
 const FILE_VIEWER_LABELLED_BY_ID = "paperclip-file-viewer-title";
 const FILE_VIEWER_DESCRIBED_BY_ID = "paperclip-file-viewer-description";
 const MIN_FILE_TREE_WIDTH = 220;
@@ -148,7 +149,7 @@ export function describeDenial(code: string, fallback: string): { title: string;
   if (lower.includes("outside") || lower.includes("traversal")) {
     return {
       icon: <Ban aria-hidden="true" className="h-6 w-6 text-red-500" />,
-      title: "Path is outside the workspace",
+      title: t("fileViewerSheet.toasts.outsideWorkspace"),
       body: "The viewer can only open files that live under the issue's workspace.",
     };
   }
@@ -169,7 +170,7 @@ export function describeDenial(code: string, fallback: string): { title: string;
   if (lower.includes("too_large") || lower.includes("size")) {
     return {
       icon: <AlertTriangle aria-hidden="true" className="h-6 w-6 text-amber-500" />,
-      title: "File is too large to preview",
+      title: t("fileViewerSheet.toasts.tooLarge"),
       body: "This file exceeds the supported preview size.",
     };
   }
@@ -182,7 +183,7 @@ export function describeDenial(code: string, fallback: string): { title: string;
   }
   return {
     icon: <Ban aria-hidden="true" className="h-6 w-6 text-red-500" />,
-    title: "Can't preview this file",
+    title: t("fileViewerSheet.toasts.cantPreview"),
     body: fallback || "The viewer was unable to load this file.",
   };
 }
@@ -244,7 +245,7 @@ export function FileViewerMetadataRow({
           ) : null}
         </>
       ) : state ? (
-        <span className="h-3 w-28 rounded bg-muted animate-pulse" aria-label="Loading file details" />
+        <span className="h-3 w-28 rounded bg-muted animate-pulse" aria-label={t("fileViewerSheet.labelsJsx.loadingDetails")} />
       ) : null}
     </div>
   );
@@ -399,7 +400,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
       <div className="absolute right-3 top-3 z-20">
         <div
           role="group"
-          aria-label="Markdown preview mode"
+          aria-label={t("fileViewerSheet.labelsJsx.markdownMode")}
           className="inline-flex rounded-md border border-border bg-background/95 p-0.5 shadow-sm backdrop-blur"
         >
           <Button
@@ -459,7 +460,7 @@ function LoadingView({ elapsedMs }: { elapsedMs: number }) {
   if (elapsedMs < 400) {
     return (
       <div className="flex-1 space-y-2 p-6" aria-busy="true" aria-live="polite">
-        <span className="sr-only">Loading file preview</span>
+        <span className="sr-only">{t("fileViewerSheet.text.loadingPreview")}</span>
         {Array.from({ length: 10 }).map((_, index) => (
           <div key={index} className="h-3 rounded bg-muted animate-pulse" style={{ width: `${90 - index * 6}%` }} />
         ))}
@@ -778,7 +779,7 @@ export function FileViewerSheet({
                   size="sm"
                   onClick={() => viewer.backToFiles()}
                   className="h-7 gap-1 px-2 text-xs"
-                  aria-label="Back to files"
+                  aria-label={t("fileViewerSheet.labelsJsx.backToFiles")}
                 >
                   <ArrowLeft className="h-3.5 w-3.5" />
                   Back to files
@@ -847,7 +848,7 @@ export function FileViewerSheet({
                 size="icon-sm"
                 onClick={() => handleOpenChange(false)}
                 className="h-7 w-7"
-                aria-label="Close file viewer"
+                aria-label={t("fileViewerSheet.labelsJsx.closeViewer")}
                 title="Close"
               >
                 <X className="h-4 w-4" />
@@ -887,7 +888,7 @@ export function FileViewerSheet({
               <div
                 role="separator"
                 aria-orientation="vertical"
-                aria-label="Resize file tree"
+                aria-label={t("fileViewerSheet.labelsJsx.resizeTree")}
                 aria-valuemin={MIN_FILE_TREE_WIDTH}
                 aria-valuemax={MAX_FILE_TREE_WIDTH}
                 aria-valuenow={fileTreeWidth}

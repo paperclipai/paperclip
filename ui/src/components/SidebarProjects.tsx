@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, useLocation } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { FolderOpen, Loader2, LogOut, MoreHorizontal, Plus } from "lucide-react";
 import {
@@ -50,8 +51,8 @@ type ProjectSidebarSlot = ReturnType<typeof usePluginSlots>["slots"][number];
 
 const PROJECT_SORT_CHOICES: SidebarSectionRadioChoice[] = [
   { value: "top", label: "Top" },
-  { value: "alphabetical", label: "Alphabetical" },
-  { value: "recent", label: "Recent" },
+  { value: "alphabetical", label: t("sidebarProjects.text.alphabetical") },
+  { value: "recent", label: t("sidebarProjects.text.recent") },
 ];
 const REORDER_POINTER_MEDIA = "(hover: hover) and (pointer: fine)";
 
@@ -420,7 +421,7 @@ export function SidebarProjects() {
       menu={{
         ariaLabel: "Projects section actions",
         actions: [
-          { type: "item", label: "Browse projects", icon: FolderOpen, href: "/projects" },
+          { type: "item", label: t("sidebarProjects.text.browseProjects"), icon: FolderOpen, href: "/projects" },
           { type: "separator" },
         ],
         radioLabel: "Project sort",

@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
+import { t } from "@/i18n";
 function issueHref(identifier: string | null, issueId: string) {
   if (!identifier) return `/issues/${issueId}`;
   const prefix = identifier.split("-")[0] || "PAP";
@@ -132,9 +133,9 @@ export function InstanceExperimentalSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
-      { label: "Experimental" },
+      { label: t("instanceExperimental.tabs.settings"), href: "/company/settings" },
+      { label: t("instanceExperimental.tabs.instanceSettings"), href: "/company/settings/instance/general" },
+      { label: t("instanceExperimental.tabs.experimental") },
     ]);
   }, [setBreadcrumbs]);
 
@@ -176,7 +177,7 @@ export function InstanceExperimentalSettings() {
       if (context?.previousSettings) {
         queryClient.setQueryData(queryKeys.instance.experimentalSettings, context.previousSettings);
       }
-      setActionError(error instanceof Error ? error.message : "Failed to update experimental settings.");
+      setActionError(error instanceof Error ? error.message : t("instanceExperimental.errors.updateSettings"));
     },
   });
 
@@ -189,7 +190,7 @@ export function InstanceExperimentalSettings() {
       setPreviewDialogOpen(true);
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to preview recovery tasks.");
+      setActionError(error instanceof Error ? error.message : t("instanceExperimental.errors.previewRecovery"));
     },
   });
 
@@ -205,7 +206,7 @@ export function InstanceExperimentalSettings() {
       ]);
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to create recovery tasks.");
+      setActionError(error instanceof Error ? error.message : t("instanceExperimental.errors.createRecovery"));
     },
   });
 
@@ -217,7 +218,7 @@ export function InstanceExperimentalSettings() {
   }, [experimentalQuery.data?.issueGraphLivenessAutoRecoveryLookbackHours]);
 
   if (experimentalQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading experimental settings...</div>;
+    return <div className="text-sm text-muted-foreground">{t("instanceExperimental.features.loading")}</div>;
   }
 
   if (experimentalQuery.error) {
@@ -303,7 +304,7 @@ export function InstanceExperimentalSettings() {
         <div className="flex items-start gap-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
           <div className="space-y-1 text-sm">
-            <p className="font-medium text-foreground">Experimental features may break at any time.</p>
+            <p className="font-medium text-foreground">{t("instanceExperimental.features.warning")}</p>
             <p className="text-muted-foreground">
               These features are opt-in and come with no compatibility guarantees. They may change, break, or be
               removed without notice. Avoid relying on them for critical or production workflows.
@@ -321,7 +322,7 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Enable Environments</h2>
+            <h2 className="text-sm font-semibold">{t("instanceExperimental.features.enableEnvironments")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Show environment management in company settings and allow project and agent environment assignment
               controls.
@@ -331,7 +332,7 @@ export function InstanceExperimentalSettings() {
             checked={enableEnvironments}
             onCheckedChange={() => toggleMutation.mutate({ enableEnvironments: !enableEnvironments })}
             disabled={toggleMutation.isPending}
-            aria-label="Toggle environments experimental setting"
+            aria-label={t("instanceExperimental.aria.toggleEnvironments")}
           />
         </div>
       </section>
@@ -339,7 +340,7 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Experimental File Viewer</h2>
+            <h2 className="text-sm font-semibold">{t("instanceExperimental.features.experimentalFileViewer")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Show task detail controls for browsing and previewing workspace files relative to a task.
             </p>
@@ -352,7 +353,7 @@ export function InstanceExperimentalSettings() {
               })
             }
             disabled={toggleMutation.isPending}
-            aria-label="Toggle experimental file viewer setting"
+            aria-label={t("instanceExperimental.aria.toggleExperimentalFileViewer")}
           />
         </div>
       </section>
@@ -360,7 +361,7 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Enable External Objects</h2>
+            <h2 className="text-sm font-semibold">{t("instanceExperimental.features.enableExternalObjects")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Detect external URLs in issues and show resolved status for pull requests, tickets, and other referenced
               work objects.
@@ -370,7 +371,7 @@ export function InstanceExperimentalSettings() {
             checked={enableExternalObjects}
             onCheckedChange={() => toggleMutation.mutate({ enableExternalObjects: !enableExternalObjects })}
             disabled={toggleMutation.isPending}
-            aria-label="Toggle external objects experimental setting"
+            aria-label={t("instanceExperimental.aria.toggleExternalObjects")}
           />
         </div>
       </section>
@@ -378,7 +379,7 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Enable Isolated Workspaces</h2>
+            <h2 className="text-sm font-semibold">{t("instanceExperimental.features.enableIsolatedWorkspaces")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Show execution workspace controls in project configuration and allow isolated workspace behavior for new
               and existing task runs.
@@ -388,7 +389,7 @@ export function InstanceExperimentalSettings() {
             checked={enableIsolatedWorkspaces}
             onCheckedChange={() => toggleMutation.mutate({ enableIsolatedWorkspaces: !enableIsolatedWorkspaces })}
             disabled={toggleMutation.isPending}
-            aria-label="Toggle isolated workspaces experimental setting"
+            aria-label={t("instanceExperimental.aria.toggleIsolatedWorkspaces")}
           />
         </div>
       </section>
@@ -396,7 +397,7 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Streamlined Left Navigation Bar</h2>
+            <h2 className="text-sm font-semibold">{t("instanceExperimental.features.streamlinedLeftNav")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Reduces the maximum number of items in the left navigation bar — nests Projects under Work with a
               dedicated Projects page, and shows only active agents (max 5 recently-active) in the sidebar.
@@ -410,7 +411,7 @@ export function InstanceExperimentalSettings() {
               })
             }
             disabled={toggleMutation.isPending}
-            aria-label="Toggle streamlined left navigation experimental setting"
+            aria-label={t("instanceExperimental.aria.toggleStreamlinedLeftNav")}
           />
         </div>
       </section>
@@ -419,7 +420,7 @@ export function InstanceExperimentalSettings() {
         <section className="rounded-xl border border-border bg-card p-5">
           <div className="flex items-start justify-between gap-4">
             <div className="space-y-1.5">
-              <h2 className="text-sm font-semibold">Conference Room Chat</h2>
+              <h2 className="text-sm font-semibold">{t("instanceExperimental.features.conferenceRoomChat")}</h2>
               <p className="max-w-2xl text-sm text-muted-foreground">
                 Adds a Conference Room — one chat where you and your whole team work together — plus the live activity
                 feed and the redesigned onboarding. Also restyles task threads as chat bubbles. Turn off anytime to
@@ -434,7 +435,7 @@ export function InstanceExperimentalSettings() {
                 })
               }
               disabled={toggleMutation.isPending}
-              aria-label="Toggle conference room chat experimental setting"
+              aria-label={t("instanceExperimental.aria.toggleConferenceRoomChat")}
             />
           </div>
         </section>
@@ -443,7 +444,7 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Task Plan Decomposition Panel</h2>
+            <h2 className="text-sm font-semibold">{t("instanceExperimental.features.taskPlanDecomposition")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Show accepted-plan decomposition history on task detail pages. Intended for debugging and validating
               subtask creation behavior while the presentation is still being refined.
@@ -457,7 +458,7 @@ export function InstanceExperimentalSettings() {
               })
             }
             disabled={toggleMutation.isPending}
-            aria-label="Toggle task plan decomposition panel experimental setting"
+            aria-label={t("instanceExperimental.aria.toggleTaskPlanDecomposition")}
           />
         </div>
       </section>
@@ -465,7 +466,7 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Task Watchdogs</h2>
+            <h2 className="text-sm font-semibold">{t("instanceExperimental.features.taskWatchdogs")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Show task detail controls for configuring watchdog agents that verify stopped task subtrees and restore
               live paths when work should continue.
@@ -479,7 +480,7 @@ export function InstanceExperimentalSettings() {
               })
             }
             disabled={toggleMutation.isPending}
-            aria-label="Toggle task watchdogs experimental setting"
+            aria-label={t("instanceExperimental.aria.toggleTaskWatchdogs")}
           />
         </div>
       </section>
@@ -487,7 +488,7 @@ export function InstanceExperimentalSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Cloud Sync</h2>
+            <h2 className="text-sm font-semibold">{t("instanceExperimental.features.cloudSync")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Show local Paperclip Cloud upstream connection, preview, push, retry, and activation review surfaces.
               Saved connections and run history are preserved when this is disabled.
@@ -497,7 +498,7 @@ export function InstanceExperimentalSettings() {
             checked={enableCloudSync}
             onCheckedChange={() => toggleMutation.mutate({ enableCloudSync: !enableCloudSync })}
             disabled={toggleMutation.isPending}
-            aria-label="Toggle cloud sync experimental setting"
+            aria-label={t("instanceExperimental.aria.toggleCloudSync")}
           />
         </div>
       </section>
@@ -536,7 +537,7 @@ export function InstanceExperimentalSettings() {
             checked={autoRestartDevServerWhenIdle}
             onCheckedChange={() => toggleMutation.mutate({ autoRestartDevServerWhenIdle: !autoRestartDevServerWhenIdle })}
             disabled={toggleMutation.isPending}
-            aria-label="Toggle guarded dev-server auto-restart"
+            aria-label={t("instanceExperimental.aria.toggleGuardedDevServer")}
           />
         </div>
       </section>
@@ -561,7 +562,7 @@ export function InstanceExperimentalSettings() {
                 previewForEnable();
               }}
               disabled={recoveryActionPending}
-              aria-label="Toggle task graph liveness auto-recovery"
+              aria-label={t("instanceExperimental.aria.toggleTaskGraphLiveness")}
             />
           </div>
 

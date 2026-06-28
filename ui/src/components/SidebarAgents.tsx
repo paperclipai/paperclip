@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, NavLink, useLocation } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   MoreHorizontal,
@@ -54,8 +55,8 @@ const RECENT_AGENT_LIMIT = 5;
 
 const AGENT_SORT_CHOICES: SidebarSectionRadioChoice[] = [
   { value: "top", label: "Top" },
-  { value: "alphabetical", label: "Alphabetical" },
-  { value: "recent", label: "Recent" },
+  { value: "alphabetical", label: t("sidebarAgents.sortOptions.alphabetical") },
+  { value: "recent", label: t("sidebarAgents.sortOptions.recent") },
 ];
 
 function agentTimestamp(agent: Agent, field: "lastHeartbeatAt" | "updatedAt" | "createdAt"): number {
@@ -146,7 +147,7 @@ function SidebarAgentItem({
       <AgentIcon icon={agent.icon} className="shrink-0 h-3.5 w-3.5 text-muted-foreground" />
       <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "flex-1 truncate"}>{agent.name}</span>
       {!rail && hasInvalidOrgChain ? (
-        <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label={t("sidebarAgents.labelsJsx.invalidReporting")} />
       ) : null}
       {!rail && (agent.pauseReason === "budget" || runCount > 0) && (
         <span className="ml-auto flex items-center gap-1.5 shrink-0">
@@ -213,7 +214,7 @@ function SidebarAgentItem({
               }}
             >
               <Pencil className="size-4" />
-              <span>Edit agent</span>
+              <span>{t("sidebarAgents.text.editAgent")}</span>
             </Link>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -443,7 +444,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
 
   return (
     <SidebarSection
-      label="Agents"
+      label={t("sidebarAgents.labelsJsx.agents")}
       collapsible={{ open, onOpenChange: setOpen }}
       headerAction={{
         ariaLabel: "New agent",
@@ -453,7 +454,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
       menu={{
         ariaLabel: "Agents section actions",
         actions: [
-          { type: "item", label: "Browse agents", icon: Users, href: "/agents/all" },
+          { type: "item", label: t("sidebarAgents.sortOptions.browseAgents"), icon: Users, href: "/agents/all" },
           { type: "separator" },
         ],
         radioLabel: "Agent sort",
@@ -493,13 +494,13 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
             className="flex items-center gap-2.5 px-3 py-1.5 pointer-coarse:py-1 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
           >
             <Users className="shrink-0 h-3.5 w-3.5" />
-            <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>See all agents</span>
+            <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>{t("sidebarAgents.text.seeAllAgents")}</span>
           </Link>
         );
         return rail ? (
           <Tooltip>
             <TooltipTrigger asChild>{seeAllLink}</TooltipTrigger>
-            <TooltipContent side="right">See all agents</TooltipContent>
+            <TooltipContent side="right">{t("sidebarAgents.text.seeAllAgents")}</TooltipContent>
           </Tooltip>
         ) : (
           seeAllLink

@@ -13,6 +13,7 @@ import {
   Sparkles,
 } from "lucide-react";
 
+import { t } from "@/i18n";
 function LabSection({
   id,
   eyebrow,
@@ -236,20 +237,20 @@ export function SystemNoticeUxLab() {
           />
           <SystemNotice
             tone="danger"
-            label="System alert"
+            label={t("systemNoticeUxLab.labelsJsx.systemAlert")}
             source={{ label: "Paperclip", href: "/PAP/agents" }}
             timestamp="2026-05-04T16:48:00.000Z"
             body="Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner."
             metadata={[
               {
-                title: "Recovery owner",
+                title: t("systemNoticeUxLab.toasts.recoveryOwner"),
                 rows: [
                   {
                     kind: "issue",
                     label: "Recovery issue",
                     identifier: "PAP-3440",
                     href: "/PAP/issues/PAP-3440",
-                    title: "Successful run handoff missing disposition",
+                    title: t("systemNoticeUxLab.toasts.handoffMissing"),
                   },
                   {
                     kind: "agent",
@@ -260,7 +261,7 @@ export function SystemNoticeUxLab() {
                 ],
               },
               {
-                title: "Run evidence",
+                title: t("systemNoticeUxLab.toasts.runEvidence"),
                 rows: [
                   {
                     kind: "run",
@@ -300,15 +301,15 @@ export function SystemNoticeUxLab() {
                     <div className="flex items-start gap-2">
                       <Sparkles className="mt-1 h-4 w-4 shrink-0 text-red-600 dark:text-red-300" />
                       <div className="min-w-0">
-                        <p className="m-0 font-semibold">Successful run handoff missing</p>
+                        <p className="m-0 font-semibold">{t("systemNoticeUxLab.text.handoffMissing")}</p>
                         <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-[13px] leading-5">
                           <li>Source issue: PAP-3440</li>
                           <li>Source run: 9cdba892-c7ca-4d93-8604-4843873b127c</li>
                           <li>Recovery run: 61fdb79b-8012-4676-ac71-2971830e126a</li>
                           <li>Status before: in_progress</li>
-                          <li>Normalized cause: Run completed without disposition</li>
-                          <li>Recovery owner: CTO</li>
-                          <li>Suggested action: Reassign to recovery agent</li>
+                          <li>{t("systemNoticeUxLab.text.normalizedCause")}</li>
+                          <li>{t("systemNoticeUxLab.text.recoveryOwner")}</li>
+                          <li>{t("systemNoticeUxLab.text.suggestedAction")}</li>
                         </ul>
                       </div>
                     </div>
@@ -334,7 +335,7 @@ export function SystemNoticeUxLab() {
             <SystemNotice {...dangerCollapsed} />
             <p className="px-1 text-xs text-muted-foreground">
               Same content. The visible body is one short system sentence; reviewers expand{" "}
-              <span className="font-medium text-foreground">Details</span> only when they need run
+              <span className="font-medium text-foreground">{t("systemNoticeUxLab.text.details")}</span> only when they need run
               evidence. Tone is reinforced by the octagon icon and the &quot;System alert&quot; label,
               not just red.
             </p>
@@ -348,14 +349,14 @@ export function SystemNoticeUxLab() {
             <Layers className="h-4 w-4 text-amber-700 dark:text-amber-300" />
             Implementation notes
           </div>
-          <CardTitle className="text-lg">Handoff to engineering</CardTitle>
+          <CardTitle className="text-lg">{t("systemNoticeUxLab.text.handoffEngineering")}</CardTitle>
           <CardDescription>
             What the Phase 4 UI implementation should preserve from this design.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3 px-5 pb-5 pt-0 text-sm text-muted-foreground">
           <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3">
-            <div className="mb-1 font-medium text-foreground">Component</div>
+            <div className="mb-1 font-medium text-foreground">{t("systemNoticeUxLab.text.component")}</div>
             Use <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px]">{`<SystemNotice />`}</code>{" "}
             from <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px]">@/components/SystemNotice</code>.
             It accepts <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px]">tone</code>,{" "}
@@ -365,17 +366,17 @@ export function SystemNoticeUxLab() {
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px]">detailsDefaultOpen</code>.
           </div>
           <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3">
-            <div className="mb-1 font-medium text-foreground">Routing in IssueChatThread</div>
+            <div className="mb-1 font-medium text-foreground">{t("systemNoticeUxLab.text.routing")}</div>
             Comments where{" "}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px]">authorType === &quot;system&quot;</code>{" "}
             or{" "}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px]">presentation.kind === &quot;system_notice&quot;</code>{" "}
             should render as a SystemNotice row at full content width — never inside an{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px]">IssueChatUserMessage</code>{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px]">{t("systemNoticeUxLab.text.issueChatUserMessage")}</code>{" "}
             or assistant bubble.
           </div>
           <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3">
-            <div className="mb-1 font-medium text-foreground">Accessibility</div>
+            <div className="mb-1 font-medium text-foreground">{t("systemNoticeUxLab.text.accessibility")}</div>
             The Details button has{" "}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px]">aria-expanded</code>{" "}
             and{" "}
@@ -387,11 +388,11 @@ export function SystemNoticeUxLab() {
             equal to the visible tone label so screen readers announce tone with text.
           </div>
           <div className="rounded-2xl border border-border/70 bg-background/80 px-4 py-3">
-            <div className="mb-1 font-medium text-foreground">Legacy fallback</div>
+            <div className="mb-1 font-medium text-foreground">{t("systemNoticeUxLab.text.legacyFallback")}</div>
             Existing comments without{" "}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px]">presentation</code>{" "}
             keep rendering through the current{" "}
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px]">SuccessfulRunHandoffCommentCallout</code>{" "}
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[12px]">{t("systemNoticeUxLab.text.successfulRunHandoffCallout")}</code>{" "}
             string-detector. The new contract is opt-in for the system generators in Phase 5.
           </div>
         </CardContent>

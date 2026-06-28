@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { Link, useLocation } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { AlertTriangle, Compass } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -18,7 +19,7 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
   const { companies, selectedCompany } = useCompany();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Not Found" }]);
+    setBreadcrumbs([{ label: t("notFound.tabs.notFound") }]);
   }, [setBreadcrumbs]);
 
   const fallbackCompany = selectedCompany ?? companies[0] ?? null;
@@ -57,7 +58,7 @@ export function NotFoundPage({ scope = "global", requestedPrefix }: NotFoundPage
             </Link>
           </Button>
           <Button variant="outline" asChild>
-            <Link to="/">Go home</Link>
+            <Link to="/">{t("notFound.text.goHome")}</Link>
           </Button>
         </div>
       </div>

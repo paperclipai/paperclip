@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import {
   DndContext,
   DragOverlay,

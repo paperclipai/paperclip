@@ -3,6 +3,7 @@ import { Loader2, ShieldCheck, Terminal, TriangleAlert } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { BOOTSTRAP_FALLBACK_COMMAND } from "@/bootstrapSetup";
+import { t, useTranslation } from "@/i18n";
 import type { AuthSession } from "@paperclipai/shared";
 
 type BootstrapPendingPageProps = {
@@ -15,16 +16,15 @@ type BootstrapPendingPageProps = {
 };
 
 function CliFallback({ hasActiveInvite = false }: { hasActiveInvite?: boolean }) {
+  const { t } = useTranslation();
   return (
     <div className="mt-6 border-t border-border pt-5">
       <div className="flex items-center gap-2 text-sm font-medium">
         <Terminal className="size-4 text-muted-foreground" aria-hidden />
-        <span>Prefer to finish setup from the host?</span>
+        <span>{t("bootstrap.cliFallback.title")}</span>
       </div>
       <p className="mt-2 text-sm text-muted-foreground">
-        {hasActiveInvite
-          ? "A bootstrap invite is already active. Check your Paperclip startup logs for the first-admin URL, or run this command on the host to rotate it:"
-          : "Run this command on the host that runs Paperclip to print a one-time first-admin invite URL:"}
+        {hasActiveInvite ? t("bootstrap.cliFallback.inviteActive") : t("bootstrap.cliFallback.command")}
       </p>
       <pre className="mt-3 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 font-mono text-xs">
 {BOOTSTRAP_FALLBACK_COMMAND}
@@ -45,21 +45,24 @@ function displayIdentity(session: AuthSession) {
   return session.user.email || session.user.name || session.user.id;
 }
 
-function claimErrorCopy(error: BootstrapPendingPageProps["claimError"]) {
+function claimErrorCopy(
+  error: BootstrapPendingPageProps["claimError"],
+  t: (key: string) => string,
+): { title: string; body: string } {
   if (error?.status === 409) {
     return {
-      title: "Someone else has already claimed this instance.",
-      body: "Refresh to sign in, or ask the existing admin to invite you from Instance settings -> Access.",
+      title: t("bootstrap.error.claimedTitle"),
+      body: t("bootstrap.error.claimedBody"),
     };
   }
   if (error?.status === 401) {
     return {
-      title: "Your session expired. Sign in again to claim this instance.",
+      title: t("bootstrap.error.sessionExpiredTitle"),
       body: "",
     };
   }
   return {
-    title: "We couldn't reach the server. Try again in a moment.",
+    title: t("bootstrap.error.networkTitle"),
     body: "",
   };
 }
@@ -72,19 +75,14 @@ export function BootstrapPendingPage({
   claimError,
   onClaim,
 }: BootstrapPendingPageProps) {
+
   if (!claimAvailable) {
     return (
       <StateChrome>
-        <h1 className="text-xl font-semibold">This Paperclip is waiting on its first admin</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          This instance runs in invite-only mode. The operator must generate a one-time first-admin invite URL
-          from the host. Once you have the link, open it from this browser to finish setup.
-        </p>
+        <h1 className="text-xl font-semibold">{t("bootstrap.waiting.title")}</h1>
+        <p className="mt-2 text-sm text-muted-foreground">{t("bootstrap.waiting.body")}</p>
         <CliFallback hasActiveInvite={hasActiveInvite} />
-        <p className="mt-4 text-xs text-muted-foreground">
-          Browser-based claim is intentionally disabled in public mode so anyone on the network can't promote
-          themselves.
-        </p>
+        <p className="mt-4 text-xs text-muted-foreground">{t("bootstrap.waiting.publicNote")}</p>
       </StateChrome>
     );
   }
@@ -97,19 +95,17 @@ export function BootstrapPendingPage({
             <ShieldCheck className="size-5" aria-hidden />
           </div>
           <div>
-            <h1 className="text-xl font-semibold">You're the instance admin</h1>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Setup is complete. Taking you to onboarding to create your first company...
-            </p>
+            <h1 className="text-xl font-semibold">{t("bootstrap.success.title")}</h1>
+            <p className="mt-2 text-sm text-muted-foreground">{t("bootstrap.success.body")}</p>
           </div>
         </div>
         <div className="mt-5 flex items-center gap-3">
           <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
-          <span className="text-sm text-muted-foreground">Redirecting...</span>
+          <span className="text-sm text-muted-foreground">{t("bootstrap.success.redirecting")}</span>
         </div>
         <div className="mt-5">
           <Button asChild variant="outline">
-            <a href="/">Continue to dashboard</a>
+            <a href="/">{t("bootstrap.success.continue")}</a>
           </Button>
         </div>
       </StateChrome>
@@ -119,14 +115,11 @@ export function BootstrapPendingPage({
   if (!session) {
     return (
       <StateChrome>
-        <h1 className="text-xl font-semibold">Finish setting up this Paperclip</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          No admin has claimed this instance yet. Sign in or create your Paperclip account to become the first
-          admin from this browser.
-        </p>
+        <h1 className="text-xl font-semibold">{t("bootstrap.setup.title")}</h1>
+        <p className="mt-2 text-sm text-muted-foreground">{t("bootstrap.setup.signedOutBody")}</p>
         <div className="mt-5">
           <Button asChild>
-            <Link to="/auth?next=/">Sign in / Create account</Link>
+            <Link to="/auth?next=/">{t("bootstrap.setup.signIn")}</Link>
           </Button>
         </div>
         <CliFallback hasActiveInvite={hasActiveInvite} />
@@ -134,27 +127,25 @@ export function BootstrapPendingPage({
     );
   }
 
-  const errorCopy = claimErrorCopy(claimError);
+  const errorCopy = claimErrorCopy(claimError, t);
   const isClaiming = claimState === "claiming";
   return (
     <StateChrome>
-      <h1 className="text-xl font-semibold">Finish setting up this Paperclip</h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        No admin has claimed this instance yet. Claim it now to become the first admin and start onboarding.
-      </p>
+      <h1 className="text-xl font-semibold">{t("bootstrap.setup.title")}</h1>
+      <p className="mt-2 text-sm text-muted-foreground">{t("bootstrap.setup.signedInBody")}</p>
       <div className="mt-5 flex flex-wrap items-center gap-3">
         <Button onClick={onClaim} disabled={isClaiming}>
           {isClaiming && <Loader2 className="mr-2 size-4 animate-spin" aria-hidden />}
-          {isClaiming ? "Claiming..." : "Claim this instance"}
+          {isClaiming ? t("bootstrap.setup.claiming") : t("bootstrap.setup.claim")}
         </Button>
         <span className="text-sm text-muted-foreground">
-          Signed in as <span className="font-medium text-foreground">{displayIdentity(session)}</span>
+          {t("bootstrap.setup.signedInAs", { identity: displayIdentity(session) })}
         </span>
       </div>
       <p className="mt-3 text-xs text-muted-foreground">
-        Wrong account?{" "}
+        {t("bootstrap.setup.wrongAccount")}{" "}
         <Link to="/auth?next=/" className="underline underline-offset-2">
-          Switch account
+          {t("bootstrap.setup.switchAccount")}
         </Link>
         .
       </p>

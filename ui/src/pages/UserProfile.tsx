@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertCircle, UserRound } from "lucide-react";
 import type { UserProfileDailyPoint, UserProfileWindowStats } from "@paperclipai/shared";
 import { Link, useParams } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { userProfilesApi } from "../api/userProfiles";
 import { Avatar, AvatarFallback, AvatarImage } from "../components/ui/avatar";
 import { EmptyState } from "../components/EmptyState";
@@ -60,20 +61,20 @@ function WindowColumn({ stats }: { stats: UserProfileWindowStats }) {
       </div>
 
       <div className="grid grid-cols-2 gap-x-5 gap-y-3">
-        <Metric value={formatNumber(stats.touchedIssues)} label="Touched" />
-        <Metric value={formatNumber(stats.completedIssues)} label="Completed" />
-        <Metric value={formatNumber(stats.commentCount)} label="Comments" />
-        <Metric value={formatNumber(stats.activityCount)} label="Actions" />
+        <Metric value={formatNumber(stats.touchedIssues)} label={t("userProfile.labelsJsx.touched")} />
+        <Metric value={formatNumber(stats.completedIssues)} label={t("userProfile.labelsJsx.completed")} />
+        <Metric value={formatNumber(stats.commentCount)} label={t("userProfile.labelsJsx.comments")} />
+        <Metric value={formatNumber(stats.activityCount)} label={t("userProfile.labelsJsx.actions")} />
       </div>
 
       <div className="grid grid-cols-2 gap-x-5 gap-y-1.5 pt-3 text-xs tabular-nums text-muted-foreground">
-        <span>Tokens</span>
+        <span>{t("userProfile.text.tokens")}</span>
         <span className="text-right text-foreground">{formatTokens(tokens)}</span>
-        <span>Spend</span>
+        <span>{t("userProfile.text.spend")}</span>
         <span className="text-right text-foreground">{formatCents(stats.costCents)}</span>
-        <span>Created</span>
+        <span>{t("userProfile.text.created")}</span>
         <span className="text-right text-foreground">{formatNumber(stats.createdIssues)}</span>
-        <span>Open</span>
+        <span>{t("userProfile.text.open")}</span>
         <span className="text-right text-foreground">{formatNumber(stats.assignedOpenIssues)}</span>
       </div>
     </div>
@@ -207,7 +208,7 @@ export function UserProfile() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Users" }, { label: data?.user.name ?? userSlug }]);
+    setBreadcrumbs([{ label: t("userProfile.labelsObj.users") }, { label: data?.user.name ?? userSlug }]);
   }, [data?.user.name, setBreadcrumbs, userSlug]);
 
   const allTime = data?.stats.find((entry) => entry.key === "all");
@@ -219,7 +220,7 @@ export function UserProfile() {
       (data?.topAgents ?? []).map((row) => ({
         key: row.agentId ?? "unknown",
         label: row.agentName ?? (row.agentId ? row.agentId.slice(0, 8) : "unknown"),
-        sublabel: "Task-linked usage",
+        sublabel: t("userProfile.labelsObj.taskLinkedUsage"),
         costCents: row.costCents,
         inputTokens: row.inputTokens,
         cachedInputTokens: row.cachedInputTokens,
@@ -283,9 +284,9 @@ export function UserProfile() {
         </div>
 
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-          <HeroStat label="All-time tokens" value={formatTokens(allTimeTokens)} hint={formatCents(allTime?.costCents ?? 0) + " spent"} />
-          <HeroStat label="Completed" value={formatNumber(allTime?.completedIssues ?? 0)} hint={allTime ? `${completionRate(allTime)} rate` : undefined} />
-          <HeroStat label="Open assigned" value={formatNumber(allTime?.assignedOpenIssues ?? 0)} hint={`${formatNumber(allTime?.createdIssues ?? 0)} created`} />
+          <HeroStat label={t("userProfile.labelsJsx.allTimeTokens")} value={formatTokens(allTimeTokens)} hint={formatCents(allTime?.costCents ?? 0) + " spent"} />
+          <HeroStat label={t("userProfile.labelsJsx.completed")} value={formatNumber(allTime?.completedIssues ?? 0)} hint={allTime ? `${completionRate(allTime)} rate` : undefined} />
+          <HeroStat label={t("userProfile.labelsJsx.openAssigned")} value={formatNumber(allTime?.assignedOpenIssues ?? 0)} hint={`${formatNumber(allTime?.createdIssues ?? 0)} created`} />
           <HeroStat label="7-day actions" value={formatNumber(last7?.activityCount ?? 0)} hint={`${formatNumber(last7?.commentCount ?? 0)} comments`} />
         </div>
       </section>
@@ -299,11 +300,11 @@ export function UserProfile() {
       <div className="grid gap-10 pt-2 xl:grid-cols-2">
         <section>
           <div className="flex items-baseline justify-between gap-3 border-b border-border pb-3">
-            <h2 className="text-sm font-semibold">Recent tasks</h2>
+            <h2 className="text-sm font-semibold">{t("userProfile.text.recentTasks")}</h2>
             <span className="text-xs text-muted-foreground tabular-nums">{data.recentIssues.length}</span>
           </div>
           {data.recentIssues.length === 0 ? (
-            <div className="pt-4 text-sm text-muted-foreground">No touched tasks yet.</div>
+            <div className="pt-4 text-sm text-muted-foreground">{t("userProfile.text.noTasks")}</div>
           ) : (
             <ul className="divide-y divide-border">
               {data.recentIssues.map((issue) => (
@@ -327,11 +328,11 @@ export function UserProfile() {
 
         <section>
           <div className="flex items-baseline justify-between gap-3 border-b border-border pb-3">
-            <h2 className="text-sm font-semibold">Recent activity</h2>
+            <h2 className="text-sm font-semibold">{t("userProfile.text.recentActivity")}</h2>
             <span className="text-xs text-muted-foreground tabular-nums">{data.recentActivity.length}</span>
           </div>
           {data.recentActivity.length === 0 ? (
-            <div className="pt-4 text-sm text-muted-foreground">No direct user actions recorded yet.</div>
+            <div className="pt-4 text-sm text-muted-foreground">{t("userProfile.text.noActions")}</div>
           ) : (
             <ul className="divide-y divide-border">
               {data.recentActivity.map((event) => (

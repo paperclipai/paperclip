@@ -5,6 +5,7 @@ import Markdown, { defaultUrlTransform, type Components, type Options } from "re
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
 import { Link } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { useTheme } from "../context/ThemeContext";
 import { useOptionalCompany } from "../context/CompanyContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";

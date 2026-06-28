@@ -4,6 +4,7 @@ import type { IssueSiblingNavigation as IssueSiblingNavigationState } from "@/li
 import { createIssueDetailPath, withIssueDetailHeaderSeed } from "@/lib/issueDetailBreadcrumb";
 import { cn } from "@/lib/utils";
 import { Link } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { StatusIcon } from "./StatusIcon";
 
 type IssueSiblingNavigationProps = {

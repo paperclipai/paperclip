@@ -1,5 +1,6 @@
 import { CheckCircle2, XCircle, Clock } from "lucide-react";
 import { Link } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Identity } from "./Identity";
@@ -69,7 +70,7 @@ export function ApprovalCard({
                 </Badge>
                 {requesterAgent && (
                   <div className="inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-                    <span>Requested by</span>
+                    <span>{t("approvalCard.text.requestedBy")}</span>
                     <Identity name={requesterAgent.name} size="sm" className="inline-flex" />
                   </div>
                 )}

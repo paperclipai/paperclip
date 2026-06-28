@@ -38,12 +38,13 @@ import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./Ma
 import { StatusBadge } from "./StatusBadge";
 import { ChoosePathButton } from "./PathInstructionsModal";
 
+import { t } from "@/i18n";
 const projectStatuses = [
-  { value: "backlog", label: "Backlog" },
-  { value: "planned", label: "Planned" },
-  { value: "in_progress", label: "In Progress" },
-  { value: "completed", label: "Completed" },
-  { value: "cancelled", label: "Cancelled" },
+  { value: "backlog", label: t("newProjectDialog.labelsObj.backlog") },
+  { value: "planned", label: t("newProjectDialog.labelsObj.planned") },
+  { value: "in_progress", label: t("newProjectDialog.labelsObj.inProgress") },
+  { value: "completed", label: t("newProjectDialog.labelsObj.completed") },
+  { value: "cancelled", label: t("newProjectDialog.labelsObj.cancelled") },
 ];
 
 export function NewProjectDialog() {
@@ -223,7 +224,7 @@ export function NewProjectDialog() {
               </span>
             )}
             <span className="text-muted-foreground/60">&rsaquo;</span>
-            <span>New project</span>
+            <span>{t("newProjectDialog.text.newProject")}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -282,7 +283,7 @@ export function NewProjectDialog() {
         <div className="px-4 pt-3 pb-3 space-y-3 border-t border-border">
           <div>
             <div className="mb-1 flex items-center gap-1.5">
-              <label className="block text-xs text-muted-foreground">Repo URL</label>
+              <label className="block text-xs text-muted-foreground">{t("newProjectDialog.text.repoUrl")}</label>
               <span className="text-xs text-muted-foreground/50">optional</span>
               <Tooltip delayDuration={300}>
                 <TooltipTrigger asChild>
@@ -303,7 +304,7 @@ export function NewProjectDialog() {
 
           <div>
             <div className="mb-1 flex items-center gap-1.5">
-              <label className="block text-xs text-muted-foreground">Local folder</label>
+              <label className="block text-xs text-muted-foreground">{t("newProjectDialog.text.localFolder")}</label>
               <span className="text-xs text-muted-foreground/50">optional</span>
               <Tooltip delayDuration={300}>
                 <TooltipTrigger asChild>
@@ -428,7 +429,7 @@ export function NewProjectDialog() {
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border">
           {createProject.isError ? (
-            <p className="text-xs text-destructive">Failed to create project.</p>
+            <p className="text-xs text-destructive">{t("newProjectDialog.errors.createFailed")}</p>
           ) : (
             <span />
           )}

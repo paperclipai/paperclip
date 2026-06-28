@@ -5,6 +5,7 @@ import { cn } from "../lib/utils";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
+import { t } from "@/i18n";
 const TRIGGER_LABELS: Record<string, string> = {
   no_comment_streak: "No-comment streak",
   long_active_duration: "Long active duration",
@@ -52,12 +53,12 @@ export function ProductivityReviewBadge({
           aria-label={`Under review · productivity review ${reviewIdentifier} (${label})`}
         >
           <Eye className="h-3 w-3" aria-hidden />
-          {hideLabel ? null : <span>Under review</span>}
+          {hideLabel ? null : <span>{t("productivityReviewBadge.text.underReview")}</span>}
         </Link>
       </TooltipTrigger>
       <TooltipContent>
         <div className="space-y-1 text-xs">
-          <div className="font-semibold">Productivity review open</div>
+          <div className="font-semibold">{t("productivityReviewBadge.text.reviewOpen")}</div>
           <div>
             <span className="text-muted-foreground">Trigger:</span> {label}
           </div>

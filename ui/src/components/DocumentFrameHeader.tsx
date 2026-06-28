@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn, relativeTime } from "../lib/utils";
+import { t } from "@/i18n";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -100,9 +101,9 @@ export function DocumentFrameHeader({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-72">
-                <DropdownMenuLabel>Revision history</DropdownMenuLabel>
+                <DropdownMenuLabel>{t("issueDocumentsSection.text.revisionHistory")}</DropdownMenuLabel>
                 {revisionMenu.loading && revisionMenu.revisions.length === 0 ? (
-                  <DropdownMenuItem disabled>Loading revisions...</DropdownMenuItem>
+                  <DropdownMenuItem disabled>{t("issueDocumentsSection.text.loadingRevisions")}</DropdownMenuItem>
                 ) : revisionMenu.revisions.length > 0 ? (
                   <DropdownMenuRadioGroup value={revisionMenu.selectedRevisionId ?? revisionMenu.currentRevisionId ?? ""}>
                     {revisionMenu.revisions.map((revision) => {
@@ -119,7 +120,7 @@ export function DocumentFrameHeader({
                               <span className="font-medium">rev {revision.revisionNumber}</span>
                               {isCurrentRevision ? (
                                 <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-                                  Current
+                                  {t("issueDocumentsSection.text.currentRevision")}
                                 </span>
                               ) : null}
                             </div>
@@ -132,7 +133,7 @@ export function DocumentFrameHeader({
                     })}
                   </DropdownMenuRadioGroup>
                 ) : (
-                  <DropdownMenuItem disabled>No revisions yet</DropdownMenuItem>
+                  <DropdownMenuItem disabled>{t("issueDocumentsSection.text.noRevisionsYet")}</DropdownMenuItem>
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
@@ -142,7 +143,7 @@ export function DocumentFrameHeader({
               href={updatedHref ?? `#document-${encodeURIComponent(documentKey)}`}
               className="truncate text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline"
             >
-              updated {relativeTime(updatedAt)}
+              {t("issueDocumentsSection.text.updated")} {relativeTime(updatedAt)}
             </a>
           ) : null}
           {annotationSlot}

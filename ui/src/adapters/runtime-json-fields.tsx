@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AdapterConfigFieldsProps } from "./types";
 import { Field, help } from "../components/agent-config-primitives";
+import { t } from "../i18n";
 
 // TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
 const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
@@ -60,6 +61,7 @@ export function RuntimeServicesJsonField({
   config,
   mark,
 }: JsonFieldProps) {
+
   if (!SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI) {
     return null;
   }
@@ -74,7 +76,7 @@ export function RuntimeServicesJsonField({
   const value = isCreate ? values?.runtimeServicesJson ?? "" : draft;
 
   return (
-    <Field label="Runtime services JSON" hint={help.runtimeServicesJson}>
+    <Field label={t("runtimeJsonFields.labelsJsx.runtimeServices")} hint={help.runtimeServicesJson}>
       <textarea
         className={`${inputClass} min-h-[148px]`}
         value={value}
@@ -96,6 +98,7 @@ export function PayloadTemplateJsonField({
   config,
   mark,
 }: JsonFieldProps) {
+
   const existing = formatJsonObject(config.payloadTemplate);
   const [draft, setDraft] = useState(existing);
 
@@ -106,7 +109,7 @@ export function PayloadTemplateJsonField({
   const value = isCreate ? values?.payloadTemplateJson ?? "" : draft;
 
   return (
-    <Field label="Payload template JSON" hint={help.payloadTemplateJson}>
+    <Field label={t("runtimeJsonFields.labelsJsx.payloadTemplate")} hint={help.payloadTemplateJson}>
       <textarea
         className={`${inputClass} min-h-[132px]`}
         value={value}

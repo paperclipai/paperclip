@@ -12,6 +12,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { ShieldCheck } from "lucide-react";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { t, useTranslation } from "@/i18n";
 
 type StatusFilter = "pending" | "all";
 
@@ -26,8 +27,8 @@ export function Approvals() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Approvals" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("nav.items.approvals") }]);
+  }, [setBreadcrumbs, t]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: queryKeys.approvals.list(selectedCompanyId!),
@@ -49,7 +50,7 @@ export function Approvals() {
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve");
+      setActionError(err instanceof Error ? err.message : t("approvals.failedApprove"));
     },
   });
 
@@ -60,7 +61,7 @@ export function Approvals() {
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject");
+      setActionError(err instanceof Error ? err.message : t("approvals.failedReject"));
     },
   });
 
@@ -95,7 +96,7 @@ export function Approvals() {
                 {pendingCount}
               </span>
             )}</> },
-            { value: "all", label: "All" },
+            { value: "all", label: t("common.status.all") },
           ]} />
         </Tabs>
       </div>
@@ -107,7 +108,7 @@ export function Approvals() {
         <div className="flex flex-col items-center justify-center py-16 text-center">
           <ShieldCheck className="h-8 w-8 text-muted-foreground/30 mb-3" />
           <p className="text-sm text-muted-foreground">
-            {statusFilter === "pending" ? "No pending approvals." : "No approvals yet."}
+            {statusFilter === "pending" ? t("approvals.noPending") : t("approvals.noApprovals")}
           </p>
         </div>
       )}

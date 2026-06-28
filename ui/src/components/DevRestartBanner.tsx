@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, RotateCcw, TimerReset } from "lucide-react";
 import { healthApi, type DevServerHealthStatus } from "../api/health";
 
+import { t } from "@/i18n";
 const RESTART_PENDING_RESET_MS = 30_000;
 
 function formatRelativeTimestamp(value: string | null): string | null {
@@ -60,7 +61,7 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
       await healthApi.requestDevServerRestart();
     } catch (error) {
       setRestartPending(false);
-      window.alert(error instanceof Error ? error.message : "Failed to request restart");
+      window.alert(error instanceof Error ? error.message : t("devRestartBanner.errors.requestRestart"));
     }
   }
 
@@ -70,7 +71,7 @@ export function DevRestartBanner({ devServer }: { devServer?: DevServerHealthSta
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-[12px] font-semibold uppercase tracking-[0.18em]">
             <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-            <span>Restart Required</span>
+            <span>{t("devRestartBanner.text.restartRequired")}</span>
             {devServer.autoRestartEnabled ? (
               <span className="rounded-full bg-amber-900/10 px-2 py-0.5 text-[10px] tracking-[0.14em] dark:bg-amber-100/10">
                 Auto-Restart On

@@ -23,6 +23,7 @@ import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
 import { Button } from "@/components/ui/button";
 
+import { t } from "@/i18n";
 interface BlockedInboxViewProps {
   companyId: string;
   searchQuery: string;
@@ -136,7 +137,7 @@ export function BlockedInboxView({
 
   if (error) {
     const message =
-      error instanceof Error ? error.message : "Couldn't load the Blocked tab.";
+      error instanceof Error ? error.message : t("blockedInboxView.errors.loadBlocked");
     return (
       <div
         data-testid="blocked-inbox-error"

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
+import { t, useTranslation } from "@/i18n";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -225,6 +226,7 @@ export function Agents() {
     return map;
   }, [agents]);
 
+  const { t } = useTranslation();
   const environmentsById = useMemo(() => {
     const map = new Map<string, Environment>();
     for (const environment of environments ?? []) map.set(environment.id, environment);
@@ -248,11 +250,11 @@ export function Agents() {
   }, [agents, environmentsById, environmentCapabilities, instanceSettings?.defaultEnvironmentId]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Agents" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("nav.items.agents") }]);
+  }, [setBreadcrumbs, t]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Bot} message="Select a company to view agents." />;
+    return <EmptyState icon={Bot} message={t("common.selectCompany.agents")} />;
   }
 
   if (isLoading) {
@@ -288,7 +290,7 @@ export function Agents() {
           resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "text-foreground/55" : "",
         )}
         leading={hasInvalidOrgChain ? (
-          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
+          <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label={t("agents.aria.invalidReportingChain")} />
         ) : (
           <AgentStatusCapsule status={agent.status} />
         )}
@@ -337,7 +339,7 @@ export function Agents() {
               <AgentActionButtons
                 agent={agent}
                 companyId={selectedCompanyId}
-                runLabel="Run Heartbeat"
+                runLabel={t("agents.text.runHeartbeat")}
                 showStatus={false}
               />
             </div>
@@ -381,10 +383,10 @@ export function Agents() {
         <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
           <PageTabBar
             items={[
-              { value: "all", label: "All" },
-              { value: "active", label: "Active" },
-              { value: "paused", label: "Paused" },
-              { value: "error", label: "Error" },
+              { value: "all", label: t("common.status.all") },
+              { value: "active", label: t("common.status.active") },
+              { value: "paused", label: t("common.status.paused") },
+              { value: "error", label: t("common.status.error") },
             ]}
             value={tab}
             onValueChange={(v) => navigate(`/agents/${v}`)}
@@ -430,7 +432,7 @@ export function Agents() {
       {agents && agents.length === 0 && (
         <EmptyState
           icon={Bot}
-          message="Create your first agent to get started."
+          message={t("agents.emptyCreate")}
           action="New Agent"
           onAction={openNewAgent}
         />
@@ -526,7 +528,7 @@ function OrgTreeNode({
         )}
       >
         {hasInvalidOrgChain ? (
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label={t("agents.aria.invalidReportingChain")} />
         ) : (
           <AgentStatusCapsule status={node.status} />
         )}

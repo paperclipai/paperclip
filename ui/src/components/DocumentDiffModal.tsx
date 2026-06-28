@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+import { t } from "@/i18n";
 function getRevisionLabel(revision: DocumentRevision) {
   const actor = revision.createdByUserId
     ? "board"
@@ -146,7 +147,7 @@ export function DocumentDiffModal({
                 <span>Old</span>
                 <span>New</span>
                 <span />
-                <span>Content</span>
+                <span>{t("documentDiffModal.text.content")}</span>
               </div>
               {diffRows.map((row, index) => (
                 <div

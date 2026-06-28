@@ -23,6 +23,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { Link, Navigate } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { queryKeys } from "@/lib/queryKeys";
 import { usePluginSlots } from "@/plugins/slots";
 
@@ -43,8 +44,8 @@ export function CompanyAccess() {
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings", href: "/company/settings" },
-      { label: "Members" },
+      { label: t("companyAccess.labelsObj.settings"), href: "/company/settings" },
+      { label: t("companyAccess.labelsObj.members") },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
@@ -84,14 +85,14 @@ export function CompanyAccess() {
       setEditingMemberId(null);
       await refreshAccessData();
       pushToast({
-        title: "Member updated",
+        title: t("companyAccess.toasts.memberUpdated"),
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to update member",
-        body: error instanceof Error ? error.message : "Unknown error",
+        title: t("companyAccess.toasts.updateMemberFailed"),
+        body: error instanceof Error ? error.message : t("companyAccess.errors.unknown"),
         tone: "error",
       });
     },
@@ -102,14 +103,14 @@ export function CompanyAccess() {
     onSuccess: async () => {
       await refreshAccessData();
       pushToast({
-        title: "Join request approved",
+        title: t("companyAccess.toasts.joinApproved"),
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to approve join request",
-        body: error instanceof Error ? error.message : "Unknown error",
+        title: t("companyAccess.toasts.approveJoinFailed"),
+        body: error instanceof Error ? error.message : t("companyAccess.errors.unknown"),
         tone: "error",
       });
     },
@@ -120,14 +121,14 @@ export function CompanyAccess() {
     onSuccess: async () => {
       await refreshAccessData();
       pushToast({
-        title: "Join request rejected",
+        title: t("companyAccess.toasts.joinRejected"),
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to reject join request",
-        body: error instanceof Error ? error.message : "Unknown error",
+        title: t("companyAccess.toasts.rejectJoinFailed"),
+        body: error instanceof Error ? error.message : t("companyAccess.errors.unknown"),
         tone: "error",
       });
     },
@@ -172,7 +173,7 @@ export function CompanyAccess() {
         await queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(selectedCompanyId) });
       }
       pushToast({
-        title: "Member removed",
+        title: t("companyAccess.toasts.memberRemoved"),
         body:
           result.reassignedIssueCount > 0
             ? `${result.reassignedIssueCount} assigned task${result.reassignedIssueCount === 1 ? "" : "s"} cleaned up.`
@@ -182,8 +183,8 @@ export function CompanyAccess() {
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to remove member",
-        body: error instanceof Error ? error.message : "Unknown error",
+        title: t("companyAccess.toasts.removeMemberFailed"),
+        body: error instanceof Error ? error.message : t("companyAccess.errors.unknown"),
         tone: "error",
       });
     },
@@ -201,7 +202,7 @@ export function CompanyAccess() {
   }, [removingMember]);
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select a company to manage access.</div>;
+    return <div className="text-sm text-muted-foreground">{t("companyAccess.text.selectCompany")}</div>;
   }
 
   if (membersQuery.isLoading) {
@@ -238,7 +239,7 @@ export function CompanyAccess() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Company Members</h1>
+          <h1 className="text-lg font-semibold">{t("companyAccess.text.companyMembers")}</h1>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
           Manage the people who can work in {selectedCompany?.name}. Members can collaborate across the company by default.
@@ -258,7 +259,7 @@ export function CompanyAccess() {
         <div className="space-y-1">
           <div className="flex items-center gap-2">
             <Users className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-base font-semibold">Humans</h2>
+            <h2 className="text-base font-semibold">{t("companyAccess.text.humans")}</h2>
           </div>
           <p className="max-w-3xl text-sm text-muted-foreground">
             Manage human company memberships and status here.
@@ -269,7 +270,7 @@ export function CompanyAccess() {
           <div className="space-y-3 rounded-xl border border-border px-4 py-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h3 className="text-sm font-semibold">Pending human joins</h3>
+                <h3 className="text-sm font-semibold">{t("companyAccess.text.pendingHumanJoins")}</h3>
                 <p className="text-sm text-muted-foreground">
                   Review pending join requests before they become active company members.
                 </p>
@@ -284,13 +285,13 @@ export function CompanyAccess() {
                     request.requesterUser?.name ||
                     request.requestEmailSnapshot ||
                     request.requestingUserId ||
-                    "Unknown human requester"
+                    t("companyAccess.fallbacks.unknownRequester")
                   }
                   subtitle={
                     request.requesterUser?.email ||
                     request.requestEmailSnapshot ||
                     request.requestingUserId ||
-                    "No email available"
+                    t("companyAccess.fallbacks.noEmail")
                   }
                   context={
                     request.invite
@@ -311,13 +312,13 @@ export function CompanyAccess() {
 
         <div className="overflow-hidden rounded-xl border border-border">
           <div className="grid grid-cols-[minmax(0,1.5fr)_120px_120px_180px] gap-3 border-b border-border px-4 py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            <div>User account</div>
-            <div>Role</div>
-            <div>Status</div>
-            <div className="text-right">Action</div>
+            <div>{t("companyAccess.text.userAccount")}</div>
+            <div>{t("companyAccess.text.role")}</div>
+            <div>{t("companyAccess.text.status")}</div>
+            <div className="text-right">{t("companyAccess.text.action")}</div>
           </div>
           {members.length === 0 ? (
-            <div className="px-4 py-8 text-sm text-muted-foreground">No user memberships found for this company yet.</div>
+            <div className="px-4 py-8 text-sm text-muted-foreground">{t("companyAccess.text.noMembershipsFound")}</div>
           ) : (
             members.map((member) => {
               const removalReason = member.removal?.reason ?? null;
@@ -371,7 +372,7 @@ export function CompanyAccess() {
       <Dialog open={!!editingMember} onOpenChange={(open) => !open && setEditingMemberId(null)}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Edit member</DialogTitle>
+            <DialogTitle>{t("companyAccess.text.editMember")}</DialogTitle>
             <DialogDescription>
               Update company role and membership status for {editingMember?.user?.name || editingMember?.user?.email || editingMember?.principalId}.
             </DialogDescription>
@@ -380,7 +381,7 @@ export function CompanyAccess() {
             <div className="space-y-5">
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="space-y-2 text-sm">
-                  <span className="font-medium">Company role</span>
+                  <span className="font-medium">{t("companyAccess.text.companyRole")}</span>
                   <select
                     className="w-full rounded-md border border-border bg-background px-3 py-2"
                     value={draftRole ?? ""}
@@ -388,7 +389,7 @@ export function CompanyAccess() {
                       setDraftRole((event.target.value || null) as CompanyMember["membershipRole"])
                     }
                   >
-                    <option value="">Unset</option>
+                    <option value="">{t("companyAccess.text.unset")}</option>
                     {Object.entries(HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS).map(([value, label]) => (
                       <option key={value} value={value}>
                         {label}
@@ -397,7 +398,7 @@ export function CompanyAccess() {
                   </select>
                 </label>
                 <label className="space-y-2 text-sm">
-                  <span className="font-medium">Membership status</span>
+                  <span className="font-medium">{t("companyAccess.text.membershipStatus")}</span>
                   <select
                     className="w-full rounded-md border border-border bg-background px-3 py-2"
                     value={draftStatus}
@@ -405,9 +406,9 @@ export function CompanyAccess() {
                       setDraftStatus(event.target.value as EditableMemberStatus)
                     }
                   >
-                    <option value="active">Active</option>
-                    <option value="pending">Pending</option>
-                    <option value="suspended">Suspended</option>
+                    <option value="active">{t("companyAccess.text.active")}</option>
+                    <option value="pending">{t("companyAccess.text.pending")}</option>
+                    <option value="suspended">{t("companyAccess.text.suspended")}</option>
                   </select>
                 </label>
               </div>
@@ -437,7 +438,7 @@ export function CompanyAccess() {
       <Dialog open={!!removingMember} onOpenChange={(open) => !open && setRemovingMemberId(null)}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>Remove member</DialogTitle>
+            <DialogTitle>{t("companyAccess.text.removeMember")}</DialogTitle>
             <DialogDescription>
               Archive {memberDisplayName(removingMember)} and move active assignments before hiding this user from assignment fields.
             </DialogDescription>
@@ -456,15 +457,15 @@ export function CompanyAccess() {
 
               {assignedIssues.length > 0 ? (
                 <div className="space-y-2">
-                  <div className="text-sm font-medium">Task reassignment</div>
+                  <div className="text-sm font-medium">{t("companyAccess.text.taskReassignment")}</div>
                   <select
                     className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                     value={reassignmentTarget}
                     onChange={(event) => setReassignmentTarget(event.target.value)}
                   >
-                    <option value="__unassigned">Leave unassigned</option>
+                    <option value="__unassigned">{t("companyAccess.text.leaveUnassigned")}</option>
                     {activeReassignmentUsers.length > 0 ? (
-                      <optgroup label="Humans">
+                      <optgroup label={t("companyAccess.labelsJsx.humans")}>
                         {activeReassignmentUsers.map((member) => (
                           <option key={member.id} value={`user:${member.principalId}`}>
                             {memberDisplayName(member)}
@@ -473,7 +474,7 @@ export function CompanyAccess() {
                       </optgroup>
                     ) : null}
                     {activeReassignmentAgents.length > 0 ? (
-                      <optgroup label="Agents">
+                      <optgroup label={t("companyAccess.labelsJsx.agents")}>
                         {activeReassignmentAgents.map((agent) => (
                           <option key={agent.id} value={`agent:${agent.id}`}>
                             {agent.name} ({agent.role})
@@ -534,8 +535,8 @@ export function CompanyAccessLegacyRoute() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
-      { label: "Access" },
+      { label: t("companyAccess.labelsObj.settings"), href: "/company/settings" },
+      { label: t("companyAccess.labelsObj.access") },
     ]);
   }, [setBreadcrumbs]);
 
@@ -545,7 +546,7 @@ export function CompanyAccessLegacyRoute() {
   }
 
   if (isLoading) {
-    return <div className="text-sm text-muted-foreground">Checking for advanced permission extensions...</div>;
+    return <div className="text-sm text-muted-foreground">{t("companyAccess.text.checkingExtensions")}</div>;
   }
 
   return (
@@ -553,7 +554,7 @@ export function CompanyAccessLegacyRoute() {
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <Shield className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Advanced Permissions</h1>
+          <h1 className="text-lg font-semibold">{t("companyAccess.text.advancedPermissions")}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
           Advanced access, scoped assignment, and explicit grant controls are provided by installed company settings extensions.
@@ -562,7 +563,7 @@ export function CompanyAccessLegacyRoute() {
 
       <div className="space-y-4 rounded-xl border border-border px-5 py-5">
         <div className="space-y-2">
-          <h2 className="text-sm font-semibold">Advanced permissions unavailable</h2>
+          <h2 className="text-sm font-semibold">{t("companyAccess.text.advancedPermissionsUnavailable")}</h2>
           <p className="text-sm text-muted-foreground">
             Core Paperclip keeps enforcing company boundaries and any existing restrictive policy data, but editing advanced permissions requires an installed extension.
           </p>
@@ -572,10 +573,10 @@ export function CompanyAccessLegacyRoute() {
         </div>
         <div className="flex flex-wrap gap-2">
           <Button asChild>
-            <Link to="/company/settings/members">Open Members</Link>
+            <Link to="/company/settings/members">{t("companyAccess.text.openMembers")}</Link>
           </Button>
           <Button asChild variant="outline">
-            <Link to="/company/settings/invites">Open Invites</Link>
+            <Link to="/company/settings/invites">{t("companyAccess.text.openInvites")}</Link>
           </Button>
         </div>
       </div>

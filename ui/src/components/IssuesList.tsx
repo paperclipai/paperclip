@@ -4,6 +4,7 @@ import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { Link } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
@@ -472,9 +473,9 @@ function IssueSearchInput({
             e.currentTarget.blur();
           }
         }}
-        placeholder="Search tasks..."
+        placeholder={t("issuesList.placeholders.searchTasks")}
         className="pl-7 text-xs sm:text-sm"
-        aria-label="Search tasks"
+        aria-label={t("issuesList.labelsJsx.searchTasks")}
         data-page-search-target="true"
       />
     </div>
@@ -547,7 +548,7 @@ function SubIssueProgressSummaryStrip({
           </div>
           <div
             role="progressbar"
-            aria-label="Sub-tasks completion progress"
+            aria-label={t("issuesList.labelsJsx.subTasksProgress")}
             aria-valuemin={0}
             aria-valuenow={summary.doneCount}
             aria-valuemax={summary.totalCount}
@@ -584,11 +585,11 @@ function SubIssueProgressSummaryStrip({
               </Link>
             </>
           ) : summary.totalCount === 0 ? (
-            <div className="text-sm font-medium text-foreground">No active sub-tasks</div>
+            <div className="text-sm font-medium text-foreground">{t("issueslist.text.noActiveSubTasks")}</div>
           ) : summary.doneCount === summary.totalCount ? (
-            <div className="text-sm font-medium text-foreground">All sub-tasks done</div>
+            <div className="text-sm font-medium text-foreground">{t("issueslist.text.allSubTasksDone")}</div>
           ) : (
-            <div className="text-sm font-medium text-foreground">No actionable sub-tasks</div>
+            <div className="text-sm font-medium text-foreground">{t("issueslist.text.noActionableSubTasks")}</div>
           )}
         </div>
       </div>
@@ -1392,14 +1393,14 @@ export function IssuesList({
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
-              title="List view"
+              title={t("issueslist.labelsJsx.listView")}
             >
               <List className="h-3.5 w-3.5" />
             </button>
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
+              title={t("issueslist.labelsJsx.boardView")}
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
@@ -1450,7 +1451,7 @@ export function IssuesList({
                       "h-8 shrink-0 gap-1.5 px-2",
                       viewState.boardColumnPageSize !== KANBAN_COLUMN_DEFAULT_PAGE_SIZE && "bg-accent",
                     )}
-                    title="Cards per column"
+                    title={t("issueslist.labelsJsx.cardsPerColumn")}
                   >
                     <ListCollapse className="h-3.5 w-3.5" />
                     <span className="min-w-4 text-xs tabular-nums">{viewState.boardColumnPageSize}</span>
@@ -1488,7 +1489,7 @@ export function IssuesList({
                   boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
                 })}
                 disabled={!boardDensityCustomized}
-                title="Reset board density"
+                title={t("issueslist.labelsJsx.resetBoardDensity")}
               >
                 <RotateCcw className="h-3.5 w-3.5" />
               </Button>
@@ -1500,7 +1501,7 @@ export function IssuesList({
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-            title="Choose which task columns stay visible"
+            title={t("issueslist.labelsJsx.chooseWhichTaskColumnsStayVisible")}
             iconOnly
           />
 
@@ -1604,13 +1605,11 @@ export function IssuesList({
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {!searchWithinLoadedIssues && normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
-          Showing up to {ISSUE_SEARCH_RESULT_LIMIT} matches. Refine the search to narrow further.
-        </p>
+          {t("issueslist.text.showingUpTo")} {ISSUE_SEARCH_RESULT_LIMIT} {t("issueslist.text.matchesRefineTheSearchToNarrowFurther")}</p>
       )}
       {boardColumnLimitReached && (
         <p className="text-xs text-muted-foreground">
-          Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} tasks. Refine filters or search to reveal the rest.
-        </p>
+          {t("issueslist.text.someBoardColumnsAreShowingUpTo")} {ISSUE_BOARD_COLUMN_RESULT_LIMIT} {t("issueslist.text.tasksRefineFiltersOrSearchToRevealTheRest")}</p>
       )}
       {!isLoading && !externalObjectFilterLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
@@ -1796,7 +1795,7 @@ export function IssuesList({
                               issueBadge === "Paused" ? (
                                 <span
                                   className={cn("ml-1.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium", statusBadge.paused)}
-                                  aria-label="Paused"
+                                  aria-label={t("issuesList.labelsJsx.paused")}
                                   title="Paused"
                                 >
                                   <CircleSlash2 className="h-3 w-3" />
@@ -1811,12 +1810,11 @@ export function IssuesList({
                             {isSuccessfulRunHandoffRequired(issue) ? (
                               <span
                                 className="ml-1.5 inline-flex items-center gap-1 rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
-                                aria-label="Needs next step"
-                                title="This task needs a next step"
+                                aria-label={t("issuesList.labelsJsx.needsNextStep")}
+                                title={t("issueslist.labelsJsx.thisTaskNeedsANextStep")}
                               >
                                 <CircleDot className="h-3 w-3" />
-                                Needs next step
-                              </span>
+                                {t("issueslist.text.needsNextStep")}</span>
                             ) : null}
                           </>
                         )}
@@ -1922,7 +1920,7 @@ export function IssuesList({
                                   >
                                     <input
                                       className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                                      placeholder="Search assignees..."
+                                      placeholder={t("issuesList.placeholders.searchAssignees")}
                                       value={assigneeSearch}
                                       onChange={(e) => setAssigneeSearch(e.target.value)}
                                       autoFocus
@@ -1939,8 +1937,7 @@ export function IssuesList({
                                           assignIssue(issue.id, null, null);
                                         }}
                                       >
-                                        No assignee
-                                      </button>
+                                        {t("issueslist.text.noAssignee")}</button>
                                       {currentUserId && (
                                         <button
                                           className={cn(

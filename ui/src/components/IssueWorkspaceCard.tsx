@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import type { Issue, ExecutionWorkspace } from "@paperclipai/shared";
 import { useQuery } from "@tanstack/react-query";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
@@ -22,9 +23,9 @@ import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSe
 /* -------------------------------------------------------------------------- */
 
 const EXECUTION_WORKSPACE_OPTIONS = [
-  { value: "shared_workspace", label: "Project default" },
-  { value: "isolated_workspace", label: "New isolated workspace" },
-  { value: "reuse_existing", label: "Reuse existing workspace" },
+  { value: "shared_workspace", label: t("issueWorkspaceCard.labelsObj.projectDefault") },
+  { value: "isolated_workspace", label: t("issueWorkspaceCard.labelsObj.newIsolated") },
+  { value: "reuse_existing", label: t("issueWorkspaceCard.labelsObj.reuseExisting") },
 ] as const;
 
 function shouldPresentExistingWorkspaceSelection(
@@ -405,7 +406,7 @@ export function IssueWorkspaceCard({
           )}
           {workspace?.repoUrl && (
             <div className="flex items-center gap-1.5 text-muted-foreground">
-              <span className="text-[11px]">Repo:</span>
+              <span className="text-[11px]">{t("issueWorkspaceCard.text.repo")}</span>
               <CopyableInline value={workspace.repoUrl} mono />
             </div>
           )}

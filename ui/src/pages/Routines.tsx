@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import type { RoutineListItem, RoutineVariable } from "@paperclipai/shared";
+import { t, useTranslation } from "@/i18n";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
@@ -241,7 +242,7 @@ export function Routines() {
   const [routineViewState, setRoutineViewState] = useState<RoutineViewState>(() => getRoutineViewState(routineViewStateKey));
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Routines" }]);
+    setBreadcrumbs([{ label: t("nav.items.routines") }]);
   }, [setBreadcrumbs]);
 
   useEffect(() => {
@@ -310,10 +311,10 @@ export function Routines() {
       setAdvancedOpen(false);
       await queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) });
       pushToast({
-        title: "Routine created",
+        title: t("routines.created"),
         body: routine.assigneeAgentId
-          ? "Add the first trigger to turn it into a live workflow."
-          : "Draft saved. Add a default agent before enabling automation.",
+          ? t("routines.createdAddTrigger")
+          : t("routines.createdDraft"),
         tone: "success",
       });
       navigate(`/routines/${routine.id}?tab=triggers`);
@@ -343,8 +344,8 @@ export function Routines() {
     },
     onError: (mutationError) => {
       pushToast({
-        title: "Failed to update routine",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not update the routine.",
+        title: t("routines.updateFailed"),
+        body: mutationError instanceof Error ? mutationError.message : t("routines.updateFailedBody"),
         tone: "error",
       });
     },
@@ -378,8 +379,8 @@ export function Routines() {
     },
     onError: (mutationError) => {
       pushToast({
-        title: "Routine run failed",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not start the routine run.",
+        title: t("routines.runFailed"),
+        body: mutationError instanceof Error ? mutationError.message : t("routines.runFailedBody"),
         tone: "error",
       });
     },
@@ -432,7 +433,7 @@ export function Routines() {
   const recentRunsIssueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Recent Runs",
+        t("routines.recentRuns"),
         buildRoutinesTabHref("runs"),
         "issues",
       ),
@@ -464,7 +465,7 @@ export function Routines() {
     if (!enabled && !routine.assigneeAgentId) {
       pushToast({
         title: "Default agent required",
-        body: "Set a default agent before enabling routine automation.",
+        body: t("routines.needAgent"),
         tone: "warn",
       });
       return;
@@ -483,7 +484,7 @@ export function Routines() {
   }
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Repeat} message="Select a company to view routines." />;
+    return <EmptyState icon={Repeat} message={t("common.selectCompany.routines")} />;
   }
 
   if (isLoading) {
@@ -513,8 +514,8 @@ export function Routines() {
           value={activeTab}
           onValueChange={handleTabChange}
           items={[
-            { value: "routines", label: "Routines" },
-            { value: "runs", label: "Recent Runs" },
+            { value: "routines", label: t("nav.items.routines") },
+            { value: "runs", label: t("routines.recentRuns") },
           ]}
         />
         <TabsContent value="routines" className="space-y-4">
@@ -533,10 +534,10 @@ export function Routines() {
                 <PopoverContent align="end" className="w-44 p-0">
                   <div className="p-2 space-y-0.5">
                     {([
-                      ["updated", "Updated"],
-                      ["created", "Created"],
-                      ["lastRun", "Last run"],
-                      ["title", "Title"],
+                      ["updated", t("common.sort.updated")],
+                      ["created", t("common.sort.created")],
+                      ["lastRun", t("common.sort.lastRun")],
+                      ["title", t("common.sort.title")],
                     ] as const).map(([field, label]) => (
                       <button
                         key={field}
@@ -556,7 +557,7 @@ export function Routines() {
                         <span>{label}</span>
                         {routineViewState.sortField === field ? (
                           <span className="text-xs text-muted-foreground">
-                            {routineViewState.sortDir === "asc" ? "Asc" : "Desc"}
+                            {routineViewState.sortDir === "asc" ? t("common.sort.asc") : t("common.sort.desc")}
                           </span>
                         ) : null}
                       </button>
@@ -574,9 +575,9 @@ export function Routines() {
                 <PopoverContent align="end" className="w-44 p-0">
                   <div className="p-2 space-y-0.5">
                     {([
-                      ["project", "Project"],
-                      ["assignee", "Agent"],
-                      ["none", "None"],
+                      ["project", t("routines.groupBy.project")],
+                      ["assignee", t("routines.groupBy.agent")],
+                      ["none", t("routines.groupBy.none")],
                     ] as const).map(([value, label]) => (
                       <button
                         key={value}
@@ -649,7 +650,7 @@ export function Routines() {
               <textarea
                 ref={titleInputRef}
                 className="w-full resize-none overflow-hidden bg-transparent text-xl font-semibold outline-none placeholder:text-muted-foreground/50"
-                placeholder="Routine title"
+                placeholder={t("routines.placeholders.title")}
                 rows={1}
                 value={draft.title}
                 onChange={(event) => {
@@ -688,7 +689,7 @@ export function Routines() {
                     value={draft.assigneeAgentId}
                     options={assigneeOptions}
                     recentOptionIds={recentAssigneeIds}
-                    placeholder="Assignee"
+                    placeholder={t("routines.placeholders.assignee")}
                     noneLabel="No assignee"
                     searchPlaceholder="Search assignees..."
                     emptyMessage="No assignees found."

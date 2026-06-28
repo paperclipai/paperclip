@@ -5,5 +5,3156 @@
       "description": "通过创建公司开始。",
       "newCompany": "新公司"
     }
+  },
+  "bootstrap": {
+    "cliFallback": {
+      "title": "更想在主机上完成设置?",
+      "inviteActive": "引导邀请已生效。请在 Paperclip 启动日志中查看首位管理员 URL,或在主机上运行以下命令轮换它:",
+      "command": "在运行 Paperclip 的主机上执行以下命令,生成一次性的首位管理员邀请链接:"
+    },
+    "error": {
+      "claimedTitle": "此实例已被他人认领。",
+      "claimedBody": "刷新页面以登录,或请现有管理员在「实例设置 → 访问」中邀请你。",
+      "sessionExpiredTitle": "会话已过期,请重新登录后认领此实例。",
+      "networkTitle": "暂时无法连接服务器,请稍后重试。"
+    },
+    "waiting": {
+      "title": "此 Paperclip 正在等待首位管理员",
+      "body": "此实例以仅邀请模式运行。运维人员需在主机上生成一次性的首位管理员邀请链接。获取链接后,在当前浏览器中打开即可完成设置。",
+      "publicNote": "在公开模式下,基于浏览器的认领已被有意禁用,以防网络上的任何人自行提权。"
+    },
+    "success": {
+      "title": "你已是实例管理员",
+      "body": "设置完成。正在前往引导流程,以创建你的第一家公司……",
+      "redirecting": "正在跳转……",
+      "continue": "前往控制台"
+    },
+    "setup": {
+      "title": "完成此 Paperclip 的设置",
+      "signedOutBody": "尚无管理员认领此实例。登录或创建 Paperclip 账号,即可在当前浏览器中成为首位管理员。",
+      "signIn": "登录 / 创建账号",
+      "signedInBody": "尚无管理员认领此实例。立即认领,成为首位管理员并开始引导流程。",
+      "claiming": "认领中……",
+      "claim": "认领此实例",
+      "signedInAs": "已登录:{{identity}}",
+      "wrongAccount": "账号不对?",
+      "switchAccount": "切换账号"
+    }
+  },
+  "auth": {
+    "loading": "加载中……",
+    "brandName": "Paperclip",
+    "signIn": {
+      "title": "登录 Paperclip",
+      "subtitle": "使用邮箱和密码访问此实例。",
+      "submit": "登录",
+      "promptSwitch": "还没有账号?",
+      "switchAction": "创建一个"
+    },
+    "signUp": {
+      "title": "创建你的 Paperclip 账号",
+      "subtitle": "为此实例创建账号。v1 版本无需邮箱验证。",
+      "submit": "创建账号",
+      "promptSwitch": "已有账号?",
+      "switchAction": "去登录"
+    },
+    "fields": {
+      "name": "姓名",
+      "email": "邮箱",
+      "password": "密码"
+    },
+    "submitting": "处理中……",
+    "error": {
+      "requiredFields": "请填写所有必填项。",
+      "authenticationFailed": "认证失败"
+    }
+  },
+  "nav": {
+    "search": "打开搜索",
+    "expandSidebar": "展开侧边栏",
+    "collapseSidebar": "收起侧边栏",
+    "keepExpanded": "保持侧边栏展开",
+    "newTask": "新建任务",
+    "unread": "未读",
+    "items": {
+      "dashboard": "仪表盘",
+      "inbox": "收件箱",
+      "conferenceRoom": "会议室",
+      "tasks": "任务",
+      "routines": "例程",
+      "goals": "目标",
+      "artifacts": "产物",
+      "skills": "技能",
+      "workspaces": "工作区",
+      "projects": "项目",
+      "org": "组织",
+      "costs": "成本",
+      "activity": "活动",
+      "settings": "设置",
+      "agents": "智能体",
+      "home": "首页",
+      "create": "创建",
+      "approvals": "审批",
+      "search": "搜索"
+    },
+    "sections": {
+      "work": "工作",
+      "company": "公司"
+    },
+    "mobileNavAria": "移动端导航"
+  },
+  "command": {
+    "placeholder": "搜索任务、智能体、项目……",
+    "empty": {
+      "noMatchPrefix": "没有快速匹配的任务。按",
+      "noMatchSuffix": "搜索全部，或继续输入以缩小范围。",
+      "noResults": "未找到结果。"
+    },
+    "headings": {
+      "search": "搜索",
+      "actions": "操作",
+      "pages": "页面",
+      "tasks": "任务",
+      "agents": "智能体",
+      "projects": "项目"
+    },
+    "actions": {
+      "newTask": "新建任务",
+      "openFile": "打开此任务中的文件……",
+      "newAgent": "新建智能体",
+      "newProject": "新建项目"
+    },
+    "searchAll": {
+      "label": "搜索全部",
+      "openFullSearch": "打开完整搜索"
+    }
+  },
+  "account": {
+    "boardFallback": "委员会",
+    "signedIn": "已登录",
+    "localBoard": "本地工作区委员会",
+    "badgeAccount": "账号",
+    "badgeLocal": "本地",
+    "openMenu": "打开账号菜单",
+    "version": "Paperclip v{{version}}",
+    "actions": {
+      "viewProfile": {
+        "label": "查看个人主页",
+        "description": "打开你的活动、任务和使用记录。"
+      },
+      "editProfile": {
+        "label": "编辑资料",
+        "description": "更新你的显示名称和头像。"
+      },
+      "documentation": {
+        "label": "文档",
+        "description": "在新标签页打开 Paperclip 文档。"
+      },
+      "feedback": {
+        "label": "反馈",
+        "description": "分享反馈或报告问题。"
+      }
+    },
+    "signOut": {
+      "label": "退出登录",
+      "pending": "正在退出……",
+      "description": "结束当前浏览器会话。"
+    }
+  },
+  "dashboard": {
+    "welcome": {
+      "message": "欢迎使用 Paperclip。设置你的第一家公司和智能体即可开始。",
+      "action": "开始设置"
+    },
+    "noCompany": "创建或选择一家公司以查看仪表盘。",
+    "noAgents": {
+      "warning": "你还没有智能体。",
+      "createHere": "在此创建"
+    },
+    "budget": {
+      "incidents": "{{count}} 个活跃预算事件",
+      "summary": "{{pausedAgents}} 个智能体已暂停 · {{pausedProjects}} 个项目已暂停 · {{pendingApprovals}} 个预算审批待处理",
+      "open": "查看预算"
+    },
+    "metrics": {
+      "agentsEnabled": "已启用智能体",
+      "agentsDesc": "{{running}} 运行中，{{paused}} 已暂停，{{error}} 个错误",
+      "tasksInProgress": "进行中任务",
+      "tasksDesc": "{{open}} 个待办，{{blocked}} 个阻塞",
+      "monthSpend": "本月支出",
+      "budgetPercent": "已用 {{budget}} 预算的 {{percent}}%",
+      "unlimitedBudget": "无预算限制",
+      "pendingApprovals": "待审批",
+      "budgetOverrides": "{{count}} 个预算变更待委员会审查",
+      "awaitingReview": "等待委员会审查"
+    },
+    "charts": {
+      "runActivity": "运行活动",
+      "tasksByPriority": "按优先级",
+      "tasksByStatus": "按状态",
+      "successRate": "成功率",
+      "last14Days": "近 14 天"
+    },
+    "sections": {
+      "recentActivity": "最近活动",
+      "recentTasks": "最近任务"
+    },
+    "noTasks": "暂无任务。"
+  },
+  "common": {
+    "status": {
+      "all": "全部",
+      "active": "活跃",
+      "paused": "已暂停",
+      "error": "错误"
+    },
+    "selectCompany": {
+      "tasks": "选择一家公司以查看任务。",
+      "agents": "选择一家公司以查看智能体。",
+      "goals": "选择一家公司以查看目标。",
+      "activity": "选择一家公司以查看活动。",
+      "projects": "选择一家公司以查看项目。",
+      "routines": "选择一家公司以查看例程。",
+      "inbox": "选择一家公司以查看收件箱。",
+      "costs": "选择一家公司以查看成本。",
+      "skills": "选择一家公司以管理技能。",
+      "secrets": "选择一家公司以管理密钥。",
+      "workspace": "选择一家公司以管理执行工作区。",
+      "access": "选择一家公司以管理访问权限。",
+      "invites": "选择一家公司以管理邀请。",
+      "cloudUpstream": "选择一家公司以配置云上游。"
+    },
+    "sort": {
+      "name": "名称",
+      "updated": "更新时间",
+      "created": "创建时间",
+      "targetDate": "目标日期",
+      "asc": "升序",
+      "desc": "降序",
+      "lastRun": "上次运行",
+      "title": "标题"
+    }
+  },
+  "agents": {
+    "emptyCreate": "创建你的第一个智能体以开始。",
+    "runHeartbeat": "运行心跳",
+    "text": {
+      "runHeartbeat": "运行心跳"
+    },
+    "aria": {
+      "invalidReportingChain": "汇报链无效"
+    }
+  },
+  "goals": {
+    "empty": "暂无目标。"
+  },
+  "activity": {
+    "filterByType": "按类型筛选",
+    "noActivity": "暂无活动。"
+  },
+  "approvals": {
+    "failedApprove": "审批失败",
+    "failedReject": "拒绝失败",
+    "noPending": "暂无待审批事项。",
+    "noApprovals": "暂无审批记录。"
+  },
+  "projects": {
+    "myProjects": "我的项目",
+    "noProjects": "暂无项目。"
+  },
+  "onboarding": {
+    "errors": {
+      "launchFailed": "启动首个任务失败",
+      "adapterTestFailed": "适配器环境测试失败",
+      "companyFailed": "创建公司失败",
+      "agentFailed": "创建智能体失败"
+    },
+    "placeholders": {
+      "companyName": "Acme 公司",
+      "mission": "你的团队想要实现什么目标?",
+      "agentName": "首席助理",
+      "searchModels": "搜索模型……"
+    },
+    "steps": {
+      "teamName": "团队名称",
+      "mission": "使命",
+      "agentCreated": "已创建智能体",
+      "modelConnected": "已连接模型"
+    },
+    "buttons": {
+      "createTeamLead": "创建你的团队负责人",
+      "connectModel": "连接模型",
+      "review": "确认",
+      "testing": "测试中……",
+      "testNow": "立即测试",
+      "creating": "创建中……",
+      "confirmMission": "确认使命",
+      "bringingToLife": "启动中……",
+      "giveHeartbeat": "赋予心跳",
+      "launching": "启动中……",
+      "getStarted": "开始使用"
+    },
+    "adapter": {
+      "gatewayUrl": "网关地址",
+      "webhookUrl": "Webhook 地址",
+      "default": "默认",
+      "comingSoon": "即将推出"
+    },
+    "testResults": {
+      "passed": "通过",
+      "warnings": "有警告",
+      "failed": "失败"
+    }
+  },
+  "settings": {
+    "fields": {
+      "companyName": "公司名称",
+      "companyNameHint": "公司的显示名称。",
+      "description": "描述",
+      "descriptionHint": "在公司资料中显示的可选描述。",
+      "descriptionPlaceholder": "可选的公司描述",
+      "logo": "徽标",
+      "logoHint": "上传 PNG、JPEG、WEBP、GIF 或 SVG 格式的徽标图片。",
+      "removing": "移除中……",
+      "removeLogo": "移除徽标",
+      "logoFailed": "徽标上传失败",
+      "brandColor": "品牌色",
+      "brandColorHint": "设置公司图标的色调。留空则自动生成颜色。",
+      "brandColorPlaceholder": "自动",
+      "attachmentLimit": "附件大小限制"
+    },
+    "buttons": {
+      "saving": "保存中……",
+      "save": "保存更改",
+      "saveFailed": "保存失败"
+    },
+    "hiring": {
+      "requireApproval": "新雇用需委员会审批",
+      "requireApprovalHint": "新智能体雇用在委员会审批前保持待定状态。"
+    },
+    "archive": {
+      "archiving": "归档中……",
+      "alreadyArchived": "已归档",
+      "archive": "归档公司"
+    }
+  },
+  "search": {
+    "placeholder": "搜索任务、评论、文档、产物、智能体、项目……",
+    "allScopes": "全部范围",
+    "unknownError": "未知错误",
+    "serverError": "服务器返回 {{status}}。",
+    "requestFailed": "请求失败。"
+  },
+  "routines": {
+    "created": "例程已创建",
+    "createdAddTrigger": "添加首个触发器即可将其变为实时工作流。",
+    "createdDraft": "草稿已保存。启用自动化前请添加默认智能体。",
+    "updateFailed": "更新例程失败",
+    "updateFailedBody": "Paperclip 无法更新该例程。",
+    "runFailed": "例程运行失败",
+    "runFailedBody": "Paperclip 无法启动该例程运行。",
+    "recentRuns": "最近运行",
+    "needAgent": "启用例程自动化前请设置默认智能体。",
+    "groupBy": {
+      "project": "项目",
+      "agent": "智能体",
+      "none": "无"
+    },
+    "placeholders": {
+      "title": "例程标题",
+      "assignee": "负责人"
+    }
+  },
+  "issueDetail": {
+    "toasts": {
+      "acceptFailed": "接受失败",
+      "answersSubmitted": "答案已提交",
+      "archiveFailed": "归档失败",
+      "cancelFailed": "取消失败",
+      "commentDeleted": "评论已删除",
+      "commentFailed": "评论失败",
+      "copiedToClipboard": "已复制到剪贴板",
+      "copyFailed": "复制失败",
+      "deleteFailed": "删除失败",
+      "feedbackSaveFailed": "保存反馈失败",
+      "interruptFailed": "中断失败",
+      "interruptRequested": "已请求中断",
+      "monitorCheckFailed": "监控检查失败",
+      "monitorCheckQueued": "监控检查已排队",
+      "questionCancelled": "问题已取消",
+      "queuedCommentCancelled": "排队的评论已取消",
+      "recoveryFailed": "恢复操作失败",
+      "rejectFailed": "拒绝失败",
+      "submitFailed": "提交失败",
+      "taskArchived": "任务已从收件箱归档",
+      "taskUpdateFailed": "任务更新失败",
+      "subtreeControlFailed": "无法应用子任务控制",
+      "pauseFailed": "无法暂停工作",
+      "workPaused": "工作已暂停"
+    },
+    "errors": {
+      "loadPreview": "无法加载预览。",
+      "deleteFailed": "删除失败",
+      "documentImport": "文档导入失败",
+      "tryAgain": "请重试。",
+      "acceptSuggested": "无法接受建议的任务",
+      "archiveFromInbox": "无法从收件箱归档此任务",
+      "cancelQuestion": "无法取消该问题",
+      "cancelQueuedComment": "无法取消排队的评论",
+      "deleteComment": "无法删除评论",
+      "interruptRun": "无法中断正在进行的运行",
+      "postComment": "无法发布评论",
+      "rejectSuggested": "无法拒绝建议的任务",
+      "resolveRecovery": "无法处理恢复操作",
+      "saveSubTask": "无法保存子任务更改",
+      "saveTask": "无法保存任务更改",
+      "stopRun": "无法停止运行并更新任务",
+      "submitAnswers": "无法提交答案",
+      "triggerMonitor": "暂时无法触发监控",
+      "updateApproval": "无法更新审批",
+      "unknown": "未知错误",
+      "uploadFailed": "上传失败",
+      "copyMarkdown": "无法复制任务 Markdown"
+    },
+    "labels": {
+      "archiveFromInbox": "从收件箱归档",
+      "backToInbox": "返回收件箱",
+      "moreActions": "更多操作",
+      "moreTaskActions": "更多任务操作",
+      "openFile": "在此任务中打开文件",
+      "stopAndCancel": "停止并取消",
+      "stopAndDone": "停止并完成"
+    },
+    "status": {
+      "paused": "已暂停"
+    }
+  },
+  "inbox": {
+    "errors": {
+      "approve": "审批失败",
+      "approveJoin": "审批加入请求失败",
+      "archive": "归档任务失败",
+      "reject": "拒绝失败",
+      "rejectJoin": "拒绝加入请求失败",
+      "undoArchive": "撤销收件箱归档失败"
+    },
+    "labels": {
+      "dismiss": "忽略",
+      "dismissFromInbox": "从收件箱忽略",
+      "markAsRead": "标记为已读",
+      "blocked": "已阻塞",
+      "inbox": "收件箱",
+      "mine": "我的",
+      "recent": "最近",
+      "unread": "未读"
+    },
+    "placeholders": {
+      "approvalStatus": "审批状态",
+      "category": "类别",
+      "search": "搜索收件箱……"
+    }
+  },
+  "costs": {
+    "labels": {
+      "activeIncidents": "活跃事件",
+      "budget": "预算",
+      "credits": "入账",
+      "debits": "出账",
+      "estimated": "预估",
+      "financeEvents": "财务事件",
+      "financeNet": "财务净额",
+      "inferenceSpend": "推理支出",
+      "pausedAgents": "已暂停智能体",
+      "pausedProjects": "已暂停项目",
+      "pendingApprovals": "待审批"
+    }
+  },
+  "agentDetail": {
+    "toasts": {
+      "agentSaved": "智能体已保存",
+      "saveFailed": "保存失败"
+    },
+    "errors": {
+      "actionFailed": "操作失败",
+      "loadMoreRunLog": "加载更多运行日志失败",
+      "loadRunLog": "加载运行日志失败",
+      "loadWorkspaceOpLog": "加载工作区操作日志失败",
+      "resumeRun": "恢复运行失败",
+      "retryRun": "重试运行失败",
+      "updatePermissions": "更新权限失败"
+    },
+    "tabs": {
+      "dashboard": "仪表盘",
+      "configuration": "配置",
+      "instructions": "指令",
+      "budget": "预算",
+      "runs": "运行",
+      "skills": "技能",
+      "installedSkills": "已安装技能"
+    },
+    "labels": {
+      "dismissMembershipNotice": "忽略智能体成员资格通知"
+    }
+  },
+  "companySkills": {
+    "toasts": {
+      "agentsUpdated": "智能体已更新",
+      "importWarnings": "导入警告",
+      "installWarnings": "安装警告",
+      "scanComplete": "项目技能扫描完成",
+      "scanFailed": "项目技能扫描失败",
+      "removeFailed": "移除失败",
+      "saveFailed": "保存失败",
+      "scanWarnings": "扫描警告",
+      "conflictsFound": "发现技能冲突",
+      "creationFailed": "技能创建失败",
+      "importFailed": "技能导入失败",
+      "skillRemoved": "技能已移除",
+      "skillSaved": "技能已保存",
+      "settingsUpdated": "技能设置已更新",
+      "settingsUpdateFailed": "技能设置更新失败",
+      "skillsImported": "技能已导入",
+      "skillUpdated": "技能已更新",
+      "starFailed": "星标失败",
+      "updateFailed": "更新失败"
+    },
+    "errors": {
+      "create": "创建技能失败。",
+      "importSource": "导入技能源码失败。",
+      "installCatalog": "安装目录技能失败。",
+      "installUpdate": "安装技能更新失败。",
+      "loadFile": "加载文件失败",
+      "remove": "移除技能失败。",
+      "saveFile": "保存技能文件失败。",
+      "scanWorkspaces": "扫描项目工作区失败。",
+      "updateAgents": "更新智能体技能失败。",
+      "updateSettings": "更新技能设置失败。",
+      "updateStar": "更新星标失败。"
+    },
+    "tabs": {
+      "overview": "概览",
+      "files": "文件",
+      "versions": "版本",
+      "detail": "详情",
+      "agents": "智能体",
+      "skills": "技能",
+      "includesAssets": "包含资源",
+      "includesScripts": "包含脚本",
+      "markdownOnly": "仅 Markdown",
+      "invalid": "无效",
+      "unknownFormat": "未知格式"
+    },
+    "messages": {
+      "catalogNotFound": "未找到目录技能。",
+      "selectCatalogToInspect": "选择一个目录技能以查看详情。",
+      "selectSkillToInspectFiles": "选择一个技能以查看其文件。",
+      "skillNotFound": "未找到技能。"
+    },
+    "aria": {
+      "paused": "已暂停",
+      "pinnedRevision": "固定源版本"
+    }
+  },
+  "secrets": {
+    "toasts": {
+      "defaultUpdateFailed": "默认更新失败",
+      "defaultVaultSet": "默认保管库已设置",
+      "deleteFailed": "删除失败",
+      "disableFailed": "禁用失败",
+      "healthChecked": "健康检查完成",
+      "healthCheckFailed": "健康检查失败",
+      "providerVaultDisabled": "提供商保管库已禁用",
+      "providerVaultRemoved": "提供商保管库已移除",
+      "removeFailed": "移除失败",
+      "rotated": "已轮换",
+      "secretCreated": "密钥已创建",
+      "secretDeleted": "密钥已删除",
+      "statusUpdateFailed": "状态更新失败"
+    },
+    "errors": {
+      "rotate": "轮换失败",
+      "tryAgain": "重试",
+      "unexpectedError": "意外错误",
+      "selectAProvider": "请选择提供商。",
+      "thisProviderVaultIsDisabled": "此提供商保险库已禁用。",
+      "thisProviderVaultIsSavedAsDraftMetadataOnly": "此提供商保险库仅保存为草稿元数据。",
+      "deploymentDefault": "部署默认值"
+    },
+    "labels": {
+      "newSecret": "新建密钥",
+      "address": "地址",
+      "awsRegion": "AWS 区域",
+      "created": "创建时间",
+      "custody": "托管",
+      "description": "描述",
+      "environmentTag": "环境标签",
+      "kmsKeyId": "KMS 密钥 ID",
+      "lastResolved": "上次解析",
+      "lastRotated": "上次轮换",
+      "latestVersion": "最新版本",
+      "location": "位置",
+      "mountPath": "挂载路径",
+      "namespace": "命名空间",
+      "ownerTag": "所有者标签",
+      "projectId": "项目 ID",
+      "provider": "提供商",
+      "providerVault": "提供商保管库",
+      "searchSecrets": "搜索密钥",
+      "secretNamePrefix": "密钥名前缀",
+      "secretPathPrefix": "密钥路径前缀",
+      "updated": "更新时间",
+      "accessEvents": "访问事件",
+      "active": "活跃",
+      "allStatuses": "所有状态",
+      "archived": "已归档",
+      "details": "详情",
+      "disabled": "已禁用",
+      "providerVaults": "提供商保管库",
+      "secrets": "密钥"
+    },
+    "placeholders": {
+      "openaiApiKey": "OPENAI_API_KEY",
+      "pasteNewValue": "粘贴新值",
+      "productionLocalVault": "生产环境本地保管库",
+      "searchByName": "按名称、键、引用搜索",
+      "storedOnce": "仅存储一次,永不再次显示",
+      "whatIsThisFor": "此密钥用于什么?(不含值)",
+      "autoFromName": "从名称自动生成"
+    },
+    "text": {
+      "selectACompanyToManageSecrets": "选择一家公司来管理密钥。",
+      "newSecret": "新建密钥",
+      "failedToLoadSecrets": "加载密钥失败:",
+      "lastRotated": "上次轮换",
+      "lastResolved": "上次解析",
+      "open": "打开",
+      "delete": "删除",
+      "secretReferences": "密钥引用",
+      "createSecret": "创建密钥",
+      "chooseWhetherPaperclipShouldOwnFutureProviderWrite": "选择 Paperclip 是否应拥有未来的提供商写入权限,或仅在运行时解析现有的提供商引用。",
+      "managedValue": "托管值",
+      "externalReference": "外部引用",
+      "providerVault": "提供商保险库",
+      "deploymentDefault": "部署默认",
+      "existingDeploymentLevelProviderSettingsStayAvailab": "现有的部署级提供商设置仍可用于向后兼容。",
+      "paperclipManagedSecretsAreCreatedInTheSelectedProv": "Paperclip 托管的密钥在选定的提供商中创建,未来的轮换通过 Paperclip 写入新的提供商版本。",
+      "existingProviderSecretsAreResolveOnlyInPaperclipRo": "现有的提供商密钥在 Paperclip 中仅为只读解析。请在提供商中轮换值,然后仅当路径、ARN 或版本更改时才更新此引用。",
+      "cancel": "取消",
+      "saveOnlyNonSensitiveRoutingMetadataCredentialsStay": "仅保存非敏感路由元数据。凭据保留在运行时环境或提供商身份中。",
+      "displayName": "显示名称",
+      "warning": "警告",
+      "comingSoon": "即将推出",
+      "defaultFor": "默认用于",
+      "thisProviderCanSaveDraftRoutingMetadataButRuntimeW": "此提供商可以保存草稿路由元数据,但在提供商模块实现并审核之前,运行时写入和解析保持禁用。",
+      "rotatingWithTheDeploymentDefaultPreservesCurrentFa": "使用部署默认值轮换可保留当前回退行为。",
+      "rotateTheActualValueInTheProviderBeforeChangingThi": "在更改此 Paperclip 引用之前,请先轮换提供商中的实际值。",
+      "newValue": "新值",
+      "deleteSecret": "删除密钥",
+      "permanentlyRemoves": "永久移除",
+      "activeBindingsWillFailUntilYouRemapThem": "。活跃绑定将失败,直到您重新映射它们。",
+      "removeProviderVault": "移除提供商保险库",
+      "fromPaperclipOnly": "仅从 Paperclip 中移除。",
+      "secretsUsingThisVaultWillLoseTheVaultAssociationUn": "使用此保险库的密钥将失去保险库关联,直到您分配另一个。",
+      "removeFromPaperclip": "从 Paperclip 移除",
+      "useSecretsByBindingThemToRuntimeEnvironmentVariabl": "通过将密钥绑定到运行时环境变量来使用它们。",
+      "createOrLinkASecretHereThenOpenAnAgentAposSEnviron": "在此创建或链接密钥,然后打开智能体的环境变量或项目的环境字段。添加进程期望的环境键,例如",
+      "andSelectTheStoredSecretVersion": ",并选择存储的密钥版本。",
+      "paperclipResolvesTheValueServerSideWhenTheRunStart": "Paperclip 在运行启动时在服务端解析值,并将其注入为该环境变量。项目环境应用于项目中的每个任务,并在匹配键上覆盖智能体环境。",
+      "allProviders": "所有提供商",
+      "importFromVault": "从保险库导入",
+      "loadingProviderVaults": "加载提供商保险库",
+      "failedToLoadProviderVaults": "加载提供商保险库失败:",
+      "addVault": "添加保险库",
+      "healthNotChecked": "未检查健康状态",
+      "checkHealth": "检查健康状态",
+      "refreshSecrets": "刷新密钥",
+      "makeDefault": "设为默认",
+      "remove": "移除",
+      "iUnderstandBackupAndRestoreRequireBothTheDatabaseM": "我了解备份和恢复需要数据库元数据和本地加密主密钥文件。",
+      "usesTheCurrentDraftRoutingFieldsToInspectAwsSecret": "使用当前草稿路由字段检查 AWS Secrets Manager 元数据。不会读取值。",
+      "findExistingAwsValues": "查找现有 AWS 值",
+      "enterAnAwsRegionBeforeDiscovery": "请在发现之前输入 AWS 区域。",
+      "searchingAwsSecretsManagerMetadata": "正在搜索 AWS Secrets Manager 元数据",
+      "noAwsVaultMetadataCandidatesFoundManualEntryIsStil": "未找到 AWS 保险库元数据候选。仍可手动输入。",
+      "vaultContext": "保险库上下文",
+      "safeRequestErrorDetails": "安全请求/错误详情",
+      "useValues": "使用值",
+      "paperclipNeverReDisplaysStoredValues": "Paperclip 永远不会重新显示已存储的值。",
+      "loading": "加载中…",
+      "noActiveBindingsAddThisSecretInAgentProjectEnviron": "无活跃绑定。在智能体、项目、环境或插件配置中添加此密钥即可开始使用。",
+      "noAccessEventsRecordedYetEachRuntimeResolutionWrit": "尚无访问事件记录。每次运行时解析都会在此写入一条脱敏记录。"
+    },
+    "labelsJsx": {
+      "configureAnAwsProviderVaultToEnableRemoteImport": "配置 AWS 提供商保险库以启用远程导入"
+    }
+  },
+  "teamCatalog": {
+    "toasts": {
+      "teamInstalled": "团队已安装"
+    },
+    "errors": {
+      "loadPreview": "加载安装预览失败。",
+      "installFailed": "安装失败。"
+    },
+    "description": {
+      "resolveSources": "在安装时解析 github/url 技能和团队来源。"
+    },
+    "actions": {
+      "resetFilters": "重置筛选"
+    },
+    "labelsJsx": {
+      "agents": "智能体",
+      "agentsImported": "智能体已导入",
+      "allowExternal": "允许外部来源",
+      "allowLocalPath": "允许本地路径来源",
+      "allowUnpinned": "允许未固定的可选来源",
+      "projects": "项目",
+      "projectsImported": "项目已导入",
+      "requiredSkills": "所需技能",
+      "routines": "例程",
+      "skillsResolved": "技能已解析",
+      "starterTasks": "初始任务",
+      "updateAvailable": "有可用更新"
+    },
+    "labelsObj": {
+      "assets": "资产",
+      "blocked": "已阻塞",
+      "bundledInPackage": "随包捆绑",
+      "compatible": "兼容",
+      "externalSources": "外部来源",
+      "invalid": "无效",
+      "markdownOnly": "仅 Markdown",
+      "orgChart": "组织架构",
+      "scripts": "脚本",
+      "teams": "团队",
+      "unknownCompat": "未知兼容性",
+      "willImportFromSource": "将从来源导入",
+      "willInstallFromCatalog": "将从目录安装"
+    },
+    "placeholders": {
+      "searchAgents": "搜索智能体……",
+      "searchTeams": "搜索团队"
+    }
+  },
+  "executionWorkspace": {
+    "toasts": {
+      "runFailed": "例程运行失败",
+      "started": "例程已启动"
+    },
+    "errors": {
+      "buildUpdate": "构建工作区更新失败。",
+      "controlCommands": "控制工作区命令失败。",
+      "loadRoutines": "加载例程失败。",
+      "loadWorkspace": "加载工作区失败",
+      "saveWorkspace": "保存执行工作区失败。",
+      "invalidJson": "JSON 格式无效。",
+      "startRun": "Paperclip 无法启动例程运行。"
+    },
+    "labels": {
+      "baseRef": "基础引用",
+      "branch": "分支",
+      "branchName": "分支名称",
+      "cleanup": "清理",
+      "cleanupCommand": "清理命令",
+      "derivedFrom": "派生自",
+      "lastUsed": "上次使用",
+      "opened": "已打开",
+      "project": "项目",
+      "projectWorkspace": "项目工作区",
+      "providerPathRef": "提供商路径/引用",
+      "providerRef": "提供商引用",
+      "provisionCommand": "配置命令",
+      "repoUrl": "仓库 URL",
+      "sourceTask": "来源任务",
+      "teardownCommand": "拆除命令",
+      "workingDir": "工作目录",
+      "workingDirectory": "工作目录",
+      "workspaceCommandsJson": "工作区命令 JSON",
+      "workspaceId": "工作区 ID",
+      "workspaceName": "工作区名称"
+    },
+    "placeholders": {
+      "workspaceName": "执行工作区名称",
+      "paperclipWorkspace": "PAP-946-工作区"
+    }
+  },
+  "pluginSettings": {
+    "labels": {
+      "configured": "已配置",
+      "readable": "可读",
+      "writable": "可写",
+      "configuration": "配置",
+      "instanceSettings": "实例设置",
+      "plugins": "插件",
+      "settings": "设置",
+      "status": "状态"
+    }
+  },
+  "boardChat": {
+    "actions": {
+      "jumpToLatest": "跳到最新消息",
+      "openAgentFeed": "打开智能体动态",
+      "resizeSplit": "调整会议室聊天和智能体动态大小"
+    },
+    "prompts": {
+      "hiringPlan": "制定招聘计划",
+      "companyBrief": "起草公司简介",
+      "firstThirtyDays": "规划前 30 天",
+      "introPitch": "写一段介绍"
+    },
+    "placeholders": {
+      "askAnything": "询问关于贵公司的任何问题……"
+    }
+  },
+  "companyImport": {
+    "toasts": {
+      "complete": "导入完成",
+      "failed": "导入失败",
+      "readFailed": "包读取失败",
+      "previewFailed": "预览失败"
+    },
+    "errors": {
+      "apply": "应用导入失败。",
+      "preview": "预览导入失败。",
+      "readFolder": "读取文件夹失败。"
+    },
+    "labels": {
+      "collisionStrategy": "冲突策略",
+      "githubUrl": "GitHub 地址",
+      "newCompanyName": "新公司名称",
+      "target": "目标"
+    },
+    "tabs": {
+      "githubRepo": "GitHub 仓库",
+      "import": "导入",
+      "localZip": "本地压缩包"
+    },
+    "placeholders": {
+      "importedCompany": "已导入公司"
+    }
+  },
+  "companyExport": {
+    "toasts": {
+      "downloaded": "导出已下载",
+      "failed": "导出失败"
+    },
+    "errors": {
+      "buildPackage": "构建导出包失败。",
+      "loadData": "加载导出数据失败。"
+    },
+    "tabs": {
+      "export": "导出"
+    },
+    "placeholders": {
+      "searchFiles": "搜索文件……"
+    }
+  },
+  "companyAccess": {
+    "toasts": {
+      "approveJoinFailed": "审批加入请求失败",
+      "rejectJoinFailed": "拒绝加入请求失败",
+      "removeMemberFailed": "移除成员失败",
+      "updateMemberFailed": "更新成员失败",
+      "joinApproved": "加入请求已批准",
+      "joinRejected": "加入请求已拒绝",
+      "memberRemoved": "成员已移除",
+      "memberUpdated": "成员已更新"
+    },
+    "errors": {
+      "unknown": "未知错误"
+    },
+    "fallbacks": {
+      "unknownRequester": "未知人类请求者",
+      "noEmail": "无可用邮箱"
+    },
+    "labelsJsx": {
+      "agents": "智能体",
+      "humans": "人类"
+    },
+    "labelsObj": {
+      "access": "访问",
+      "members": "成员",
+      "settings": "设置"
+    },
+    "text": {
+      "action": "操作",
+      "active": "活跃",
+      "advancedPermissions": "高级权限",
+      "advancedPermissionsUnavailable": "高级权限不可用",
+      "checkingExtensions": "正在检查高级权限扩展……",
+      "companyMembers": "公司成员",
+      "companyRole": "公司角色",
+      "editMember": "编辑成员",
+      "leaveUnassigned": "保持未分配",
+      "membershipStatus": "成员资格状态",
+      "noMembershipsFound": "此公司暂无用户成员。",
+      "openInvites": "打开邀请",
+      "openMembers": "打开成员",
+      "pending": "待处理",
+      "pendingHumanJoins": "待处理的人类加入",
+      "removeMember": "移除成员",
+      "role": "角色",
+      "status": "状态",
+      "suspended": "已暂停",
+      "taskReassignment": "任务重新分配",
+      "unset": "未设置",
+      "userAccount": "用户账号",
+      "humans": "人类成员",
+      "selectCompany": "选择一家公司"
+    }
+  },
+  "companyEnvironments": {
+    "toasts": {
+      "defaultUpdated": "默认环境已更新",
+      "draftProbeFailed": "草稿探测失败",
+      "probeFailed": "环境探测失败",
+      "saveFailed": "保存环境失败",
+      "defaultUpdateFailed": "更新默认环境失败"
+    },
+    "errors": {
+      "defaultUpdateFailed": "默认环境更新失败。",
+      "probeFailed": "环境探测失败。",
+      "saveFailed": "环境保存失败。"
+    },
+    "text": {
+      "default": "默认",
+      "local": "本地",
+      "noSavedSecret": "无已保存密钥",
+      "runsOnHost": "在此 Paperclip 主机上运行。",
+      "sandbox": "沙盒"
+    },
+    "labelsJsx": {
+      "description": "描述",
+      "driver": "驱动",
+      "envVars": "环境变量",
+      "host": "主机",
+      "knownHosts": "已知主机",
+      "name": "名称",
+      "port": "端口",
+      "privateKey": "私钥",
+      "provider": "提供商",
+      "remotePath": "远程工作区路径",
+      "strictHostKey": "严格的主机密钥检查",
+      "username": "用户名"
+    },
+    "tabs": {
+      "environments": "环境",
+      "instanceSettings": "实例设置",
+      "settings": "设置"
+    }
+  },
+  "companyInvites": {
+    "toasts": {
+      "clipboardUnavailable": "剪贴板不可用",
+      "createFailed": "创建邀请失败",
+      "revokeFailed": "撤销邀请失败",
+      "created": "邀请已创建",
+      "revoked": "邀请已撤销"
+    },
+    "errors": {
+      "unknown": "未知错误"
+    },
+    "text": {
+      "action": "操作",
+      "chooseRole": "选择角色",
+      "companyInvites": "公司邀请",
+      "created": "创建时间",
+      "inactive": "未活跃",
+      "invitePerson": "邀请人员",
+      "invitedBy": "邀请者",
+      "inviteHistory": "邀请历史",
+      "auditTrail": "以下邀请历史保留审计记录。",
+      "joinRequest": "加入请求",
+      "latestInviteLink": "最新邀请链接",
+      "latestInviteUrl": "最新邀请 URL",
+      "state": "状态"
+    },
+    "labelsJsx": {
+      "latestInviteUrl": "最新邀请 URL"
+    },
+    "labelsObj": {
+      "admin": "管理员",
+      "invites": "邀请",
+      "operator": "操作员",
+      "owner": "所有者",
+      "settings": "设置",
+      "viewer": "查看者"
+    },
+    "roleDescriptions": {
+      "viewer": "可查看公司工作并跟进。",
+      "admin": "完全公司访问权限,包括成员管理。"
+    }
+  },
+  "adapterManager": {
+    "toasts": {
+      "installed": "适配器已安装",
+      "reinstalled": "适配器已重装",
+      "reloaded": "适配器已重载",
+      "removed": "适配器已移除",
+      "installFailed": "安装失败",
+      "overrideToggleFailed": "覆盖切换失败",
+      "reinstallFailed": "重装失败",
+      "reloadFailed": "重载失败",
+      "removalFailed": "移除失败",
+      "toggleFailed": "切换失败"
+    },
+    "text": {
+      "adapters": "适配器",
+      "cancel": "取消",
+      "current": "当前",
+      "externalAdapters": "外部适配器",
+      "externalAlpha": "外部适配器为 Alpha 阶段。",
+      "installExternal": "安装外部适配器",
+      "latestOnNpm": "npm 最新版",
+      "loadingAdapters": "正在加载适配器……",
+      "noExternalInstalled": "未安装外部适配器",
+      "package": "包",
+      "packageName": "包名称",
+      "pathToPackage": "适配器包路径",
+      "reinstallAdapter": "重装适配器",
+      "removeAdapter": "移除适配器"
+    },
+    "tabs": {
+      "adapters": "适配器",
+      "instanceSettings": "实例设置",
+      "settings": "设置"
+    }
+  },
+  "cloudUpstream": {
+    "errors": {
+      "activateEntities": "激活导入实体失败。",
+      "finishConnection": "完成连接失败。",
+      "runPush": "运行推送失败。",
+      "startConnection": "启动连接失败。"
+    },
+    "text": {
+      "activationChecklist": "激活检查清单",
+      "cloudUpstream": "云上游",
+      "conflicts": "冲突",
+      "connection": "连接",
+      "loadingExperimental": "正在加载实验设置……",
+      "noConflicts": "此预览未检测到目标冲突。",
+      "preview": "预览",
+      "progressAndFinish": "进度与完成"
+    },
+    "labelsJsx": {
+      "stackUrl": "Paperclip Cloud 栈地址"
+    },
+    "steps": {
+      "scan": "扫描",
+      "connect": "连接",
+      "preview": "预览",
+      "activate": "激活",
+      "push": "推送",
+      "verify": "验证",
+      "agents": "智能体",
+      "routines": "例程",
+      "monitors": "监控"
+    },
+    "tabs": {
+      "cloudUpstream": "云上游",
+      "settings": "设置"
+    }
+  },
+  "cloudUpstreamUxLab": {
+    "checks": {
+      "automationsPaused": {
+        "title": "自动化保持暂停",
+        "detail": "导入的智能体、例程和监控需要在推送后显式激活。"
+      },
+      "unmatchedUsers": {
+        "title": "未匹配的用户成为历史作者",
+        "detail": "传输完成后,邀请操作降级为次要操作。"
+      },
+      "secretsNotTransferred": {
+        "title": "密钥值不传输",
+        "detail": "推送仅包含密钥需求。在激活自动化前请先配置云端密钥。"
+      },
+      "stackUpgradeRequired": {
+        "title": "需要云栈升级",
+        "detail": "此本地构建使用上游 schema 7,但云栈报告 schema 5。"
+      }
+    },
+    "text": {
+      "activationChecklist": "激活检查清单",
+      "cloudUpstream": "云上游",
+      "conflicts": "冲突",
+      "connection": "连接",
+      "noConflicts": "此预览未检测到目标冲突。",
+      "preview": "预览",
+      "progressAndFinish": "进度与完成"
+    },
+    "labelsJsx": {
+      "stackUrl": "Paperclip Cloud 栈地址"
+    },
+    "steps": {
+      "scan": "扫描",
+      "connect": "连接",
+      "preview": "预览",
+      "activate": "激活",
+      "push": "推送",
+      "verify": "验证",
+      "agents": "智能体",
+      "routines": "例程",
+      "monitors": "监控",
+      "users": "用户"
+    }
+  },
+  "approvalDetail": {
+    "errors": {
+      "approve": "审批失败",
+      "comment": "评论失败",
+      "delete": "删除失败",
+      "reject": "拒绝失败",
+      "resubmit": "重新提交失败"
+    },
+    "text": {
+      "confirmed": "审批已确认",
+      "notFound": "未找到审批。",
+      "linkedTasks": "链接任务",
+      "requestedBy": "请求人"
+    },
+    "labels": {
+      "approvals": "审批",
+      "backToApprovals": "返回审批",
+      "openHiredAgent": "打开已雇用智能体"
+    },
+    "placeholders": {
+      "addComment": "添加评论……"
+    }
+  },
+  "artifacts": {
+    "text": {
+      "groupBy": "分组方式"
+    },
+    "labelsJsx": {
+      "clearSearch": "清除产物搜索",
+      "filterByType": "按类型筛选产物",
+      "search": "搜索产物"
+    },
+    "labelsObj": {
+      "artifacts": "产物",
+      "documents": "文档",
+      "files": "文件",
+      "images": "图片",
+      "none": "无"
+    }
+  },
+  "boardClaim": {
+    "errors": {
+      "challengeInvalid": "挑战无效或已过期。",
+      "claimFailed": "认领董事会所有权失败"
+    },
+    "text": {
+      "claimed": "董事会所有权已认领",
+      "claim": "认领董事会所有权",
+      "challengeUnavailable": "认领挑战不可用",
+      "invalidUrl": "无效的董事会认领 URL。",
+      "loading": "正在加载认领挑战……",
+      "openBoard": "打开董事会",
+      "signInRequired": "需要登录"
+    }
+  },
+  "companies": {
+    "text": {
+      "loading": "正在加载公司……",
+      "unlimitedBudget": "无限预算"
+    },
+    "tabs": {
+      "companies": "公司"
+    }
+  },
+  "companySettingsPluginPage": {
+    "text": {
+      "loading": "加载中……",
+      "selectCompany": "选择一家公司以查看此页面。"
+    },
+    "tabs": {
+      "settings": "设置"
+    }
+  },
+  "dashboardLive": {
+    "text": {
+      "liveRuns": "正在运行的智能体"
+    },
+    "tabs": {
+      "dashboard": "仪表盘",
+      "liveRuns": "正在运行"
+    }
+  },
+  "goalDetail": {
+    "text": {
+      "noLinkedProjects": "无链接项目。"
+    },
+    "tabs": {
+      "goals": "目标"
+    },
+    "placeholders": {
+      "addDescription": "添加描述……"
+    }
+  },
+  "cliAuth": {
+    "errors": {
+      "challengeInvalid": "挑战无效或已过期。"
+    },
+    "text": {
+      "approve": "批准 Paperclip CLI 访问",
+      "client": "客户端",
+      "command": "命令",
+      "invalidUrl": "无效的 CLI 认证 URL。",
+      "loading": "正在加载 CLI 认证挑战……",
+      "requestedAccess": "请求的访问",
+      "requestedCompany": "请求的公司",
+      "signInRequired": "需要登录"
+    }
+  },
+  "bootstrapSetupUxLab": {
+    "text": {
+      "claimInstance": "认领此实例",
+      "continueToDashboard": "继续前往控制台",
+      "finishSetup": "完成此 Paperclip 的设置",
+      "preferHostSetup": "更想在主机上完成设置?",
+      "alreadyClaimed": "此实例已被他人认领。",
+      "waitingForAdmin": "此 Paperclip 正在等待首位管理员"
+    }
+  },
+  "instanceAccess": {
+    "toasts": {
+      "companyAccessUpdated": "公司访问已更新",
+      "instanceRoleUpdated": "实例角色已更新"
+    },
+    "errors": {
+      "loadUserAccess": "加载用户访问失败。"
+    },
+    "text": {
+      "companyAccess": "公司访问",
+      "currentMemberships": "当前成员资格",
+      "instanceAccess": "实例访问",
+      "searchUsers": "搜索用户",
+      "selectUserToInspect": "选择用户以查看实例访问。"
+    },
+    "tabs": {
+      "access": "访问",
+      "instanceSettings": "实例设置",
+      "settings": "设置"
+    },
+    "placeholders": {
+      "searchByName": "按名称或邮箱搜索"
+    }
+  },
+  "instanceExperimental": {
+    "errors": {
+      "createRecovery": "创建恢复任务失败。",
+      "previewRecovery": "预览恢复任务失败。",
+      "updateSettings": "更新实验设置失败。"
+    },
+    "features": {
+      "experimental": "实验性",
+      "warning": "实验性功能可能随时中断。",
+      "loading": "正在加载实验设置……",
+      "cloudSync": "云同步",
+      "conferenceRoomChat": "会议室聊天",
+      "enableEnvironments": "启用环境",
+      "enableExternalObjects": "启用外部对象",
+      "enableIsolatedWorkspaces": "启用隔离工作区",
+      "experimentalFileViewer": "实验性文件查看器",
+      "streamlinedLeftNav": "精简左侧导航栏",
+      "taskPlanDecomposition": "任务计划分解面板",
+      "taskWatchdogs": "任务看门狗"
+    },
+    "aria": {
+      "toggleCloudSync": "切换云同步实验设置",
+      "toggleConferenceRoomChat": "切换会议室聊天实验设置",
+      "toggleEnvironments": "切换环境实验设置",
+      "toggleExperimentalFileViewer": "切换实验性文件查看器设置",
+      "toggleExternalObjects": "切换外部对象实验设置",
+      "toggleGuardedDevServer": "切换受保护的开发服务器自动重启",
+      "toggleIsolatedWorkspaces": "切换隔离工作区实验设置",
+      "toggleStreamlinedLeftNav": "切换精简左侧导航实验设置",
+      "toggleTaskGraphLiveness": "切换任务图活性自动恢复",
+      "toggleTaskPlanDecomposition": "切换任务计划分解面板实验设置",
+      "toggleTaskWatchdogs": "切换任务看门狗实验设置"
+    },
+    "tabs": {
+      "experimental": "实验性",
+      "instanceSettings": "实例设置",
+      "settings": "设置"
+    }
+  },
+  "instanceGeneral": {
+    "errors": {
+      "signOut": "退出失败。",
+      "updateSettings": "更新常规设置失败。"
+    },
+    "text": {
+      "backupRetention": "备份保留",
+      "censorUsername": "在日志中隐去用户名",
+      "daily": "每日",
+      "deploymentAuth": "部署与认证",
+      "general": "常规",
+      "keyboardShortcuts": "键盘快捷键",
+      "loading": "正在加载常规设置……",
+      "monthly": "每月",
+      "signOut": "退出",
+      "weekly": "每周"
+    },
+    "labelsJsx": {
+      "authReadiness": "认证就绪",
+      "bootstrapInvite": "引导邀请",
+      "bootstrapStatus": "引导状态",
+      "toggleKeyboardShortcuts": "切换键盘快捷键",
+      "toggleUsernameLogCensoring": "切换日志用户名隐去"
+    },
+    "descriptions": {
+      "keepVotedLocal": "仅在本地保留投票的 AI 输出。",
+      "shareVotedOutputs": "自动分享投票的 AI 输出。"
+    },
+    "options": {
+      "alwaysAllow": "始终允许",
+      "dontAllow": "不允许"
+    },
+    "tabs": {
+      "general": "常规",
+      "instanceSettings": "实例设置",
+      "settings": "设置"
+    }
+  },
+  "inviteUxLab": {
+    "text": {
+      "acceptCompanyInvite": "接受公司邀请",
+      "action": "操作",
+      "adapterType": "适配器类型",
+      "agentName": "智慧代理名称",
+      "approvalPage": "审批页面",
+      "capabilities": "能力",
+      "chooseRole": "选择角色",
+      "claimSecret": "领取密钥",
+      "claudeCode": "Claude Code",
+      "codex": "Codex",
+      "created": "创建时间",
+      "createInvite": "创建邀请",
+      "cursor": "Cursor",
+      "email": "邮箱",
+      "emptyHistory": "空历史状态",
+      "inactive": "未活跃",
+      "uxReview": "邀请与注册用户体验审查界面",
+      "invitedBy": "邀请者",
+      "inviteHistory": "邀请历史",
+      "auditTrail": "以下邀请历史保留审计记录。",
+      "joinRequest": "加入请求",
+      "latestInviteLink": "最新邀请链接",
+      "messageFromInviter": "邀请者留言",
+      "name": "姓名",
+      "paperclip": "Paperclip",
+      "password": "密码",
+      "permissionError": "权限错误",
+      "role": "角色",
+      "state": "状态",
+      "submitAgentDetails": "提交智慧代理詳情",
+      "submittingRequest": "正在提交請求……"
+    },
+    "actions": {
+      "inactive": "未活跃",
+      "revoke": "撤销"
+    },
+    "descriptions": {
+      "boardApproval": "委员会用户必须審批你的加入請求。",
+      "viewer": "可查看公司工作并跟进。",
+      "admin": "完全公司访问权限,包括成员管理。"
+    },
+    "labelsJsx": {
+      "company": "公司",
+      "invitedBy": "邀请者",
+      "inviteExpires": "邀请过期",
+      "requestedAccess": "請求的访问"
+    },
+    "labelsObj": {
+      "admin": "管理员",
+      "operator": "操作员",
+      "owner": "所有者",
+      "viewer": "查看者"
+    }
+  },
+  "projectDetail": {
+    "text": {
+      "color": "颜色",
+      "icon": "图标",
+      "loadingWorkspaces": "正在加载工作區……",
+      "noIconsMatch": "没有匹配的圖示",
+      "status": "状态",
+      "targetDate": "目标日期"
+    },
+    "labelsJsx": {
+      "changeIconColor": "更改專案圖示和顏色",
+      "dismissMembershipNotice": "忽略项目成员资格通知",
+      "resetToGray": "重置为中性灰"
+    },
+    "labelsObj": {
+      "budget": "预算",
+      "configuration": "配置",
+      "overview": "概览",
+      "pluginOperations": "插件操作",
+      "projects": "项目",
+      "tasks": "任务",
+      "workspaces": "工作区"
+    },
+    "placeholders": {
+      "addDescription": "添加描述……",
+      "searchIcons": "搜索图标……"
+    }
+  },
+  "routineDetail": {
+    "toasts": {
+      "defaultAgentRequired": "需要預設智慧代理",
+      "addTriggerFailed": "添加触发器失败",
+      "deleteTriggerFailed": "删除触发器失败",
+      "rotateWebhookFailed": "轮换 Webhook 密钥失败",
+      "saveFailed": "保存例程失败",
+      "updateFailed": "更新例程失败",
+      "updateTriggerFailed": "更新触发器失败",
+      "routineChanged": "例程已更改",
+      "runFailed": "例程运行失败",
+      "runStarted": "例程运行已启动",
+      "saved": "例程已保存",
+      "triggerAdded": "触发器已添加",
+      "triggerDeleted": "触发器已删除",
+      "triggerSaved": "触发器已保存",
+      "webhookRotated": "Webhook 密钥已轮换",
+      "webhookTriggerCreated": "Webhook 触发器已创建"
+    },
+    "errors": {
+      "clipboardDenied": "剪贴板访问被拒绝。",
+      "createTrigger": "Paperclip 无法创建触发器。",
+      "deleteTrigger": "Paperclip 无法删除触发器。",
+      "rotateWebhook": "Paperclip 无法轮换 Webhook 密钥。",
+      "saveRoutine": "Paperclip 无法保存例程。",
+      "startRun": "Paperclip 无法启动例程运行。",
+      "updateRoutine": "Paperclip 无法更新例程。",
+      "updateTrigger": "Paperclip 无法更新触发器。",
+      "loadRoutine": "无法加载此例程。"
+    },
+    "tabs": {
+      "routines": "例程"
+    },
+    "placeholders": {
+      "title": "例程标题"
+    }
+  },
+  "inviteLanding": {
+    "errors": {
+      "acceptFailed": "接受邀请失败"
+    },
+    "text": {
+      "adapterType": "适配器类型",
+      "agentName": "智慧代理名称",
+      "approvalPage": "审批页面",
+      "bootstrapComplete": "引导完成",
+      "capabilities": "能力",
+      "checkingAccess": "正在检查你的访问……",
+      "claimSecret": "领取密钥",
+      "company": "公司",
+      "email": "邮箱",
+      "invalidToken": "无效的邀請令牌。",
+      "invitedBy": "邀请者",
+      "inviteExpires": "邀请过期",
+      "inviteNotAvailable": "邀請不可用",
+      "loadingInvite": "正在加载邀請……",
+      "messageFromInviter": "邀请者留言",
+      "name": "姓名",
+      "openBoard": "打开董事会",
+      "openingCompany": "正在打开公司……",
+      "password": "密码",
+      "requestedAccess": "請求的访问",
+      "submitAgentDetails": "提交智慧代理詳情",
+      "joinedCompany": "你已加入公司"
+    }
+  },
+  "projectWorkspaceDetail": {
+    "errors": {
+      "controlCommands": "控制工作区命令失败。",
+      "loadWorkspace": "加载工作区失败",
+      "saveWorkspace": "保存工作区失败。",
+      "updateWorkspace": "更新工作区失败。",
+      "invalidJson": "JSON 格式无效。"
+    },
+    "text": {
+      "advancedRuntimeJson": "高级运行时 JSON",
+      "currentState": "当前状态",
+      "noUnsavedChanges": "无未儲存的更改。",
+      "servicesJobs": "服务与任务",
+      "workspaceCommands": "工作区命令",
+      "workspaceFacts": "工作区事实",
+      "notFound": "此项目未找到工作区。"
+    },
+    "labelsJsx": {
+      "cleanupCommand": "清理命令",
+      "defaultRef": "默认引用",
+      "localPath": "本地路径",
+      "project": "项目",
+      "remoteProvider": "远程提供商",
+      "remoteRef": "远程工作区引用",
+      "repo": "仓库",
+      "repoRef": "仓库引用",
+      "repoUrl": "仓库 URL",
+      "setupCommand": "设置命令",
+      "sharedKey": "共享工作区密钥",
+      "sourceType": "来源类型",
+      "updated": "更新时间",
+      "visibility": "可见性",
+      "workspaceCommandsJson": "工作区命令 JSON",
+      "workspaceId": "工作区 ID",
+      "workspaceName": "工作区名称"
+    },
+    "descriptions": {
+      "hosted": "由外部引用跟踪的托管工作區。",
+      "localNonGit": "无 git 语义的本地文件夹。",
+      "localDirect": "Paperclip 可直接使用的本地路径。",
+      "remoteRepo": "具有可选引用和本地检出的仓库 URL。"
+    },
+    "labelsObj": {
+      "advanced": "高级",
+      "configuration": "配置",
+      "default": "默认",
+      "localGit": "本地 git 检出",
+      "localNonGit": "本地非 git 路径",
+      "projects": "项目",
+      "remoteGit": "远程 git 仓库",
+      "remoteManaged": "远程管理工作区",
+      "workspaces": "工作区"
+    },
+    "placeholders": {
+      "workspaceName": "工作区名称"
+    }
+  },
+  "pluginManager": {
+    "toasts": {
+      "disableFailed": "禁用插件失败",
+      "enableFailed": "启用插件失败",
+      "installFailed": "安装插件失败",
+      "uninstallFailed": "卸载插件失败",
+      "disabled": "插件已禁用",
+      "enabled": "插件已启用",
+      "installed": "插件安装成功",
+      "uninstalled": "插件卸载成功"
+    },
+    "text": {
+      "available": "可用插件",
+      "building": "正在构建插件……",
+      "bundled": "已捆绑",
+      "cancel": "取消",
+      "errorDetails": "错误详情",
+      "loadBundledFailed": "加载捆绑插件失败。",
+      "loadFailed": "加载插件失败。",
+      "fullErrorOutput": "完整错误输出",
+      "installedPlugins": "已安装插件",
+      "installPlugin": "安装插件",
+      "loadingBundled": "正在加载捆绑插件……",
+      "loading": "正在加载插件……",
+      "noneInstalled": "未安装插件",
+      "notInstalled": "未安装",
+      "pluginError": "插件错误",
+      "pluginManager": "插件管理器",
+      "pluginsAlpha": "插件为 Alpha 阶段。",
+      "uninstallPlugin": "卸载插件"
+    },
+    "tabs": {
+      "instanceSettings": "实例设置",
+      "plugins": "插件",
+      "settings": "设置"
+    }
+  },
+  "systemNoticeUxLab": {
+    "toasts": {
+      "recoveryOwner": "恢复负责人",
+      "runEvidence": "运行证据",
+      "handoffMissing": "成功运行交接缺少处置"
+    },
+    "text": {
+      "accessibility": "可访问性",
+      "component": "组件",
+      "details": "详情",
+      "handoffEngineering": "交接给工程团队",
+      "issueChatUserMessage": "问题聊天用户消息",
+      "legacyFallback": "旧版回退",
+      "normalizedCause": "标准化原因:运行已完成但无处置",
+      "recoveryOwner": "恢复负责人:CTO",
+      "routing": "路由至问题聊天线程",
+      "successfulRunHandoffCallout": "成功运行交接评论标注",
+      "handoffMissing": "成功运行交接缺失",
+      "suggestedAction": "建议操作:重新分配给恢复智能体"
+    },
+    "labelsJsx": {
+      "systemAlert": "系统提醒",
+      "owner": "负责人",
+      "paperclip": "Paperclip",
+      "recoveryIssue": "恢复问题",
+      "sourceRun": "来源运行"
+    }
+  },
+  "newAgent": {
+    "errors": {
+      "create": "创建智能体失败。"
+    },
+    "text": {
+      "companySkills": "公司技能",
+      "newAgent": "新建智能体",
+      "defaultNameHint": "这将是 CEO"
+    },
+    "tabs": {
+      "agents": "智能体",
+      "newAgent": "新建智能体"
+    },
+    "placeholders": {
+      "agentName": "智能体名称",
+      "title": "职位(如工程副总裁)"
+    }
+  },
+  "orgChart": {
+    "aria": {
+      "fitToScreen": "适应屏幕",
+      "zoomIn": "放大",
+      "zoomOut": "缩小"
+    },
+    "tabs": {
+      "orgChart": "组织架构"
+    }
+  },
+  "issueChatUxLab": {
+    "text": {
+      "reviewSurface": "问题聊天审查界面",
+      "whatToEvaluate": "在此页面评估什么",
+      "working": "工作中"
+    }
+  },
+  "userProfile": {
+    "text": {
+      "created": "创建时间",
+      "noActions": "暂无直接的用户操作记录。",
+      "noTasks": "暂未触及任务。",
+      "open": "打开",
+      "recentActivity": "最近活动",
+      "recentTasks": "最近任务",
+      "spend": "支出",
+      "tokens": "令牌"
+    },
+    "labelsJsx": {
+      "actions": "操作",
+      "allTimeTokens": "总令牌数",
+      "comments": "评论",
+      "completed": "已完成",
+      "openAssigned": "打开已分配",
+      "touched": "已触及"
+    },
+    "labelsObj": {
+      "taskLinkedUsage": "任务关联用量",
+      "users": "用户"
+    }
+  },
+  "runTranscriptUxLab": {
+    "text": {
+      "fixtures": "运行记录固定数据"
+    },
+    "tabs": {
+      "dashboardCard": "仪表盘卡片",
+      "issueWidget": "问题小部件",
+      "runDetail": "运行详情"
+    }
+  },
+  "designGuide": {
+    "toasts": {
+      "blockedStatus": "已阻塞状态",
+      "doneStatus": "已完成状态",
+      "identifierOnly": "仅标识符——尚无状态",
+      "removedStrikethrough": "已移除(带删除线)",
+      "withInProgress": "带进行中状态"
+    },
+    "text": {
+      "action": "操作",
+      "agent": "智能体",
+      "agentAlpha": "智能体 Alpha",
+      "agentHeartbeat": "智能体心跳",
+      "assignee": "负责人",
+      "backlog": "待办",
+      "cancel": "取消",
+      "cardContent": "卡片内容放在这里。这是主要区域。",
+      "cardDescription": "带支持文字的卡片描述。",
+      "cardTitle": "卡片标题",
+      "checkedItem": "已选项",
+      "comment": "评论",
+      "comments": "评论",
+      "commentsContent": "评论内容。",
+      "config": "配置",
+      "configTabContent": "配置标签内容。",
+      "cost": "成本",
+      "costs": "成本",
+      "costsTabContent": "成本标签内容。",
+      "created": "创建时间",
+      "critical": "关键",
+      "default": "默认",
+      "description": "描述",
+      "designGuide": "设计指南",
+      "destructive": "破坏性",
+      "details": "详情",
+      "detailsContent": "详情内容。",
+      "dialogTitle": "对话框标题",
+      "disabled": "禁用",
+      "disabledItem": "禁用项",
+      "disabledOutline": "禁用轮廓",
+      "done": "已完成",
+      "editMetadata": "在不离开当前页面的情况下编辑元数据。",
+      "extraSmall": "极小",
+      "ghost": "幽灵",
+      "high": "高",
+      "horizontal": "水平",
+      "hoverMe": "悬停我",
+      "human": "人类",
+      "inProgress": "进行中",
+      "inReview": "审查中",
+      "issueList": "问题列表",
+      "issueProperties": "问题属性",
+      "large": "大",
+      "left": "左",
+      "link": "链接",
+      "live": "实时",
+      "medium": "中",
+      "model": "模型",
+      "name": "名称",
+      "noResults": "未找到结果。",
+      "openDialog": "打开对话框",
+      "openPopover": "打开弹出框",
+      "openSidePanel": "打开侧边面板",
+      "outline": "轮廓",
+      "overview": "概览",
+      "overviewTabContent": "概览标签内容。",
+      "owner": "所有者",
+      "paperclipApp": "Paperclip 应用",
+      "priority": "优先级",
+      "projects": "项目",
+      "right": "右",
+      "runs": "运行",
+      "runsTabContent": "运行标签内容。",
+      "save": "保存",
+      "secondary": "次要",
+      "settings": "设置",
+      "small": "小",
+      "status": "状态",
+      "summary": "摘要",
+      "summaryContent": "带下划线标签的摘要内容。",
+      "tooltip": "这是一个提示",
+      "title": "标题",
+      "todo": "待办",
+      "tokens": "令牌",
+      "total": "总数",
+      "uncheckedItem": "未选项",
+      "wakeNow": "立即唤醒"
+    },
+    "headings": {
+      "actions": "操作",
+      "pages": "页面"
+    },
+    "labelsJsx": {
+      "activeAgents": "活跃智能体",
+      "monthlyCost": "月成本",
+      "openIssues": "未解决问题",
+      "uptime": "正常运行时间"
+    },
+    "labelsObj": {
+      "overBudget95": "超出预算(95%)",
+      "priority": "优先级",
+      "status": "状态",
+      "underBudget40": "未超预算(40%)",
+      "warning75": "警告(75%)"
+    },
+    "descriptions": {
+      "underBudget": "未超预算"
+    },
+    "placeholders": {
+      "addDescription": "添加描述……",
+      "defaultInput": "默认输入",
+      "describe": "描述……",
+      "disabledInput": "禁用输入",
+      "enterName": "输入名称",
+      "filterAgent": "按智能体名称筛选",
+      "leaveComment": "留下评论……",
+      "selectStatus": "选择状态",
+      "typeCommand": "输入命令或搜索……",
+      "writeSomething": "写点什么……"
+    }
+  },
+  "issueProperties": {
+    "errors": {
+      "controlCommands": "控制工作区命令失败。"
+    },
+    "text": {
+      "agent": "智能体",
+      "cancel": "取消",
+      "cheapModel": "廉价模型",
+      "lastError": "上次错误",
+      "model": "模型",
+      "modelLane": "模型通道",
+      "nextAttempt": "下次尝试",
+      "noLabels": "无标签",
+      "noMatches": "无匹配。",
+      "noMatchingTasks": "无匹配任务。",
+      "none": "无",
+      "noParent": "无父任务",
+      "noProject": "无项目",
+      "primaryModel": "主模型",
+      "reason": "原因",
+      "removeBlocker": "移除阻塞?",
+      "replacesRun": "替换运行",
+      "searchingTasks": "正在搜索任务……",
+      "selectAgent": "选择智能体",
+      "setWatchdog": "设置看门狗",
+      "thinkingEffort": "思考力度",
+      "unassigned": "未分配",
+      "watchdogAgent": "看门狗智能体"
+    },
+    "labelsJsx": {
+      "addLabel": "添加标签",
+      "approvers": "审批人",
+      "assignee": "负责人",
+      "blockedBy": "被阻塞于",
+      "blocking": "阻塞中",
+      "branch": "分支",
+      "clearAdapterOptions": "清除适配器选项",
+      "completed": "已完成",
+      "created": "创建时间",
+      "createdBy": "创建者",
+      "depth": "深度",
+      "execution": "执行",
+      "externalObjects": "外部对象",
+      "folder": "文件夹",
+      "labels": "标签",
+      "model": "模型",
+      "modelLane": "模型通道",
+      "monitor": "监控",
+      "parent": "父任务",
+      "priority": "优先级",
+      "project": "项目",
+      "relatedTasks": "相关任务",
+      "reviewers": "审查人",
+      "scheduledRetry": "计划重试",
+      "searchBlockers": "搜索要作为阻塞项的任务",
+      "service": "服务",
+      "started": "开始时间",
+      "status": "状态",
+      "subTasks": "子任务",
+      "updated": "更新时间",
+      "watchdog": "看门狗",
+      "workspace": "工作区"
+    },
+    "labelsObj": {
+      "assignToMe": "分配给我",
+      "default": "默认",
+      "high": "高",
+      "medium": "中",
+      "minimal": "最小",
+      "noAssignee": "无负责人",
+      "xHigh": "极高"
+    },
+    "placeholders": {
+      "defaultModel": "默认模型",
+      "externalService": "外部服务",
+      "newLabel": "新标签",
+      "searchAssignees": "搜索负责人……",
+      "searchLabels": "搜索标签……",
+      "searchProjects": "搜索项目……",
+      "searchTasks": "搜索任务……",
+      "selectAgent": "选择智能体",
+      "watchdogWhat": "智能体应重新检查什么?"
+    }
+  },
+  "issueChatThread": {
+    "toasts": {
+      "copyFailed": "复制失败"
+    },
+    "errors": {
+      "copyMessage": "无法复制消息",
+      "copySystemNotice": "无法复制系统通知",
+      "copySystemNoticeLink": "无法复制系统通知链接",
+      "copyText": "无法复制文本",
+      "uploadFailed": "上传失败"
+    },
+    "text": {
+      "alwaysAllow": "始终允许",
+      "assignee": "负责人",
+      "rendererError": "聊天渲染器遇到内部状态错误。",
+      "commentDeleted": "评论已删除",
+      "deleteComment": "删除评论?",
+      "dropToUpload": "拖放以上传",
+      "noAdditionalDetails": "无其他详情。",
+      "noAssignee": "未选择负责人",
+      "noMessageContent": "无消息内容。",
+      "savePreference": "保存你的反馈分享偏好?"
+    },
+    "labelsJsx": {
+      "copy": "复制",
+      "copyLinkSystemNotice": "复制系统通知链接",
+      "copyMessage": "复制消息",
+      "copySystemNotice": "复制系统通知",
+      "deleteComment": "删除评论",
+      "helpful": "有帮助",
+      "legacyRecovery": "旧版恢复任务",
+      "moreActions": "更多操作",
+      "needsWork": "需要改进"
+    },
+    "placeholders": {
+      "shortNote": "添加简短备注"
+    }
+  },
+  "newIssueDialog": {
+    "errors": {
+      "createFailed": "创建任务失败,请重试。"
+    },
+    "text": {
+      "approver": "审批人",
+      "assignee": "负责人",
+      "attachments": "附件",
+      "backlog": "待办",
+      "documents": "文档",
+      "executionWorkspace": "执行工作区",
+      "inProgress": "进行中",
+      "instructions": "指令",
+      "model": "模型",
+      "modelLane": "模型通道"
+    },
+    "labelsJsx": {
+      "lowTrustReview": "低信任审查智能体",
+      "modelLane": "模型通道"
+    },
+    "descriptions": {
+      "executable": "可执行——将唤醒负责人",
+      "parked": "已暂停——不会唤醒负责人"
+    },
+    "labelsObj": {
+      "backlog": "待办",
+      "critical": "关键",
+      "default": "默认",
+      "done": "完成",
+      "high": "高",
+      "inProgress": "进行中"
+    }
+  },
+  "agentConfigForm": {
+    "errors": {
+      "envTestFailed": "环境测试失败",
+      "refreshAdapterModels": "刷新适配器模型失败。"
+    },
+    "text": {
+      "adapter": "适配器",
+      "cheapModel": "廉价模型",
+      "comingSoon": "即将推出",
+      "environment": "环境",
+      "identity": "身份",
+      "primaryModel": "主模型",
+      "unsavedChanges": "有未保存的更改",
+      "useManualModel": "使用手动模型"
+    },
+    "labelsJsx": {
+      "adapterType": "适配器类型",
+      "bootstrapPrompt": "引导提示(旧版)",
+      "capabilities": "能力",
+      "command": "命令",
+      "continuationAttempts": "续接尝试次数",
+      "continuationDelay": "续接延迟(秒)",
+      "continueAfterMaxTurn": "最大回合后继续",
+      "cooldown": "冷却时间(秒)",
+      "defaultEnvironment": "默认环境",
+      "envOverride": "环境覆盖",
+      "envVars": "环境变量",
+      "extraArgs": "额外参数(逗号分隔)",
+      "heartbeatInterval": "按间隔心跳",
+      "interruptGrace": "中断宽限期(秒)",
+      "maxConcurrent": "最大并发运行",
+      "model": "模型",
+      "name": "名称",
+      "promptTemplate": "提示模板",
+      "reportsTo": "报告给",
+      "thinkingEffort": "思考力度",
+      "timeout": "超时(秒)",
+      "title": "标题",
+      "wakeOnDemand": "按需唤醒",
+      "workingDir": "工作目录(已弃用)"
+    },
+    "labelsObj": {
+      "auto": "自动",
+      "cheapModel": "廉价模型",
+      "high": "高",
+      "medium": "中",
+      "minimal": "最小",
+      "plan": "计划",
+      "primaryModel": "主模型",
+      "xHigh": "极高"
+    },
+    "placeholders": {
+      "agentName": "智能体名称",
+      "agentDesc": "描述此智能体能做什么……",
+      "initialPrompt": "首次运行的可选初始设置提示"
+    }
+  },
+  "issueThreadInteractionCard": {
+    "text": {
+      "confirmed": "已确认",
+      "declined": "已拒绝",
+      "jumpToComment": "跳转到评论",
+      "noAnswerRecorded": "未记录答案。",
+      "noAnswerWasRecorded": "未记录任何答案。"
+    },
+    "labelsJsx": {
+      "answer": "答案",
+      "assignee": "负责人",
+      "billing": "账单",
+      "defaultParent": "默认父级",
+      "label": "标签"
+    }
+  },
+  "issueDocumentsSection": {
+    "errors": {
+      "delete": "删除文档失败",
+      "restoreRevision": "恢复文档历史版本失败",
+      "save": "保存文档失败"
+    },
+    "text": {
+      "documents": "文档",
+      "loadingRevisions": "正在加载历史版本……",
+      "newDocument": "新建文档",
+      "noRevisionsYet": "尚无历史版本",
+      "outOfDate": "已过期",
+      "revisionHistory": "修订历史",
+      "currentRevision": "当前",
+      "updated": "更新于"
+    },
+    "labelsJsx": {
+      "locked": "已锁定文档"
+    },
+    "placeholders": {
+      "docKey": "文档键",
+      "body": "Markdown 正文",
+      "title": "可选标题"
+    }
+  },
+  "routineHistoryTab": {
+    "toasts": {
+      "restoreFailed": "恢复历史版本失败"
+    },
+    "errors": {
+      "restore": "Paperclip 无法恢复该历史版本。"
+    },
+    "text": {
+      "compare": "比较例程历史版本",
+      "content": "内容",
+      "loadFailed": "无法加载历史版本",
+      "identical": "描述相同。",
+      "field": "字段"
+    },
+    "tabs": {
+      "catchup": "追赶",
+      "concurrency": "并发",
+      "defaultAgent": "默认智能体",
+      "priority": "优先级",
+      "project": "项目"
+    }
+  },
+  "projectProperties": {
+    "text": {
+      "baseRef": "基线引用",
+      "branchTemplate": "分支模板",
+      "codebase": "代码库",
+      "enableIsolated": "启用隔离任务检出",
+      "environment": "环境"
+    },
+    "labelsJsx": {
+      "clearLocalFolder": "清空本地文件夹",
+      "clearRepo": "清空仓库",
+      "codebaseHelp": "代码库帮助",
+      "created": "创建时间",
+      "description": "描述"
+    }
+  },
+  "fileViewerSheet": {
+    "toasts": {
+      "cantPreview": "无法预览此文件",
+      "tooLarge": "文件过大无法预览",
+      "outsideWorkspace": "路径在工作区之外"
+    },
+    "text": {
+      "loadingPreview": "正在加载文件预览"
+    },
+    "labelsJsx": {
+      "backToFiles": "返回文件",
+      "closeViewer": "关闭文件查看器",
+      "loadingDetails": "正在加载文件详情",
+      "markdownMode": "Markdown 预览模式",
+      "resizeTree": "调整文件目录"
+    }
+  },
+  "issueRunLedger": {
+    "toasts": {
+      "watchdogNotRecorded": "看门狗决策未记录"
+    },
+    "text": {
+      "childWork": "子任务",
+      "elapsed": "耗时",
+      "lastUsefulAction": "最后有用动作",
+      "nextAction": "下一动作:",
+      "runLedger": "运行记录"
+    },
+    "descriptions": {
+      "evaluatedAfterFinish": "活跃度在运行结束后评估。",
+      "queuedRetry": "Paperclip 排队了尚未开始的自动重试。",
+      "noConcreteAction": "运行描述了未来工作但无具体动作证据。",
+      "endedUnsuccessfully": "运行未成功结束。",
+      "noUsefulOutput": "运行结束但无有用输出。"
+    }
+  },
+  "issueRecoveryActionCard": {
+    "text": {
+      "board": "委员会",
+      "recovery": "恢复:",
+      "system": "系统"
+    },
+    "descriptions": {
+      "dismissComplete": "忽略恢复并将来源任务标记为完成。",
+      "dismissTodo": "忽略恢复并将来源任务返回待办。",
+      "dismissReview": "忽略恢复并将来源任务送去审查。",
+      "reviewPath": "移交给具有真实审查路径的审查人。",
+      "recordComplete": "通过将请求的工作记录为完成来恢复。"
+    }
+  },
+  "issueFiltersPopover": {
+    "text": {
+      "project": "项目",
+      "quickFilters": "快速筛选",
+      "status": "状态",
+      "visibility": "可见性",
+      "workspace": "工作区",
+      "assignee": "负责人",
+      "creator": "创建者",
+      "externalObjectStatus": "外部对象状态",
+      "filters": "快速筛选",
+      "hideRoutineRuns": "隐藏例程运行",
+      "labels": "标签",
+      "liveRunsOnly": "仅显示运行中",
+      "noAssignee": "无负责人",
+      "noCreatorsMatch": "无匹配的创建者",
+      "priority": "优先级"
+    },
+    "placeholders": {
+      "searchCreators": "搜索创建者..."
+    }
+  },
+  "issuesList": {
+    "labelsJsx": {
+      "needsNextStep": "需要下一步",
+      "paused": "已暂停",
+      "searchTasks": "搜索任务",
+      "subTasksProgress": "子任务完成进度"
+    },
+    "placeholders": {
+      "searchAssignees": "搜索负责人...",
+      "searchTasks": "搜索任务..."
+    }
+  },
+  "workspaceFileBrowser": {
+    "toasts": {
+      "noWorkspace": "尚无工作区",
+      "remotePreviewUnsupported": "不支持远程工作区预览",
+      "workspaceGone": "工作区不再可用",
+      "unavailable": "工作区不可用"
+    },
+    "text": {
+      "loadMore": "从此文件夹加载更多"
+    },
+    "labelsJsx": {
+      "currentFolder": "当前文件夹",
+      "searchFiles": "搜索工作区文件",
+      "workspaceFiles": "工作区文件"
+    },
+    "placeholders": {
+      "searchByName": "按名称或路径搜索文件…"
+    }
+  },
+  "activityFeed": {
+    "text": {
+      "agentFeed": "智能体动态",
+      "filterBy": "筛选依据"
+    },
+    "labelsObj": {
+      "done": "已完成",
+      "inProgress": "进行中",
+      "inReview": "审查中"
+    }
+  },
+  "routineRunVariables": {
+    "text": {
+      "defaultAgentRequired": "此运行需要默认智能体。",
+      "false": "否",
+      "noProject": "无项目",
+      "noValue": "无值",
+      "project": "项目",
+      "runRoutine": "运行例程",
+      "selectAgent": "选择智能体",
+      "true": "是"
+    },
+    "placeholders": {
+      "agent": "智能体",
+      "chooseValue": "选择值",
+      "project": "项目"
+    }
+  },
+  "sidebarAgents": {
+    "text": {
+      "editAgent": "编辑智能体",
+      "seeAllAgents": "查看所有智能体"
+    },
+    "labelsJsx": {
+      "agents": "智能体",
+      "invalidReporting": "无效的汇报链"
+    },
+    "sortOptions": {
+      "alphabetical": "按字母排序",
+      "browseAgents": "浏览智能体",
+      "recent": "最近"
+    }
+  },
+  "newProjectDialog": {
+    "errors": {
+      "createFailed": "创建项目失败。"
+    },
+    "text": {
+      "localFolder": "本地文件夹",
+      "newProject": "新建项目",
+      "repoUrl": "仓库 URL"
+    },
+    "labelsObj": {
+      "backlog": "待办",
+      "cancelled": "已取消",
+      "completed": "已完成",
+      "inProgress": "进行中",
+      "planned": "已计划"
+    }
+  },
+  "newAgentDialog": {
+    "toasts": {
+      "inviteCreated": "智能体邀请已创建",
+      "clipboardUnavailable": "剪贴板不可用",
+      "createNew": "创建新智能体"
+    },
+    "errors": {
+      "unknown": "未知错误"
+    },
+    "text": {
+      "addNewAgent": "添加新智能体",
+      "onboardingPrompt": "智能体引导提示",
+      "inviteExternal": "邀请外部智能体",
+      "optionalMessage": "智能体的可选消息"
+    },
+    "placeholders": {
+      "onboarding": "添加引导上下文、预期角色或初始指令。"
+    }
+  },
+  "envVarEditor": {
+    "aria": {
+      "createSecret": "从当前明文值创建密钥",
+      "storeAsSecret": "将值存储为密钥并替换为引用"
+    },
+    "prompts": {
+      "secretName": "密钥名称"
+    },
+    "errors": {
+      "createSecret": "创建密钥失败"
+    },
+    "labelsJsx": {
+      "bindingMode": "绑定模式",
+      "secret": "密钥",
+      "version": "版本"
+    },
+    "placeholders": {
+      "selectSecret": "选择密钥"
+    },
+    "text": {
+      "plain": "纯文本",
+      "secret": "密钥"
+    }
+  },
+  "commentThread": {
+    "text": {
+      "assignee": "负责人",
+      "commentDeleted": "评论已删除",
+      "noTimeline": "暂无时间线条目。"
+    },
+    "labelsJsx": {
+      "copyAsMarkdown": "以 Markdown 复制评论"
+    },
+    "placeholders": {
+      "assignee": "负责人",
+      "leaveComment": "留下评论..."
+    }
+  },
+  "documentAnnotationPanel": {
+    "labelsJsx": {
+      "closePanel": "关闭批注面板",
+      "moreThreadActions": "更多线程操作"
+    },
+    "placeholders": {
+      "reply": "回复……",
+      "writeComment": "写评论……"
+    }
+  },
+  "workspaceRuntimeControls": {
+    "text": {
+      "commands": "工作区命令"
+    },
+    "descriptions": {
+      "oneShot": "立即运行的一次性命令,完成后退出。"
+    }
+  },
+  "issueWorkspaceCard": {
+    "text": {
+      "repo": "仓库:"
+    },
+    "labelsObj": {
+      "newIsolated": "新建隔离工作区",
+      "projectDefault": "项目默认",
+      "reuseExisting": "复用现有工作区"
+    }
+  },
+  "scheduleEditor": {
+    "errors": {
+      "invalidCron": "Cron 字段必须使用有效数字、范围、列表、通配符或步长。",
+      "enterFive": "输入 5 字段 Cron 表达式。"
+    },
+    "labelsJsx": {
+      "cronExpression": "Cron 表达式",
+      "scheduleFrequency": "调度频率"
+    },
+    "placeholders": {
+      "chooseFrequency": "选择频率..."
+    },
+    "status": {
+      "custom": "自定义 (cron)",
+      "everyDay": "每天",
+      "everyHour": "每小时"
+    },
+    "tabs": {
+      "everyMinute": "每分钟",
+      "monthly": "每月",
+      "weekdays": "工作日",
+      "weekly": "每周"
+    }
+  },
+  "agentActionButtons": {
+    "toasts": {
+      "actionFailed": "操作失败",
+      "agentDuplicated": "智能体已复制",
+      "duplicateFailed": "无法复制智能体"
+    },
+    "errors": {
+      "actionFailed": "操作失败",
+      "duplicateFailed": "复制智能体失败",
+      "resetFailed": "重置会话失败"
+    },
+    "text": {
+      "clearError": "清除错误",
+      "pause": "暂停",
+      "resume": "恢复"
+    },
+    "aria": {
+      "clearError": "清除错误并将智能体返回空闲",
+      "runNow": "立即运行"
+    }
+  },
+  "routineVariablesEditor": {
+    "text": {
+      "defaultOption": "默认选项",
+      "defaultValue": "默认值",
+      "description": "描述",
+      "example": "示例",
+      "false": "否"
+    },
+    "aria": {
+      "showHelp": "显示变量帮助"
+    },
+    "placeholders": {
+      "noDefault": "无默认值"
+    }
+  },
+  "artifactsPanel": {
+    "text": {
+      "artifacts": "产物",
+      "docEmpty": "文档为空。",
+      "docUnavailable": "文档尚不可用。",
+      "needsReview": "此文档需要你的审查。"
+    },
+    "status": {
+      "changesRequested": "请求修改",
+      "completed": "已完成",
+      "failed": "失败",
+      "forReview": "待审查",
+      "inProgress": "进行中"
+    }
+  },
+  "executionWorkspaceClose": {
+    "toasts": {
+      "closeFailed": "关闭工作区失败"
+    },
+    "errors": {
+      "inspectFailed": "检查工作区关闭准备状态失败。",
+      "unknown": "未知错误"
+    },
+    "text": {
+      "attachedServices": "已附加的运行时服务",
+      "baseRef": "基线引用",
+      "blockingReasons": "阻塞原因",
+      "blockingTasks": "阻塞任务",
+      "branch": "分支"
+    }
+  },
+  "secretBindingPicker": {
+    "errors": {
+      "createFailed": "创建密钥失败"
+    },
+    "text": {
+      "cancel": "取消",
+      "createNew": "新建密钥",
+      "description": "描述",
+      "name": "名称",
+      "value": "值"
+    },
+    "labelsJsx": {
+      "create": "创建密钥",
+      "secret": "密钥",
+      "version": "版本"
+    },
+    "placeholders": {
+      "openaiApiKey": "OPENAI_API_KEY",
+      "notes": "可选备注(不含值)"
+    }
+  },
+  "trustPresetSection": {
+    "text": {
+      "rootIssue": "根问题",
+      "explicitIssues": "显式问题",
+      "preset": "预设",
+      "projects": "项目",
+      "promotionTarget": "晋升目标",
+      "rawOutput": "原始输出",
+      "trustPreset": "信任预设",
+      "issue": "任务",
+      "project": "项目",
+      "trust": "信任预设"
+    },
+    "labelsJsx": {
+      "allowedAgents": "允许的智能体",
+      "allowedSecrets": "允许的密钥",
+      "allowedTools": "允许的工具",
+      "boundaryType": "边界类型",
+      "eeFields": "EE 字段"
+    }
+  },
+  "approvalPayload": {
+    "text": {
+      "adapter": "适配器",
+      "capabilities": "能力",
+      "name": "名称",
+      "onApproval": "审批时",
+      "risks": "风险"
+    },
+    "labelsJsx": {
+      "icon": "图标",
+      "metric": "指标",
+      "role": "角色",
+      "scope": "范围",
+      "title": "标题"
+    }
+  },
+  "agentBubbleActionRow": {
+    "text": {
+      "savePreference": "保存你的反馈分享偏好",
+      "alwaysAllow": "始终允许",
+      "alwaysSavedLocally": "始终本地保存",
+      "whatBetter": "有什么可以改进的?"
+    },
+    "labelsJsx": {
+      "copyMessage": "复制消息",
+      "helpful": "有帮助",
+      "moreActions": "更多操作",
+      "needsWork": "需要改进"
+    },
+    "placeholders": {
+      "shortNote": "简短备注..."
+    }
+  },
+  "activityCharts": {
+    "text": {
+      "noRuns": "暂无运行",
+      "noTasks": "无任务"
+    }
+  },
+  "issueRow": {
+    "aria": {
+      "dismissFromInbox": "从收件箱忽略",
+      "markAsRead": "标记为已读",
+      "productivityReview": "生产力审查已打开"
+    }
+  },
+  "budgetPolicyCard": {
+    "text": {
+      "budget": "预算",
+      "observed": "已观察",
+      "remaining": "剩余"
+    }
+  },
+  "routineSubSidebar": {
+    "labelsJsx": {
+      "routineSection": "例程分组",
+      "routineSections": "例程分组",
+      "unsavedChanges": "有未保存的更改"
+    },
+    "tabs": {
+      "activity": "活动",
+      "delivery": "交付"
+    }
+  },
+  "companySettingsSidebar": {
+    "labelsJsx": {
+      "access": "访问",
+      "adapters": "适配器",
+      "cloudUpstream": "云上游",
+      "environments": "环境",
+      "experimental": "实验性"
+    }
+  },
+  "keyboardShortcuts": {
+    "toasts": {
+      "global": "全局",
+      "inbox": "收件箱",
+      "taskDetail": "任务详情"
+    },
+    "text": {
+      "title": "键盘快捷键"
+    },
+    "shortcuts": {
+      "archiveItem": "归档项目",
+      "collapseExpandSidebar": "折叠或展开侧边栏",
+      "collapseSelectedGroup": "折叠所选分组",
+      "expandSelectedGroup": "展开所选分组",
+      "focusCommentComposer": "聚焦评论编辑器"
+    }
+  },
+  "agentProperties": {
+    "labelsJsx": {
+      "adapter": "适配器",
+      "created": "创建时间",
+      "errorReason": "错误原因",
+      "lastHeartbeat": "上次心跳",
+      "reportsTo": "报告给"
+    }
+  },
+  "standaloneBrowser": {
+    "toasts": {
+      "linkCopied": "链接已复制",
+      "shareFailed": "分享失败",
+      "sharingUnavailable": "分享不可用"
+    },
+    "labelsJsx": {
+      "openInBrowser": "在浏览器中打开",
+      "refresh": "刷新",
+      "share": "分享"
+    }
+  },
+  "priorityIcon": {
+    "labelsObj": {
+      "critical": "关键",
+      "high": "高",
+      "medium": "中"
+    },
+    "tabs": {
+      "critical": "紧急",
+      "high": "高",
+      "medium": "中"
+    }
+  },
+  "instanceSidebar": {
+    "labelsJsx": {
+      "access": "访问",
+      "adapters": "适配器",
+      "environments": "环境",
+      "experimental": "实验性",
+      "general": "常规"
+    }
+  },
+  "accountingModelCard": {
+    "toasts": {
+      "financeLedger": "财务分类账",
+      "inferenceLedger": "推理分类账",
+      "liveQuotas": "实时配额"
+    },
+    "descriptions": {
+      "accountLevel": "非单次提示-响应对的账户级别费用。",
+      "requestScoped": "来自 cost_events 的请求级使用和计费运行。"
+    }
+  },
+  "sourceResolvedFoldCallout": {
+    "labelsJsx": {
+      "evaluationTask": "评估任务",
+      "processCleanup": "进程清理",
+      "sameRunEvidence": "同运行证据",
+      "silenceAge": "折叠前静默时长",
+      "watchdogFold": "源解析看门狗折叠"
+    }
+  },
+  "goalProperties": {
+    "text": {
+      "none": "无"
+    },
+    "labelsJsx": {
+      "created": "创建时间",
+      "level": "层级",
+      "owner": "所有者",
+      "parentGoal": "父目标",
+      "status": "状态"
+    }
+  },
+  "jsonSchemaForm": {
+    "text": {
+      "advancedOptions": "高级选项",
+      "removeItem": "移除项目",
+      "selectExistingSecret": "选择现有密钥",
+      "selectOption": "选择选项"
+    }
+  },
+  "sidebarProjects": {
+    "text": {
+      "alphabetical": "按字母排序",
+      "browseProjects": "浏览项目",
+      "projects": "项目",
+      "recent": "最近"
+    }
+  },
+  "agentConfigPrimitives": {
+    "text": {
+      "option": "选项",
+      "shift": "Shift",
+      "specifyPath": "手动指定路径"
+    }
+  },
+  "markdownBody": {
+    "toasts": {
+      "copyCode": "复制代码"
+    },
+    "errors": {
+      "renderMermaid": "渲染 Mermaid 图表失败。"
+    },
+    "text": {
+      "scrollableTable": "可滚动表格"
+    }
+  },
+  "outputFeedbackButtons": {
+    "text": {
+      "shortNote": "添加简短备注",
+      "alwaysAllow": "始终允许",
+      "savePreference": "保存你的反馈分享偏好"
+    }
+  },
+  "pathInstructionsModal": {
+    "text": {
+      "howTo": "如何获取完整路径",
+      "linux": "Linux",
+      "windows": "Windows"
+    }
+  },
+  "documentDiffModal": {
+    "text": {
+      "content": "内容",
+      "selectRevision": "选择历史版本"
+    }
+  },
+  "routineTriggerCard": {
+    "text": {
+      "label": "标签",
+      "schedule": "调度",
+      "signingMode": "签名模式"
+    }
+  },
+  "chatComposer": {
+    "text": {
+      "attachFiles": "附加文件",
+      "message": "消息……",
+      "sendMessage": "发送消息",
+      "uploading": "上传中……"
+    },
+    "placeholders": {
+      "message": "消息……"
+    }
+  },
+  "cloudAccessGate": {
+    "errors": {
+      "loadAppState": "加载应用状态失败"
+    },
+    "text": {
+      "noCompanyAccess": "无公司访问权限"
+    }
+  },
+  "companySwitcher": {
+    "text": {
+      "companies": "公司",
+      "noCompanies": "无公司"
+    }
+  },
+  "devRestartBanner": {
+    "errors": {
+      "requestRestart": "请求重启失败"
+    },
+    "text": {
+      "restartRequired": "需要重启"
+    }
+  },
+  "documentAnnotationLayer": {
+    "aria": {
+      "openThread": "打开批注线程",
+      "selectionActions": "选择操作"
+    }
+  },
+  "fileTree": {
+    "labelsJsx": {
+      "description": "描述"
+    }
+  },
+  "frontDoor": {
+    "text": {
+      "addAgents": "向你的组织添加智能体",
+      "buildTeam": "建立新团队"
+    }
+  },
+  "issueReferenceActivitySummary": {
+    "text": {
+      "addedRefs": "添加的引用",
+      "removedRefs": "移除的引用"
+    }
+  },
+  "localeSwitcher": {
+    "text": {
+      "language": "语言"
+    }
+  },
+  "markdownEditor": {
+    "errors": {
+      "imageUpload": "图片上传失败"
+    }
+  },
+  "newGoalDialog": {
+    "text": {
+      "addDescription": "添加描述...",
+      "goalTitle": "目标标题"
+    },
+    "placeholders": {
+      "goalTitle": "目标标题"
+    }
+  },
+  "productivityReviewBadge": {
+    "text": {
+      "reviewOpen": "生产力审查已打开",
+      "underReview": "审查中"
+    }
+  },
+  "projectWorkspaceSummaryCard": {
+    "text": {
+      "branch": "分支",
+      "service": "服务"
+    }
+  },
+  "propertiesPanel": {
+    "text": {
+      "properties": "属性"
+    }
+  },
+  "providerQuotaCard": {
+    "text": {
+      "periodSpend": "周期支出",
+      "thisWeek": "本周"
+    }
+  },
+  "sidebarCompanyMenu": {
+    "text": {
+      "companySettings": "公司设置",
+      "noWorkspaces": "无工作区"
+    }
+  },
+  "reusableExecutionWorkspaceSelect": {
+    "text": {
+      "chooseWorkspace": "选择现有工作区"
+    }
+  },
+  "routeErrorBoundary": {
+    "text": {
+      "pageError": "此页面发生错误"
+    }
+  },
+  "scrollToBottom": {
+    "aria": {
+      "scrollToBottom": "滚动到底部"
+    }
+  },
+  "sidebarShell": {
+    "aria": {
+      "resizeSidebar": "调整侧边栏"
+    }
+  },
+  "sourceResolvedFoldBadge": {
+    "text": {
+      "watchdogFold": "源解析看门狗折叠"
+    }
+  },
+  "toastViewport": {
+    "aria": {
+      "dismiss": "忽略通知"
+    }
+  },
+  "worktreeBanner": {
+    "text": {
+      "worktree": "工作树"
+    }
+  },
+  "agentIconPicker": {
+    "text": {
+      "noIconsMatch": "无匹配图标",
+      "searchIcons": "搜索图标..."
+    },
+    "placeholders": {
+      "searchIcons": "搜索图标..."
+    }
+  },
+  "approvalCard": {
+    "text": {
+      "requestedBy": "请求人"
+    }
+  },
+  "billerSpendCard": {
+    "text": {
+      "periodSpend": "周期支出"
+    }
+  },
+  "blockedInboxView": {
+    "errors": {
+      "loadBlocked": "无法加载已阻塞标签页。"
+    }
+  },
+  "breadcrumbBar": {
+    "aria": {
+      "openSidebar": "打开侧边栏"
+    }
+  },
+  "financeKindCard": {
+    "text": {
+      "financialEventMix": "财务事件组合"
+    }
+  },
+  "financeTimelineCard": {
+    "text": {
+      "recentFinancialEvents": "最近财务事件"
+    }
+  },
+  "inlineEditor": {
+    "placeholders": {
+      "clickToEdit": "点击编辑..."
+    }
+  },
+  "issueAssignedBacklogNotice": {
+    "text": {
+      "parked": "已暂停"
+    }
+  },
+  "issueAttachmentsSection": {
+    "text": {
+      "attachments": "附件"
+    }
+  },
+  "issueMonitorActivityCard": {
+    "text": {
+      "monitorScheduled": "监控已调度"
+    }
+  },
+  "issuePlanDecompositionsSection": {
+    "text": {
+      "planDecomposition": "计划分解"
+    }
+  },
+  "issueRelatedWorkPanel": {
+    "text": {
+      "externalObjects": "外部对象",
+      "otherTasksHint": "其他当前指向此任务的任务。"
+    }
+  },
+  "issueSiblingNavigation": {
+    "text": {
+      "subTaskNavigation": "子任务导航"
+    }
+  },
+  "kanbanBoard": {
+    "text": {
+      "needsNextStep": "需要下一步"
+    }
+  },
+  "layout": {
+    "aria": {
+      "closeSidebar": "关闭侧边栏"
+    }
+  },
+  "instanceSettings": {
+    "errors": {
+      "disableAll": "禁用所有心跳失败。",
+      "updateHeartbeat": "更新心跳失败。",
+      "unknown": "未知错误"
+    },
+    "text": {
+      "loadingHeartbeats": "正在加载调度器心跳...",
+      "heartbeats": "调度器心跳"
+    },
+    "tabs": {
+      "heartbeats": "心跳",
+      "instanceSettings": "实例设置",
+      "settings": "设置"
+    }
+  },
+  "issueChatLongThreadPerf": {
+    "text": {
+      "baselineMetrics": "基线指标",
+      "fixtureShape": "固定数据形状",
+      "issueDocuments": "问题文档"
+    },
+    "labelsJsx": {
+      "fixtureRows": "固定数据行数",
+      "latestDuration": "最近耗时",
+      "markdownRows": "Markdown 行数",
+      "maxDuration": "最大耗时",
+      "mountDuration": "挂载耗时",
+      "profilerCommits": "分析器提交",
+      "totalDuration": "总耗时"
+    }
+  },
+  "joinRequestQueue": {
+    "toasts": {
+      "approved": "加入请求已批准",
+      "rejected": "加入请求已拒绝"
+    },
+    "text": {
+      "agent": "智能体",
+      "approved": "已批准",
+      "human": "人类",
+      "inviteContext": "邀请上下文",
+      "queue": "加入请求队列",
+      "pending": "待审批",
+      "rejected": "已拒绝",
+      "requestDetails": "请求详情",
+      "requestType": "请求类型",
+      "selectCompany": "选择一家公司以审查加入请求。",
+      "status": "状态"
+    },
+    "tabs": {
+      "inbox": "收件箱",
+      "joinRequests": "加入请求"
+    }
+  },
+  "myIssues": {
+    "tabs": {
+      "myTasks": "我的任务"
+    }
+  },
+  "notFound": {
+    "text": {
+      "goHome": "返回首页"
+    },
+    "tabs": {
+      "notFound": "未找到"
+    }
+  },
+  "org": {
+    "tabs": {
+      "orgChart": "组织架构"
+    }
+  },
+  "pluginPage": {
+    "text": {
+      "selectCompany": "选择一家公司以查看此页面。"
+    },
+    "tabs": {
+      "plugins": "插件"
+    }
+  },
+  "profileSettings": {
+    "errors": {
+      "load": "加载个人资料失败。",
+      "removeAvatar": "删除头像失败。",
+      "update": "更新个人资料失败。",
+      "uploadAvatar": "上传头像失败。"
+    },
+    "text": {
+      "displayName": "显示名称",
+      "email": "邮箱",
+      "loadingProfile": "正在加载个人资料...",
+      "profile": "个人资料"
+    },
+    "tabs": {
+      "instanceSettings": "实例设置",
+      "profile": "个人资料",
+      "settings": "设置"
+    },
+    "placeholders": {
+      "board": "委员会"
+    }
+  },
+  "workspaces": {
+    "text": {
+      "noActivity": "暂无工作区活动。",
+      "workspaces": "工作区"
+    },
+    "tabs": {
+      "workspaces": "工作区"
+    }
+  },
+  "runtimeJsonFields": {
+    "labelsJsx": {
+      "payloadTemplate": "负载模板 JSON",
+      "runtimeServices": "运行时服务 JSON"
+    }
+  },
+  "stagesecretspanel": {
+    "text": {
+      "theseEnvVarsAreInjectedWhen": "以下环境变量将在",
+      "runsThisStepTheyOverrideMatchingProjectAndAgentEnv": "运行此步骤时注入。冲突时它们将覆盖匹配的项目和智能体环境变量。",
+      "namesAreReserved": "名称已保留。",
+      "loadingSecrets": "加载密钥中…",
+      "unsavedChanges": "未保存的更改"
+    }
+  },
+  "importfromvaultdialog": {
+    "text": {
+      "failed": "失败",
+      "importFromAwsSecretsManager": "从 AWS Secrets Manager 导入",
+      "bringAwsManagedSecretsIntoPaperclipAsExternalRefer": "将 AWS 管理的密钥作为外部引用导入 Paperclip。",
+      "cancel": "取消",
+      "notVisibleWithCurrentSearch": "在当前搜索中不可见",
+      "remoteName": "远程名称",
+      "lastChanged": "上次更改",
+      "suggestedName": "建议名称",
+      "alreadyImported": "已导入",
+      "loading": "加载中…",
+      "paperclipName": "Paperclip 名称"
+    },
+    "errors": {
+      "unexpectedError": "意外错误",
+      "nameIsRequired": "名称为必填项。",
+      "nameMustBe160CharactersOrFewer": "名称不能超过 160 个字符。",
+      "keyIsRequired": "键为必填项。",
+      "keyMayOnlyContainLowercaseLettersNumbersDotUndersc": "键只能包含小写字母、数字、点、下划线或连字符。",
+      "keyMustBe120CharactersOrFewer": "键不能超过 120 个字符。",
+      "descriptionMustBe500CharactersOrFewer": "描述不能超过 500 个字符。",
+      "aPaperclipSecretAlreadyUsesThisName": "已有 Paperclip 密钥使用了此名称。",
+      "aPaperclipSecretAlreadyUsesThisKey": "已有 Paperclip 密钥使用了此键。",
+      "anotherRowInThisBatchAlreadyUsesThisName": "此批次中已有另一行使用了此名称。",
+      "anotherRowInThisBatchAlreadyUsesThisKey": "此批次中已有另一行使用了此键。"
+    },
+    "labels": {
+      "importFailed": "导入失败",
+      "couldNotLoadMoreResults": "无法加载更多结果"
+    },
+    "aria": {
+      "closeImportDialog": "关闭导入对话框",
+      "selectAwsVault": "选择 AWS 保险库",
+      "searchRemoteSecrets": "搜索远程密钥",
+      "refreshRemoteSecrets": "刷新远程密钥"
+    },
+    "placeholders": {
+      "selectAnAwsVault": "选择 AWS 保险库",
+      "searchByNameArnTag": "按名称、ARN、标签搜索"
+    },
+    "labelsJsx": {
+      "failed": "失败"
+    }
+  },
+  "issuedetail": {
+    "errors": {
+      "onlyBoardUsersCanPreviewSubtreeControls": "仅 Board 用户可预览子树控制。",
+      "previewIsStaleBecauseSubtreeHoldStateChangedRetryT": "预览已过期,因为子树保持状态已更改。请重试以刷新。",
+      "thisSubtreeActionIsCurrentlyInvalidForTheSelectedT": "此子树操作对所选任务当前无效。"
+    },
+    "text": {
+      "noProject": "无项目",
+      "copyAsMarkdown": "复制为 Markdown",
+      "hideThisTask": "隐藏此任务",
+      "costSummary": "费用汇总",
+      "noCostDataYet": "暂无费用数据。",
+      "thisTask": "此任务",
+      "noDirectCostData": "无直接费用数据。",
+      "includingSubTasks": "包含子任务",
+      "uploadAttachment": "上传附件",
+      "thisTaskIsHidden": "此任务已隐藏",
+      "viewAffected": "查看受影响 (",
+      "cancelSubtree": "取消子树...",
+      "thisTaskIsPausedByAncestor": "此任务被上级暂停",
+      "resumeFromTheRootTaskToDeliverDeferredWork": "。从根任务恢复以交付延迟的工作。",
+      "productivityReview": "生产力审查",
+      "blockedByParkedWork": "被搁置的工作阻塞",
+      "pauseWork": "暂停工作...",
+      "resumeWork": "恢复工作",
+      "pauseSubtree": "暂停子树...",
+      "resumeSubtree": "恢复子树",
+      "restoreSubtree": "恢复子树...",
+      "newSubTask": "新建子任务",
+      "relatedWork": "相关工作",
+      "cancellingASubtreeIsDestructiveNonTerminalTasksWil": "取消子树是破坏性操作。非终态任务将被标记为已取消,运行中或排队的工作将尽可能被中断。",
+      "wakeAffectedAgents": "唤醒受影响的智能体 (",
+      "iUnderstandThisWillCancel": "我了解这将取消",
+      "retryPreview": "重试预览",
+      "previewUnavailable": "预览不可用。",
+      "close": "关闭"
+    },
+    "toasts": {
+      "theActiveRunIsStoppingSoQueuedCommentsCanContinueN": "活跃运行正在停止,排队的评论可以继续下一步。",
+      "theQueuedMessageWasRestoredToTheComposer": "排队的消息已恢复到编辑器。",
+      "theThreadNowShowsADeletedCommentMarker": "对话现在显示已删除评论标记。"
+    },
+    "labels": {
+      "theActiveRunIsStoppingSoQueuedCommentsCanContinueN": "活跃运行正在停止,排队的评论可以继续下一步。",
+      "theQueuedMessageWasRestoredToTheComposer": "排队的消息已恢复到编辑器。",
+      "theThreadNowShowsADeletedCommentMarker": "对话现在显示已删除评论标记。"
+    },
+    "labelsJsx": {
+      "thisTaskIsAProductivityReview": "此任务是生产力审查。",
+      "thisTaskIsAGeneratedWatchdogTaskItVerifiesWhetherS": "此任务是自动生成的看门狗任务。它验证被监视任务树中停止的工作是否合理。",
+      "blockedByParkedWorkAtLeastOneAssignedBlockerIsInBa": "被搁置工作阻塞 — 至少一个分配的阻塞项在待办列表中,不会唤醒其负责人。",
+      "copyTaskAsMarkdown": "复制任务为 Markdown",
+      "archiveFromInbox": "从收件箱归档",
+      "openFileGF": "打开文件... (g f)",
+      "showProperties": "显示属性",
+      "moreTaskActions": "更多任务操作"
+    },
+    "placeholders": {
+      "addADescription": "添加描述...",
+      "explainWhyThisSubtreeControlIsBeingApplied": "说明为什么应用此子树控制..."
+    }
+  },
+  "issueslist": {
+    "text": {
+      "noActiveSubTasks": "无活跃子任务",
+      "allSubTasksDone": "所有子任务已完成",
+      "noActionableSubTasks": "无可操作的子任务",
+      "showingUpTo": "最多显示",
+      "matchesRefineTheSearchToNarrowFurther": "个匹配项。优化搜索以进一步缩小范围。",
+      "someBoardColumnsAreShowingUpTo": "部分看板列最多显示",
+      "tasksRefineFiltersOrSearchToRevealTheRest": "个任务。优化筛选或搜索以显示其余。",
+      "needsNextStep": "需要下一步",
+      "noAssignee": "无负责人"
+    },
+    "labelsJsx": {
+      "listView": "列表视图",
+      "boardView": "看板视图",
+      "cardsPerColumn": "每列卡片数",
+      "resetBoardDensity": "重置看板密度",
+      "chooseWhichTaskColumnsStayVisible": "选择哪些任务列保持可见",
+      "thisTaskNeedsANextStep": "此任务需要下一步"
+    }
   }
 }

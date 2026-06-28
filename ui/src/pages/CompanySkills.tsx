@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type SVGProps } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AgentDesiredSkillEntry,
@@ -414,19 +415,19 @@ function TrustChip({ level }: { level: CompanySkillTrustLevel }) {
   const map = {
     markdown_only: {
       icon: ShieldCheck,
-      label: "Markdown only",
+      label: t("markdownOnly"),
       tooltip: "Text only — no scripts, no binaries, no assets.",
       className: "border-border bg-muted/40 text-muted-foreground",
     },
     assets: {
       icon: Folder,
-      label: "Includes assets",
+      label: t("includesAssets"),
       tooltip: "Ships images, fonts, or other non-script files.",
       className: "border-cyan-500/30 bg-cyan-500/10 text-cyan-200",
     },
     scripts_executables: {
       icon: AlertTriangle,
-      label: "Includes scripts",
+      label: t("includesScripts"),
       tooltip: "Ships executable scripts. Review before installing.",
       className: "border-amber-500/40 bg-amber-500/10 text-amber-200",
     },
@@ -451,13 +452,13 @@ function CompatChip({ compatibility }: { compatibility: CompanySkillCompatibilit
   const map = {
     unknown: {
       icon: HelpCircle,
-      label: "Unknown format",
+      label: t("unknownFormat"),
       tooltip: "Paperclip could not validate this skill as Agent Skills markdown. Install at your own risk.",
       className: "border-yellow-500/40 bg-yellow-500/10 text-yellow-200",
     },
     invalid: {
       icon: XOctagon,
-      label: "Invalid",
+      label: t("invalid"),
       tooltip: "This skill cannot be installed — content is not valid Agent Skills markdown.",
       className: "border-destructive/40 bg-destructive/10 text-destructive",
     },
@@ -1695,7 +1696,7 @@ function CatalogDetailPane({
   loadingPrimaryAction: boolean;
 }) {
   if (!skill) {
-    return <EmptyState icon={Boxes} message="Select a catalog skill to inspect." />;
+    return <EmptyState icon={Boxes} message={t("companySkills.messages.selectCatalogToInspect")} />;
   }
 
   const installedHash = installedSkill?.originHash ?? null;
@@ -1820,7 +1821,7 @@ function CatalogDetailPane({
         {fileQuery.isLoading ? (
           <PageSkeleton variant="detail" />
         ) : fileQuery.error ? (
-          <div className="text-sm text-destructive">{fileQuery.error instanceof Error ? fileQuery.error.message : "Failed to load file"}</div>
+          <div className="text-sm text-destructive">{fileQuery.error instanceof Error ? fileQuery.error.message : t("companySkills.errors.loadFile")}</div>
         ) : !fileQuery.data ? (
           <div className="text-sm text-muted-foreground">Select a file to inspect.</div>
         ) : fileQuery.data.markdown ? (
@@ -2385,10 +2386,10 @@ function SkillList({
 type SkillDetailTab = "overview" | "files" | "versions" | "agents";
 
 const SKILL_DETAIL_TABS: Array<{ value: SkillDetailTab; label: string; icon: typeof FileText }> = [
-  { value: "overview", label: "Overview", icon: FileText },
-  { value: "files", label: "Files", icon: FolderOpen },
-  { value: "versions", label: "Versions", icon: History },
-  { value: "agents", label: "Agents", icon: Users },
+  { value: "overview", label: t("overview"), icon: FileText },
+  { value: "files", label: t("files"), icon: FolderOpen },
+  { value: "versions", label: t("versions"), icon: History },
+  { value: "agents", label: t("nav.items.agents"), icon: Users },
 ];
 
 function currentVersionSelection(detail: CompanySkillDetail | null | undefined) {
@@ -2682,7 +2683,7 @@ export function SkillDetailPage({
   }, [isDirty]);
 
   if (!detail) {
-    return loading ? <PageSkeleton variant="detail" /> : <EmptyState icon={Boxes} message="Skill not found." />;
+    return loading ? <PageSkeleton variant="detail" /> : <EmptyState icon={Boxes} message={t("companySkills.messages.skillNotFound")} />;
   }
 
   const skill = detail;
@@ -3138,7 +3139,7 @@ export function SkillDetailPage({
                         <AgentIcon icon={meta?.icon ?? null} className="h-4 w-4 shrink-0 text-muted-foreground" />
                         <span className="min-w-0 flex-1 truncate text-foreground">{agent.name}</span>
                         {meta?.paused ? (
-                          <Pause className="h-3 w-3 shrink-0 text-amber-500" aria-label="Paused" />
+                          <Pause className="h-3 w-3 shrink-0 text-amber-500" aria-label={t("companySkills.aria.paused")} />
                         ) : null}
                       </Link>
                     );
@@ -3218,7 +3219,7 @@ export function SkillDetailPage({
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <Pin className="h-3.5 w-3.5 shrink-0" aria-label="Pinned source revision" />
+                      <Pin className="h-3.5 w-3.5 shrink-0" aria-label={t("companySkills.aria.pinnedRevision")} />
                     </TooltipTrigger>
                     <TooltipContent>Pinned source revision</TooltipContent>
                   </Tooltip>
@@ -3420,7 +3421,7 @@ function SkillPane({
     return (
       <EmptyState
         icon={Boxes}
-        message="Select a skill to inspect its files."
+        message={t("companySkills.messages.selectSkillToInspectFiles")}
       />
     );
   }
@@ -3797,8 +3798,8 @@ export function CompanySkills() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Skills", href: "/skills" },
-      ...(routeSkillToken ? [{ label: "Detail" }] : []),
+      { label: t("nav.items.skills"), href: "/skills" },
+      ...(routeSkillToken ? [{ label: t("detail") }] : []),
     ]);
   }, [routeSkillToken, setBreadcrumbs]);
 
@@ -3952,19 +3953,19 @@ export function CompanySkills() {
       if (result.imported[0]) navigate(routeForSkill(result.imported[0]));
       pushToast({
         tone: "success",
-        title: "Skills imported",
+        title: t("companySkills.toasts.skillsImported"),
         body: `${result.imported.length} skill${result.imported.length === 1 ? "" : "s"} added.`,
       });
       if (result.warnings[0]) {
-        pushToast({ tone: "warn", title: "Import warnings", body: result.warnings[0] });
+        pushToast({ tone: "warn", title: t("companySkills.toasts.importWarnings"), body: result.warnings[0] });
       }
       setSource("");
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Skill import failed",
-        body: error instanceof Error ? error.message : "Failed to import skill source.",
+        title: t("companySkills.toasts.importFailed"),
+        body: error instanceof Error ? error.message : t("companySkills.errors.importSource"),
       });
     },
   });
@@ -3984,11 +3985,11 @@ export function CompanySkills() {
       });
     },
     onError: (error) => {
-      const message = error instanceof Error ? error.message : "Failed to create skill.";
+      const message = error instanceof Error ? error.message : t("companySkills.errors.create");
       setCreateError(message);
       pushToast({
         tone: "error",
-        title: "Skill creation failed",
+        title: t("companySkills.toasts.creationFailed"),
         body: message,
       });
     },
@@ -4006,19 +4007,19 @@ export function CompanySkills() {
       setScanStatusMessage(summary);
       pushToast({
         tone: "success",
-        title: "Project skill scan complete",
+        title: t("companySkills.toasts.scanComplete"),
         body: summary,
       });
       if (result.conflicts[0]) {
         pushToast({
           tone: "warn",
-          title: "Skill conflicts found",
+          title: t("companySkills.toasts.conflictsFound"),
           body: result.conflicts[0].reason,
         });
       } else if (result.warnings[0]) {
         pushToast({
           tone: "warn",
-          title: "Scan warnings",
+          title: t("companySkills.toasts.scanWarnings"),
           body: result.warnings[0],
         });
       }
@@ -4027,8 +4028,8 @@ export function CompanySkills() {
       setScanStatusMessage(null);
       pushToast({
         tone: "error",
-        title: "Project skill scan failed",
-        body: error instanceof Error ? error.message : "Failed to scan project workspaces.",
+        title: t("companySkills.toasts.scanFailed"),
+        body: error instanceof Error ? error.message : t("companySkills.errors.scanWorkspaces"),
       });
     },
   });
@@ -4050,15 +4051,15 @@ export function CompanySkills() {
       setEditMode(false);
       pushToast({
         tone: "success",
-        title: "Skill saved",
+        title: t("companySkills.toasts.skillSaved"),
         body: result.path,
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Save failed",
-        body: error instanceof Error ? error.message : "Failed to save skill file.",
+        title: t("companySkills.toasts.saveFailed"),
+        body: error instanceof Error ? error.message : t("companySkills.errors.saveFile"),
       });
     },
   });
@@ -4080,8 +4081,8 @@ export function CompanySkills() {
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Star failed",
-        body: error instanceof Error ? error.message : "Failed to update star.",
+        title: t("companySkills.toasts.starFailed"),
+        body: error instanceof Error ? error.message : t("companySkills.errors.updateStar"),
       });
     },
   });
@@ -4102,13 +4103,13 @@ export function CompanySkills() {
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.detail(selectedCompanyId!, skill.id) }),
       ]);
-      pushToast({ tone: "success", title: "Skill settings updated", body: skillSettingsToastBody(skill) });
+      pushToast({ tone: "success", title: t("companySkills.toasts.settingsUpdated"), body: skillSettingsToastBody(skill) });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Skill settings update failed",
-        body: error instanceof Error ? error.message : "Failed to update skill settings.",
+        title: t("companySkills.toasts.settingsUpdateFailed"),
+        body: error instanceof Error ? error.message : t("companySkills.errors.updateSettings"),
       });
     },
   });
@@ -4125,15 +4126,15 @@ export function CompanySkills() {
       navigate(routeForSkill(skill, selectedPath));
       pushToast({
         tone: "success",
-        title: "Skill updated",
+        title: t("companySkills.toasts.skillUpdated"),
         body: skill.sourceRef ? `Pinned to ${shortRef(skill.sourceRef)}` : skill.name,
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Update failed",
-        body: error instanceof Error ? error.message : "Failed to install skill update.",
+        title: t("companySkills.toasts.updateFailed"),
+        body: error instanceof Error ? error.message : t("companySkills.errors.installUpdate"),
       });
     },
   });
@@ -4261,14 +4262,14 @@ export function CompanySkills() {
         body: result.skill.name,
       });
       if (result.warnings[0]) {
-        pushToast({ tone: "warn", title: "Install warnings", body: result.warnings[0] });
+        pushToast({ tone: "warn", title: t("companySkills.toasts.installWarnings"), body: result.warnings[0] });
       }
       if (result.action === "created") {
         navigate(routeForSkill(result.skill));
       }
     },
     onError: (error) => {
-      const message = error instanceof Error ? error.message : "Failed to install catalog skill.";
+      const message = error instanceof Error ? error.message : t("companySkills.errors.installCatalog");
       setInstallDialogState((current) => ({ ...current, error: message }));
     },
   });
@@ -4335,9 +4336,9 @@ export function CompanySkills() {
         }
         await attachAgentsMutation.mutateAsync({ agentId, desiredSkills: currentEntries });
       }
-      pushToast({ tone: "success", title: "Agents updated", body: `${nextAgentIds.length} agent(s) attached.` });
+      pushToast({ tone: "success", title: t("companySkills.toasts.agentsUpdated"), body: `${nextAgentIds.length} agent(s) attached.` });
     } catch (error) {
-      pushToast({ tone: "error", title: "Update failed", body: error instanceof Error ? error.message : "Failed to update agent skills." });
+      pushToast({ tone: "error", title: t("companySkills.toasts.updateFailed"), body: error instanceof Error ? error.message : t("companySkills.errors.updateAgents") });
     }
   }
 
@@ -4387,21 +4388,21 @@ export function CompanySkills() {
       navigate("/skills", { replace: true });
       pushToast({
         tone: "success",
-        title: "Skill removed",
+        title: t("companySkills.toasts.skillRemoved"),
         body: `${skill.name} was removed from the company skill library.`,
       });
     },
     onError: (error) => {
       pushToast({
         tone: "error",
-        title: "Remove failed",
-        body: error instanceof Error ? error.message : "Failed to remove skill.",
+        title: t("companySkills.toasts.removeFailed"),
+        body: error instanceof Error ? error.message : t("companySkills.errors.remove"),
       });
     },
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Boxes} message="Select a company to manage skills." />;
+    return <EmptyState icon={Boxes} message={t("common.selectCompany.skills")} />;
   }
 
   function handleAddSkillSource() {
@@ -4715,7 +4716,7 @@ export function CompanySkills() {
           {catalogListQuery.isLoading || catalogDetailQuery.isLoading ? (
             <PageSkeleton variant="detail" />
           ) : !selectedCatalogSkill ? (
-            <EmptyState icon={Boxes} message="Catalog skill not found." />
+            <EmptyState icon={Boxes} message={t("companySkills.messages.catalogNotFound")} />
           ) : (
             <div className="grid gap-0 xl:grid-cols-[14rem_minmax(0,1fr)]">
               <aside className="border-b border-border px-3 py-4 xl:border-b-0 xl:border-r">
@@ -4760,7 +4761,7 @@ export function CompanySkills() {
           {skillsQuery.isLoading ? (
             <PageSkeleton variant="detail" />
           ) : (
-            <EmptyState icon={Boxes} message="Skill not found." />
+            <EmptyState icon={Boxes} message={t("companySkills.messages.skillNotFound")} />
           )}
         </div>
       )}

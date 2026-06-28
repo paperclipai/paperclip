@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import type { ActivityEvent, Issue, Agent } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { accessApi, type CurrentBoardAccess } from "../api/access";
 import { activityApi, type RunForIssue, type RunLivenessState } from "../api/activity";
 import { ApiError } from "../api/client";
@@ -85,12 +86,12 @@ const LIVENESS_COPY: Record<RunLivenessState, LivenessCopy> = {
   plan_only: {
     label: "Plan only",
     tone: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-    description: "Run described future work without concrete action evidence.",
+    description: t("issueRunLedger.descriptions.noConcreteAction"),
   },
   empty_response: {
     label: "Empty response",
     tone: "border-orange-500/30 bg-orange-500/10 text-orange-700 dark:text-orange-300",
-    description: "Run finished without useful output.",
+    description: t("issueRunLedger.descriptions.noUsefulOutput"),
   },
   blocked: {
     label: "Blocked",
@@ -100,7 +101,7 @@ const LIVENESS_COPY: Record<RunLivenessState, LivenessCopy> = {
   failed: {
     label: "Failed",
     tone: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300",
-    description: "Run ended unsuccessfully.",
+    description: t("issueRunLedger.descriptions.endedUnsuccessfully"),
   },
   needs_followup: {
     label: "Needs follow-up",
@@ -112,13 +113,13 @@ const LIVENESS_COPY: Record<RunLivenessState, LivenessCopy> = {
 const PENDING_LIVENESS_COPY: LivenessCopy = {
   label: "Checks after finish",
   tone: "border-border bg-background text-muted-foreground",
-  description: "Liveness is evaluated after the run finishes.",
+  description: t("issueRunLedger.descriptions.evaluatedAfterFinish"),
 };
 
 const RETRY_PENDING_LIVENESS_COPY: LivenessCopy = {
   label: "Retry pending",
   tone: "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
-  description: "Paperclip queued an automatic retry that has not started yet.",
+  description: t("issueRunLedger.descriptions.queuedRetry"),
 };
 
 const MISSING_LIVENESS_COPY: LivenessCopy = {
@@ -451,7 +452,7 @@ export function IssueRunLedger({
       const dedupeSuffix = error instanceof ApiError ? String(error.status) : "error";
       setWatchdogDecisionError(message);
       pushToast({
-        title: "Watchdog decision not recorded",
+        title: t("issueRunLedger.toasts.watchdogNotRecorded"),
         body: message,
         tone: "error",
         dedupeKey: `watchdog-decision:${issueId}:${dedupeSuffix}`,
@@ -538,7 +539,7 @@ export function IssueRunLedgerContent({
     <section className="space-y-3" aria-label="Task run ledger">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <h3 className="text-sm font-medium text-muted-foreground">Run ledger</h3>
+          <h3 className="text-sm font-medium text-muted-foreground">{t("issueRunLedger.text.runLedger")}</h3>
           <p className="text-xs text-muted-foreground">
             {latestRun
               ? runSummary(latestRun, agentMap)
@@ -560,7 +561,7 @@ export function IssueRunLedgerContent({
       {children.total > 0 ? (
         <div className="rounded-md border border-border/70 px-3 py-2">
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="font-medium text-foreground">Child work</span>
+            <span className="font-medium text-foreground">{t("issueRunLedger.text.childWork")}</span>
             <span className="text-muted-foreground">
               {children.active.length > 0
                 ? `${children.active.length} active, ${children.done} done, ${children.cancelled} cancelled`
@@ -782,11 +783,11 @@ export function IssueRunLedgerContent({
 
                 <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
                   <div className="min-w-0">
-                    <span className="text-foreground">Elapsed</span>{" "}
+                    <span className="text-foreground">{t("issueRunLedger.text.elapsed")}</span>{" "}
                     {duration ?? "unknown"}
                   </div>
                   <div className="min-w-0">
-                    <span className="text-foreground">Last useful action</span>{" "}
+                    <span className="text-foreground">{t("issueRunLedger.text.lastUsefulAction")}</span>{" "}
                     {lastUsefulActionLabel(run)}
                   </div>
                   <div className="min-w-0">
@@ -835,7 +836,7 @@ export function IssueRunLedgerContent({
 
                 {run.nextAction ? (
                   <div className="min-w-0 rounded-md bg-accent/40 px-2 py-1.5 text-xs leading-5">
-                    <span className="font-medium text-foreground">Next action: </span>
+                    <span className="font-medium text-foreground">{t("issueRunLedger.text.nextAction")}</span>
                     <span className="break-words text-muted-foreground">{run.nextAction}</span>
                   </div>
                 ) : null}

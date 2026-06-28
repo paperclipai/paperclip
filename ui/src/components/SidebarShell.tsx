@@ -12,6 +12,7 @@ import {
 } from "react";
 import { cn } from "@/lib/utils";
 
+import { t } from "@/i18n";
 const DEFAULT_SIDEBAR_WIDTH = 240;
 const MIN_SIDEBAR_WIDTH = 208;
 const MAX_SIDEBAR_WIDTH = 420;
@@ -218,7 +219,7 @@ export function SidebarShell({
         {canResize ? (
           <div
             role="separator"
-            aria-label="Resize sidebar"
+            aria-label={t("sidebarShell.aria.resizeSidebar")}
             aria-orientation="vertical"
             aria-valuemin={MIN_SIDEBAR_WIDTH}
             aria-valuemax={MAX_SIDEBAR_WIDTH}

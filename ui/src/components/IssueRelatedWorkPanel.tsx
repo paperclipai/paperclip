@@ -4,6 +4,7 @@ import { ExternalObjectPill } from "./ExternalObjectPill";
 import type { IssueExternalObjectGroup } from "../hooks/useIssueExternalObjects";
 import { externalObjectToneSeverity } from "../lib/external-objects";
 
+import { t } from "@/i18n";
 type GroupedSource = {
   label: string;
   count: number;
@@ -110,7 +111,7 @@ function ExternalObjectsSection({
   return (
     <section className="space-y-3 rounded-lg border border-border p-3">
       <div className="space-y-1">
-        <h3 className="text-sm font-semibold">External objects</h3>
+        <h3 className="text-sm font-semibold">{t("issueRelatedWorkPanel.text.externalObjects")}</h3>
         <p className="text-xs text-muted-foreground">
           Remote work referenced from this issue — pull requests, deployments, tickets in other systems, and more.
         </p>

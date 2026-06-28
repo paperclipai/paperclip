@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
@@ -504,7 +505,7 @@ function WorkspaceOperationLogViewer({
           {isLoading && <div className="text-xs text-muted-foreground">Loading log...</div>}
           {error && (
             <div className="text-xs text-destructive">
-              {error instanceof Error ? error.message : "Failed to load workspace operation log"}
+              {error instanceof Error ? error.message : t("agentDetail.errors.loadWorkspaceOpLog")}
             </div>
           )}
           {!isLoading && !error && chunks.length === 0 && (
@@ -813,7 +814,7 @@ export function AgentDetail() {
       }
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Action failed");
+      setActionError(err instanceof Error ? err.message : t("agentDetail.errors.actionFailed"));
     },
   });
 
@@ -858,13 +859,13 @@ export function AgentDetail() {
       }
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to update permissions");
+      setActionError(err instanceof Error ? err.message : t("agentDetail.errors.updatePermissions"));
     },
   });
 
   useEffect(() => {
     const crumbs: { label: string; href?: string }[] = [
-      { label: "Agents", href: "/agents" },
+      { label: t("nav.items.agents"), href: "/agents" },
     ];
     const agentName = agent?.name ?? routeAgentRef ?? "Agent";
     if (activeView === "dashboard" && !urlRunId) {
@@ -872,20 +873,20 @@ export function AgentDetail() {
     } else {
       crumbs.push({ label: agentName, href: `/agents/${canonicalAgentRef}/dashboard` });
       if (urlRunId) {
-        crumbs.push({ label: "Runs", href: `/agents/${canonicalAgentRef}/runs` });
+        crumbs.push({ label: t("agentDetail.tabs.runs"), href: `/agents/${canonicalAgentRef}/runs` });
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
       } else if (activeView === "instructions") {
-        crumbs.push({ label: "Instructions" });
+        crumbs.push({ label: t("agentDetail.tabs.instructions") });
       } else if (activeView === "configuration") {
-        crumbs.push({ label: "Configuration" });
+        crumbs.push({ label: t("agentDetail.tabs.configuration") });
       // } else if (activeView === "skills") { // TODO: bring back later
-      //   crumbs.push({ label: "Skills" });
+      //   crumbs.push({ label: t("agentDetail.tabs.skills") });
       } else if (activeView === "runs") {
-        crumbs.push({ label: "Runs" });
+        crumbs.push({ label: t("agentDetail.tabs.runs") });
       } else if (activeView === "budget") {
-        crumbs.push({ label: "Budget" });
+        crumbs.push({ label: t("agentDetail.tabs.budget") });
       } else {
-        crumbs.push({ label: "Dashboard" });
+        crumbs.push({ label: t("agentDetail.tabs.dashboard") });
       }
     }
     setBreadcrumbs(crumbs);
@@ -958,7 +959,7 @@ export function AgentDetail() {
           <button
             type="button"
             className="h-6 w-6 shrink-0 text-yellow-100/70 hover:text-yellow-100"
-            aria-label="Dismiss agent membership notice"
+            aria-label={t("agentDetail.labels.dismissMembershipNotice")}
             onClick={() => setDismissedLeftAgentIds((current) => new Set(current).add(agent.id))}
           >
             ×
@@ -1037,12 +1038,12 @@ export function AgentDetail() {
         >
           <PageTabBar
             items={[
-              { value: "dashboard", label: "Dashboard" },
-              { value: "instructions", label: "Instructions" },
-              { value: "skills", label: "Skills" },
-              { value: "configuration", label: "Configuration" },
-              { value: "runs", label: "Runs" },
-              { value: "budget", label: "Budget" },
+              { value: "dashboard", label: t("agentDetail.tabs.dashboard") },
+              { value: "instructions", label: t("agentDetail.tabs.instructions") },
+              { value: "skills", label: t("agentDetail.tabs.skills") },
+              { value: "configuration", label: t("agentDetail.tabs.configuration") },
+              { value: "runs", label: t("agentDetail.tabs.runs") },
+              { value: "budget", label: t("agentDetail.tabs.budget") },
             ]}
             value={activeView}
             onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
@@ -1613,7 +1614,7 @@ function ConfigurationTab({
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
-      pushToast({ title: "Agent saved", tone: "success" });
+      pushToast({ title: t("agentDetail.toasts.agentSaved"), tone: "success" });
     },
     onError: (err) => {
       setAwaitingRefreshAfterSave(false);
@@ -1623,7 +1624,7 @@ function ConfigurationTab({
           : err instanceof Error
             ? err.message
             : "Could not save agent";
-      pushToast({ title: "Save failed", body: message, tone: "error" });
+      pushToast({ title: t("agentDetail.toasts.saveFailed"), body: message, tone: "error" });
     },
   });
 
@@ -2900,7 +2901,7 @@ export function AgentSkillsTab({
               <>
                 {optionalSkillRows.length > 0
                   ? renderSkillSection(
-                      "Installed skills",
+                      t("agentDetail.tabs.installedSkills"),
                       installedSkillRows,
                       "No company-library skills installed on this agent.",
                     )
@@ -3322,12 +3323,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
             })()}
             {resumeRun.isError && (
               <div className="text-xs text-destructive">
-                {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}
+                {resumeRun.error instanceof Error ? resumeRun.error.message : t("agentDetail.errors.resumeRun")}
               </div>
             )}
             {retryRun.isError && (
               <div className="text-xs text-destructive">
-                {retryRun.error instanceof Error ? retryRun.error.message : "Failed to retry run"}
+                {retryRun.error instanceof Error ? retryRun.error.message : t("agentDetail.errors.retryRun")}
               </div>
             )}
             {startTime && (
@@ -3758,7 +3759,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
             setLogLoading(false);
             return;
           }
-          setLogError(err instanceof Error ? err.message : "Failed to load run log");
+          setLogError(err instanceof Error ? err.message : t("agentDetail.errors.loadRunLog"));
         }
       } finally {
         if (!cancelled) setLogLoading(false);
@@ -3782,7 +3783,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       setLogOffset(next);
       setHasMoreLog(result.nextOffset !== undefined);
     } catch (err) {
-      setLogError(err instanceof Error ? err.message : "Failed to load more run log");
+      setLogError(err instanceof Error ? err.message : t("agentDetail.errors.loadMoreRunLog"));
     } finally {
       setLoadingMoreLog(false);
     }

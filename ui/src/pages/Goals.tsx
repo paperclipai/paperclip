@@ -10,6 +10,7 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Target, Plus } from "lucide-react";
+import { t, useTranslation } from "@/i18n";
 
 export function Goals() {
   const { selectedCompanyId } = useCompany();
@@ -17,8 +18,8 @@ export function Goals() {
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Goals" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("nav.items.goals") }]);
+  }, [setBreadcrumbs, t]);
 
   const { data: goals, isLoading, error } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
@@ -27,7 +28,7 @@ export function Goals() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Target} message="Select a company to view goals." />;
+    return <EmptyState icon={Target} message={t("common.selectCompany.goals")} />;
   }
 
   if (isLoading) {
@@ -41,7 +42,7 @@ export function Goals() {
       {goals && goals.length === 0 && (
         <EmptyState
           icon={Target}
-          message="No goals yet."
+          message={t("goals.empty")}
           action="Add Goal"
           onAction={() => openNewGoal()}
         />

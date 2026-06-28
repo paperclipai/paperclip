@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
@@ -94,7 +95,7 @@ export function Org() {
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Org Chart" }]);
+    setBreadcrumbs([{ label: t("org.tabs.orgChart") }]);
   }, [setBreadcrumbs]);
 
   const { data, isLoading, error } = useQuery({

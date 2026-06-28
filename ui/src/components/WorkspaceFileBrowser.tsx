@@ -24,6 +24,7 @@ import type {
   WorkspaceFileSelector,
 } from "@paperclipai/shared";
 
+import { t } from "@/i18n";
 type BrowserSource = "current" | "other";
 
 // Hard list cap. The spec called out ~50 to keep reads cheap; 100 trades a bit
@@ -78,27 +79,27 @@ export function describeUnavailable(reason: string): { title: string; body: stri
   if (lower.includes("remote")) {
     return {
       icon: <Cloud aria-hidden="true" className="h-5 w-5 text-muted-foreground" />,
-      title: "Remote workspace preview not supported",
+      title: t("workspaceFileBrowser.toasts.remotePreviewUnsupported"),
       body: "This workspace is hosted remotely and is not available for inline preview yet.",
     };
   }
   if (lower.includes("no_workspace") || lower.includes("no_local")) {
     return {
       icon: <FolderOpen aria-hidden="true" className="h-5 w-5 text-muted-foreground" />,
-      title: "No workspace yet",
+      title: t("workspaceFileBrowser.toasts.noWorkspace"),
       body: "This issue does not have a workspace to browse. Files appear here once a run creates one.",
     };
   }
   if (lower.includes("archiv") || lower.includes("cleaned") || lower.includes("unavailable")) {
     return {
       icon: <FolderOpen aria-hidden="true" className="h-5 w-5 text-muted-foreground" />,
-      title: "Workspace is no longer available",
+      title: t("workspaceFileBrowser.toasts.workspaceGone"),
       body: "The isolated worktree for this issue has been cleaned up, so files cannot be previewed.",
     };
   }
   return {
     icon: <AlertTriangle aria-hidden="true" className="h-5 w-5 text-amber-500" />,
-    title: "Workspace unavailable",
+    title: t("workspaceFileBrowser.toasts.unavailable"),
     body: "These workspace files can't be browsed right now.",
   };
 }
@@ -128,7 +129,7 @@ function WorkspaceFileBreadcrumbs({
   if (!rootLabel && segments.length === 0) return null;
 
   return (
-    <nav aria-label="Current folder" className="min-w-0 overflow-hidden text-[11px] text-muted-foreground">
+    <nav aria-label={t("workspaceFileBrowser.labelsJsx.currentFolder")} className="min-w-0 overflow-hidden text-[11px] text-muted-foreground">
       <ol className="flex min-w-0 items-center gap-1 overflow-hidden">
         {rootLabel ? (
           <li className="min-w-0 shrink">
@@ -415,7 +416,7 @@ function WorkspaceFileTree({
                   style={{ paddingLeft: `${1 + (node.depth + 1) * 0.875}rem` }}
                 >
                   <span className="h-3.5 w-3.5 shrink-0" />
-                  <span>Load more from this folder</span>
+                  <span>{t("workspaceFileBrowser.text.loadMore")}</span>
                 </button>
               ) : null}
             </>
@@ -440,7 +441,7 @@ function WorkspaceFileTree({
   }
 
   return (
-    <div role="tree" id={listboxId} aria-label="Workspace files" className="space-y-0.5 py-1">
+    <div role="tree" id={listboxId} aria-label={t("workspaceFileBrowser.labelsJsx.workspaceFiles")} className="space-y-0.5 py-1">
       {nodes.map(renderNode)}
     </div>
   );
@@ -1046,8 +1047,8 @@ export function WorkspaceFileBrowser({
           value={searchInput}
           onChange={(event) => setSearchInput(event.target.value)}
           onKeyDown={handleSearchKeyDown}
-          placeholder="Search files by name or path…"
-          aria-label="Search workspace files"
+          placeholder={t("workspaceFileBrowser.placeholders.searchByName")}
+          aria-label={t("workspaceFileBrowser.labelsJsx.searchFiles")}
           role="combobox"
           aria-expanded={items.length > 0}
           aria-controls={items.length > 0 ? listboxId : undefined}

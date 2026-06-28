@@ -4,16 +4,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { nextCronFires, parseCronExpression } from "../lib/cron-fires";
 
+import { t } from "@/i18n";
 export type SchedulePreset = "every_minute" | "every_hour" | "every_day" | "weekdays" | "weekly" | "monthly" | "custom";
 
 const PRESETS: { value: SchedulePreset; label: string }[] = [
-  { value: "every_minute", label: "Every minute" },
-  { value: "every_hour", label: "Every hour" },
-  { value: "every_day", label: "Every day" },
-  { value: "weekdays", label: "Weekdays" },
-  { value: "weekly", label: "Weekly" },
-  { value: "monthly", label: "Monthly" },
-  { value: "custom", label: "Custom (cron)" },
+  { value: "every_minute", label: t("scheduleEditor.tabs.everyMinute") },
+  { value: "every_hour", label: t("scheduleEditor.status.everyHour") },
+  { value: "every_day", label: t("scheduleEditor.status.everyDay") },
+  { value: "weekdays", label: t("scheduleEditor.tabs.weekdays") },
+  { value: "weekly", label: t("scheduleEditor.tabs.weekly") },
+  { value: "monthly", label: t("scheduleEditor.tabs.monthly") },
+  { value: "custom", label: t("scheduleEditor.status.custom") },
 ];
 
 const HOURS = Array.from({ length: 24 }, (_, i) => ({
@@ -247,8 +248,8 @@ export function ScheduleEditor({
   return (
     <div className="space-y-3">
       <Select value={preset} onValueChange={(v) => handlePresetChange(v as SchedulePreset)}>
-        <SelectTrigger className="w-full" aria-label="Schedule frequency">
-          <SelectValue placeholder="Choose frequency..." />
+        <SelectTrigger className="w-full" aria-label={t("scheduleEditor.labelsJsx.scheduleFrequency")}>
+          <SelectValue placeholder={t("scheduleEditor.placeholders.chooseFrequency")} />
         </SelectTrigger>
         <SelectContent>
           {PRESETS.map((p) => (
@@ -271,7 +272,7 @@ export function ScheduleEditor({
               }
             }}
             placeholder="0 10 * * *"
-            aria-label="Cron expression"
+            aria-label={t("scheduleEditor.labelsJsx.cronExpression")}
             aria-invalid={!customValidation.valid}
             className="font-mono text-sm"
           />

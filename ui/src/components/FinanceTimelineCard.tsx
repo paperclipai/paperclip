@@ -9,6 +9,7 @@ import {
   providerDisplayName,
 } from "@/lib/utils";
 
+import { t } from "@/i18n";
 interface FinanceTimelineCardProps {
   rows: FinanceEvent[];
   emptyMessage?: string;
@@ -21,7 +22,7 @@ export function FinanceTimelineCard({
   return (
     <Card>
       <CardHeader className="px-4 pt-4 pb-1">
-        <CardTitle className="text-base">Recent financial events</CardTitle>
+        <CardTitle className="text-base">{t("financeTimelineCard.text.recentFinancialEvents")}</CardTitle>
         <CardDescription>Top-ups, fees, credits, commitments, and other non-request charges.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3 px-4 pb-4 pt-3">

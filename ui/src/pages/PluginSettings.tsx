@@ -5,6 +5,7 @@ import type { PluginLocalFolderDeclaration } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Link, Navigate, useParams } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { pluginsApi, type PluginLocalFolderStatus } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
@@ -117,9 +118,9 @@ export function PluginSettings() {
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
-      { label: "Plugins", href: "/company/settings/instance/plugins" },
+      { label: t("pluginSettings.labels.settings"), href: "/company/settings" },
+      { label: t("pluginSettings.labels.instanceSettings"), href: "/company/settings/instance/general" },
+      { label: t("pluginSettings.labels.plugins"), href: "/company/settings/instance/plugins" },
       { label: plugin?.manifestJson?.displayName ?? plugin?.packageName ?? "Plugin Details" },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs, companyPrefix, plugin]);
@@ -177,8 +178,8 @@ export function PluginSettings() {
         <PageTabBar
           align="start"
           items={[
-            { value: "configuration", label: "Configuration" },
-            { value: "status", label: "Status" },
+            { value: "configuration", label: t("pluginSettings.labels.configuration") },
+            { value: "status", label: t("pluginSettings.labels.status") },
           ]}
           value={activeTab}
           onValueChange={(value) => setActiveTab(value as "configuration" | "status")}
@@ -714,10 +715,10 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
       </div>
 
       <div className="grid gap-3 text-sm sm:grid-cols-3">
-        <FolderStatusMetric label="Configured" value={status?.configured ? "Yes" : "No"} ok={!!status?.configured} />
-        <FolderStatusMetric label="Readable" value={status?.readable ? "Yes" : "No"} ok={!!status?.readable} />
+        <FolderStatusMetric label={t("pluginSettings.labels.configured")} value={status?.configured ? "Yes" : "No"} ok={!!status?.configured} />
+        <FolderStatusMetric label={t("pluginSettings.labels.readable")} value={status?.readable ? "Yes" : "No"} ok={!!status?.readable} />
         <FolderStatusMetric
-          label="Writable"
+          label={t("pluginSettings.labels.writable")}
           value={access === "read" ? "Not requested" : status?.writable ? "Yes" : "No"}
           ok={access === "read" || !!status?.writable}
         />

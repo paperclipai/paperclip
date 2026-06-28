@@ -26,6 +26,7 @@ import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
 
+import { t } from "@/i18n";
 const levelLabels: Record<string, string> = {
   company: "Company",
   team: "Team",
@@ -154,7 +155,7 @@ export function NewGoalDialog() {
         <div className="px-4 pt-4 pb-2 shrink-0">
           <input
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
-            placeholder="Goal title"
+            placeholder={t("newGoalDialog.placeholders.goalTitle")}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => {

@@ -11,6 +11,7 @@ import { Activity, ExternalLink, Loader2, Play, RotateCcw, Square } from "lucide
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+import { t } from "@/i18n";
 export type WorkspaceRuntimeAction = "start" | "stop" | "restart" | "run";
 
 export type WorkspaceRuntimeControlRequest = WorkspaceRuntimeControlTarget & {
@@ -405,7 +406,7 @@ export function WorkspaceRuntimeControls({
     <div className={cn("space-y-4", className)}>
       <div className={cn("border border-border/70 bg-background p-3", square ? "rounded-none" : "rounded-xl")}>
         <div className="space-y-1">
-          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace commands</div>
+          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">{t("workspaceRuntimeControls.text.commands")}</div>
           <div className="flex flex-wrap items-center gap-2">
             <span
               className={cn(

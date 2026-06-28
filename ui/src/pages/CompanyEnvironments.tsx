@@ -29,6 +29,7 @@ import {
   ToggleField,
 } from "../components/agent-config-primitives";
 
+import { t } from "@/i18n";
 type EnvironmentFormState = {
   name: string;
   description: string;
@@ -177,9 +178,9 @@ export function CompanyEnvironments() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings", href: "/company/settings/instance/general" },
-      { label: "Environments" },
+      { label: t("companyEnvironments.tabs.settings"), href: "/company/settings" },
+      { label: t("companyEnvironments.tabs.instanceSettings"), href: "/company/settings/instance/general" },
+      { label: t("companyEnvironments.tabs.environments") },
     ]);
   }, [setBreadcrumbs]);
 
@@ -251,8 +252,8 @@ export function CompanyEnvironments() {
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to save environment",
-        body: error instanceof Error ? error.message : "Environment save failed.",
+        title: t("companyEnvironments.toasts.saveFailed"),
+        body: error instanceof Error ? error.message : t("companyEnvironments.errors.saveFailed"),
         tone: "error",
       });
     },
@@ -264,15 +265,15 @@ export function CompanyEnvironments() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.instance.settings });
       pushToast({
-        title: "Default environment updated",
+        title: t("companyEnvironments.toasts.defaultUpdated"),
         body: "Agent inheritance now follows the updated instance default.",
         tone: "success",
       });
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to update default environment",
-        body: error instanceof Error ? error.message : "Default environment update failed.",
+        title: t("companyEnvironments.toasts.defaultUpdateFailed"),
+        body: error instanceof Error ? error.message : t("companyEnvironments.errors.defaultUpdateFailed"),
         tone: "error",
       });
     },
@@ -304,13 +305,13 @@ export function CompanyEnvironments() {
         [environmentId]: {
           ok: false,
           driver: failedEnvironment?.driver ?? "local",
-          summary: error instanceof Error ? error.message : "Environment probe failed.",
+          summary: error instanceof Error ? error.message : t("companyEnvironments.errors.probeFailed"),
           details: null,
         },
       }));
       pushToast({
-        title: "Environment probe failed",
-        body: error instanceof Error ? error.message : "Environment probe failed.",
+        title: t("companyEnvironments.toasts.probeFailed"),
+        body: error instanceof Error ? error.message : t("companyEnvironments.errors.probeFailed"),
         tone: "error",
       });
     },
@@ -330,8 +331,8 @@ export function CompanyEnvironments() {
     },
     onError: (error) => {
       pushToast({
-        title: "Draft probe failed",
-        body: error instanceof Error ? error.message : "Environment probe failed.",
+        title: t("companyEnvironments.toasts.draftProbeFailed"),
+        body: error instanceof Error ? error.message : t("companyEnvironments.errors.probeFailed"),
         tone: "error",
       });
     },
@@ -496,7 +497,7 @@ export function CompanyEnvironments() {
         <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="space-y-1">
-              <div className="text-sm font-medium">Default</div>
+              <div className="text-sm font-medium">{t("companyEnvironments.text.default")}</div>
             </div>
             <div className="min-w-[18rem] flex-1">
               <select
@@ -506,7 +507,7 @@ export function CompanyEnvironments() {
                   defaultEnvironmentMutation.mutate(event.target.value || null)}
                 disabled={defaultEnvironmentMutation.isPending}
               >
-                <option value="">Local</option>
+                <option value="">{t("companyEnvironments.text.local")}</option>
                 {nonLocalEnvironments.map((environment) => (
                   <option key={environment.id} value={environment.id}>
                     {environment.name} · {environment.driver}
@@ -556,7 +557,7 @@ export function CompanyEnvironments() {
                         })()}
                       </div>
                     ) : (
-                      <div className="text-xs text-muted-foreground">Runs on this Paperclip host.</div>
+                      <div className="text-xs text-muted-foreground">{t("companyEnvironments.text.runsOnHost")}</div>
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -623,7 +624,7 @@ export function CompanyEnvironments() {
 
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
             <div className="space-y-4">
-              <Field label="Name" hint="Operator-facing name for this execution target.">
+              <Field label={t("companyEnvironments.labelsJsx.name")} hint="Operator-facing name for this execution target.">
                 <input
                   className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                   type="text"
@@ -631,7 +632,7 @@ export function CompanyEnvironments() {
                   onChange={(e) => setEnvironmentForm((current) => ({ ...current, name: e.target.value }))}
                 />
               </Field>
-              <Field label="Description" hint="Optional note about what this machine is for.">
+              <Field label={t("companyEnvironments.labelsJsx.description")} hint="Optional note about what this machine is for.">
                 <input
                   className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                   type="text"
@@ -639,7 +640,7 @@ export function CompanyEnvironments() {
                   onChange={(e) => setEnvironmentForm((current) => ({ ...current, description: e.target.value }))}
                 />
               </Field>
-              <Field label="Driver" hint="Sandbox stores plugin-backed provider config on the shared environment seam. SSH stores a remote machine target.">
+              <Field label={t("companyEnvironments.labelsJsx.driver")} hint="Sandbox stores plugin-backed provider config on the shared environment seam. SSH stores a remote machine target.">
                 <select
                   className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                   value={environmentForm.driver}
@@ -664,18 +665,18 @@ export function CompanyEnvironments() {
                     }))}
                 >
                   {sandboxCreationEnabled || environmentForm.driver === "sandbox" ? (
-                    <option value="sandbox">Sandbox</option>
+                    <option value="sandbox">{t("companyEnvironments.text.sandbox")}</option>
                   ) : null}
                   <option value="ssh">SSH</option>
                   {environmentForm.driver === "local" ? (
-                    <option value="local">Local</option>
+                    <option value="local">{t("companyEnvironments.text.local")}</option>
                   ) : null}
                 </select>
               </Field>
 
               {environmentForm.driver === "ssh" ? (
                 <div className="grid gap-3 md:grid-cols-2">
-                  <Field label="Host" hint="DNS name or IP address for the remote machine.">
+                  <Field label={t("companyEnvironments.labelsJsx.host")} hint="DNS name or IP address for the remote machine.">
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                       type="text"
@@ -683,7 +684,7 @@ export function CompanyEnvironments() {
                       onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshHost: e.target.value }))}
                     />
                   </Field>
-                  <Field label="Port" hint="Defaults to 22.">
+                  <Field label={t("companyEnvironments.labelsJsx.port")} hint="Defaults to 22.">
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                       type="number"
@@ -693,7 +694,7 @@ export function CompanyEnvironments() {
                       onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshPort: e.target.value }))}
                     />
                   </Field>
-                  <Field label="Username" hint="SSH login user.">
+                  <Field label={t("companyEnvironments.labelsJsx.username")} hint="SSH login user.">
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                       type="text"
@@ -701,7 +702,7 @@ export function CompanyEnvironments() {
                       onChange={(e) => setEnvironmentForm((current) => ({ ...current, sshUsername: e.target.value }))}
                     />
                   </Field>
-                  <Field label="Remote workspace path" hint="Absolute path that Paperclip will verify during SSH connection tests.">
+                  <Field label={t("companyEnvironments.labelsJsx.remotePath")} hint="Absolute path that Paperclip will verify during SSH connection tests.">
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                       type="text"
@@ -711,7 +712,7 @@ export function CompanyEnvironments() {
                         setEnvironmentForm((current) => ({ ...current, sshRemoteWorkspacePath: e.target.value }))}
                     />
                   </Field>
-                  <Field label="Private key" hint="Optional PEM private key. Leave blank to rely on the server's SSH agent or default keychain.">
+                  <Field label={t("companyEnvironments.labelsJsx.privateKey")} hint="Optional PEM private key. Leave blank to rely on the server's SSH agent or default keychain.">
                     <div className="space-y-2">
                       <select
                         className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
@@ -723,7 +724,7 @@ export function CompanyEnvironments() {
                             sshPrivateKey: e.target.value ? "" : current.sshPrivateKey,
                           }))}
                       >
-                        <option value="">No saved secret</option>
+                        <option value="">{t("companyEnvironments.text.noSavedSecret")}</option>
                         {(secrets ?? []).map((secret) => (
                           <option key={secret.id} value={secret.id}>{secret.name}</option>
                         ))}
@@ -736,7 +737,7 @@ export function CompanyEnvironments() {
                       />
                     </div>
                   </Field>
-                  <Field label="Known hosts" hint="Optional known_hosts block used when strict host key checking is enabled.">
+                  <Field label={t("companyEnvironments.labelsJsx.knownHosts")} hint="Optional known_hosts block used when strict host key checking is enabled.">
                     <textarea
                       className="h-32 w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-xs font-mono outline-none"
                       value={environmentForm.sshKnownHosts}
@@ -745,7 +746,7 @@ export function CompanyEnvironments() {
                   </Field>
                   <div className="md:col-span-2">
                     <ToggleField
-                      label="Strict host key checking"
+                      label={t("companyEnvironments.labelsJsx.strictHostKey")}
                       hint="Keep this on unless you deliberately want probe-time host key acceptance disabled."
                       checked={environmentForm.sshStrictHostKeyChecking}
                       onChange={(checked) =>
@@ -757,7 +758,7 @@ export function CompanyEnvironments() {
 
               {environmentForm.driver === "sandbox" ? (
                 <div className="space-y-3">
-                  <Field label="Provider" hint="Installed run-capable sandbox provider plugins appear here.">
+                  <Field label={t("companyEnvironments.labelsJsx.provider")} hint="Installed run-capable sandbox provider plugins appear here.">
                     <select
                       className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                       value={environmentForm.sandboxProvider}
@@ -805,7 +806,7 @@ export function CompanyEnvironments() {
               ) : null}
 
               <Field
-                label="Environment variables"
+                label={t("companyEnvironments.labelsJsx.envVars")}
                 hint="Injected into runs that resolve through this environment. Use plain values or company secrets."
               >
                 <EnvVarEditor

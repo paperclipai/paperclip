@@ -12,12 +12,13 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { formatDate } from "../lib/utils";
 import { ListTodo } from "lucide-react";
 
+import { t } from "@/i18n";
 export function MyIssues() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "My Tasks" }]);
+    setBreadcrumbs([{ label: t("myIssues.tabs.myTasks") }]);
   }, [setBreadcrumbs]);
 
   const { data: issues, isLoading, error } = useQuery({

@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { useLocation, useNavigate } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { Button } from "@/components/ui/button";
 
 type RouteErrorBoundaryInnerProps = {
@@ -39,7 +40,7 @@ class RouteErrorBoundaryInner extends Component<RouteErrorBoundaryInnerProps, Ro
     return (
       <div className="mx-auto max-w-2xl space-y-4 px-4 py-10">
         <div>
-          <h1 className="text-lg font-semibold">This page hit an error</h1>
+          <h1 className="text-lg font-semibold">{t("routeErrorBoundary.text.pageError")}</h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Something went wrong while rendering this page. You can go back and try again, or reload.
           </p>

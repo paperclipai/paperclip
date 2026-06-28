@@ -18,6 +18,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { cn } from "../lib/utils";
 
+import { t } from "@/i18n";
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function InstanceGeneralSettings() {
@@ -31,15 +32,15 @@ export function InstanceGeneralSettings() {
       queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to sign out.");
+      setActionError(error instanceof Error ? error.message : t("instanceGeneral.errors.signOut"));
     },
   });
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Settings", href: "/company/settings" },
-      { label: "Instance settings" },
-      { label: "General" },
+      { label: t("instanceGeneral.tabs.settings"), href: "/company/settings" },
+      { label: t("instanceGeneral.tabs.instanceSettings") },
+      { label: t("instanceGeneral.tabs.general") },
     ]);
   }, [setBreadcrumbs]);
 
@@ -60,12 +61,12 @@ export function InstanceGeneralSettings() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
     },
     onError: (error) => {
-      setActionError(error instanceof Error ? error.message : "Failed to update general settings.");
+      setActionError(error instanceof Error ? error.message : t("instanceGeneral.errors.updateSettings"));
     },
   });
 
   if (generalQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading general settings...</div>;
+    return <div className="text-sm text-muted-foreground">{t("instanceGeneral.text.loading")}</div>;
   }
 
   if (generalQuery.error) {
@@ -88,7 +89,7 @@ export function InstanceGeneralSettings() {
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <SlidersHorizontal className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">General</h1>
+          <h1 className="text-lg font-semibold">{t("instanceGeneral.text.general")}</h1>
         </div>
         <p className="text-sm text-muted-foreground">
           Configure instance-wide preferences including log display, keyboard shortcuts, backup
@@ -105,7 +106,7 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="space-y-3">
           <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold">Deployment and auth</h2>
+            <h2 className="text-sm font-semibold">{t("instanceGeneral.text.deploymentAuth")}</h2>
             <ModeBadge
               deploymentMode={healthQuery.data?.deploymentMode}
               deploymentExposure={healthQuery.data?.deploymentExposure}
@@ -120,15 +121,15 @@ export function InstanceGeneralSettings() {
           </div>
           <div className="grid gap-3 md:grid-cols-3">
             <StatusBox
-              label="Auth readiness"
+              label={t("instanceGeneral.labelsJsx.authReadiness")}
               value={healthQuery.data?.authReady ? "Ready" : "Not ready"}
             />
             <StatusBox
-              label="Bootstrap status"
+              label={t("instanceGeneral.labelsJsx.bootstrapStatus")}
               value={healthQuery.data?.bootstrapStatus === "bootstrap_pending" ? "Setup required" : "Ready"}
             />
             <StatusBox
-              label="Bootstrap invite"
+              label={t("instanceGeneral.labelsJsx.bootstrapInvite")}
               value={healthQuery.data?.bootstrapInviteActive ? "Active" : "None"}
             />
           </div>
@@ -138,7 +139,7 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Censor username in logs</h2>
+            <h2 className="text-sm font-semibold">{t("instanceGeneral.text.censorUsername")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Hide the username segment in home-directory paths and similar operator-visible log output. Standalone
               username mentions outside of paths are not yet masked in the live transcript view. This is off by
@@ -149,7 +150,7 @@ export function InstanceGeneralSettings() {
             checked={censorUsernameInLogs}
             onCheckedChange={() => updateGeneralMutation.mutate({ censorUsernameInLogs: !censorUsernameInLogs })}
             disabled={updateGeneralMutation.isPending}
-            aria-label="Toggle username log censoring"
+            aria-label={t("instanceGeneral.labelsJsx.toggleUsernameLogCensoring")}
           />
         </div>
       </section>
@@ -157,7 +158,7 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Keyboard shortcuts</h2>
+            <h2 className="text-sm font-semibold">{t("instanceGeneral.text.keyboardShortcuts")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating tasks or
               toggling panels. This is off by default.
@@ -167,7 +168,7 @@ export function InstanceGeneralSettings() {
             checked={keyboardShortcuts}
             onCheckedChange={() => updateGeneralMutation.mutate({ keyboardShortcuts: !keyboardShortcuts })}
             disabled={updateGeneralMutation.isPending}
-            aria-label="Toggle keyboard shortcuts"
+            aria-label={t("instanceGeneral.labelsJsx.toggleKeyboardShortcuts")}
           />
         </div>
       </section>
@@ -175,7 +176,7 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="space-y-5">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Backup retention</h2>
+            <h2 className="text-sm font-semibold">{t("instanceGeneral.text.backupRetention")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Configure how long automatic database backups are retained. Backups run roughly
               every hour and are compressed with gzip. Within the daily window all backups are
@@ -184,7 +185,7 @@ export function InstanceGeneralSettings() {
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Daily</h3>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t("instanceGeneral.text.daily")}</h3>
             <div className="flex flex-wrap gap-2">
               {DAILY_RETENTION_PRESETS.map((days) => {
                 const active = backupRetention.dailyDays === days;
@@ -213,7 +214,7 @@ export function InstanceGeneralSettings() {
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Weekly</h3>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t("instanceGeneral.text.weekly")}</h3>
             <div className="flex flex-wrap gap-2">
               {WEEKLY_RETENTION_PRESETS.map((weeks) => {
                 const active = backupRetention.weeklyWeeks === weeks;
@@ -243,7 +244,7 @@ export function InstanceGeneralSettings() {
           </div>
 
           <div className="space-y-1.5">
-            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Monthly</h3>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{t("instanceGeneral.text.monthly")}</h3>
             <div className="flex flex-wrap gap-2">
               {MONTHLY_RETENTION_PRESETS.map((months) => {
                 const active = backupRetention.monthlyMonths === months;
@@ -303,13 +304,13 @@ export function InstanceGeneralSettings() {
             {[
               {
                 value: "allowed",
-                label: "Always allow",
-                description: "Share voted AI outputs automatically.",
+                label: t("instanceGeneral.options.alwaysAllow"),
+                description: t("instanceGeneral.descriptions.shareVotedOutputs"),
               },
               {
                 value: "not_allowed",
-                label: "Don't allow",
-                description: "Keep voted AI outputs local only.",
+                label: t("instanceGeneral.options.dontAllow"),
+                description: t("instanceGeneral.descriptions.keepVotedLocal"),
               },
             ].map((option) => {
               const active = feedbackDataSharingPreference === option.value;
@@ -353,7 +354,7 @@ export function InstanceGeneralSettings() {
       <section className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Sign out</h2>
+            <h2 className="text-sm font-semibold">{t("instanceGeneral.text.signOut")}</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               Sign out of this Paperclip instance. You will be redirected to the login page.
             </p>

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
+import { t } from "@/i18n";
 function centsInputValue(value: number) {
   return (value / 100).toFixed(2);
 }
@@ -56,14 +57,14 @@ export function BudgetPolicyCard({
   const observedBudgetGrid = isPlain ? (
     <div className="grid gap-6 sm:grid-cols-2">
       <div>
-        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Observed</div>
+        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t("budgetPolicyCard.text.observed")}</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
           {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
         </div>
       </div>
       <div>
-        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Budget</div>
+        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t("budgetPolicyCard.text.budget")}</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">
           {summary.amount > 0 ? formatCents(summary.amount) : "Disabled"}
         </div>
@@ -75,14 +76,14 @@ export function BudgetPolicyCard({
   ) : (
     <div className="grid gap-3 sm:grid-cols-2">
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
-        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Observed</div>
+        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t("budgetPolicyCard.text.observed")}</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">{formatCents(summary.observedAmount)}</div>
         <div className="mt-1 text-xs text-muted-foreground">
           {summary.amount > 0 ? `${summary.utilizationPercent}% of limit` : "No cap configured"}
         </div>
       </div>
       <div className="rounded-xl border border-border/70 bg-black/[0.18] px-4 py-3">
-        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Budget</div>
+        <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{t("budgetPolicyCard.text.budget")}</div>
         <div className="mt-2 text-xl font-semibold tabular-nums">
           {summary.amount > 0 ? formatCents(summary.amount) : "Disabled"}
         </div>
@@ -96,7 +97,7 @@ export function BudgetPolicyCard({
   const progressSection = (
     <div className="space-y-2">
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>Remaining</span>
+        <span>{t("budgetPolicyCard.text.remaining")}</span>
         <span>{summary.amount > 0 ? formatCents(summary.remainingAmount) : "Unlimited"}</span>
       </div>
       <div className={cn("h-2 overflow-hidden rounded-full", isPlain ? "bg-border/70" : "bg-muted/70")}>

@@ -5,10 +5,11 @@ import { priorityColor, priorityColorDefault } from "../lib/status-colors";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 
+import { t } from "@/i18n";
 const priorityConfig: Record<string, { icon: typeof ArrowUp; color: string; label: string }> = {
-  critical: { icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault, label: "Critical" },
-  high: { icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault, label: "High" },
-  medium: { icon: Minus, color: priorityColor.medium ?? priorityColorDefault, label: "Medium" },
+  critical: { icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault, label: t("priorityIcon.tabs.critical") },
+  high: { icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault, label: t("priorityIcon.tabs.high") },
+  medium: { icon: Minus, color: priorityColor.medium ?? priorityColorDefault, label: t("priorityIcon.tabs.medium") },
   low: { icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault, label: "Low" },
 };
 

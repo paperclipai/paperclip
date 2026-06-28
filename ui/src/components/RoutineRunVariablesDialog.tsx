@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
+import { t } from "@/i18n";
 function buildInitialValues(variables: RoutineVariable[]) {
   return Object.fromEntries(variables.map((variable) => [variable.name, variable.defaultValue ?? ""]));
 }
@@ -344,7 +345,7 @@ export function RoutineRunVariablesDialog({
           {routineName && (
             <p className="text-muted-foreground text-sm">{routineName}</p>
           )}
-          <DialogTitle>Run routine</DialogTitle>
+          <DialogTitle>{t("routineRunVariables.text.runRoutine")}</DialogTitle>
           <DialogDescription>
             Choose the agent and optional project for this one run. Routine defaults are prefilled and won&apos;t be changed.
           </DialogDescription>
@@ -358,7 +359,7 @@ export function RoutineRunVariablesDialog({
                 value={selection.assigneeAgentId}
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeIds}
-                placeholder="Agent"
+                placeholder={t("routineRunVariables.placeholders.agent")}
                 noneLabel="Select an agent"
                 searchPlaceholder="Search agents..."
                 emptyMessage="No agents found."
@@ -379,7 +380,7 @@ export function RoutineRunVariablesDialog({
                       <span className="truncate">{option.label}</span>
                     )
                   ) : (
-                    <span className="text-muted-foreground">Select an agent</span>
+                    <span className="text-muted-foreground">{t("routineRunVariables.text.selectAgent")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -395,12 +396,12 @@ export function RoutineRunVariablesDialog({
               />
             </div>
             <div className="space-y-1.5">
-              <Label className="text-xs">Project</Label>
+              <Label className="text-xs">{t("routineRunVariables.text.project")}</Label>
               <InlineEntitySelector
                 value={selection.projectId}
                 options={projectOptions}
                 recentOptionIds={recentProjectIds}
-                placeholder="Project"
+                placeholder={t("routineRunVariables.placeholders.project")}
                 noneLabel="No project"
                 searchPlaceholder="Search projects..."
                 emptyMessage="No projects found."
@@ -428,7 +429,7 @@ export function RoutineRunVariablesDialog({
                       <span className="truncate">{option.label}</span>
                     </>
                   ) : (
-                    <span className="text-muted-foreground">No project</span>
+                    <span className="text-muted-foreground">{t("routineRunVariables.text.noProject")}</span>
                   )
                 }
                 renderOption={(option) => {
@@ -478,9 +479,9 @@ export function RoutineRunVariablesDialog({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__unset__">No value</SelectItem>
-                    <SelectItem value="true">True</SelectItem>
-                    <SelectItem value="false">False</SelectItem>
+                    <SelectItem value="__unset__">{t("routineRunVariables.text.noValue")}</SelectItem>
+                    <SelectItem value="true">{t("routineRunVariables.text.true")}</SelectItem>
+                    <SelectItem value="false">{t("routineRunVariables.text.false")}</SelectItem>
                   </SelectContent>
                 </Select>
               ) : variable.type === "select" ? (
@@ -492,10 +493,10 @@ export function RoutineRunVariablesDialog({
                   }))}
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="Choose a value" />
+                    <SelectValue placeholder={t("routineRunVariables.placeholders.chooseValue")} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__unset__">No value</SelectItem>
+                    <SelectItem value="__unset__">{t("routineRunVariables.text.noValue")}</SelectItem>
                     {variable.options.map((option) => (
                       <SelectItem key={option} value={option}>{option}</SelectItem>
                     ))}
@@ -535,7 +536,7 @@ export function RoutineRunVariablesDialog({
           className="shrink-0 border-t border-border/60 bg-background px-6 pb-[calc(1rem+env(safe-area-inset-bottom))] pt-4"
         >
           {!selection.assigneeAgentId ? (
-            <p className="mr-auto text-xs text-amber-600">Default agent required for this run.</p>
+            <p className="mr-auto text-xs text-amber-600">{t("routineRunVariables.text.defaultAgentRequired")}</p>
           ) : missingRequired.length > 0 ? (
             <p className="mr-auto text-xs text-amber-600">
               Missing: {missingRequired.join(", ")}

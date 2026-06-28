@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { Agent, AcceptedPlanDecompositionSummary } from "@paperclipai/shared";
 import { ChevronRight, GitBranch, Repeat, CheckCircle2, Loader2 } from "lucide-react";
 import { Link } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, formatDateTime, relativeTime } from "../lib/utils";
@@ -46,7 +47,7 @@ export function IssuePlanDecompositionsSection({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-medium text-muted-foreground">Plan decomposition</h3>
+        <h3 className="text-sm font-medium text-muted-foreground">{t("issuePlanDecompositionsSection.text.planDecomposition")}</h3>
         <span className="text-[11px] text-muted-foreground/80">
           {items.length === 1 ? "1 accepted plan revision" : `${items.length} accepted plan revisions`}
         </span>

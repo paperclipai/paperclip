@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { Link, Navigate } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import type { WorkspaceOverviewItem } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
@@ -95,7 +96,7 @@ export function Workspaces() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Workspaces" }]);
+    setBreadcrumbs([{ label: t("workspaces.tabs.workspaces") }]);
   }, [setBreadcrumbs]);
 
   const overviewPages = overviewQuery.data?.pages ?? [];
@@ -117,11 +118,11 @@ export function Workspaces() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-xl font-bold">Workspaces</h2>
+        <h2 className="text-xl font-bold">{t("workspaces.text.workspaces")}</h2>
       </div>
 
       {groups.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No workspace activity yet.</p>
+        <p className="text-sm text-muted-foreground">{t("workspaces.text.noActivity")}</p>
       ) : (
         <div className="space-y-8">
           {groups.map((group) => (

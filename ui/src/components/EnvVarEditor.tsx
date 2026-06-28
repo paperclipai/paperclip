@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+import { t } from "@/i18n";
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 
@@ -207,7 +208,7 @@ export function EnvVarEditor({
     if (!key || plain.length === 0) return;
 
     const suggested = defaultSecretName(key) || "secret";
-    const name = window.prompt("Secret name", suggested)?.trim();
+    const name = window.prompt(t("envVarEditor.prompts.secretName"), suggested)?.trim();
     if (!name) return;
 
     try {
@@ -215,7 +216,7 @@ export function EnvVarEditor({
       const created = await onCreateSecret(name, plain);
       updateRow(index, { source: "secret", secretId: created.id });
     } catch (error) {
-      setSealError(error instanceof Error ? error.message : "Failed to create secret");
+      setSealError(error instanceof Error ? error.message : t("envVarEditor.errors.createSecret"));
     }
   }
 
@@ -244,12 +245,12 @@ export function EnvVarEditor({
                 })
               }
             >
-              <SelectTrigger className={cn(selectTriggerClass, "flex-[1]")} aria-label="Binding mode">
+              <SelectTrigger className={cn(selectTriggerClass, "flex-[1]")} aria-label={t("envVarEditor.labelsJsx.bindingMode")}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="plain">Plain</SelectItem>
-                <SelectItem value="secret">Secret</SelectItem>
+                <SelectItem value="plain">{t("envVarEditor.text.plain")}</SelectItem>
+                <SelectItem value="secret">{t("envVarEditor.text.secret")}</SelectItem>
               </SelectContent>
             </Select>
             {row.source === "secret" ? (
@@ -261,7 +262,7 @@ export function EnvVarEditor({
                   }
                 >
                   <SelectTrigger
-                    aria-label="Secret"
+                    aria-label={t("envVarEditor.labelsJsx.secret")}
                     className={cn(
                       selectTriggerClass,
                       "flex-[3]",
@@ -270,7 +271,7 @@ export function EnvVarEditor({
                         "border-destructive text-destructive",
                     )}
                   >
-                    <SelectValue placeholder="Select secret..." />
+                    <SelectValue placeholder={t("envVarEditor.placeholders.selectSecret")} />
                   </SelectTrigger>
                   <SelectContent>
                     {row.secretId && !secrets.some((s) => s.id === row.secretId) ? (
@@ -295,7 +296,7 @@ export function EnvVarEditor({
                   }
                   disabled={!row.secretId}
                 >
-                  <SelectTrigger className={cn(selectTriggerClass, "flex-[1]")} aria-label="Version">
+                  <SelectTrigger className={cn(selectTriggerClass, "flex-[1]")} aria-label={t("envVarEditor.labelsJsx.version")}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -320,7 +321,7 @@ export function EnvVarEditor({
                   className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
                   onClick={() => sealRow(index)}
                   disabled={!row.key.trim() || !row.plainValue}
-                  title="Create secret from current plain value"
+                  title={t("envVarEditor.aria.createSecret")}
                 >
                   New
                 </button>
@@ -338,7 +339,7 @@ export function EnvVarEditor({
                   className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
                   onClick={() => sealRow(index)}
                   disabled={!row.key.trim() || !row.plainValue}
-                  title="Store value as secret and replace with reference"
+                  title={t("envVarEditor.aria.storeAsSecret")}
                 >
                   Seal
                 </button>

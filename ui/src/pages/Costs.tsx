@@ -33,6 +33,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+import { t } from "@/i18n";
 const NO_COMPANY = "__none__";
 
 function currentWeekRange(): { from: string; to: string } {
@@ -118,13 +119,13 @@ function FinanceSummaryCard({
       </CardHeader>
       <CardContent className="grid gap-3 px-5 pb-5 pt-2 sm:grid-cols-2 xl:grid-cols-4">
         <MetricTile
-          label="Debits"
+          label={t("costs.labels.debits")}
           value={formatCents(debitCents)}
           subtitle={`${eventCount} total event${eventCount === 1 ? "" : "s"} in range`}
           icon={ArrowUpRight}
         />
         <MetricTile
-          label="Credits"
+          label={t("costs.labels.credits")}
           value={formatCents(creditCents)}
           subtitle="Refunds, offsets, and credit returns"
           icon={ArrowDownLeft}
@@ -136,7 +137,7 @@ function FinanceSummaryCard({
           icon={ReceiptText}
         />
         <MetricTile
-          label="Estimated"
+          label={t("costs.labels.estimated")}
           value={formatCents(estimatedDebitCents)}
           subtitle="Estimated debits that are not yet invoice-authoritative"
           icon={Coins}
@@ -168,7 +169,7 @@ export function Costs() {
   } = useDateRange();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Costs" }]);
+    setBreadcrumbs([{ label: t("nav.items.costs") }]);
   }, [setBreadcrumbs]);
 
   const [today, setToday] = useState(() => new Date().toDateString());
@@ -529,7 +530,7 @@ export function Costs() {
   }), [budgetPolicies]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={DollarSign} message="Select a company to view costs." />;
+    return <EmptyState icon={DollarSign} message={t("common.selectCompany.costs")} />;
   }
 
   const showCustomPrompt = preset === "custom" && !customReady;
@@ -581,13 +582,13 @@ export function Costs() {
 
           <div className="grid gap-3 lg:grid-cols-4">
             <MetricTile
-              label="Inference spend"
+              label={t("costs.labels.inferenceSpend")}
               value={formatCents(spendData?.summary.spendCents ?? 0)}
               subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
               icon={DollarSign}
             />
             <MetricTile
-              label="Budget"
+              label={t("costs.labels.budget")}
               value={activeBudgetIncidents.length > 0 ? String(activeBudgetIncidents.length) : (
                 spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
                   ? `${spendData.summary.utilizationPercent}%`
@@ -603,13 +604,13 @@ export function Costs() {
               icon={Coins}
             />
             <MetricTile
-              label="Finance net"
+              label={t("costs.labels.financeNet")}
               value={formatCents(financeData?.summary.netCents ?? 0)}
               subtitle={`${formatCents(financeData?.summary.debitCents ?? 0)} debits · ${formatCents(financeData?.summary.creditCents ?? 0)} credits`}
               icon={ReceiptText}
             />
             <MetricTile
-              label="Finance events"
+              label={t("costs.labels.financeEvents")}
               value={String(financeData?.summary.eventCount ?? 0)}
               subtitle={`${formatCents(financeData?.summary.estimatedDebitCents ?? 0)} estimated in range`}
               icon={ArrowUpRight}
@@ -847,25 +848,25 @@ export function Costs() {
                 </CardHeader>
                 <CardContent className="grid gap-3 px-5 pb-5 pt-0 md:grid-cols-4">
                   <MetricTile
-                    label="Active incidents"
+                    label={t("costs.labels.activeIncidents")}
                     value={String(activeBudgetIncidents.length)}
                     subtitle="Open soft or hard threshold crossings"
                     icon={ReceiptText}
                   />
                   <MetricTile
-                    label="Pending approvals"
+                    label={t("costs.labels.pendingApprovals")}
                     value={String(budgetData?.pendingApprovalCount ?? 0)}
                     subtitle="Budget override approvals awaiting board action"
                     icon={ArrowUpRight}
                   />
                   <MetricTile
-                    label="Paused agents"
+                    label={t("costs.labels.pausedAgents")}
                     value={String(budgetData?.pausedAgentCount ?? 0)}
                     subtitle="Agent heartbeats blocked by budget"
                     icon={Coins}
                   />
                   <MetricTile
-                    label="Paused projects"
+                    label={t("costs.labels.pausedProjects")}
                     value={String(budgetData?.pausedProjectCount ?? 0)}
                     subtitle="Project execution blocked by budget"
                     icon={DollarSign}

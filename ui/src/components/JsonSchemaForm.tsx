@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/select";
 import { SecretBindingPicker, type SecretBindingValue } from "./SecretBindingPicker";
 
+import { t } from "@/i18n";
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -953,7 +954,7 @@ const ArrayField = React.memo(({
               }}
             >
               <Trash2 className="h-4 w-4" />
-              <span className="sr-only">Remove item</span>
+              <span className="sr-only">{t("jsonSchemaForm.text.removeItem")}</span>
             </Button>
           </div>
         ))}

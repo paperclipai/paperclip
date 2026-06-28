@@ -16,6 +16,7 @@ import { ScheduleEditor } from "./ScheduleEditor";
 import { buildRoutineTriggerPatch } from "../lib/routine-trigger-patch";
 import { describeCron } from "../lib/cron-readable";
 
+import { t } from "@/i18n";
 const signingModes = ["bearer", "hmac_sha256", "github_hmac", "none"];
 const SIGNING_MODES_WITHOUT_REPLAY_WINDOW = new Set(["github_hmac", "none"]);
 
@@ -103,7 +104,7 @@ export function RoutineTriggerCard({
 
       <div className="grid gap-3 md:grid-cols-2">
         <div className="space-y-1.5">
-          <Label className="text-xs">Label</Label>
+          <Label className="text-xs">{t("routineTriggerCard.text.label")}</Label>
           <Input
             value={draft.label}
             disabled={disabled}
@@ -112,7 +113,7 @@ export function RoutineTriggerCard({
         </div>
         {trigger.kind === "schedule" && (
           <div className="space-y-1.5 md:col-span-2">
-            <Label className="text-xs">Schedule</Label>
+            <Label className="text-xs">{t("routineTriggerCard.text.schedule")}</Label>
             <ScheduleEditor
               value={draft.cronExpression}
               onChange={(cronExpression) =>
@@ -124,7 +125,7 @@ export function RoutineTriggerCard({
         {trigger.kind === "webhook" && (
           <>
             <div className="space-y-1.5">
-              <Label className="text-xs">Signing mode</Label>
+              <Label className="text-xs">{t("routineTriggerCard.text.signingMode")}</Label>
               <Select
                 value={draft.signingMode}
                 onValueChange={(signingMode) =>

@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
+import { t } from "@/i18n";
 const variableTypes: RoutineVariable["type"][] = ["text", "textarea", "number", "boolean", "select", "date"];
 
 function serializeVariables(value: RoutineVariable[]) {
@@ -139,7 +140,7 @@ export function RoutineVariablesEditor({
 
               <div className="space-y-1.5 md:col-span-2">
                 <div className="flex items-center justify-between gap-3">
-                  <Label className="text-xs">Default value</Label>
+                  <Label className="text-xs">{t("routineVariablesEditor.text.defaultValue")}</Label>
                   <label className="flex items-center gap-2 text-xs text-muted-foreground">
                     <input
                       type="checkbox"
@@ -176,7 +177,7 @@ export function RoutineVariablesEditor({
                     <SelectContent>
                       <SelectItem value="__unset__">No default</SelectItem>
                       <SelectItem value="true">True</SelectItem>
-                      <SelectItem value="false">False</SelectItem>
+                      <SelectItem value="false">{t("routineVariablesEditor.text.false")}</SelectItem>
                     </SelectContent>
                   </Select>
                 ) : variable.type === "select" ? (
@@ -200,7 +201,7 @@ export function RoutineVariablesEditor({
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <Label className="text-xs">Default option</Label>
+                      <Label className="text-xs">{t("routineVariablesEditor.text.defaultOption")}</Label>
                       <Select
                         value={typeof variable.defaultValue === "string" ? variable.defaultValue : "__unset__"}
                         onValueChange={(next) => onChange(updateVariableList(syncedVariables, variable.name, (current) => ({
@@ -209,7 +210,7 @@ export function RoutineVariablesEditor({
                         })))}
                       >
                         <SelectTrigger>
-                          <SelectValue placeholder="No default" />
+                          <SelectValue placeholder={t("routineVariablesEditor.placeholders.noDefault")} />
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="__unset__">No default</SelectItem>
@@ -281,7 +282,7 @@ export function RoutineVariablesHint() {
           type="button"
           onClick={() => setHelpOpen(true)}
           className="shrink-0 rounded-full p-0.5 text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="Show variable help"
+          aria-label={t("routineVariablesEditor.aria.showHelp")}
         >
           <HelpCircle className="h-3.5 w-3.5" />
         </button>
@@ -331,8 +332,8 @@ export function RoutineVariablesHint() {
                   <thead className="bg-muted/40 text-muted-foreground">
                     <tr>
                       <th className="px-3 py-2 font-medium">Placeholder</th>
-                      <th className="px-3 py-2 font-medium">Example</th>
-                      <th className="px-3 py-2 font-medium">Description</th>
+                      <th className="px-3 py-2 font-medium">{t("routineVariablesEditor.text.example")}</th>
+                      <th className="px-3 py-2 font-medium">{t("routineVariablesEditor.text.description")}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/70">

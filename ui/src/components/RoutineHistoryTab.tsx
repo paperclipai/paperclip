@@ -36,6 +36,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "./EmptyState";
 import { MarkdownBody } from "./MarkdownBody";
 
+import { t } from "@/i18n";
 type AgentLookup = Map<string, { id: string; name: string }>;
 type ProjectLookup = Map<string, { id: string; name: string }>;
 type SecretLookup = Map<string, CompanySecret>;
@@ -152,8 +153,8 @@ export function RoutineHistoryTab({
     },
     onError: (error) => {
       pushToast({
-        title: "Failed to restore revision",
-        body: error instanceof Error ? error.message : "Paperclip could not restore the revision.",
+        title: t("routineHistoryTab.toasts.restoreFailed"),
+        body: error instanceof Error ? error.message : t("routineHistoryTab.errors.restore"),
         tone: "error",
       });
     },
@@ -199,7 +200,7 @@ export function RoutineHistoryTab({
     return (
       <div className="rounded-md border border-l-2 border-l-destructive border-border p-4 space-y-3">
         <div>
-          <p className="text-sm font-medium">Could not load revisions</p>
+          <p className="text-sm font-medium">{t("routineHistoryTab.text.loadFailed")}</p>
           <p className="text-xs text-muted-foreground">
             {revisionsQuery.error instanceof Error
               ? revisionsQuery.error.message
@@ -528,7 +529,7 @@ function RevisionPreview({
     },
     {
       key: "priority",
-      label: "Priority",
+      label: t("routineHistoryTab.tabs.priority"),
       value: snapshot.priority,
       differs: !!currentSnapshot && currentSnapshot.priority !== snapshot.priority,
     },
@@ -540,25 +541,25 @@ function RevisionPreview({
     },
     {
       key: "assigneeAgentId",
-      label: "Default agent",
+      label: t("routineHistoryTab.tabs.defaultAgent"),
       value: resolveAgentName(snapshot.assigneeAgentId, agents),
       differs: !!currentSnapshot && currentSnapshot.assigneeAgentId !== snapshot.assigneeAgentId,
     },
     {
       key: "projectId",
-      label: "Project",
+      label: t("routineHistoryTab.tabs.project"),
       value: resolveProjectName(snapshot.projectId, projects),
       differs: !!currentSnapshot && currentSnapshot.projectId !== snapshot.projectId,
     },
     {
       key: "concurrencyPolicy",
-      label: "Concurrency",
+      label: t("routineHistoryTab.tabs.concurrency"),
       value: snapshot.concurrencyPolicy.replaceAll("_", " "),
       differs: !!currentSnapshot && currentSnapshot.concurrencyPolicy !== snapshot.concurrencyPolicy,
     },
     {
       key: "catchUpPolicy",
-      label: "Catch-up",
+      label: t("routineHistoryTab.tabs.catchup"),
       value: snapshot.catchUpPolicy.replaceAll("_", " "),
       differs: !!currentSnapshot && currentSnapshot.catchUpPolicy !== snapshot.catchUpPolicy,
     },
@@ -820,7 +821,7 @@ function RoutineRevisionDiffModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="!max-w-[90%] w-full max-h-[85vh] overflow-hidden flex flex-col">
         <DialogHeader>
-          <DialogTitle>Compare routine revisions</DialogTitle>
+          <DialogTitle>{t("routineHistoryTab.text.compare")}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-wrap items-center gap-3">
           <RevisionPicker
@@ -849,7 +850,7 @@ function RoutineRevisionDiffModal({
               <table className="w-full text-sm border border-border rounded-md overflow-hidden">
                 <thead>
                   <tr className="text-xs uppercase tracking-wide bg-muted/30 text-muted-foreground">
-                    <th className="px-3 py-2 text-left">Field</th>
+                    <th className="px-3 py-2 text-left">{t("routineHistoryTab.text.field")}</th>
                     <th className="px-3 py-2 text-left">Old value</th>
                     <th className="px-3 py-2 text-left">New value</th>
                   </tr>
@@ -937,7 +938,7 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
     return <p className="text-sm text-muted-foreground">No description on either revision.</p>;
   }
   if (rows.every((row) => row.kind === "context")) {
-    return <p className="text-sm text-muted-foreground">Descriptions are identical.</p>;
+    return <p className="text-sm text-muted-foreground">{t("routineHistoryTab.text.identical")}</p>;
   }
   const lineClassesByKind: Record<DiffRow["kind"], string> = {
     context: "bg-transparent",
@@ -955,7 +956,7 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
         <span>Old</span>
         <span>New</span>
         <span />
-        <span>Content</span>
+        <span>{t("routineHistoryTab.text.content")}</span>
       </div>
       {rows.map((row, index) => (
         <div

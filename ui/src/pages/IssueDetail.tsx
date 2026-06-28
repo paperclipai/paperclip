@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode, type Ref } from "react";
+import { useTranslation } from "@/i18n";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
@@ -606,6 +607,7 @@ function InboxMobileToolbar({
   onProperties,
   onHide,
 }: InboxMobileToolbarProps) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -624,7 +626,7 @@ function InboxMobileToolbar({
             navigate(backHref);
           }
         }}
-        aria-label="Back to inbox"
+        aria-label={t("issueDetail.labels.backToInbox")}
       >
         <ArrowLeft className="h-5 w-5" />
       </Button>
@@ -636,7 +638,7 @@ function InboxMobileToolbar({
             size="icon-sm"
             onClick={onArchive}
             disabled={archivePending}
-            aria-label="Archive from inbox"
+            aria-label={t("issueDetail.labels.archiveFromInbox")}
           >
             <Archive className="h-5 w-5" />
           </Button>
@@ -644,7 +646,7 @@ function InboxMobileToolbar({
 
         <Popover open={menuOpen} onOpenChange={setMenuOpen}>
           <PopoverTrigger asChild>
-            <Button variant="ghost" size="icon-sm" aria-label="More actions">
+            <Button variant="ghost" size="icon-sm" aria-label={t("issueDetail.labels.moreActions")}>
               <MoreVertical className="h-5 w-5" />
             </Button>
           </PopoverTrigger>
@@ -1311,8 +1313,8 @@ function IssueDetailActivityTab({
     </>
   );
 }
-
 export function IssueDetail() {
+  const { t } = useTranslation();
   const { issueId } = useParams<{ issueId: string }>();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
@@ -1461,7 +1463,7 @@ export function IssueDetail() {
     }
   }, [hasLiveRuns, locallyQueuedCommentRunIds.size]);
   const sourceBreadcrumb = useMemo(
-    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: "Tasks", href: "/issues" },
+    () => readIssueDetailBreadcrumb(issueId, location.state, location.search) ?? { label: t("nav.items.tasks"), href: "/issues" },
     [issueId, location.state, location.search],
   );
 
@@ -1916,8 +1918,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.list(context.selectedCompanyId), context.previousList);
       }
       pushToast({
-        title: "Task update failed",
-        body: err instanceof Error ? err.message : "Unable to save task changes",
+        title: t("issueDetail.toasts.taskUpdateFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.saveTask"),
         tone: "error",
       });
     },
@@ -1944,8 +1946,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Recovery resolution failed",
-        body: err instanceof Error ? err.message : "Unable to resolve recovery action",
+        title: t("issueDetail.toasts.recoveryFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.resolveRecovery"),
         tone: "error",
       });
     },
@@ -2031,8 +2033,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Unable to apply subtree control",
-        body: err instanceof Error ? err.message : "Please try again.",
+        title: t("issueDetail.toasts.subtreeControlFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.tryAgain"),
         tone: "error",
       });
     },
@@ -2050,7 +2052,7 @@ export function IssueDetail() {
     onSuccess: async (result) => {
       const cancelCount = result.preview?.totals.activeRuns ?? 0;
       pushToast({
-        title: "Work paused",
+        title: t("issueDetail.toasts.workPaused"),
         body: cancelCount > 0
           ? `Work paused. ${cancelCount} run${cancelCount === 1 ? "" : "s"} cancelled.`
           : "Work paused. This task is held until resume.",
@@ -2070,8 +2072,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Unable to pause work",
-        body: err instanceof Error ? err.message : "Please try again.",
+        title: t("issueDetail.toasts.pauseFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.tryAgain"),
         tone: "error",
       });
     },
@@ -2103,7 +2105,7 @@ export function IssueDetail() {
         title: runWasStopped
           ? "Run stopped; task update failed"
           : status === "done" ? "Stop and done failed" : "Stop and cancel failed",
-        body: err instanceof Error ? err.message : "Unable to stop the run and update the task",
+        body: err instanceof Error ? err.message : t("issueDetail.errors.stopRun"),
         tone: "error",
       });
     },
@@ -2129,8 +2131,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Task update failed",
-        body: err instanceof Error ? err.message : "Unable to save sub-task changes",
+        title: t("issueDetail.toasts.taskUpdateFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.saveSubTask"),
         tone: "error",
       });
     },
@@ -2146,14 +2148,14 @@ export function IssueDetail() {
       invalidateIssueRunState();
       invalidateIssueCollections();
       pushToast({
-        title: "Monitor check queued",
+        title: t("issueDetail.toasts.monitorCheckQueued"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Monitor check failed",
-        body: err instanceof Error ? err.message : "Unable to trigger the monitor right now",
+        title: t("issueDetail.toasts.monitorCheckFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.triggerMonitor"),
         tone: "error",
       });
     },
@@ -2185,7 +2187,7 @@ export function IssueDetail() {
     onError: (err, variables) => {
       pushToast({
         title: variables.action === "approve" ? "Approval failed" : "Rejection failed",
-        body: err instanceof Error ? err.message : "Unable to update approval",
+        body: err instanceof Error ? err.message : t("issueDetail.errors.updateApproval"),
         tone: "error",
       });
     },
@@ -2246,8 +2248,8 @@ export function IssueDetail() {
           return;
         } catch (err) {
           pushToast({
-            title: "Cancel failed",
-            body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+            title: t("issueDetail.toasts.cancelFailed"),
+            body: err instanceof Error ? err.message : t("issueDetail.errors.cancelQueuedComment"),
             tone: "error",
           });
         }
@@ -2280,8 +2282,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
       pushToast({
-        title: "Comment failed",
-        body: err instanceof Error ? err.message : "Unable to post comment",
+        title: t("issueDetail.toasts.commentFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.postComment"),
         tone: "error",
       });
     },
@@ -2331,8 +2333,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Accept failed",
-        body: err instanceof Error ? err.message : "Unable to accept the suggested tasks",
+        title: t("issueDetail.toasts.acceptFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.acceptSuggested"),
         tone: "error",
       });
     },
@@ -2351,8 +2353,8 @@ export function IssueDetail() {
     },
     onError: (err) => {
       pushToast({
-        title: "Reject failed",
-        body: err instanceof Error ? err.message : "Unable to reject the suggested tasks",
+        title: t("issueDetail.toasts.rejectFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.rejectSuggested"),
         tone: "error",
       });
     },
@@ -2370,14 +2372,14 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueCollections();
       pushToast({
-        title: "Answers submitted",
+        title: t("issueDetail.toasts.answersSubmitted"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Submit failed",
-        body: err instanceof Error ? err.message : "Unable to submit answers",
+        title: t("issueDetail.toasts.submitFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.submitAnswers"),
         tone: "error",
       });
     },
@@ -2391,14 +2393,14 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueCollections();
       pushToast({
-        title: "Question cancelled",
+        title: t("issueDetail.toasts.questionCancelled"),
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Cancel failed",
-        body: err instanceof Error ? err.message : "Unable to cancel the question",
+        title: t("issueDetail.toasts.cancelFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.cancelQuestion"),
         tone: "error",
       });
     },
@@ -2475,8 +2477,8 @@ export function IssueDetail() {
           return;
         } catch (err) {
           pushToast({
-            title: "Cancel failed",
-            body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+            title: t("issueDetail.toasts.cancelFailed"),
+            body: err instanceof Error ? err.message : t("issueDetail.errors.cancelQueuedComment"),
             tone: "error",
           });
         }
@@ -2511,8 +2513,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.detail(issueId!), context.previousIssue);
       }
       pushToast({
-        title: "Comment failed",
-        body: err instanceof Error ? err.message : "Unable to post comment",
+        title: t("issueDetail.toasts.commentFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.postComment"),
         tone: "error",
       });
     },
@@ -2592,7 +2594,7 @@ export function IssueDetail() {
       invalidateIssueDetail();
       invalidateIssueRunState();
       pushToast({
-        title: "Interrupt requested",
+        title: t("issueDetail.toasts.interruptRequested"),
         body: "The active run is stopping so queued comments can continue next.",
         tone: "success",
       });
@@ -2608,8 +2610,8 @@ export function IssueDetail() {
         setLocallyQueuedCommentRunIds(context.previousLocalQueuedCommentRunIds);
       }
       pushToast({
-        title: "Interrupt failed",
-        body: err instanceof Error ? err.message : "Unable to interrupt the active run",
+        title: t("issueDetail.toasts.interruptFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.interruptRun"),
         tone: "error",
       });
     },
@@ -2630,15 +2632,15 @@ export function IssueDetail() {
       invalidateIssueThreadLazily();
       invalidateIssueCollections();
       pushToast({
-        title: "Queued comment canceled",
+        title: t("issueDetail.toasts.queuedCommentCancelled"),
         body: "The queued message was restored to the composer.",
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Cancel failed",
-        body: err instanceof Error ? err.message : "Unable to cancel the queued comment",
+        title: t("issueDetail.toasts.cancelFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.cancelQueuedComment"),
         tone: "error",
       });
     },
@@ -2654,15 +2656,15 @@ export function IssueDetail() {
       invalidateIssueCollections();
       invalidateIssueDocumentAnnotationState();
       pushToast({
-        title: "Comment deleted",
+        title: t("issueDetail.toasts.commentDeleted"),
         body: "The thread now shows a deleted-comment marker.",
         tone: "success",
       });
     },
     onError: (err) => {
       pushToast({
-        title: "Delete failed",
-        body: err instanceof Error ? err.message : "Unable to delete the comment",
+        title: t("issueDetail.toasts.deleteFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.deleteComment"),
         tone: "error",
       });
     },
@@ -2680,7 +2682,7 @@ export function IssueDetail() {
       if (cancelledCommentBody) {
         restoreQueuedCommentDraft(cancelledCommentBody);
         pushToast({
-          title: "Queued comment canceled",
+          title: t("issueDetail.toasts.queuedCommentCancelled"),
           body: "The queued message was restored to the composer.",
           tone: "success",
         });
@@ -2749,8 +2751,8 @@ export function IssueDetail() {
         queryClient.setQueryData(queryKeys.issues.feedbackVotes(issueId!), context.previousVotes);
       }
       pushToast({
-        title: "Failed to save feedback",
-        body: err instanceof Error ? err.message : "Unknown error",
+        title: t("issueDetail.toasts.feedbackSaveFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.unknown"),
         tone: "error",
       });
     },
@@ -2767,7 +2769,7 @@ export function IssueDetail() {
       invalidateIssueDetail();
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Upload failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issueDetail.errors.uploadFailed"));
     },
   });
 
@@ -2792,7 +2794,7 @@ export function IssueDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(issueId!) });
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Document import failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issueDetail.errors.documentImport"));
     },
   });
 
@@ -2804,7 +2806,7 @@ export function IssueDetail() {
       invalidateIssueDetail();
     },
     onError: (err) => {
-      setAttachmentError(err instanceof Error ? err.message : "Delete failed");
+      setAttachmentError(err instanceof Error ? err.message : t("issueDetail.errors.deleteFailed"));
     },
   });
 
@@ -2813,12 +2815,12 @@ export function IssueDetail() {
     onSuccess: () => {
       invalidateIssueCollections();
       navigate(sourceBreadcrumb.href.startsWith("/inbox") ? sourceBreadcrumb.href : "/inbox", { replace: true });
-      pushToast({ title: "Task archived from inbox", tone: "success" });
+      pushToast({ title: t("issueDetail.toasts.taskArchived"), tone: "success" });
     },
     onError: (err) => {
       pushToast({
-        title: "Archive failed",
-        body: err instanceof Error ? err.message : "Unable to archive this task from the inbox",
+        title: t("issueDetail.toasts.archiveFailed"),
+        body: err instanceof Error ? err.message : t("issueDetail.errors.archiveFromInbox"),
         tone: "error",
       });
     },
@@ -3148,11 +3150,11 @@ export function IssueDetail() {
     try {
       await copyTextToClipboard(md);
       setCopied(true);
-      pushToast({ title: "Copied to clipboard", tone: "success" });
+      pushToast({ title: t("issueDetail.toasts.copiedToClipboard"), tone: "success" });
       setTimeout(() => setCopied(false), 2000);
     } catch (error) {
       pushToast({
-        title: "Copy failed",
+        title: t("issueDetail.toasts.copyFailed"),
         body: error instanceof Error ? error.message : "Unable to copy task markdown",
         tone: "error",
       });
@@ -3286,7 +3288,7 @@ export function IssueDetail() {
   const runFinalizationActions = useMemo<readonly IssueChatRunFinalizationAction[]>(() => [
     {
       id: "cancel",
-      label: "Stop and cancel",
+      label: t("issueDetail.labels.stopAndCancel"),
       pendingLabel: "Stopping and cancelling...",
       isPending:
         stopAndFinalizeRun.isPending &&
@@ -3297,7 +3299,7 @@ export function IssueDetail() {
     },
     {
       id: "done",
-      label: "Stop and done",
+      label: t("issueDetail.labels.stopAndDone"),
       pendingLabel: "Stopping and marking done...",
       isPending:
         stopAndFinalizeRun.isPending &&
@@ -3405,7 +3407,7 @@ export function IssueDetail() {
     const badges = new Map<string, string>();
     for (const child of childIssues) {
       if (!heldIssueIds.has(child.id)) continue;
-      badges.set(child.id, "Paused");
+      badges.set(child.id, t("issueDetail.status.paused"));
     }
     return badges;
   }, [childIssues, heldIssueIds]);
@@ -3821,7 +3823,7 @@ export function IssueDetail() {
                 }}
                 disabled={archivePending}
                 title="Archive from inbox"
-                aria-label="Archive from inbox"
+                aria-label={t("issueDetail.labels.archiveFromInbox")}
               >
                 <Archive className="h-4 w-4" />
               </Button>
@@ -3832,7 +3834,7 @@ export function IssueDetail() {
                 size="icon-xs"
                 onClick={() => setFileViewerPromptOpen(true)}
                 title="Open file... (g f)"
-                aria-label="Open file in this issue"
+                aria-label={t("issueDetail.labels.openFile")}
               >
                 <FileCode2 className="h-4 w-4" />
               </Button>
@@ -3864,7 +3866,7 @@ export function IssueDetail() {
                   variant="ghost"
                   size="icon-xs"
                   className="shrink-0"
-                  aria-label="More task actions"
+                  aria-label={t("issueDetail.labels.moreTaskActions")}
                   title="More task actions"
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
+import { t, useTranslation } from "@/i18n";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PROJECT_COLORS, PROJECT_ICON_NAMES, isUuidLike, type BudgetPolicySummary } from "@paperclipai/shared";
 import { budgetsApi } from "../api/budgets";
@@ -85,21 +86,21 @@ function OverviewContent({
         nullable
         as="p"
         className="text-sm text-muted-foreground"
-        placeholder="Add a description..."
+        placeholder={t("projectDetail.placeholders.addDescription")}
         multiline
         imageUploadHandler={imageUploadHandler}
       />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
         <div>
-          <span className="text-muted-foreground">Status</span>
+          <span className="text-muted-foreground">{t("projectDetail.text.status")}</span>
           <div className="mt-1">
             <StatusBadge status={project.status} />
           </div>
         </div>
         {project.targetDate && (
           <div>
-            <span className="text-muted-foreground">Target Date</span>
+            <span className="text-muted-foreground">{t("projectDetail.text.targetDate")}</span>
             <p>{project.targetDate}</p>
           </div>
         )}
@@ -147,16 +148,16 @@ function ProjectTilePicker({
         <button
           type="button"
           className="shrink-0 rounded-lg cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
-          aria-label="Change project icon and color"
+          aria-label={t("projectDetail.labelsJsx.changeIconColor")}
         >
           <ProjectTile color={color} icon={icon} size="md" />
         </button>
       </PopoverTrigger>
       <PopoverContent className="w-72 p-3" align="start">
         {/* Icon search + grid */}
-        <p className="text-xs font-medium text-muted-foreground mb-2">Icon</p>
+        <p className="text-xs font-medium text-muted-foreground mb-2">{t("projectDetail.text.icon")}</p>
         <Input
-          placeholder="Search icons..."
+          placeholder={t("projectDetail.placeholders.searchIcons")}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="mb-2 h-8 text-sm"
@@ -178,13 +179,13 @@ function ProjectTilePicker({
             </button>
           ))}
           {filteredIcons.length === 0 && (
-            <p className="col-span-7 text-xs text-muted-foreground text-center py-2">No icons match</p>
+            <p className="col-span-7 text-xs text-muted-foreground text-center py-2">{t("projectDetail.text.noIconsMatch")}</p>
           )}
         </div>
 
         {/* Color swatches */}
         <div className="mt-3 border-t border-border pt-3">
-          <p className="text-xs font-medium text-muted-foreground mb-2">Color</p>
+          <p className="text-xs font-medium text-muted-foreground mb-2">{t("projectDetail.text.color")}</p>
           <div className="grid grid-cols-5 gap-1.5">
             {/* Neutral / reset-to-gray option */}
             <button
@@ -195,7 +196,7 @@ function ProjectTilePicker({
                   ? "ring-2 ring-foreground ring-offset-1 ring-offset-background rounded-md"
                   : ""
               }`}
-              aria-label="Reset to neutral gray"
+              aria-label={t("projectDetail.labelsJsx.resetToGray")}
               title="Neutral (default)"
             >
               <ProjectTile color={null} size="sm" />
@@ -501,7 +502,7 @@ export function ProjectDetail() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Projects", href: "/projects" },
+      { label: t("projectDetail.labelsObj.projects"), href: "/projects" },
       { label: project?.name ?? routeProjectRef ?? "Project" },
     ]);
   }, [setBreadcrumbs, project, routeProjectRef]);
@@ -750,7 +751,7 @@ export function ProjectDetail() {
           <button
             type="button"
             className="h-6 w-6 shrink-0 text-yellow-100/70 hover:text-yellow-100"
-            aria-label="Dismiss project membership notice"
+            aria-label={t("projectDetail.labelsJsx.dismissMembershipNotice")}
             onClick={() => setDismissedLeftProjectIds((current) => new Set(current).add(project.id))}
           >
             ×
@@ -822,12 +823,12 @@ export function ProjectDetail() {
       <Tabs value={activeTab ?? "list"} onValueChange={(value) => handleTabChange(value as ProjectTab)}>
         <PageTabBar
           items={[
-            { value: "list", label: "Tasks" },
-            { value: "overview", label: "Overview" },
-            ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
-            ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
-            { value: "configuration", label: "Configuration" },
-            { value: "budget", label: "Budget" },
+            { value: "list", label: t("projectDetail.labelsObj.tasks") },
+            { value: "overview", label: t("projectDetail.labelsObj.overview") },
+            ...(project.managedByPlugin ? [{ value: "plugin-operations", label: t("projectDetail.labelsObj.pluginOperations") }] : []),
+            ...(showWorkspacesTab ? [{ value: "workspaces", label: t("projectDetail.labelsObj.workspaces") }] : []),
+            { value: "configuration", label: t("projectDetail.labelsObj.configuration") },
+            { value: "budget", label: t("projectDetail.labelsObj.budget") },
             ...pluginTabItems.map((item) => ({
               value: item.value,
               label: item.label,
@@ -875,7 +876,7 @@ export function ProjectDetail() {
             />
           )
         ) : (
-          <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+          <p className="text-sm text-muted-foreground">{t("projectDetail.text.loadingWorkspaces")}</p>
         )
       ) : null}
 

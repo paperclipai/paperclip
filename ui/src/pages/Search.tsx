@@ -26,6 +26,7 @@ import { PageTabBar, type PageTabItem } from "../components/PageTabBar";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { SearchResultRow } from "../components/search/SearchResultRow";
 import type { Agent } from "@paperclipai/shared";
+import { t, useTranslation } from "@/i18n";
 
 const SEARCH_DEBOUNCE_MS = 250;
 const IDENTIFIER_PATTERN = /^[A-Z]+-\d+$/;
@@ -83,7 +84,7 @@ function isCompanySearchScope(value: string | null): value is CompanySearchScope
 }
 
 function describeScope(scope: CompanySearchScope) {
-  if (scope === "all") return "All scopes";
+  if (scope === "all") return t("search.allScopes");
   return SCOPE_LABELS[scope];
 }
 
@@ -103,7 +104,7 @@ export function buildSearchUrl(href: string, query: string, scope: CompanySearch
 }
 
 function shapeError(error: unknown): { message: string; status?: number } {
-  if (!error) return { message: "Unknown error" };
+  if (!error) return { message: t("search.unknownError") };
   if (error instanceof Error) {
     const status = (error as Error & { status?: number }).status;
     return { message: error.message, status: typeof status === "number" ? status : undefined };
@@ -131,7 +132,7 @@ export function Search() {
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Search" }]);
+    setBreadcrumbs([{ label: t("nav.items.search") }]);
   }, [setBreadcrumbs]);
 
   useEffect(() => {
@@ -346,7 +347,7 @@ export function Search() {
                 }
               }
             }}
-            placeholder="Search tasks, comments, documents, artifacts, agents, projects…"
+            placeholder={t("search.placeholder")}
             aria-label="Search query"
             className="h-10 pl-9 pr-20 text-sm"
           />

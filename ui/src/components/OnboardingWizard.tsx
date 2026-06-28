@@ -25,6 +25,7 @@ import {
 } from "../lib/model-utils";
 import { getUIAdapter } from "../adapters";
 import { listUIAdapters } from "../adapters";
+import { t, useTranslation } from "@/i18n";
 import { isVisualAdapterChoice } from "../adapters/metadata";
 import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
@@ -460,7 +461,7 @@ export function OnboardingWizard() {
       closeOnboarding();
       navigate(prefix ? `/${prefix}/dashboard` : "/dashboard");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to launch first task");
+      setError(err instanceof Error ? err.message : t("onboarding.errors.launchFailed"));
     } finally {
       setLoading(false);
     }
@@ -525,7 +526,7 @@ export function OnboardingWizard() {
       return result;
     } catch (err) {
       setAdapterEnvError(
-        err instanceof Error ? err.message : "Adapter environment test failed"
+        err instanceof Error ? err.message : t("onboarding.errors.adapterTestFailed")
       );
       return null;
     } finally {
@@ -566,7 +567,7 @@ export function OnboardingWizard() {
 
       setStep(3); // → Create your team lead
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create company");
+      setError(err instanceof Error ? err.message : t("onboarding.errors.companyFailed"));
     } finally {
       setLoading(false);
     }
@@ -673,7 +674,7 @@ export function OnboardingWizard() {
       // strategy + hiring from the planning chat after "Get started".
       setStep(5);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create agent");
+      setError(err instanceof Error ? err.message : t("onboarding.errors.agentFailed"));
     } finally {
       setLoading(false);
     }
@@ -829,10 +830,10 @@ export function OnboardingWizard() {
                     <div>
                       <h3 className="font-medium">
                         {step === 3
-                          ? "Create your team lead"
+                          ? t("onboarding.buttons.createTeamLead")
                           : step === 4
                             ? "Connect a model"
-                            : "Review"}
+                            : t("onboarding.buttons.review")}
                       </h3>
                       <p className="text-xs text-muted-foreground">
                         {step === 3 ? (
@@ -989,7 +990,7 @@ export function OnboardingWizard() {
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Acme Corp"
+                      placeholder={t("onboarding.placeholders.companyName")}
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
                       onKeyDown={(e) => {
@@ -1081,7 +1082,7 @@ export function OnboardingWizard() {
                         </label>
                         <textarea
                           className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
-                          placeholder="What is your team trying to achieve?"
+                          placeholder={t("onboarding.placeholders.mission")}
                           value={companyGoal}
                           onChange={(e) => setCompanyGoal(e.target.value)}
                           autoFocus
@@ -1218,7 +1219,7 @@ export function OnboardingWizard() {
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Chief of staff"
+                      placeholder={t("onboarding.placeholders.agentName")}
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
                       onKeyDown={(e) => {
@@ -1328,7 +1329,7 @@ export function OnboardingWizard() {
                             <span className="font-medium">{opt.label}</span>
                             <span className="text-muted-foreground text-[10px]">
                               {opt.comingSoon
-                                ? opt.disabledLabel ?? "Coming soon"
+                                ? opt.disabledLabel ?? t("onboarding.adapter.comingSoon")
                                 : opt.description}
                             </span>
                           </button>
@@ -1363,7 +1364,7 @@ export function OnboardingWizard() {
                                   : model ||
                                     (adapterType === "opencode_local"
                                       ? "Select model (required)"
-                                      : "Default")}
+                                      : t("onboarding.adapter.default"))}
                               </span>
                               <ChevronDown className="h-3 w-3 text-muted-foreground" />
                             </button>
@@ -1374,7 +1375,7 @@ export function OnboardingWizard() {
                           >
                             <input
                               className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-                              placeholder="Search models..."
+                              placeholder={t("onboarding.placeholders.searchModels")}
                               value={modelSearch}
                               onChange={(e) => setModelSearch(e.target.value)}
                               autoFocus
@@ -1459,7 +1460,7 @@ export function OnboardingWizard() {
                           disabled={adapterEnvLoading}
                           onClick={() => void runAdapterEnvironmentTest()}
                         >
-                          {adapterEnvLoading ? "Testing..." : "Test now"}
+                          {adapterEnvLoading ? t("onboarding.buttons.testing") : t("onboarding.buttons.testNow")}
                         </Button>
                       </div>
 
@@ -1563,8 +1564,8 @@ export function OnboardingWizard() {
                     <div>
                       <label className="text-xs text-muted-foreground mb-1 block">
                         {adapterType === "openclaw_gateway"
-                          ? "Gateway URL"
-                          : "Webhook URL"}
+                          ? t("onboarding.adapter.gatewayUrl")
+                          : t("onboarding.adapter.webhookUrl")}
                       </label>
                       <input
                         className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
@@ -1587,10 +1588,10 @@ export function OnboardingWizard() {
                   {/* Review checklist — everything that's now set up */}
                   <div className="space-y-1.5">
                     {[
-                      { label: "Company name", done: Boolean(companyName.trim()) },
-                      { label: "Mission", done: Boolean(companyGoal.trim()) },
-                      { label: "Agent created", done: Boolean(createdAgentId) },
-                      { label: "Model connected", done: Boolean(createdAgentId) },
+                      { label: t("onboarding.steps.teamName"), done: Boolean(companyName.trim()) },
+                      { label: t("onboarding.steps.mission"), done: Boolean(companyGoal.trim()) },
+                      { label: t("onboarding.steps.agentCreated"), done: Boolean(createdAgentId) },
+                      { label: t("onboarding.steps.modelConnected"), done: Boolean(createdAgentId) },
                     ].map(({ label, done }) => (
                       <div key={label} className="flex items-center gap-2 text-sm">
                         <span
@@ -1668,7 +1669,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Creating..." : "Confirm mission"}
+                      {loading ? t("onboarding.buttons.creating") : t("onboarding.buttons.confirmMission")}
                     </Button>
                   )}
                   {step === 3 && (
@@ -1692,7 +1693,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Bringing to life..." : "Give it a heartbeat"}
+                      {loading ? t("onboarding.buttons.bringingToLife") : t("onboarding.buttons.giveHeartbeat")}
                     </Button>
                   )}
                   {step === 5 && (
@@ -1706,7 +1707,7 @@ export function OnboardingWizard() {
                       ) : (
                         <ArrowRight className="h-3.5 w-3.5 mr-1" />
                       )}
-                      {loading ? "Launching..." : "Get started"}
+                      {loading ? t("onboarding.buttons.launching") : t("onboarding.buttons.getStarted")}
                     </Button>
                   )}
                 </div>
@@ -1738,10 +1739,10 @@ function AdapterEnvironmentResult({
 }) {
   const statusLabel =
     result.status === "pass"
-      ? "Passed"
+      ? t("onboarding.testResults.passed")
       : result.status === "warn"
       ? "Warnings"
-      : "Failed";
+      : t("onboarding.testResults.failed");
   const statusClass =
     result.status === "pass"
       ? "text-green-700 dark:text-green-300 border-green-300 dark:border-green-500/40 bg-green-50 dark:bg-green-500/10"

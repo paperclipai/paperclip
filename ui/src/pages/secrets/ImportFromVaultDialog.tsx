@@ -51,6 +51,7 @@ import {
 } from "@/components/ui/select";
 import { EmptyState } from "../../components/EmptyState";
 import { cn } from "../../lib/utils";
+import { t } from "@/i18n";
 
 type Step = "select" | "review" | "result";
 
@@ -170,8 +171,7 @@ function RowResultBadge({ status }: { status: RemoteSecretImportRowResult["statu
           variant="outline"
           className="gap-1 px-1.5 py-0 font-normal text-destructive border-destructive/40"
         >
-          <XCircle className="h-3 w-3" /> Failed
-        </Badge>
+          <XCircle className="h-3 w-3" /> {t("importfromvaultdialog.text.failed")}</Badge>
       );
   }
 }
@@ -205,7 +205,7 @@ function readableErrorMessage(error: unknown): string {
     return error.message || `Request failed: ${error.status}`;
   }
   if (error instanceof Error) return error.message;
-  return "Unexpected error";
+  return t("importfromvaultdialog.errors.unexpectedError");
 }
 
 function apiErrorCode(error: ApiError): string | null {
@@ -270,34 +270,34 @@ function validateDraftRow(
   existing: CompanySecret[],
   otherDrafts: DraftSelection[],
 ): string | null {
-  if (!draft.name.trim()) return "Name is required.";
-  if (draft.name.length > 160) return "Name must be 160 characters or fewer.";
-  if (!draft.key.trim()) return "Key is required.";
+  if (!draft.name.trim()) return t("importfromvaultdialog.errors.nameIsRequired");
+  if (draft.name.length > 160) return t("importfromvaultdialog.errors.nameMustBe160CharactersOrFewer");
+  if (!draft.key.trim()) return t("importfromvaultdialog.errors.keyIsRequired");
   if (!KEY_PATTERN.test(draft.key)) {
-    return "Key may only contain lowercase letters, numbers, dot, underscore, or hyphen.";
+    return t("importfromvaultdialog.errors.keyMayOnlyContainLowercaseLettersNumbersDotUndersc");
   }
-  if (draft.key.length > 120) return "Key must be 120 characters or fewer.";
-  if (draft.description.length > 500) return "Description must be 500 characters or fewer.";
+  if (draft.key.length > 120) return t("importfromvaultdialog.errors.keyMustBe120CharactersOrFewer");
+  if (draft.description.length > 500) return t("importfromvaultdialog.errors.descriptionMustBe500CharactersOrFewer");
 
   const lowerName = draft.name.trim().toLowerCase();
   const lowerKey = draft.key.trim().toLowerCase();
 
   for (const existingSecret of existing) {
     if (existingSecret.name.trim().toLowerCase() === lowerName) {
-      return "A Paperclip secret already uses this name.";
+      return t("importfromvaultdialog.errors.aPaperclipSecretAlreadyUsesThisName");
     }
     if (existingSecret.key.trim().toLowerCase() === lowerKey) {
-      return "A Paperclip secret already uses this key.";
+      return t("importfromvaultdialog.errors.aPaperclipSecretAlreadyUsesThisKey");
     }
   }
 
   for (const other of otherDrafts) {
     if (other === draft) continue;
     if (other.name.trim().toLowerCase() === lowerName) {
-      return "Another row in this batch already uses this name.";
+      return t("importfromvaultdialog.errors.anotherRowInThisBatchAlreadyUsesThisName");
     }
     if (other.key.trim().toLowerCase() === lowerKey) {
-      return "Another row in this batch already uses this key.";
+      return t("importfromvaultdialog.errors.anotherRowInThisBatchAlreadyUsesThisKey");
     }
   }
 
@@ -477,7 +477,7 @@ export function ImportFromVaultDialog({
         awsVaults.find((vault) => vault.id === vaultId)?.displayName ?? "AWS";
       if (result.errorCount === draftList.length && result.errorCount > 0) {
         toast.pushToast({
-          title: "Import failed",
+          title: t("importfromvaultdialog.labels.importFailed"),
           body: `No secrets were imported from ${vaultName}.`,
           tone: "error",
         });
@@ -491,7 +491,7 @@ export function ImportFromVaultDialog({
     },
     onError: (error) => {
       toast.pushToast({
-        title: "Import failed",
+        title: t("importfromvaultdialog.labels.importFailed"),
         body: readableErrorMessage(error),
         tone: "error",
       });
@@ -552,7 +552,7 @@ export function ImportFromVaultDialog({
       })
       .catch((error) => {
         toast.pushToast({
-          title: "Could not load more results",
+          title: t("importfromvaultdialog.labels.couldNotLoadMoreResults"),
           body: readableErrorMessage(error),
           tone: "error",
         });
@@ -655,18 +655,16 @@ export function ImportFromVaultDialog({
         <header className="flex items-start justify-between gap-3 border-b border-border/60 px-5 py-4">
           <div className="flex flex-col gap-1">
             <DialogTitle className="text-base font-semibold">
-              Import from AWS Secrets Manager
-            </DialogTitle>
+              {t("importfromvaultdialog.text.importFromAwsSecretsManager")}</DialogTitle>
             <DialogDescription className="text-xs text-muted-foreground">
-              Bring AWS-managed secrets into Paperclip as external references.
-            </DialogDescription>
+              {t("importfromvaultdialog.text.bringAwsManagedSecretsIntoPaperclipAsExternalRefer")}</DialogDescription>
             <Stepper step={step} />
           </div>
           <button
             type="button"
             className="rounded-sm text-muted-foreground transition-opacity hover:opacity-100 opacity-70"
             onClick={() => handleClose()}
-            aria-label="Close import dialog"
+            aria-label={t("importfromvaultdialog.aria.closeImportDialog")}
           >
             <X className="h-4 w-4" />
           </button>
@@ -730,8 +728,7 @@ export function ImportFromVaultDialog({
           <div className="flex items-center gap-2">
             {step !== "result" && (
               <Button variant="ghost" size="sm" onClick={() => handleClose()}>
-                Cancel
-              </Button>
+                {t("importfromvaultdialog.text.cancel")}</Button>
             )}
             {step === "review" && (
               <Button
@@ -907,8 +904,8 @@ function SelectStep(props: SelectStepProps) {
             value={vaultId ?? undefined}
             onValueChange={onVaultChange}
           >
-            <SelectTrigger size="sm" className="text-xs" aria-label="Select AWS vault">
-              <SelectValue placeholder="Select an AWS vault" />
+            <SelectTrigger size="sm" className="text-xs" aria-label={t("importfromvaultdialog.aria.selectAwsVault")}>
+              <SelectValue placeholder={t("importfromvaultdialog.placeholders.selectAnAwsVault")} />
             </SelectTrigger>
             <SelectContent>
               {awsVaults.map((vault) => {
@@ -946,9 +943,9 @@ function SelectStep(props: SelectStepProps) {
           <Input
             value={searchInput}
             onChange={(event) => onSearchInput(event.target.value)}
-            placeholder="Search by name, ARN, tag"
+            placeholder={t("importfromvaultdialog.placeholders.searchByNameArnTag")}
             className="pl-7 pr-7 text-xs"
-            aria-label="Search remote secrets"
+            aria-label={t("importfromvaultdialog.aria.searchRemoteSecrets")}
             data-testid="vault-search"
           />
           {showSearchSpinner && (
@@ -961,7 +958,7 @@ function SelectStep(props: SelectStepProps) {
           size="sm"
           onClick={onRefresh}
           disabled={previewLoading || !vaultId}
-          aria-label="Refresh remote secrets"
+          aria-label={t("importfromvaultdialog.aria.refreshRemoteSecrets")}
         >
           <RefreshCw className={cn("h-3.5 w-3.5", previewLoading && "animate-spin")} />
         </Button>
@@ -970,8 +967,7 @@ function SelectStep(props: SelectStepProps) {
       {selectedNotVisible > 0 && (
         <div className="flex items-center justify-between border-b border-border/60 bg-muted/20 px-5 py-1.5 text-xs text-muted-foreground">
           <span>
-            {selection.size} selected · {selectedNotVisible} not visible with current search
-          </span>
+            {selection.size} selected · {selectedNotVisible} {t("importfromvaultdialog.text.notVisibleWithCurrentSearch")}</span>
           <Button
             variant="ghost"
             size="sm"
@@ -1002,10 +998,10 @@ function SelectStep(props: SelectStepProps) {
                     disabled={selectableInLoaded.length === 0}
                   />
                 </th>
-                <th className="px-2 py-2 text-left font-medium">Remote name</th>
+                <th className="px-2 py-2 text-left font-medium">{t("importfromvaultdialog.text.remoteName")}</th>
                 <th className="px-2 py-2 text-left font-medium">Reference</th>
-                <th className="px-2 py-2 text-left font-medium">Last changed</th>
-                <th className="px-2 py-2 text-left font-medium">Suggested name</th>
+                <th className="px-2 py-2 text-left font-medium">{t("importfromvaultdialog.text.lastChanged")}</th>
+                <th className="px-2 py-2 text-left font-medium">{t("importfromvaultdialog.text.suggestedName")}</th>
                 <th className="px-2 py-2 text-left font-medium">State</th>
               </tr>
             </thead>
@@ -1062,8 +1058,7 @@ function SelectStep(props: SelectStepProps) {
                         {candidate.status === "duplicate" &&
                           candidate.conflicts.find((c) => c.type === "exact_reference")?.existingSecretId && (
                             <span className="text-[11px] text-muted-foreground">
-                              Already imported
-                            </span>
+                              {t("importfromvaultdialog.text.alreadyImported")}</span>
                           )}
                       </div>
                       {candidate.status === "conflict" && candidate.conflicts.length > 0 && (
@@ -1103,8 +1098,7 @@ function SelectStep(props: SelectStepProps) {
             >
               {pageLoading ? (
                 <>
-                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Loading…
-                </>
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> {t("importfromvaultdialog.text.loading")}</>
               ) : (
                 `Load ${PAGE_SIZE} more`
               )}
@@ -1245,7 +1239,7 @@ function ReviewStep({ drafts, reviewErrors, updateDraft, removeDraft, importing 
                   </div>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                     <label className="flex flex-col gap-1 text-xs">
-                      <span className="text-muted-foreground">Paperclip name</span>
+                      <span className="text-muted-foreground">{t("importfromvaultdialog.text.paperclipName")}</span>
                       <Input
                         value={draft.name}
                         onChange={(e) =>
@@ -1369,7 +1363,7 @@ function ResultStep({ result, draftList }: ResultStepProps) {
           <ResultGroup label="Skipped" rows={grouped.skipped} draftLookup={draftLookup} />
         )}
         {grouped.failed.length > 0 && (
-          <ResultGroup label="Failed" rows={grouped.failed} draftLookup={draftLookup} />
+          <ResultGroup label={t("importfromvaultdialog.labelsJsx.failed")} rows={grouped.failed} draftLookup={draftLookup} />
         )}
       </div>
     </div>
