@@ -2326,7 +2326,19 @@ async function materializeOpenCodeK8sSharedDocs(input: {
   const entryFile = readNonEmptyString(input.config.instructionsEntryFile) ??
     (instructionsFilePath ? path.basename(instructionsFilePath) : "AGENTS.md");
   // External instruction bundles are optional; if AGENTS.md is absent, skip doc materialization.
-  const instructionsContents = await fs.readFile(path.resolve(sourceRootPath, entryFile), "utf8").catch(() => "");
+  const instructionsEntryPath = path.resolve(sourceRootPath, entryFile);
+  let instructionsContents = "";
+  try {
+    instructionsContents = await fs.readFile(instructionsEntryPath, "utf8");
+  } catch (error) {
+    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+    if (code !== "ENOENT") {
+      await input.onLog(
+        "stderr",
+        `[paperclip] Skipped opencode_k8s shared docs materialization: failed to read instructions entry (${code ?? "unknown"}).\n`,
+      );
+    }
+  }
   if (!instructionsContents) return;
 
   await ensureReferencedSharedDocsMaterialized({
