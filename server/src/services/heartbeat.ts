@@ -113,7 +113,10 @@ import {
 } from "./run-liveness.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import { githubHasReviewerEvidenceForPr } from "./github-app-auth.js";
-import { ensureReferencedSharedDocsMaterialized } from "@paperclipai/adapter-opencode-local/server";
+import {
+  ensureReferencedSharedDocsMaterialized,
+  normalizeInstructionsEntryFile,
+} from "@paperclipai/adapter-opencode-local/server";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -2329,9 +2332,12 @@ async function materializeOpenCodeK8sSharedDocs(input: {
   const sourceRootPath = instructionsRootPath
     ? path.resolve(input.cwd, instructionsRootPath)
     : path.dirname(path.resolve(input.cwd, instructionsFilePath!));
-  const entryFile = readNonEmptyString(input.config.instructionsEntryFile) ??
-    (instructionsFilePath ? path.basename(instructionsFilePath) : "AGENTS.md");
-  // External instruction bundles are optional; if AGENTS.md is absent, skip doc materialization.
+  const entryFile = normalizeInstructionsEntryFile(
+    readNonEmptyString(input.config.instructionsEntryFile) ??
+      (instructionsFilePath ? path.basename(instructionsFilePath) : "AGENTS.md"),
+  );
+  if (!entryFile) return;
+  // External instruction bundles are optional; if the resolved entry is absent, skip doc materialization.
   const instructionsEntryPath = path.resolve(sourceRootPath, entryFile);
   let instructionsContents = "";
   try {
@@ -2353,6 +2359,7 @@ async function materializeOpenCodeK8sSharedDocs(input: {
   if (!instructionsContents) return;
 
   await ensureReferencedSharedDocsMaterialized({
+    // opencode_k8s mounts this local execution workspace into the pod, so writes here are visible remotely.
     cwd: input.cwd,
     instructionsRootPath: sourceRootPath,
     instructionsContents,
