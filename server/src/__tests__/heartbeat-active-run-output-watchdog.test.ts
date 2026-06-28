@@ -146,7 +146,10 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     now: Date;
     ageMs: number;
     withOutput?: boolean;
+    lastOutputAgeMs?: number;
+    lastUsefulActionAgeMs?: number;
     logChunk?: string;
+    recentRunEventAgeMs?: number;
     sourceStatus?: "in_progress" | "done" | "cancelled";
     sourceOriginKind?: string;
     sameRunTerminalEvidence?: "activity" | "comment";
@@ -158,7 +161,12 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     const runId = randomUUID();
     const issuePrefix = `W${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const startedAt = new Date(opts.now.getTime() - opts.ageMs);
-    const lastOutputAt = opts.withOutput ? new Date(opts.now.getTime() - 5 * 60 * 1000) : null;
+    const lastOutputAt = opts.withOutput
+      ? new Date(opts.now.getTime() - (opts.lastOutputAgeMs ?? 5 * 60 * 1000))
+      : null;
+    const lastUsefulActionAt = opts.lastUsefulActionAgeMs !== undefined
+      ? new Date(opts.now.getTime() - opts.lastUsefulActionAgeMs)
+      : null;
     const sourceStatus = opts.sourceStatus ?? "in_progress";
     const terminalEvidenceAt = new Date(startedAt.getTime() + 10 * 60 * 1000);
 
@@ -220,6 +228,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       lastOutputAt,
       lastOutputSeq: opts.withOutput ? 3 : 0,
       lastOutputStream: opts.withOutput ? "stdout" : null,
+      lastUsefulActionAt,
       contextSnapshot: { issueId },
       stdoutExcerpt: "OPENAI_API_KEY=sk-test-secret-value should not leak",
       logBytes: 0,
@@ -240,6 +249,19 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
           logBytes,
         })
         .where(eq(heartbeatRuns.id, runId));
+    }
+    if (opts.recentRunEventAgeMs !== undefined) {
+      await db.insert(heartbeatRunEvents).values({
+        companyId,
+        runId,
+        agentId: coderId,
+        seq: (opts.withOutput ? 3 : 0) + 1,
+        eventType: "tool_result",
+        stream: "stdout",
+        level: "info",
+        message: "opencode emitted tool output after adapter handoff",
+        createdAt: new Date(opts.now.getTime() - opts.recentRunEventAgeMs),
+      });
     }
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     if (opts.sameRunTerminalEvidence === "activity") {
@@ -712,6 +734,68 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     expect(staleResult).toMatchObject({ created: 0, snoozed: 1 });
     expect(noisyResult).toMatchObject({ scanned: 0, created: 0 });
+  });
+
+  it("does not file when adapter handoff is followed by later run event output", async () => {
+    // Regression for external adapter handoff: the output cursor can stay on
+    // the initial adapter line while durable tool/log events continue later.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 10 * 60_000,
+      withOutput: true,
+      lastOutputAgeMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 10 * 60_000,
+      recentRunEventAgeMs: 5 * 60_000,
+    });
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ scanned: 0, created: 0 });
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
+
+  it("does not file when liveness recorded a recent useful action after stale output", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 10 * 60_000,
+      withOutput: true,
+      lastOutputAgeMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 10 * 60_000,
+      lastUsefulActionAgeMs: 5 * 60_000,
+    });
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ scanned: 0, created: 0 });
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
+
+  it("uses stale useful-action evidence as the silence boundary instead of run age", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 10 * 60_000,
+      withOutput: true,
+      lastOutputAgeMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 5 * 60_000,
+      lastUsefulActionAgeMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ scanned: 1, created: 1 });
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.priority).toBe("medium");
   });
 
   it("records watchdog decisions through recovery owner authorization", async () => {
