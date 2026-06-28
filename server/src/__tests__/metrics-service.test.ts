@@ -3,17 +3,22 @@ import {
   CONCURRENT_RUN_BLOCKED_METRIC,
   DEP_BLOCKED_WAKEUP_METRIC,
   HEARTBEAT_RUN_FAILED_METRIC,
+  ISOLATED_RUN_STARTED_METRIC,
   KNOWN_BLOCKED_REASONS,
   KNOWN_INVOCATION_SOURCES,
+  KNOWN_ISOLATION_MODES,
   UNKNOWN_AGENT_ID,
   UNKNOWN_INVOCATION_SOURCE,
+  UNKNOWN_ISOLATION_MODE,
   UNKNOWN_REASON,
   __resetMetricsForTest,
   normalizeAgentId,
   normalizeInvocationSource,
+  normalizeIsolationMode,
   normalizeReason,
   recordConcurrentRunBlocked,
   recordHeartbeatRunFailed,
+  recordIsolatedRunStarted,
   renderMetrics,
 } from "../services/metrics.js";
 import {
@@ -67,43 +72,127 @@ describe("recordConcurrentRunBlocked + renderMetrics", () => {
     expect(body).toContain(`# TYPE ${CONCURRENT_RUN_BLOCKED_METRIC} counter`);
   });
 
-  it("emits the real agent_id for a roster member", async () => {
+  it("emits the real agent_id for a roster member (isolation_mode defaults to unknown)", async () => {
     const labels = recordConcurrentRunBlocked({
       agentId: "agent-a",
       reason: "live_job_for_unknown_run",
       knownAgentIds: new Set(["agent-a"]),
     });
-    expect(labels).toEqual({ agent_id: "agent-a", reason: "live_job_for_unknown_run" });
+    expect(labels).toEqual({
+      agent_id: "agent-a",
+      reason: "live_job_for_unknown_run",
+      isolation_mode: "unknown",
+    });
 
     const { body } = await renderMetrics();
     expect(body).toContain(
-      `${CONCURRENT_RUN_BLOCKED_METRIC}{agent_id="agent-a",reason="live_job_for_unknown_run"} 1`,
+      `${CONCURRENT_RUN_BLOCKED_METRIC}{agent_id="agent-a",reason="live_job_for_unknown_run",isolation_mode="unknown"} 1`,
     );
   });
 
-  it("collapses an unknown agent id and unknown reason (cardinality guardrail)", async () => {
+  it("collapses an unknown agent id, reason, and isolation_mode (cardinality guardrail)", async () => {
     const labels = recordConcurrentRunBlocked({
       agentId: "spoofed-or-typo",
       reason: "garbage",
+      isolationMode: "not-a-mode",
       knownAgentIds: new Set(["agent-a"]),
     });
-    expect(labels).toEqual({ agent_id: UNKNOWN_AGENT_ID, reason: UNKNOWN_REASON });
+    expect(labels).toEqual({
+      agent_id: UNKNOWN_AGENT_ID,
+      reason: UNKNOWN_REASON,
+      isolation_mode: UNKNOWN_ISOLATION_MODE,
+    });
 
     const { body } = await renderMetrics();
     expect(body).toContain(
-      `${CONCURRENT_RUN_BLOCKED_METRIC}{agent_id="${UNKNOWN_AGENT_ID}",reason="${UNKNOWN_REASON}"} 1`,
+      `${CONCURRENT_RUN_BLOCKED_METRIC}{agent_id="${UNKNOWN_AGENT_ID}",reason="${UNKNOWN_REASON}",isolation_mode="${UNKNOWN_ISOLATION_MODE}"} 1`,
+    );
+  });
+
+  it("keeps the bounded isolation_mode label and the new isolation-audit reasons", async () => {
+    const roster = new Set(["agent-a"]);
+    recordConcurrentRunBlocked({
+      agentId: "agent-a",
+      reason: "shared_mode_serialized",
+      isolationMode: "shared",
+      knownAgentIds: roster,
+    });
+    recordConcurrentRunBlocked({
+      agentId: "agent-a",
+      reason: "unknown_isolation_blocked",
+      isolationMode: "workspace",
+      knownAgentIds: roster,
+    });
+
+    const { body } = await renderMetrics();
+    expect(body).toContain(
+      `${CONCURRENT_RUN_BLOCKED_METRIC}{agent_id="agent-a",reason="shared_mode_serialized",isolation_mode="shared"} 1`,
+    );
+    expect(body).toContain(
+      `${CONCURRENT_RUN_BLOCKED_METRIC}{agent_id="agent-a",reason="unknown_isolation_blocked",isolation_mode="workspace"} 1`,
     );
   });
 
   it("accumulates repeated events into the same bounded series", async () => {
     const roster = new Set(["agent-a"]);
-    recordConcurrentRunBlocked({ agentId: "agent-a", reason: "live_job_for_active_run", knownAgentIds: roster });
-    recordConcurrentRunBlocked({ agentId: "agent-a", reason: "live_job_for_active_run", knownAgentIds: roster });
+    recordConcurrentRunBlocked({ agentId: "agent-a", reason: "live_job_for_active_run", isolationMode: "shared", knownAgentIds: roster });
+    recordConcurrentRunBlocked({ agentId: "agent-a", reason: "live_job_for_active_run", isolationMode: "shared", knownAgentIds: roster });
 
     const { body } = await renderMetrics();
     expect(body).toContain(
-      `${CONCURRENT_RUN_BLOCKED_METRIC}{agent_id="agent-a",reason="live_job_for_active_run"} 2`,
+      `${CONCURRENT_RUN_BLOCKED_METRIC}{agent_id="agent-a",reason="live_job_for_active_run",isolation_mode="shared"} 2`,
     );
+  });
+});
+
+describe("normalizeIsolationMode", () => {
+  it("keeps every known isolation mode", () => {
+    for (const mode of KNOWN_ISOLATION_MODES) {
+      expect(normalizeIsolationMode(mode)).toBe(mode);
+    }
+  });
+
+  it("coerces unknown/empty modes to the bounded fallback", () => {
+    expect(normalizeIsolationMode("isolated")).toBe(UNKNOWN_ISOLATION_MODE);
+    expect(normalizeIsolationMode("")).toBe(UNKNOWN_ISOLATION_MODE);
+    expect(normalizeIsolationMode(undefined)).toBe(UNKNOWN_ISOLATION_MODE);
+    expect(normalizeIsolationMode(null)).toBe(UNKNOWN_ISOLATION_MODE);
+  });
+});
+
+describe("recordIsolatedRunStarted + renderMetrics", () => {
+  it("registers the counter TYPE line and bounds its labels", async () => {
+    const roster = new Set(["agent-a"]);
+    const labels = recordIsolatedRunStarted({
+      agentId: "agent-a",
+      isolationMode: "workspace",
+      knownAgentIds: roster,
+    });
+    expect(labels).toEqual({ agent_id: "agent-a", isolation_mode: "workspace" });
+
+    const { body } = await renderMetrics();
+    expect(body).toContain(`# TYPE ${ISOLATED_RUN_STARTED_METRIC} counter`);
+    expect(body).toContain(
+      `${ISOLATED_RUN_STARTED_METRIC}{agent_id="agent-a",isolation_mode="workspace"} 1`,
+    );
+  });
+
+  it("collapses an off-roster agent and bad mode to bounded fallbacks", async () => {
+    const labels = recordIsolatedRunStarted({
+      agentId: "ghost",
+      isolationMode: "nope",
+      knownAgentIds: new Set(["agent-a"]),
+    });
+    expect(labels).toEqual({ agent_id: UNKNOWN_AGENT_ID, isolation_mode: UNKNOWN_ISOLATION_MODE });
+
+    // Symmetry with the blocked-counter tests: confirm the bounded fallback
+    // labels actually land on the rendered /metrics series (no "ghost"/"nope").
+    const { body } = await renderMetrics();
+    expect(body).toContain(
+      `${ISOLATED_RUN_STARTED_METRIC}{agent_id="${UNKNOWN_AGENT_ID}",isolation_mode="${UNKNOWN_ISOLATION_MODE}"} 1`,
+    );
+    expect(body).not.toContain("ghost");
+    expect(body).not.toContain('isolation_mode="nope"');
   });
 });
 
