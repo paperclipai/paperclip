@@ -85,28 +85,48 @@ Skip the `Risk and rollback` section only for clearly trivial PRs (typos, docs).
 - Linked issue moves to `in_review` or `done` per project convention.
 - Delete the branch after merge unless it is a long-lived integration branch.
 
-## Merging (which credential to use)
+## Which credential to use (authoring, reviewing, merging)
 
-Your default GitHub auth is the rotated App-installation token (identity
-`app/allyblockcast` — the same bot that authors your PRs). It works for commits,
-PR creation, comments, and reads. But it **cannot self-approve your own PR**, and
-on some repos the final merge needs a non-author maintainer identity.
+You have two GitHub identities available, and which one you use decides whether
+the review bot can formally review your PR:
 
-If a **merge token** is mounted at `/paperclip/.secrets/github-merge-token/token`,
-use it for the final merge step only:
+- **Default App-installation token** — identity `app/allyblockcast[bot]`. Works
+  for commits, PR creation, comments, status, and reads. This is also the
+  identity the **review bot** posts as.
+- **User-seat token** — mounted at `/paperclip/.secrets/github-merge-token/token`
+  when provisioned. This is the **`allyblockcast` user** account, a *distinct*
+  GitHub identity from the `app/allyblockcast[bot]` App.
+
+GitHub forbids an identity from submitting a **formal review** (`APPROVE` /
+`REQUEST_CHANGES`) on a PR it authored. So when a PR is authored by the App, the
+review bot (also the App) can only leave a *comment* — never a formal review.
+Authoring under the **user seat** makes author ≠ reviewer, so the bot can post a
+real `gh pr review`.
+
+**When the user-seat token is mounted, author your PR under it** — push the
+branch and create the PR with it — and use it for the final merge too:
 
 ```sh
-GH_TOKEN="$(cat /paperclip/.secrets/github-merge-token/token)" \
-  gh pr merge <number> --repo <org>/<repo> --squash
+AUTHOR_TOKEN="$(cat /paperclip/.secrets/github-merge-token/token)"
+
+# push the branch + open the PR as the allyblockcast USER (formally reviewable)
+GH_TOKEN="$AUTHOR_TOKEN" git -c http.https://github.com/.extraheader= \
+  push -u origin "$(git branch --show-current)"
+GH_TOKEN="$AUTHOR_TOKEN" gh pr create --repo <org>/<repo> --title ... --body ...
+
+# ... later, after the review checklist is satisfied:
+GH_TOKEN="$AUTHOR_TOKEN" gh pr merge <number> --repo <org>/<repo> --squash
 ```
 
 Rules:
-- Use the merge token **only** for `gh pr merge` (and, if needed, arming
-  auto-merge). Keep using the default token for everything else, so commits and
-  PRs stay attributed to `app/allyblockcast` and the Paperclip↔GitHub integration
-  keeps working.
-- If the file does not exist, the merge lane is not provisioned for this repo —
-  do not improvise a token. Hand the merge to a maintainer and note it on the issue.
+- Use the **user-seat token** for the branch push, `gh pr create`, and
+  `gh pr merge`/auto-merge. Use the **default App token** for everything else
+  (comments, replies, status, reads) so the Paperclip↔GitHub integration keeps
+  working.
+- If the file does **not** exist, the user-seat lane is not provisioned for this
+  repo — do not improvise a token. Author and merge under the default token as
+  before; the review bot will fall back to comment-mode review, and a maintainer
+  lands the merge. Note it on the issue.
 - Only merge when the merge checklist above is satisfied (checks green, comments
   resolved).
 
