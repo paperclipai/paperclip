@@ -98,6 +98,7 @@ function makeHeartbeatRun(overrides: Partial<HeartbeatRun>): HeartbeatRun {
     agentId: "agent-codex",
     invocationSource: "on_demand",
     triggerDetail: "manual",
+    authContext: null,
     status: "succeeded",
     startedAt: createdAt,
     finishedAt: new Date(createdAt.getTime() + 11 * 60_000),

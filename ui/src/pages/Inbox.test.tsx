@@ -400,6 +400,7 @@ describe("FailedRunInboxRow", () => {
       agentId: "agent-1",
       invocationSource: "assignment",
       triggerDetail: null,
+      authContext: null,
       status: "failed",
       error: "boom",
       wakeupRequestId: null,
