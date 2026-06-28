@@ -69,6 +69,50 @@ describe("resolveSessionKey", () => {
       }),
     ).toBeNull();
   });
+
+  describe("compaction for prompt_cache_key 64-char limit", () => {
+    const uuids = {
+      companyId: "11111111-2222-3333-4444-555555555555",
+      agentId: "66666666-7777-8888-9999-aaaaaaaaaaaa",
+      issueId: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+      runId: "12121212-3434-5656-7878-909090909090",
+    };
+
+    it("compacts over-length issue keys to <=64 chars while staying namespaced", () => {
+      const key = resolveSessionKey({ strategy: "issue", ...uuids });
+      expect(key).not.toBeNull();
+      expect(key!.length).toBeLessThanOrEqual(64);
+      expect(key).toMatch(/^paperclip:h:[0-9a-f]{48}$/);
+    });
+
+    it("compacts over-length agent keys (97 chars) as well", () => {
+      const key = resolveSessionKey({ strategy: "agent", ...uuids });
+      expect(key!.length).toBeLessThanOrEqual(64);
+      expect(key).toMatch(/^paperclip:h:[0-9a-f]{48}$/);
+    });
+
+    it("is stable: same scope yields the same compacted key", () => {
+      const a = resolveSessionKey({ strategy: "issue", ...uuids });
+      const b = resolveSessionKey({ strategy: "issue", ...uuids });
+      expect(a).toBe(b);
+    });
+
+    it("isolates: different issues yield different keys", () => {
+      const a = resolveSessionKey({ strategy: "issue", ...uuids });
+      const b = resolveSessionKey({
+        strategy: "issue",
+        ...uuids,
+        issueId: "00000000-1111-2222-3333-444444444444",
+      });
+      expect(a).not.toBe(b);
+    });
+
+    it("leaves within-limit keys (run strategy) untouched", () => {
+      expect(resolveSessionKey({ strategy: "run", ...uuids })).toBe(
+        `paperclip:run:${uuids.runId}`,
+      );
+    });
+  });
 });
 
 describe("parseSseFramesForTest", () => {
