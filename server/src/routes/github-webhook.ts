@@ -456,11 +456,12 @@ function resolveEventContext(
       // ready_for_review (draft -> ready), synchronize (author pushed a
       // fixup after an earlier review), closed (merged or abandoned).
       //
-      // synchronize fires once per push. We DON'T fan out one reviewer run
-      // per push: the wake is coalesced PR-scoped (head-sha-independent
-      // idempotency key) so a burst of rapid pushes collapses onto a single
-      // pending reviewer wake, which reviews whatever the latest head is when
-      // it runs. See shouldFirePrReviewerWake / buildPrReviewerWakeIdempotencyKey.
+      // synchronize fires once per push. We don't fan out one reviewer run per
+      // push: active reviewer runs are coalesced by the PR-scoped task key, and
+      // duplicate wake rows are skipped by a stable PR+reason idempotency
+      // precheck. Both are head-sha- and delivery-independent for synchronize.
+      // See shouldFirePrReviewerWake / buildPrReviewerTaskKey /
+      // buildPrReviewerWakeIdempotencyKey.
       if (
         action !== "opened" &&
         action !== "reopened" &&
@@ -566,7 +567,7 @@ function resolveDependabotAlertContext(
 }
 
 function shouldFirePrReviewerWake(context: ResolvedEventContext | null): context is ResolvedEventContext & { prNumber: number } {
-  if (!context || !context.wakeReason || !context.prNumber) return false;
+  if (!context || !context.wakeReason || typeof context.prNumber !== "number") return false;
   return new Set([
     "github_pr_opened",
     "github_pr_reopened",
@@ -582,16 +583,26 @@ function buildPrReviewerWakeIdempotencyKey(
   deliveryId: string | null,
 ) {
   const repo = context.repoFullName ?? "unknown";
+  if (typeof context.prNumber !== "number") {
+    logger.error(
+      {
+        deliveryId,
+        repoFullName: context.repoFullName,
+        wakeReason: context.wakeReason,
+        prNumber: context.prNumber,
+      },
+      "github webhook reviewer wake idempotency key missing PR number",
+    );
+    throw new Error("PR reviewer wake idempotency key requires prNumber");
+  }
   // @ally comment requests are scoped to the GitHub comment id so a later
   // explicit re-review comment can wake Ally again.
   //
-  // Every other reason — including github_pr_synchronized — keys on
-  // repo+prNumber+reason ALONE, deliberately omitting the head sha and the
-  // delivery id. For synchronize this is the debounce: a burst of rapid
-  // fixup pushes all resolve to the same key, so the second-and-later pushes
-  // dedup against the still-pending wake (see IDEMPOTENT_REVIEWER_WAKE_STATUSES)
-  // instead of each spawning a reviewer run. The single coalesced wake reviews
-  // whatever the latest head is when Ally actually runs.
+  // Every other reason, including github_pr_synchronized, keys on
+  // repo+prNumber+reason alone. This deliberately omits head sha and delivery
+  // id so the idempotency precheck can skip duplicate pending/completed wake
+  // requests for the same PR+reason. Active run coalescing is controlled by
+  // buildPrReviewerTaskKey plus enqueueWakeup's same-task-scope logic.
   const commentScopedSuffix =
     context.wakeReason === "github_pr_review_requested"
       ? `${context.wakeReason}:comment:${context.commentId ?? deliveryId ?? "unknown"}`
@@ -861,9 +872,9 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
     //   - pull_request.reopened        — explicit retry / renewed review signal
     //   - pull_request.ready_for_review — draft promoted to ready
     //   - pull_request.synchronize     — author pushed a fixup after a review;
-    //       the wake is coalesced PR-scoped (head-sha-independent key) so a
-    //       burst of rapid pushes collapses onto ONE pending reviewer wake
-    //       rather than fanning out one review per push (capacity safety).
+    //       active reviewer runs are coalesced by the stable PR-scoped taskKey,
+    //       and duplicate wake requests are skipped by the PR+reason
+    //       idempotency precheck, so rapid pushes don't fan out per push.
     //   - issue_comment.created with @ally — explicit operator re-review request
     //   - pull_request_review.submitted — request a counter-review pass
     // (We deliberately skip pull_request.closed and check_run/workflow_run —
@@ -877,6 +888,8 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
           ...config.heartbeatOptions,
         });
         const reviewerTaskKey = buildPrReviewerTaskKey(context);
+        // taskKey scopes active-run coalescing; idempotencyKey scopes duplicate
+        // request rows for the same PR+reason before enqueueing.
         const idempotencyKey = buildPrReviewerWakeIdempotencyKey(context, deliveryId);
         const existingWake = await db
           .select({ id: agentWakeupRequests.id })
@@ -1140,15 +1153,30 @@ export function githubWebhookRoutes(db: Db, config: GithubWebhookConfig) {
     const reopened: Array<{ issueIdentifier: string | null; commentId: string | null }> = [];
     const actionableReviewFeedback = isActionableReviewFeedbackContext(context);
 
-    // pull_request.synchronize is a REVIEWER-only signal. The reviewer wake
-    // above is debounced (coalesced PR-scoped) so a burst of fixup pushes
-    // collapses onto one re-review. The author-assignee wake below is
-    // deliberately NOT driven by it: the assignee is the one who just pushed,
-    // so waking them per push would (a) be redundant and (b) fan out one
-    // author run per push — the exact capacity thrash this whole path guards
-    // against. The author still gets woken by check_run/workflow_run on
-    // terminal CI and by review-submitted/@ally feedback, as before.
+    // pull_request.synchronize is a reviewer-only signal. The reviewer wake
+    // above is PR-scoped: active runs coalesce on taskKey, and duplicate request
+    // rows are skipped by the idempotency precheck. The author-assignee wake
+    // below is deliberately not driven by synchronize: the assignee is the one
+    // who just pushed, so waking them per push would be redundant and would fan
+    // out one author run per push. The author still gets woken by
+    // check_run/workflow_run on terminal CI and by review-submitted/@ally
+    // feedback, as before.
     const synchronizeReviewerOnly = context.wakeReason === "github_pr_synchronized";
+    if (
+      eventName === "pull_request" &&
+      synchronizeReviewerOnly &&
+      typeof context.prNumber !== "number"
+    ) {
+      logger.error(
+        {
+          deliveryId,
+          repoFullName: context.repoFullName,
+          wakeReason: context.wakeReason,
+          prNumber: context.prNumber,
+        },
+        "github webhook synchronize reviewer-only context missing PR number; suppressing author wakes",
+      );
+    }
 
     for (const issue of synchronizeReviewerOnly ? [] : matched) {
       // Terminal-status issues don't need to wake -- the assignee
