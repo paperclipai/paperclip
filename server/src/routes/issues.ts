@@ -6989,14 +6989,57 @@ export function issueRoutes(
       return;
     }
 
+    let activeRecoveryActionForCheckout: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>> = null;
+    let recoveryCheckoutLookupError: unknown = null;
     if (issue.assigneeAgentId !== req.body.agentId) {
-      await assertCanAssignTasks(req, issue.companyId, {
-        issueId: issue.id,
-        projectId: issue.projectId ?? null,
-        parentIssueId: issue.parentId ?? null,
-        assigneeAgentId: req.body.agentId,
-        assigneeUserId: null,
-      });
+      try {
+        activeRecoveryActionForCheckout = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+      } catch (err) {
+        recoveryCheckoutLookupError = err;
+        logger.error(
+          { err, issueId: issue.id, companyId: issue.companyId, agentId: req.body.agentId },
+          "failed to load active recovery action for issue checkout authorization",
+        );
+      }
+    }
+    const allowSourceScopedRecoveryOwnerCheckout =
+      req.actor.type === "agent" &&
+      req.actor.agentId === req.body.agentId &&
+      activeRecoveryActionForCheckout !== null &&
+      // Keep this belt-and-suspenders source check alongside the service-level atomic revalidation.
+      activeRecoveryActionForCheckout.sourceIssueId === issue.id &&
+      (activeRecoveryActionForCheckout.status === "active" || activeRecoveryActionForCheckout.status === "escalated") &&
+      activeRecoveryActionForCheckout.ownerAgentId === req.body.agentId;
+
+    if (issue.assigneeAgentId !== req.body.agentId && !allowSourceScopedRecoveryOwnerCheckout) {
+      try {
+        await assertCanAssignTasks(req, issue.companyId, {
+          issueId: issue.id,
+          projectId: issue.projectId ?? null,
+          parentIssueId: issue.parentId ?? null,
+          assigneeAgentId: req.body.agentId,
+          assigneeUserId: null,
+        });
+      } catch (err) {
+        if (recoveryCheckoutLookupError) {
+          logger.error(
+            {
+              err: recoveryCheckoutLookupError,
+              assignmentErr: err,
+              issueId: issue.id,
+              companyId: issue.companyId,
+              agentId: req.body.agentId,
+            },
+            "failed to verify recovery checkout authorization and assignment fallback was denied",
+          );
+          res.status(500).json({
+            error: "Failed to verify recovery checkout authorization",
+            reason: "recovery_lookup_failed",
+          });
+          return;
+        }
+        throw err;
+      }
     }
 
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
@@ -7007,7 +7050,11 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
-    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId, {
+      allowSourceScopedRecoveryOwner: allowSourceScopedRecoveryOwnerCheckout,
+      recoveryActionId: activeRecoveryActionForCheckout?.id ?? null,
+      recoveryActionStatus: activeRecoveryActionForCheckout?.status ?? null,
+    });
     const actor = getActorInfo(req);
 
     await logActivity(db, {

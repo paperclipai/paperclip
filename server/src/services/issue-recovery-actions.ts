@@ -9,7 +9,7 @@ import type {
   IssueRecoveryActionStatus,
 } from "@paperclipai/shared";
 
-const ACTIVE_RECOVERY_ACTION_STATUSES = ["active", "escalated"] as const satisfies readonly IssueRecoveryActionStatus[];
+export const ACTIVE_RECOVERY_ACTION_STATUSES = ["active", "escalated"] as const satisfies readonly IssueRecoveryActionStatus[];
 const MAX_UPSERT_RETRIES = 3;
 
 type IssueRecoveryActionRow = typeof issueRecoveryActions.$inferSelect;

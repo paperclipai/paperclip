@@ -16,6 +16,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueComments,
+  issueRecoveryActions,
   issueThreadInteractions,
   issueInboxArchives,
   issueApprovals,
@@ -41,6 +42,7 @@ import {
   issueService,
   parseExecutiveHoldMarkerTimestamp,
 } from "../services/issues.js";
+import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -254,6 +256,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
   afterEach(async () => {
     await db.delete(issueComments);
+    await db.delete(issueRecoveryActions);
     await db.delete(issueRelations);
     await db.delete(issueDocuments);
     await db.delete(issueInboxArchives);
@@ -410,6 +413,231 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(persisted).toMatchObject({
       assigneeAgentId: null,
       status: "todo",
+    });
+  });
+
+  it("lets an active source-scoped recovery owner checkout the source issue", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const assigneeAgentId = randomUUID();
+    const recoveryOwnerAgentId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, { id: assigneeAgentId, name: "BlockedCoder" }),
+      agentRow(companyId, { id: recoveryOwnerAgentId, name: "RecoveryOwner" }),
+    ]);
+    const issue = await svc.create(companyId, {
+      title: "Recover source issue",
+      description: null,
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId,
+    });
+    await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId: issue.id,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: recoveryOwnerAgentId,
+      cause: "stranded_assigned_issue",
+      fingerprint: `recovery:${issue.id}`,
+      evidence: { latestRunId: "run-1" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "wake_owner" },
+    });
+
+    const checkoutRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId: recoveryOwnerAgentId,
+      status: "running",
+      invocationSource: "manual",
+    });
+    const checkedOut = await svc.checkout(
+      issue.id,
+      recoveryOwnerAgentId,
+      ["blocked"],
+      checkoutRunId,
+      { allowSourceScopedRecoveryOwner: true },
+    );
+
+    expect(checkedOut).toMatchObject({
+      id: issue.id,
+      assigneeAgentId: recoveryOwnerAgentId,
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+      status: "in_progress",
+    });
+  });
+
+  it("lets an escalated source-scoped recovery owner checkout the source issue", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const assigneeAgentId = randomUUID();
+    const recoveryOwnerAgentId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, { id: assigneeAgentId, name: "EscalatedBlockedCoder" }),
+      agentRow(companyId, { id: recoveryOwnerAgentId, name: "EscalatedRecoveryOwner" }),
+    ]);
+    const issue = await svc.create(companyId, {
+      title: "Recover escalated source issue",
+      description: null,
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId,
+    });
+    const recoveryAction = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId: issue.id,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: recoveryOwnerAgentId,
+      cause: "stranded_assigned_issue",
+      fingerprint: `recovery:${issue.id}`,
+      evidence: { latestRunId: "run-1" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    await db
+      .update(issueRecoveryActions)
+      .set({ status: "escalated" })
+      .where(eq(issueRecoveryActions.id, recoveryAction.id));
+
+    const checkoutRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId: recoveryOwnerAgentId,
+      status: "running",
+      invocationSource: "manual",
+    });
+    const checkedOut = await svc.checkout(
+      issue.id,
+      recoveryOwnerAgentId,
+      ["blocked"],
+      checkoutRunId,
+      { allowSourceScopedRecoveryOwner: true },
+    );
+
+    expect(checkedOut).toMatchObject({
+      id: issue.id,
+      assigneeAgentId: recoveryOwnerAgentId,
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+      status: "in_progress",
+    });
+  });
+
+  it("rejects source-scoped recovery checkout when the recovery action is no longer active", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const assigneeAgentId = randomUUID();
+    const recoveryOwnerAgentId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, { id: assigneeAgentId, name: "ResolvedBlockedCoder" }),
+      agentRow(companyId, { id: recoveryOwnerAgentId, name: "ResolvedRecoveryOwner" }),
+    ]);
+    const issue = await svc.create(companyId, {
+      title: "Reject resolved recovery action",
+      description: null,
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId,
+    });
+    const recoveryAction = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId: issue.id,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: recoveryOwnerAgentId,
+      cause: "stranded_assigned_issue",
+      fingerprint: `recovery:${issue.id}`,
+      evidence: { latestRunId: "run-1" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    await db
+      .update(issueRecoveryActions)
+      .set({ status: "resolved" })
+      .where(eq(issueRecoveryActions.id, recoveryAction.id));
+
+    const checkoutRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId: recoveryOwnerAgentId,
+      status: "running",
+      invocationSource: "manual",
+    });
+
+    await expect(
+      svc.checkout(issue.id, recoveryOwnerAgentId, ["blocked"], checkoutRunId, {
+        allowSourceScopedRecoveryOwner: true,
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "Issue checkout failed — authorization or status mismatch",
+    });
+  });
+
+  it("does not let unrelated non-assignees use the recovery-owner checkout path", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const assigneeAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, { id: assigneeAgentId, name: "BlockedCoder" }),
+      agentRow(companyId, { id: otherAgentId, name: "OtherCoder" }),
+    ]);
+    const issue = await svc.create(companyId, {
+      title: "Keep ownership scoped",
+      description: null,
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId,
+    });
+
+    const checkoutRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+      invocationSource: "manual",
+    });
+
+    await expect(
+      svc.checkout(issue.id, otherAgentId, ["blocked"], checkoutRunId, { allowSourceScopedRecoveryOwner: true }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "Issue checkout failed — authorization or status mismatch",
+    });
+  });
+
+  it("rejects non-assignee checkout by default without source-scoped recovery authority", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const assigneeAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, { id: assigneeAgentId, name: "DefaultBlockedCoder" }),
+      agentRow(companyId, { id: otherAgentId, name: "DefaultOtherCoder" }),
+    ]);
+    const issue = await svc.create(companyId, {
+      title: "Keep default checkout ownership strict",
+      description: null,
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId,
+    });
+
+    const checkoutRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+      invocationSource: "manual",
+    });
+
+    await expect(svc.checkout(issue.id, otherAgentId, ["blocked"], checkoutRunId)).rejects.toMatchObject({
+      status: 409,
+      message: "Issue checkout conflict",
     });
   });
 

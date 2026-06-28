@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, exists, gt, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -101,6 +101,7 @@ import {
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
+import { ACTIVE_RECOVERY_ACTION_STATUSES } from "./issue-recovery-actions.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const OPEN_ROUTINE_EXECUTION_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
@@ -6748,7 +6749,17 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
-    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+    checkout: async (
+      id: string,
+      agentId: string,
+      expectedStatuses: string[],
+      checkoutRunId: string | null,
+      options: {
+        allowSourceScopedRecoveryOwner?: boolean;
+        recoveryActionId?: string | null;
+        recoveryActionStatus?: string | null;
+      } = {},
+    ) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -6802,6 +6813,21 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
+      const activeRecoveryOwnerCondition = options.allowSourceScopedRecoveryOwner
+        ? exists(
+          db
+            .select({ id: issueRecoveryActions.id })
+            .from(issueRecoveryActions)
+            .where(
+              and(
+                eq(issueRecoveryActions.companyId, issues.companyId),
+                eq(issueRecoveryActions.sourceIssueId, issues.id),
+                eq(issueRecoveryActions.ownerAgentId, agentId),
+                inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+              ),
+            ),
+        )
+        : undefined;
       const updated = await db
         .update(issues)
         .set({
@@ -6817,7 +6843,9 @@ export function issueService(db: Db) {
           and(
             eq(issues.id, id),
             inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+            activeRecoveryOwnerCondition
+              ? or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition, activeRecoveryOwnerCondition)
+              : or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,
           ),
         )
@@ -6827,6 +6855,19 @@ export function issueService(db: Db) {
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
         return enriched;
+      }
+
+      if (options.allowSourceScopedRecoveryOwner) {
+        logger.warn(
+          {
+            issueId: id,
+            agentId,
+            expectedStatuses,
+            recoveryActionId: options.recoveryActionId ?? null,
+            recoveryActionStatus: options.recoveryActionStatus ?? null,
+          },
+          "source-scoped recovery owner checkout update matched no rows",
+        );
       }
 
       const current = await db
@@ -6842,6 +6883,16 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw notFound("Issue not found");
+
+      if (options.allowSourceScopedRecoveryOwner && current.assigneeAgentId !== agentId) {
+        throw conflict("Issue checkout failed — authorization or status mismatch", {
+          issueId: current.id,
+          status: current.status,
+          assigneeAgentId: current.assigneeAgentId,
+          checkoutRunId: current.checkoutRunId,
+          executionRunId: current.executionRunId,
+        });
+      }
 
       if (
         current.assigneeAgentId === agentId &&
