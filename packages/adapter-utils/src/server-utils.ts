@@ -2411,6 +2411,14 @@ export async function runChildProcess(
           shell: false,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
+        // Decode stdout/stderr as UTF-8 from the start so that multibyte
+        // characters (e.g. German umlauts in model output) are never split
+        // across chunk boundaries and garbled.  Without setEncoding the data
+        // events deliver raw Buffers; String(buffer) decodes correctly for
+        // complete sequences but produces replacement characters when a
+        // multibyte character is split across two consecutive chunks.
+        child.stdout?.setEncoding("utf8");
+        child.stderr?.setEncoding("utf8");
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
 
