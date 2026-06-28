@@ -87,6 +87,8 @@ const VITE_DEV_STATIC_PATHS = new Set([
   "/favicon-32x32.png",
   "/favicon.ico",
   "/favicon.svg",
+  "/robots.txt",
+  "/sitemap.xml",
   "/site.webmanifest",
   "/sw.js",
 ]);
