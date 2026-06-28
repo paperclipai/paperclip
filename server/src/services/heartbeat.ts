@@ -2332,6 +2332,7 @@ async function materializeOpenCodeK8sSharedDocs(input: {
   const sourceRootPath = instructionsRootPath
     ? path.resolve(input.cwd, instructionsRootPath)
     : path.dirname(path.resolve(input.cwd, instructionsFilePath!));
+  // External instruction roots are allowed to live outside the workspace; shared-doc writes stay bounded to cwd.
   const entryFile = normalizeInstructionsEntryFile(
     readNonEmptyString(input.config.instructionsEntryFile) ??
       (instructionsFilePath ? path.basename(instructionsFilePath) : "AGENTS.md"),
@@ -2349,11 +2350,13 @@ async function materializeOpenCodeK8sSharedDocs(input: {
         "stdout",
         "[paperclip] Skipped opencode_k8s shared docs materialization: external instructions entry absent.\n",
       );
+      return;
     } else {
       await input.onLog(
         "stderr",
         `[paperclip] Skipped opencode_k8s shared docs materialization: failed to read instructions entry (${code ?? "unknown"}).\n`,
       );
+      return;
     }
   }
   if (!instructionsContents) return;
