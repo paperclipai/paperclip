@@ -9,12 +9,12 @@
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import * as utils from "./utils.js";
 
-// We mock runChildProcess at the utils layer so we can inspect the opts
-// without actually spawning a child process.
-vi.mock("./utils.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./utils.js")>();
+// Mock the adapter-utils server-utils module that execute.ts imports from.
+// We intercept runChildProcess so we can inspect its opts without spawning
+// a real child process.
+vi.mock("@paperclipai/adapter-utils/server-utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/server-utils")>();
   return {
     ...actual,
     runChildProcess: vi.fn(async () => ({
@@ -27,7 +27,7 @@ vi.mock("./utils.js", async (importOriginal) => {
   };
 });
 
-// We also need to mock fs and child_process resolution to avoid real execution
+// Mock fs and path resolution to avoid real file reads in execute()
 vi.mock("node:fs/promises", () => ({
   readFile: vi.fn(async () => ""),
   writeFile: vi.fn(async () => undefined),
@@ -39,6 +39,7 @@ vi.mock("node:fs/promises", () => ({
 }));
 
 import { execute } from "./execute.js";
+import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 
 function makeCtx(overrides: Record<string, unknown> = {}) {
   const onSpawn = vi.fn(async () => undefined);
@@ -96,19 +97,18 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       // we only care that runChildProcess was called with onSpawn.
     }
 
-    const mocked = vi.mocked(utils.runChildProcess);
-    if (mocked.mock.calls.length > 0) {
-      const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
-      const opts = lastCall[3] as Record<string, unknown>;
-      expect(opts.onSpawn).toBe(onSpawn);
-    }
+    const mocked = vi.mocked(serverUtils.runChildProcess);
+    expect(mocked.mock.calls.length).toBeGreaterThan(0);
+    const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
+    const opts = lastCall[3] as Record<string, unknown>;
+    expect(opts.onSpawn).toBe(onSpawn);
   });
 
   it("runChildProcess opts type includes onSpawn", () => {
     // Type-level assertion: if onSpawn were removed from the type,
     // this file would fail to compile. The runtime test above catches
     // the behavioral case; this documents the contract.
-    const opts: Parameters<typeof utils.runChildProcess>[3] = {
+    const opts: Parameters<typeof serverUtils.runChildProcess>[3] = {
       cwd: "/tmp",
       env: {},
       timeoutSec: 60,
