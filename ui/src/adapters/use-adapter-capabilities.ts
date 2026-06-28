@@ -15,7 +15,7 @@ const ALL_FALSE: AdapterCapabilities = {
  * Synchronous fallback for known built-in adapter types so capability checks
  * return correct values on first render before the /api/adapters call resolves.
  */
-const KNOWN_DEFAULTS: Record<string, AdapterCapabilities> = {
+export const BUILTIN_ADAPTER_CAPABILITY_DEFAULTS: Record<string, AdapterCapabilities> = {
   acpx_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: false },
   claude_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: true },
   codex_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsModelProfiles: true },
@@ -53,5 +53,5 @@ export function useAdapterCapabilities(): (type: string) => AdapterCapabilities 
   }, [adapters]);
 
   return (type: string): AdapterCapabilities =>
-    capMap.get(type) ?? KNOWN_DEFAULTS[type] ?? ALL_FALSE;
+    capMap.get(type) ?? BUILTIN_ADAPTER_CAPABILITY_DEFAULTS[type] ?? ALL_FALSE;
 }
