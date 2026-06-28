@@ -778,6 +778,26 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluations).toHaveLength(0);
   });
 
+  it("uses stale useful-action evidence as the silence boundary instead of run age", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 10 * 60_000,
+      withOutput: true,
+      lastOutputAgeMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 5 * 60_000,
+      lastUsefulActionAgeMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ scanned: 1, created: 1 });
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.priority).toBe("medium");
+  });
+
   it("records watchdog decisions through recovery owner authorization", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId, managerId, runId } = await seedRunningRun({

@@ -1164,9 +1164,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   function silenceStartedAtForRun(run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "lastUsefulActionAt" | "processStartedAt" | "startedAt" | "createdAt">) {
-    const progressAt = [run.lastOutputAt, run.lastUsefulActionAt]
+    const progressTimes = [run.lastOutputAt, run.lastUsefulActionAt]
       .filter((value): value is Date => value instanceof Date)
-      .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+      .map((value) => value.getTime());
+    const progressAt = progressTimes.length > 0 ? new Date(Math.max(...progressTimes)) : null;
     return progressAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
   }
 
@@ -2472,17 +2473,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined,
           eq(heartbeatRuns.status, "running"),
           sql`coalesce(
-            nullif(
+            case when ${heartbeatRuns.lastOutputAt} is not null or ${heartbeatRuns.lastUsefulActionAt} is not null then
               greatest(
                 coalesce(${heartbeatRuns.lastOutputAt}, 'epoch'::timestamptz),
                 coalesce(${heartbeatRuns.lastUsefulActionAt}, 'epoch'::timestamptz)
-              ),
-              'epoch'::timestamptz
-            ),
+              )
+            end,
             ${heartbeatRuns.processStartedAt},
             ${heartbeatRuns.startedAt},
             ${heartbeatRuns.createdAt}
           ) <= ${suspicionBefore.toISOString()}::timestamptz`,
+          // Exclude lifecycle markers and adapter invocations; only flag on meaningful tool/log output.
           sql`not exists (
             select 1
             from ${heartbeatRunEvents}
