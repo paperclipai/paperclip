@@ -83,9 +83,9 @@ const manifest: PaperclipPluginManifestV1 = {
       autoCloseOnResolve: {
         type: "boolean",
         title: "Auto-close issue when alert resolves",
-        default: false,
+        default: true,
         description:
-          "If true, transitions the issue to status=cancelled when AM sends status=resolved. If false, posts a 'resolved at <ts>' comment and leaves status alone.",
+          "Defaults to true. If true or omitted, transitions the issue to status=cancelled when AM sends status=resolved. If false, posts a 'resolved at <ts>' comment and leaves status alone.",
       },
       ownerMap: {
         type: "object",

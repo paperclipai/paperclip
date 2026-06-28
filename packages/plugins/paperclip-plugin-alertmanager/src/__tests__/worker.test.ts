@@ -644,6 +644,49 @@ describe("handleWebhook — resolved", () => {
     expect(mocks.issues.createComment).not.toHaveBeenCalled();
   });
 
+  it("cancels the issue when autoCloseOnResolve is omitted", async () => {
+    const { ctx, mocks } = mkCtx();
+    const config = baseConfig({ autoCloseOnResolve: undefined });
+    const existing: AlertStateRecord = {
+      paperclipIssueId: "issue-existing",
+      paperclipCompanyId: "company-1",
+      assigneeUserId: null,
+      assigneeAgentId: null,
+      alertname: "PhysicalInfraQaSyntheticDiskRouteTest",
+      severity: "warning",
+      firstSeenAt: "2026-06-27T08:00:00Z",
+      lastFiredAt: "2026-06-27T08:00:00Z",
+      resolvedAt: null,
+    };
+    mocks.state.get.mockResolvedValueOnce(existing);
+    mocks.issues.get.mockResolvedValueOnce({ id: "issue-existing", status: "todo" });
+
+    const resolvedAlert = baseAlert({
+      status: "resolved",
+      labels: {
+        alertname: "PhysicalInfraQaSyntheticDiskRouteTest",
+        severity: "warning",
+        route_test: "true",
+        qa_run: "BLO-12204",
+        class: "physical_infra_disk",
+      },
+      endsAt: "2026-06-27T10:00:00Z",
+    });
+    const envelope = baseEnvelope({
+      status: "resolved",
+      alerts: [resolvedAlert],
+    });
+
+    await handleWebhook(ctx, config, TOKEN, baseInput({ parsedBody: envelope }));
+
+    expect(mocks.issues.update).toHaveBeenCalledWith(
+      "issue-existing",
+      { status: "cancelled" },
+      "company-1",
+    );
+    expect(mocks.issues.createComment).not.toHaveBeenCalled();
+  });
+
   it("recovers missing state from the issue origin before cancelling", async () => {
     const { ctx, mocks } = mkCtx();
     const config = baseConfig({ autoCloseOnResolve: true });

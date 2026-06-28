@@ -85,7 +85,7 @@ export interface AlertmanagerPluginConfig {
    */
   severityToPriority?: Record<string, PaperclipPriority>;
   /**
-   * If true, transitions the issue to status=cancelled when AM sends
+   * If true or omitted, transitions the issue to status=cancelled when AM sends
    * status=resolved. If false, posts a "resolved at <ts>" comment and leaves
    * status alone.
    */

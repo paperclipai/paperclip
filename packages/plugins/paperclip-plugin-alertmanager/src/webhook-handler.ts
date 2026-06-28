@@ -325,7 +325,7 @@ export async function handleResolved(
   const alertname = existing.alertname;
 
   try {
-    if (config.autoCloseOnResolve) {
+    if (config.autoCloseOnResolve !== false) {
       const issue = await ctx.issues.get(
         existing.paperclipIssueId,
         existing.paperclipCompanyId,
