@@ -8,7 +8,9 @@ describe("instance settings service", () => {
       enableIsolatedWorkspaces: true,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
+      enableTaskWatchdogs: true,
       enableCloudSync: true,
+      enableServerInfoDebugView: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
@@ -16,13 +18,62 @@ describe("instance settings service", () => {
     })).toEqual({
       enableEnvironments: true,
       enableIsolatedWorkspaces: true,
-      enableStreamlinedLeftNavigation: false,
+      enableStreamlinedLeftNavigation: true,
+      enableConferenceRoomChat: false,
+      enableExternalObjects: false,
+      enablePipelines: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
+      enableTaskWatchdogs: true,
       enableCloudSync: true,
+      enableServerInfoDebugView: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
     });
+  });
+
+  it("defaults enableConferenceRoomChat to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableConferenceRoomChat).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableConferenceRoomChat).toBe(false);
+    // Rows persisted before the flag existed (PAP-137) must normalize to off.
+    expect(
+      normalizeExperimentalSettings({ enableStreamlinedLeftNavigation: true }).enableConferenceRoomChat,
+    ).toBe(false);
+  });
+
+  it("defaults enableTaskWatchdogs to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableTaskWatchdogs).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableTaskWatchdogs).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableExperimentalFileViewer: true }).enableTaskWatchdogs,
+    ).toBe(false);
+  });
+
+  it("defaults enableServerInfoDebugView to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableServerInfoDebugView).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableServerInfoDebugView).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ autoRestartDevServerWhenIdle: true }).enableServerInfoDebugView,
+    ).toBe(false);
+  });
+
+  it("round-trips an enableConferenceRoomChat patch through the update merge", () => {
+    // updateExperimental merges `{ ...normalize(current), ...patch }` and
+    // re-normalizes; emulate that to prove the flag survives the roundtrip
+    // without disturbing other settings.
+    const current = normalizeExperimentalSettings({});
+    const enabled = normalizeExperimentalSettings({ ...current, enableConferenceRoomChat: true });
+    expect(enabled.enableConferenceRoomChat).toBe(true);
+    expect(enabled.enableStreamlinedLeftNavigation).toBe(true);
+
+    const disabled = normalizeExperimentalSettings({ ...enabled, enableConferenceRoomChat: false });
+    expect(disabled).toEqual(current);
+  });
+
+  it("rejects non-boolean enableConferenceRoomChat values back to the default", () => {
+    expect(
+      normalizeExperimentalSettings({ enableConferenceRoomChat: "yes" }).enableConferenceRoomChat,
+    ).toBe(false);
   });
 });

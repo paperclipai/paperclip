@@ -282,7 +282,7 @@ pnpm paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-i
 Agent configuration and runtime endpoints:
 
 ```sh
-pnpm paperclipai agent permissions:update <agent-id> --payload-json '{"canCreateAgents":true,"canAssignTasks":true}'
+pnpm paperclipai agent permissions:update <agent-id> --payload-json '{"canCreateAgents":true,"canCreateSkills":true,"canAssignTasks":true}'
 pnpm paperclipai agent configuration <agent-id>
 pnpm paperclipai agent config-revisions <agent-id>
 pnpm paperclipai agent config-revision:get <agent-id> <revision-id>
@@ -398,6 +398,11 @@ By default the command creates a `todo` issue assigned to the target agent and w
 
 Required Paperclip runtime skills (heartbeat, etc.) remain server-enforced and
 are added on top of whatever the desired set names.
+
+Company skill mutations (`skills install`, `skills import`, `skills create`, and
+`skills scan-projects`) require board authentication, an explicit `skills:create`
+grant, or an agent whose permissions keep `canCreateSkills` enabled. They do not
+require `agents:create` unless the command also creates agents.
 
 ### Catalog (app-shipped skills)
 
@@ -651,6 +656,8 @@ pnpm paperclipai auth revoke-current
 
 `--token <challenge-secret>` is still supported for compatibility, but `--token-env` avoids putting challenge secrets in shell history or process arguments.
 
+## Instance Settings Commands
+
 ```sh
 pnpm paperclipai instance scheduler-heartbeats
 pnpm paperclipai instance settings:general
@@ -658,6 +665,11 @@ pnpm paperclipai instance settings:general:update --payload-json '{...}'
 pnpm paperclipai instance settings:experimental
 pnpm paperclipai instance settings:experimental:update --payload-json '{...}'
 pnpm paperclipai instance database-backup
+```
+
+Experimental features are opt-in and are provided without compatibility guarantees. They may break, change, or be removed at any time. Use them at your own risk.
+
+```sh
 pnpm paperclipai sidebar preferences
 pnpm paperclipai sidebar preferences:update --payload-json '{...}'
 pnpm paperclipai sidebar project-preferences --company-id <company-id>
@@ -675,6 +687,13 @@ pnpm paperclipai llm agent-configuration
 pnpm paperclipai llm agent-configuration:adapter <adapter-type>
 pnpm paperclipai llm agent-icons
 ```
+
+Hermes gateway uses the generic invite/join commands above rather than
+`openclaw invite-prompt`. Create an agent invite, read
+`invite onboarding:text`, submit a join request with
+`adapterType: "hermes_gateway"` and `agentDefaultsPayload.apiBaseUrl` /
+`agentDefaultsPayload.apiKey`, then approve and claim the key with the `join`
+commands. See [HERMES_GATEWAY_ONBOARDING.md](./HERMES_GATEWAY_ONBOARDING.md).
 
 ## Adapter, Asset, And Skill Commands
 

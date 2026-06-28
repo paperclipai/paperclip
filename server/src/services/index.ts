@@ -27,6 +27,21 @@ export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
 export { issueRecoveryActionService } from "./issue-recovery-actions.js";
+export { taskWatchdogService } from "./task-watchdogs.js";
+export {
+  issueIsInTaskWatchdogSubtree,
+  resolveTaskWatchdogMutationScope,
+  taskWatchdogScopeAllowsIssueMutation,
+} from "./task-watchdog-scope.js";
+export {
+  createExternalObjectDetectorRegistry,
+  createExternalObjectResolverRegistry,
+  externalObjectService,
+  type ExternalObjectDetector,
+  type ExternalObjectResolver,
+  type ExternalObjectResolveResult,
+  type ExternalObjectResolverSnapshot,
+} from "./external-objects.js";
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
@@ -62,6 +77,7 @@ export type {
 } from "./authorization.js";
 export { boardAuthService } from "./board-auth.js";
 export { instanceSettingsService } from "./instance-settings.js";
+export { bootstrapExecutionPolicyFromEnv } from "./execution-policy-bootstrap.js";
 export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./cloud-upstreams.js";
 export { companyPortabilityService } from "./company-portability.js";
 export { teamsCatalogService } from "./teams-catalog.js";
@@ -73,5 +89,9 @@ export { workProductService } from "./work-products.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
+export {
+  reconcileCodexLocalManagedHomesOnStartup,
+  type CodexAuthReconciliationSummary,
+} from "./codex-auth-reconciliation.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";

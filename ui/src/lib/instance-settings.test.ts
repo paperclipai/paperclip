@@ -12,6 +12,9 @@ describe("normalizeRememberedInstanceSettingsPath", () => {
     expect(normalizeRememberedInstanceSettingsPath("/instance/settings/experimental")).toBe(
       "/company/settings/instance/experimental",
     );
+    expect(normalizeRememberedInstanceSettingsPath("/instance/settings/environments")).toBe(
+      "/company/settings/instance/environments",
+    );
     expect(normalizeRememberedInstanceSettingsPath("/instance/settings/plugins/example?tab=config#logs")).toBe(
       "/company/settings/instance/plugins/example?tab=config#logs",
     );
@@ -23,6 +26,9 @@ describe("normalizeRememberedInstanceSettingsPath", () => {
     );
     expect(normalizeRememberedInstanceSettingsPath("/company/settings/instance/plugins/example?tab=config#logs")).toBe(
       "/company/settings/instance/plugins/example?tab=config#logs",
+    );
+    expect(normalizeRememberedInstanceSettingsPath("/company/settings/environments")).toBe(
+      "/company/settings/instance/environments",
     );
     expect(normalizeRememberedInstanceSettingsPath("/settings/access?tab=users#admins")).toBe(
       "/company/settings/instance/access?tab=users#admins",

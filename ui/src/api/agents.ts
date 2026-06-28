@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentDesiredSkillEntry,
   AgentPermissions,
   AgentDetail,
   AgentInstructionsBundle,
@@ -14,6 +15,7 @@ import type {
   Approval,
   AgentConfigRevision,
   ClearAgentErrorResponse,
+  AgentApiKeyScope,
 } from "@paperclipai/shared";
 import type {
   AdapterModelProfileDefinition,
@@ -25,6 +27,7 @@ import { ApiError, api } from "./client";
 export interface AgentKey {
   id: string;
   name: string;
+  scope: AgentApiKeyScope;
   createdAt: Date;
   revokedAt: Date | null;
 }
@@ -68,6 +71,7 @@ export interface AgentHireResponse {
 
 export interface AgentPermissionUpdate {
   canCreateAgents: boolean;
+  canCreateSkills: boolean;
   canAssignTasks: boolean;
   trustPreset?: AgentPermissions["trustPreset"];
   authorizationPolicy?: AgentPermissions["authorizationPolicy"];
@@ -174,10 +178,10 @@ export const agentsApi = {
   listKeys: (id: string, companyId?: string) => api.get<AgentKey[]>(agentPath(id, companyId, "/keys")),
   skills: (id: string, companyId?: string) =>
     api.get<AgentSkillSnapshot>(agentPath(id, companyId, "/skills")),
-  syncSkills: (id: string, desiredSkills: string[], companyId?: string) =>
+  syncSkills: (id: string, desiredSkills: Array<string | AgentDesiredSkillEntry>, companyId?: string) =>
     api.post<AgentSkillSnapshot>(agentPath(id, companyId, "/skills/sync"), { desiredSkills }),
-  createKey: (id: string, name: string, companyId?: string) =>
-    api.post<AgentKeyCreated>(agentPath(id, companyId, "/keys"), { name }),
+  createKey: (id: string, name: string, companyId?: string, scope?: AgentApiKeyScope) =>
+    api.post<AgentKeyCreated>(agentPath(id, companyId, "/keys"), { name, ...(scope ? { scope } : {}) }),
   revokeKey: (agentId: string, keyId: string, companyId?: string) =>
     api.delete<{ ok: true }>(agentPath(agentId, companyId, `/keys/${encodeURIComponent(keyId)}`)),
   runtimeState: (id: string, companyId?: string) =>

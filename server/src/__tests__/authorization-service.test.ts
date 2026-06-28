@@ -6,6 +6,7 @@ import {
   companyMemberships,
   createDb,
   instanceUserRoles,
+  issueComments,
   issues,
   principalPermissionGrants,
   projects,
@@ -72,6 +73,8 @@ async function createIssue(
     projectId?: string | null;
     parentId?: string | null;
     assigneeAgentId?: string | null;
+    originKind?: string | null;
+    originId?: string | null;
   } = {},
 ) {
   return db
@@ -85,6 +88,8 @@ async function createIssue(
       projectId: input.projectId ?? null,
       parentId: input.parentId ?? null,
       assigneeAgentId: input.assigneeAgentId ?? null,
+      originKind: input.originKind ?? "manual",
+      originId: input.originId ?? null,
     })
     .returning()
     .then((rows) => rows[0]!);
@@ -124,6 +129,7 @@ describeEmbeddedPostgres("authorization service", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueComments);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(instanceUserRoles);
@@ -495,6 +501,421 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("allows null-mapped visibility actions for active same-company board members", async () => {
+    const company = await createCompany(db, "BoardVisibility");
+    const userId = `user-${randomUUID()}`;
+    const project = await createProject(db, company.id, "Visible");
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, { projectId: project.id });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "board" as const, userId, source: "session" as const };
+
+    await expect(authorization.decide({
+      actor,
+      action: "agent:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "project:read",
+      resource: { type: "project", companyId: company.id, projectId: project.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "issue:read",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        parentIssueId: issue.parentId,
+        status: issue.status,
+      },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "runtime:manage",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "secrets:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+  });
+
+  it("denies null-mapped visibility actions for board users without an active membership", async () => {
+    const memberCompany = await createCompany(db, "BoardVisibilityMember");
+    const otherCompany = await createCompany(db, "BoardVisibilityOther");
+    const userId = `user-${randomUUID()}`;
+    const targetAgent = await createAgent(db, otherCompany.id, { role: "engineer" });
+    const inactiveUserId = `user-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: memberCompany.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(companyMemberships).values({
+      companyId: otherCompany.id,
+      principalType: "user",
+      principalId: inactiveUserId,
+      status: "removed",
+      membershipRole: "member",
+    });
+
+    const authorization = authorizationService(db);
+
+    await expect(authorization.decide({
+      actor: { type: "board", userId, source: "session" },
+      action: "agent:read",
+      resource: { type: "agent", companyId: otherCompany.id, agentId: targetAgent.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_membership" });
+    await expect(authorization.decide({
+      actor: { type: "board", userId: inactiveUserId, source: "session" },
+      action: "company_scope:read",
+      resource: { type: "company", companyId: otherCompany.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_membership" });
+  });
+
+  it("keeps denying self-gated null-mapped actions for board members", async () => {
+    const company = await createCompany(db, "BoardWakeDenied");
+    const userId = `user-${randomUUID()}`;
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const authorization = authorizationService(db);
+
+    await expect(authorization.decide({
+      actor: { type: "board", userId, source: "session" },
+      action: "agent:wake",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_unsupported_action",
+    });
+    const issue = await createIssue(db, company.id, { title: "Wake denied issue" });
+    await expect(authorization.decide({
+      actor: { type: "board", userId, source: "session" },
+      action: "issue:mutate",
+      resource: { type: "issue", companyId: company.id, issueId: issue.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_unsupported_action",
+    });
+  });
+
+  it("allows mentioned agents to read and comment on assigned issues without granting issue mutation", async () => {
+    const company = await createCompany(db, "MentionCommentAuth");
+    const allowedProject = await createProject(db, company.id, "MentionAllowed");
+    const targetProject = await createProject(db, company.id, "MentionTarget");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const mentionedAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [allowedProject.id],
+          },
+        },
+      },
+    });
+    const issue = await createIssue(db, company.id, {
+      title: "Mention-scoped comment target",
+      projectId: targetProject.id,
+      assigneeAgentId: ownerAgent.id,
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "agent", agentId: mentionedAgent.id, companyId: company.id, source: "agent_key" } as const;
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: ownerAgent.id,
+      status: issue.status,
+    } as const;
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+
+    const deletedMention = await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      body: `[@Mentioned Agent](agent://${mentionedAgent.id}) this deleted comment should not count`,
+      deletedAt: new Date(),
+    }).returning().then((rows) => rows[0]!);
+    expect(deletedMention.id).toBeTruthy();
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      body: `[@Mentioned Agent](agent://${mentionedAgent.id}) please respond here`,
+      authorAgentId: ownerAgent.id,
+    });
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:read",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_issue_mention_grant",
+    });
+    await expect(authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_issue_mention_grant",
+    });
+    await expect(authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+  });
+
+  it("allows a mentioned non-assignee to comment when the mention author is the issue assignee", async () => {
+    const company = await createCompany(db, "MentionCommentAssigneeGrant");
+    const allowedProject = await createProject(db, company.id, "MentionAssigneeAllowed");
+    const targetProject = await createProject(db, company.id, "MentionAssigneeTarget");
+    const assigneeAgent = await createAgent(db, company.id, { role: "coach" });
+    const mentionedAgent = await createAgent(db, company.id, {
+      role: "qa",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [allowedProject.id],
+          },
+        },
+      },
+    });
+    const issue = await createIssue(db, company.id, {
+      title: "Assignee-authored mention reply target",
+      projectId: targetProject.id,
+      assigneeAgentId: assigneeAgent.id,
+    });
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      authorAgentId: assigneeAgent.id,
+      authorType: "agent",
+      body: `[@QA](agent://${mentionedAgent.id}) please reply on this issue.`,
+    });
+
+    await expect(authorizationService(db).decide({
+      actor: { type: "agent", agentId: mentionedAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        assigneeAgentId: assigneeAgent.id,
+        status: issue.status,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_issue_mention_grant",
+    });
+  });
+
+  it("does not grant mention-scoped issue access from self-authored or unauthorized-author comments", async () => {
+    const company = await createCompany(db, "MentionCommentDenied");
+    const allowedProject = await createProject(db, company.id, "MentionDeniedAllowed");
+    const targetProject = await createProject(db, company.id, "MentionDeniedTarget");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const mentionedAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [allowedProject.id],
+          },
+        },
+      },
+    });
+    const unrelatedAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Mention-scoped comment denial target",
+      projectId: targetProject.id,
+      assigneeAgentId: ownerAgent.id,
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "agent", agentId: mentionedAgent.id, companyId: company.id, source: "agent_key" } as const;
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: ownerAgent.id,
+      status: issue.status,
+    } as const;
+
+    await db.insert(issueComments).values([
+      {
+        companyId: company.id,
+        issueId: issue.id,
+        body: `Self mention [@Mentioned Agent](agent://${mentionedAgent.id})`,
+        authorAgentId: mentionedAgent.id,
+      },
+      {
+        companyId: company.id,
+        issueId: issue.id,
+        body: `Unauthorized mention [@Mentioned Agent](agent://${mentionedAgent.id})`,
+        authorAgentId: unrelatedAgent.id,
+      },
+    ]);
+
+    await expect(authorization.decide({
+      actor,
+      action: "issue:read",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+    await expect(authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+  });
+
+  it("allows active board-user comments to create mention-scoped issue grants", async () => {
+    const company = await createCompany(db, "MentionCommentBoardGrant");
+    const allowedProject = await createProject(db, company.id, "MentionBoardAllowed");
+    const targetProject = await createProject(db, company.id, "MentionBoardTarget");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const mentionedAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [allowedProject.id],
+          },
+        },
+      },
+    });
+    const issue = await createIssue(db, company.id, {
+      title: "Mention-scoped board grant target",
+      projectId: targetProject.id,
+      assigneeAgentId: ownerAgent.id,
+    });
+    const boardUserId = `user-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: boardUserId,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      body: `Board mention [@Mentioned Agent](agent://${mentionedAgent.id})`,
+      authorUserId: boardUserId,
+    });
+
+    const actor = { type: "agent", agentId: mentionedAgent.id, companyId: company.id, source: "agent_key" } as const;
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: ownerAgent.id,
+      status: issue.status,
+    } as const;
+
+    await expect(authorizationService(db).decide({
+      actor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_issue_mention_grant",
+    });
+  });
+
+  it("limits viewer members to read-only visibility actions", async () => {
+    const company = await createCompany(db, "BoardViewerVisibility");
+    const userId = `user-${randomUUID()}`;
+    const targetAgent = await createAgent(db, company.id, { role: "engineer" });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "viewer",
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "board", userId, source: "session" } as const;
+
+    await expect(authorization.decide({
+      actor,
+      action: "agent:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgent.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "runtime:manage",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+    await expect(authorization.decide({
+      actor,
+      action: "secrets:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+  });
+
   it("denies legacy board assignment context for viewers", async () => {
     const company = await createCompany(db, "BoardViewerAssignment");
     const userId = `user-${randomUUID()}`;
@@ -518,6 +939,48 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: false,
       reason: "deny_missing_grant",
     });
+  });
+
+  it("never elevates cloud_tenant actors through stale instance_admin rows", async () => {
+    const tenantCompany = await createCompany(db, "CloudTenantStale");
+    const otherCompany = await createCompany(db, "CloudTenantOther");
+    const userId = `user-${randomUUID()}`;
+    const targetAgent = await createAgent(db, otherCompany.id, { role: "engineer" });
+    await db.insert(companyMemberships).values({
+      companyId: tenantCompany.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "owner",
+    });
+    // Stale grant left behind by a pre-hardening cloud_tenant deployment.
+    await db.insert(instanceUserRoles).values({ userId, role: "instance_admin" });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "board",
+        userId,
+        companyIds: [tenantCompany.id],
+        isInstanceAdmin: false,
+        source: "cloud_tenant",
+      },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: otherCompany.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).not.toBe("allow_instance_admin");
+
+    // Control: the instanceUserRoles lookup still elevates non-cloud_tenant
+    // board actors, so the carve-out is scoped to the tenant contract only.
+    const sessionDecision = await authorizationService(db).decide({
+      actor: { type: "board", userId, companyIds: [tenantCompany.id], source: "session" },
+      action: "tasks:assign",
+      resource: { type: "issue", companyId: otherCompany.id, assigneeAgentId: targetAgent.id },
+      scope: { assigneeAgentId: targetAgent.id },
+    });
+    expect(sessionDecision).toMatchObject({ allowed: true, reason: "allow_instance_admin" });
   });
 
   it("denies simple-mode assignment to a target agent from another company", async () => {
@@ -560,6 +1023,25 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: true,
       reason: "allow_legacy_agent_creator",
     });
+  });
+
+  it("denies active-checkout management outside the CEO caller company scope", async () => {
+    const sourceCompany = await createCompany(db, "CheckoutSource");
+    const targetCompany = await createCompany(db, "CheckoutTarget");
+    const actorAgent = await createAgent(db, sourceCompany.id, { role: "ceo" });
+    const targetAgent = await createAgent(db, targetCompany.id, { role: "engineer" });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: sourceCompany.id, source: "agent_jwt" },
+      action: "tasks:manage_active_checkouts",
+      resource: { type: "issue", companyId: targetCompany.id, assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_company_boundary",
+    });
+    expect(decision.explanation).toContain("another company");
   });
 
   it("allows scoped assignment inside a granted project and denies other projects", async () => {
@@ -707,6 +1189,120 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision).toMatchObject({
       allowed: true,
       grant: { permissionKey: "tasks:assign" },
+    });
+  });
+
+  it("scopes task bridge keys away from company-wide reads and unrelated issue writes", async () => {
+    const company = await createCompany(db, "TaskBridge");
+    const bridgeAgent = await createAgent(db, company.id);
+    const targetAgent = await createAgent(db, company.id);
+    const project = await createProject(db, company.id, "Bridge");
+    const parentIssue = await createIssue(db, company.id, { projectId: project.id });
+    const assignedIssue = await createIssue(db, company.id, { assigneeAgentId: bridgeAgent.id });
+    const keyId = randomUUID();
+    const bridgeCreatedIssue = await createIssue(db, company.id, {
+      originKind: "task_bridge",
+      originId: keyId,
+    });
+    const unrelatedIssue = await createIssue(db, company.id);
+    const actor = {
+      type: "agent" as const,
+      agentId: bridgeAgent.id,
+      companyId: company.id,
+      source: "agent_key" as const,
+      keyId,
+      keyScope: {
+        kind: "task_bridge" as const,
+        parentIssueId: parentIssue.id,
+        allowedAssigneeAgentIds: [targetAgent.id],
+      },
+    };
+    const authz = authorizationService(db);
+
+    await expect(authz.decide({
+      actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        parentIssueId: parentIssue.id,
+        assigneeAgentId: targetAgent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        projectId: project.id,
+        assigneeUserId: randomUUID(),
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: assignedIssue.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: bridgeCreatedIssue.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: unrelatedIssue.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "agent_config:read",
+      resource: {
+        type: "agent",
+        companyId: company.id,
+        agentId: bridgeAgent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
     });
   });
 });

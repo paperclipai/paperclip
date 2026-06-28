@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parseGeminiJsonl } from "./parse.js";
+import {
+  detectGeminiAuthRequired,
+  isGeminiTransientNetworkError,
+  isGeminiSessionUnrecoverableError,
+  parseGeminiJsonl,
+} from "./parse.js";
 
 describe("parseGeminiJsonl", () => {
   it("collects assistant text from message events with string content", () => {
@@ -129,5 +134,82 @@ describe("parseGeminiJsonl", () => {
 
     const result = parseGeminiJsonl(stdout);
     expect(result.errorMessage).toBe("boom");
+  });
+
+  it("classifies non-interactive manual authorization failures as auth required", () => {
+    const result = detectGeminiAuthRequired({
+      parsed: null,
+      stdout: "",
+      stderr:
+        "Error authenticating: FatalAuthenticationError: Manual authorization is required but the current session is non-interactive.",
+    });
+
+    expect(result.requiresAuth).toBe(true);
+  });
+});
+
+describe("isGeminiSessionUnrecoverableError", () => {
+  it("matches 'unknown session'", () => {
+    expect(isGeminiSessionUnrecoverableError("", "Error: unknown session 'abc-123'")).toBe(true);
+  });
+
+  it("matches 'session ... not found'", () => {
+    expect(isGeminiSessionUnrecoverableError("", "Resumed session abc-123 not found on disk")).toBe(true);
+  });
+
+  it("matches 'exceeds the maximum number of tokens' (compression overflow)", () => {
+    const stderr =
+      '_ApiError: {"error":{"code":400,"message":"The input token count exceeds the maximum number of tokens allowed 1048576","status":"INVALID_ARGUMENT"}} at ChatCompressionService.compress';
+    expect(isGeminiSessionUnrecoverableError("", stderr)).toBe(true);
+  });
+
+  it("matches 'input token count exceeds'", () => {
+    expect(
+      isGeminiSessionUnrecoverableError("", "input token count exceeds maximum"),
+    ).toBe(true);
+  });
+
+  it("does not match unrelated stderr", () => {
+    expect(isGeminiSessionUnrecoverableError("", "Some other error")).toBe(false);
+  });
+
+  it("does not match transient network errors (those go to isGeminiTransientNetworkError)", () => {
+    expect(
+      isGeminiSessionUnrecoverableError(
+        "",
+        "_GaxiosError: getaddrinfo ENOTFOUND oauth2.googleapis.com",
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("isGeminiTransientNetworkError", () => {
+  it("matches DNS failure on oauth2.googleapis.com", () => {
+    const stderr =
+      "_GaxiosError: request to https://oauth2.googleapis.com/token failed, reason: getaddrinfo ENOTFOUND oauth2.googleapis.com";
+    expect(isGeminiTransientNetworkError("", stderr)).toBe(true);
+  });
+
+  it("matches EAI_AGAIN", () => {
+    expect(
+      isGeminiTransientNetworkError("", "Error: getaddrinfo EAI_AGAIN sts.googleapis.com"),
+    ).toBe(true);
+  });
+
+  it("matches _UserRefreshClient ENOTFOUND", () => {
+    const stderr =
+      "at _UserRefreshClient.refreshTokenNoCache (.../google-auth-library/...)\n" +
+      "  caused by: ENOTFOUND oauth2.googleapis.com";
+    expect(isGeminiTransientNetworkError("", stderr)).toBe(true);
+  });
+
+  it("does not match unrelated stderr", () => {
+    expect(isGeminiTransientNetworkError("", "Some other error")).toBe(false);
+  });
+
+  it("does not match unknown-session errors (those go to isGeminiSessionUnrecoverableError)", () => {
+    expect(
+      isGeminiTransientNetworkError("", "Error: unknown session 'abc-123'"),
+    ).toBe(false);
   });
 });

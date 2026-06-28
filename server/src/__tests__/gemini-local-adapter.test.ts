@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   isGeminiTurnLimitResult,
-  isGeminiUnknownSessionError,
+  isGeminiSessionUnrecoverableError,
   parseGeminiJsonl,
 } from "@paperclipai/adapter-gemini-local/server";
 import { parseGeminiStdoutLine } from "@paperclipai/adapter-gemini-local/ui";
@@ -76,8 +76,8 @@ describe("gemini_local parser", () => {
 
 describe("gemini_local stale session detection", () => {
   it("treats missing session messages as an unknown session error", () => {
-    expect(isGeminiUnknownSessionError("", "unknown session id abc")).toBe(true);
-    expect(isGeminiUnknownSessionError("", "checkpoint latest not found")).toBe(true);
+    expect(isGeminiSessionUnrecoverableError("", "unknown session id abc")).toBe(true);
+    expect(isGeminiSessionUnrecoverableError("", "checkpoint latest not found")).toBe(true);
   });
 });
 
