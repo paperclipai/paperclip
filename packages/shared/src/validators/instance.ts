@@ -31,7 +31,7 @@ export const instanceGeneralSettingsSchema = z.object({
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
   backupRetention: backupRetentionPolicySchema.default(DEFAULT_BACKUP_RETENTION),
-}).strict();
+});
 
 export const patchInstanceGeneralSettingsSchema = instanceGeneralSettingsSchema.partial();
 
