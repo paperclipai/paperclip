@@ -70,7 +70,7 @@ import {
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -135,6 +135,32 @@ function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function recordHasNonEmptyStringArray(record: unknown, key: string) {
+  if (!record || typeof record !== "object") return false;
+  const value = (record as Record<string, unknown>)[key];
+  return Array.isArray(value) && value.some((item) => typeof item === "string" && item.trim().length > 0);
+}
+
+function issueHasAssigneeReviewTurn(issue: {
+  assigneeAgentId: string | null;
+  executionState: unknown;
+}) {
+  if (!issue.assigneeAgentId) return false;
+  const executionState = parseIssueExecutionState(issue.executionState);
+  const currentParticipant = executionState?.status === "pending" ? executionState.currentParticipant : null;
+  return currentParticipant?.type === "agent" && currentParticipant.agentId === issue.assigneeAgentId;
+}
+
+function isInteractionOrCommentWakeContext(contextSnapshot: unknown) {
+  const context = parseObject(contextSnapshot);
+  const wakeReason = readStringFromRecord(context, "wakeReason") ?? readStringFromRecord(context, "reason");
+  if (wakeReason === "issue_commented" || wakeReason === "issue_reopened_via_comment") return true;
+  if (readStringFromRecord(context, "interactionId")) return true;
+  if (readStringFromRecord(context, "wakeCommentId")) return true;
+  if (recordHasNonEmptyStringArray(context, "wakeCommentIds")) return true;
+  return false;
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -4094,6 +4120,57 @@ export function issueService(db: Db) {
     });
   }
 
+  async function isCheckoutSuppressedByPendingInteraction(input: {
+    issueId: string;
+    agentId: string;
+    expectedStatuses: string[];
+    checkoutRunId: string | null;
+  }) {
+    if (!input.expectedStatuses.includes("in_review")) return false;
+    if (!input.checkoutRunId) return false;
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        executionState: issues.executionState,
+      })
+      .from(issues)
+      .where(eq(issues.id, input.issueId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!issue) throw notFound("Issue not found");
+    if (issue.status !== "in_review") return false;
+    if (issue.assigneeUserId || issue.assigneeAgentId !== input.agentId) return false;
+    if (issueHasAssigneeReviewTurn(issue)) return false;
+
+    const pendingWakeInteraction = await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.status, "pending"),
+          eq(issueThreadInteractions.continuationPolicy, "wake_assignee"),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!pendingWakeInteraction) return false;
+
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.id, input.checkoutRunId)))
+      .then((rows) => rows[0] ?? null);
+
+    return !isInteractionOrCommentWakeContext(run?.contextSnapshot ?? null);
+  }
+
   return {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
@@ -5556,6 +5633,13 @@ export function issueService(db: Db) {
 
       await clearExecutionRunIfTerminal(id);
       await clearCheckoutRunIfTerminal(id);
+      if (await isCheckoutSuppressedByPendingInteraction({ issueId: id, agentId, expectedStatuses, checkoutRunId })) {
+        throw conflict("Issue is waiting on a pending issue-thread interaction", {
+          issueId: id,
+          status: "in_review",
+          continuationPolicy: "wake_assignee",
+        });
+      }
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
       const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
