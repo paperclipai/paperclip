@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { metricsIngestRoutes, type MetricsIngestOptions } from "../routes/metrics-ingest.js";
 import {
   CONCURRENT_RUN_BLOCKED_METRIC,
@@ -10,6 +10,7 @@ import {
   renderMetrics,
 } from "../services/metrics.js";
 import { errorHandler } from "../middleware/index.js";
+import { logger } from "../middleware/logger.js";
 
 afterEach(() => {
   __resetMetricsForTest();
@@ -199,5 +200,62 @@ describe(`POST ${ISOLATED_ENDPOINT}`, () => {
       .send({ agentId: "agent-a", isolationMode: "workspace" });
 
     expect(res.status).toBe(401);
+  });
+});
+
+// A logging failure must never fail the request: the metric increment has
+// already landed and the adapter blocks on the 202 to advance. The guard-
+// decision log is best-effort and its throw is swallowed in the route.
+describe("guard-decision logging is best-effort", () => {
+  it("still returns 202 (and records the metric) when the blocked log throws", async () => {
+    const spy = vi.spyOn(logger, "info").mockImplementation(() => {
+      throw new Error("logger transport down");
+    });
+    try {
+      const app = buildApp({
+        actor: { type: "agent", agentId: "agent-a", companyId: "company-1" },
+        resolveKnownAgentIds: async () => new Set(["agent-a"]),
+      });
+
+      const res = await request(app)
+        .post(ENDPOINT)
+        .send({ agentId: "agent-a", reason: "live_job_for_active_run", isolationMode: "shared" });
+
+      expect(res.status).toBe(202);
+      expect(res.body.recorded).toBe(true);
+
+      const { body } = await renderMetrics();
+      expect(body).toContain(
+        `${CONCURRENT_RUN_BLOCKED_METRIC}{agent_id="agent-a",reason="live_job_for_active_run",isolation_mode="shared"} 1`,
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("still returns 202 (and records the metric) when the isolated-start log throws", async () => {
+    const spy = vi.spyOn(logger, "info").mockImplementation(() => {
+      throw new Error("logger transport down");
+    });
+    try {
+      const app = buildApp({
+        actor: { type: "agent", agentId: "agent-a", companyId: "company-1" },
+        resolveKnownAgentIds: async () => new Set(["agent-a"]),
+      });
+
+      const res = await request(app)
+        .post(ISOLATED_ENDPOINT)
+        .send({ agentId: "agent-a", isolationMode: "workspace" });
+
+      expect(res.status).toBe(202);
+      expect(res.body.recorded).toBe(true);
+
+      const { body } = await renderMetrics();
+      expect(body).toContain(
+        `${ISOLATED_RUN_STARTED_METRIC}{agent_id="agent-a",isolation_mode="workspace"} 1`,
+      );
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

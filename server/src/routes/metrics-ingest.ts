@@ -45,6 +45,21 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/**
+ * Emit a structured guard-decision log. Logging is best-effort: the metric
+ * increment has already landed by the time we get here, and the adapter blocks
+ * on the route's 202 to advance to the next dispatch. A transient logger
+ * failure (transport write error, buffer overflow) must therefore never turn
+ * the 202 into a 500 — swallow any throw and keep the response path intact.
+ */
+function logGuardDecision(fields: Record<string, unknown>, msg: string): void {
+  try {
+    logger.info(fields, msg);
+  } catch {
+    // Intentionally swallowed: a logging failure must not fail the request.
+  }
+}
+
 export function metricsIngestRoutes(db?: Db, opts: MetricsIngestOptions = {}) {
   const router = Router();
   const resolveKnownAgentIds =
@@ -93,7 +108,7 @@ export function metricsIngestRoutes(db?: Db, opts: MetricsIngestOptions = {}) {
     // identifiers that are intentionally absent from the metric labels, so the
     // operator can pinpoint the conflicting task/session (BLO-12212 AC: isolated
     // blocks point to the conflicting isolation key/task/session).
-    logger.info(
+    logGuardDecision(
       {
         event: "k8s_concurrent_run_blocked",
         decision: "blocked",
@@ -129,7 +144,7 @@ export function metricsIngestRoutes(db?: Db, opts: MetricsIngestOptions = {}) {
 
     const labels = recordIsolatedRunStarted({ agentId, isolationMode, knownAgentIds });
 
-    logger.info(
+    logGuardDecision(
       {
         event: "k8s_isolated_run_started",
         decision: "allowed",
