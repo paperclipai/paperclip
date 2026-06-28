@@ -42,9 +42,9 @@ export function companySkillRoutes(db: Db) {
   const access = accessService(db);
   const svc = companySkillService(db);
 
-  function canCreateAgents(agent: { permissions: Record<string, unknown> | null | undefined }) {
-    if (!agent.permissions || typeof agent.permissions !== "object") return false;
-    return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+  function canCreateSkills(agent: { permissions: Record<string, unknown> | null | undefined }) {
+    if (!agent.permissions || typeof agent.permissions !== "object") return true;
+    return (agent.permissions as Record<string, unknown>).canCreateSkills !== false;
   }
 
   function asString(value: unknown): string | null {
@@ -94,9 +94,9 @@ export function companySkillRoutes(db: Db) {
 
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-      const allowed = await access.canUser(companyId, req.actor.userId, "agents:create");
+      const allowed = await access.canUser(companyId, req.actor.userId, "skills:create");
       if (!allowed) {
-        throw forbidden("Missing permission: agents:create");
+        throw forbidden("Missing permission: skills:create");
       }
       return;
     }
@@ -110,12 +110,16 @@ export function companySkillRoutes(db: Db) {
       throw forbidden("Agent key cannot access another company");
     }
 
-    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "agents:create");
-    if (allowedByGrant || canCreateAgents(actorAgent)) {
+    if (canCreateSkills(actorAgent)) {
       return;
     }
 
-    throw forbidden("Missing permission: can create agents");
+    const allowedByGrant = await access.hasPermission(companyId, "agent", actorAgent.id, "skills:create");
+    if (allowedByGrant) {
+      return;
+    }
+
+    throw forbidden("Missing permission: skills:create");
   }
 
   router.get("/skills/catalog", async (req, res) => {
@@ -442,6 +446,7 @@ export function companySkillRoutes(db: Db) {
         entityId: result.id,
         details: {
           slug: result.slug,
+          categories: result.categories,
           sharingScope: result.sharingScope,
         },
       });

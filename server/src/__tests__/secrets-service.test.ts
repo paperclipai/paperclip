@@ -145,6 +145,45 @@ describeEmbeddedPostgres("secretService", () => {
     ).rejects.toThrow(/already exists/i);
   });
 
+  it("syncs top-level secret refs idempotently", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const firstSecret = await svc.create(companyId, {
+      name: `top-level-first-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "one",
+    });
+    const secondSecret = await svc.create(companyId, {
+      name: `top-level-second-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "two",
+    });
+    const target = { targetType: "environment" as const, targetId: "env-1" };
+
+    await svc.syncSecretRefsForTarget(companyId, target, [
+      { secretId: firstSecret.id, configPath: "apiKey" },
+    ]);
+    await svc.syncSecretRefsForTarget(companyId, target, [
+      { secretId: firstSecret.id, configPath: "apiKey" },
+    ]);
+    await svc.syncSecretRefsForTarget(companyId, target, [
+      { secretId: secondSecret.id, configPath: "apiKey" },
+    ]);
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, target.targetId));
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toMatchObject({
+      companyId,
+      targetType: "environment",
+      targetId: target.targetId,
+      configPath: "apiKey",
+      secretId: secondSecret.id,
+    });
+  });
+
   it("reports reference counts and resolves binding target labels", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -959,6 +998,11 @@ describeEmbeddedPostgres("secretService", () => {
         version: 1,
       },
     }));
+
+    const persisted = await svc.getByName(companyId, "Create Rollback");
+    expect(persisted).toBeNull();
+    const versions = await db.select().from(companySecretVersions);
+    expect(versions).toHaveLength(0);
   });
 
   it("keeps a local cleanup handle when create rollback cleanup fails", async () => {
@@ -1432,7 +1476,20 @@ describeEmbeddedPostgres("secretService", () => {
     expect(thrown).toMatchObject({
       status: 403,
       message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
-      details: { code: "access_denied" },
+      details: {
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "secret_provider_config.discovery.preview",
+        providerConfigId: "discovery-preview",
+        providerVaultContext: "draft_config",
+        region: "us-east-1",
+        credentialPath: "Paperclip server runtime/provider credential path",
+        requiredCapability: "secretsmanager:ListSecrets",
+        actionableMessage:
+          "AWS discovery preview needs secretsmanager:ListSecrets in the selected region for the Paperclip server runtime/provider credential path.",
+        safeAlternative:
+          "If the operator already knows the exact AWS Secrets Manager ARN, paste/link that ARN instead of using discovery. Exact-resource DescribeSecret and runtime read permissions are still required.",
+      },
     });
     expect(JSON.stringify(thrown)).not.toContain("arn:aws");
     expect(JSON.stringify(thrown)).not.toContain("123456789012");

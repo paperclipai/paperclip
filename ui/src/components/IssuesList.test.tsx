@@ -1454,8 +1454,9 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
     });
-    await flush();
-    expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
+    await waitForAssertion(() => {
+      expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
+    });
     await flush();
     expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
 
@@ -1886,6 +1887,40 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(mockExecutionWorkspacesApi.listSummaries).toHaveBeenCalledWith("company-1");
       expect(mockExecutionWorkspacesApi.list).not.toHaveBeenCalled();
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  // PAP-246 (QA of PAP-245/PAP-243a): the desktop row status glyph must render
+  // at lg (20px). The earlier IssueRow unit test passed because it rendered
+  // IssueRow WITHOUT IssuesList's own leading slots, hitting the
+  // `?? <StatusIcon size="lg">` fallback — but the live list always supplies its
+  // own `statusSlot`. This asserts the real list-supplied slot is lg.
+  it("renders the desktop row status glyph at lg (20px)", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ status: "in_progress" })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const glyphs = Array.from(container.querySelectorAll("svg")).filter(
+        (svg) => svg.getAttribute("width") === "20" && svg.getAttribute("height") === "20",
+      );
+      expect(glyphs.length).toBeGreaterThan(0);
+      // No 16px (md) status glyph should leak through from the list's slot.
+      const mdGlyphs = Array.from(container.querySelectorAll("svg")).filter(
+        (svg) => svg.getAttribute("width") === "16" && svg.getAttribute("height") === "16",
+      );
+      expect(mdGlyphs.length).toBe(0);
     });
 
     act(() => {

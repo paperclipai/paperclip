@@ -21,6 +21,21 @@ export type RuntimeProgressDirection = "to" | "from";
 
 export type RuntimeProgressTarget = "sandbox" | "ssh";
 
+export type RuntimeStatusPhase =
+  | "git_sync"
+  | "config_sync"
+  | "adapter_startup"
+  | "restore"
+  | "export"
+  | "finalize";
+
+export interface RuntimeStatusUpdate {
+  phase: RuntimeStatusPhase;
+  message: string;
+}
+
+export type RuntimeStatusSink = (update: RuntimeStatusUpdate) => void | Promise<void>;
+
 export interface RuntimeProgressReporterOptions {
   sink: RuntimeProgressSink;
   phase: RuntimeProgressPhase;

@@ -236,6 +236,55 @@ describe("secret routes", () => {
     expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("paperclip/prod-use1/company-1/openai");
   });
 
+  it("returns actionable sanitized provider vault discovery errors", async () => {
+    mockSecretService.previewProviderConfigDiscovery.mockRejectedValue(
+      new HttpError(
+        403,
+        "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+        {
+          code: "access_denied",
+          provider: "aws_secrets_manager",
+          operation: "secret_provider_config.discovery.preview",
+          providerConfigId: "discovery-preview",
+          providerVaultContext: "draft_config",
+          region: "us-east-1",
+          credentialPath: "Paperclip server runtime/provider credential path",
+          requiredCapability: "secretsmanager:ListSecrets",
+          actionableMessage:
+            "AWS discovery preview needs secretsmanager:ListSecrets in the selected region for the Paperclip server runtime/provider credential path.",
+          safeAlternative:
+            "If the operator already knows the exact AWS Secrets Manager ARN, paste/link that ARN instead of using discovery. Exact-resource DescribeSecret and runtime read permissions are still required.",
+        },
+      ),
+    );
+
+    const res = await request(createApp())
+      .post("/api/companies/company-1/secret-provider-configs/discovery/preview")
+      .send({
+        provider: "aws_secrets_manager",
+        config: { region: "us-east-1" },
+        pageSize: 25,
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      error: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
+      details: {
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "secret_provider_config.discovery.preview",
+        providerVaultContext: "draft_config",
+        region: "us-east-1",
+        requiredCapability: "secretsmanager:ListSecrets",
+      },
+    });
+    expect(res.body.details.actionableMessage).toContain("Paperclip server runtime/provider credential path");
+    expect(res.body.details.safeAlternative).toContain("paste/link that ARN");
+    expect(JSON.stringify(res.body)).not.toContain("arn:aws");
+    expect(JSON.stringify(res.body)).not.toContain("123456789012");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("rejects ready status for coming-soon provider vaults", async () => {
     const res = await request(createApp()).post("/api/companies/company-1/secret-provider-configs").send({
       provider: "vault",
@@ -465,6 +514,7 @@ describe("secret routes", () => {
 
     expect(res.status).toBe(403);
     expect(res.body).toEqual({
+      code: "access_denied",
       error: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
       details: { code: "access_denied" },
     });

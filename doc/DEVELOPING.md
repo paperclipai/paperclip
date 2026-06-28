@@ -710,6 +710,13 @@ The board UI generates agent onboarding prompts from the add-agent modal (`+` in
 - `GET /api/skills/index` lists available skill documents.
 - `GET /api/skills/paperclip` returns the Paperclip heartbeat skill markdown.
 
+Hermes gateway agents use this same generic agent invite flow with
+`adapterType=hermes_gateway` and `agentDefaultsPayload.apiBaseUrl` /
+`agentDefaultsPayload.apiKey`. See
+[HERMES_GATEWAY_ONBOARDING.md](./HERMES_GATEWAY_ONBOARDING.md) for the full
+operator path, including Hermes credentials, invite approval, key claim, and
+fresh-state Docker smoke setup.
+
 ## OpenClaw Join Smoke Test
 
 Run the end-to-end OpenClaw join smoke harness:

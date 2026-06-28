@@ -650,6 +650,22 @@ function invalidateHeartbeatQueries(
   }
 }
 
+function invalidateHeartbeatProgressQueries(
+  queryClient: ReturnType<typeof useQueryClient>,
+  companyId: string,
+  payload: Record<string, unknown>,
+) {
+  queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+
+  const agentId = readString(payload.agentId);
+  if (agentId) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
+  }
+}
+
 function invalidateActivityQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   companyId: string,
@@ -858,7 +874,10 @@ function handleLiveEvent(
     return;
   }
 
-  if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
+  if (
+    event.type === "heartbeat.run.queued" ||
+    event.type === "heartbeat.run.status"
+  ) {
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
     if (event.type === "heartbeat.run.status") {
@@ -870,6 +889,12 @@ function handleLiveEvent(
         gatedPushToast(gate, pushToast, "run-status", toast);
       }
     }
+    return;
+  }
+
+  if (event.type === "heartbeat.run.progress") {
+    invalidateHeartbeatProgressQueries(queryClient, expectedCompanyId, payload);
+    invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
     return;
   }
 
@@ -956,6 +981,7 @@ export const __liveUpdatesTestUtils = {
   closeSocketQuietly,
   hydrateVisibleIssueComment,
   invalidateActivityQueries,
+  invalidateHeartbeatProgressQueries,
   invalidateVisibleIssueRunQueries,
   resolveLiveCompanyId,
   shouldDeferIssueRefetchForVisibleAgentActivity,
