@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, Environment, EnvironmentCapabilities } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../context/ToastContext";
 import { Agents } from "./Agents";
@@ -15,8 +15,17 @@ const mockAgentsApi = vi.hoisted(() => ({
   org: vi.fn(),
 }));
 
+const mockEnvironmentsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+  capabilities: vi.fn(),
+}));
+
 const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
+}));
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(),
 }));
 
 const mockResourceMembershipsApi = vi.hoisted(() => ({
@@ -55,8 +64,16 @@ vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
 }));
 
+vi.mock("../api/environments", () => ({
+  environmentsApi: mockEnvironmentsApi,
+}));
+
 vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: mockHeartbeatsApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("../api/resourceMemberships", () => ({
@@ -106,6 +123,92 @@ function makeAgent(overrides: Partial<Agent>): Agent {
   };
 }
 
+function makeEnvironment(overrides: Partial<Environment>): Environment {
+  return {
+    id: "env-1",
+    name: "Daytona Sandbox",
+    description: null,
+    driver: "sandbox",
+    status: "active",
+    config: { provider: "daytona" },
+    envVars: {},
+    metadata: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    ...overrides,
+  };
+}
+
+const environmentCapabilities: EnvironmentCapabilities = {
+  adapters: [],
+  drivers: {
+    local: "supported",
+    ssh: "supported",
+    sandbox: "supported",
+    plugin: "supported",
+  },
+  sandboxProviders: {
+    fake: {
+      status: "supported",
+      supportsSavedProbe: true,
+      supportsUnsavedProbe: true,
+      supportsRunExecution: true,
+      supportsReusableLeases: true,
+      displayName: "Fake",
+      source: "builtin",
+    },
+    daytona: {
+      status: "supported",
+      supportsSavedProbe: true,
+      supportsUnsavedProbe: true,
+      supportsRunExecution: true,
+      supportsReusableLeases: true,
+      displayName: "Daytona",
+      source: "plugin",
+    },
+  },
+};
+
+function makeInstanceSettings({
+  defaultEnvironmentId = null,
+  enableEnvironments = true,
+}: {
+  defaultEnvironmentId?: string | null;
+  enableEnvironments?: boolean;
+} = {}) {
+  return {
+    id: "instance-settings-1",
+    defaultEnvironmentId,
+    general: {
+      censorUsernameInLogs: true,
+      keyboardShortcuts: true,
+      feedbackDataSharingPreference: "prompt",
+      backupRetention: {
+        dailyDays: 7,
+        weeklyWeeks: 4,
+        monthlyMonths: 1,
+      },
+      executionMode: "any",
+    },
+    experimental: {
+      enableEnvironments,
+      enableIsolatedWorkspaces: true,
+      enableStreamlinedLeftNavigation: false,
+      enableConferenceRoomChat: false,
+      enableTaskWatchdogs: true,
+      enableIssuePlanDecompositions: true,
+      enableExperimentalFileViewer: false,
+      enableCloudSync: false,
+      enableExternalObjects: false,
+      autoRestartDevServerWhenIdle: false,
+      enableIssueGraphLivenessAutoRecovery: false,
+      issueGraphLivenessAutoRecoveryLookbackHours: 24,
+    },
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+  };
+}
+
 const invalidOrgChainHealth: AgentOrgChainHealth = {
   status: "invalid_org_chain",
   reason: "terminated_ancestor",
@@ -141,6 +244,10 @@ async function flushReact() {
   });
 }
 
+function findAgentRow(container: HTMLElement, agentName: string): HTMLElement | null {
+  return Array.from(container.querySelectorAll("a")).find((row) => row.textContent?.includes(agentName)) ?? null;
+}
+
 describe("Agents", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot> | null;
@@ -170,6 +277,11 @@ describe("Agents", () => {
         reports: [],
       },
     ]);
+    mockEnvironmentsApi.list.mockResolvedValue([
+      makeEnvironment({ id: "env-daytona" }),
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(environmentCapabilities);
+    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings());
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
     mockResourceMembershipsApi.listMine.mockResolvedValue({
       projectMemberships: {},
@@ -219,6 +331,324 @@ describe("Agents", () => {
     const heartbeatCell = container.querySelector(".whitespace-nowrap.w-24");
     expect(heartbeatCell).not.toBeNull();
     expect(heartbeatCell?.textContent).not.toContain("\n");
+  });
+
+  it("shows effective environment and sandbox provider beside agents", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        defaultEnvironmentId: "env-daytona",
+      }),
+    ]);
+    mockEnvironmentsApi.list.mockResolvedValue([
+      makeEnvironment({
+        id: "env-local",
+        name: "Local",
+        driver: "local",
+        config: {},
+      }),
+      makeEnvironment({ id: "env-daytona" }),
+    ]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Daytona Sandbox");
+    expect(container.textContent).toContain("Daytona sandbox provider");
+  });
+
+  it("uses configured names for local-driver environments", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        defaultEnvironmentId: "env-local",
+      }),
+    ]);
+    mockEnvironmentsApi.list.mockResolvedValue([
+      makeEnvironment({
+        id: "env-local",
+        name: "Dev Laptop",
+        driver: "local",
+        config: {},
+      }),
+      makeEnvironment({ id: "env-daytona" }),
+    ]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Dev Laptop");
+    expect(container.textContent).toContain("Paperclip host");
+  });
+
+  it("reserves the environment column while environment metadata is loading", async () => {
+    let resolveEnvironments: (environments: Environment[]) => void = () => {};
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        defaultEnvironmentId: "env-daytona",
+      }),
+    ]);
+    mockEnvironmentsApi.list.mockReturnValue(new Promise((resolve) => {
+      resolveEnvironments = resolve;
+    }));
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Loading environment");
+
+    await act(async () => {
+      resolveEnvironments([
+        makeEnvironment({
+          id: "env-local",
+          name: "Local",
+          driver: "local",
+          config: {},
+        }),
+        makeEnvironment({ id: "env-daytona" }),
+      ]);
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Daytona Sandbox");
+    expect(container.textContent).not.toContain("Loading environment");
+  });
+
+  it("hides the environment column when there is only one configured environment", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        defaultEnvironmentId: "env-daytona",
+      }),
+    ]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Daytona Sandbox");
+    expect(container.textContent).not.toContain("Daytona sandbox provider");
+  });
+
+  it("hides the environment column when environments are experimentally disabled", async () => {
+    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableEnvironments: false }));
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        id: "agent-local",
+        name: "Local Agent",
+        urlKey: "local-agent",
+        defaultEnvironmentId: null,
+      }),
+      makeAgent({
+        id: "agent-sandbox",
+        name: "Sandbox Agent",
+        urlKey: "sandbox-agent",
+        defaultEnvironmentId: "env-daytona",
+      }),
+    ]);
+    mockAgentsApi.org.mockResolvedValue([
+      {
+        id: "agent-local",
+        name: "Local Agent",
+        role: "engineer",
+        status: "active",
+        reports: [],
+      },
+      {
+        id: "agent-sandbox",
+        name: "Sandbox Agent",
+        role: "engineer",
+        status: "active",
+        reports: [],
+      },
+    ]);
+    mockEnvironmentsApi.list.mockResolvedValue([
+      makeEnvironment({
+        id: "env-local",
+        name: "Local",
+        driver: "local",
+        config: {},
+      }),
+      makeEnvironment({ id: "env-daytona" }),
+    ]);
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Daytona Sandbox");
+    expect(container.textContent).not.toContain("Daytona sandbox provider");
+    expect(mockEnvironmentsApi.list).not.toHaveBeenCalled();
+    expect(mockEnvironmentsApi.capabilities).not.toHaveBeenCalled();
+  });
+
+  it("uses the instance default environment unless the agent overrides it", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        id: "agent-fallback",
+        name: "Fallback Agent",
+        urlKey: "fallback-agent",
+        defaultEnvironmentId: null,
+      }),
+      makeAgent({
+        id: "agent-override",
+        name: "Override Agent",
+        urlKey: "override-agent",
+        defaultEnvironmentId: "env-override",
+      }),
+    ]);
+    mockAgentsApi.org.mockResolvedValue([
+      {
+        id: "agent-fallback",
+        name: "Fallback Agent",
+        role: "engineer",
+        status: "active",
+        reports: [],
+      },
+      {
+        id: "agent-override",
+        name: "Override Agent",
+        role: "engineer",
+        status: "active",
+        reports: [],
+      },
+    ]);
+    mockEnvironmentsApi.list.mockResolvedValue([
+      makeEnvironment({
+        id: "env-default",
+        name: "Instance Default",
+        config: { provider: "daytona" },
+      }),
+      makeEnvironment({
+        id: "env-override",
+        name: "Agent Override",
+        config: { provider: "daytona" },
+      }),
+    ]);
+    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ defaultEnvironmentId: "env-default" }));
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const fallbackRow = findAgentRow(container, "Fallback Agent");
+    const overrideRow = findAgentRow(container, "Override Agent");
+    expect(fallbackRow?.textContent).toContain("Instance Default");
+    expect(overrideRow?.textContent).toContain("Agent Override");
+    expect(overrideRow?.textContent).not.toContain("Instance Default");
+  });
+
+  it("falls back to the raw sandbox provider config when capabilities omit a display name", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({
+        defaultEnvironmentId: "env-custom",
+      }),
+    ]);
+    mockEnvironmentsApi.list.mockResolvedValue([
+      makeEnvironment({
+        id: "env-local",
+        name: "Local",
+        driver: "local",
+        config: {},
+      }),
+      makeEnvironment({
+        id: "env-custom",
+        name: "Custom Sandbox",
+        config: { provider: "acme_sandbox" },
+      }),
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue({
+      ...environmentCapabilities,
+      sandboxProviders: {},
+    });
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Custom Sandbox");
+    expect(container.textContent).toContain("acme_sandbox sandbox provider");
+  });
+
+  it("does not show environment filter or grouping controls yet", async () => {
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <Agents />
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.querySelector('select[aria-label="Filter by environment"]')).toBeNull();
+    expect(container.querySelector('select[aria-label="Group agents"]')).toBeNull();
   });
 
   it("gives list-view rows a fixed-width title so meta columns align (PAP-86)", async () => {

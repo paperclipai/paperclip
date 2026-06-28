@@ -51,6 +51,7 @@ import { copyTextToClipboard } from "../lib/clipboard";
 import {
   buildIssueChatMessages,
   formatDurationWords,
+  isCoTSegmentActive,
   stabilizeThreadMessages,
   type IssueChatComment,
   type IssueChatLinkedRun,
@@ -101,7 +102,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { WorkspaceFileMarkdownBody } from "./WorkspaceFileMarkdownBody";
 import { MarkdownEditor, type MentionOption, type MarkdownEditorRef } from "./MarkdownEditor";
 import { Identity } from "./Identity";
@@ -217,6 +218,7 @@ interface IssueChatMessageContext {
   onUploadImage?: (file: File) => Promise<string>;
   issueStatus?: string;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  externalReferences?: MarkdownExternalReferenceMap;
 }
 
 const IssueChatCtx = createContext<IssueChatMessageContext>({
@@ -407,6 +409,7 @@ interface IssueChatThreadProps {
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
+  autoScrollToLatestOnInitialLoad?: boolean;
   emptyMessage?: string;
   footer?: ReactNode;
   variant?: "full" | "embedded";
@@ -450,6 +453,7 @@ interface IssueChatThreadProps {
    * comment is in the loaded set before we scroll to it.
    */
   onRefreshLatestComments?: () => Promise<unknown> | void;
+  externalReferences?: MarkdownExternalReferenceMap;
 }
 
 type IssueChatErrorBoundaryProps = {
@@ -457,6 +461,7 @@ type IssueChatErrorBoundaryProps = {
   messages: readonly ThreadMessage[];
   emptyMessage: string;
   variant: "full" | "embedded";
+  externalReferences?: MarkdownExternalReferenceMap;
   children: ReactNode;
 };
 
@@ -491,6 +496,7 @@ class IssueChatErrorBoundary extends Component<IssueChatErrorBoundaryProps, Issu
           messages={this.props.messages}
           emptyMessage={this.props.emptyMessage}
           variant={this.props.variant}
+          externalReferences={this.props.externalReferences}
         />
       );
     }
@@ -555,10 +561,12 @@ function IssueChatFallbackThread({
   messages,
   emptyMessage,
   variant,
+  externalReferences,
 }: {
   messages: readonly ThreadMessage[];
   emptyMessage: string;
   variant: "full" | "embedded";
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   return (
     <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
@@ -599,7 +607,9 @@ function IssueChatFallbackThread({
                 </div>
                 <div className="space-y-2">
                   {lines.length > 0 ? lines.map((line, index) => (
-                    <MarkdownBody key={`${message.id}:fallback:${index}`}>{line}</MarkdownBody>
+                    <MarkdownBody key={`${message.id}:fallback:${index}`} externalReferences={externalReferences}>
+                      {line}
+                    </MarkdownBody>
                   )) : (
                     <p className="text-sm text-muted-foreground">No message content.</p>
                   )}
@@ -705,7 +715,7 @@ function commentDateLabel(date: Date | string | undefined): string {
 }
 
 const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed, onAccent }: { text: string; recessed?: boolean; onAccent?: boolean }) {
-  const { onImageClick } = useContext(IssueChatCtx);
+  const { onImageClick, externalReferences } = useContext(IssueChatCtx);
   if (isSuccessfulRunHandoffComment(text)) {
     return <SuccessfulRunHandoffCommentCallout text={text} recessed={recessed} onImageClick={onImageClick} />;
   }
@@ -717,6 +727,7 @@ const IssueChatTextPart = memo(function IssueChatTextPart({ text, recessed, onAc
       style={recessed ? { opacity: 0.55 } : undefined}
       softBreaks
       onImageClick={onImageClick}
+      externalReferences={externalReferences}
     >
       {text}
     </WorkspaceFileMarkdownBody>
@@ -861,13 +872,18 @@ function IssueChatChainOfThought({
     (p): p is ToolCallMessagePart => p.type === "tool-call",
   );
 
-  const isActive = isMessageRunning;
-  const [expanded, setExpanded] = useState(isActive);
-
   const rawSegments = Array.isArray(custom.chainOfThoughtSegments)
     ? (custom.chainOfThoughtSegments as SegmentTiming[])
     : [];
+  const currentStatusMessage =
+    typeof custom.currentStatusMessage === "string" ? custom.currentStatusMessage.trim() : "";
   const segmentTiming = myIndex >= 0 ? rawSegments[myIndex] ?? null : null;
+  const isActive = isCoTSegmentActive({
+    isMessageRunning,
+    segmentIndex: myIndex,
+    segmentCount: rawSegments.length,
+  });
+  const [expanded, setExpanded] = useState(isActive);
   const liveElapsed = useLiveElapsed(segmentTiming?.startMs, isActive);
 
   useEffect(() => {
@@ -895,33 +911,45 @@ function IssueChatChainOfThought({
     <div>
       <button
         type="button"
-        className="group flex w-full items-center gap-2.5 rounded-lg px-1 py-2 text-left transition-colors hover:bg-accent/5"
+        className="group flex w-full items-start gap-2.5 rounded-lg px-1 py-2 text-left transition-colors hover:bg-accent/5"
         onClick={() => hasContent && setExpanded((v) => !v)}
       >
-        <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
-          {agentIcon ? (
-            <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
-          ) : isActive ? (
-            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
-          ) : (
-            <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
+              {agentIcon ? (
+                <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
+              ) : isActive ? (
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+              ) : (
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/70" />
+                </span>
+              )}
+              {isActive ? (
+                <span className="shimmer-text">{headerVerb}</span>
+              ) : (
+                headerVerb
+              )}
             </span>
-          )}
-          {isActive ? (
-            <span className="shimmer-text">{headerVerb}</span>
-          ) : (
-            headerVerb
-          )}
-        </span>
-        {headerSuffix ? (
-          <span className="text-xs text-muted-foreground/60">{headerSuffix}</span>
-        ) : null}
-        {toolSummary ? (
-          <span className="text-xs text-muted-foreground/40">· {toolSummary}</span>
-        ) : null}
+            {headerSuffix ? (
+              <span className="text-xs text-muted-foreground/60">{headerSuffix}</span>
+            ) : null}
+            {toolSummary ? (
+              <span className="text-xs text-muted-foreground/40">· {toolSummary}</span>
+            ) : null}
+          </div>
+          {isActive && currentStatusMessage ? (
+            <span
+              className="mt-0.5 block truncate pl-6 text-xs leading-4 text-muted-foreground/70"
+              title={currentStatusMessage}
+            >
+              {currentStatusMessage}
+            </span>
+          ) : null}
+        </div>
         {hasContent ? (
-          <ChevronDown className={cn("ml-auto h-4 w-4 shrink-0 text-muted-foreground/50 transition-transform", expanded && "rotate-180")} />
+          <ChevronDown className={cn("mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/50 transition-transform", expanded && "rotate-180")} />
         ) : null}
       </button>
       {expanded && hasContent ? (
@@ -1566,6 +1594,8 @@ function IssueChatAssistantMessage({
     ? custom.notices.filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
     : [];
   const waitingText = typeof custom.waitingText === "string" ? custom.waitingText : "";
+  const currentStatusMessage =
+    typeof custom.currentStatusMessage === "string" ? custom.currentStatusMessage.trim() : "";
   const isRunning = message.role === "assistant" && message.status?.type === "running";
   const runHref = runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
   const canStopRun = Boolean(runId) && (isRunActive || runStatus === "queued" || runStatus === "running");
@@ -1842,15 +1872,25 @@ function IssueChatAssistantMessage({
               <div className="space-y-3">
                 <IssueChatAssistantParts message={message} hasCoT={hasCoT} />
                 {message.content.length === 0 && waitingText ? (
-                  <div className="flex items-center gap-2.5 rounded-lg px-1 py-2">
-                    <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
-                      {agentIcon ? (
-                        <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
-                      ) : (
-                        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
-                      )}
-                      <span className="shimmer-text">{waitingText}</span>
-                    </span>
+                  <div className="rounded-lg px-1 py-2">
+                    <div className="flex min-w-0 items-center gap-2.5">
+                      <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
+                        {agentIcon ? (
+                          <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
+                        ) : (
+                          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+                        )}
+                        <span className="shimmer-text">{waitingText}</span>
+                      </span>
+                    </div>
+                    {isRunning && currentStatusMessage ? (
+                      <div
+                        className="mt-0.5 truncate pl-6 text-xs leading-4 text-muted-foreground/70"
+                        title={currentStatusMessage}
+                      >
+                        {currentStatusMessage}
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
                 {notices.length > 0 ? (
@@ -2113,6 +2153,7 @@ function ExpiredRequestConfirmationActivity({
     onRejectInteraction,
     onCancelInteraction,
     onUploadImage,
+    externalReferences,
   } = useContext(IssueChatCtx);
   const [expanded, setExpanded] = useState(false);
   const hasResolvedActor = Boolean(interaction.resolvedByAgentId || interaction.resolvedByUserId);
@@ -2193,6 +2234,7 @@ function ExpiredRequestConfirmationActivity({
             onRejectInteraction={onRejectInteraction}
             onCancelInteraction={onCancelInteraction}
             onUploadImage={onUploadImage}
+            externalReferences={externalReferences}
           />
         </div>
       ) : null}
@@ -2620,6 +2662,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onSubmitInteractionAnswers,
     onCancelInteraction,
     onUploadImage,
+    externalReferences,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
@@ -2677,6 +2720,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
             onCancelInteraction={onCancelInteraction}
             onUploadImage={onUploadImage}
+            externalReferences={externalReferences}
           />
         </div>
       </div>
@@ -2928,6 +2972,18 @@ type SimpleVirtualItem = {
   size: number;
 };
 
+export function getVirtualizedMeasurementScrollAdjustment(args: {
+  itemStart: number;
+  previousSize: number;
+  nextSize: number;
+  viewportStart: number;
+}) {
+  const { itemStart, previousSize, nextSize, viewportStart } = args;
+  const previousEnd = itemStart + previousSize;
+  if (previousEnd > viewportStart) return 0;
+  return nextSize - previousSize;
+}
+
 function useIssueThreadVirtualizer({
   count,
   estimateSize,
@@ -3042,7 +3098,20 @@ function useIssueThreadVirtualizer({
       const key = getItemKey(index);
       const previousSize = measuredSizeByKeyRef.current.get(key) ?? estimatedSize;
       if (Math.abs(previousSize - measuredSize) < 1) return;
+      const scrollAdjustment = getVirtualizedMeasurementScrollAdjustment({
+        itemStart: itemStarts[index] ?? scrollMargin,
+        previousSize,
+        nextSize: measuredSize,
+        viewportStart: Math.max(scrollMargin, scrollOffset()),
+      });
       measuredSizeByKeyRef.current.set(key, measuredSize);
+      if (Math.abs(scrollAdjustment) >= 1) {
+        if (mode.kind === "window") {
+          window.scrollBy({ top: scrollAdjustment, behavior: "auto" });
+        } else {
+          mode.element.scrollBy({ top: scrollAdjustment, behavior: "auto" });
+        }
+      }
       rerender((value) => value + 1);
     },
   };
@@ -3728,14 +3797,20 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     );
   }
 
-  const workModeOptions = workModeMetaList(true);
-  const pendingWorkModeMeta = workModeMetaFor(pendingWorkMode, true);
+  const workModeOptions = workModeMetaList();
+  const pendingWorkModeMeta = workModeMetaFor(pendingWorkMode);
   const PendingWorkModeIcon = pendingWorkModeMeta.icon;
 
   function handleComposerKeyDown(evt: ReactKeyboardEvent<HTMLDivElement>) {
-    if (!(evt.metaKey || evt.ctrlKey) || evt.code !== "Period") return;
+    // Match the period via both `code` and `key`: iOS Safari with a hardware
+    // keyboard often leaves `code` empty for cmd-period, so relying on it alone
+    // lets the event fall through and triggers Safari's default cancel/dismiss
+    // (which closes the view). Catching `key === "."` keeps the shortcut working
+    // on iOS while preserving desktop behavior.
+    const isPeriod = evt.code === "Period" || evt.key === ".";
+    if (!(evt.metaKey || evt.ctrlKey) || !isPeriod) return;
     evt.preventDefault();
-    setPendingWorkMode((current) => nextWorkMode(current, true));
+    setPendingWorkMode((current) => nextWorkMode(current));
   }
 
   return (
@@ -3888,7 +3963,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                   aria-expanded={workModeMenuOpen}
                   aria-pressed={pendingWorkMode !== "standard"}
                   aria-keyshortcuts="Meta+Period Control+Period"
-                  title={titleForPendingWorkMode(pendingWorkMode, true)}
+                  title={titleForPendingWorkMode(pendingWorkMode)}
                   className={cn(
                     "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors",
                     pendingWorkModeMeta.classes.chip,
@@ -4070,6 +4145,7 @@ export function IssueChatThread({
   composerHint = null,
   showComposer = true,
   showJumpToLatest,
+  autoScrollToLatestOnInitialLoad = true,
   emptyMessage,
   footer,
   variant = "full",
@@ -4094,6 +4170,7 @@ export function IssueChatThread({
   assigneeUserId = null,
   onResumeFromBacklog,
   resumeFromBacklogPending = false,
+  externalReferences,
 }: IssueChatThreadProps) {
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
@@ -4121,6 +4198,8 @@ export function IssueChatThread({
         status: activeRun.status,
         invocationSource: activeRun.invocationSource,
         triggerDetail: activeRun.triggerDetail,
+        contextCommentId: activeRun.contextCommentId,
+        contextWakeCommentId: activeRun.contextWakeCommentId,
         startedAt: toIsoString(activeRun.startedAt),
         finishedAt: toIsoString(activeRun.finishedAt),
         createdAt: toIsoString(activeRun.createdAt) ?? new Date().toISOString(),
@@ -4129,6 +4208,15 @@ export function IssueChatThread({
         adapterType: activeRun.adapterType,
         logBytes: activeRun.logBytes,
         lastOutputBytes: activeRun.lastOutputBytes,
+        issueId: activeRun.issueId,
+        livenessState: activeRun.livenessState,
+        livenessReason: activeRun.livenessReason,
+        continuationAttempt: activeRun.continuationAttempt,
+        lastUsefulActionAt: toIsoString(activeRun.lastUsefulActionAt),
+        nextAction: activeRun.nextAction,
+        outputSilence: activeRun.outputSilence,
+        currentStatusMessage: activeRun.currentStatusMessage ?? null,
+        currentStatusUpdatedAt: toIsoString(activeRun.currentStatusUpdatedAt),
       });
     }
     return [...deduped.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
@@ -4394,6 +4482,7 @@ export function IssueChatThread({
   // mount, after messages first populate.
   useEffect(() => {
     if (didInitialLatestScrollRef.current) return;
+    if (!autoScrollToLatestOnInitialLoad) return;
     if (variant !== "full") return;
     if (messages.length === 0) return;
     const hash = location.hash || (typeof window !== "undefined" ? window.location.hash : "");
@@ -4411,7 +4500,7 @@ export function IssueChatThread({
     // we resolve and scroll to the latest comment's anchor.
     const frame = requestAnimationFrame(() => scrollToLatestCommentWithSettle(latestMessagesRef.current));
     return () => cancelAnimationFrame(frame);
-  }, [messages, variant, location.hash]);
+  }, [autoScrollToLatestOnInitialLoad, messages, variant, location.hash]);
 
   function jumpToLatestFallback() {
     if (useVirtualizedThread) {
@@ -4618,6 +4707,7 @@ export function IssueChatThread({
       onUploadImage: stableOnUploadImage,
       issueStatus,
       successfulRunHandoff,
+      externalReferences,
     }),
     [
       feedbackDataSharingPreference,
@@ -4643,6 +4733,7 @@ export function IssueChatThread({
       stableOnUploadImage,
       issueStatus,
       successfulRunHandoff,
+      externalReferences,
     ],
   );
 
@@ -4680,6 +4771,7 @@ export function IssueChatThread({
           messages={messages}
           emptyMessage={resolvedEmptyMessage}
           variant={variant}
+          externalReferences={externalReferences}
         >
           <div data-testid="thread-root">
             <div

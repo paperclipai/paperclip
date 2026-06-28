@@ -12,6 +12,7 @@ import {
   VIRTUALIZED_THREAD_ROW_THRESHOLD,
   canStopIssueChatRun,
   findLatestCommentMessageIndex,
+  getVirtualizedMeasurementScrollAdjustment,
   resolveAssistantMessageFoldedState,
   resolveIssueChatHumanAuthor,
 } from "./IssueChatThread";
@@ -674,6 +675,51 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("cycles work modes and prevents default when iOS leaves the keydown code empty", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            issueWorkMode="standard"
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const composer = container.querySelector('[data-testid="issue-chat-composer"]') as HTMLDivElement | null;
+    expect(composer).not.toBeNull();
+    expect(composer?.getAttribute("data-pending-work-mode")).toBe("standard");
+
+    // iOS Safari with a hardware keyboard frequently reports an empty `code` for
+    // cmd-period. Without a `key` fallback the handler returns early, never calls
+    // preventDefault, and Safari's default cancel/dismiss closes the view.
+    const evt = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      code: "",
+      key: ".",
+      metaKey: true,
+    });
+    act(() => {
+      composer?.dispatchEvent(evt);
+    });
+
+    expect(evt.defaultPrevented).toBe(true);
+    expect(composer?.getAttribute("data-pending-work-mode")).not.toBe("standard");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("virtualizes long merged threads so only a windowed slice mounts", () => {
     const root = createRoot(container);
     const totalMergedRows =
@@ -1061,6 +1107,74 @@ describe("IssueChatThread", () => {
     vi.useRealTimers();
   });
 
+  it("can keep the page at the top on initial load while preserving manual jump-to-latest", () => {
+    vi.useFakeTimers();
+    container.remove();
+    const scrollHost = document.createElement("main");
+    scrollHost.id = "main-content";
+    scrollHost.style.overflowY = "auto";
+    scrollHost.style.overflow = "auto";
+    scrollHost.style.height = "640px";
+    document.body.appendChild(scrollHost);
+    container = document.createElement("div");
+    scrollHost.appendChild(container);
+
+    const elementScrollToMock = vi.fn();
+    scrollHost.scrollTo = elementScrollToMock as unknown as typeof scrollHost.scrollTo;
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    const scrollIntoViewMock = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoViewMock as unknown as typeof Element.prototype.scrollIntoView;
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={issueChatLongThreadLinkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            autoScrollToLatestOnInitialLoad={false}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(elementScrollToMock).not.toHaveBeenCalled();
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
+
+    const jump = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    ) as HTMLButtonElement | undefined;
+    expect(jump).toBeDefined();
+
+    act(() => {
+      jump?.click();
+    });
+
+    const scrolledToLatest =
+      elementScrollToMock.mock.calls.some(([arg]) => hasSmoothScrollBehavior(arg))
+      || scrollIntoViewMock.mock.calls.length > 0;
+    expect(scrolledToLatest).toBe(true);
+
+    Element.prototype.scrollIntoView = originalScrollIntoView;
+    act(() => {
+      root.unmount();
+    });
+    scrollHost.remove();
+    vi.useRealTimers();
+  });
+
   // Regression for PAP-2672: when the merged feed ends with a non-comment row
   // (run/timeline/embedded output) we still want Jump to latest to land on the
   // last comment, not whichever activity row sorts last.
@@ -1341,6 +1455,31 @@ describe("IssueChatThread", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("keeps the viewport anchored when virtualized rows above it remeasure", () => {
+    expect(getVirtualizedMeasurementScrollAdjustment({
+      itemStart: 200,
+      previousSize: 220,
+      nextSize: 360,
+      viewportStart: 480,
+    })).toBe(140);
+
+    expect(getVirtualizedMeasurementScrollAdjustment({
+      itemStart: 200,
+      previousSize: 360,
+      nextSize: 180,
+      viewportStart: 620,
+    })).toBe(-180);
+  });
+
+  it("does not scroll-anchor virtualized measurement changes inside the viewport", () => {
+    expect(getVirtualizedMeasurementScrollAdjustment({
+      itemStart: 420,
+      previousSize: 220,
+      nextSize: 360,
+      viewportStart: 480,
+    })).toBe(0);
   });
 
   it("renders virtualized rows with the same role/kind metadata as the direct path", () => {
@@ -3241,6 +3380,48 @@ describe("IssueChatThread", () => {
 
     expect(container.textContent).toContain("Working");
     expect(container.textContent).not.toContain("Worked");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders ephemeral active-run status below the working indicator", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            activeRun={{
+              id: "run-1",
+              issueId: "issue-1",
+              status: "running",
+              invocationSource: "comment",
+              triggerDetail: null,
+              startedAt: "2026-04-06T12:00:00.000Z",
+              finishedAt: null,
+              createdAt: "2026-04-06T12:00:00.000Z",
+              agentId: "agent-1",
+              agentName: "Agent 1",
+              adapterType: "codex_local",
+              currentStatusMessage: "Syncing git worktree to sandbox",
+              currentStatusUpdatedAt: "2026-04-06T12:00:05.000Z",
+            }}
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Working...");
+    expect(container.textContent).toContain("Syncing git worktree to sandbox");
+    expect(container.querySelector('[title="Syncing git worktree to sandbox"]')).not.toBeNull();
 
     act(() => {
       root.unmount();

@@ -504,6 +504,31 @@ export interface PluginApiRouteDeclaration {
   companyResolution?: PluginApiRouteCompanyResolution;
 }
 
+export interface PluginObjectReferenceRefreshPolicy {
+  /** Default freshness window for resolved objects from this provider. */
+  defaultTtlSeconds?: number;
+  /** UI-visible staleness window. Core still stores liveness separately from remote status. */
+  staleAfterSeconds?: number;
+}
+
+export interface PluginObjectReferenceProviderDeclaration {
+  /** Stable provider key such as "github", "linear", or "mocktracker". */
+  providerKey: string;
+  /** Human-readable provider name shown in operator-facing surfaces. */
+  displayName: string;
+  /** Provider object types this plugin can detect and resolve. */
+  objectTypes: string[];
+  /**
+   * Human-readable URL patterns this provider recognizes.
+   * These are metadata for operators and docs; workers still perform detection.
+   */
+  urlPatterns?: string[];
+  /** Optional default refresh behavior for this provider. */
+  refreshPolicy?: PluginObjectReferenceRefreshPolicy;
+  /** Optional webhook endpoint keys declared under `webhooks` that can refresh these objects. */
+  webhookEndpointKeys?: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1
 // ---------------------------------------------------------------------------
@@ -570,6 +595,8 @@ export interface PaperclipPluginManifestV1 {
   skills?: PluginManagedSkillDeclaration[];
   /** Trusted local folders this plugin can configure and access by stable key. */
   localFolders?: PluginLocalFolderDeclaration[];
+  /** External object reference providers this plugin contributes. */
+  objectReferences?: PluginObjectReferenceProviderDeclaration[];
   /**
    * Legacy top-level launcher declarations.
    * Prefer `ui.launchers` for new manifests.

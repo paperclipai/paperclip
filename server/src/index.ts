@@ -852,6 +852,14 @@ export async function startServer(): Promise<StartedServer> {
     });
 
     setInterval(() => {
+      const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
+      if (sweptRuntimeStatuses > 0) {
+        logger.info(
+          { swept: sweptRuntimeStatuses },
+          "heartbeat runtime-status sweeper cleared expired entries",
+        );
+      }
+
       void heartbeat
         .tickTimers(new Date())
         .then((result) => {
