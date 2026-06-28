@@ -116,6 +116,7 @@ import {
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
   SVG_CONTENT_TYPE,
+  ATTACHMENT_INLINE_MAX_BYTES,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
@@ -3317,6 +3318,7 @@ export function issueRoutes(
       scheduledRetry,
       attachments,
       continuationSummary,
+      userDocuments,
       currentExecutionWorkspace,
       activeRecoveryAction,
     ] =
@@ -3331,6 +3333,7 @@ export function issueRoutes(
         svc.getCurrentScheduledRetry(issue.id),
         svc.listAttachments(issue.id),
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
+        documentsSvc.listIssueDocuments(issue.id),
         currentExecutionWorkspacePromise,
         recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
       ]);
@@ -3411,14 +3414,53 @@ export function issueRoutes(
         : null,
       commentCursor,
       wakeComment: safeWakeComment,
-      attachments: attachments.map((a) => ({
-        id: a.id,
-        filename: a.originalFilename,
-        contentType: a.contentType,
-        byteSize: a.byteSize,
-        contentPath: withContentPath(a).contentPath,
-        createdAt: a.createdAt,
-      })),
+      attachments: await (async () => {
+        // Pre-select which attachments to inline using an aggregate byte budget.
+        // Attachments are processed in createdAt order; once the running total
+        // would exceed ATTACHMENT_INLINE_MAX_BYTES the remaining ones are skipped
+        // (they still appear in the response with contentPath for the agent to fetch).
+        const inlineIds = new Set<string>();
+        let inlineBudgetRemaining = ATTACHMENT_INLINE_MAX_BYTES;
+        for (const a of attachments) {
+          const isInlineable =
+            a.contentType === "text/plain" ||
+            a.contentType === "text/markdown" ||
+            a.contentType === "application/json" ||
+            a.contentType === "text/csv";
+          const size = a.byteSize ?? null;
+          if (isInlineable && size != null && size <= inlineBudgetRemaining) {
+            inlineIds.add(a.id);
+            inlineBudgetRemaining -= size;
+          }
+        }
+        return Promise.all(attachments.map(async (a) => {
+          let inlineContent: string | null = null;
+          if (inlineIds.has(a.id)) {
+            try {
+              const obj = await storage.getObject(a.companyId, a.objectKey);
+              const chunks: Buffer[] = [];
+              for await (const chunk of obj.stream) {
+                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+              }
+              inlineContent = Buffer.concat(chunks).toString("utf-8");
+            } catch (err) {
+              logger.warn(
+                { err, issueId: issue.id, attachmentId: a.id },
+                "failed to inline attachment content for heartbeat-context",
+              );
+            }
+          }
+          return {
+            id: a.id,
+            filename: a.originalFilename,
+            contentType: a.contentType,
+            byteSize: a.byteSize,
+            contentPath: withContentPath(a).contentPath,
+            createdAt: a.createdAt,
+            ...(inlineContent !== null ? { inlineContent } : {}),
+          };
+        }));
+      })(),
       continuationSummary: safeContinuationSummary
         ? {
             key: safeContinuationSummary.key,
@@ -3430,6 +3472,22 @@ export function issueRoutes(
             sourceTrust: safeContinuationSummary.sourceTrust ?? null,
           }
         : null,
+      documents: userDocuments.map((doc) => {
+        const safeDoc = redactLowTrust ? redactQuarantinedBodyForHigherTrust(doc) : doc;
+        const bodyFits =
+          typeof safeDoc.body === "string" &&
+          Buffer.byteLength(safeDoc.body, "utf-8") <= ATTACHMENT_INLINE_MAX_BYTES;
+        return {
+          key: safeDoc.key,
+          title: safeDoc.title,
+          format: safeDoc.format,
+          body: bodyFits ? safeDoc.body : null,
+          latestRevisionId: safeDoc.latestRevisionId,
+          latestRevisionNumber: safeDoc.latestRevisionNumber,
+          updatedAt: safeDoc.updatedAt,
+          sourceTrust: safeDoc.sourceTrust ?? null,
+        };
+      }),
       currentExecutionWorkspace,
     });
   });
