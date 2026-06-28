@@ -184,6 +184,15 @@ describe("recordIsolatedRunStarted + renderMetrics", () => {
       knownAgentIds: new Set(["agent-a"]),
     });
     expect(labels).toEqual({ agent_id: UNKNOWN_AGENT_ID, isolation_mode: UNKNOWN_ISOLATION_MODE });
+
+    // Symmetry with the blocked-counter tests: confirm the bounded fallback
+    // labels actually land on the rendered /metrics series (no "ghost"/"nope").
+    const { body } = await renderMetrics();
+    expect(body).toContain(
+      `${ISOLATED_RUN_STARTED_METRIC}{agent_id="${UNKNOWN_AGENT_ID}",isolation_mode="${UNKNOWN_ISOLATION_MODE}"} 1`,
+    );
+    expect(body).not.toContain("ghost");
+    expect(body).not.toContain('isolation_mode="nope"');
   });
 });
 

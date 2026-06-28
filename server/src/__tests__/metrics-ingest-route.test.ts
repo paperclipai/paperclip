@@ -148,6 +148,29 @@ describe(`POST ${ENDPOINT}`, () => {
     expect(res.body.labels.agent_id).toBe(UNKNOWN_AGENT_ID);
   });
 
+  it("records the fail-closed unknown_isolation_blocked reason through the HTTP layer", async () => {
+    const app = buildApp({
+      actor: { type: "agent", agentId: "agent-a", companyId: "company-1" },
+      resolveKnownAgentIds: async () => new Set(["agent-a"]),
+    });
+
+    const res = await request(app)
+      .post(ENDPOINT)
+      .send({ agentId: "agent-a", reason: "unknown_isolation_blocked", isolationMode: "workspace" });
+
+    expect(res.status).toBe(202);
+    expect(res.body.labels).toEqual({
+      agent_id: "agent-a",
+      reason: "unknown_isolation_blocked",
+      isolation_mode: "workspace",
+    });
+
+    const { body } = await renderMetrics();
+    expect(body).toContain(
+      `${CONCURRENT_RUN_BLOCKED_METRIC}{agent_id="agent-a",reason="unknown_isolation_blocked",isolation_mode="workspace"} 1`,
+    );
+  });
+
   it("rejects unauthenticated callers", async () => {
     const app = buildApp({ actor: { type: "none", source: "none" } });
 
@@ -200,6 +223,119 @@ describe(`POST ${ISOLATED_ENDPOINT}`, () => {
       .send({ agentId: "agent-a", isolationMode: "workspace" });
 
     expect(res.status).toBe(401);
+  });
+});
+
+// The BLO-12212/BLO-12505 acceptance criterion is that an isolated block points
+// to the conflicting isolation key / task / session. The metric labels
+// deliberately omit those high-card ids, so the ONLY place they surface is the
+// structured guard-decision log line. These tests assert the log is actually
+// emitted with the right fields and mapping — a regression that drops or
+// mis-maps a field would otherwise pass every other test in this suite.
+describe("guard-decision log carries the high-card conflicting ids", () => {
+  it("emits isolation_key/task_key/session_id on the blocked-route log line", async () => {
+    const spy = vi.spyOn(logger, "info").mockImplementation(() => undefined as never);
+    try {
+      const app = buildApp({
+        actor: { type: "agent", agentId: "agent-a", companyId: "company-1" },
+        resolveKnownAgentIds: async () => new Set(["agent-a"]),
+      });
+
+      const res = await request(app)
+        .post(ENDPOINT)
+        .send({
+          agentId: "agent-a",
+          reason: "shared_mode_serialized",
+          isolationMode: "shared",
+          isolationKey: "shared:company-1:agent-a",
+          taskKey: "issue-123",
+          sessionId: "sess-abc-456",
+        });
+
+      expect(res.status).toBe(202);
+      expect(spy).toHaveBeenCalledWith(
+        {
+          event: "k8s_concurrent_run_blocked",
+          decision: "blocked",
+          agent_id: "agent-a",
+          reason: "shared_mode_serialized",
+          isolation_mode: "shared",
+          isolation_key: "shared:company-1:agent-a",
+          task_key: "issue-123",
+          session_id: "sess-abc-456",
+        },
+        "k8s guard: dispatch blocked",
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("emits isolation_key/task_key/session_id on the isolated-start log line", async () => {
+    const spy = vi.spyOn(logger, "info").mockImplementation(() => undefined as never);
+    try {
+      const app = buildApp({
+        actor: { type: "agent", agentId: "agent-a", companyId: "company-1" },
+        resolveKnownAgentIds: async () => new Set(["agent-a"]),
+      });
+
+      const res = await request(app)
+        .post(ISOLATED_ENDPOINT)
+        .send({
+          agentId: "agent-a",
+          isolationMode: "workspace",
+          isolationKey: "workspace:company-1:agent-a:ws-1",
+          taskKey: "issue-777",
+          sessionId: "sess-zzz",
+        });
+
+      expect(res.status).toBe(202);
+      expect(spy).toHaveBeenCalledWith(
+        {
+          event: "k8s_isolated_run_started",
+          decision: "allowed",
+          agent_id: "agent-a",
+          isolation_mode: "workspace",
+          isolation_key: "workspace:company-1:agent-a:ws-1",
+          task_key: "issue-777",
+          session_id: "sess-zzz",
+        },
+        "k8s guard: isolated dispatch allowed",
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("null-coalesces the conflicting ids when the request omits them", async () => {
+    const spy = vi.spyOn(logger, "info").mockImplementation(() => undefined as never);
+    try {
+      const app = buildApp({
+        actor: { type: "agent", agentId: "agent-a", companyId: "company-1" },
+        resolveKnownAgentIds: async () => new Set(["agent-a"]),
+      });
+
+      const res = await request(app)
+        .post(ENDPOINT)
+        .send({ agentId: "agent-a", reason: "live_job_for_active_run" });
+
+      expect(res.status).toBe(202);
+      expect(spy).toHaveBeenCalledWith(
+        {
+          event: "k8s_concurrent_run_blocked",
+          decision: "blocked",
+          agent_id: "agent-a",
+          reason: "live_job_for_active_run",
+          isolation_mode: "unknown",
+          isolation_key: null,
+          task_key: null,
+          session_id: null,
+        },
+        "k8s guard: dispatch blocked",
+      );
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 

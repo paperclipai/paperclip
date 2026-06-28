@@ -46,17 +46,47 @@ function readString(value: unknown): string | undefined {
 }
 
 /**
+ * The high-cardinality conflicting identifiers that ride on the structured
+ * guard-decision log line (never on metric labels). Pulled into one helper so
+ * the blocked and isolated-start records stay structurally aligned as fields
+ * are added, and the null-coalescing is expressed once.
+ */
+function readGuardIds(body: {
+  isolationKey?: unknown;
+  taskKey?: unknown;
+  sessionId?: unknown;
+}): { isolation_key: string | null; task_key: string | null; session_id: string | null } {
+  return {
+    isolation_key: readString(body.isolationKey) ?? null,
+    task_key: readString(body.taskKey) ?? null,
+    session_id: readString(body.sessionId) ?? null,
+  };
+}
+
+/**
  * Emit a structured guard-decision log. Logging is best-effort: the metric
  * increment has already landed by the time we get here, and the adapter blocks
  * on the route's 202 to advance to the next dispatch. A transient logger
  * failure (transport write error, buffer overflow) must therefore never turn
  * the 202 into a 500 — swallow any throw and keep the response path intact.
+ *
+ * The swallow is deliberately broad (it also masks a programming error such as
+ * a non-serializable field), so we leave a breadcrumb via `logger.warn`. That
+ * warn is itself guarded: if the transport is genuinely down, even the warn can
+ * throw, and we must still not fail the request.
  */
 function logGuardDecision(fields: Record<string, unknown>, msg: string): void {
   try {
     logger.info(fields, msg);
-  } catch {
-    // Intentionally swallowed: a logging failure must not fail the request.
+  } catch (err) {
+    try {
+      logger.warn(
+        { event: "guard_decision_log_failed", err: String(err) },
+        "k8s guard: guard-decision log emission failed (swallowed)",
+      );
+    } catch {
+      // Transport is down for both paths: a logging failure must not fail the request.
+    }
   }
 }
 
@@ -115,9 +145,7 @@ export function metricsIngestRoutes(db?: Db, opts: MetricsIngestOptions = {}) {
         agent_id: labels.agent_id,
         reason: labels.reason,
         isolation_mode: labels.isolation_mode,
-        isolation_key: readString(body.isolationKey) ?? null,
-        task_key: readString(body.taskKey) ?? null,
-        session_id: readString(body.sessionId) ?? null,
+        ...readGuardIds(body),
       },
       "k8s guard: dispatch blocked",
     );
@@ -150,9 +178,7 @@ export function metricsIngestRoutes(db?: Db, opts: MetricsIngestOptions = {}) {
         decision: "allowed",
         agent_id: labels.agent_id,
         isolation_mode: labels.isolation_mode,
-        isolation_key: readString(body.isolationKey) ?? null,
-        task_key: readString(body.taskKey) ?? null,
-        session_id: readString(body.sessionId) ?? null,
+        ...readGuardIds(body),
       },
       "k8s guard: isolated dispatch allowed",
     );
