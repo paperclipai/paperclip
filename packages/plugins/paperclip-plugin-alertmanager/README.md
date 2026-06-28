@@ -43,7 +43,7 @@ Configured per-instance via the host's plugin settings UI. Schema lives in
 | `webhookToken`       | string  | dev only | Inline token; use `webhookTokenRef` in production. |
 | `acceptOnlyLabels`   | object  | no       | Accept-only label filter, e.g. `{ paperclip: "true" }`. |
 | `severityToPriority` | object  | no       | Override the default severity map. |
-| `autoCloseOnResolve` | boolean | no       | Defaults to false (comment-only). |
+| `autoCloseOnResolve` | boolean | no       | Defaults to true (status → cancelled). Set false for comment-only. |
 | `ownerMap`           | object  | no       | `{ <labelKey>: { <labelValue>: <email> } }`. |
 | `issueRouteMap`      | object  | no       | `{ <labelKey>: { <labelValue>: { projectId, goalId, assigneeAgentId, status } } }`. |
 
@@ -77,7 +77,7 @@ severityToPriority:
   critical: critical
   warning:  high
   info:     medium
-autoCloseOnResolve: false
+autoCloseOnResolve: true
 ownerMap:
   class:
     paperclip_claude_k8s: support@blockcast.net

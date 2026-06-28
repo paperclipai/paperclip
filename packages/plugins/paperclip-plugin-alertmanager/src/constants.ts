@@ -136,7 +136,7 @@ export const DEFAULT_CONFIG: AlertmanagerPluginConfig = {
   webhookToken: "",
   acceptOnlyLabels: {},
   severityToPriority: DEFAULT_SEVERITY_TO_PRIORITY,
-  autoCloseOnResolve: false,
+  autoCloseOnResolve: true,
   ownerMap: DEFAULT_OWNER_MAP,
   issueRouteMap: DEFAULT_ISSUE_ROUTE_MAP,
 };
