@@ -2318,7 +2318,13 @@ async function materializeOpenCodeK8sSharedDocs(input: {
   if (input.adapterType !== "opencode_k8s") return;
   const instructionsRootPath = readNonEmptyString(input.config.instructionsRootPath);
   const instructionsFilePath = readNonEmptyString(input.config.instructionsFilePath);
-  if (!instructionsRootPath && !instructionsFilePath) return;
+  if (!instructionsRootPath && !instructionsFilePath) {
+    await input.onLog(
+      "stdout",
+      "[paperclip] Skipped opencode_k8s shared docs materialization: no instructions bundle configured.\n",
+    );
+    return;
+  }
 
   const sourceRootPath = instructionsRootPath
     ? path.resolve(input.cwd, instructionsRootPath)
@@ -2332,7 +2338,12 @@ async function materializeOpenCodeK8sSharedDocs(input: {
     instructionsContents = await fs.readFile(instructionsEntryPath, "utf8");
   } catch (error) {
     const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
-    if (code !== "ENOENT") {
+    if (code === "ENOENT") {
+      await input.onLog(
+        "stdout",
+        "[paperclip] Skipped opencode_k8s shared docs materialization: external instructions entry absent.\n",
+      );
+    } else {
       await input.onLog(
         "stderr",
         `[paperclip] Skipped opencode_k8s shared docs materialization: failed to read instructions entry (${code ?? "unknown"}).\n`,
