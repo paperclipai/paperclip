@@ -15,7 +15,7 @@ PEN-1191 coordinates the transport-level MCP resource streaming work for Papercl
 
 - Stdio MCP reads expose run metadata, log metadata, resumable log chunks, events, and touched issues.
 - Stdio MCP subscriptions emit `notifications/resources/updated` as change signals and clean up on unsubscribe, close, terminal run state, and polling/send failures.
-- Streamable HTTP MCP sessions expose the same resources and deliver resource update notifications over the HTTP/SSE session path.
+- Streamable HTTP MCP sessions expose the same resources and deliver resource update notifications over the HTTP/SSE session path; clients without subscription support use the fallback tail tool for polling instead of receiving server-pushed updates.
 - `paperclipTailHeartbeatRunLog` remains available for clients without resource subscription support.
 - Bridge-only runtimes can read the heartbeat-run routes required by MCP resources while heartbeat-run mutation routes remain denied.
 
@@ -34,3 +34,9 @@ Verified on 2026-06-28:
 - `@paperclipai/mcp-server`: 3 files, 44 tests passed.
 - `@paperclipai/mcp-external`: 5 files, 98 tests passed.
 - `packages/adapter-utils/src/sandbox-callback-bridge.test.ts`: 1 file, 14 tests passed.
+
+## Regression Test Path
+
+- Failures in `@paperclipai/mcp-server` tests indicate a stdio resource read, fallback tail tool, or subscription lifecycle regression.
+- Failures in `@paperclipai/mcp-external` tests indicate a Streamable HTTP resource read or HTTP/SSE notification regression.
+- Failures in `packages/adapter-utils/src/sandbox-callback-bridge.test.ts` indicate a bridge callback allowlist regression for heartbeat-run read routes or denied mutation routes.
