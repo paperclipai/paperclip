@@ -308,6 +308,24 @@ export function isAuthorizedApprover(
   return true;
 }
 
+/**
+ * Whether a Telegram user may run destructive connection-management commands
+ * (currently `/unpair`) for a paired chat. Only the operator who completed the
+ * handshake qualifies; chats paired before that id was captured fall back to
+ * allow so the command keeps working after an upgrade. Note this is the
+ * pairing operator specifically — not the plan-approval approver, which is a
+ * separate role configured per company.
+ */
+export function isPairingOperator(
+  chat: PairedChat | undefined,
+  fromUserId: number | undefined,
+): boolean {
+  if (chat?.pairedByTelegramUserId != null) {
+    return fromUserId === chat.pairedByTelegramUserId;
+  }
+  return true;
+}
+
 /** Constant-time-ish equality for short verification codes. */
 export function codesMatch(a: string, b: string): boolean {
   const aa = a.trim().toUpperCase();

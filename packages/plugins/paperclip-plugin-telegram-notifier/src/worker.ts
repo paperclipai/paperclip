@@ -75,6 +75,7 @@ import {
   getMessageContext,
   getPaired,
   isAuthorizedApprover,
+  isPairingOperator,
   isHandshakeExpired,
   isPairedFor,
   listPairedCompanies,
@@ -895,6 +896,15 @@ async function handleSlashCommand(
     }
     case "/unpair": {
       if (!pairing) return;
+      // Unpair disconnects the whole company — restrict it to the operator who
+      // paired the chat so a stray group member can't sever the link.
+      if (!isPairingOperator(pairing.chat, message.from?.id)) {
+        await replyTo(ctx, config, incomingChatId, {
+          text: "*Not allowed\\.* Only the operator who paired this chat can unpair it\\.",
+          keyboard: [],
+        });
+        return;
+      }
       await removePairedChat(ctx, pairing.companyId);
       await replyTo(ctx, config, incomingChatId, buildUnpairedMessage());
       return;

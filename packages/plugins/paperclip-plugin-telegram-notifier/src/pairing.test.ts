@@ -7,6 +7,7 @@ import {
   getMessageContext,
   isAuthorizedApprover,
   isHandshakeExpired,
+  isPairingOperator,
   newHandshakeExpiry,
   saveMessageContext,
 } from "./pairing.js";
@@ -186,5 +187,26 @@ describe("isAuthorizedApprover", () => {
     expect(isAuthorizedApprover(undefined, pairedChat(), 123)).toBe(true);
     expect(isAuthorizedApprover(approval(), pairedChat(), 123)).toBe(true);
     expect(isAuthorizedApprover(undefined, undefined, 123)).toBe(true);
+  });
+});
+
+describe("isPairingOperator", () => {
+  it("allows only the operator who paired the chat", () => {
+    const chat = pairedChat({ pairedByTelegramUserId: 7 });
+    expect(isPairingOperator(chat, 7)).toBe(true);
+    expect(isPairingOperator(chat, 8)).toBe(false);
+    expect(isPairingOperator(chat, undefined)).toBe(false);
+  });
+
+  it("does not consult the approval approver (distinct role)", () => {
+    // A chat paired by operator 7; approverTelegramUserId lives elsewhere and
+    // must not grant unpair rights to a non-operator.
+    const chat = pairedChat({ pairedByTelegramUserId: 7 });
+    expect(isPairingOperator(chat, 42)).toBe(false);
+  });
+
+  it("allows anyone for legacy chats with no recorded operator", () => {
+    expect(isPairingOperator(pairedChat(), 123)).toBe(true);
+    expect(isPairingOperator(undefined, 123)).toBe(true);
   });
 });
