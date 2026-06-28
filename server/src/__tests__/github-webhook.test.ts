@@ -110,8 +110,8 @@ describe("github-webhook pure helpers", () => {
     ).toBeNull();
   });
 
-  it("resolves pull_request synchronize as a reviewer wake with a debounced (head-sha-independent) idempotency key", () => {
-    const ctx = __test_resolveEventContext("pull_request", {
+  it("resolves pull_request synchronize with stable PR-scoped reviewer keys across rapid pushes", () => {
+    const ctx1 = __test_resolveEventContext("pull_request", {
       action: "synchronize",
       pull_request: {
         number: 318,
@@ -122,24 +122,67 @@ describe("github-webhook pure helpers", () => {
       },
       repository: { full_name: "Blockcast/paperclip" },
     });
-    expect(ctx).toMatchObject({
+    const ctx2 = __test_resolveEventContext("pull_request", {
+      action: "synchronize",
+      pull_request: {
+        number: 318,
+        title: "Fix BLO-3182 webflow blog",
+        body: null,
+        html_url: "https://github.com/Blockcast/paperclip/pull/318",
+        head: { ref: "fix/BLO-3182", sha: "push3sha" },
+      },
+      repository: { full_name: "Blockcast/paperclip" },
+    });
+    expect(ctx1).toMatchObject({
       identifiers: ["BLO-3182"],
       wakeReason: "github_pr_synchronized",
       prNumber: 318,
       repoFullName: "Blockcast/paperclip",
       headSha: "push2sha",
     });
-    // synchronize drives the reviewer wake (debounced re-review on push).
-    expect(__test_shouldFirePrReviewerWake(ctx)).toBe(true);
-    if (!ctx || !ctx.prNumber) {
-      throw new Error("expected synchronize pull_request context with PR number");
+    expect(ctx2).toMatchObject({
+      wakeReason: "github_pr_synchronized",
+      prNumber: 318,
+      headSha: "push3sha",
+    });
+    expect(__test_shouldFirePrReviewerWake(ctx1)).toBe(true);
+    expect(__test_shouldFirePrReviewerWake(ctx2)).toBe(true);
+    if (!__test_shouldFirePrReviewerWake(ctx1) || !__test_shouldFirePrReviewerWake(ctx2)) {
+      throw new Error("expected synchronize pull_request contexts with PR numbers");
     }
-    // Debounce: the key omits head sha + delivery id, so a burst of rapid
-    // pushes (each a distinct head sha / delivery) collapses onto one key and
-    // dedups against the still-pending wake.
-    // @ts-expect-error – test fixture omits the prNumber field required by the narrow union
-    expect(__test_buildPrReviewerWakeIdempotencyKey(ctx, "delivery-push-2")).toBe(
+    // taskKey controls active-run coalescing; idempotencyKey controls duplicate
+    // wake-row prechecks. For synchronize both deliberately omit head sha and
+    // delivery id, so rapid pushes stay PR-scoped instead of per-push.
+    expect(__test_buildPrReviewerTaskKey(ctx1)).toBe("pr_review:Blockcast/paperclip:318");
+    expect(__test_buildPrReviewerTaskKey(ctx2)).toBe(__test_buildPrReviewerTaskKey(ctx1));
+    expect(__test_buildPrReviewerWakeIdempotencyKey(ctx1, "delivery-push-2")).toBe(
       "pr_review:Blockcast/paperclip:318:github_pr_synchronized",
+    );
+    expect(__test_buildPrReviewerWakeIdempotencyKey(ctx2, "delivery-push-3")).toBe(
+      __test_buildPrReviewerWakeIdempotencyKey(ctx1, "delivery-push-2"),
+    );
+  });
+
+  it("does not build reviewer debounce keys for malformed PR contexts without a PR number", () => {
+    const ctx = __test_resolveEventContext("pull_request", {
+      action: "synchronize",
+      pull_request: {
+        title: "No paperclip link",
+        body: null,
+        html_url: "https://github.com/Blockcast/paperclip/pull/318",
+        head: { ref: "refresh/no-identifier", sha: "push2sha" },
+      },
+      repository: { full_name: "Blockcast/paperclip" },
+    });
+    expect(ctx).toMatchObject({
+      identifiers: [],
+      wakeReason: "github_pr_synchronized",
+      prNumber: null,
+      repoFullName: "Blockcast/paperclip",
+    });
+    expect(__test_shouldFirePrReviewerWake(ctx)).toBe(false);
+    expect(() => __test_buildPrReviewerWakeIdempotencyKey(ctx as never, "delivery-push-2")).toThrow(
+      "PR reviewer wake idempotency key requires prNumber",
     );
   });
 
@@ -772,6 +815,131 @@ describeEmbeddedPostgres("github-webhook route", () => {
         reviewKind: "pr_review",
       }),
     }));
+  });
+
+  it("dedupes rapid pull_request.synchronize pushes and suppresses only synchronize author wakes", async () => {
+    const { companyId, agentId: authorAgentId } = await seedIssueWithIdentifier("BLO-3182");
+    const reviewerAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "Ally",
+      role: "engineer",
+      status: "idle",
+      adapterType: "claude_k8s",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const app = buildApp({ prReviewerAgentId: reviewerAgentId });
+    const synchronizePayload = (headSha: string) => ({
+      action: "synchronize",
+      pull_request: {
+        number: 981,
+        title: "Fix BLO-3182 webflow blog",
+        body: null,
+        html_url: "https://github.com/Blockcast/magma/pull/981",
+        head: { ref: "fix/BLO-3182-webflow-blog", sha: headSha },
+      },
+      repository: { full_name: "Blockcast/magma" },
+    });
+
+    const first = signedRequest(synchronizePayload("push1sha"));
+    const firstRes = await request(app)
+      .post("/api/webhooks/github")
+      .set("x-github-event", "pull_request")
+      .set("x-hub-signature-256", first.signature)
+      .set("x-github-delivery", "delivery-sync-1")
+      .set("content-type", "application/json")
+      .send(first.body);
+
+    const second = signedRequest(synchronizePayload("push2sha"));
+    const secondRes = await request(app)
+      .post("/api/webhooks/github")
+      .set("x-github-event", "pull_request")
+      .set("x-hub-signature-256", second.signature)
+      .set("x-github-delivery", "delivery-sync-2")
+      .set("content-type", "application/json")
+      .send(second.body);
+
+    expect(firstRes.status).toBe(200);
+    expect(secondRes.status).toBe(200);
+    expect(firstRes.body.wakes).toEqual([]);
+    expect(secondRes.body.wakes).toEqual([]);
+
+    const reviewerWakes = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, reviewerAgentId));
+    expect(reviewerWakes).toHaveLength(1);
+    expect(reviewerWakes[0]).toMatchObject({
+      status: "queued",
+      reason: "github_pr_synchronized",
+      idempotencyKey: "pr_review:Blockcast/magma:981:github_pr_synchronized",
+      payload: expect.objectContaining({
+        taskKey: "pr_review:Blockcast/magma:981",
+        source: "github",
+        event: "pull_request",
+        deliveryId: "delivery-sync-1",
+        prNumber: 981,
+        repoFullName: "Blockcast/magma",
+        headSha: "push1sha",
+        paperclipIdentifiers: ["BLO-3182"],
+        reviewKind: "pr_review",
+      }),
+    });
+
+    const authorWakesAfterSynchronize = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, authorAgentId));
+    expect(authorWakesAfterSynchronize).toHaveLength(0);
+
+    const ciPayload = {
+      action: "completed",
+      check_run: {
+        head_branch: "fix/BLO-3182-webflow-blog",
+        head_sha: "push2sha",
+        html_url: "https://github.com/Blockcast/magma/actions/runs/1/job/2",
+        pull_requests: [{ number: 981, head: { ref: "fix/BLO-3182-webflow-blog" } }],
+      },
+      repository: { full_name: "Blockcast/magma" },
+    };
+    const ci = signedRequest(ciPayload);
+    const ciRes = await request(app)
+      .post("/api/webhooks/github")
+      .set("x-github-event", "check_run")
+      .set("x-hub-signature-256", ci.signature)
+      .set("x-github-delivery", "delivery-ci-after-sync")
+      .set("content-type", "application/json")
+      .send(ci.body);
+
+    expect(ciRes.status).toBe(200);
+    expect(ciRes.body.wakes).toEqual([{ issueIdentifier: "BLO-3182", agentId: authorAgentId }]);
+    const authorWakesAfterCi = await db
+      .select({
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, authorAgentId));
+    expect(authorWakesAfterCi).toHaveLength(1);
+    expect(authorWakesAfterCi[0]).toMatchObject({
+      reason: "github_check_completed",
+      payload: expect.objectContaining({
+        source: "github",
+        event: "check_run",
+        deliveryId: "delivery-ci-after-sync",
+        prNumber: 981,
+        repoFullName: "Blockcast/magma",
+      }),
+    });
   });
 
   it("drives a reviewer wake for pull_request.reopened even without a paperclip identifier (BLO-7426)", async () => {
