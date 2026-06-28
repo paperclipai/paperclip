@@ -131,7 +131,20 @@ function assertPenstockOrgKeySecretEnv(rendered, envName) {
   );
 }
 
-function assertNoLegacyProviderSecretEnv(rendered, envName) {
+function assertCcrotateServeSecretEnv(rendered, envName) {
+  const envBlock = extractEnvBlock(rendered, envName);
+
+  assert.match(envBlock, /\n\s+valueFrom:\n/, `${envName} should use valueFrom`);
+  assert.match(envBlock, /\n\s+secretKeyRef:\n/, `${envName} should use secretKeyRef`);
+  assert.match(
+    envBlock,
+    /\n\s+name: paperclip-ccrotate-serve-secrets\n/,
+    `${envName} should inherit the ccrotate serve token secret`,
+  );
+  assert.match(envBlock, /\n\s+key: serveToken\n/, `${envName} should read the serveToken key`);
+}
+
+function assertNoCcrotateProviderSecretEnv(rendered, envName) {
   const envBlock = extractEnvBlock(rendered, envName);
 
   assert.doesNotMatch(
@@ -227,21 +240,24 @@ test("runtimeCache can be disabled for API tier rollback", () => {
   assert.doesNotMatch(rendered, /XDG_CACHE_HOME/);
 });
 
-test("Blockcast values route agent LLM traffic through Penstock gateway", () => {
+test("Blockcast values split agent LLM routing between ccrotate Anthropic and Penstock OpenAI", () => {
   const renderedStatefulSet = renderStatefulSet();
   const renderedApiDeployment = renderApiDeployment();
 
   for (const rendered of [renderedStatefulSet, renderedApiDeployment]) {
-    assertValueEnv(rendered, "ANTHROPIC_BASE_URL", "https://api.penstock.run/anthropic");
-    assertPenstockOrgKeySecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
-    assertPenstockOrgKeySecretEnv(rendered, "ANTHROPIC_API_KEY");
-    assertNoLegacyProviderSecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
-    assertNoLegacyProviderSecretEnv(rendered, "ANTHROPIC_API_KEY");
+    assertValueEnv(
+      rendered,
+      "PATH",
+      "/paperclip/.local/bin:/paperclip/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    );
+    assertValueEnv(rendered, "ANTHROPIC_BASE_URL", "http://ccrotate-serve.paperclip.svc:4001");
+    assertCcrotateServeSecretEnv(rendered, "ANTHROPIC_AUTH_TOKEN");
+    assertCcrotateServeSecretEnv(rendered, "ANTHROPIC_API_KEY");
     assertValueEnv(rendered, "OPENAI_BASE_URL", "https://api.penstock.run/v1");
     assertValueEnv(rendered, "OPENAI_API_BASE", "https://api.penstock.run/v1");
     assertValueEnv(rendered, "OPENAI_API_BASE_URL", "https://api.penstock.run/v1");
     assertPenstockOrgKeySecretEnv(rendered, "OPENAI_API_KEY");
-    assertNoLegacyProviderSecretEnv(rendered, "OPENAI_API_KEY");
+    assertNoCcrotateProviderSecretEnv(rendered, "OPENAI_API_KEY");
     assertCodexPenstockProvider(rendered);
     assert.doesNotMatch(
       rendered,
