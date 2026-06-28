@@ -225,6 +225,32 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  // GGU-SOF-334: disposition-freshness gate. Synthetic run that posts a
+  // disposition comment after run.finishedAt must NOT arm the missing-disposition
+  // recovery — the agent already recorded its work, the scan-vs-PATCH race has
+  // resolved in favor of the agent. This is the exact shape that produced the
+  // 8+ false-positive SOF-17 recovery arms on 2026-06-28.
+  it("does not queue when the assignee recorded a disposition after the run completed (SOF-334 race window)", () => {
+    expect(decide({ hasDispositionAfterRunFinished: true })).toEqual({
+      kind: "skip",
+      reason:
+        "agent recorded a disposition after the run completed (scan-vs-PATCH race window resolved)",
+    });
+  });
+
+  it("still queues when hasDispositionAfterRunFinished is false (default — pre-disposition scan)", () => {
+    const decision = decide({ hasDispositionAfterRunFinished: false });
+    expect(decision.kind).toBe("enqueue");
+  });
+
+  it("still queues when hasDispositionAfterRunFinished is undefined (backwards compat)", () => {
+    // The input is optional; older call sites that omit it must continue to
+    // arm the recovery as before. This protects against accidental fleet-wide
+    // suppression if a deployment desync omits the new field.
+    const decision = decide({});
+    expect(decision.kind).toBe("enqueue");
+  });
+
   it("uses a stable one-attempt idempotency key", () => {
     expect(buildFinishSuccessfulRunHandoffIdempotencyKey({
       issueId: "issue-1",

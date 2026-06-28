@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -5454,6 +5454,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       budgetBlock,
       pauseHold,
       activeRoutineContinuation,
+      dispositionAfterRun,
     ] = await Promise.all([
       issue
         ? db
@@ -5593,6 +5594,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .limit(1)
           .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
+      // GGU-SOF-334: disposition-freshness gate signal. True if the assignee
+      // authored any issue comment AFTER run.finishedAt (and NOT by the source
+      // run itself, which are run-internal artifacts), meaning the agent has
+      // already recorded its disposition in a follow-up API call before this
+      // scan reads issue state. When true, the missing-disposition recovery
+      // would be a false-positive race artifact and must be skipped.
+      // We explicitly exclude `createdByRunId = run.id` because comments
+      // persisted in the run's bookkeeping flush can have createdAt >
+      // finishedAt but are part of the run, not evidence of post-run motion.
+      issue && run.finishedAt
+        ? db
+          .select({ id: issueComments.id })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.companyId, issue.companyId),
+              eq(issueComments.issueId, issue.id),
+              eq(issueComments.authorAgentId, issue.assigneeAgentId ?? run.agentId),
+              gt(issueComments.createdAt, run.finishedAt),
+              or(
+                isNull(issueComments.createdByRunId),
+                ne(issueComments.createdByRunId, run.id),
+              ),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -5611,7 +5640,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
+      hasDispositionAfterRunFinished: Boolean(dispositionAfterRun),
     });
+
+    // GGU-SOF-334: when the disposition-freshness gate suppresses a would-be
+    // missing-disposition recovery, emit an observability event so the
+    // successful_run_missing_state.false_positive_rate counter can be derived
+    // from logs / Loki. Tagged with the issue identifier and source run id.
+    if (
+      decision.kind === "skip" &&
+      decision.reason ===
+        "agent recorded a disposition after the run completed (scan-vs-PATCH race window resolved)" &&
+      issue
+    ) {
+      logger.info(
+        {
+          event: "successful_run_missing_state.suppressed_by_disposition_freshness",
+          companyId: issue.companyId,
+          issueId: issue.id,
+          issueIdentifier: issue.identifier,
+          sourceRunId: run.id,
+          runFinishedAt: run.finishedAt,
+        },
+        "successful_run_missing_state suppressed by disposition-freshness gate (GGU-SOF-334)",
+      );
+    }
 
     if (decision.kind !== "enqueue" || !issue) return;
 

@@ -353,6 +353,14 @@ export function decideSuccessfulRunHandoff(input: {
   hasActiveRoutineContinuation: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
+  /**
+   * True when the assignee authored an issue comment with `createdAt` strictly
+   * greater than `run.finishedAt`. Indicates the agent has already recorded a
+   * disposition after the run completed, so the scan-vs-PATCH race window has
+   * resolved and a `successful_run_missing_state` recovery would be a false
+   * positive. See SOF-334.
+   */
+  hasDispositionAfterRunFinished?: boolean;
 }): SuccessfulRunHandoffDecision {
   const { run, issue, agent } = input;
 
@@ -394,6 +402,18 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.budgetBlocked) return { kind: "skip", reason: "budget hard stop blocks corrective wake" };
   if (input.idempotentWakeExists) {
     return { kind: "skip", reason: "corrective handoff wake already exists for this source run" };
+  }
+  // GGU-SOF-334: disposition-freshness gate. If the agent already posted a
+  // comment after the run finished (i.e. the disposition PATCH has landed
+  // before this scan), the missing-disposition recovery would be a false
+  // positive. Skip arming the corrective handoff wake. The agent has already
+  // recorded its work; let the next normal-state scan observe the new comment
+  // and reclassify if a real disposition gap is still present.
+  if (input.hasDispositionAfterRunFinished) {
+    return {
+      kind: "skip",
+      reason: "agent recorded a disposition after the run completed (scan-vs-PATCH race window resolved)",
+    };
   }
 
   const instruction = buildSuccessfulRunHandoffInstruction({
