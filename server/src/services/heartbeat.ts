@@ -113,6 +113,7 @@ import {
 } from "./run-liveness.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import { githubHasReviewerEvidenceForPr } from "./github-app-auth.js";
+import { ensureReferencedSharedDocsMaterialized } from "@paperclipai/adapter-opencode-local/server";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -2306,6 +2307,33 @@ export function isRateLimitExhausted(
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+async function materializeOpenCodeK8sSharedDocs(input: {
+  adapterType: string;
+  config: Record<string, unknown>;
+  cwd: string;
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}) {
+  if (input.adapterType !== "opencode_k8s") return;
+  const instructionsRootPath = readNonEmptyString(input.config.instructionsRootPath);
+  const instructionsFilePath = readNonEmptyString(input.config.instructionsFilePath);
+  if (!instructionsRootPath && !instructionsFilePath) return;
+
+  const sourceRootPath = instructionsRootPath
+    ? path.resolve(input.cwd, instructionsRootPath)
+    : path.dirname(path.resolve(input.cwd, instructionsFilePath!));
+  const entryFile = readNonEmptyString(input.config.instructionsEntryFile) ??
+    (instructionsFilePath ? path.basename(instructionsFilePath) : "AGENTS.md");
+  const instructionsContents = await fs.readFile(path.resolve(sourceRootPath, entryFile), "utf8").catch(() => "");
+  if (!instructionsContents) return;
+
+  await ensureReferencedSharedDocsMaterialized({
+    cwd: input.cwd,
+    instructionsRootPath: sourceRootPath,
+    instructionsContents,
+    onLog: input.onLog,
+  });
 }
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
@@ -12231,8 +12259,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               id: issueRef.id,
               identifier: issueRef.identifier,
             }
-          : null,
+            : null,
         cwd: executionWorkspace.cwd,
+      });
+      await materializeOpenCodeK8sSharedDocs({
+        adapterType: agent.adapterType,
+        config: runtimeConfig,
+        cwd: executionWorkspace.cwd,
+        onLog,
       });
       const adapterEnv = Object.fromEntries(
         Object.entries(parseObject(resolvedConfig.env)).filter(

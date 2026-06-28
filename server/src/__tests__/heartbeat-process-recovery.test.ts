@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -2249,6 +2252,48 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(progressAfterKeepalive?.lastOutputSeq).toBe(progressBeforeKeepalive?.lastOutputSeq);
     expect(progressAfterKeepalive?.lastOutputStream).toBe(progressBeforeKeepalive?.lastOutputStream);
     expect(settledRun?.stdoutExcerpt ?? "").not.toContain("[paperclip] keepalive");
+  });
+
+  it("materializes missing opencode_k8s shared docs before adapter dispatch", async () => {
+    const instructionsRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-k8s-docs-"));
+    await fs.writeFile(
+      path.join(instructionsRoot, "AGENTS.md"),
+      "Read: docs/architecture-template.md\n",
+      "utf8",
+    );
+
+    try {
+      const { agentId, runId } = await seedQueuedIssueRunFixture();
+      await db
+        .update(agents)
+        .set({
+          adapterType: "opencode_k8s",
+          adapterConfig: {
+            instructionsBundleMode: "external",
+            instructionsRootPath: instructionsRoot,
+            instructionsFilePath: path.join(instructionsRoot, "AGENTS.md"),
+            instructionsEntryFile: "AGENTS.md",
+          },
+        })
+        .where(eq(agents.id, agentId));
+
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId);
+
+      const adapterCall = mockAdapterExecute.mock.calls.find(([ctx]) => ctx.runId === runId)?.[0] as
+        | { context?: { paperclipWorkspace?: { cwd?: unknown } } }
+        | undefined;
+      const workspaceCwd = adapterCall?.context?.paperclipWorkspace?.cwd;
+      expect(workspaceCwd).toBeTypeOf("string");
+      const materialized = await fs.readFile(
+        path.join(workspaceCwd as string, "docs", "architecture-template.md"),
+        "utf8",
+      );
+      expect(materialized).toContain("# Missing Shared Documentation: docs/architecture-template.md");
+      expect(materialized).toContain("Continue the run without failing");
+    } finally {
+      await fs.rm(instructionsRoot, { recursive: true, force: true });
+    }
   });
 
   it("schedules a bounded retry for codex transient upstream failures instead of blocking the issue immediately", async () => {
