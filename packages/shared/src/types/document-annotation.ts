@@ -3,6 +3,9 @@ import type {
   DocumentAnnotationAnchorState,
   DocumentAnnotationThreadStatus,
   IssueCommentAuthorType,
+  IssueThreadInteractionContinuationPolicy,
+  IssueThreadInteractionKind,
+  IssueThreadInteractionStatus,
 } from "../constants.js";
 
 export interface DocumentTextPosition {
@@ -136,4 +139,94 @@ export interface CreateDocumentAnnotationCommentRequest {
 
 export interface UpdateDocumentAnnotationThreadRequest {
   status?: DocumentAnnotationThreadStatus;
+}
+
+export interface PlanReviewContextAuthor {
+  type: IssueCommentAuthorType;
+  id: string | null;
+}
+
+export interface PlanReviewContextComment {
+  id: string;
+  threadId: string;
+  body: string;
+  bodyTruncated: boolean;
+  author: PlanReviewContextAuthor;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlanReviewContextThread {
+  id: string;
+  documentKey: string;
+  documentId: string;
+  status: DocumentAnnotationThreadStatus;
+  revisionId: string | null;
+  revisionNumber: number;
+  anchorState: DocumentAnnotationAnchorState;
+  anchorConfidence: DocumentAnnotationAnchorConfidence;
+  selectedText: string;
+  selectedTextTruncated: boolean;
+  prefixText: string;
+  prefixTextTruncated: boolean;
+  suffixText: string;
+  suffixTextTruncated: boolean;
+  author: PlanReviewContextAuthor;
+  commentCount: number;
+  comments: PlanReviewContextComment[];
+  commentsTruncated: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlanReviewInteractionTargetContext {
+  issueId: string;
+  documentId: string | null;
+  key: string;
+  revisionId: string | null;
+  revisionNumber: number | null;
+}
+
+export interface PlanReviewInteractionResultContext {
+  outcome: string | null;
+  reason: string | null;
+  commentId: string | null;
+}
+
+export interface PlanReviewInteractionContext {
+  id: string;
+  kind: IssueThreadInteractionKind | string;
+  status: IssueThreadInteractionStatus | string;
+  continuationPolicy: IssueThreadInteractionContinuationPolicy | string;
+  sourceCommentId: string | null;
+  sourceRunId: string | null;
+  target: PlanReviewInteractionTargetContext | null;
+  acceptedTargetRevision: PlanReviewInteractionTargetContext | null;
+  result: PlanReviewInteractionResultContext | null;
+  resolvedAt: string | null;
+}
+
+export interface PlanReviewContext {
+  documentKey: "plan";
+  issueId: string;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number | null;
+  threads: PlanReviewContextThread[];
+  interaction: PlanReviewInteractionContext | null;
+  totals: {
+    openThreadCount: number;
+    includedThreadCount: number;
+    omittedThreadCount: number;
+    commentCount: number;
+    includedCommentCount: number;
+    omittedCommentCount: number;
+  };
+  limits: {
+    maxThreads: number;
+    maxComments: number;
+    maxBodyChars: number;
+    maxTotalBodyChars: number;
+    maxAnchorTextChars: number;
+  };
+  truncated: boolean;
 }
