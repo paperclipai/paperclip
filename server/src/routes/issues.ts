@@ -5809,8 +5809,10 @@ export function issueRoutes(
       actorType: actor.actorType,
       actorId: actor.actorId,
     });
+    const routineTerminalPlainComment =
+      isTerminalRoutineExecutionIssue(existing) && !explicitMoveToTodoRequested;
     const effectiveMoveToTodoRequested =
-      !isTerminalRoutineExecutionIssue(existing) &&
+      !routineTerminalPlainComment &&
       !assigneeSelfCommentOnTerminal &&
       (explicitMoveToTodoRequested ||
         (!!commentBody &&
@@ -7626,8 +7628,10 @@ export function issueRoutes(
       actorType: actor.actorType,
       actorId: actor.actorId,
     });
+    const routineTerminalPlainComment =
+      isTerminalRoutineExecutionIssue(issue) && !explicitMoveToTodoRequested;
     const effectiveMoveToTodoRequested =
-      !isTerminalRoutineExecutionIssue(issue) &&
+      !routineTerminalPlainComment &&
       !assigneeSelfCommentOnTerminal &&
       (explicitMoveToTodoRequested ||
         shouldImplicitlyMoveCommentedIssueToTodo({

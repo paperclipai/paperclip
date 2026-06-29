@@ -10568,10 +10568,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredCommentWakeId = deriveCommentId(deferredContextSeed, deferredPayload);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
+        // Only explicit lifecycle intent should revive completed issues. Plain
+        // comments, including routine-execution comments, remain history-only.
+        const deferredLifecycleIntent =
+          promotedContextSeed.resumeIntent === true ||
+          promotedContextSeed.followUpRequested === true ||
+          readNonEmptyString(promotedContextSeed.reopenedFrom) !== null;
         if (
           deferredCommentWakeId &&
           issue.originKind === "routine_execution" &&
-          (issue.status === "done" || issue.status === "cancelled")
+          (issue.status === "done" || issue.status === "cancelled") &&
+          !deferredLifecycleIntent
         ) {
           await tx
             .update(agentWakeupRequests)
@@ -10608,10 +10615,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
-        const deferredLifecycleIntent =
-          promotedContextSeed.resumeIntent === true ||
-          promotedContextSeed.followUpRequested === true ||
-          readNonEmptyString(promotedContextSeed.reopenedFrom) !== null;
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
           !deferredCommentWakeIsSelfAuthored &&
