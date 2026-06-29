@@ -70,7 +70,10 @@ function isSubsequence(needle: string, haystack: string): boolean {
  */
 function scoreProjectMatch(name: string, description: string, q: string): number | null {
   if (name === q) return 1000;
-  if (name.startsWith(q)) return 900 - name.length;
+  // Shorter names rank first, but clamp the length penalty so a prefix match can
+  // never sink below the substring band (max 699) for unusually long names —
+  // keeps the prefix > substring > description > fuzzy ordering invariant.
+  if (name.startsWith(q)) return Math.max(700, 900 - name.length);
   const nameIdx = name.indexOf(q);
   if (nameIdx >= 0) return 700 - nameIdx;
   if (description.includes(q)) return 400;
