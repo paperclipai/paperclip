@@ -20,6 +20,14 @@ function defaultGitCommand() {
   );
 }
 
+function readGitInfo(gitCommand: GitCommand = defaultGitCommand): ServerGitInfo {
+  try {
+    return parseGitInfo(gitCommand());
+  } catch {
+    return { available: false, unavailableReason: "git_unavailable" };
+  }
+}
+
 function parseGitInfo(output: string): ServerGitInfo {
   const [fullSha = "", shortSha = "", subject = "", committedAt = ""] = output
     .trimEnd()
@@ -42,21 +50,34 @@ function parseGitInfo(output: string): ServerGitInfo {
 export function createServerInfoSnapshot(
   opts: { now?: Date; gitCommand?: GitCommand } = {},
 ): ServerInfoSnapshot {
-  let git: ServerGitInfo;
-  try {
-    git = parseGitInfo((opts.gitCommand ?? defaultGitCommand)());
-  } catch {
-    git = { available: false, unavailableReason: "git_unavailable" };
-  }
-
   return {
     processStartedAt: (opts.now ?? new Date()).toISOString(),
-    git,
+    git: readGitInfo(opts.gitCommand),
   };
 }
 
-const serverInfoSnapshot = createServerInfoSnapshot();
+// processStartedAt is a true boot constant, but the running commit can change
+// without the Node process restarting: a managed dev-server restart re-runs the
+// code while keeping this module alive, so a commit captured once at boot goes
+// stale. Re-read git HEAD on demand, throttled by a short TTL so frequent health
+// polls don't spawn git on every request.
+const GIT_INFO_CACHE_TTL_MS = 3000;
+const processStartedAt = new Date().toISOString();
+let gitInfoCache: { value: ServerGitInfo; expiresAt: number } | null = null;
 
-export function getServerInfoSnapshot(): ServerInfoSnapshot {
-  return serverInfoSnapshot;
+export function getServerInfoSnapshot(
+  opts: { now?: number; gitCommand?: GitCommand } = {},
+): ServerInfoSnapshot {
+  const now = opts.now ?? Date.now();
+  if (!gitInfoCache || now >= gitInfoCache.expiresAt) {
+    gitInfoCache = {
+      value: readGitInfo(opts.gitCommand),
+      expiresAt: now + GIT_INFO_CACHE_TTL_MS,
+    };
+  }
+  return { processStartedAt, git: gitInfoCache.value };
+}
+
+export function resetServerInfoCacheForTests(): void {
+  gitInfoCache = null;
 }
