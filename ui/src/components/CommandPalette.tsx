@@ -247,9 +247,9 @@ export function CommandPalette() {
                   data-testid="command-project-match"
                 >
                   <Hexagon className="mr-2 h-4 w-4 shrink-0" />
-                  <span className="flex-1 truncate">{project.name}</span>
+                  <span className="min-w-0 truncate">{project.name}</span>
                   {project.description ? (
-                    <span className="ml-2 hidden truncate text-xs text-muted-foreground sm:inline">
+                    <span className="ml-2 hidden min-w-0 flex-1 truncate text-xs text-muted-foreground sm:inline">
                       {project.description}
                     </span>
                   ) : null}
