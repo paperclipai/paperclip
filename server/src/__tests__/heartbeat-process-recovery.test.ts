@@ -868,7 +868,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
-  async function seedQueuedIssueRunFixture() {
+  async function seedQueuedIssueRunFixture(input?: {
+    adapterType?: "codex_local" | "pi_local";
+    agentName?: string;
+    runtimeConfig?: Record<string, unknown>;
+  }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
@@ -887,12 +891,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.insert(agents).values({
       id: agentId,
       companyId,
-      name: "CodexCoder",
+      name: input?.agentName ?? "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: input?.adapterType ?? "codex_local",
       adapterConfig: {},
-      runtimeConfig: {
+      runtimeConfig: input?.runtimeConfig ?? {
         heartbeat: {
           wakeOnDemand: true,
           maxConcurrentRuns: 1,
@@ -1028,8 +1032,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         })
     );
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
-    // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
-    expect(issue?.checkoutRunId).toBeNull();
+    // Terminal run cleanup releases the dead run's checkout lock; depending on cleanup/adoption timing,
+    // the queued retry may either own checkout already or leave it free until claim time.
+    expect(issue?.checkoutRunId).not.toBe(runId);
+    expect([null, retryRun?.id ?? null]).toContain(issue?.checkoutRunId ?? null);
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {
@@ -1342,6 +1348,81 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(0);
+  });
+
+  it("schedules a fresh provider fallback retry for transient upstream failures", async () => {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "adapter_failed",
+      errorFamily: "transient_upstream",
+      errorMessage: "429 rate_limit_error: This request would exceed your account's rate limit.",
+      provider: "claude-bridge",
+      model: "claude-opus-4-8",
+      retryNotBefore: "2099-04-29T10:00:00.000Z",
+      resultJson: {
+        errorFamily: "transient_upstream",
+        retryNotBefore: "2099-04-29T10:00:00.000Z",
+        transientRetryNotBefore: "2099-04-29T10:00:00.000Z",
+      },
+    });
+
+    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture({
+      adapterType: "pi_local",
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+        providerFallbacks: [
+          {
+            key: "claude-sonnet",
+            adapterConfig: {
+              model: "claude-bridge/claude-sonnet-4-6",
+              thinking: "low",
+            },
+          },
+        ],
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+
+    const runs = await waitForValue(async () => {
+      const rows = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      return rows.length >= 2 ? rows : null;
+    });
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs?.find((row) => row.id === runId);
+    const retryRun = runs?.find((row) => row.id !== runId);
+    expect(failedRun?.status).toBe("failed");
+    expect((failedRun?.resultJson as Record<string, unknown> | null)?.errorFamily).toBe("transient_upstream");
+    expect(retryRun?.status).toBe("scheduled_retry");
+    expect(retryRun?.scheduledRetryReason).toBe("transient_failure");
+    expect(retryRun?.scheduledRetryAt?.getTime()).toBeLessThan(new Date("2099-04-29T10:00:00.000Z").getTime());
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      providerFallbackKey: "claude-sonnet",
+      forceFreshSession: true,
+      paperclipProviderFallback: {
+        key: "claude-sonnet",
+        model: "claude-bridge/claude-sonnet-4-6",
+      },
+    });
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
   });
 
   it("blocks a git-sensitive local adapter before launch when a project-workspace-linked issue is missing its project id", async () => {

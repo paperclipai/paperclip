@@ -383,6 +383,127 @@ function mergeAdapterRecoveryMetadata(input: {
       : {}),
   };
 }
+
+interface TransientProviderFallbackDefinition {
+  key: string;
+  adapterConfig: Record<string, unknown>;
+  forceFreshSession: boolean;
+  delayMs: number | null;
+}
+
+interface ProviderFallbackApplication {
+  requestedKey: string | null;
+  appliedKey: string | null;
+  fallbackReason: string | null;
+  adapterConfig: Record<string, unknown> | null;
+  forceFreshSession: boolean;
+}
+
+function readNonNegativeInteger(value: unknown): number | null {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.max(0, Math.floor(parsed));
+}
+
+function readTransientProviderFallbackDefinitions(runtimeConfig: unknown): TransientProviderFallbackDefinition[] {
+  const runtimeRecord = parseObject(runtimeConfig);
+  const rawFallbacks = Array.isArray(runtimeRecord.providerFallbacks)
+    ? runtimeRecord.providerFallbacks
+    : Array.isArray(runtimeRecord.modelFallbacks)
+      ? runtimeRecord.modelFallbacks
+      : [];
+
+  const definitions: TransientProviderFallbackDefinition[] = [];
+  for (const [index, rawFallback] of rawFallbacks.entries()) {
+    const fallback = parseObject(rawFallback);
+    if (fallback.enabled === false) continue;
+    const adapterConfig = parseObject(fallback.adapterConfig);
+    if (Object.keys(adapterConfig).length === 0) continue;
+    definitions.push({
+      key: readNonEmptyString(fallback.key) ?? `fallback-${index + 1}`,
+      adapterConfig,
+      forceFreshSession: fallback.forceFreshSession !== false,
+      delayMs: readNonNegativeInteger(fallback.delayMs),
+    });
+  }
+  return definitions;
+}
+
+function resolveTransientProviderFallbackForAttempt(
+  runtimeConfig: unknown,
+  attempt: number,
+): (TransientProviderFallbackDefinition & { attempt: number }) | null {
+  if (!Number.isInteger(attempt) || attempt <= 0) return null;
+  const fallback = readTransientProviderFallbackDefinitions(runtimeConfig)[attempt - 1] ?? null;
+  return fallback ? { ...fallback, attempt } : null;
+}
+
+function readContextProviderFallbackKey(contextSnapshot: Record<string, unknown> | null | undefined): string | null {
+  const nested = parseObject(contextSnapshot?.paperclipProviderFallback);
+  return readNonEmptyString(contextSnapshot?.providerFallbackKey) ?? readNonEmptyString(nested.key);
+}
+
+function resolveProviderFallbackApplication(input: {
+  agentRuntimeConfig: unknown;
+  contextSnapshot: Record<string, unknown> | null | undefined;
+}): ProviderFallbackApplication {
+  const requestedKey = readContextProviderFallbackKey(input.contextSnapshot);
+  if (!requestedKey) {
+    return {
+      requestedKey: null,
+      appliedKey: null,
+      fallbackReason: null,
+      adapterConfig: null,
+      forceFreshSession: false,
+    };
+  }
+
+  const fallback = readTransientProviderFallbackDefinitions(input.agentRuntimeConfig)
+    .find((candidate) => candidate.key === requestedKey) ?? null;
+  if (!fallback) {
+    return {
+      requestedKey,
+      appliedKey: null,
+      fallbackReason: "agent_runtime_provider_fallback_not_configured",
+      adapterConfig: null,
+      forceFreshSession: false,
+    };
+  }
+
+  return {
+    requestedKey,
+    appliedKey: fallback.key,
+    fallbackReason: null,
+    adapterConfig: fallback.adapterConfig,
+    forceFreshSession: fallback.forceFreshSession,
+  };
+}
+
+function providerFallbackRunMetadata(
+  providerFallback: ProviderFallbackApplication,
+): Record<string, unknown> | null {
+  if (!providerFallback.requestedKey) return null;
+  const model = readNonEmptyString(providerFallback.adapterConfig?.model);
+  return {
+    requestedKey: providerFallback.requestedKey,
+    appliedKey: providerFallback.appliedKey,
+    fallbackReason: providerFallback.fallbackReason,
+    forceFreshSession: providerFallback.forceFreshSession,
+    ...(model ? { model } : {}),
+  };
+}
+
+function mergeProviderFallbackRunMetadata(
+  resultJson: Record<string, unknown> | null,
+  providerFallback: ProviderFallbackApplication,
+): Record<string, unknown> | null {
+  const metadata = providerFallbackRunMetadata(providerFallback);
+  if (!metadata) return resultJson;
+  return {
+    ...(resultJson ?? {}),
+    providerFallback: metadata,
+  };
+}
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set(["approval_approved"]);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
@@ -2110,6 +2231,7 @@ export function shouldResetTaskSessionForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   if (contextSnapshot?.forceFreshSession === true) return true;
+  if (readContextProviderFallbackKey(contextSnapshot)) return true;
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (
@@ -2223,6 +2345,7 @@ export function describeSessionResetReason(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   if (contextSnapshot?.forceFreshSession === true) return "forceFreshSession was requested";
+  if (readContextProviderFallbackKey(contextSnapshot)) return "provider fallback was requested";
 
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
@@ -6189,27 +6312,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const now = opts?.now ?? new Date();
     const retryReason = opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
-    const maxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
+    const transientRecovery =
+      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+        ? readTransientRecoveryContractFromRun(run)
+        : null;
+    const providerFallbackCount = transientRecovery
+      ? readTransientProviderFallbackDefinitions(agent.runtimeConfig).length
+      : 0;
+    const maxAttempts = Math.max(0, Math.floor(
+      opts?.maxAttempts ?? (providerFallbackCount > 0
+        ? providerFallbackCount
+        : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
+    ));
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
-    const baseSchedule = opts?.delayMs != null
+    const providerFallback = transientRecovery
+      ? resolveTransientProviderFallbackForAttempt(agent.runtimeConfig, nextAttempt)
+      : null;
+    const configuredDelayMs = providerFallback ? (providerFallback.delayMs ?? 0) : opts?.delayMs;
+    const baseSchedule = configuredDelayMs != null
       ? nextAttempt <= maxAttempts
         ? {
             attempt: nextAttempt,
-            baseDelayMs: Math.max(0, Math.floor(opts.delayMs)),
-            delayMs: Math.max(0, Math.floor(opts.delayMs)),
-            dueAt: new Date(now.getTime() + Math.max(0, Math.floor(opts.delayMs))),
+            baseDelayMs: Math.max(0, Math.floor(configuredDelayMs)),
+            delayMs: Math.max(0, Math.floor(configuredDelayMs)),
+            dueAt: new Date(now.getTime() + Math.max(0, Math.floor(configuredDelayMs))),
             maxAttempts,
           }
         : null
       : nextAttempt <= maxAttempts
         ? computeBoundedTransientHeartbeatRetrySchedule(nextAttempt, now, opts?.random)
         : null;
-    const transientRecovery =
-      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
-        ? readTransientRecoveryContractFromRun(run)
-        : null;
     const codexTransientFallbackMode =
-      agent.adapterType === "codex_local" && transientRecovery
+      agent.adapterType === "codex_local" && transientRecovery && !providerFallback
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
@@ -6262,7 +6396,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const schedule =
-      transientRetryNotBefore && transientRetryNotBefore.getTime() > baseSchedule.dueAt.getTime()
+      !providerFallback && transientRetryNotBefore && transientRetryNotBefore.getTime() > baseSchedule.dueAt.getTime()
         ? {
             ...baseSchedule,
             dueAt: transientRetryNotBefore,
@@ -6297,6 +6431,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
+    const providerFallbackContext = providerFallback
+      ? {
+          providerFallbackKey: providerFallback.key,
+          forceFreshSession: providerFallback.forceFreshSession,
+          paperclipProviderFallback: {
+            key: providerFallback.key,
+            attempt: providerFallback.attempt,
+            reason: "transient_upstream",
+            model: readNonEmptyString(providerFallback.adapterConfig.model),
+            forceFreshSession: providerFallback.forceFreshSession,
+          },
+        }
+      : {};
     const retryContextSnapshot: Record<string, unknown> = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
@@ -6307,6 +6454,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       scheduledRetryAt: schedule.dueAt.toISOString(),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+      ...providerFallbackContext,
     }, "normal_model");
     const maxTurnContinuationIdempotencyKey = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
       ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
@@ -6477,6 +6625,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             scheduledRetryAt: schedule.dueAt.toISOString(),
             ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
             ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+            ...providerFallbackContext,
           }, "normal_model"),
           status: "queued",
           requestedByActorType: "system",
@@ -6599,6 +6748,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         delayMs: schedule.delayMs,
         ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
         ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+        ...(providerFallback
+          ? {
+              providerFallbackKey: providerFallback.key,
+              providerFallbackModel: readNonEmptyString(providerFallback.adapterConfig.model),
+              forceFreshSession: providerFallback.forceFreshSession,
+            }
+          : {}),
       },
     });
 
@@ -8415,11 +8571,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipModelProfile;
     }
-    const mergedConfig = mergeModelProfileAdapterConfig({
-      baseConfig: persistedWorkspaceManagedConfig,
-      modelProfile: modelProfileApplication,
-      issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
+    const providerFallbackApplication = resolveProviderFallbackApplication({
+      agentRuntimeConfig: agent.runtimeConfig,
+      contextSnapshot: context,
     });
+    const providerFallbackMetadata = providerFallbackRunMetadata(providerFallbackApplication);
+    if (providerFallbackMetadata) {
+      context.paperclipProviderFallback = providerFallbackMetadata;
+      if (providerFallbackApplication.forceFreshSession) context.forceFreshSession = true;
+    } else {
+      delete context.paperclipProviderFallback;
+    }
+    const mergedConfig = {
+      ...persistedWorkspaceManagedConfig,
+      ...(modelProfileApplication.adapterConfig ?? {}),
+      ...(providerFallbackApplication.adapterConfig ?? {}),
+      ...(issueAssigneeOverrides?.adapterConfig ?? {}),
+    };
+    const effectiveConfiguredModel = readConfiguredModelFromAdapterConfig(mergedConfig) ?? configuredModel;
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
@@ -9105,6 +9274,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           payload: {
             ...(meta as unknown as Record<string, unknown>),
             ...(modelProfileMetadata ? { modelProfile: modelProfileMetadata } : {}),
+            ...(providerFallbackMetadata ? { providerFallback: providerFallbackMetadata } : {}),
           },
         });
       };
@@ -9340,13 +9510,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const persistedResultJson = mergeHeartbeatRunResultJson(
         mergeRunStopMetadataForAgent(agent, outcome, {
-          resultJson: mergeModelProfileRunMetadata(
-            mergeAdapterRecoveryMetadata({
-              resultJson: adapterResult.resultJson ?? null,
-              errorFamily: adapterResult.errorFamily ?? null,
-              retryNotBefore: adapterResult.retryNotBefore ?? null,
-            }),
-            modelProfileApplication,
+          resultJson: mergeProviderFallbackRunMetadata(
+            mergeModelProfileRunMetadata(
+              mergeAdapterRecoveryMetadata({
+                resultJson: adapterResult.resultJson ?? null,
+                errorFamily: adapterResult.errorFamily ?? null,
+                retryNotBefore: adapterResult.retryNotBefore ?? null,
+              }),
+              modelProfileApplication,
+            ),
+            providerFallbackApplication,
           ),
           errorCode: runErrorCode,
           errorMessage: runErrorMessage,
@@ -9524,7 +9697,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               agentId: agent.id,
               adapterType: agent.adapterType,
               taskKey,
-              sessionParamsJson: attachConfiguredModelToSessionParams(nextSessionState.params, configuredModel),
+              sessionParamsJson: attachConfiguredModelToSessionParams(nextSessionState.params, effectiveConfiguredModel),
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
               lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
@@ -9626,7 +9799,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             agentId: agent.id,
             adapterType: agent.adapterType,
             taskKey,
-            sessionParamsJson: attachConfiguredModelToSessionParams(previousSessionParams, configuredModel),
+            sessionParamsJson: attachConfiguredModelToSessionParams(previousSessionParams, effectiveConfiguredModel),
             sessionDisplayId: previousSessionDisplayId,
             lastRunId: failedRun.id,
             lastError: message,

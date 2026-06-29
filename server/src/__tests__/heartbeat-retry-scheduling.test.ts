@@ -72,8 +72,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     retryNotBefore?: string | null;
     scheduledRetryAttempt?: number;
     resultJson?: Record<string, unknown> | null;
-    adapterType?: "codex_local" | "claude_local";
+    adapterType?: "codex_local" | "claude_local" | "pi_local";
     agentName?: string;
+    runtimeConfig?: Record<string, unknown>;
   }) {
     const adapterType = input.adapterType ?? "codex_local";
     const agentName = input.agentName ?? (adapterType === "claude_local" ? "ClaudeCoder" : "CodexCoder");
@@ -92,7 +93,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       status: "active",
       adapterType,
       adapterConfig: {},
-      runtimeConfig: {
+      runtimeConfig: input.runtimeConfig ?? {
         heartbeat: {
           wakeOnDemand: true,
           maxConcurrentRuns: 1,
@@ -1338,6 +1339,134 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       await db.delete(agents);
       await db.delete(companies);
     }
+  });
+
+  it("schedules configured provider fallback immediately with fresh-session context", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-04-22T10:00:00.000Z");
+    const retryNotBefore = new Date("2026-04-29T10:00:00.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "adapter_failed",
+      errorFamily: "transient_upstream",
+      adapterType: "pi_local",
+      retryNotBefore: retryNotBefore.toISOString(),
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+        providerFallbacks: [
+          {
+            key: "claude-sonnet",
+            adapterConfig: {
+              model: "claude-bridge/claude-sonnet-4-6",
+              thinking: "low",
+            },
+          },
+          {
+            key: "codex",
+            adapterConfig: {
+              model: "openai-codex/gpt-5.5",
+              thinking: "low",
+            },
+          },
+        ],
+      },
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+    expect(scheduled.dueAt.getTime()).toBe(now.getTime());
+    expect(scheduled.maxAttempts).toBe(2);
+
+    const retryRun = await db
+      .select({
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(retryRun?.scheduledRetryAt?.getTime()).toBe(now.getTime());
+    const contextSnapshot = (retryRun?.contextSnapshot as Record<string, unknown> | null) ?? {};
+    expect(contextSnapshot.providerFallbackKey).toBe("claude-sonnet");
+    expect(contextSnapshot.forceFreshSession).toBe(true);
+    expect(contextSnapshot.paperclipProviderFallback).toMatchObject({
+      key: "claude-sonnet",
+      attempt: 1,
+      model: "claude-bridge/claude-sonnet-4-6",
+      forceFreshSession: true,
+    });
+    expect(contextSnapshot.transientRetryNotBefore).toBe(retryNotBefore.toISOString());
+    expect(contextSnapshot.codexTransientFallbackMode ?? null).toBeNull();
+
+    const wakeupRequest = await db
+      .select({ payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, retryRun?.wakeupRequestId ?? ""))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeupRequest?.payload).toMatchObject({
+      providerFallbackKey: "claude-sonnet",
+      forceFreshSession: true,
+      paperclipProviderFallback: {
+        key: "claude-sonnet",
+        attempt: 1,
+        model: "claude-bridge/claude-sonnet-4-6",
+      },
+    });
+  });
+
+  it("exhausts transient retries after the configured provider fallback ladder", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-04-22T10:30:00.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "adapter_failed",
+      errorFamily: "transient_upstream",
+      adapterType: "pi_local",
+      scheduledRetryAttempt: 1,
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+        providerFallbacks: [
+          {
+            key: "claude-sonnet",
+            adapterConfig: { model: "claude-bridge/claude-sonnet-4-6" },
+          },
+        ],
+      },
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(scheduled.outcome).toBe("retry_exhausted");
+    expect(scheduled.attempt).toBe(2);
+    expect(scheduled.maxAttempts).toBe(1);
   });
 
   it("honors codex retry-not-before timestamps when they exceed the default bounded backoff", async () => {

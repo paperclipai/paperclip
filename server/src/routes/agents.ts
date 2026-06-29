@@ -1065,8 +1065,46 @@ export function agentRoutes(
     return entries;
   }
 
+  function listRuntimeProviderFallbackAdapterConfigs(runtimeConfig: unknown): Array<{
+    field: "providerFallbacks" | "modelFallbacks";
+    index: number;
+    fallback: Record<string, unknown>;
+    adapterConfig: Record<string, unknown>;
+    path: string;
+  }> {
+    const runtimeRecord = asRecord(runtimeConfig);
+    const field: "providerFallbacks" | "modelFallbacks" = Array.isArray(runtimeRecord?.providerFallbacks)
+      ? "providerFallbacks"
+      : "modelFallbacks";
+    const providerFallbacks = Array.isArray(runtimeRecord?.[field]) ? runtimeRecord[field] : [];
+
+    const entries: Array<{
+      field: "providerFallbacks" | "modelFallbacks";
+      index: number;
+      fallback: Record<string, unknown>;
+      adapterConfig: Record<string, unknown>;
+      path: string;
+    }> = [];
+    for (const [index, rawFallback] of providerFallbacks.entries()) {
+      const fallback = asRecord(rawFallback);
+      const adapterConfig = asRecord(fallback?.adapterConfig);
+      if (!fallback || !adapterConfig) continue;
+      entries.push({
+        field,
+        index,
+        fallback,
+        adapterConfig,
+        path: `runtimeConfig.${field}.${index}.adapterConfig`,
+      });
+    }
+    return entries;
+  }
+
   function assertNoAgentRuntimeConfigAdapterConfigMutation(req: Request, runtimeConfig: unknown) {
     for (const entry of listRuntimeModelProfileAdapterConfigs(runtimeConfig)) {
+      assertNoAgentAdapterConfigMutation(req, entry.adapterConfig, entry.path);
+    }
+    for (const entry of listRuntimeProviderFallbackAdapterConfigs(runtimeConfig)) {
       assertNoAgentAdapterConfigMutation(req, entry.adapterConfig, entry.path);
     }
   }
@@ -1097,16 +1135,17 @@ export function agentRoutes(
     runtimeConfig: Record<string, unknown>,
     baseAdapterConfig: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    const entries = listRuntimeModelProfileAdapterConfigs(runtimeConfig);
-    if (entries.length === 0) return runtimeConfig;
-    const adapterModelProfiles = await listAdapterModelProfiles(adapterType);
+    const profileEntries = listRuntimeModelProfileAdapterConfigs(runtimeConfig);
+    const fallbackEntries = listRuntimeProviderFallbackAdapterConfigs(runtimeConfig);
+    if (profileEntries.length === 0 && fallbackEntries.length === 0) return runtimeConfig;
+    const adapterModelProfiles = profileEntries.length > 0 ? await listAdapterModelProfiles(adapterType) : [];
 
     const normalizedRuntimeConfig = { ...runtimeConfig };
     const modelProfiles = asRecord(runtimeConfig.modelProfiles) ?? {};
     const normalizedModelProfiles = { ...modelProfiles };
-    normalizedRuntimeConfig.modelProfiles = normalizedModelProfiles;
+    if (profileEntries.length > 0) normalizedRuntimeConfig.modelProfiles = normalizedModelProfiles;
 
-    for (const entry of entries) {
+    for (const entry of profileEntries) {
       const adapterProfile = adapterModelProfiles.find((profile) => profile.key === entry.profileKey);
       const adapterDefaultConfig = asRecord(adapterProfile?.adapterConfig) ?? {};
       const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
@@ -1122,6 +1161,26 @@ export function agentRoutes(
         ...entry.profile,
         adapterConfig: normalizedAdapterConfig,
       };
+    }
+
+    if (fallbackEntries.length > 0) {
+      const fallbackField = fallbackEntries[0]?.field ?? "providerFallbacks";
+      const providerFallbacks = Array.isArray(runtimeConfig[fallbackField])
+        ? [...runtimeConfig[fallbackField]]
+        : [];
+      normalizedRuntimeConfig[fallbackField] = providerFallbacks;
+      for (const entry of fallbackEntries) {
+        const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
+          companyId,
+          adapterType,
+          adapterConfig: entry.adapterConfig,
+          constraintAdapterConfig: baseAdapterConfig,
+        });
+        providerFallbacks[entry.index] = {
+          ...entry.fallback,
+          adapterConfig: normalizedAdapterConfig,
+        };
+      }
     }
 
     return normalizedRuntimeConfig;
