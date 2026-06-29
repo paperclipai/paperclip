@@ -189,6 +189,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "agent_not_found",
   "budget_blocked",
   "budget_exhausted",
+  "claude_auth_required",
   "issue_paused",
   "issue_dependencies_blocked",
 ]);
@@ -202,6 +203,14 @@ const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+
+// Maximum consecutive failed source_scoped_recovery dispatches before switching to board escalation.
+// Caps the storm amplifier at O(CAP × stranded_issues) instead of O(∞).
+export const SOURCE_SCOPED_RECOVERY_DISPATCH_CAP = 3;
+
+export function shouldSuppressSourceScopedRecoveryDispatch(attemptCount: number): boolean {
+  return attemptCount > SOURCE_SCOPED_RECOVERY_DISPATCH_CAP;
+}
 
 type ContinuationRetryClassification = {
   kind: "transient_infra" | "non_retryable" | "default";
@@ -2351,6 +2360,69 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (input.recoveryCause === "workspace_validation_failed") return;
     if (input.recoveryCause === "configuration_incomplete") return;
     if (!input.action.ownerAgentId) return;
+    if (shouldSuppressSourceScopedRecoveryDispatch(input.action.attemptCount)) {
+      logger.warn({
+        actionId: input.action.id,
+        issueId: input.issue.id,
+        attemptCount: input.action.attemptCount,
+        cap: SOURCE_SCOPED_RECOVERY_DISPATCH_CAP,
+        ownerAgentId: input.action.ownerAgentId,
+      }, "source_scoped_recovery: dispatch cap exceeded, suppressing agent wake — board must intervene");
+
+      // Flip wakePolicy to board_escalation so the action card reflects the escalated state.
+      await db
+        .update(issueRecoveryActions)
+        .set({ wakePolicy: { type: "board_escalation", reason: "max_source_scoped_recovery_attempts_exceeded" } })
+        .where(eq(issueRecoveryActions.id, input.action.id));
+
+      // Emit a board-visible comment on the stranded issue so the cap breach is not log-only.
+      // Idempotent: dual-guard — sentinel phrase AND recovery action ID in metadata — avoids
+      // false-positive against the attempt-1 escalation comment that also contains the action ID.
+      const capBreachSentinel = `source-scoped recovery has been suspended`;
+      const hasCapBreachComment = await db
+        .select({ id: issueComments.id, body: issueComments.body, metadata: issueComments.metadata })
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.issueId, input.issue.id),
+            eq(issueComments.authorType, "system"),
+          ),
+        )
+        .orderBy(desc(issueComments.createdAt))
+        .limit(50)
+        .then((rows) => rows.some((row) =>
+          (row.body ?? "").includes(capBreachSentinel) &&
+          noticeMetadataReferencesRecoveryAction(row.metadata, input.action.id),
+        ));
+
+      if (!hasCapBreachComment) {
+        const capBreachBody = [
+          "Automatic source-scoped recovery has been suspended for this issue.",
+          "",
+          `- Recovery action: \`${input.action.id}\``,
+          `- Attempts: \`${input.action.attemptCount}\` (cap: \`${SOURCE_SCOPED_RECOVERY_DISPATCH_CAP}\`)`,
+          `- Cause: \`${input.recoveryCause}\``,
+          "- Next action: a board operator should restore auth, clear the recovery action, or record an intentional manual resolution — then reassign this issue to resume normal execution.",
+        ].join("\n");
+
+        await issuesSvc.addComment(input.issue.id, capBreachBody, {}, {
+          authorType: "system",
+          metadata: {
+            version: 1,
+            sections: [
+              {
+                rows: [
+                  { type: "key_value", label: "Recovery action", value: input.action.id },
+                  { type: "key_value", label: "Cause", value: input.recoveryCause },
+                ],
+              },
+            ],
+          },
+        });
+      }
+
+      return;
+    }
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
       triggerDetail: "system",
