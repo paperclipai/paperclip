@@ -654,6 +654,40 @@ function isApprovalReviewComment(body: string) {
   );
 }
 
+function parseReviewCommentDecision(body: string): "approved" | "changes_requested" | null {
+  const normalized = body.replace(/\r\n?/g, "\n");
+  if (isApprovalReviewComment(body) || /(?:^|\n)##\s*QA Review\b[^\n]*\b(?:APROVADO|APPROVED)\b/i.test(normalized)) {
+    return "approved";
+  }
+  if (
+    /^[ \t]*kind[ \t]*:[ \t]*review[ \t]*\n[ \t]*decision[ \t]*:[ \t]*(?:changes_requested|rejected)[ \t]*$/im.test(normalized)
+    || /^[ \t]*decision[ \t]*:[ \t]*(?:changes_requested|rejected)[ \t]*\n[ \t]*kind[ \t]*:[ \t]*review[ \t]*$/im.test(normalized)
+    || /(?:^|\n)##\s*QA Review\b[^\n]*\b(?:REPROVADO|REJECT(?:ED|ION)?|CHANGES?\s+REQUESTED)\b/i.test(normalized)
+  ) {
+    return "changes_requested";
+  }
+  const headingMatch = normalized.match(/(?:^|\n)##\s*Review:\s*([^\n]*)/i);
+  if (headingMatch && APPROVAL_NEGATION_REGEX.test(headingMatch[1] ?? "")) {
+    return "changes_requested";
+  }
+  return null;
+}
+
+function findLatestRejectingReviewerAgentId(input: {
+  comments: Array<{ authorType?: string | null; authorAgentId?: string | null; body?: string | null }>;
+  actorAgentId: string;
+}) {
+  for (const comment of input.comments) {
+    if (comment.authorType !== "agent") continue;
+    const authorAgentId = typeof comment.authorAgentId === "string" ? comment.authorAgentId : null;
+    if (!authorAgentId || authorAgentId === input.actorAgentId) continue;
+    const decision = parseReviewCommentDecision(comment.body ?? "");
+    if (decision === "approved") return null;
+    if (decision === "changes_requested") return authorAgentId;
+  }
+  return null;
+}
+
 function buildExecutionStageWakeContext(input: {
   state: ParsedExecutionState;
   wakeRole: ExecutionStageWakeContext["wakeRole"];
@@ -1682,6 +1716,7 @@ export function issueRoutes(
       id: string;
       companyId: string;
       status: string;
+      assigneeAgentId?: string | null;
       assigneeUserId?: string | null;
       executionState?: unknown;
       monitorNextCheckAt?: Date | null;
@@ -1698,6 +1733,14 @@ export function issueRoutes(
       ? input.existing.assigneeUserId
       : input.updateFields.assigneeUserId;
     if (typeof nextAssigneeUserId === "string" && nextAssigneeUserId.trim().length > 0) return;
+    const nextAssigneeAgentId = input.updateFields.assigneeAgentId === undefined
+      ? input.existing.assigneeAgentId
+      : input.updateFields.assigneeAgentId;
+    if (
+      typeof nextAssigneeAgentId === "string"
+      && nextAssigneeAgentId.trim().length > 0
+      && nextAssigneeAgentId !== input.existing.assigneeAgentId
+    ) return;
 
     const nextExecutionState = input.updateFields.executionState === undefined
       ? input.existing.executionState
@@ -1721,6 +1764,7 @@ export function issueRoutes(
       code: "invalid_issue_disposition",
       missing: "review_path",
       validReviewPaths: [
+        "assigned_reviewer_agent_id",
         "pending_issue_thread_interaction",
         "linked_pending_approval",
         "human_assignee_user_id",
@@ -5880,6 +5924,42 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+    let autoReviewerHandoff = false;
+    const nextStatusForReviewerHandoff = typeof updateFields.status === "string"
+      ? updateFields.status
+      : existing.status;
+    if (
+      req.actor.type === "agent"
+      && req.actor.agentId
+      && existing.status === "in_progress"
+      && nextStatusForReviewerHandoff === "in_review"
+    ) {
+      const nextAssigneeAgentId = updateFields.assigneeAgentId === undefined
+        ? existing.assigneeAgentId
+        : updateFields.assigneeAgentId as string | null | undefined;
+      const nextAssigneeUserId = updateFields.assigneeUserId === undefined
+        ? existing.assigneeUserId
+        : updateFields.assigneeUserId as string | null | undefined;
+      const nextExecutionState = updateFields.executionState === undefined
+        ? existing.executionState
+        : updateFields.executionState;
+      if (
+        !nextAssigneeUserId
+        && !hasExecutionParticipant(nextExecutionState)
+        && (!nextAssigneeAgentId || nextAssigneeAgentId === existing.assigneeAgentId)
+      ) {
+        const comments = await svc.listComments(id, { order: "desc", limit: 25 });
+        const reviewerAgentId = findLatestRejectingReviewerAgentId({
+          comments,
+          actorAgentId: req.actor.agentId,
+        });
+        if (reviewerAgentId) {
+          updateFields.assigneeAgentId = reviewerAgentId;
+          updateFields.assigneeUserId = null;
+          autoReviewerHandoff = true;
+        }
+      }
+    }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
@@ -5916,7 +5996,7 @@ export function issueRoutes(
       !!existing.createdByUserId &&
       nextAssigneeUserId === existing.createdByUserId;
 
-    if (assigneeWillChange && !transition.workflowControlledAssignment) {
+    if (assigneeWillChange && !transition.workflowControlledAssignment && !autoReviewerHandoff) {
       if (!isAgentReturningIssueToCreator) {
         await assertCanAssignTasks(req, existing.companyId, {
           issueId: existing.id,
