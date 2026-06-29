@@ -434,6 +434,67 @@ describe("issue execution policy routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it("patches a raw execution policy with participant reviewers onto an issue missing a policy", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1008",
+      title: "Routine issue missing execution policy",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [
+            {
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+            },
+          ],
+        },
+      });
+
+    expect(res.status).toBe(200);
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch.executionPolicy).toMatchObject({
+      mode: "normal",
+      commentRequired: true,
+      stages: [
+        {
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [
+            {
+              type: "agent",
+              agentId: "44444444-4444-4444-8444-444444444444",
+              userId: null,
+            },
+          ],
+        },
+      ],
+    });
+    expect((updatePatch.executionPolicy as any).stages[0].id).toEqual(expect.any(String));
+    expect((updatePatch.executionPolicy as any).stages[0].participants[0].id).toEqual(expect.any(String));
+    expect(updatePatch.status).toBeUndefined();
+    expect(updatePatch.executionState).toBeUndefined();
+  });
+
   it("triggers a scheduled monitor immediately from the dedicated route", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
