@@ -13,6 +13,7 @@ export const kubernetesProviderConfigSchema = z
     companySlug: z.string().regex(/^[a-z0-9-]{1,32}$/).optional(),
 
     imageRegistry: z.string().url().optional(),
+    runtimeImages: z.record(z.string().trim().min(1)).default({}),
     imageAllowList: z.array(z.string()).default([]),
     imagePullSecrets: z.array(z.string()).default([]),
 
