@@ -40,8 +40,8 @@ export function isCodexLocalFastModeSupported(model: string | null | undefined):
 export const models = [
   { id: "gpt-5.5", label: "gpt-5.5" },
   { id: "gpt-5.4", label: "gpt-5.4" },
+  { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
   { id: DEFAULT_CODEX_LOCAL_MODEL, label: DEFAULT_CODEX_LOCAL_MODEL },
-  { id: "gpt-5.3-codex-spark", label: "gpt-5.3-codex-spark" },
   { id: "gpt-5", label: "gpt-5" },
   { id: "o3", label: "o3" },
   { id: "o4-mini", label: "o4-mini" },
@@ -55,10 +55,9 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
-    description: "Use the lowest-cost known Codex local model lane without changing the primary model.",
+    description: "Use the approved mini Codex local model lane without changing the primary model.",
     adapterConfig: {
-      model: "gpt-5.3-codex-spark",
-      // Spark is the cheap lane by model price; high effort keeps Codex coding behavior usable for delegated work.
+      model: "gpt-5.4-mini",
       modelReasoningEffort: "high",
     },
     source: "adapter_default",
