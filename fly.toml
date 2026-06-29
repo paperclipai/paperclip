@@ -21,3 +21,12 @@ primary_region = 'iad'
   cpu_kind = 'shared'
   cpus = 1
   memory_mb = 1024
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "3100"
+  PAPERCLIP_HOME = "/data"
+  PAPERCLIP_DEPLOYMENT_MODE = "authenticated"
+  PAPERCLIP_PUBLIC_URL = "https://paperclip-iv5dca.fly.dev/"
+  PAPERCLIP_ALLOWED_HOSTNAMES = "paperclip-iv5dca.fly.dev/"
+  PAPERCLIP_STORAGE_PROVIDER = "local_disk"
