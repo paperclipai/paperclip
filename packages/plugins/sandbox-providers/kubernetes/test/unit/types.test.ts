@@ -6,6 +6,7 @@ describe("kubernetesProviderConfigSchema", () => {
     const parsed = parseKubernetesProviderConfig({ inCluster: true });
     expect(parsed.inCluster).toBe(true);
     expect(parsed.namespacePrefix).toBe("paperclip-");
+    expect(parsed.runtimeImages).toEqual({});
     expect(parsed.imageAllowList).toEqual([]);
     expect(parsed.egressMode).toBe("standard");
     expect(parsed.jobTtlSecondsAfterFinished).toBe(900);
@@ -35,5 +36,23 @@ describe("kubernetesProviderConfigSchema", () => {
     expect(() =>
       parseKubernetesProviderConfig({ inCluster: true, egressAllowCidrs: ["not-a-cidr"] }),
     ).toThrow(/CIDR/i);
+  });
+
+  it("accepts per-adapter runtime image overrides", () => {
+    const parsed = parseKubernetesProviderConfig({
+      inCluster: true,
+      runtimeImages: {
+        claude_local: "ghcr.io/paperclipai/agent-runtime-claude:git-b18cbb0dd3d524d3d332f54143c84f00c694636c",
+      },
+    });
+    expect(parsed.runtimeImages.claude_local).toBe(
+      "ghcr.io/paperclipai/agent-runtime-claude:git-b18cbb0dd3d524d3d332f54143c84f00c694636c",
+    );
+  });
+
+  it("rejects blank runtime image override values", () => {
+    expect(() =>
+      parseKubernetesProviderConfig({ inCluster: true, runtimeImages: { claude_local: "   " } }),
+    ).toThrow();
   });
 });
