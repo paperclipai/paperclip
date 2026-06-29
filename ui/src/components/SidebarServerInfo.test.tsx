@@ -105,6 +105,13 @@ describe("SidebarServerInfo", () => {
           shortSha: "abcdef1",
           subject: "Add server info debug view",
           committedAt: "2026-06-25T23:00:00.000Z",
+          localChanges: {
+            available: true,
+            hasLocalChanges: false,
+            stagedFileCount: 0,
+            unstagedFileCount: 0,
+            untrackedFileCount: 0,
+          },
         },
       },
     });
@@ -113,9 +120,40 @@ describe("SidebarServerInfo", () => {
 
     expect(container.textContent).toContain("Last restarted");
     expect(container.textContent).toContain("Running commit");
+    expect(container.textContent).toContain("Checkout state");
     expect(container.querySelector('time[dateTime="2026-06-26T01:15:00.000Z"]')).not.toBeNull();
     expect(container.textContent).toContain("abcdef1");
     expect(container.textContent).toContain("Add server info debug view");
+    expect(container.textContent).toContain("Clean checkout");
+  });
+
+  it("shows path-free local change counts from health data", async () => {
+    mockEnabledSettings(true);
+    mockHealthApi.get.mockResolvedValue({
+      status: "ok",
+      serverInfo: {
+        processStartedAt: "2026-06-26T00:00:00.000Z",
+        git: {
+          available: true,
+          fullSha: "abcdef1234567890abcdef1234567890abcdef12",
+          shortSha: "abcdef1",
+          subject: "Add server info debug view",
+          committedAt: "2026-06-25T23:00:00.000Z",
+          localChanges: {
+            available: true,
+            hasLocalChanges: true,
+            stagedFileCount: 3,
+            unstagedFileCount: 2,
+            untrackedFileCount: 1,
+          },
+        },
+      },
+    });
+
+    await render();
+
+    expect(container.textContent).toContain("Local changes present (3 staged, 2 unstaged, 1 untracked)");
+    expect(container.textContent).not.toContain("server-info.ts");
   });
 
   it("refetches fresh health each time the drawer reopens, even within staleTime", async () => {
@@ -130,6 +168,13 @@ describe("SidebarServerInfo", () => {
           shortSha: "1111111",
           subject: "First boot",
           committedAt: "2026-06-25T23:00:00.000Z",
+          localChanges: {
+            available: true,
+            hasLocalChanges: false,
+            stagedFileCount: 0,
+            unstagedFileCount: 0,
+            untrackedFileCount: 0,
+          },
         },
       },
     };
@@ -169,12 +214,20 @@ describe("SidebarServerInfo", () => {
           shortSha: "2222222",
           subject: "After restart",
           committedAt: "2026-06-26T01:30:00.000Z",
+          localChanges: {
+            available: true,
+            hasLocalChanges: true,
+            stagedFileCount: 1,
+            unstagedFileCount: 0,
+            untrackedFileCount: 0,
+          },
         },
       },
     });
 
     const secondOpen = await mountDrawer();
     expect(container.textContent).toContain("After restart");
+    expect(container.textContent).toContain("Local changes present (1 staged)");
     expect(container.textContent).not.toContain("First boot");
     flushSync(() => secondOpen.unmount());
   });

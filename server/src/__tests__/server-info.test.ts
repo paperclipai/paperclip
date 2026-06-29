@@ -21,6 +21,7 @@ describe("server info snapshot", () => {
           "Add server info debug view",
           "2026-06-25T17:00:00-07:00",
         ].join("\n"),
+      gitStatusCommand: () => "",
     });
 
     expect(snapshot).toEqual({
@@ -31,6 +32,68 @@ describe("server info snapshot", () => {
         shortSha: "0123456",
         subject: "Add server info debug view",
         committedAt: "2026-06-26T00:00:00.000Z",
+        localChanges: {
+          available: true,
+          hasLocalChanges: false,
+          stagedFileCount: 0,
+          unstagedFileCount: 0,
+          untrackedFileCount: 0,
+        },
+      },
+    });
+  });
+
+  it("summarizes local checkout changes without exposing file paths", () => {
+    const snapshot = createServerInfoSnapshot({
+      now: new Date("2026-06-26T00:00:00.000Z"),
+      gitCommand: () =>
+        [
+          "0123456789abcdef0123456789abcdef01234567",
+          "0123456",
+          "Add server info debug view",
+          "2026-06-25T17:00:00-07:00",
+        ].join("\n"),
+      gitStatusCommand: () =>
+        [
+          "M  packages/shared/src/types/server-info.ts",
+          " M ui/src/components/SidebarServerInfo.tsx",
+          "MM server/src/server-info.ts",
+          "?? server/src/__tests__/server-info.test.ts",
+        ].join("\n"),
+    });
+
+    expect(snapshot.git).toMatchObject({
+      available: true,
+      localChanges: {
+        available: true,
+        hasLocalChanges: true,
+        stagedFileCount: 2,
+        unstagedFileCount: 2,
+        untrackedFileCount: 1,
+      },
+    });
+  });
+
+  it("keeps commit metadata available when git status is unavailable", () => {
+    const snapshot = createServerInfoSnapshot({
+      now: new Date("2026-06-26T00:00:00.000Z"),
+      gitCommand: () =>
+        [
+          "0123456789abcdef0123456789abcdef01234567",
+          "0123456",
+          "Add server info debug view",
+          "2026-06-25T17:00:00-07:00",
+        ].join("\n"),
+      gitStatusCommand: () => {
+        throw new Error("status unavailable");
+      },
+    });
+
+    expect(snapshot.git).toMatchObject({
+      available: true,
+      localChanges: {
+        available: false,
+        unavailableReason: "git_status_unavailable",
       },
     });
   });

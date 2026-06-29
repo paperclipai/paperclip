@@ -15,6 +15,13 @@ const testServerInfo = {
     shortSha: "0123456",
     subject: "Add server info debug view",
     committedAt: "2026-06-25T23:00:00.000Z",
+    localChanges: {
+      available: true,
+      hasLocalChanges: false,
+      stagedFileCount: 0,
+      unstagedFileCount: 0,
+      untrackedFileCount: 0,
+    },
   },
 } as const;
 
