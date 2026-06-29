@@ -235,7 +235,38 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason:
         "agent recorded a disposition after the run completed (scan-vs-PATCH race window resolved)",
+      gateInclusion: "comment_post_run",
     });
+  });
+
+  // GGU-SOF-549: second inclusion path for the SOF-334 gate. The SOF-69
+  // 15-flip shape: assignee's disposition PATCH+comment lands INSIDE the run
+  // (continuous-acceptance epic, closing heartbeat). The v1 gate excluded
+  // `createdByRunId = run.id` comments to avoid suppressing legitimate
+  // handoff wakes via run-internal bookkeeping. The SOF-549 addition relaxes
+  // the exclusion when paired with a status transition (proxy: agent PATCHed
+  // the issue row during the run, computed in heartbeat.ts as
+  // `issue.updatedAt >= run.startedAt`).
+  it("does not queue when the assignee recorded an in-place disposition with status-transition evidence (SOF-549 SOF-69 shape)", () => {
+    expect(decide({ hasInPlaceDispositionWithStatusTransition: true })).toEqual({
+      kind: "skip",
+      reason:
+        "agent recorded an in-place disposition with status-transition evidence (scan-vs-PATCH race resolved on closing heartbeat)",
+      gateInclusion: "in_place_status_transition",
+    });
+  });
+
+  // SOF-549 precedence: when BOTH inclusions would match, the post-run comment
+  // wins (it is the stronger signal — comment outside the run is unambiguously
+  // post-run motion). This protects callers that compute both signals.
+  it("prefers the post-run comment inclusion when both signals are present", () => {
+    const decision = decide({
+      hasDispositionAfterRunFinished: true,
+      hasInPlaceDispositionWithStatusTransition: true,
+    });
+    expect(decision.kind).toBe("skip");
+    if (decision.kind !== "skip") return;
+    expect(decision.gateInclusion).toBe("comment_post_run");
   });
 
   it("still queues when hasDispositionAfterRunFinished is false (default — pre-disposition scan)", () => {
@@ -248,6 +279,14 @@ describe("successful run handoff decision", () => {
     // arm the recovery as before. This protects against accidental fleet-wide
     // suppression if a deployment desync omits the new field.
     const decision = decide({});
+    expect(decision.kind).toBe("enqueue");
+  });
+
+  // SOF-549 backwards compat: callers that omit the new field must continue
+  // to behave as before. The v1 (post-run comment) check still suppresses;
+  // the SOF-549 (in-place) check simply doesn't fire.
+  it("still queues with only in_place=false when both new fields are undefined (backwards compat)", () => {
+    const decision = decide({ hasDispositionAfterRunFinished: false });
     expect(decision.kind).toBe("enqueue");
   });
 

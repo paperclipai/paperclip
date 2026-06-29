@@ -73,6 +73,8 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { agentService } from "./agents.js";
+import { isClaudeTokenPlanCapFailure, QUOTA_PAUSE_COOLDOWN_MS } from "./claude-quota-classifier.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
@@ -5430,6 +5432,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
         projectId: issues.projectId,
+        // GGU-SOF-549: needed for the in-place disposition inclusion check.
+        // When `issue.updatedAt >= run.startedAt` the assignee PATCHed the
+        // issue during the run, which is the status-transition proxy used
+        // to pair with the in-place assignee comment.
+        updatedAt: issues.updatedAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -5455,6 +5462,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       pauseHold,
       activeRoutineContinuation,
       dispositionAfterRun,
+      inPlaceAssigneeComment,
     ] = await Promise.all([
       issue
         ? db
@@ -5622,7 +5630,65 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .limit(1)
           .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
+      // GGU-SOF-549: second inclusion path for the SOF-334 gate. Catches the
+      // SOF-69 15-flip shape: assignee authored a comment INSIDE the run
+      // window (closing heartbeat) with `createdByRunId = run.id`. The v1
+      // `createdByRunId != run.id` exclusion prevents suppressing legitimate
+      // handoff wakes via run-internal bookkeeping comments; the SOF-549
+      // inclusion adds it back ONLY when paired with PATCH motion on the
+      // issue row (the status-transition proxy checked in JS below). Pure
+      // progress-note comments don't PATCH the issue row, so the JS filter
+      // is what distinguishes a disposition from a status update.
+      //
+      // We exclude server-side infrastructure comments by body prefix:
+      //   - workspace-ready / adapter-managed runtime (run startup)
+      //   - the handoff-required notice (written by the recovery itself,
+      //     never a real disposition)
+      //   - the run-summary comment posted by `buildHeartbeatRunIssueComment`
+      //     (built from `result.summary`, posted as part of run finalization
+      //     bookkeeping — distinct from a deliberate close-time disposition)
+      // A real SOF-549 disposition comment is one whose body is NOT one of
+      // these well-known infrastructure bodies.
+      issue && run.startedAt
+        ? db
+          .select({ id: issueComments.id })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.companyId, issue.companyId),
+              eq(issueComments.issueId, issue.id),
+              eq(issueComments.authorAgentId, issue.assigneeAgentId ?? run.agentId),
+              eq(issueComments.createdByRunId, run.id),
+              gte(issueComments.createdAt, run.startedAt),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
     ]);
+
+    // GGU-SOF-549: pair the in-place assignee comment with the status
+    // transition proxy. A real disposition is one where the assignee
+    // explicitly chose an outcome for the issue — the issue status moved
+    // AWAY FROM `in_progress` during the run window. PURE progress-note
+    // comments (workspace-ready, run-summary auto-extracted from
+    // adapterResult.summary) leave the issue status alone; they are
+    // bookkeeping, not a disposition. Combining:
+    //   1. in-place assignee comment (createdByRunId = run.id, within run),
+    //   2. issue.status != "in_progress" (literal status transition away
+    //      from "still working on it"), and
+    //   3. issue.updatedAt >= run.startedAt (the PATCH happened during run)
+    // produces the SOF-549 disposition signal: deliberate, recorded,
+    // evidenced.
+    const inPlaceDispositionWithStatusTransition = Boolean(
+      inPlaceAssigneeComment &&
+        issue &&
+        run.startedAt &&
+        issue.updatedAt &&
+        issue.status &&
+        issue.status !== "in_progress" &&
+        issue.updatedAt >= run.startedAt,
+    );
 
     const decision = decideSuccessfulRunHandoff({
       run,
@@ -5641,18 +5707,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
       hasDispositionAfterRunFinished: Boolean(dispositionAfterRun),
+      hasInPlaceDispositionWithStatusTransition: inPlaceDispositionWithStatusTransition,
     });
 
-    // GGU-SOF-334: when the disposition-freshness gate suppresses a would-be
-    // missing-disposition recovery, emit an observability event so the
-    // successful_run_missing_state.false_positive_rate counter can be derived
-    // from logs / Loki. Tagged with the issue identifier and source run id.
-    if (
-      decision.kind === "skip" &&
-      decision.reason ===
-        "agent recorded a disposition after the run completed (scan-vs-PATCH race window resolved)" &&
-      issue
-    ) {
+    if (decision.kind === "skip" && decision.gateInclusion && issue) {
+      // GGU-SOF-334 + SOF-549: when the disposition-freshness gate suppresses
+      // a would-be missing-disposition recovery, emit an observability event
+      // so the successful_run_missing_state.false_positive_rate counter can be
+      // derived from logs / Loki. Tagged with the issue identifier, source
+      // run id, AND the gate inclusion path so dashboards can split
+      // suppression by signal source (post-run comment vs. in-place
+      // status-transition). See SOF-549 acceptance #5.
       logger.info(
         {
           event: "successful_run_missing_state.suppressed_by_disposition_freshness",
@@ -5661,8 +5726,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           issueIdentifier: issue.identifier,
           sourceRunId: run.id,
           runFinishedAt: run.finishedAt,
+          gateInclusion: decision.gateInclusion,
         },
-        "successful_run_missing_state suppressed by disposition-freshness gate (GGU-SOF-334)",
+        `successful_run_missing_state suppressed by disposition-freshness gate (${decision.gateInclusion})`,
       );
     }
 
@@ -7899,6 +7965,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agentId: string,
     outcome: "succeeded" | "failed" | "cancelled" | "timed_out",
     failureReason?: string | null,
+    errorCode?: string | null,
   ) {
     const existing = await getAgent(agentId);
     if (!existing) return;
@@ -7916,6 +7983,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : outcome === "succeeded" || outcome === "cancelled"
           ? "idle"
           : "error";
+
+    // SOF-550: Token Plan cap (2056/2062) → auto-pause instead of `error`.
+    // Without this, finalizeAgentStatus writes status:"error" every heartbeat
+    // and the assignee's next timer keeps firing → SOF-162 7h43m minimal-poll
+    // loop. Cooldown respects existing.pausedAt so a successful probe after a
+    // 429 burst doesn't immediately re-fire.
+    if (
+      outcome === "failed" &&
+      runningCount === 0 &&
+      isClaudeTokenPlanCapFailure(errorCode, failureReason)
+    ) {
+      const lastPauseMs = existing.pausedAt ? new Date(existing.pausedAt).getTime() : 0;
+      const cooldownElapsed = !lastPauseMs || Date.now() - lastPauseMs > QUOTA_PAUSE_COOLDOWN_MS;
+      if (cooldownElapsed) {
+        const paused = await agentService(db).pause(agentId, "quota_exceeded");
+        if (paused) {
+          await db
+            .update(agents)
+            .set({ lastHeartbeatAt: new Date() })
+            .where(eq(agents.id, agentId));
+          if (isFirstHeartbeat) {
+            const tc = getTelemetryClient();
+            if (tc) trackAgentFirstHeartbeat(tc, { agentRole: paused.role, agentId: paused.id });
+          }
+          publishLiveEvent({
+            companyId: paused.companyId,
+            type: "agent.status",
+            payload: {
+              agentId: paused.id,
+              status: paused.status,
+              lastHeartbeatAt: paused.lastHeartbeatAt
+                ? new Date(paused.lastHeartbeatAt).toISOString()
+                : null,
+              outcome,
+              pauseReason: paused.pauseReason,
+            },
+          });
+          return;
+        }
+      }
+    }
 
     const updated = await db
       .update(agents)
@@ -8287,7 +8395,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      await finalizeAgentStatus(run.agentId, "failed", baseMessage);
+      await finalizeAgentStatus(run.agentId, "failed", baseMessage, run.errorCode ?? null);
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
@@ -10184,6 +10292,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         agent.id,
         outcome,
         outcome === "succeeded" ? null : (adapterResult.errorMessage ?? null),
+        outcome === "succeeded" ? null : (adapterResult.errorCode ?? null),
       );
     } catch (err) {
       const message = redactCurrentUserText(
@@ -10282,7 +10391,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed", message);
+      await finalizeAgentStatus(agent.id, "failed", message, failureErrorCode);
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -11031,6 +11140,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
     };
+
+    // SOF-551: heartbeat_timer wakes for a paused agent redirect to the
+    // assignee's manager. The assignee is the one whose Claude invocations
+    // failed (2056/2062/budget); their next heartbeat will fail the same way.
+    // Wake the manager instead so a recovery action (SOF-292 quota restore,
+    // or a per-agent budget raise) can land and the agent can be unpaused.
+    // The skip row preserves an audit trail; the manager's wake carries the
+    // pausedAgentId so it knows it's a recovery wake, not a normal heartbeat.
+    if (reason === "heartbeat_timer" && agent.status === "paused" && agent.reportsTo && agent.reportsTo !== agent.id) {
+      const manager = await getAgent(agent.reportsTo);
+      if (manager && manager.status !== "paused") {
+        await writeSkippedRequest("assignee_paused_routed_to_manager", {
+          error: `Wake rerouted to manager ${manager.id} because assignee is paused (pauseReason=${agent.pauseReason ?? "null"})`,
+        });
+        return enqueueWakeup(manager.id, {
+          ...opts,
+          reason: "heartbeat_timer",
+          payload: {
+            ...(opts.payload ?? {}),
+            pausedAgentId: agent.id,
+            pausedAgentPauseReason: agent.pauseReason ?? null,
+            pausedAgentPausedAt: agent.pausedAt ? new Date(agent.pausedAt).toISOString() : null,
+            wakeKind: "paused_agent_recovery",
+          },
+          contextSnapshot: {
+            ...enrichedContextSnapshot,
+            pausedAgentId: agent.id,
+            pausedAgentPauseReason: agent.pauseReason ?? null,
+            pausedAgentPausedAt: agent.pausedAt ? new Date(agent.pausedAt).toISOString() : null,
+            wakeKind: "paused_agent_recovery",
+          },
+        });
+      }
+      // Manager is also paused (or missing): record the skip and stop. We do
+      // not recurse — that would loop forever on a paused-manager tree.
+      await writeSkippedRequest("assignee_paused_manager_unavailable", {
+        error: `Assignee paused; manager ${agent.reportsTo ?? "(null)"} unavailable (status=${manager?.status ?? "missing"})`,
+      });
+      return null;
+    }
 
     const company = await db
       .select({ status: companies.status })
@@ -12490,8 +12639,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
+      let managerRouted = 0;
 
+      // SOF-551: when the heartbeat timer fires for a paused agent, route the
+      // wake to the manager (per chainOfCommand) instead of the assignee. This
+      // breaks the SOF-162 minimal-poll loop where a paused-but-recently-resumed
+      // assignee keeps getting wakes the manager would act on. The manager wake
+      // carries context so the manager knows which subordinate is paused and why.
       for (const agent of allAgents) {
+        if (agent.status === "paused" && agent.pausedAt && agent.reportsTo) {
+          const baseline = new Date(agent.pausedAt).getTime();
+          const elapsedMs = now.getTime() - baseline;
+          // Manager-wake cadence: at most once per heartbeat interval for the
+          // paused subordinate. Use the subordinate's policy so a high-frequency
+          // heartbeat doesn't spam the manager.
+          const policy = parseHeartbeatPolicy(agent);
+          if (policy.enabled && policy.intervalSec > 0 && elapsedMs >= policy.intervalSec * 1000) {
+            const run = await enqueueWakeup(agent.reportsTo, {
+              source: "timer",
+              triggerDetail: "system",
+              reason: "paused_subordinate_timer",
+              requestedByActorType: "system",
+              requestedByActorId: "heartbeat_scheduler",
+              contextSnapshot: {
+                source: "scheduler",
+                reason: "paused_subordinate_interval_elapsed",
+                pausedAgentId: agent.id,
+                pausedAgentName: agent.name,
+                pausedAgentPauseReason: agent.pauseReason ?? null,
+                now: now.toISOString(),
+              },
+            });
+            if (run) managerRouted += 1;
+            else skipped += 1;
+          }
+          continue;
+        }
+
         const invokability = evaluateAgentInvokability(toAgentOrgRow(agent), agentsByCompany.get(agent.companyId) ?? []);
         if (!invokability.invokable) continue;
         const policy = parseHeartbeatPolicy(agent);
@@ -12524,6 +12708,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         checked: checked + issueMonitors.checked,
         enqueued: enqueued + issueMonitors.triggered,
         skipped: skipped + issueMonitors.skipped,
+        managerRouted,
       };
     },
 

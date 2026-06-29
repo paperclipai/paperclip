@@ -18,7 +18,7 @@
  * can distinguish backfilled clearances from organic ones.
  */
 
-import { and, eq, isNull, gt, or, ne } from "drizzle-orm";
+import { and, eq, isNull, gt, gte, or, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   createDb,
@@ -31,10 +31,14 @@ import {
 interface BackfillStats {
   scanned: number;
   cleared: number;
+  clearedByInPlaceInclusion: number;
+  clearedByPostRunInclusion: number;
   skippedGateMiss: number;
   skippedAlreadyResolved: number;
   errors: Array<{ recoveryActionId: string; error: string }>;
 }
+
+type GateInclusion = "comment_post_run" | "in_place_status_transition";
 
 async function isDispositionAfterRunFinished(
   db: Db,
@@ -54,6 +58,47 @@ async function isDispositionAfterRunFinished(
     )
     .limit(1);
   return row.length > 0;
+}
+
+// GGU-SOF-549: second inclusion path for the SOF-334 disposition-freshness
+// gate. Catches the SOF-69 15-flip shape where the assignee's disposition
+// PATCH+comment lands INSIDE the run window (createdByRunId = run.id AND
+// createdAt within [run.startedAt, run.finishedAt]). We pair it with the
+// status-transition proxy: the issue must have moved AWAY FROM `in_progress`
+// during the run window. A real disposition is the assignee choosing a final
+// state (done, in_review, blocked, etc.); pure progress-note comments like
+// the run-summary auto-extracted from `adapterResult.summary` or
+// workspace-ready leave the status alone and are bookkeeping, not a
+// disposition.
+async function isInPlaceDispositionWithStatusTransition(
+  db: Db,
+  input: { companyId: string; issueId: string; assigneeAgentId: string; runId: string; runStartedAt: Date },
+): Promise<boolean> {
+  const [commentRow, issueRow] = await Promise.all([
+    db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, input.companyId),
+          eq(issueComments.issueId, input.issueId),
+          eq(issueComments.authorAgentId, input.assigneeAgentId),
+          eq(issueComments.createdByRunId, input.runId),
+          gte(issueComments.createdAt, input.runStartedAt),
+        ),
+      )
+      .limit(1),
+    db
+      .select({ updatedAt: issues.updatedAt, status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+      .limit(1),
+  ]);
+  if (commentRow.length === 0) return false;
+  const issue = issueRow[0];
+  if (!issue?.updatedAt || !issue?.status) return false;
+  if (issue.status === "in_progress") return false;
+  return issue.updatedAt >= input.runStartedAt;
 }
 
 async function resolveAsFalsePositive(
@@ -76,6 +121,8 @@ export async function backfillSof334FalsePositiveRecoveries(db: Db): Promise<Bac
   const stats: BackfillStats = {
     scanned: 0,
     cleared: 0,
+    clearedByInPlaceInclusion: 0,
+    clearedByPostRunInclusion: 0,
     skippedGateMiss: 0,
     skippedAlreadyResolved: 0,
     errors: [],
@@ -123,6 +170,7 @@ export async function backfillSof334FalsePositiveRecoveries(db: Db): Promise<Bac
         .select({
           id: heartbeatRuns.id,
           agentId: heartbeatRuns.agentId,
+          startedAt: heartbeatRuns.startedAt,
           finishedAt: heartbeatRuns.finishedAt,
         })
         .from(heartbeatRuns)
@@ -150,26 +198,55 @@ export async function backfillSof334FalsePositiveRecoveries(db: Db): Promise<Bac
         continue;
       }
 
-      const gateMatches = await isDispositionAfterRunFinished(db, {
-        companyId: rec.companyId,
-        issueId: rec.sourceIssueId,
-        assigneeAgentId: issue.assigneeAgentId,
-        runFinishedAt: run.finishedAt,
-        runId: run.id,
-      });
+      // GGU-SOF-549: try both inclusion paths. The v1 SOF-334 path catches
+      // post-run comments (createdAt > finishedAt, not by source run). The
+      // SOF-549 path catches in-place comments (createdByRunId = run.id,
+      // within run window) paired with PATCH motion. Try the stronger v1
+      // signal first so the resolution note reflects the original gate; if
+      // only the SOF-549 inclusion matches, fall back to its note.
+      let inclusion: GateInclusion | null = null;
+      if (
+        await isDispositionAfterRunFinished(db, {
+          companyId: rec.companyId,
+          issueId: rec.sourceIssueId,
+          assigneeAgentId: issue.assigneeAgentId,
+          runFinishedAt: run.finishedAt,
+          runId: run.id,
+        })
+      ) {
+        inclusion = "comment_post_run";
+      } else if (
+        run.startedAt &&
+        (await isInPlaceDispositionWithStatusTransition(db, {
+          companyId: rec.companyId,
+          issueId: rec.sourceIssueId,
+          assigneeAgentId: issue.assigneeAgentId,
+          runId: run.id,
+          runStartedAt: run.startedAt,
+        }))
+      ) {
+        inclusion = "in_place_status_transition";
+      }
 
-      if (!gateMatches) {
+      if (!inclusion) {
         stats.skippedGateMiss += 1;
         continue;
       }
 
+      const note =
+        inclusion === "comment_post_run"
+          ? "SOF-334 backfill: disposition-freshness gate would have suppressed this recovery " +
+            "(agent posted disposition after run completed). Auto-cleared without VP-Eng wake."
+          : "SOF-549 backfill: in-place disposition inclusion would have suppressed this recovery " +
+            "(agent posted disposition comment + PATCHed issue inside run window). Auto-cleared without VP-Eng wake.";
+
       await resolveAsFalsePositive(db, {
         recoveryActionId: rec.id,
-        resolutionNote:
-          "SOF-334 backfill: disposition-freshness gate would have suppressed this recovery " +
-          "(agent posted disposition after run completed). Auto-cleared without VP-Eng wake.",
+        resolutionNote: note,
       });
       stats.cleared += 1;
+      if (inclusion === "comment_post_run") stats.clearedByPostRunInclusion += 1;
+      else stats.clearedByInPlaceInclusion += 1;
     } catch (err) {
       stats.errors.push({
         recoveryActionId: rec.id,

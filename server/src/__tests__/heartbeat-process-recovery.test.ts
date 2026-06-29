@@ -1598,12 +1598,29 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("queues one finish-handoff wake when a successful run leaves in-progress work without a next action", async () => {
+    // GGU-SOF-549: this test exercises the genuine missing-disposition shape
+    // (no assignee-authored comment inside the run, no PATCH motion). The
+    // SOF-334 v1 + SOF-549 v2 gates both look for assignee-authored evidence
+    // of a recorded disposition; here the run-internal comment is authored
+    // by a non-assignee agent, so neither inclusion matches and the recovery
+    // arms as the test expects.
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherObserver",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      permissions: {},
+    });
     mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
       await db.insert(issueComments).values({
         companyId,
         issueId,
-        authorAgentId: agentId,
+        authorAgentId: otherAgentId,
         createdByRunId: ctx.runId,
         body: "Implemented the backend detector, but did not choose a final issue state.",
       });
@@ -1680,8 +1697,77 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(true);
   });
 
-  it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {
+  // GGU-SOF-549: SOF-69 closing-heartbeat shape. The assignee records a
+  // disposition comment INSIDE the run window AND transitions the issue
+  // status away from `in_progress` (here, to `done`) before the run
+  // finishes. The disposition-freshness gate's `in_place_status_transition`
+  // inclusion must fire and suppress the missing-disposition recovery.
+  it("does not queue a handoff wake when the assignee records an in-place disposition with status transition (SOF-69 closing-heartbeat)", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      // Assignee posts a disposition comment from inside the adapter call
+      // (this is the SOF-69 closing-heartbeat shape).
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: ctx.runId,
+        body: "Closing this: implemented the disposition and marked the issue done.",
+      });
+      // Assignee transitions the issue status from in_progress to done
+      // (this is the PATCH motion that pairs with the in-place comment).
+      await db
+        .update(issues)
+        .set({ status: "done", updatedAt: new Date() })
+        .where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Implemented and closed with a status transition.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    // No handoff wakeup should be enqueued for this run: the gate must
+    // have suppressed the recovery based on the in-place disposition with
+    // status-transition evidence (SOF-549 inclusion).
+    const handoffWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    const matches = handoffWakeups.filter((wakeup) => wakeup.reason === "finish_successful_run_handoff");
+    expect(matches).toHaveLength(0);
+
+    // Issue remains in the assignee-chosen terminal state (`done`).
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("done");
+  });
+
+  it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {
+    // GGU-SOF-549: comment authored by a non-assignee agent so the
+    // disposition-freshness gate does not treat it as evidence of a recorded
+    // disposition. See test 1 for the full rationale.
+    const seeded = await seedQueuedIssueRunFixture();
+    const { companyId, agentId, runId, issueId } = seeded;
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherObserver",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      permissions: {},
+    });
     const idempotencyKey = `finish_successful_run_handoff:${issueId}:${runId}:1`;
     await db.insert(agentWakeupRequests).values({
       id: randomUUID(),
@@ -1706,7 +1792,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await db.insert(issueComments).values({
         companyId,
         issueId,
-        authorAgentId: agentId,
+        authorAgentId: otherAgentId,
         createdByRunId: ctx.runId,
         body: "Implemented recovery handling, but did not choose a final issue state.",
       });
@@ -1741,14 +1827,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("queues one missing-disposition handoff for artifact-producing successful runs left in progress", async () => {
-    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    // GGU-SOF-549: comment authored by a non-assignee agent so the
+    // disposition-freshness gate does not treat it as evidence. See test 1.
+    const seeded = await seedQueuedIssueRunFixture();
+    const { companyId, agentId, runId, issueId } = seeded;
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "OtherObserver",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      permissions: {},
+    });
     mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
       const documentId = randomUUID();
       const revisionId = randomUUID();
       await db.insert(issueComments).values({
         companyId,
         issueId,
-        authorAgentId: agentId,
+        authorAgentId: otherAgentId,
         createdByRunId: ctx.runId,
         body: "Drafted the Phase 3 test plan but did not choose a final issue disposition.",
       });
@@ -1844,6 +1944,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("redacts secret-bearing successful-run detected progress before handoff disclosure", async () => {
+    // GGU-SOF-549: this test does not create any run-internal comment, so
+    // there is no assignee-authored evidence for the gate to suppress on.
+    // See test 1 for the full rationale on the new gate behavior.
     const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const bearerSecret = "live-bearer-token-value";
     const apiKeySecret = "sk-testsuccessfulhandoffsecret";

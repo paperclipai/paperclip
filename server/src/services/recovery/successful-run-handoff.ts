@@ -85,6 +85,15 @@ export type SuccessfulRunHandoffDecision =
   | {
       kind: "skip";
       reason: string;
+      /**
+       * When the SOF-334 disposition-freshness gate (or its SOF-549 second
+       * inclusion path) suppresses a would-be recovery, this names which
+       * inclusion triggered the suppression. Surfaces in the Loki event key
+       * `successful_run_missing_state.suppressed_by_disposition_freshness`
+       * as a `gateInclusion` label so dashboards can split suppression by
+       * signal source. Absent on skips for non-gate reasons.
+       */
+      gateInclusion?: "comment_post_run" | "in_place_status_transition";
     };
 
 function metadataText(value: unknown, fallback = "unknown") {
@@ -361,6 +370,26 @@ export function decideSuccessfulRunHandoff(input: {
    * positive. See SOF-334.
    */
   hasDispositionAfterRunFinished?: boolean;
+  /**
+   * True when the assignee authored a comment INSIDE the run window
+   * (`run.startedAt <= comment.createdAt <= run.finishedAt`) with
+   * `createdByRunId = run.id`, AND the issue's `updatedAt` advanced during
+   * the run (proving the assignee PATCHed the issue during the heartbeat).
+   *
+   * This is the SOF-549 / SOF-69 inclusion path. The SOF-334 v1 gate
+   * intentionally excluded `createdByRunId = run.id` to avoid suppressing
+   * legitimate handoff wakes via run-internal bookkeeping comments. But on
+   * continuous-acceptance epics, the assignee's disposition PATCH+comment
+   * lands inside the run (e.g. as part of the closing heartbeat), the status
+   * may revert to `in_progress` after the transition, and the comment carries
+   * the disposition signal that the existing post-run check can't see.
+   *
+   * The status-transition proxy (`issue.updatedAt >= run.startedAt`) is the
+   * minimum signal that distinguishes an in-place disposition comment from a
+   * pure progress note: progress notes don't PATCH the issue row. Pairing the
+   * in-place comment with a PATCH motion is the SOF-549 option-(a) contract.
+   */
+  hasInPlaceDispositionWithStatusTransition?: boolean;
 }): SuccessfulRunHandoffDecision {
   const { run, issue, agent } = input;
 
@@ -413,6 +442,24 @@ export function decideSuccessfulRunHandoff(input: {
     return {
       kind: "skip",
       reason: "agent recorded a disposition after the run completed (scan-vs-PATCH race window resolved)",
+      gateInclusion: "comment_post_run",
+    };
+  }
+  // GGU-SOF-549: second inclusion path for the SOF-334 gate. The v1 gate
+  // excludes `createdByRunId = run.id` to avoid suppressing legitimate
+  // handoff wakes via run-internal bookkeeping comments. But the SOF-69
+  // 15-flip shape shows a real gap: when the assignee's disposition
+  // PATCH+comment lands inside the run (continuous-acceptance epic, in-place
+  // closing heartbeat), the comment is excluded by the v1 clause even though
+  // it IS disposition evidence. The fix: also accept an in-place assignee
+  // comment paired with PATCH motion on the issue row. This is the smallest
+  // change with the highest signal — progress notes don't PATCH the issue.
+  if (input.hasInPlaceDispositionWithStatusTransition) {
+    return {
+      kind: "skip",
+      reason:
+        "agent recorded an in-place disposition with status-transition evidence (scan-vs-PATCH race resolved on closing heartbeat)",
+      gateInclusion: "in_place_status_transition",
     };
   }
 
