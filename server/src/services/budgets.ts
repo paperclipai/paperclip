@@ -218,7 +218,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         .update(agents)
         .set({
           status: "paused",
-          pauseReason: "budget",
+          pauseReason: "budget_exceeded",
           pausedAt: now,
           updatedAt: now,
         })

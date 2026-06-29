@@ -133,7 +133,7 @@ describe("budgetService", () => {
     expect(dbStub.updateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         status: "paused",
-        pauseReason: "budget",
+        pauseReason: "budget_exceeded",
         pausedAt: expect.any(Date),
       }),
     );
