@@ -3008,9 +3008,32 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const boardClosed = await svc.update(blockedId, { status: "done", actorUserId });
     expect(boardClosed?.status).toBe("done");
 
-    // Carve-out: recovery/liveness-escalation origin closes even with an open blocker.
+    // Carve-out: a blocker-holding recovery origin (stranded_issue_recovery) closes
+    // even with an open blocker, because it tears down its own blocker edge on close.
     const recoveryClosed = await svc.update(recoveryId, { status: "done", actorAgentId });
     expect(recoveryClosed?.status).toBe("done");
+
+    // Narrowed carve-out: a non-blocker-holding recovery origin (productivity review)
+    // is still guarded — the exemption is limited to BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS.
+    const reviewId = randomUUID();
+    await db.insert(issues).values({
+      id: reviewId, companyId, title: "Productivity review", status: "blocked", priority: "medium",
+      originKind: "issue_productivity_review",
+    });
+    await svc.update(reviewId, { blockedByIssueIds: [blockerId] });
+    await expect(
+      svc.update(reviewId, { status: "done", actorAgentId }),
+    ).rejects.toMatchObject({ status: 409, details: { code: "pre_close_guard_blocked" } });
+
+    // Same-PATCH detach-and-close: clearing the blocker relation in the same update
+    // that closes the issue is allowed (no unresolved blocker remains after the patch).
+    const detachId = randomUUID();
+    await db.insert(issues).values({
+      id: detachId, companyId, title: "Detach-and-close", status: "blocked", priority: "medium",
+    });
+    await svc.update(detachId, { blockedByIssueIds: [blockerId] });
+    const detached = await svc.update(detachId, { status: "done", blockedByIssueIds: [], actorAgentId });
+    expect(detached?.status).toBe("done");
 
     // Resolution path: once the blocker is resolved, an agent close succeeds.
     const blockedId2 = randomUUID();

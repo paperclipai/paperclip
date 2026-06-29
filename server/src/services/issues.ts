@@ -5189,17 +5189,22 @@ export function issueService(db: Db) {
       // (or set the same patch's blockedByIssueIds to an empty/resolved set).
       // Carve-outs:
       //  - Board/user actors keep an explicit override (operator authority).
-      //  - Recovery/liveness-escalation issues are exempt because they legitimately
-      //    tear down their own blocker edge as part of closing (see the
-      //    issueGraphLivenessEscalation handling later in this transaction).
+      //  - Blocked-inbox recovery issues (liveness-escalation, stranded-issue
+      //    recovery) are exempt because they legitimately tear down their own
+      //    blocker edge as part of closing (see the issueGraphLivenessEscalation
+      //    handling later in this transaction). Other recovery origins
+      //    (productivity-review, stale-active-run) do not hold a blocker edge they
+      //    must discard on close, so the guard applies to them normally.
       const isTerminalClose =
         (patch.status === "done" || patch.status === "cancelled") &&
         existing.status !== patch.status;
       const isAgentActor = !!actorAgentId && !actorUserId;
-      const isRecoveryOriginIssue =
+      const isBlockerHoldingRecoveryIssue =
         existing.originKind != null &&
-        (Object.values(RECOVERY_ORIGIN_KINDS) as ReadonlyArray<string>).includes(existing.originKind);
-      if (isTerminalClose && isAgentActor && !isRecoveryOriginIssue) {
+        BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS.includes(
+          existing.originKind as (typeof BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS)[number],
+        );
+      if (isTerminalClose && isAgentActor && !isBlockerHoldingRecoveryIssue) {
         const unresolvedBlockerIssueIds = blockedByIssueIds !== undefined
           ? await listUnresolvedBlockerIssueIds(dbOrTx, existing.companyId, blockedByIssueIds)
           : (
