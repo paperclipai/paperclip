@@ -188,6 +188,90 @@ describeEmbeddedPostgres("agent service clearError", () => {
     });
   });
 
+  it("projects stale error reasons only for agents still in error status", async () => {
+    const companyId = randomUUID();
+    const runningAgentId = randomUUID();
+    const idleAgentId = randomUUID();
+    const errorAgentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: runningAgentId,
+        companyId,
+        name: "RunningCoder",
+        role: "engineer",
+        status: "running",
+        errorReason: "stale process failure",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: idleAgentId,
+        companyId,
+        name: "IdleCoder",
+        role: "engineer",
+        status: "idle",
+        errorReason: "stale secret failure",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: errorAgentId,
+        companyId,
+        name: "ErrorCoder",
+        role: "engineer",
+        status: "error",
+        errorReason: "real adapter failure",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const svc = agentService(db);
+    const listedAgents = await svc.list(companyId);
+    const byId = new Map(listedAgents.map((agent) => [agent.id, agent]));
+
+    expect(byId.get(runningAgentId)).toMatchObject({
+      status: "running",
+      errorReason: null,
+    });
+    expect(byId.get(idleAgentId)).toMatchObject({
+      status: "idle",
+      errorReason: null,
+    });
+    expect(byId.get(errorAgentId)).toMatchObject({
+      status: "error",
+      errorReason: "real adapter failure",
+    });
+
+    await expect(svc.getById(runningAgentId)).resolves.toMatchObject({
+      status: "running",
+      errorReason: null,
+    });
+    await expect(svc.getById(idleAgentId)).resolves.toMatchObject({
+      status: "idle",
+      errorReason: null,
+    });
+    await expect(svc.getById(errorAgentId)).resolves.toMatchObject({
+      status: "error",
+      errorReason: "real adapter failure",
+    });
+  });
+
   it("keeps resume-style terminal and pending-approval protections", async () => {
     const companyId = randomUUID();
     const terminatedAgentId = randomUUID();
