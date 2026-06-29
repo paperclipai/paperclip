@@ -28,6 +28,7 @@ export interface PipelineCaseConversationSource {
 export interface PipelineStageAutomation {
   routineId: string;
   assigneeAgentId: string | null;
+  titleTemplate: string;
   instructionsBody: string;
   projectId: string | null;
   projectWorkspaceId: string | null;
