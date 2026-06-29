@@ -7,16 +7,14 @@
 #   1. Install the bermont-clawsweeper App on valkyriweb/paperclip (Only select repositories).
 #   2. Set repo secret CLAWSWEEPER_APP_PRIVATE_KEY from 1Password vault
 #      "Bermont Digital" item "GitHub App — bermont-clawsweeper" / private_key field.
-#   3. This file lives on BOTH master (default branch — so issues/issue_comment/
-#      pull_request_review command events resolve here) and bermont (so push +
-#      pull_request_target base=bermont events resolve here).
+#   3. This file lives on master (default branch — so issues/issue_comment,
+#      pull_request_review, push, and pull_request_target events resolve here).
 #   4. client_id Iv23liwPWAIcc4PAk2Dt is the App's public client_id.
 #
-# Branch scoping: paperclip ships from `bermont` (production overlay); `master`
-# mirrors upstream paperclipai/paperclip. Auto PR review + commit review are
-# scoped to `bermont` so upstream-sync PRs into master are not reviewed. Issue
-# triage and @clawsweeper maintainer commands work repo-wide (default-branch
-# resolved). Until the secret + App install land, every step no-ops cleanly.
+# Branch scoping: paperclip ships from `master`; upstream-sync PRs now target
+# master as review notices. Issue triage and @clawsweeper maintainer commands work
+# repo-wide (default-branch resolved). Until the secret + App install land, every
+# step no-ops cleanly.
 
 name: Bermont ClawSweeper Dispatch
 
@@ -26,9 +24,9 @@ on:
   issue_comment:
     types: [created, edited]
   push:
-    branches: [bermont]
+    branches: [master]
   pull_request_target: # zizmor: ignore[dangerous-triggers] maintainer-owned external dispatch; no checkout or untrusted PR code execution
-    branches: [bermont]
+    branches: [master]
     types: [opened, reopened, synchronize, ready_for_review, edited, labeled, unlabeled]
   pull_request_review:
     types: [submitted, edited, dismissed]
@@ -278,7 +276,7 @@ jobs:
           fi
 
       - name: Dispatch ClawSweeper commit review
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/bermont' && github.event.deleted != true }}
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' && github.event.deleted != true }}
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           TARGET_REPO: ${{ github.repository }}

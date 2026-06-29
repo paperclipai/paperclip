@@ -1,14 +1,13 @@
-# Upstream sync — paperclipai/paperclip master -> our bermont overlay
+# Upstream sync — paperclipai/paperclip master -> our fork master
 #
-# Weekly job that publishes upstream/master as a PR branch against the production
-# `bermont` branch. It does not attempt the merge in CI: bermont carries the
-# Bermont overlay (migration renumbering, CI hardenings), so upstream updates need
-# a human/agent review session that resolves conflicts deliberately.
+# Weekly job that publishes upstream/master as a PR branch against our default
+# `master` branch. It does not attempt the merge in CI: fork updates need a
+# human/agent review session that resolves conflicts deliberately.
 #
 # Lives on `master` because GitHub only runs `schedule:` triggers from the default
-# branch — the job itself operates on `bermont`, not master.
+# branch.
 #
-# Idempotent: if upstream/master is already contained in bermont, the run exits
+# Idempotent: if upstream/master is already contained in master, the run exits
 # early with no branch and no PR. Otherwise it force-updates an automation branch
 # to upstream/master and opens/reuses a PR as the review notice.
 #
@@ -39,7 +38,7 @@ concurrency:
 
 jobs:
   sync:
-    name: Open upstream/master update PR for bermont
+    name: Open upstream/master update PR for master
     runs-on: ubuntu-latest
     env:
       SYNC_BRANCH: automation/upstream-sync
@@ -63,28 +62,28 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
-      - name: Checkout bermont (full history)
+      - name: Checkout master (full history)
         uses: actions/checkout@v6
         with:
-          ref: bermont
+          ref: master
           fetch-depth: 0
           token: ${{ steps.app_token.outputs.token }}
 
-      - name: Fetch upstream + bermont
+      - name: Fetch upstream + master
         run: |
           set -euo pipefail
           git config user.name "bermont-clawsweeper[bot]"
           git config user.email "bermont-clawsweeper[bot]@users.noreply.github.com"
           git remote add upstream "$UPSTREAM_URL" 2>/dev/null || git remote set-url upstream "$UPSTREAM_URL"
           git fetch --no-tags upstream master
-          git fetch --no-tags origin bermont
+          git fetch --no-tags origin master
 
       - name: Skip if already in sync
         id: gate
         run: |
           set -euo pipefail
-          if git merge-base --is-ancestor upstream/master origin/bermont; then
-            echo "bermont already contains upstream/master — nothing to sync."
+          if git merge-base --is-ancestor upstream/master origin/master; then
+            echo "master already contains upstream/master — nothing to sync."
             echo "synced=true" >> "$GITHUB_OUTPUT"
           else
             echo "synced=false" >> "$GITHUB_OUTPUT"
@@ -103,15 +102,15 @@ jobs:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
         run: |
           set -euo pipefail
-          ahead="$(git rev-list --count origin/bermont..upstream/master)"
+          ahead="$(git rev-list --count origin/master..upstream/master)"
           body_file="$RUNNER_TEMP/sync-pr-body.md"
           {
-            echo "Automated weekly notice that \`upstream/master\` (paperclipai/paperclip) has updates not yet incorporated into the \`bermont\` production overlay."
+            echo "Automated weekly notice that \`upstream/master\` (paperclipai/paperclip) has updates not yet incorporated into fork \`master\`."
             echo
-            echo "- Upstream commits not yet in bermont: **${ahead}**"
+            echo "- Upstream commits not yet in fork master: **${ahead}**"
             echo "- This PR branch points directly at \`upstream/master\`; the workflow intentionally does not attempt to merge it."
             echo
-            echo "Review the upstream diff, pull this PR into an agent session, resolve any merge conflicts deliberately, then close/replace this notice PR once the resolved update lands in \`bermont\`."
+            echo "Review the upstream diff, pull this PR into an agent session, resolve any merge conflicts deliberately, then close/replace this notice PR once the resolved update lands in \`master\`."
           } > "$body_file"
 
           # Detect/update an existing open PR for this head via REST. (gh's
@@ -119,11 +118,11 @@ jobs:
           # path.) Keep the title/body fresh after each force-push so the notice
           # does not preserve stale merge-era wording or upstream counts.
           existing_pr="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/pulls?base=bermont&state=open&head=${GITHUB_REPOSITORY_OWNER}:${SYNC_BRANCH}" \
+            "repos/${GITHUB_REPOSITORY}/pulls?base=master&state=open&head=${GITHUB_REPOSITORY_OWNER}:${SYNC_BRANCH}" \
             --jq '.[0].number // empty')"
           if [ -n "${existing_pr:-}" ]; then
             gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${existing_pr}" \
-              --raw-field title="chore: review upstream/master update for bermont" \
+              --raw-field title="chore: review upstream/master update for master" \
               --field "body=@${body_file}"
             echo "Updated existing sync PR #${existing_pr} for ${SYNC_BRANCH}."
             exit 0
@@ -132,7 +131,7 @@ jobs:
           # Create via REST, not `gh pr create` (GraphQL createPullRequest is not
           # accessible to App installation tokens). --field body=@file reads the body.
           gh api --method POST "repos/${GITHUB_REPOSITORY}/pulls" \
-            --raw-field title="chore: review upstream/master update for bermont" \
+            --raw-field title="chore: review upstream/master update for master" \
             --raw-field head="$SYNC_BRANCH" \
-            --raw-field base="bermont" \
+            --raw-field base="master" \
             --field "body=@${body_file}"
