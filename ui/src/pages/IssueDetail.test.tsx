@@ -291,7 +291,7 @@ vi.mock("../components/IssueWorkspaceCard", () => ({
 }));
 
 vi.mock("../components/ImageGalleryModal", () => ({
-  ImageGalleryModal: (props: { images: IssueAttachment[]; initialIndex: number; open: boolean }) => {
+  ImageGalleryModal: (props: { items: IssueAttachment[]; initialIndex: number; open: boolean }) => {
     mockImageGalleryRender(props);
     return null;
   },
@@ -1998,7 +1998,8 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("report.md");
     expect(container.textContent).toContain("Attachments1");
     expect(container.querySelectorAll("video")).toHaveLength(1);
-    expect(mockImageGalleryRender.mock.calls.at(-1)?.[0].images.map((attachment: IssueAttachment) => attachment.id)).toEqual([
+    expect(mockImageGalleryRender.mock.calls.at(-1)?.[0].items.map((attachment: IssueAttachment) => attachment.id)).toEqual([
+      videoAttachment.id,
       imageAttachment.id,
     ]);
   });

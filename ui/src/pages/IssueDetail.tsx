@@ -74,8 +74,13 @@ import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssuePlanDecompositionsSection } from "../components/IssuePlanDecompositionsSection";
 import { IssueOutputSection } from "../components/issue-output/IssueOutputSection";
-import { isImageAttachment } from "../lib/issue-attachments";
-import { getPromotedOutputAttachmentIds } from "../lib/issue-output";
+import { isImageAttachment, isVideoAttachment } from "../lib/issue-attachments";
+import {
+  getIssueOutputs,
+  getPromotedOutputAttachmentIds,
+  isImageContentType,
+  isVideoLikeOutput,
+} from "../lib/issue-output";
 import { IssueSiblingNavigation } from "../components/IssueSiblingNavigation";
 import type { MarkdownExternalReferenceMap } from "../components/MarkdownBody";
 import { IssuesList } from "../components/IssuesList";
@@ -91,7 +96,7 @@ import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
-import { ImageGalleryModal } from "../components/ImageGalleryModal";
+import { ImageGalleryModal, type GalleryMediaItem } from "../components/ImageGalleryModal";
 import { FileViewerProvider, useRequiredFileViewer } from "../context/FileViewerContext";
 import { FileViewerSheet } from "../components/FileViewerSheet";
 import { ArtifactFileChip } from "../components/ArtifactFileChip";
@@ -3111,17 +3116,55 @@ export function IssueDetail() {
     () => (attachments ?? []).filter((attachment) => !promotedOutputAttachmentIds.has(attachment.id)),
     [attachments, promotedOutputAttachmentIds],
   );
-  const imageAttachments = useMemo(() => (attachments ?? []).filter(isImageAttachment), [attachments]);
+  const mediaGalleryItems = useMemo<GalleryMediaItem[]>(() => {
+    const items: GalleryMediaItem[] = [];
+    const seen = new Set<string>();
+
+    const mark = (attachmentId: string | null | undefined, contentPath: string) => {
+      if (attachmentId) seen.add(`attachment:${attachmentId}`);
+      seen.add(`content:${contentPath}`);
+    };
+
+    const hasSeen = (attachmentId: string | null | undefined, contentPath: string) => (
+      Boolean(attachmentId && seen.has(`attachment:${attachmentId}`)) ||
+      seen.has(`content:${contentPath}`)
+    );
+
+    for (const attachment of attachments ?? []) {
+      if (!isImageAttachment(attachment) && !isVideoAttachment(attachment)) continue;
+      items.push(attachment);
+      mark(attachment.id, attachment.contentPath);
+    }
+
+    for (const item of getIssueOutputs(workProducts).items) {
+      const meta = item.metadata;
+      if (!meta) continue;
+      const isMedia = isImageContentType(meta.contentType) ||
+        isVideoLikeOutput(meta.contentType, meta.originalFilename);
+      if (!isMedia || hasSeen(meta.attachmentId, meta.contentPath)) continue;
+      items.push({
+        id: `work-product-${item.id}`,
+        contentPath: meta.contentPath,
+        openPath: meta.openPath,
+        downloadPath: meta.downloadPath,
+        contentType: meta.contentType,
+        originalFilename: meta.originalFilename ?? item.title,
+      });
+      mark(meta.attachmentId, meta.contentPath);
+    }
+
+    return items;
+  }, [attachments, workProducts]);
 
   const handleChatImageClick = useCallback(
     (src: string) => {
       // Try exact contentPath match first
-      let idx = imageAttachments.findIndex((a) => a.contentPath === src);
+      let idx = mediaGalleryItems.findIndex((a) => a.contentPath === src);
       if (idx < 0) {
         // Try matching by asset ID extracted from /api/assets/{assetId}/content URLs
         const assetMatch = src.match(/\/api\/assets\/([^/]+)\/content/);
         if (assetMatch) {
-          idx = imageAttachments.findIndex((a) => a.assetId === assetMatch[1]);
+          idx = mediaGalleryItems.findIndex((a) => "assetId" in a && a.assetId === assetMatch[1]);
         }
       }
       if (idx >= 0) {
@@ -3132,7 +3175,7 @@ export function IssueDetail() {
         window.open(src, "_blank");
       }
     },
-    [imageAttachments],
+    [mediaGalleryItems],
   );
 
   const copyIssueToClipboard = async () => {
@@ -4119,7 +4162,20 @@ export function IssueDetail() {
         userProfileMap={userProfileMap}
       />
 
-      <IssueOutputSection workProducts={workProducts} />
+      <IssueOutputSection
+        workProducts={workProducts}
+        onMediaClick={(item) => {
+          const meta = item.metadata;
+          if (!meta) return;
+          const idx = mediaGalleryItems.findIndex((galleryItem) => (
+            galleryItem.contentPath === meta.contentPath ||
+            galleryItem.id === `work-product-${item.id}` ||
+            galleryItem.id === meta.attachmentId
+          ));
+          setGalleryIndex(idx >= 0 ? idx : 0);
+          setGalleryOpen(true);
+        }}
+      />
 
       {attachmentsInitialLoading ? (
         <IssueSectionSkeleton titleWidth="w-24" rows={2} />
@@ -4132,7 +4188,7 @@ export function IssueDetail() {
           deletePending={deleteAttachment.isPending}
           onDelete={(attachmentId) => deleteAttachment.mutate(attachmentId)}
           onImageClick={(attachment) => {
-            const idx = imageAttachments.findIndex((a) => a.id === attachment.id);
+            const idx = mediaGalleryItems.findIndex((a) => a.id === attachment.id);
             setGalleryIndex(idx >= 0 ? idx : 0);
             setGalleryOpen(true);
           }}
@@ -4153,7 +4209,7 @@ export function IssueDetail() {
       ) : null}
 
       <ImageGalleryModal
-        images={imageAttachments}
+        items={mediaGalleryItems}
         initialIndex={galleryIndex}
         open={galleryOpen}
         onOpenChange={setGalleryOpen}
