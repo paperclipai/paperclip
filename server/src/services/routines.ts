@@ -1558,10 +1558,11 @@ export function routineService(
       const nextStatus = patch.assigneeAgentId === undefined
         ? requestedStatus
         : normalizeDraftRoutineStatus(requestedStatus, nextAssigneeAgentId);
-      const nextVariables = syncRoutineVariablesWithTemplate(
-        [nextTitle, nextDescription],
-        patch.variables === undefined ? existing.variables : sanitizeRoutineVariableInputs(patch.variables),
-      );
+      // Explicit patch.variables are persisted as-is so callers can store
+      // variables not referenced in the template (e.g. shadow-mode flags).
+      const nextVariables = patch.variables !== undefined
+        ? sanitizeRoutineVariableInputs(patch.variables)
+        : syncRoutineVariablesWithTemplate([nextTitle, nextDescription], existing.variables);
       if (patch.projectId !== undefined) await assertProject(existing.companyId, nextProjectId);
       if (patch.assigneeAgentId !== undefined) await assertAssignableAgent(existing.companyId, nextAssigneeAgentId);
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
