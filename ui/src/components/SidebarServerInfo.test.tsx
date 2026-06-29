@@ -29,6 +29,14 @@ async function flushReact() {
   flushSync(() => {});
 }
 
+async function flushReactMicrotasks() {
+  for (let index = 0; index < 6; index += 1) {
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+  }
+  flushSync(() => {});
+}
+
 function mockEnabledSettings(enabled: boolean) {
   mockInstanceSettingsApi.getExperimental.mockResolvedValue({
     enableServerInfoDebugView: enabled,
@@ -69,6 +77,7 @@ describe("SidebarServerInfo", () => {
     container.remove();
     document.body.replaceChildren();
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
   it("renders nothing while the experimental flag is disabled", async () => {
@@ -125,6 +134,64 @@ describe("SidebarServerInfo", () => {
     expect(container.textContent).toContain("abcdef1");
     expect(container.textContent).toContain("Add server info debug view");
     expect(container.textContent).toContain("Clean checkout");
+  });
+
+  it("polls health while the drawer is open and the dev server is active", async () => {
+    vi.useFakeTimers();
+    mockEnabledSettings(true);
+    mockHealthApi.get.mockResolvedValue({
+      status: "ok",
+      devServer: {
+        enabled: true,
+        restartRequired: false,
+        reason: null,
+        lastChangedAt: null,
+        changedPathCount: 0,
+        changedPathsSample: [],
+        pendingMigrations: [],
+        autoRestartEnabled: false,
+        activeRunCount: 0,
+        waitingForIdle: false,
+        lastRestartAt: "2026-06-26T01:15:00.000Z",
+      },
+      serverInfo: {
+        processStartedAt: "2026-06-26T00:00:00.000Z",
+        git: {
+          available: true,
+          fullSha: "abcdef1234567890abcdef1234567890abcdef12",
+          shortSha: "abcdef1",
+          subject: "Add server info debug view",
+          committedAt: "2026-06-25T23:00:00.000Z",
+          localChanges: {
+            available: true,
+            hasLocalChanges: false,
+            stagedFileCount: 0,
+            unstagedFileCount: 0,
+            untrackedFileCount: 0,
+          },
+        },
+      },
+    });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    root = createRoot(container);
+    flushSync(() => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarServerInfo />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReactMicrotasks();
+
+    expect(mockHealthApi.get).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushReactMicrotasks();
+
+    expect(mockHealthApi.get).toHaveBeenCalledTimes(2);
   });
 
   it("shows path-free local change counts from health data", async () => {
