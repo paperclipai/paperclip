@@ -1015,10 +1015,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return `${value.slice(value.length - maxChars)}\n[truncated earlier evidence]`;
   }
 
+  function knownRunLogBytesForEvidence(run: typeof heartbeatRuns.$inferSelect) {
+    const finalizedBytes = Number(run.logBytes ?? 0);
+    if (Number.isFinite(finalizedBytes) && finalizedBytes > 0) return finalizedBytes;
+    const activeBytes = Number(run.lastOutputBytes ?? 0);
+    return Number.isFinite(activeBytes) && activeBytes > 0 ? activeBytes : 0;
+  }
+
   async function readRunLogTailForEvidence(run: typeof heartbeatRuns.$inferSelect) {
-    if (!run.logStore || !run.logRef || !run.logBytes) return "";
+    const knownLogBytes = knownRunLogBytesForEvidence(run);
+    if (!run.logStore || !run.logRef) return "";
     try {
-      const offset = Math.max(0, run.logBytes - ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES);
+      const offset = knownLogBytes > 0
+        ? Math.max(0, knownLogBytes - ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES)
+        : 0;
       const result = await runLogStore.read(
         { store: run.logStore as "local_file", logRef: run.logRef },
         { offset, limitBytes: ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES },
@@ -2043,7 +2053,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const candidateIds: string[] = [];
     if (issue.assigneeAgentId) {
       const assignee = await getAgent(issue.assigneeAgentId);
-      if (assignee?.reportsTo) candidateIds.push(assignee.reportsTo);
+      if (assignee?.reportsTo) {
+        candidateIds.push(assignee.reportsTo);
+      } else {
+        candidateIds.push(issue.assigneeAgentId);
+      }
     }
     if (issue.createdByAgentId) {
       const creator = await getAgent(issue.createdByAgentId);

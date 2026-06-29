@@ -96,6 +96,8 @@ const upsertDocumentToolSchema = z.object({
 
 const createIssueToolSchema = z.object({
   companyId: companyIdOptional,
+  parent_issue_id: z.string().uuid().optional().nullable(),
+  parentIssueId: z.string().uuid().optional().nullable(),
 }).merge(createIssueInputSchema);
 
 const updateIssueToolSchema = z.object({
@@ -172,6 +174,18 @@ const apiRequestSchema = z.object({
   path: z.string().min(1),
   jsonBody: z.string().optional(),
 });
+
+function normalizeCreateIssueToolInput(input: z.infer<typeof createIssueToolSchema>) {
+  const { companyId, parent_issue_id: parentIssueIdSnake, parentIssueId, ...body } = input;
+  const normalizedParentId = body.parentId ?? parentIssueId ?? parentIssueIdSnake;
+  return {
+    companyId,
+    body: {
+      ...body,
+      ...(normalizedParentId ? { parentId: normalizedParentId } : {}),
+    },
+  };
+}
 
 const workspaceRuntimeControlTargetSchema = z.object({
   workspaceCommandId: z.string().min(1).optional().nullable(),
@@ -258,8 +272,11 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "Get a single agent by id",
       z.object({ agentId: z.string().min(1), companyId: companyIdOptional }),
       async ({ agentId, companyId }) => {
+        const resolvedAgentId = ["me", "self"].includes(agentId.trim().toLowerCase())
+          ? client.resolveAgentId(null)
+          : agentId;
         const qs = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
-        return client.requestJson("GET", `/agents/${encodeURIComponent(agentId)}${qs}`);
+        return client.requestJson("GET", `/agents/${encodeURIComponent(resolvedAgentId)}${qs}`);
       },
     ),
     makeTool(
@@ -457,8 +474,10 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipCreateIssue",
       "Create a new issue",
       createIssueToolSchema,
-      async ({ companyId, ...body }) =>
-        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body }),
+      async (input) => {
+        const { companyId, body } = normalizeCreateIssueToolInput(input);
+        return client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body });
+      },
     ),
     makeTool(
       "paperclipUpdateIssue",

@@ -43,6 +43,7 @@ import {
   issueApprovals,
   issueComments,
   issuePlanDecompositions,
+  issueReferenceMentions,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -190,6 +191,7 @@ import {
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+import { buildAgentRunContextBundle, type AgentRunContextIssueSummary } from "./agent-run-context-bundle.js";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
@@ -2621,7 +2623,6 @@ function enrichWakeContextSnapshot(input: {
   const { contextSnapshot, reason, source, triggerDetail, payload } = input;
   const issueIdFromPayload = readNonEmptyString(payload?.["issueId"]) ?? readNonEmptyString(payload?.["taskId"]);
   const commentIdFromPayload = readNonEmptyString(payload?.["commentId"]);
-  const taskKey = deriveTaskKey(contextSnapshot, payload);
   const wakeCommentId = deriveCommentId(contextSnapshot, payload);
   const wakeCommentIds = mergeWakeCommentIds(contextSnapshot, commentIdFromPayload);
 
@@ -2633,9 +2634,6 @@ function enrichWakeContextSnapshot(input: {
   }
   if (!readNonEmptyString(contextSnapshot["taskId"]) && issueIdFromPayload) {
     contextSnapshot.taskId = issueIdFromPayload;
-  }
-  if (!readNonEmptyString(contextSnapshot["taskKey"]) && taskKey) {
-    contextSnapshot.taskKey = taskKey;
   }
   if (!readNonEmptyString(contextSnapshot["commentId"]) && commentIdFromPayload) {
     contextSnapshot.commentId = commentIdFromPayload;
@@ -2656,6 +2654,10 @@ function enrichWakeContextSnapshot(input: {
   }
   if (!readNonEmptyString(contextSnapshot["wakeTriggerDetail"]) && triggerDetail) {
     contextSnapshot.wakeTriggerDetail = triggerDetail;
+  }
+  const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, payload);
+  if (!readNonEmptyString(contextSnapshot["taskKey"]) && taskKey) {
+    contextSnapshot.taskKey = taskKey;
   }
   normalizeModelProfileWakeContext({ contextSnapshot, payload });
   normalizeInteractionContinuationWakeContext(contextSnapshot, payload);
@@ -3039,7 +3041,7 @@ export async function buildPaperclipWakePayload(input: {
 }
 
 function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
-  return deriveTaskKey(run.contextSnapshot as Record<string, unknown> | null, null);
+  return deriveTaskKeyWithHeartbeatFallback(run.contextSnapshot as Record<string, unknown> | null, null);
 }
 
 function isSameTaskScope(left: string | null, right: string | null) {
@@ -3697,6 +3699,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         priority: issues.priority,
         projectId: issues.projectId,
         projectWorkspaceId: issues.projectWorkspaceId,
+        parentId: issues.parentId,
         executionWorkspaceId: issues.executionWorkspaceId,
         executionWorkspacePreference: issues.executionWorkspacePreference,
         assigneeAgentId: issues.assigneeAgentId,
@@ -3710,6 +3713,148 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
+  }
+
+  function toRunContextIssueSummary(issue: {
+    id?: string | null;
+    identifier?: string | null;
+    title?: string | null;
+    description?: string | null;
+    status?: string | null;
+    priority?: string | null;
+  } | null | undefined): AgentRunContextIssueSummary | null {
+    if (!issue) return null;
+    return {
+      id: issue.id ?? null,
+      identifier: issue.identifier ?? null,
+      title: issue.title ?? null,
+      description: issue.description ?? null,
+      status: issue.status ?? null,
+      priority: issue.priority ?? null,
+    };
+  }
+
+  function uniqueRunContextIssueSummaries(
+    issueSummaries: Array<AgentRunContextIssueSummary | null>,
+  ): AgentRunContextIssueSummary[] {
+    const byKey = new Map<string, AgentRunContextIssueSummary>();
+    for (const issue of issueSummaries) {
+      if (!issue) continue;
+      const key = issue.id ?? issue.identifier ?? issue.title;
+      if (!key || byKey.has(key)) continue;
+      byKey.set(key, issue);
+    }
+    return [...byKey.values()];
+  }
+
+  async function listRunContextIssueGraph(input: {
+    companyId: string;
+    issue: {
+      id: string;
+      parentId?: string | null;
+    };
+    ancestors: Array<{
+      id: string;
+      identifier: string | null;
+      title: string;
+      description?: string | null;
+      status: string;
+      priority: string;
+    }>;
+  }) {
+    const parent = input.issue.parentId
+      ? input.ancestors.find((ancestor) => ancestor.id === input.issue.parentId) ?? await db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            title: issues.title,
+            description: issues.description,
+            status: issues.status,
+            priority: issues.priority,
+          })
+          .from(issues)
+          .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issue.parentId)))
+          .then((rows) => rows[0] ?? null)
+      : null;
+
+    const [blocking, dependent, outboundLinked, inboundLinked] = await Promise.all([
+      db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          description: issues.description,
+          status: issues.status,
+          priority: issues.priority,
+        })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+        .where(and(
+          eq(issueRelations.companyId, input.companyId),
+          eq(issueRelations.relatedIssueId, input.issue.id),
+          eq(issueRelations.type, "blocks"),
+        )),
+      db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          description: issues.description,
+          status: issues.status,
+          priority: issues.priority,
+        })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+        .where(and(
+          eq(issueRelations.companyId, input.companyId),
+          eq(issueRelations.issueId, input.issue.id),
+          eq(issueRelations.type, "blocks"),
+        )),
+      db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          description: issues.description,
+          status: issues.status,
+          priority: issues.priority,
+        })
+        .from(issueReferenceMentions)
+        .innerJoin(issues, eq(issueReferenceMentions.targetIssueId, issues.id))
+        .where(and(
+          eq(issueReferenceMentions.companyId, input.companyId),
+          eq(issueReferenceMentions.sourceIssueId, input.issue.id),
+        )),
+      db
+        .select({
+          id: issues.id,
+          identifier: issues.identifier,
+          title: issues.title,
+          description: issues.description,
+          status: issues.status,
+          priority: issues.priority,
+        })
+        .from(issueReferenceMentions)
+        .innerJoin(issues, eq(issueReferenceMentions.sourceIssueId, issues.id))
+        .where(and(
+          eq(issueReferenceMentions.companyId, input.companyId),
+          eq(issueReferenceMentions.targetIssueId, input.issue.id),
+        )),
+    ]);
+
+    return {
+      parent: toRunContextIssueSummary(parent),
+      linked: uniqueRunContextIssueSummaries([
+        ...outboundLinked.map((issue) => toRunContextIssueSummary(issue)),
+        ...inboundLinked.map((issue) => toRunContextIssueSummary(issue)),
+      ]),
+      blocking: blocking
+        .map((issue) => toRunContextIssueSummary(issue))
+        .filter((issue): issue is AgentRunContextIssueSummary => Boolean(issue)),
+      dependent: dependent
+        .map((issue) => toRunContextIssueSummary(issue))
+        .filter((issue): issue is AgentRunContextIssueSummary => Boolean(issue)),
+    };
   }
 
   async function getRoutineEnvForExecutionIssue(
@@ -8531,6 +8676,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return;
     }
 
+    const companyContext = await db
+      .select({
+        id: companies.id,
+        name: companies.name,
+        description: companies.description,
+      })
+      .from(companies)
+      .where(eq(companies.id, agent.companyId))
+      .then((rows) => rows[0] ?? null);
+
     const runtime = await ensureRuntimeState(agent);
     const context = parseObject(run.contextSnapshot);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
@@ -8737,6 +8892,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           description: issueContext.description,
           projectId: issueContext.projectId,
           projectWorkspaceId: issueContext.projectWorkspaceId,
+          parentId: issueContext.parentId,
           executionWorkspaceId: issueContext.executionWorkspaceId,
           executionWorkspacePreference: issueContext.executionWorkspacePreference,
         }
@@ -8756,6 +8912,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueAncestors = issueRef
       ? await issuesSvc.getAncestors(issueRef.id)
       : [];
+    const issueGraphContext = issueRef
+      ? await listRunContextIssueGraph({
+          companyId: agent.companyId,
+          issue: {
+            id: issueRef.id,
+            parentId: issueRef.parentId,
+          },
+          ancestors: issueAncestors,
+        })
+      : { parent: null, linked: [], blocking: [], dependent: [] };
     if (continuationSummary) {
       context.paperclipContinuationSummary = {
         key: safeContinuationSummary!.key,
@@ -9403,6 +9569,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })(),
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
+    context.paperclipRunContext = buildAgentRunContextBundle({
+      company: companyContext,
+      agent: {
+        id: agent.id,
+        name: agent.name,
+        role: agent.role,
+        title: agent.title,
+        permissions: agent.permissions,
+        reportsTo: agent.reportsTo,
+      },
+      issue: issueRef
+        ? {
+            id: issueRef.id,
+            identifier: issueRef.identifier,
+            title: issueRef.title,
+            description: issueRef.description,
+            status: issueRef.status,
+            priority: issueRef.priority,
+            workMode: issueRef.workMode,
+          }
+        : null,
+      graph: issueGraphContext,
+      workspace: {
+        path: executionWorkspace.cwd,
+        repo: executionWorkspace.repoUrl,
+        branch: executionWorkspace.branchName,
+        dirtyStatus: null,
+        openPrs: [],
+      },
+      run: {
+        id: run.id,
+        wakeReason: readNonEmptyString(context.wakeReason) ?? run.invocationSource ?? null,
+      },
+    });
     const runtimeServiceIntents = (() => {
       const runtimeConfig = parseObject(resolvedConfig.workspaceRuntime);
       return Array.isArray(runtimeConfig.services)
@@ -10670,6 +10870,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             deferredWakeReason === "issue_reopened_via_comment"
           );
         let reopenedActivity: LogActivityInput | null = null;
+
+        if (
+          deferred.agentId === run.agentId &&
+          deferredCommentWakeIsSelfAuthored &&
+          (issue.status === "done" || issue.status === "cancelled")
+        ) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: new Date(),
+              error: "Deferred self-authored comment wake suppressed after issue completed",
+              updatedAt: new Date(),
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
 
         if (shouldReopenDeferredCommentWake) {
           const reopenedFromStatus = issue.status;

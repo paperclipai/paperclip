@@ -136,6 +136,8 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import { buildHermesPaperclipPrompt } from "./hermes-paperclip-prompt.js";
+import { applyPaperclipWorkspaceEnv } from "@paperclipai/adapter-utils/server-utils";
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -174,6 +176,128 @@ function buildCursorRuntimeCommandSpec(config: Record<string, unknown>): Adapter
     detectCommand: command,
     installCommand: null,
   };
+}
+
+function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(ctx: T): T {
+  const config =
+    ctx && typeof ctx === "object" && "config" in ctx && ctx.config && typeof ctx.config === "object"
+      ? (ctx.config as Record<string, unknown>)
+      : null;
+  const agent =
+    ctx && typeof ctx === "object" && "agent" in ctx && ctx.agent && typeof ctx.agent === "object"
+      ? (ctx.agent as Record<string, unknown>)
+      : null;
+  const agentAdapterConfig =
+    agent?.adapterConfig && typeof agent.adapterConfig === "object"
+      ? (agent.adapterConfig as Record<string, unknown>)
+      : null;
+
+  const configCommand =
+    typeof config?.command === "string" && config.command.length > 0 ? config.command : undefined;
+  const agentCommand =
+    typeof agentAdapterConfig?.command === "string" && agentAdapterConfig.command.length > 0
+      ? agentAdapterConfig.command
+      : undefined;
+
+  if (config && !config.hermesCommand && configCommand) {
+    config.hermesCommand = configCommand;
+  }
+  if (agentAdapterConfig && !agentAdapterConfig.hermesCommand && agentCommand) {
+    agentAdapterConfig.hermesCommand = agentCommand;
+  }
+
+  return ctx;
+}
+
+function passHermesCustomProviderThroughExtraArgs(config: Record<string, unknown>): Record<string, unknown> {
+  const provider = typeof config.provider === "string" ? config.provider.trim() : "";
+  if (!provider.startsWith("custom:")) return config;
+
+  const existingExtraArgs = Array.isArray(config.extraArgs)
+    ? config.extraArgs.filter((arg): arg is string => typeof arg === "string")
+    : [];
+  const alreadyHasProviderArg = existingExtraArgs.some((arg) =>
+    arg === "--provider" || arg.startsWith("--provider=")
+  );
+  if (alreadyHasProviderArg) return config;
+
+  return {
+    ...config,
+    extraArgs: [...existingExtraArgs, "--provider", provider],
+  };
+}
+
+const UNSUPPORTED_PAPERCLIP_HERMES_TOOLSETS = new Set(["messaging"]);
+
+function filterPaperclipHermesToolsets(value: string): string | undefined {
+  const supported = value
+    .split(",")
+    .map((toolset) => toolset.trim())
+    .filter((toolset) => toolset && !UNSUPPORTED_PAPERCLIP_HERMES_TOOLSETS.has(toolset));
+  return supported.length > 0 ? supported.join(",") : undefined;
+}
+
+function filterHermesToolsetArgs(args: string[]): string[] {
+  const filtered: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "-t" || arg === "--toolsets") {
+      const next = args[index + 1];
+      const toolsets = next ? filterPaperclipHermesToolsets(next) : undefined;
+      if (toolsets) {
+        filtered.push(arg, toolsets);
+      }
+      index += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--toolsets=")) {
+      const toolsets = filterPaperclipHermesToolsets(arg.slice("--toolsets=".length));
+      if (toolsets) {
+        filtered.push(`--toolsets=${toolsets}`);
+      }
+      continue;
+    }
+
+    filtered.push(arg);
+  }
+  return filtered;
+}
+
+function removeUnsupportedPaperclipHermesToolsets(
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...config };
+  if (typeof next.toolsets === "string") {
+    const toolsets = filterPaperclipHermesToolsets(next.toolsets);
+    if (toolsets) {
+      next.toolsets = toolsets;
+    } else {
+      delete next.toolsets;
+    }
+  }
+
+  if (Array.isArray(next.enabledToolsets)) {
+    const enabledToolsets = next.enabledToolsets.filter(
+      (toolset): toolset is string =>
+        typeof toolset === "string" &&
+        toolset.trim().length > 0 &&
+        !UNSUPPORTED_PAPERCLIP_HERMES_TOOLSETS.has(toolset.trim()),
+    );
+    if (enabledToolsets.length > 0) {
+      next.enabledToolsets = enabledToolsets.map((toolset) => toolset.trim());
+    } else {
+      delete next.enabledToolsets;
+    }
+  }
+
+  if (Array.isArray(next.extraArgs)) {
+    next.extraArgs = filterHermesToolsetArgs(
+      next.extraArgs.filter((arg): arg is string => typeof arg === "string"),
+    );
+  }
+
+  return next;
 }
 
 function dedupeAdapterModels(models: AdapterModel[]): AdapterModel[] {
@@ -348,7 +472,7 @@ const grokLocalAdapter: ServerAdapterModule = {
 
 const hermesGatewayAdapter = createHermesGatewayServerAdapter();
 
-const hermesLocalAdapter = createHermesLocalServerAdapter();
+const baseHermesLocalAdapter = createHermesLocalServerAdapter();
 
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
@@ -398,6 +522,75 @@ const piLocalAdapter: ServerAdapterModule = {
   getRuntimeCommandSpec: (config) =>
     buildNpmRuntimeCommandSpec(config, "pi", "@mariozechner/pi-coding-agent"),
   agentConfigurationDoc: piAgentConfigurationDoc,
+};
+
+const hermesLocalAdapter: ServerAdapterModule = {
+  ...baseHermesLocalAdapter,
+  execute: async (ctx) => {
+    const normalizedCtx = normalizeHermesConfig(ctx);
+    const existingConfig = (normalizedCtx.agent.adapterConfig ?? {}) as Record<string, unknown>;
+    const existingEnv =
+      typeof existingConfig.env === "object" && existingConfig.env !== null && !Array.isArray(existingConfig.env)
+        ? (existingConfig.env as Record<string, string>)
+        : {};
+    const explicitApiKey =
+      typeof existingEnv.PAPERCLIP_API_KEY === "string" && existingEnv.PAPERCLIP_API_KEY.trim().length > 0;
+
+    const { promptTemplate, instructionsRootPath, logNotes } = await buildHermesPaperclipPrompt({
+      adapterConfig: existingConfig,
+      context: normalizedCtx.context ?? {},
+      runtime: normalizedCtx.runtime,
+    });
+    for (const note of logNotes) {
+      await normalizedCtx.onLog("stdout", `[paperclip] ${note}\n`);
+    }
+
+    const patchedEnv: Record<string, string> = {
+      ...existingEnv,
+      ...(normalizedCtx.authToken && !explicitApiKey ? { PAPERCLIP_API_KEY: normalizedCtx.authToken } : {}),
+      ...(normalizedCtx.runId ? { PAPERCLIP_RUN_ID: normalizedCtx.runId } : {}),
+      ...(instructionsRootPath ? { PAPERCLIP_INSTRUCTIONS_ROOT: instructionsRootPath } : {}),
+    };
+
+    const paperclipWorkspace =
+      normalizedCtx.context &&
+      typeof normalizedCtx.context === "object" &&
+      normalizedCtx.context.paperclipWorkspace &&
+      typeof normalizedCtx.context.paperclipWorkspace === "object"
+        ? (normalizedCtx.context.paperclipWorkspace as Record<string, unknown>)
+        : null;
+    applyPaperclipWorkspaceEnv(patchedEnv, {
+      workspaceCwd: typeof paperclipWorkspace?.cwd === "string" ? paperclipWorkspace.cwd : null,
+      workspaceSource: typeof paperclipWorkspace?.source === "string" ? paperclipWorkspace.source : null,
+      workspaceStrategy: typeof paperclipWorkspace?.strategy === "string" ? paperclipWorkspace.strategy : null,
+      workspaceId: typeof paperclipWorkspace?.workspaceId === "string" ? paperclipWorkspace.workspaceId : null,
+      workspaceRepoUrl: typeof paperclipWorkspace?.repoUrl === "string" ? paperclipWorkspace.repoUrl : null,
+      workspaceRepoRef: typeof paperclipWorkspace?.repoRef === "string" ? paperclipWorkspace.repoRef : null,
+      workspaceBranch: typeof paperclipWorkspace?.branchName === "string" ? paperclipWorkspace.branchName : null,
+      workspaceWorktreePath: typeof paperclipWorkspace?.worktreePath === "string" ? paperclipWorkspace.worktreePath : null,
+      agentHome: typeof paperclipWorkspace?.agentHome === "string" ? paperclipWorkspace.agentHome : null,
+    });
+
+    const effectivePatchedConfig = removeUnsupportedPaperclipHermesToolsets(
+      passHermesCustomProviderThroughExtraArgs({
+        ...existingConfig,
+        promptTemplate,
+        env: patchedEnv,
+      }),
+    );
+
+    const patchedCtx = {
+      ...normalizedCtx,
+      agent: {
+        ...normalizedCtx.agent,
+        adapterConfig: effectivePatchedConfig,
+      },
+    };
+
+    return baseHermesLocalAdapter.execute(patchedCtx);
+  },
+  testEnvironment: (ctx) =>
+    baseHermesLocalAdapter.testEnvironment!(normalizeHermesConfig(ctx) as never),
 };
 
 const adaptersByType = new Map<string, ServerAdapterModule>();

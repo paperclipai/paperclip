@@ -1030,7 +1030,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("does not reopen a finished issue when the deferred comment wake is self-authored by the closing run", async () => {
+  it("drops a finished issue deferred comment wake when it is self-authored by the closing run", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -1165,17 +1165,18 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
       gateway.releaseFirstWait();
 
-      // The deferred wake still promotes (so the agent gets the message), but
-      // the issue must remain `done` because the only referenced comment is
-      // self-authored by the run that is now ending.
-      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
+      // The deferred wake should be suppressed: it is a same-run completion
+      // comment on an issue the run just closed, so a follow-up run would only
+      // repeat the same no-op completion and create a self-wake loop.
       await waitFor(async () => {
         const runs = await db
           .select()
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+        return runs.length === 1 && runs.every((run) => run.status === "succeeded");
       }, 90_000);
+
+      expect(gateway.getAgentPayloads()).toHaveLength(1);
 
       const issueAfterPromotion = await db
         .select({
@@ -1190,6 +1191,39 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         status: "done",
       });
       expect(issueAfterPromotion?.completedAt).not.toBeNull();
+
+      await waitFor(async () => {
+        const wakeups = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, agentId),
+            ),
+          );
+        const deferredWake = wakeups.find((wakeup) =>
+          wakeup.payload && JSON.stringify(wakeup.payload).includes(selfComment.id)
+        );
+        return deferredWake?.status === "cancelled";
+      });
+
+      const wakeups = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+          ),
+        );
+      const deferredWake = wakeups.find((wakeup) =>
+        wakeup.payload && JSON.stringify(wakeup.payload).includes(selfComment.id)
+      );
+      expect(deferredWake).toMatchObject({
+        status: "cancelled",
+        error: "Deferred self-authored comment wake suppressed after issue completed",
+      });
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

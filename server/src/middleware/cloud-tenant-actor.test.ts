@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Request } from "express";
 import type { Db } from "@paperclipai/db";
-import { authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
-import { resolveCloudTenantActor } from "./auth.js";
+import { agents, authUsers, companies, companyMemberships, heartbeatRuns, instanceUserRoles } from "@paperclipai/db";
+import { resolveAgentActorFromRunHeader, resolveCloudTenantActor } from "./auth.js";
 
 // Minimal fake Drizzle Db: records every table passed to .insert() / .delete() and
 // supports the chained call shapes used by resolveCloudTenantActor (values /
@@ -37,6 +37,33 @@ function fakeReq(headers: Record<string, string>): Request {
   return { header: (name: string) => lower[name.toLowerCase()] } as unknown as Request;
 }
 
+function createRunActorFakeDb() {
+  const runRow = {
+    id: "run-123",
+    companyId: "company-1",
+    agentId: "agent-1",
+  };
+  const agentRow = {
+    id: "agent-1",
+    companyId: "company-1",
+    status: "idle",
+  };
+  const db = {
+    select: () => ({
+      from: (table: unknown) => ({
+        where: () => ({
+          then: (resolve: (rows: unknown[]) => unknown) => {
+            if (table === heartbeatRuns) return Promise.resolve([runRow]).then(resolve);
+            if (table === agents) return Promise.resolve([agentRow]).then(resolve);
+            return Promise.resolve([]).then(resolve);
+          },
+        }),
+      }),
+    }),
+  } as unknown as Db;
+  return { db };
+}
+
 const VALID_HEADERS = {
   "x-paperclip-cloud-tenant-token": "test-server-token",
   "x-paperclip-cloud-user-id": "user-123",
@@ -44,6 +71,22 @@ const VALID_HEADERS = {
   "x-paperclip-cloud-stack-id": "stack-abc",
   "x-paperclip-cloud-stack-role": "owner",
 };
+
+describe("resolveAgentActorFromRunHeader", () => {
+  it("attributes local trusted run-scoped API writes to the heartbeat run agent", async () => {
+    const { db } = createRunActorFakeDb();
+
+    const actor = await resolveAgentActorFromRunHeader(db, "run-123");
+
+    expect(actor).toMatchObject({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-123",
+      source: "agent_key",
+    });
+  });
+});
 
 describe("resolveCloudTenantActor (shared-pool hardening)", () => {
   beforeEach(() => {

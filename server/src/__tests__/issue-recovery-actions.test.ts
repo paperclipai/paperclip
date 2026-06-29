@@ -324,6 +324,67 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("keeps root CEO-owned stranded work assigned to the CEO instead of a CTO fallback", async () => {
+    const { companyId, managerId, sourceIssueId, prefix } = await seedCompany();
+    const ceoId = randomUUID();
+    await db.insert(agents).values({
+      id: ceoId,
+      companyId,
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(agents).set({ reportsTo: ceoId }).where(eq(agents.id, managerId));
+    await db.update(issues).set({ assigneeAgentId: ceoId }).where(eq(issues.id, sourceIssueId));
+    const [sourceIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const latestRun = {
+      id: randomUUID(),
+      agentId: ceoId,
+      status: "failed",
+      error: "operator drained queue",
+      errorCode: "operator_queue_drain",
+      contextSnapshot: { retryReason: "issue_continuation_needed" },
+      livenessState: "needs_followup",
+    } as const;
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue!,
+      previousStatus: "in_progress",
+      latestRun,
+      comment: "Automatic continuation recovery failed.",
+    });
+
+    const actionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(actionRows).toHaveLength(1);
+    expect(actionRows[0]).toMatchObject({
+      companyId,
+      ownerAgentId: ceoId,
+      previousOwnerAgentId: ceoId,
+      returnOwnerAgentId: ceoId,
+      cause: "stranded_assigned_issue",
+    });
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      ceoId,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          sourceIssueId,
+          recoveryCause: "stranded_assigned_issue",
+        }),
+      }),
+    );
+    expect(actionRows[0]?.nextAction).toContain("Restore a live execution path");
+    expect(sourceIssue?.identifier).toBe(`${prefix}-1`);
+  });
+
   it("reuses the same source-scoped action when latest run IDs change while the cause stays the same", async () => {
     const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);

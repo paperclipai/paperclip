@@ -22,6 +22,9 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockCleanupExecutionWorkspaceArtifacts = vi.hoisted(() => vi.fn());
+const mockStopRuntimeServicesForExecutionWorkspace = vi.hoisted(() => vi.fn(async () => undefined));
+const mockDestroyReusableSandboxLeases = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -29,6 +32,37 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   workspaceOperationService: () => mockWorkspaceOperationService,
 }));
+
+vi.mock("../services/workspace-runtime.js", () => ({
+  buildWorkspaceRuntimeDesiredStatePatch: vi.fn(),
+  cleanupExecutionWorkspaceArtifacts: mockCleanupExecutionWorkspaceArtifacts,
+  ensurePersistedExecutionWorkspaceAvailable: vi.fn(),
+  listConfiguredRuntimeServiceEntries: vi.fn(() => []),
+  runWorkspaceJobForControl: vi.fn(),
+  startRuntimeServicesForWorkspaceControl: vi.fn(),
+  stopRuntimeServicesForExecutionWorkspace: mockStopRuntimeServicesForExecutionWorkspace,
+}));
+
+vi.mock("../services/environment-runtime.js", () => ({
+  environmentRuntimeService: () => ({
+    destroyReusableSandboxLeases: mockDestroyReusableSandboxLeases,
+  }),
+}));
+
+function createDbDouble() {
+  return {
+    update: vi.fn(() => ({
+      set: vi.fn(() => ({
+        where: vi.fn(async () => undefined),
+      })),
+    })),
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => Promise.resolve([])),
+      })),
+    })),
+  };
+}
 
 function createApp(companyIds = ["company-1"]) {
   const app = express();
@@ -43,7 +77,7 @@ function createApp(companyIds = ["company-1"]) {
     };
     next();
   });
-  app.use("/api", executionWorkspaceRoutes({} as any));
+  app.use("/api", executionWorkspaceRoutes(createDbDouble() as any));
   app.use(errorHandler);
   return app;
 }
@@ -75,6 +109,11 @@ describe.sequential("execution workspace routes", () => {
       },
     ]);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    mockExecutionWorkspaceService.update.mockReset();
+    mockExecutionWorkspaceService.getCloseReadiness.mockReset();
+    mockCleanupExecutionWorkspaceArtifacts.mockResolvedValue({ cleaned: false, warnings: [] });
+    mockStopRuntimeServicesForExecutionWorkspace.mockClear();
+    mockDestroyReusableSandboxLeases.mockClear();
   });
 
   it("uses summary mode for lightweight workspace lookups", async () => {
@@ -126,5 +165,128 @@ describe.sequential("execution workspace routes", () => {
 
     expect(res.status).toBe(422);
     expect(mockExecutionWorkspaceService.listOverview).not.toHaveBeenCalled();
+  });
+
+  it("rejects blocked close-readiness before archiving", async () => {
+    const existingWorkspace = {
+      id: "workspace-blocked",
+      companyId: "company-1",
+      projectId: "project-1",
+      projectWorkspaceId: null,
+      sourceIssueId: "issue-1",
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Blocked workspace",
+      status: "active",
+      cwd: "/repo/worktree",
+      repoUrl: null,
+      baseRef: "origin/main",
+      branchName: "feature/work",
+      providerType: "git_worktree",
+      providerRef: "/repo/worktree",
+      config: null,
+      metadata: null,
+      runtimeServices: [],
+    };
+
+    mockExecutionWorkspaceService.getById.mockResolvedValue(existingWorkspace);
+    mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({
+      workspaceId: existingWorkspace.id,
+      state: "blocked",
+      blockingReasons: ["This workspace is still linked to an open issue."],
+      warnings: [],
+      linkedIssues: [],
+      plannedActions: [],
+      isDestructiveCloseAllowed: false,
+      isSharedWorkspace: false,
+      isProjectPrimaryWorkspace: false,
+      git: null,
+      runtimeServices: [],
+    });
+
+    const res = await request(createApp())
+      .patch(`/api/execution-workspaces/${existingWorkspace.id}`)
+      .send({ status: "archived" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "This workspace is still linked to an open issue.",
+      closeReadiness: {
+        state: "blocked",
+        isDestructiveCloseAllowed: false,
+      },
+    });
+    expect(mockExecutionWorkspaceService.update).not.toHaveBeenCalled();
+    expect(mockCleanupExecutionWorkspaceArtifacts).not.toHaveBeenCalled();
+  });
+
+  it("archives shared project-primary records without treating the primary cwd as cleanup failure", async () => {
+    const existingWorkspace = {
+      id: "workspace-shared-primary",
+      companyId: "company-1",
+      projectId: "project-1",
+      projectWorkspaceId: "project-workspace-1",
+      sourceIssueId: "issue-1",
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Shared primary session",
+      status: "cleanup_failed",
+      cwd: "/repo/primary",
+      repoUrl: null,
+      baseRef: "origin/main",
+      branchName: "main",
+      providerType: "local_fs",
+      providerRef: null,
+      config: null,
+      metadata: { source: "project_primary" },
+      runtimeServices: [],
+    };
+    const archivedWorkspace = {
+      ...existingWorkspace,
+      status: "archived",
+      closedAt: new Date("2026-06-29T00:00:00.000Z"),
+      cleanupReason: null,
+    };
+
+    mockExecutionWorkspaceService.getById.mockResolvedValue(existingWorkspace);
+    mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({
+      workspaceId: existingWorkspace.id,
+      state: "ready_with_warnings",
+      blockingReasons: [],
+      warnings: ["This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record."],
+      linkedIssues: [],
+      plannedActions: [
+        {
+          kind: "archive_record",
+          label: "Archive workspace record",
+          description: "Keep history.",
+          command: null,
+        },
+      ],
+      isDestructiveCloseAllowed: true,
+      isSharedWorkspace: true,
+      isProjectPrimaryWorkspace: true,
+      git: null,
+      runtimeServices: [],
+    });
+    mockExecutionWorkspaceService.update.mockResolvedValue(archivedWorkspace);
+
+    const res = await request(createApp())
+      .patch(`/api/execution-workspaces/${existingWorkspace.id}`)
+      .send({ status: "archived" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      id: existingWorkspace.id,
+      status: "archived",
+      cwd: "/repo/primary",
+      cleanupReason: null,
+    });
+    expect(mockCleanupExecutionWorkspaceArtifacts).not.toHaveBeenCalled();
+    expect(mockExecutionWorkspaceService.update).toHaveBeenCalledTimes(1);
+    expect(mockExecutionWorkspaceService.update).toHaveBeenCalledWith(existingWorkspace.id, expect.objectContaining({
+      status: "archived",
+      cleanupReason: null,
+    }));
   });
 });

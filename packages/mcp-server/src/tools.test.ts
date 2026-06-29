@@ -69,6 +69,23 @@ describe("paperclip MCP tools", () => {
     expect(response.content[0]?.text).toContain("issue-1");
   });
 
+  it("resolves get agent me to the configured agent id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "22222222-2222-2222-2222-222222222222" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipGetAgent");
+    await tool.execute({ agentId: "me" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/agents/22222222-2222-2222-2222-222222222222",
+    );
+    expect(init.method).toBe("GET");
+  });
+
   it("uses default agent id for checkout requests", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ id: "PAP-1135", status: "in_progress" }),
@@ -109,6 +126,28 @@ describe("paperclip MCP tools", () => {
       workMode: "standard",
       priority: "medium",
       assigneeAgentId: "22222222-2222-2222-2222-222222222222",
+      requestDepth: 0,
+    });
+  });
+
+  it("maps snake-case parent issue aliases to parentId on create issue requests", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ id: "issue-1", parentId: "44444444-4444-4444-8444-444444444444" }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipCreateIssue");
+    await tool.execute({
+      title: "Child follow-up",
+      parent_issue_id: "44444444-4444-4444-8444-444444444444",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      title: "Child follow-up",
+      parentId: "44444444-4444-4444-8444-444444444444",
+      workMode: "standard",
+      priority: "medium",
       requestDepth: 0,
     });
   });

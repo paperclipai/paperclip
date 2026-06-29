@@ -220,3 +220,12 @@ PR #2218 (`feat/external-adapter-phase1`) adds external adapter support. See roo
 - `createServerAdapter()` must include ALL optional fields (especially `detectModel`)
 - Built-in UI adapters can shadow external plugin parsers; external override pause/resume should restore the built-in parser.
 - Reference external adapters: Droid (npm); Hermes can also be tested as an override package.
+
+## Learned User Preferences
+
+- Keep Paperclip agent instructions and profiles managed in Paperclip, not embedded in Hermes adapter behavior.
+- Use telegraphic/caveman-style communication for Paperclip agent comments and handoffs when practical to reduce token use.
+
+## Learned Workspace Facts
+
+- Hermes command approval auto-denial appears as `Timeout — denying command`; Paperclip adapter process timeouts appear as `timed out: true` after the configured adapter timeout.

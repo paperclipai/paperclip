@@ -863,12 +863,11 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   ) {
     return false;
   }
-  // Only human comments should implicitly reopen finished work.
-  // Agent-authored comments remain communicative unless reopen was explicit.
-  if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
-  if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
-  return true;
+  // Plain comments are evidence, not execution intent. Blocked/terminal issues
+  // require explicit `resume: true`, `reopen: true`, or a status patch before
+  // they move back to todo. This prevents blocked-preservation comments from
+  // repeatedly reopening and waking the same assignee with no new action path.
+  return false;
 }
 
 function shouldHumanCommentResumeInProgressScheduledRetry(input: {
@@ -5759,6 +5758,10 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionWorkspaceSettings?.environmentId);
     const requestedAssigneeAgentId =
       normalizedAssigneeAgentId === undefined ? existing.assigneeAgentId : normalizedAssigneeAgentId;
+    const requestedAssigneeUserId =
+      req.body.assigneeUserId === undefined ? existing.assigneeUserId : (req.body.assigneeUserId as string | null);
+    const assignmentPatchChangesOwner =
+      requestedAssigneeAgentId !== existing.assigneeAgentId || requestedAssigneeUserId !== existing.assigneeUserId;
     const explicitMoveToTodoRequested = reopenRequested || resumeRequested === true;
     const recoveryRelevantSourceMutationRequested =
       req.body.status !== undefined ||
@@ -5805,6 +5808,7 @@ export function issueRoutes(
     const effectiveMoveToTodoRequested =
       !assigneeSelfCommentOnTerminal &&
       (explicitMoveToTodoRequested ||
+        (!!commentBody && isClosed && assignmentPatchChangesOwner) ||
         (!!commentBody &&
           shouldImplicitlyMoveCommentedIssueToTodo({
             issueStatus: existing.status,
@@ -6590,7 +6594,8 @@ export function issueRoutes(
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
-        const skipAssigneeCommentWake = selfComment || isClosed;
+        const blockedCommentWithoutResume = issue.status === "blocked" && !reopened && resumeRequested !== true;
+        const skipAssigneeCommentWake = selfComment || isClosed || blockedCommentWithoutResume;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
           addWakeup(assigneeId, {
@@ -7963,7 +7968,8 @@ export function issueRoutes(
       // Re-derive closed-ness from the post-mutation issue so the auto-approval
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
-      const skipWake = selfComment || isClosedIssueStatus(currentIssue.status);
+      const blockedCommentWithoutResume = currentIssue.status === "blocked" && !reopened && resumeRequested !== true;
+      const skipWake = selfComment || isClosedIssueStatus(currentIssue.status) || blockedCommentWithoutResume;
       if (assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           addWakeup(assigneeId, {

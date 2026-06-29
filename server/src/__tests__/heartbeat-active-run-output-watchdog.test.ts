@@ -128,6 +128,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     ageMs: number;
     withOutput?: boolean;
     logChunk?: string;
+    persistLogBytes?: boolean;
+    persistLastOutputBytes?: boolean;
     sourceStatus?: "in_progress" | "done" | "cancelled";
     sourceOriginKind?: string;
     sameRunTerminalEvidence?: "activity" | "comment";
@@ -218,7 +220,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         .set({
           logStore: handle.store,
           logRef: handle.logRef,
-          logBytes,
+          logBytes: opts.persistLogBytes === false ? null : logBytes,
+          lastOutputBytes: opts.persistLastOutputBytes === false ? null : logBytes,
         })
         .where(eq(heartbeatRuns.id, runId));
     }
@@ -285,6 +288,49 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(evaluations[0]?.description).toContain("Decision Checklist");
     expect(evaluations[0]?.description).not.toContain("sk-test-secret-value");
+  });
+
+  it("uses lastOutputBytes for active-run evidence before finalized logBytes is available", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const activeTail = "active run tail persisted before finalization";
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      logChunk: activeTail,
+      persistLogBytes: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.description).toContain(activeTail);
+    expect(evaluation?.description).not.toContain("_No run-log tail was available._");
+  });
+
+  it("uses existing run-log evidence when byte counters were not persisted", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const activeTail = "orphaned run tail exists despite missing counters";
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      logChunk: activeTail,
+      persistLogBytes: false,
+      persistLastOutputBytes: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.description).toContain(activeTail);
+    expect(evaluation?.description).not.toContain("_No run-log tail was available._");
   });
 
   it("redacts sensitive values from actual run-log evidence", async () => {

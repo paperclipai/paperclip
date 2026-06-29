@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, agents, authUsers, companies, companyMemberships, heartbeatRuns, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -12,6 +12,43 @@ import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compa
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+export async function resolveAgentActorFromRunHeader(
+  db: Db,
+  runIdHeader: string | null | undefined,
+): Promise<Express.Request["actor"] | null> {
+  if (!runIdHeader) return null;
+  const run = await db
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+    })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runIdHeader))
+    .then((rows) => rows[0] ?? null);
+  if (!run) return null;
+
+  const agentRecord = await db
+    .select({
+      id: agents.id,
+      companyId: agents.companyId,
+      status: agents.status,
+    })
+    .from(agents)
+    .where(eq(agents.id, run.agentId))
+    .then((rows) => rows[0] ?? null);
+  if (!agentRecord || agentRecord.companyId !== run.companyId) return null;
+  if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") return null;
+
+  return {
+    type: "agent",
+    agentId: run.agentId,
+    companyId: run.companyId,
+    runId: run.id,
+    source: "agent_key",
+  };
 }
 
 interface ActorMiddlewareOptions {
@@ -35,6 +72,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         : { type: "none", source: "none" };
 
     const runIdHeader = req.header("x-paperclip-run-id");
+
+    if (opts.deploymentMode === "local_trusted" && runIdHeader) {
+      const runActor = await resolveAgentActorFromRunHeader(db, runIdHeader);
+      if (runActor) {
+        req.actor = runActor;
+      }
+    }
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
@@ -95,6 +139,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           next();
           return;
         }
+      }
+      const runActor = await resolveAgentActorFromRunHeader(db, runIdHeader);
+      if (runActor) {
+        req.actor = runActor;
+        next();
+        return;
       }
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
