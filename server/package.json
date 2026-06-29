@@ -66,7 +66,7 @@
     "chokidar": "^4.0.3",
     "detect-port": "^2.1.0",
     "dompurify": "^3.4.8",
-    "dotenv": "^17.0.1",
+    "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "embedded-postgres": "^18.1.0-beta.16",
     "express": "^5.1.0",
