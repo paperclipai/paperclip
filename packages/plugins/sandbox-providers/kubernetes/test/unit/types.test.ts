@@ -50,6 +50,34 @@ describe("kubernetesProviderConfigSchema", () => {
     );
   });
 
+  it("accepts runtime image overrides for declared adapter registry entries", () => {
+    const parsed = parseKubernetesProviderConfig({
+      inCluster: true,
+      adapters: [
+        {
+          adapterType: "custom_local",
+          runtimeImage: "registry.example/custom:v1",
+        },
+      ],
+      runtimeImages: {
+        custom_local: "registry.example/custom:git-b18cbb0",
+      },
+    });
+
+    expect(parsed.runtimeImages.custom_local).toBe("registry.example/custom:git-b18cbb0");
+  });
+
+  it("rejects runtime image overrides for unknown adapter keys", () => {
+    expect(() =>
+      parseKubernetesProviderConfig({
+        inCluster: true,
+        runtimeImages: {
+          claude_locall: "ghcr.io/paperclipai/agent-runtime-claude:git-b18cbb0",
+        },
+      }),
+    ).toThrow(/runtimeImages keys must match a known adapter type/);
+  });
+
   it("rejects blank runtime image override values", () => {
     expect(() =>
       parseKubernetesProviderConfig({ inCluster: true, runtimeImages: { claude_local: "   " } }),
