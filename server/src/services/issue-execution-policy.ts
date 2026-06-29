@@ -390,15 +390,21 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
   const reviewPreset = parsed.data.reviewPreset;
   const authorizationPolicy = parsed.data.authorizationPolicy;
 
-  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy) return null;
+  const permanentWatcher = parsed.data.permanentWatcher;
+  const successfulRunHandoff = parsed.data.successfulRunHandoff;
+  const suppressesHandoff = successfulRunHandoff?.required === false;
+
+  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy && !permanentWatcher && !suppressesHandoff) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
-    commentRequired: true,
+    commentRequired: parsed.data.commentRequired ?? true,
     stages,
     ...(monitor ? { monitor } : {}),
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
+    ...(permanentWatcher !== undefined ? { permanentWatcher } : {}),
+    ...(successfulRunHandoff != null ? { successfulRunHandoff } : {}),
   };
 }
 

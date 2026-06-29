@@ -451,6 +451,8 @@ export interface IssueExecutionPolicy {
   authorizationPolicy?: TrustAuthorizationPolicy;
   /** When true, the harness skips all automatic escalation for this issue. Use for permanent watcher issues that intentionally stay in_progress indefinitely. */
   permanentWatcher?: boolean;
+  /** When required is false, suppresses the successful-run handoff escalation for standing/routine issues that intentionally remain in_progress without a terminal disposition. */
+  successfulRunHandoff?: { required?: boolean } | null;
 }
 
 export interface IssueExecutionMonitorState {

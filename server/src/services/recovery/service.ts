@@ -2866,6 +2866,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        const handoffPolicy = (issue.executionPolicy as Record<string, unknown> | null)?.successfulRunHandoff;
+        if (handoffPolicy && (handoffPolicy as Record<string, unknown>).required === false) {
+          result.skipped += 1;
+          continue;
+        }
+
         const updated = await escalateStrandedAssignedIssue({
           issue,
           previousStatus: "in_progress",

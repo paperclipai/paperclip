@@ -131,6 +131,34 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("does not queue when executionPolicy suppresses successfulRunHandoff escalation", () => {
+    expect(decide({
+      issue: { ...issue, executionPolicy: { successfulRunHandoff: { required: false } } } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "issue has successfulRunHandoff escalation suppressed",
+    });
+  });
+
+  it("does not queue when executionPolicy sets required to false alongside other policy fields", () => {
+    expect(decide({
+      issue: {
+        ...issue,
+        executionPolicy: { permanentWatcher: false, successfulRunHandoff: { required: false } },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "issue has successfulRunHandoff escalation suppressed",
+    });
+  });
+
+  it("still queues when executionPolicy does not suppress successfulRunHandoff", () => {
+    const decision = decide({
+      issue: { ...issue, executionPolicy: { successfulRunHandoff: { required: true } } } as any,
+    });
+    expect(decision.kind).toBe("enqueue");
+  });
+
   it("does not queue when the issue is the recurring parent of an active routine", () => {
     expect(decide({ hasActiveRoutineContinuation: true })).toEqual({
       kind: "skip",

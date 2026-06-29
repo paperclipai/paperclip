@@ -375,6 +375,10 @@ export function decideSuccessfulRunHandoff(input: {
   if ((issue.executionPolicy as Record<string, unknown> | null)?.permanentWatcher === true) {
     return { kind: "skip", reason: "issue has permanent watcher policy" };
   }
+  const handoffPolicy = (issue.executionPolicy as Record<string, unknown> | null)?.successfulRunHandoff;
+  if (handoffPolicy && (handoffPolicy as Record<string, unknown>).required === false) {
+    return { kind: "skip", reason: "issue has successfulRunHandoff escalation suppressed" };
+  }
   if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
