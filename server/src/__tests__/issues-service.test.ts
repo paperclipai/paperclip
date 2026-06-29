@@ -2963,6 +2963,66 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(blockedRelations.blockedBy.map((relation) => relation.id)).toEqual([blockerId]);
   });
 
+  it("§7.10.3 pre-close guard: blocks an agent from closing an issue with unresolved blockers, allows board override and resolved/recovery closes", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const actorAgentId = randomUUID();
+    const actorUserId = randomUUID();
+
+    const blockerId = randomUUID();
+    const blockedId = randomUUID();
+    const recoveryId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Blocker", status: "todo", priority: "high" },
+      { id: blockedId, companyId, title: "Blocked issue", status: "blocked", priority: "medium" },
+      {
+        id: recoveryId,
+        companyId,
+        title: "Recovery issue",
+        status: "blocked",
+        priority: "medium",
+        originKind: "stranded_issue_recovery",
+      },
+    ]);
+    await svc.update(blockedId, { blockedByIssueIds: [blockerId] });
+    await svc.update(recoveryId, { blockedByIssueIds: [blockerId] });
+
+    // Agent close while a first-class blocker is unresolved → 409 PRE_CLOSE_GUARD_BLOCKED.
+    await expect(
+      svc.update(blockedId, { status: "done", actorAgentId }),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: { code: "pre_close_guard_blocked", unresolvedBlockerIssueIds: [blockerId] },
+    });
+    // The same guard covers cancellation.
+    await expect(
+      svc.update(blockedId, { status: "cancelled", actorAgentId }),
+    ).rejects.toMatchObject({ status: 409, details: { code: "pre_close_guard_blocked" } });
+
+    // Carve-out: board/user actor override.
+    const boardClosed = await svc.update(blockedId, { status: "done", actorUserId });
+    expect(boardClosed?.status).toBe("done");
+
+    // Carve-out: recovery/liveness-escalation origin closes even with an open blocker.
+    const recoveryClosed = await svc.update(recoveryId, { status: "done", actorAgentId });
+    expect(recoveryClosed?.status).toBe("done");
+
+    // Resolution path: once the blocker is resolved, an agent close succeeds.
+    const blockedId2 = randomUUID();
+    await db.insert(issues).values({
+      id: blockedId2, companyId, title: "Blocked issue 2", status: "blocked", priority: "medium",
+    });
+    await svc.update(blockedId2, { blockedByIssueIds: [blockerId] });
+    await svc.update(blockerId, { status: "done", actorAgentId });
+    const closedAfterResolve = await svc.update(blockedId2, { status: "done", actorAgentId });
+    expect(closedAfterResolve?.status).toBe("done");
+  });
+
   it("adds terminal blockers to immediate blocked-by summaries", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
