@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parsePiJsonl, isPiUnknownSessionError } from "./parse.js";
+import { isPiTransientUpstreamError, parsePiJsonl, isPiUnknownSessionError } from "./parse.js";
 
 describe("parsePiJsonl", () => {
   it("parses agent lifecycle and messages", () => {
@@ -259,6 +259,27 @@ describe("parsePiJsonl", () => {
 
     const parsed = parsePiJsonl(stdout);
     expect(parsed.errors).toEqual([]);
+  });
+});
+
+describe("isPiTransientUpstreamError", () => {
+  it("classifies Pi JSONL provider rate limits as transient upstream", () => {
+    expect(
+      isPiTransientUpstreamError({
+        errorMessage:
+          '429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}}',
+      }),
+    ).toBe(true);
+    expect(isPiTransientUpstreamError({ errorMessage: "Cloud Code Assist API error (429): RESOURCE_EXHAUSTED" })).toBe(true);
+  });
+
+  it("does not classify deterministic model/config errors as transient", () => {
+    expect(
+      isPiTransientUpstreamError({
+        errorMessage: '404 {"type":"error","error":{"type":"not_found_error","message":"model: claude-opus-4-8-200k"}}',
+      }),
+    ).toBe(false);
+    expect(isPiTransientUpstreamError({ errorMessage: "Invalid request_error: Unknown parameter 'foo'." })).toBe(false);
   });
 });
 
