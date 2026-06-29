@@ -53,11 +53,6 @@ const workspaceDirs = Array.from(
 ).sort();
 
 function findWorkspaceLinkMismatches(workspaceDir: string): WorkspaceLinkMismatch[] {
-  const nodeModulesDir = path.join(repoRoot, workspaceDir, "node_modules");
-  if (!existsSync(nodeModulesDir)) {
-    return [];
-  }
-
   const packageJson = readJsonFile(path.join(repoRoot, workspaceDir, "package.json"));
   const dependencies = {
     ...(packageJson.dependencies as Record<string, unknown> | undefined),
