@@ -68,6 +68,15 @@ export function SidebarServerInfo() {
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
     enabled,
+    // The drawer only mounts while the account popover is open, so it cannot
+    // rely on Layout's background health poll (which is itself gated on
+    // devServer.enabled). Always refetch on open and poll while open so a server
+    // restart is reflected without leaving stale boot-time serverInfo on screen.
+    refetchOnMount: "always",
+    refetchInterval: (query) => {
+      const data = query.state.data as HealthStatus | undefined;
+      return data?.devServer?.enabled ? 2000 : false;
+    },
   });
 
   if (!enabled) return null;

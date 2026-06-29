@@ -118,6 +118,67 @@ describe("SidebarServerInfo", () => {
     expect(container.textContent).toContain("Add server info debug view");
   });
 
+  it("refetches fresh health each time the drawer reopens, even within staleTime", async () => {
+    mockEnabledSettings(true);
+    const baseHealth = {
+      status: "ok" as const,
+      serverInfo: {
+        processStartedAt: "2026-06-26T00:00:00.000Z",
+        git: {
+          available: true,
+          fullSha: "1111111111111111111111111111111111111111",
+          shortSha: "1111111",
+          subject: "First boot",
+          committedAt: "2026-06-25T23:00:00.000Z",
+        },
+      },
+    };
+    mockHealthApi.get.mockResolvedValue(baseHealth);
+
+    // A long staleTime mirrors the production QueryClient: without
+    // refetchOnMount "always", reopening the drawer would show cached data.
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+    });
+
+    async function mountDrawer() {
+      const drawerRoot = createRoot(container);
+      flushSync(() => {
+        drawerRoot.render(
+          <QueryClientProvider client={queryClient}>
+            <SidebarServerInfo />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      return drawerRoot;
+    }
+
+    const firstOpen = await mountDrawer();
+    expect(container.textContent).toContain("First boot");
+    flushSync(() => firstOpen.unmount());
+
+    // Server restarted: a fresh commit and process start should appear on reopen.
+    mockHealthApi.get.mockResolvedValue({
+      ...baseHealth,
+      serverInfo: {
+        processStartedAt: "2026-06-26T02:00:00.000Z",
+        git: {
+          available: true,
+          fullSha: "2222222222222222222222222222222222222222",
+          shortSha: "2222222",
+          subject: "After restart",
+          committedAt: "2026-06-26T01:30:00.000Z",
+        },
+      },
+    });
+
+    const secondOpen = await mountDrawer();
+    expect(container.textContent).toContain("After restart");
+    expect(container.textContent).not.toContain("First boot");
+    flushSync(() => secondOpen.unmount());
+  });
+
   it("falls back to process start and unavailable commit copy", async () => {
     mockEnabledSettings(true);
     mockHealthApi.get.mockResolvedValue({
