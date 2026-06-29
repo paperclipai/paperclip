@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
   companies,
+  companyMemberships,
   createDb,
   documentRevisions,
   documents,
@@ -59,6 +60,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.delete(projects);
     await db.delete(goals);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(instanceSettings);
     await db.delete(companies);
   });
@@ -267,6 +269,15 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
+    });
+    // The root human initiator holds an active, write-capable membership so the
+    // gated ancestor resolver (TWX-1112) targets them.
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: "jonas-user",
+      status: "active",
+      membershipRole: "owner",
     });
     await db.insert(issues).values({
       id: rootIssueId,

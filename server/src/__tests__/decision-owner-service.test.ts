@@ -148,6 +148,178 @@ describeEmbeddedPostgres("decision owner resolution", () => {
     });
   });
 
+  it("prefers a triggering board commenter over the issue's own creator", async () => {
+    // TWX-1107: when an issue has a human creator but no human ancestor, a board
+    // member who explicitly comments to request the decision must outrank the
+    // person who merely filed the issue.
+    const { companyId, rootIssueId } = await seedIssueTree();
+    const sourceCommentId = randomUUID();
+    await seedActiveCompanyUser(companyId, "thomas-user");
+    await db.insert(issueComments).values({
+      id: sourceCommentId,
+      companyId,
+      issueId: rootIssueId,
+      authorUserId: "thomas-user",
+      body: "Send this decision to me.",
+    });
+
+    await expect(resolveDecisionOwnerUserId(db, {
+      companyId,
+      sourceCommentId,
+      issueIds: [rootIssueId],
+      currentUserId: "current-user",
+    })).resolves.toMatchObject({
+      userId: "thomas-user",
+      source: "source_comment_author",
+    });
+  });
+
+  it("skips a commenter who is no longer an active member and falls back to the issue creator", async () => {
+    // TWX-1110: the accept/approval path is locked to the resolved decision owner.
+    // A commenter who was removed from the company can no longer resolve it, so we
+    // must fall through to the next resolver (the issue's own creator) instead.
+    const { companyId, rootIssueId } = await seedIssueTree();
+    const sourceCommentId = randomUUID();
+    // The issue creator "jonas-user" is a write-capable member and is the valid
+    // fallback once the commenter is skipped (TWX-1112 gates the creator too).
+    await seedActiveCompanyUser(companyId, "jonas-user");
+    // "removed-user" authored the triggering comment but has no active membership.
+    await db.insert(issueComments).values({
+      id: sourceCommentId,
+      companyId,
+      issueId: rootIssueId,
+      authorUserId: "removed-user",
+      body: "Send this decision to me.",
+    });
+
+    await expect(resolveDecisionOwnerUserId(db, {
+      companyId,
+      sourceCommentId,
+      issueIds: [rootIssueId],
+      currentUserId: "current-user",
+    })).resolves.toMatchObject({
+      userId: "jonas-user",
+      source: "current_issue_creator",
+    });
+  });
+
+  it("skips a commenter downgraded to viewer and falls back to the issue creator", async () => {
+    // TWX-1110: a viewer membership is read-only and cannot resolve a decision,
+    // so a downgraded commenter must not be targeted as the decision owner.
+    const { companyId, rootIssueId } = await seedIssueTree();
+    const sourceCommentId = randomUUID();
+    await seedActiveCompanyUser(companyId, "jonas-user");
+    await seedActiveCompanyUser(companyId, "viewer-user", "viewer");
+    await db.insert(issueComments).values({
+      id: sourceCommentId,
+      companyId,
+      issueId: rootIssueId,
+      authorUserId: "viewer-user",
+      body: "Send this decision to me.",
+    });
+
+    await expect(resolveDecisionOwnerUserId(db, {
+      companyId,
+      sourceCommentId,
+      issueIds: [rootIssueId],
+      currentUserId: "current-user",
+    })).resolves.toMatchObject({
+      userId: "jonas-user",
+      source: "current_issue_creator",
+    });
+  });
+
+  it("falls back to the issue's own creator when no ancestor or commenter resolves", async () => {
+    // TWX-1107: the issue creator still wins over the current board actor and the
+    // configured default owner when nothing higher-priority resolves.
+    const { companyId, rootIssueId } = await seedIssueTree();
+    await seedActiveCompanyUser(companyId, "jonas-user");
+
+    await expect(resolveDecisionOwnerUserId(db, {
+      companyId,
+      issueIds: [rootIssueId],
+      currentUserId: "current-user",
+    })).resolves.toMatchObject({
+      userId: "jonas-user",
+      source: "current_issue_creator",
+    });
+  });
+
+  it("falls through an invalid commenter AND an invalid issue creator to the board actor", async () => {
+    // TWX-1112: this is the blocking case the fix targets. When the triggering
+    // commenter and the issue's own creator both lack an active write-capable
+    // membership, the resolver must continue down the documented order instead of
+    // locking the interaction onto a creator who cannot resolve it.
+    const { companyId, rootIssueId } = await seedIssueTree();
+    const sourceCommentId = randomUUID();
+    // Neither "removed-commenter" nor the creator "jonas-user" has a membership.
+    await db.insert(issueComments).values({
+      id: sourceCommentId,
+      companyId,
+      issueId: rootIssueId,
+      authorUserId: "removed-commenter",
+      body: "Send this decision to me.",
+    });
+
+    await expect(resolveDecisionOwnerUserId(db, {
+      companyId,
+      sourceCommentId,
+      issueIds: [rootIssueId],
+      currentUserId: "current-user",
+    })).resolves.toMatchObject({
+      userId: "current-user",
+      source: "current_board_actor",
+    });
+  });
+
+  it("falls through a viewer-only issue creator to the configured default owner", async () => {
+    // TWX-1112: a viewer membership is read-only, so an issue creator downgraded
+    // to viewer cannot resolve the decision and must continue to the configured
+    // default board owner when no other higher-priority candidate resolves.
+    const { companyId, rootIssueId } = await seedIssueTree();
+    await seedActiveCompanyUser(companyId, "jonas-user", "viewer");
+    await seedActiveCompanyUser(companyId, "default-user");
+    await instanceSettingsService(db).updateGeneral({
+      defaultDecisionOwnerUserId: "default-user",
+    });
+
+    await expect(resolveDecisionOwnerUserId(db, {
+      companyId,
+      issueIds: [rootIssueId],
+    })).resolves.toMatchObject({
+      userId: "default-user",
+      source: "configured_default_board_owner",
+    });
+  });
+
+  it("skips a root human ancestor who lacks a write-capable membership", async () => {
+    // TWX-1112: the parent-chain originator is also gated. If the root human
+    // initiator was removed/downgraded, fall through to the next resolver rather
+    // than lock the decision onto a user who cannot accept it. Here the commenter
+    // is the next valid candidate.
+    const { companyId, childIssueId, grandchildIssueId } = await seedIssueTree();
+    const sourceCommentId = randomUUID();
+    // "jonas-user" is the root creator but has no membership; thomas commented.
+    await seedActiveCompanyUser(companyId, "thomas-user");
+    await db.insert(issueComments).values({
+      id: sourceCommentId,
+      companyId,
+      issueId: childIssueId,
+      authorUserId: "thomas-user",
+      body: "Send this decision to me.",
+    });
+
+    await expect(resolveDecisionOwnerUserId(db, {
+      companyId,
+      sourceCommentId,
+      issueIds: [grandchildIssueId],
+      currentUserId: "current-user",
+    })).resolves.toMatchObject({
+      userId: "thomas-user",
+      source: "source_comment_author",
+    });
+  });
+
   it("falls back to current board actor and configured default owner", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
@@ -188,7 +360,25 @@ describeEmbeddedPostgres("decision owner resolution", () => {
       currentUserId: "current-user",
     })).rejects.toMatchObject({
       status: 400,
-      message: "Explicit decision owner must be an active user in this company",
+      message: "Explicit decision owner must be an active, write-capable (non-viewer) user in this company",
+    });
+  });
+
+  it("rejects an explicit user who is only a viewer", async () => {
+    // TWX-1112: explicit owners are caller-specified, so an invalid (read-only)
+    // target is a caller error and fails loudly rather than silently falling
+    // through like the inferred resolver paths.
+    const { companyId, childIssueId } = await seedIssueTree();
+    await seedActiveCompanyUser(companyId, "viewer-explicit", "viewer");
+
+    await expect(resolveDecisionOwnerUserId(db, {
+      companyId,
+      explicitUserId: "viewer-explicit",
+      issueIds: [childIssueId],
+      currentUserId: "current-user",
+    })).rejects.toMatchObject({
+      status: 400,
+      message: "Explicit decision owner must be an active, write-capable (non-viewer) user in this company",
     });
   });
 });
