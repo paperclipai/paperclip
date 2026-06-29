@@ -525,7 +525,10 @@ function IssueDetailLoadingState({
                 <span className="text-sm font-mono text-muted-foreground shrink-0">{identifier}</span>
               ) : null}
               {headerSeed.originKind === "routine_execution" && headerSeed.originId ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 shrink-0">
+                <span
+                  className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 shrink-0"
+                  title={`Routine execution from routine ${headerSeed.originId}`}
+                >
                   <Repeat className="h-3 w-3" />
                   Routine
                 </span>
@@ -3699,6 +3702,7 @@ export function IssueDetail() {
             <Link
               to={`/routines/${issue.originId}`}
               className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 border border-violet-500/30 px-2 py-0.5 text-[10px] font-medium text-violet-600 dark:text-violet-400 shrink-0 hover:bg-violet-500/20 transition-colors"
+              title={`Routine execution from routine ${issue.originId}`}
             >
               <Repeat className="h-3 w-3" />
               Routine

@@ -37,6 +37,7 @@ import {
   type ExecutionWorkspaceMode,
   type IssueExecutionWorkspaceSettings,
   type PipelineStageAutomation,
+  PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE,
   PIPELINE_CASE_BODY_DOCUMENT_KEY,
   type RoutineVariable,
   type RoutineRevisionSnapshotV1,
@@ -65,7 +66,7 @@ const PIPELINE_CASE_BODY_DOCUMENT_TITLE = "Item body document";
 export const PIPELINE_CASE_EVENTS_DEFAULT_LIMIT = 50;
 export const PIPELINE_CASE_EVENTS_MAX_LIMIT = 100;
 export const PIPELINE_CONTEXT_PACK_EVENT_LIMIT = 20;
-export const PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE = "{{pipeline_name}} / {{stage_name}}: {{case_title}}";
+export { PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE };
 
 function legacyPipelineAutomationTitle(stageName: string) {
   return `${stageName} automation`;
