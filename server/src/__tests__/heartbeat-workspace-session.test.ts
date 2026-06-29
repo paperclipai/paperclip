@@ -3,9 +3,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
+import { logger } from "../middleware/logger.js";
+import { KNOWN_ISOLATION_MODES } from "../services/metrics.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
@@ -17,6 +19,7 @@ import {
   deriveTaskKeyWithHeartbeatFallback,
   evaluatePreferredProjectWorkspaceRealization,
   isNonPrimaryWorkspaceTarget,
+  logK8sGuardDecision,
   resolveProjectPrimaryWorkspaceId,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
@@ -43,6 +46,10 @@ import {
 } from "../services/heartbeat.js";
 
 const execFile = promisify(execFileCallback);
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function buildResolvedWorkspace(
   overrides: Partial<ResolvedWorkspaceForRunSuccess> = {},
@@ -1426,6 +1433,154 @@ describe("K8s session isolation metadata", () => {
         isolation,
       ),
     ).toBe(false);
+  });
+
+  it("logs scheduler-side K8s guard decisions with bounded isolation fields", () => {
+    const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
+    const workspaceIsolation = buildK8sRunIsolationDescriptor({
+      adapterType: "opencode_k8s",
+      companyId: "company-1",
+      agentId: "agent-1",
+      taskKey: "issue-1",
+      executionWorkspace: {
+        cwd: "/tmp/workspace-1",
+        source: "task_session",
+        strategy: "git_worktree",
+      },
+      persistedExecutionWorkspaceId: "execution-workspace-1",
+      effectiveExecutionWorkspaceMode: "isolated_workspace",
+    });
+    expect(workspaceIsolation).not.toBeNull();
+
+    logK8sGuardDecision({
+      decision: "allowed",
+      isolation: workspaceIsolation,
+      sessionId: "session-1",
+      agentId: "agent-1",
+      runId: "run-1",
+    });
+    logK8sGuardDecision({
+      decision: "reattached",
+      isolation: workspaceIsolation,
+      sessionId: "session-1",
+      agentId: "agent-1",
+      runId: "run-1",
+    });
+    logK8sGuardDecision({
+      decision: "requeued",
+      reason: "isolation_mismatch",
+      isolation: workspaceIsolation,
+      sessionId: "session-2",
+      agentId: "agent-1",
+      runId: "run-1",
+    });
+    logK8sGuardDecision({
+      decision: "blocked",
+      reason: "unknown_isolation_blocked",
+      isolation: null,
+      taskKey: "issue-1",
+      sessionId: "session-3",
+      agentId: "agent-1",
+      runId: "run-1",
+    });
+
+    const payloads = spy.mock.calls.map(([fields]) => fields as Record<string, unknown>);
+    expect(payloads).toEqual([
+      expect.objectContaining({
+        event: "k8s_guard_decision",
+        decision: "allowed",
+        isolation_mode: "workspace",
+        isolation_key: "workspace:company-1:agent-1:execution-workspace-1",
+        task_key: "issue-1",
+        session_id: "session-1",
+        agent_id: "agent-1",
+        run_id: "run-1",
+      }),
+      expect.objectContaining({
+        event: "k8s_guard_decision",
+        decision: "reattached",
+        isolation_mode: "workspace",
+        isolation_key: "workspace:company-1:agent-1:execution-workspace-1",
+        task_key: "issue-1",
+        session_id: "session-1",
+      }),
+      expect.objectContaining({
+        event: "k8s_guard_decision",
+        decision: "requeued",
+        reason: "isolation_mismatch",
+        isolation_mode: "workspace",
+        isolation_key: "workspace:company-1:agent-1:execution-workspace-1",
+        task_key: "issue-1",
+        session_id: "session-2",
+      }),
+      expect.objectContaining({
+        event: "k8s_guard_decision",
+        decision: "blocked",
+        reason: "unknown_isolation_blocked",
+        isolation_mode: "unknown",
+        isolation_key: null,
+        task_key: "issue-1",
+        session_id: "session-3",
+      }),
+    ]);
+    expect(KNOWN_ISOLATION_MODES).toContain(payloads[0]?.isolation_mode);
+  });
+
+  it("normalizes malformed scheduler isolation modes before logging", () => {
+    const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
+    const malformedIsolation = {
+      ...isolation,
+      isolationMode: "workspace:company-1:agent-1:bad-high-card-mode" as never,
+    };
+
+    logK8sGuardDecision({
+      decision: "allowed",
+      isolation: malformedIsolation,
+      sessionId: "session-1",
+      agentId: "agent-1",
+      runId: "run-1",
+    });
+
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "k8s_guard_decision",
+        decision: "allowed",
+        isolation_mode: "unknown",
+        isolation_key: "workspace:company-1:agent-1:workspace-1",
+        task_key: "issue-1",
+        session_id: "session-1",
+      }),
+      "k8s guard decision",
+    );
+  });
+
+  it("normalizes missing scheduler isolation modes before logging", () => {
+    const spy = vi.spyOn(logger, "info").mockImplementation(() => {});
+    const missingModeIsolation = {
+      ...isolation,
+      // Bypass the descriptor's required-mode invariant to exercise runtime normalization.
+      isolationMode: undefined as never,
+    };
+
+    logK8sGuardDecision({
+      decision: "allowed",
+      isolation: missingModeIsolation,
+      sessionId: "session-1",
+      agentId: "agent-1",
+      runId: "run-1",
+    });
+
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "k8s_guard_decision",
+        decision: "allowed",
+        isolation_mode: "unknown",
+        isolation_key: "workspace:company-1:agent-1:workspace-1",
+        task_key: "issue-1",
+        session_id: "session-1",
+      }),
+      "k8s guard decision",
+    );
   });
 });
 

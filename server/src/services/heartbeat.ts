@@ -161,7 +161,7 @@ import {
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { recordHeartbeatRunFailed } from "./metrics.js";
+import { normalizeIsolationMode, recordHeartbeatRunFailed } from "./metrics.js";
 import { runQuotaExhaustedHook } from "./quota-exhausted-hook.js";
 import { captureQuotaBurnIntoCcrotateTierCache } from "./ccrotate-quota-writeback.js";
 import { runLifecycleHook } from "./lifecycle-hook.js";
@@ -2981,6 +2981,55 @@ export function sessionParamsMatchIsolation(
   const savedIsolationKey = readNonEmptyString(sessionParams[SESSION_ISOLATION_KEY_PARAM]);
   if (!savedIsolationKey) return isolation.isolationMode === "shared";
   return savedIsolationKey === isolation.isolationKey;
+}
+
+/**
+ * Best-effort scheduler audit log for K8s isolation decisions: dispatch allowed,
+ * saved-session reattached, mismatch requeued, or fail-closed blocked.
+ * `isolation_mode` is normalized through metrics.ts so the log follows the same
+ * bounded vocabulary used by Prometheus labels.
+ */
+export function logK8sGuardDecision(input: {
+  decision: "allowed" | "reattached" | "requeued" | "blocked";
+  isolation: AdapterRunIsolationDescriptor | null;
+  taskKey?: string | null;
+  sessionId?: string | null;
+  agentId: string;
+  runId: string;
+  reason?: string | null;
+}): void {
+  try {
+    logger.info(
+      {
+        event: "k8s_guard_decision",
+        decision: input.decision,
+        ...(input.reason ? { reason: input.reason } : {}),
+        isolation_mode: normalizeIsolationMode(input.isolation?.isolationMode),
+        isolation_key: input.isolation?.isolationKey ?? null,
+        // Prefer the descriptor's derived scope; input.taskKey is only for blocked
+        // paths without a descriptor.
+        task_key: input.isolation?.sessionScope.taskKey ?? input.taskKey ?? null,
+        session_id: input.sessionId ?? null,
+        agent_id: input.agentId,
+        run_id: input.runId,
+      },
+      "k8s guard decision",
+    );
+  } catch (err) {
+    try {
+      logger.warn(
+        {
+          event: "k8s_guard_decision_log_failed",
+          err: String(err),
+          runId: input.runId,
+          agentId: input.agentId,
+        },
+        "k8s guard: scheduler guard-decision log emission failed (swallowed)",
+      );
+    } catch {
+      // Logging must never affect scheduler behavior.
+    }
+  }
 }
 
 function parseIssueAssigneeAdapterOverrides(
@@ -11942,6 +11991,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       unscopedRuntimeSessionParams,
       k8sRunIsolation,
     );
+    if (isolationSessionMismatch && k8sRunIsolation) {
+      logK8sGuardDecision({
+        decision: "requeued",
+        reason: "isolation_mismatch",
+        isolation: k8sRunIsolation,
+        sessionId: readNonEmptyString(unscopedRuntimeSessionParams?.sessionId),
+        agentId: agent.id,
+        runId: run.id,
+      });
+    }
     const isolationScopedRuntimeSessionParams = isolationSessionMismatch
       ? null
       : unscopedRuntimeSessionParams;
@@ -12453,38 +12512,84 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           } as Awaited<ReturnType<typeof adapter.execute>>;
           await recordWorkspaceFinalize("failed", { errorMessage: adapterResult.errorMessage });
         } else {
-        adapterResult = await adapter.execute({
-          runId: run.id,
-          agent,
-          runtime: runtimeForAdapter,
-          config: runtimeConfig,
-          context,
-          runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
-          executionTarget,
-          executionTransport: remoteExecution
-            ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
-            : undefined,
-          onLog,
-          onMeta: onAdapterMeta,
-          onSpawn: async (meta) => {
-            await persistRunProcessMetadata(run.id, {
-              pid: meta.pid,
-              processGroupId:
-                "processGroupId" in meta && typeof meta.processGroupId === "number"
-                  ? meta.processGroupId
-                  : null,
-              startedAt: meta.startedAt,
+          if (k8sRunIsolation) {
+            if (runtimeForAdapter.sessionParams) {
+              logK8sGuardDecision({
+                decision: "reattached",
+                isolation: k8sRunIsolation,
+                sessionId: runtimeForAdapter.sessionId,
+                agentId: agent.id,
+                runId: run.id,
+              });
+            }
+            logK8sGuardDecision({
+              decision: "allowed",
+              isolation: k8sRunIsolation,
+              sessionId: runtimeForAdapter.sessionId,
+              agentId: agent.id,
+              runId: run.id,
             });
-          },
-          authToken: authToken ?? undefined,
-        });
-        // Adapter returned cleanly, which means its workspace-restore finally
-        // block also ran without throwing. Record the workspace_finalize
-        // barrier so dependents that share this executionWorkspace can wake.
-        // If recording the barrier itself fails, propagate as a run failure
-        // rather than silently leaving dependents stranded behind a missing
-        // finalize row.
-        await recordWorkspaceFinalize("succeeded");
+          }
+          if (!k8sRunIsolation && isK8sAdapter(agent.adapterType)) {
+            const errorMessage =
+              "K8s adapter dispatch blocked because scheduler isolation metadata was missing.";
+            logK8sGuardDecision({
+              decision: "blocked",
+              reason: "unknown_isolation_blocked",
+              isolation: null,
+              taskKey,
+              sessionId: runtimeForAdapter.sessionId,
+              agentId: agent.id,
+              runId: run.id,
+            });
+            adapterResult = {
+              exitCode: 1,
+              signal: null,
+              timedOut: false,
+              errorMessage,
+              errorCode: "k8s_concurrent_run_blocked",
+              errorFamily: "transient_upstream",
+              retryNotBefore: new Date(Date.now() + ADAPTER_RESOLUTION_RETRY_DELAY_MS).toISOString(),
+              summary: "k8s isolation metadata missing",
+              resultJson: { reason: "unknown_isolation_blocked" },
+              provider: "paperclip",
+              model: "unknown",
+            } as Awaited<ReturnType<typeof adapter.execute>>;
+            await recordWorkspaceFinalize("failed", { errorMessage });
+          } else {
+            adapterResult = await adapter.execute({
+              runId: run.id,
+              agent,
+              runtime: runtimeForAdapter,
+              config: runtimeConfig,
+              context,
+              runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
+              executionTarget,
+              executionTransport: remoteExecution
+                ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
+                : undefined,
+              onLog,
+              onMeta: onAdapterMeta,
+              onSpawn: async (meta) => {
+                await persistRunProcessMetadata(run.id, {
+                  pid: meta.pid,
+                  processGroupId:
+                    "processGroupId" in meta && typeof meta.processGroupId === "number"
+                      ? meta.processGroupId
+                      : null,
+                  startedAt: meta.startedAt,
+                });
+              },
+              authToken: authToken ?? undefined,
+            });
+            // Adapter returned cleanly, which means its workspace-restore finally
+            // block also ran without throwing. Record the workspace_finalize
+            // barrier so dependents that share this executionWorkspace can wake.
+            // If recording the barrier itself fails, propagate as a run failure
+            // rather than silently leaving dependents stranded behind a missing
+            // finalize row.
+            await recordWorkspaceFinalize("succeeded");
+          }
         }
       } catch (adapterErr) {
         // Adapter (or its restore finally) threw — or the finalize record
