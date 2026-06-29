@@ -1143,6 +1143,117 @@ describeEmbeddedPostgres("github-webhook route", () => {
     expect(wakes[0]!.reason).toBe("github_check_completed");
   });
 
+  it("coalesces GitHub check/suite/workflow completion bursts into one queued issue wake", async () => {
+    const { agentId, issueId } = await seedIssueWithIdentifier("BLO-3182");
+    const app = buildApp();
+    const deliveries = [
+      {
+        event: "check_run",
+        delivery: "delivery-check-run",
+        payload: {
+          action: "completed",
+          check_run: {
+            head_branch: "fix/BLO-3182-webflow",
+            head_sha: "sha-check-run",
+            html_url: "https://github.com/Blockcast/paperclip/actions/runs/1/job/2",
+            pull_requests: [{ number: 117, head: { ref: "fix/BLO-3182-webflow" } }],
+          },
+          repository: { full_name: "Blockcast/paperclip" },
+        },
+      },
+      {
+        event: "check_suite",
+        delivery: "delivery-check-suite",
+        payload: {
+          action: "completed",
+          check_suite: {
+            head_branch: "fix/BLO-3182-webflow",
+            head_sha: "sha-check-suite",
+            html_url: "https://github.com/Blockcast/paperclip/actions/runs/1",
+            pull_requests: [{ number: 117, head: { ref: "fix/BLO-3182-webflow" } }],
+          },
+          repository: { full_name: "Blockcast/paperclip" },
+        },
+      },
+      {
+        event: "workflow_run",
+        delivery: "delivery-workflow-run",
+        payload: {
+          action: "completed",
+          workflow_run: {
+            head_branch: "fix/BLO-3182-webflow",
+            head_sha: "sha-workflow-run",
+            html_url: "https://github.com/Blockcast/paperclip/actions/runs/2",
+            display_title: "Fix BLO-3182 webflow",
+            pull_requests: [{ number: 117, head: { ref: "fix/BLO-3182-webflow" } }],
+          },
+          repository: { full_name: "Blockcast/paperclip" },
+        },
+      },
+    ];
+
+    for (const delivery of deliveries) {
+      const { body, signature } = signedRequest(delivery.payload);
+      const res = await request(app)
+        .post("/api/webhooks/github")
+        .set("x-github-event", delivery.event)
+        .set("x-hub-signature-256", signature)
+        .set("x-github-delivery", delivery.delivery)
+        .set("content-type", "application/json")
+        .send(body);
+      expect(res.status).toBe(200);
+      expect(res.body.wakes).toEqual([{ issueIdentifier: "BLO-3182", agentId }]);
+    }
+
+    const runs = await db
+      .select({
+        status: heartbeatRuns.status,
+        triggerDetail: heartbeatRuns.triggerDetail,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      status: "queued",
+      triggerDetail: "system",
+      contextSnapshot: expect.objectContaining({
+        issueId,
+        taskId: issueId,
+        wakeReason: "github_workflow_completed",
+        githubDeliveryId: "delivery-workflow-run",
+        githubHeadSha: "sha-workflow-run",
+        githubEvent: "workflow_run",
+      }),
+    });
+
+    const wakes = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        coalescedCount: agentWakeupRequests.coalescedCount,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .orderBy(agentWakeupRequests.requestedAt);
+    expect(wakes).toHaveLength(3);
+    expect(wakes[0]).toMatchObject({
+      status: "queued",
+      reason: "github_workflow_completed",
+      coalescedCount: 2,
+      payload: expect.objectContaining({
+        event: "workflow_run",
+        deliveryId: "delivery-workflow-run",
+        headSha: "sha-workflow-run",
+      }),
+    });
+    expect(wakes.slice(1)).toEqual([
+      expect.objectContaining({ status: "coalesced", reason: "github_state_change_queued_coalesced" }),
+      expect.objectContaining({ status: "coalesced", reason: "github_state_change_queued_coalesced" }),
+    ]);
+  });
+
   it("reopens an in_review issue when Ally posts actionable PR feedback and ignores done siblings on the same PR", async () => {
     const { companyId, agentId, issueId } = await seedIssueWithIdentifier("PEN-1126", { status: "in_review" });
     await db.insert(issues).values({

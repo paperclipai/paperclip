@@ -242,6 +242,9 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { createServerGbrainClient } from "./gbrain-client-factory.js";
 import { runSweepWakePreflight } from "./sweep-wake-preflight.js";
 
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type WakeCoalescingDb = Pick<Db | DbTransaction, "select" | "update" | "insert">;
+
 // Run statuses considered terminal. Used to gate the agent-image-bump
 // run-completion hook in setRunStatus: a deferred image bump is retried
 // only when its agent reaches one of these states. Non-terminal transitions
@@ -295,6 +298,11 @@ const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "ti
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
 const OPEN_ROUTINE_EXECUTION_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"] as const;
 const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
+const GITHUB_STATE_CHANGE_WAKE_REASONS = new Set([
+  "github_check_completed",
+  "github_check_suite_completed",
+  "github_workflow_completed",
+]);
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -3606,6 +3614,10 @@ export function mergeCoalescedContextSnapshot(
   if (existing.forceFreshSession === true || incoming.forceFreshSession === true) {
     merged.forceFreshSession = true;
   }
+  // Preserve task identity after overlaying newer GitHub metadata.
+  for (const key of ["issueId", "taskId", "taskKey"] as const) {
+    merged[key] = readNonEmptyString(incoming[key]) ?? readNonEmptyString(existing[key]) ?? merged[key];
+  }
   const mergedCommentIds = mergeWakeCommentIds(existing, incoming);
   if (mergedCommentIds.length > 0) {
     const latestCommentId = mergedCommentIds[mergedCommentIds.length - 1];
@@ -3887,6 +3899,117 @@ function runTaskKey(run: typeof heartbeatRuns.$inferSelect) {
 
 function isSameTaskScope(left: string | null, right: string | null) {
   return (left ?? null) === (right ?? null);
+}
+
+function isGithubStateChangeWake(contextSnapshot: Record<string, unknown> | null | undefined) {
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  return Boolean(wakeReason && GITHUB_STATE_CHANGE_WAKE_REASONS.has(wakeReason));
+}
+
+function githubStateChangeContextPredicate(taskKey: string) {
+  return sql`(
+    ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${taskKey}
+    OR ${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${taskKey}
+    OR ${heartbeatRuns.contextSnapshot} ->> 'taskKey' = ${taskKey}
+  )`;
+}
+
+async function coalesceQueuedGithubStateWake(input: {
+  tx: WakeCoalescingDb;
+  companyId: string;
+  agentId: string;
+  source: string;
+  triggerDetail: string | null;
+  reason: string | null;
+  payload: Record<string, unknown> | null;
+  contextSnapshot: Record<string, unknown>;
+  taskKey: string | null;
+  requestedByActorType: WakeupOptions["requestedByActorType"] | null | undefined;
+  requestedByActorId: WakeupOptions["requestedByActorId"] | null | undefined;
+  idempotencyKey: string | null | undefined;
+}) {
+  if (!input.taskKey || !isGithubStateChangeWake(input.contextSnapshot)) return null;
+
+  const existingRun = await input.tx
+    .select()
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        eq(heartbeatRuns.status, "queued"),
+        inArray(sql<string>`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`, [...GITHUB_STATE_CHANGE_WAKE_REASONS]),
+        githubStateChangeContextPredicate(input.taskKey),
+      ),
+    )
+    .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+
+  if (!existingRun) return null;
+
+  const now = new Date();
+  const mergedContextSnapshot = mergeCoalescedContextSnapshot(existingRun.contextSnapshot, input.contextSnapshot);
+  const mergedRun = await input.tx
+    .update(heartbeatRuns)
+    .set({
+      invocationSource: input.source,
+      triggerDetail: input.triggerDetail,
+      contextSnapshot: mergedContextSnapshot,
+      updatedAt: now,
+    })
+    .where(and(eq(heartbeatRuns.id, existingRun.id), eq(heartbeatRuns.status, "queued")))
+    .returning()
+    .then((rows) => rows[0] ?? existingRun);
+
+  let coalescedEventCount: number | null = null;
+  if (mergedRun.wakeupRequestId) {
+    const updatedWakeupRequest = await input.tx
+      .update(agentWakeupRequests)
+      .set({
+        source: input.source,
+        triggerDetail: input.triggerDetail,
+        reason: input.reason,
+        payload: input.payload,
+        coalescedCount: sql`coalesce(${agentWakeupRequests.coalescedCount}, 0) + 1`,
+        updatedAt: now,
+      })
+      .where(eq(agentWakeupRequests.id, mergedRun.wakeupRequestId))
+      .returning({ coalescedCount: agentWakeupRequests.coalescedCount })
+      .then((rows) => rows[0] ?? null);
+    coalescedEventCount = updatedWakeupRequest?.coalescedCount ?? null;
+  }
+
+  await input.tx.insert(agentWakeupRequests).values({
+    companyId: input.companyId,
+    agentId: input.agentId,
+    source: input.source,
+    triggerDetail: input.triggerDetail,
+    reason: "github_state_change_queued_coalesced",
+    payload: input.payload,
+    status: "coalesced",
+    coalescedCount: 1,
+    requestedByActorType: input.requestedByActorType ?? null,
+    requestedByActorId: input.requestedByActorId ?? null,
+    idempotencyKey: input.idempotencyKey ?? null,
+    runId: mergedRun.id,
+    finishedAt: now,
+  });
+
+  logger.info(
+    {
+      companyId: input.companyId,
+      agentId: input.agentId,
+      runId: mergedRun.id,
+      taskKey: input.taskKey,
+      wakeReason: input.reason,
+      wakeSourceFamily: "github_state_change",
+      coalescedEventCount,
+    },
+    "github state-change wake coalesced into existing queued heartbeat run",
+  );
+
+  return mergedRun;
 }
 
 function isTrackedLocalChildProcessAdapter(adapterType: string) {
@@ -14852,6 +14975,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             const mergedRun = await tx
               .update(heartbeatRuns)
               .set({
+                ...(isGithubStateChangeWake(enrichedContextSnapshot)
+                  ? { invocationSource: source, triggerDetail }
+                  : {}),
                 contextSnapshot: mergedContextSnapshot,
                 updatedAt: new Date(),
               })
@@ -14859,12 +14985,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               .returning()
               .then((rows) => rows[0] ?? availableActiveExecutionRun);
 
+            if (isGithubStateChangeWake(enrichedContextSnapshot) && mergedRun.wakeupRequestId) {
+              await tx
+                .update(agentWakeupRequests)
+                .set({
+                  source,
+                  triggerDetail,
+                  reason,
+                  payload,
+                  coalescedCount: sql`coalesce(${agentWakeupRequests.coalescedCount}, 0) + 1`,
+                  updatedAt: new Date(),
+                })
+                .where(eq(agentWakeupRequests.id, mergedRun.wakeupRequestId));
+            }
+
             await tx.insert(agentWakeupRequests).values({
               companyId: agent.companyId,
               agentId,
               source,
               triggerDetail,
-              reason: "issue_execution_same_name",
+              reason: isGithubStateChangeWake(enrichedContextSnapshot)
+                ? "github_state_change_queued_coalesced"
+                : "issue_execution_same_name",
               payload,
               status: "coalesced",
               coalescedCount: 1,
@@ -14984,6 +15126,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               .where(eq(agents.id, agentId));
           }
           return { kind: "skipped" as const };
+        }
+
+        const coalescedGithubStateRun = await coalesceQueuedGithubStateWake({
+          tx,
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason,
+          payload,
+          contextSnapshot: enrichedContextSnapshot,
+          taskKey: effectiveTaskKey,
+          requestedByActorType: opts.requestedByActorType,
+          requestedByActorId: opts.requestedByActorId,
+          idempotencyKey: opts.idempotencyKey,
+        });
+        if (coalescedGithubStateRun) {
+          return { kind: "coalesced" as const, run: coalescedGithubStateRun };
         }
 
         const wakeupRequest = await tx
@@ -15160,6 +15320,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "skipped" as const };
       }
 
+      const coalescedGithubStateRun = await coalesceQueuedGithubStateWake({
+        tx,
+        companyId: agent.companyId,
+        agentId,
+        source,
+        triggerDetail,
+        reason,
+        payload,
+        contextSnapshot: enrichedContextSnapshot,
+        taskKey: effectiveTaskKey,
+        requestedByActorType: opts.requestedByActorType,
+        requestedByActorId: opts.requestedByActorId,
+        idempotencyKey: opts.idempotencyKey,
+      });
+      if (coalescedGithubStateRun) {
+        return { kind: "coalesced" as const, run: coalescedGithubStateRun };
+      }
+
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -15205,6 +15383,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     if (queueOutcome.kind === "skipped") return null;
+    if (queueOutcome.kind === "coalesced") return queueOutcome.run;
     const newRun = queueOutcome.run;
 
     publishLiveEvent({
