@@ -47,6 +47,8 @@ export const issuesApi = {
       assigneeAgentId?: string;
       participantAgentId?: string;
       assigneeUserId?: string;
+      treeOwnerUserId?: string;
+      includeUnownedTrees?: boolean;
       touchedByUserId?: string;
       inboxArchivedByUserId?: string;
       unreadForUserId?: string;
@@ -76,6 +78,8 @@ export const issuesApi = {
     if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
     if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
     if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
+    if (filters?.treeOwnerUserId) params.set("treeOwnerUserId", filters.treeOwnerUserId);
+    if (filters?.includeUnownedTrees) params.set("includeUnownedTrees", "true");
     if (filters?.touchedByUserId) params.set("touchedByUserId", filters.touchedByUserId);
     if (filters?.inboxArchivedByUserId) params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
     if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);

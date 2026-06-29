@@ -1054,6 +1054,117 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(new Set(result.map((issue) => issue.id))).toEqual(new Set([childId, grandchildId]));
   });
 
+  it("filters task trees to the requesting user's trees by root createdByUserId", async () => {
+    const companyId = randomUUID();
+    const userA = "user-a";
+    const userB = "user-b";
+    const rootA = randomUUID();
+    const childA = randomUUID();
+    const grandchildA = randomUUID();
+    const rootB = randomUUID();
+    const childB = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      { id: rootA, companyId, title: "Root A", status: "todo", priority: "medium", createdByUserId: userA },
+      // Child created by another user but inside user A's tree: still belongs to A's tree.
+      { id: childA, companyId, parentId: rootA, title: "Child A", status: "todo", priority: "medium", createdByUserId: userB },
+      { id: grandchildA, companyId, parentId: childA, title: "Grandchild A", status: "todo", priority: "medium", createdByUserId: userA },
+      { id: rootB, companyId, title: "Root B", status: "todo", priority: "medium", createdByUserId: userB },
+      { id: childB, companyId, parentId: rootB, title: "Child B", status: "todo", priority: "medium", createdByUserId: userA },
+    ]);
+
+    const forA = await svc.list(companyId, { treeOwnerUserId: userA });
+    expect(new Set(forA.map((issue) => issue.id))).toEqual(new Set([rootA, childA, grandchildA]));
+
+    const forB = await svc.list(companyId, { treeOwnerUserId: userB });
+    expect(new Set(forB.map((issue) => issue.id))).toEqual(new Set([rootB, childB]));
+  });
+
+  it("includes agent/system-spawned trees only when includeUnownedTrees is set", async () => {
+    const companyId = randomUUID();
+    const userA = "user-a";
+    const mineRoot = randomUUID();
+    const unownedRoot = randomUUID();
+    const unownedChild = randomUUID();
+    const otherRoot = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      { id: mineRoot, companyId, title: "Mine", status: "todo", priority: "medium", createdByUserId: userA },
+      // Agent/system-spawned tree: no human creator on the root.
+      { id: unownedRoot, companyId, title: "Unowned", status: "todo", priority: "medium", createdByUserId: null },
+      { id: unownedChild, companyId, parentId: unownedRoot, title: "Unowned child", status: "todo", priority: "medium", createdByUserId: null },
+      { id: otherRoot, companyId, title: "Other", status: "todo", priority: "medium", createdByUserId: "user-b" },
+    ]);
+
+    const strict = await svc.list(companyId, { treeOwnerUserId: userA });
+    expect(new Set(strict.map((issue) => issue.id))).toEqual(new Set([mineRoot]));
+
+    const withUnowned = await svc.list(companyId, { treeOwnerUserId: userA, includeUnownedTrees: true });
+    expect(new Set(withUnowned.map((issue) => issue.id))).toEqual(new Set([mineRoot, unownedRoot, unownedChild]));
+  });
+
+  it("treats an issue under a hidden parent as its own task tree root", async () => {
+    const companyId = randomUUID();
+    const userA = "user-a";
+    const hiddenRoot = randomUUID();
+    const orphan = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      // Root is hidden and owned by another user; its visible child is owned by user A.
+      { id: hiddenRoot, companyId, title: "Hidden root", status: "todo", priority: "medium", createdByUserId: "user-b", hiddenAt: new Date() },
+      { id: orphan, companyId, parentId: hiddenRoot, title: "Orphan", status: "todo", priority: "medium", createdByUserId: userA },
+    ]);
+
+    const forA = await svc.list(companyId, { treeOwnerUserId: userA });
+    expect(forA.map((issue) => issue.id)).toEqual([orphan]);
+  });
+
+  it("never includes another company's task trees when filtering by tree owner", async () => {
+    const companyA = randomUUID();
+    const companyB = randomUUID();
+    const sharedUser = "shared-user";
+    const issueA = randomUUID();
+    const issueB = randomUUID();
+
+    for (const id of [companyA, companyB]) {
+      await db.insert(companies).values({
+        id,
+        name: "Paperclip",
+        issuePrefix: `T${id.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+    }
+
+    await db.insert(issues).values([
+      { id: issueA, companyId: companyA, title: "A", status: "todo", priority: "medium", createdByUserId: sharedUser },
+      { id: issueB, companyId: companyB, title: "B", status: "todo", priority: "medium", createdByUserId: sharedUser },
+    ]);
+
+    const forA = await svc.list(companyA, { treeOwnerUserId: sharedUser });
+    expect(forA.map((issue) => issue.id)).toEqual([issueA]);
+  });
+
   it("combines descendant filtering with search", async () => {
     const companyId = randomUUID();
     const rootId = randomUUID();

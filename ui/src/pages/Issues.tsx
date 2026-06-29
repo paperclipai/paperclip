@@ -2,6 +2,7 @@ import { useEffect, useMemo, useCallback, useRef, useState } from "react";
 import { useLocation, useSearchParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { issuesApi } from "../api/issues";
+import { authApi } from "../api/auth";
 import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
@@ -17,6 +18,16 @@ import type { Issue } from "@paperclipai/shared";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
 const ISSUES_PAGE_SIZE = 500;
+const MY_TREES_ONLY_STORAGE_KEY = "paperclip:issues:my-trees-only";
+
+function readMyTreesOnlyPreference(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(MY_TREES_ONLY_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
 
 export function getNextIssuesPageOffset(
   loadedPageSize: number,
@@ -105,6 +116,26 @@ export function Issues() {
 
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
 
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const [myTreesOnly, setMyTreesOnly] = useState(readMyTreesOnlyPreference);
+  const setMyTreesOnlyPreference = useCallback((next: boolean) => {
+    setMyTreesOnly(next);
+    try {
+      window.localStorage.setItem(MY_TREES_ONLY_STORAGE_KEY, next ? "true" : "false");
+    } catch {
+      // Ignore storage failures (private mode / quota); the in-memory toggle still applies.
+    }
+  }, []);
+  // Only filter when we know who "me" is; agent/system-spawned trees stay visible.
+  const treeOwnerFilterActive = myTreesOnly && !!currentUserId;
+  const treeOwnerFilters = treeOwnerFilterActive
+    ? ({ treeOwnerUserId: "me", includeUnownedTrees: true } as const)
+    : undefined;
+
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
@@ -136,12 +167,18 @@ export function Issues() {
       "workspace",
       workspaceIdFilter ?? "__all__",
       "with-routine-executions",
+      "tree-owner",
+      // Key by the concrete user id (not the literal "me") so switching board
+      // sessions without a full reload refetches instead of reusing the prior
+      // user's filtered dataset (TWX-1080 review).
+      treeOwnerFilterActive ? (currentUserId ?? "me") : "__all__",
       "infinite",
       issuePageSize,
     ],
     queryFn: ({ pageParam }) => issuesApi.list(selectedCompanyId!, {
       participantAgentId,
       workspaceId: workspaceIdFilter,
+      ...treeOwnerFilters,
       includeRoutineExecutions: true,
       limit: issuePageSize,
       offset: pageParam,
@@ -197,7 +234,14 @@ export function Issues() {
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId || workspaceIdFilter ? { participantAgentId, workspaceId: workspaceIdFilter } : undefined}
+      searchFilters={participantAgentId || workspaceIdFilter || treeOwnerFilters
+        ? { participantAgentId, workspaceId: workspaceIdFilter, ...treeOwnerFilters }
+        : undefined}
+      treeOwnerFilter={{
+        available: !!currentUserId,
+        enabled: myTreesOnly,
+        onToggle: setMyTreesOnlyPreference,
+      }}
     />
   );
 }

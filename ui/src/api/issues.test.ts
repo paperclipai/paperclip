@@ -35,6 +35,18 @@ describe("issuesApi.list", () => {
     );
   });
 
+  it("passes tree-owner filters through to the company issues endpoint", async () => {
+    await issuesApi.list("company-1", {
+      treeOwnerUserId: "me",
+      includeUnownedTrees: true,
+      limit: 500,
+    });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?treeOwnerUserId=me&includeUnownedTrees=true&limit=500",
+    );
+  });
+
   it("passes generic workspaceId filters through to the company issues endpoint", async () => {
     await issuesApi.list("company-1", { workspaceId: "workspace-1", limit: 1000 });
 

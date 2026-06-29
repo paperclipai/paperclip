@@ -59,6 +59,7 @@ import { IssueFiltersPopover } from "./IssueFiltersPopover";
 import { IssueRow } from "./IssueRow";
 import { PageSkeleton } from "./PageSkeleton";
 import { Button } from "@/components/ui/button";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
@@ -410,6 +411,16 @@ interface IssuesListProps {
    */
   parentIssueIdForCostSummary?: string;
   enableRoutineVisibilityFilter?: boolean;
+  /**
+   * Optional controlled "only my task trees" toggle. When `available` is true a
+   * switch is rendered in the toolbar; the owning page applies the actual
+   * `treeOwnerUserId` filter to its issue query (see TWX-1078).
+   */
+  treeOwnerFilter?: {
+    available: boolean;
+    enabled: boolean;
+    onToggle: (enabled: boolean) => void;
+  };
   hasMoreIssues?: boolean;
   isLoadingMoreIssues?: boolean;
   mutedIssueIds?: Set<string>;
@@ -617,6 +628,7 @@ export function IssuesList({
   showProgressSummary = false,
   parentIssueIdForCostSummary,
   enableRoutineVisibilityFilter = false,
+  treeOwnerFilter,
   hasMoreIssues = false,
   isLoadingMoreIssues = false,
   mutedIssueIds,
@@ -1387,6 +1399,17 @@ export function IssuesList({
         </div>
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
+          {treeOwnerFilter?.available ? (
+            <label className="mr-1 flex items-center gap-1.5 text-xs text-muted-foreground whitespace-nowrap">
+              <ToggleSwitch
+                checked={treeOwnerFilter.enabled}
+                onCheckedChange={treeOwnerFilter.onToggle}
+                aria-label="Show only my task trees"
+                title="Hide task trees started by other users"
+              />
+              <span className="hidden sm:inline">My trees</span>
+            </label>
+          ) : null}
           {/* View mode toggle */}
           <div className="flex items-center border border-border rounded-md overflow-hidden mr-1">
             <button

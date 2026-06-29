@@ -256,6 +256,14 @@ export interface IssueFilters {
   assigneeAgentId?: string | null;
   participantAgentId?: string;
   assigneeUserId?: string;
+  /**
+   * Restrict to task trees whose root issue was created by this user
+   * (see {@link treeOwnerIssueCondition}). Pair with {@link includeUnownedTrees}
+   * to also keep agent/system-spawned trees visible.
+   */
+  treeOwnerUserId?: string;
+  /** When filtering by {@link treeOwnerUserId}, also include trees with no human root creator. */
+  includeUnownedTrees?: boolean;
   touchedByUserId?: string;
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
@@ -949,6 +957,59 @@ function touchedByUserCondition(companyId: string, userId: string) {
           AND ${issueComments.companyId} = ${companyId}
           AND ${issueComments.authorUserId} = ${userId}
       )
+    )
+  `;
+}
+
+/**
+ * Restrict results to issues that belong to a "task tree" owned by `userId`.
+ *
+ * A task tree's owner is the human (`createdByUserId`) who created the tree's
+ * root issue. This lets a board user hide trees started by other users while
+ * keeping their own — see TWX-1077/TWX-1078.
+ *
+ * The recursive CTE walks each tree down from its root and propagates the
+ * root's owner to every descendant. Roots are issues with no parent OR whose
+ * parent is missing/hidden (orphans are their own root, mirroring the UI's
+ * `buildIssueTree`). Hidden issues never anchor or join a tree, so a hidden
+ * parent makes its child a fresh root. `UNION` (not `UNION ALL`) dedups and
+ * guarantees termination even if a parent cycle ever exists.
+ *
+ * When `includeUnowned` is true, trees whose root has no human creator
+ * (agent/system-spawned, `created_by_user_id IS NULL`) are also included, so
+ * autonomous work stays visible. Trees rooted by a *different* human are always
+ * excluded. The CTE is company-scoped, so this never widens cross-company
+ * visibility.
+ */
+function treeOwnerIssueCondition(companyId: string, userId: string, includeUnowned: boolean) {
+  const ownerPredicate = includeUnowned
+    ? sql`(tree.root_owner = ${userId} OR tree.root_owner IS NULL)`
+    : sql`tree.root_owner = ${userId}`;
+  return sql<boolean>`
+    ${issues.id} IN (
+      WITH RECURSIVE tree(id, root_owner) AS (
+        SELECT r.id, r.created_by_user_id
+        FROM ${issues} r
+        WHERE r.company_id = ${companyId}
+          AND r.hidden_at IS NULL
+          AND (
+            r.parent_id IS NULL
+            OR NOT EXISTS (
+              SELECT 1
+              FROM ${issues} p
+              WHERE p.id = r.parent_id
+                AND p.company_id = ${companyId}
+                AND p.hidden_at IS NULL
+            )
+          )
+        UNION
+        SELECT c.id, tree.root_owner
+        FROM ${issues} c
+        JOIN tree ON c.parent_id = tree.id
+        WHERE c.company_id = ${companyId}
+          AND c.hidden_at IS NULL
+      )
+      SELECT tree.id FROM tree WHERE ${ownerPredicate}
     )
   `;
 }
@@ -3081,6 +3142,12 @@ async function blockedInboxIssueConditions(
   }
   if (filters?.participantAgentId) conditions.push(participatedByAgentCondition(companyId, filters.participantAgentId));
   if (filters?.assigneeUserId) conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
+  const treeOwnerUserId = filters?.treeOwnerUserId?.trim() || undefined;
+  if (treeOwnerUserId) {
+    conditions.push(
+      treeOwnerIssueCondition(companyId, treeOwnerUserId, filters?.includeUnownedTrees === true),
+    );
+  }
   if (touchedByUserId) conditions.push(touchedByUserCondition(companyId, touchedByUserId));
   if (inboxArchivedByUserId) conditions.push(inboxVisibleForUserCondition(companyId, inboxArchivedByUserId));
   if (unreadForUserId) conditions.push(unreadForUserCondition(companyId, unreadForUserId));
@@ -4178,6 +4245,12 @@ export function issueService(db: Db) {
       }
       if (filters?.assigneeUserId) {
         conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
+      }
+      const treeOwnerUserId = filters?.treeOwnerUserId?.trim() || undefined;
+      if (treeOwnerUserId) {
+        conditions.push(
+          treeOwnerIssueCondition(companyId, treeOwnerUserId, filters?.includeUnownedTrees === true),
+        );
       }
       if (touchedByUserId) {
         conditions.push(touchedByUserCondition(companyId, touchedByUserId));
