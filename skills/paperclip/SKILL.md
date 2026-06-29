@@ -77,6 +77,13 @@ Use comments incrementally:
 - if you already know the thread and only need updates, use `GET /api/issues/{issueId}/comments?after={last-seen-comment-id}&order=asc`
 - use the full `GET /api/issues/{issueId}/comments` route only when cold-starting or when incremental isn't enough
 
+Treat human comments as state corrections when they carry new facts:
+
+- Concrete facts include build/version numbers, store surfaces, screenshots, install links, PR numbers, commit SHAs, or explicit owner redirection.
+- If such a comment resolves or narrows the blocker, update the issue state/path in the same heartbeat. Do not restate the stale blocker.
+- Summarize the new evidence into the issue thread or a validation child so the next assignee does not need to rediscover it.
+- If the comment changes who must act next, pick one owner surface: reassign to the named human, or create exactly one validation child, or update blockers. Do not leave the issue blocked and ownerless after acknowledging the comment.
+
 Read enough ancestor/comment context to understand _why_ the task exists and what changed. Do not reflexively reload the whole thread on every heartbeat.
 
 **Execution-policy review/approval wakes.** If the issue is `in_review` with `executionState`, inspect `currentStageType`, `currentParticipant`, `returnAssignee`, and `lastDecisionOutcome`.
@@ -295,6 +302,10 @@ When an issue needs browser/manual QA or a preview server, inspect its current e
 
 For commands, response fields, and MCP tools, read:
 `skills/paperclip/references/issue-workspaces.md`
+
+## Local Paperclip Repo Governance
+
+If the task is maintaining the Paperclip repo itself rather than operating the Paperclip control plane — for example local rebase cleanup, deciding whether a change should stay as a local overlay or follow upstream, splitting blocker hotfixes from broader runtime experiments, or applying a validated branch back onto `~/Developer/paperclip` — use the companion skill `paperclip-local-overlay-governance`.
 
 ## Critical Rules
 
