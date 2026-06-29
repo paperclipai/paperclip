@@ -3,6 +3,7 @@ export const RECOVERY_ORIGIN_KINDS = {
   issueProductivityReview: "issue_productivity_review",
   strandedIssueRecovery: "stranded_issue_recovery",
   staleActiveRunEvaluation: "stale_active_run_evaluation",
+  staleSessionRotationAlert: "stale_session_rotation_alert",
 } as const;
 
 export const RECOVERY_REASON_KINDS = {

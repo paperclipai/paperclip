@@ -168,6 +168,14 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    activeStaleSessionRotationAlertIdx: uniqueIndex("issues_active_stale_session_rotation_alert_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(
+        sql`${table.originKind} = 'stale_session_rotation_alert'
+          and ${table.originId} is not null
+          and ${table.hiddenAt} is null
+          and ${table.status} not in ('done', 'cancelled')`,
+      ),
     // The onboarding first-task origin grants privileged behavior (agent-attributed
     // greeting, description suppression), so at most one issue per company may ever
     // carry it — concurrent creates race on the pre-insert count check and this
