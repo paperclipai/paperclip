@@ -398,7 +398,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
 
   return {
     mode: parsed.data.mode ?? "normal",
-    commentRequired: parsed.data.commentRequired ?? true,
+    commentRequired: true,
     stages,
     ...(monitor ? { monitor } : {}),
     ...(reviewPreset ? { reviewPreset } : {}),
