@@ -3508,6 +3508,88 @@ export function resolveNextSessionState(input: {
   };
 }
 
+/**
+ * usageJson `sessionRotationReason` written when a persisted session is
+ * invalidated because it produced no tokens — i.e. the dead-session signal.
+ */
+export const STALE_SESSION_ROTATION_REASON = "stale_session_zero_token";
+
+/**
+ * Consecutive 0-token completed runs that trigger a platform alert. Chosen to
+ * beat the productivity watchdog (which only fires at 10+ wasted runs) so the
+ * loop is surfaced with actionable signal much earlier.
+ */
+export const STALE_SESSION_ALERT_THRESHOLD = 3;
+
+/**
+ * Detects a dead persisted session: a *completed* run that reused an existing
+ * session (`freshSession === false`) yet exchanged zero input AND zero output
+ * tokens. That is the signature of a session whose startup handshake failed
+ * (expired credentials, context-limit, or an unreachable backend) before any
+ * tokens flowed — every real model turn spends input tokens on the system
+ * prompt, so 0/0 against a reused session means no turn happened at all.
+ *
+ * Guards:
+ * - `freshSession === false` is the critical guard. A *fresh* 0-token run is a
+ *   legitimately idle first wake, not a dead session — never rotate it
+ *   (otherwise we'd throw away a brand-new session for no reason).
+ * - Only `succeeded`/`failed` outcomes count. `cancelled` is an operator action
+ *   and `timed_out` is a hung mid-work run — neither is a dead handshake.
+ *
+ * When this returns true the caller invalidates the persisted session so the
+ * NEXT run starts fresh rather than reusing the dead one. We rotate on the very
+ * first occurrence: re-establishing a session loses no in-progress context (a
+ * 0-token run did no visible work) and rotating immediately minimizes wasted
+ * runs, which is the whole point of the fix.
+ */
+export function isStaleZeroTokenSession(input: {
+  outcome: RunSessionOutcome;
+  freshSession: boolean;
+  inputTokens: number;
+  outputTokens: number;
+}): boolean {
+  if (input.outcome !== "succeeded" && input.outcome !== "failed") return false;
+  if (input.freshSession) return false;
+  return input.inputTokens === 0 && input.outputTokens === 0;
+}
+
+/**
+ * Counts the leading streak of consecutive 0-token runs in a list ordered
+ * most-recent-first. Stops at the first run that produced any tokens —
+ * `inputTokens > 0 OR outputTokens > 0` resets the counter. Runs whose token
+ * totals are unknown (null usage, e.g. a never-started run) break the streak
+ * too: we only count runs we can confirm did no work. Used to surface the
+ * platform alert once the streak reaches {@link STALE_SESSION_ALERT_THRESHOLD}.
+ */
+export function countLeadingZeroTokenRuns(
+  runs: ReadonlyArray<{ inputTokens: number | null; outputTokens: number | null }>,
+): number {
+  let count = 0;
+  for (const run of runs) {
+    if (run.inputTokens == null || run.outputTokens == null) break;
+    if (run.inputTokens !== 0 || run.outputTokens !== 0) break;
+    count += 1;
+  }
+  return count;
+}
+
+/**
+ * Reads normalized input/output token totals from a persisted run's usageJson.
+ * Returns nulls when the shape is unknown so {@link countLeadingZeroTokenRuns}
+ * can treat such runs as streak-breaking rather than miscounting them as 0.
+ */
+export function readUsageTokenTotals(
+  usageJson: unknown,
+): { inputTokens: number | null; outputTokens: number | null } {
+  const usage = parseObject(usageJson);
+  const input = usage.inputTokens;
+  const output = usage.outputTokens;
+  return {
+    inputTokens: typeof input === "number" && Number.isFinite(input) ? input : null,
+    outputTokens: typeof output === "number" && Number.isFinite(output) ? output : null,
+  };
+}
+
 export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeService>;
 
 export interface HeartbeatServiceOptions {
@@ -4661,6 +4743,104 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       handoffMarkdown,
       previousRunId: latestRun.id,
     };
+  }
+
+  /**
+   * Surfaces a platform alert when an agent has produced {@link
+   * STALE_SESSION_ALERT_THRESHOLD} consecutive 0-token completed runs — the
+   * signature of a session-rotation loop that the per-run rotation above isn't
+   * clearing on its own (e.g. broken credentials, not just a stale session).
+   *
+   * The streak is derived from persisted run history (no extra state column),
+   * counting back from the just-finalized run and resetting on any run that
+   * exchanged tokens. We fire exactly when the streak first reaches the
+   * threshold, and the alert issue is idempotent on (originKind, originId), so a
+   * given loop produces a single high-priority issue well before the
+   * productivity watchdog fires at 10+ runs. Best-effort: failures here never
+   * disrupt run finalization.
+   */
+  async function surfaceStaleSessionRotationAlert(input: {
+    agent: typeof agents.$inferSelect;
+    issueId: string | null;
+    deadSessionId: string | null;
+  }) {
+    const { agent, issueId, deadSessionId } = input;
+    try {
+      const recentRuns = await db
+        .select({ usageJson: heartbeatRuns.usageJson })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agent.id),
+            inArray(heartbeatRuns.status, ["succeeded", "failed"]),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(STALE_SESSION_ALERT_THRESHOLD + 1);
+
+      const streak = countLeadingZeroTokenRuns(
+        recentRuns.map((row) => readUsageTokenTotals(row.usageJson)),
+      );
+      // Fire once the streak reaches the threshold. Using >= (not ===) self-heals
+      // if a finalization is missed at exactly the threshold run; duplicates are
+      // prevented by the open-issue check below plus the partial unique index
+      // (issues_active_stale_session_rotation_alert_uq), so a loop yields a single
+      // alert even under concurrent finalization.
+      if (streak < STALE_SESSION_ALERT_THRESHOLD) return;
+
+      const originId = agent.id;
+      const existingAlert = await db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, agent.companyId),
+            eq(issues.originKind, RECOVERY_ORIGIN_KINDS.staleSessionRotationAlert),
+            eq(issues.originId, originId),
+            isNull(issues.hiddenAt),
+            notInArray(issues.status, ["done", "cancelled"]),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingAlert) return;
+
+      const description = [
+        `Agent **${agent.name}** has completed ${STALE_SESSION_ALERT_THRESHOLD} consecutive runs that exchanged 0 input and 0 output tokens.`,
+        "",
+        "This is the signature of a session-rotation loop: the persisted session keeps failing to start (expired credentials, context-limit, or an unreachable backend). The adapter now rotates the dead session automatically after each 0-token run, but the underlying agent is still producing no work — so the rotation alone isn't recovering it.",
+        "",
+        deadSessionId ? `- Most recent dead session: \`${deadSessionId}\`` : "",
+        `- Adapter: \`${agent.adapterType}\``,
+        issueId ? `- Last run issue: ${issueId}` : "",
+        "",
+        agent.adapterType === "claude_local"
+          ? "Action: check the agent's credentials/session backend — for `claude_local`, verify `~/.claude/.credentials.json`. This alert fires before the productivity watchdog (10+ runs) so the loop can be broken early."
+          : "Action: check the agent's credentials/session backend. This alert fires before the productivity watchdog (10+ runs) so the loop can be broken early.",
+      ]
+        .filter((line) => line !== "")
+        .join("\n");
+
+      await issuesSvc.create(agent.companyId, {
+        title: `Platform alert: agent ${agent.name} stuck in 0-token session loop`,
+        description,
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: null,
+        originKind: RECOVERY_ORIGIN_KINDS.staleSessionRotationAlert,
+        originId,
+        originFingerprint: deadSessionId ? `stale_session:${deadSessionId}` : `stale_session:${originId}`,
+      });
+      logger.warn(
+        { agentId: agent.id, deadSessionId, streak },
+        "surfaced stale-session rotation alert after consecutive 0-token runs",
+      );
+    } catch (err) {
+      logger.warn(
+        { err, agentId: agent.id },
+        "failed to surface stale-session rotation alert",
+      );
+    }
   }
 
   async function resolveSessionBeforeForWakeup(
@@ -9831,7 +10011,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outcome = "failed";
       }
 
-      const nextSessionState = resolveNextSessionState({
+      let nextSessionState = resolveNextSessionState({
         adapterType: agent.adapterType,
         codec: sessionCodec,
         adapterResult,
@@ -9848,6 +10028,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         rawUsage,
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
+
+      // 0-token session rotation (BLU-17857): a completed run that reused a
+      // persisted session yet exchanged no tokens means the session is dead
+      // (expired / context-limit / failed handshake). Invalidate it so the next
+      // run starts fresh instead of looping on the same dead session. Clearing
+      // nextSessionState mirrors the adapterResult.clearSession path and cascades
+      // to agentRuntimeState.sessionId, the task session, and sessionIdAfter.
+      const freshSession =
+        runtimeForAdapter.sessionId == null && runtimeForAdapter.sessionDisplayId == null;
+      const staleSessionDetected = isStaleZeroTokenSession({
+        outcome,
+        freshSession,
+        inputTokens: normalizedUsage?.inputTokens ?? 0,
+        outputTokens: normalizedUsage?.outputTokens ?? 0,
+      });
+      const deadSessionId = staleSessionDetected
+        ? (nextSessionState.displayId ?? nextSessionState.legacySessionId ?? null)
+        : null;
+      if (staleSessionDetected) {
+        nextSessionState = { params: null, displayId: null, legacySessionId: null };
+      }
+
       const runErrorMessage =
         outcome === "cancelled"
           ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
@@ -9900,9 +10102,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 : {}),
               sessionReused: runtimeForAdapter.sessionId != null || runtimeForAdapter.sessionDisplayId != null,
               taskSessionReused: taskSessionForRun != null,
-              freshSession: runtimeForAdapter.sessionId == null && runtimeForAdapter.sessionDisplayId == null,
-              sessionRotated: sessionCompaction.rotate,
-              sessionRotationReason: sessionCompaction.reason,
+              freshSession,
+              sessionRotated: sessionCompaction.rotate || staleSessionDetected,
+              sessionRotationReason: staleSessionDetected
+                ? STALE_SESSION_ROTATION_REASON
+                : sessionCompaction.reason,
               provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
               biller: resolveLedgerBiller(adapterResult),
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
@@ -9957,6 +10161,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let persistedRun = persistedRunWrite.run;
       if (persistedRun) {
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
+      }
+
+      if (staleSessionDetected) {
+        logger.warn(
+          { runId: run.id, agentId: agent.id, deadSessionId, issueId },
+          "rotated dead persisted session after 0-token non-fresh run",
+        );
+        await surfaceStaleSessionRotationAlert({ agent, issueId, deadSessionId });
       }
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
