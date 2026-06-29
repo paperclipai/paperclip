@@ -662,7 +662,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("promotes deferred comment wakes after the active run closes the issue", async () => {
+  it("promotes deferred comment wakes after the active run closes the issue without reopening it", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -702,7 +702,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await db.insert(issues).values({
         id: issueId,
         companyId,
-        title: "Reopen after deferred comment",
+        title: "Terminal deferred comment",
         status: "todo",
         priority: "medium",
         assigneeAgentId: agentId,
@@ -820,7 +820,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         );
       }, 90_000);
 
-      const reopenedIssue = await db
+      const terminalIssue = await db
         .select({
           status: issues.status,
           completedAt: issues.completedAt,
@@ -829,10 +829,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
 
-      expect(reopenedIssue).toMatchObject({
-        status: "in_progress",
-        completedAt: null,
+      expect(terminalIssue).toMatchObject({
+        status: "done",
       });
+      expect(terminalIssue?.completedAt).not.toBeNull();
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toBeUndefined();
@@ -844,8 +844,8 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         issue: {
           id: issueId,
           identifier: `${issuePrefix}-1`,
-          title: "Reopen after deferred comment",
-          status: "in_progress",
+          title: "Terminal deferred comment",
+          status: "done",
           priority: "medium",
         },
       });
@@ -1402,7 +1402,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("still reopens a finished issue when a deferred batch mixes self-authored and human comments", async () => {
+  it("keeps a finished issue terminal when a deferred batch mixes self-authored and human comments", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -1442,7 +1442,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await db.insert(issues).values({
         id: issueId,
         companyId,
-        title: "Human follow-up must survive mixed deferred batches",
+        title: "Mixed deferred comments stay terminal",
         status: "todo",
         priority: "medium",
         assigneeAgentId: agentId,
@@ -1587,9 +1587,9 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .then((rows) => rows[0] ?? null);
 
       expect(issueAfterPromotion).toMatchObject({
-        status: "in_progress",
-        completedAt: null,
+        status: "done",
       });
+      expect(issueAfterPromotion?.completedAt).not.toBeNull();
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toBeUndefined();
@@ -1601,8 +1601,8 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         issue: {
           id: issueId,
           identifier: `${issuePrefix}-1`,
-          title: "Human follow-up must survive mixed deferred batches",
-          status: "in_progress",
+          title: "Mixed deferred comments stay terminal",
+          status: "done",
           priority: "medium",
         },
       });

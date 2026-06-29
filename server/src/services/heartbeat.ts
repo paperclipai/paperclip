@@ -10608,10 +10608,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         // Only human/comment-reopen interactions should revive completed issues;
         // system follow-ups such as retry or cleanup wakes must not reopen closed work.
+        const deferredLifecycleIntent =
+          promotedContextSeed.resumeIntent === true ||
+          promotedContextSeed.followUpRequested === true ||
+          readNonEmptyString(promotedContextSeed.reopenedFrom) !== null;
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
           !deferredCommentWakeIsSelfAuthored &&
           (issue.status === "done" || issue.status === "cancelled") &&
+          deferredLifecycleIntent &&
           (
             deferred.requestedByActorType === "user" ||
             deferredWakeReason === "issue_reopened_via_comment"
