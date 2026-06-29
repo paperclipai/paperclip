@@ -56,7 +56,7 @@
     "i18next": "^26.3.1",
     "lexical": "0.35.0",
     "lucide-react": "^0.577.0",
-    "mermaid": "^11.12.0",
+    "mermaid": "^11.16.0",
     "radix-ui": "^1.6.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
