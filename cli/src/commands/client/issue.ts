@@ -75,6 +75,7 @@ interface IssueUpdateOptions extends BaseClientOptions {
   requestDepth?: string;
   billingCode?: string;
   comment?: string;
+  commentFile?: string;
   hiddenAt?: string;
 }
 
@@ -112,7 +113,8 @@ interface IssueDeleteOptions extends BaseClientOptions {
 }
 
 interface JsonPayloadOptions extends BaseClientOptions {
-  payloadJson: string;
+  payloadJson?: string;
+  payloadFile?: string;
 }
 
 interface IssueDocumentPutOptions extends BaseClientOptions {
@@ -328,6 +330,7 @@ export function registerIssueCommands(program: Command): void {
       .option("--request-depth <n>", "Request depth integer")
       .option("--billing-code <code>", "Billing code")
       .option("--comment <text>", "Optional comment to add with update")
+      .option("--comment-file <path>", "Read update comment from a file")
       .option("--hidden-at <iso8601|null>", "Set hiddenAt timestamp or literal 'null'")
       .action(async (issueId: string, opts: IssueUpdateOptions) => {
         try {
@@ -343,7 +346,12 @@ export function registerIssueCommands(program: Command): void {
             parentId: opts.parentId,
             requestDepth: parseOptionalInt(opts.requestDepth),
             billingCode: opts.billingCode,
-            comment: opts.comment,
+            comment: await readOptionalTextInput({
+              inlineValue: opts.comment,
+              filePath: opts.commentFile,
+              inlineLabel: "--comment",
+              fileLabel: "--comment-file",
+            }),
             hiddenAt: parseHiddenAt(opts.hiddenAt),
           });
 
@@ -542,11 +550,12 @@ export function registerIssueCommands(program: Command): void {
       .command("child:create")
       .description("Create a child issue from a JSON payload")
       .argument("<issueId>", "Parent issue ID")
-      .requiredOption("--payload-json <json>", "CreateChildIssue JSON payload")
+      .option("--payload-json <json>", "CreateChildIssue JSON payload")
+      .option("--payload-file <path>", "Read CreateChildIssue JSON payload from a file")
       .action(async (issueId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = createChildIssueSchema.parse(parseJson(opts.payloadJson));
+          const payload = createChildIssueSchema.parse(await readJsonPayloadInput(opts));
           const child = await ctx.api.post<Issue>(apiPath`/api/issues/${issueId}/children`, payload);
           printOutput(child, { json: ctx.json });
         } catch (err) {
@@ -592,11 +601,12 @@ export function registerIssueCommands(program: Command): void {
       .command("work-product:create")
       .description("Create an issue work product from JSON")
       .argument("<issueId>", "Issue ID")
-      .requiredOption("--payload-json <json>", "CreateIssueWorkProduct JSON payload")
+      .option("--payload-json <json>", "CreateIssueWorkProduct JSON payload")
+      .option("--payload-file <path>", "Read CreateIssueWorkProduct JSON payload from a file")
       .action(async (issueId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = createIssueWorkProductSchema.parse(parseJson(opts.payloadJson));
+          const payload = createIssueWorkProductSchema.parse(await readJsonPayloadInput(opts));
           const product = await ctx.api.post(apiPath`/api/issues/${issueId}/work-products`, payload);
           printOutput(product, { json: ctx.json });
         } catch (err) {
@@ -610,11 +620,12 @@ export function registerIssueCommands(program: Command): void {
       .command("work-product:update")
       .description("Update a work product from JSON")
       .argument("<workProductId>", "Work product ID")
-      .requiredOption("--payload-json <json>", "UpdateIssueWorkProduct JSON payload")
+      .option("--payload-json <json>", "UpdateIssueWorkProduct JSON payload")
+      .option("--payload-file <path>", "Read UpdateIssueWorkProduct JSON payload from a file")
       .action(async (workProductId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = updateIssueWorkProductSchema.parse(parseJson(opts.payloadJson));
+          const payload = updateIssueWorkProductSchema.parse(await readJsonPayloadInput(opts));
           const product = await ctx.api.patch(apiPath`/api/work-products/${workProductId}`, payload);
           printOutput(product, { json: ctx.json });
         } catch (err) {
@@ -726,11 +737,12 @@ export function registerIssueCommands(program: Command): void {
       .command("interaction:create")
       .description("Create an issue thread interaction from JSON")
       .argument("<issueId>", "Issue ID")
-      .requiredOption("--payload-json <json>", "CreateIssueThreadInteraction JSON payload")
+      .option("--payload-json <json>", "CreateIssueThreadInteraction JSON payload")
+      .option("--payload-file <path>", "Read CreateIssueThreadInteraction JSON payload from a file")
       .action(async (issueId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = createIssueThreadInteractionSchema.parse(parseJson(opts.payloadJson));
+          const payload = createIssueThreadInteractionSchema.parse(await readJsonPayloadInput(opts));
           const interaction = await ctx.api.post(apiPath`/api/issues/${issueId}/interactions`, payload);
           printOutput(interaction, { json: ctx.json });
         } catch (err) {
@@ -830,11 +842,12 @@ export function registerIssueCommands(program: Command): void {
       .command("tree-preview")
       .description("Preview issue tree control changes")
       .argument("<issueId>", "Root issue ID")
-      .requiredOption("--payload-json <json>", "PreviewIssueTreeControl JSON payload")
+      .option("--payload-json <json>", "PreviewIssueTreeControl JSON payload")
+      .option("--payload-file <path>", "Read PreviewIssueTreeControl JSON payload from a file")
       .action(async (issueId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = previewIssueTreeControlSchema.parse(parseJson(opts.payloadJson));
+          const payload = previewIssueTreeControlSchema.parse(await readJsonPayloadInput(opts));
           const preview = await ctx.api.post(apiPath`/api/issues/${issueId}/tree-control/preview`, payload);
           printOutput(preview, { json: ctx.json });
         } catch (err) {
@@ -872,11 +885,12 @@ export function registerIssueCommands(program: Command): void {
       .command("tree-hold:create")
       .description("Create an issue tree hold from JSON")
       .argument("<issueId>", "Root issue ID")
-      .requiredOption("--payload-json <json>", "CreateIssueTreeHold JSON payload")
+      .option("--payload-json <json>", "CreateIssueTreeHold JSON payload")
+      .option("--payload-file <path>", "Read CreateIssueTreeHold JSON payload from a file")
       .action(async (issueId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = createIssueTreeHoldSchema.parse(parseJson(opts.payloadJson));
+          const payload = createIssueTreeHoldSchema.parse(await readJsonPayloadInput(opts));
           const hold = await ctx.api.post(apiPath`/api/issues/${issueId}/tree-holds`, payload);
           printOutput(hold, { json: ctx.json });
         } catch (err) {
@@ -908,11 +922,12 @@ export function registerIssueCommands(program: Command): void {
       .description("Release an issue tree hold")
       .argument("<issueId>", "Root issue ID")
       .argument("<holdId>", "Hold ID")
-      .option("--payload-json <json>", "ReleaseIssueTreeHold JSON payload", "{}")
+      .option("--payload-json <json>", "ReleaseIssueTreeHold JSON payload")
+      .option("--payload-file <path>", "Read ReleaseIssueTreeHold JSON payload from a file")
       .action(async (issueId: string, holdId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = releaseIssueTreeHoldSchema.parse(parseJson(opts.payloadJson));
+          const payload = releaseIssueTreeHoldSchema.parse(await readJsonPayloadInput(opts, "{}"));
           const hold = await ctx.api.post(apiPath`/api/issues/${issueId}/tree-holds/${holdId}/release`, payload);
           printOutput(hold, { json: ctx.json });
         } catch (err) {
@@ -1076,11 +1091,12 @@ export function registerIssueCommands(program: Command): void {
       .command("feedback:vote")
       .description("Create or update a feedback vote")
       .argument("<issueId>", "Issue ID")
-      .requiredOption("--payload-json <json>", "UpsertIssueFeedbackVote JSON payload")
+      .option("--payload-json <json>", "UpsertIssueFeedbackVote JSON payload")
+      .option("--payload-file <path>", "Read UpsertIssueFeedbackVote JSON payload from a file")
       .action(async (issueId: string, opts: JsonPayloadOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
-          const payload = upsertIssueFeedbackVoteSchema.parse(parseJson(opts.payloadJson));
+          const payload = upsertIssueFeedbackVoteSchema.parse(await readJsonPayloadInput(opts));
           const vote = await ctx.api.post(apiPath`/api/issues/${issueId}/feedback-votes`, payload);
           printOutput(vote, { json: ctx.json });
         } catch (err) {
@@ -1355,6 +1371,40 @@ function addIssuePostDeleteMarkerCommand(
 
 function parseJson(value: string): unknown {
   return JSON.parse(value) as unknown;
+}
+
+async function readOptionalTextInput({
+  inlineValue,
+  filePath,
+  inlineLabel,
+  fileLabel,
+}: {
+  inlineValue: string | undefined;
+  filePath: string | undefined;
+  inlineLabel: string;
+  fileLabel: string;
+}): Promise<string | undefined> {
+  if (inlineValue !== undefined && filePath !== undefined) {
+    throw new Error(`Pass either ${inlineLabel} or ${fileLabel}, not both.`);
+  }
+  if (filePath !== undefined) {
+    return await readFile(filePath, "utf8");
+  }
+  return inlineValue;
+}
+
+async function readJsonPayloadInput(opts: JsonPayloadOptions, fallbackJson?: string): Promise<unknown> {
+  const source = await readOptionalTextInput({
+    inlineValue: opts.payloadJson,
+    filePath: opts.payloadFile,
+    inlineLabel: "--payload-json",
+    fileLabel: "--payload-file",
+  });
+  const resolved = source ?? fallbackJson;
+  if (resolved === undefined) {
+    throw new Error("Pass --payload-json or --payload-file.");
+  }
+  return parseJson(resolved);
 }
 
 function parseOptionalInt(value: string | undefined): number | undefined {

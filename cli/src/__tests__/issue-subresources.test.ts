@@ -61,6 +61,36 @@ describe("issue subresource commands", () => {
     ]);
   });
 
+  it("reads issue update comments and interaction payloads from files", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "paperclip-cli-issue-files-"));
+    const commentPath = join(tmp, "comment.md");
+    const payloadPath = join(tmp, "interaction.json");
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await writeFile(commentPath, "Line 1\n\n- bullet\n", "utf8");
+    await writeFile(payloadPath, JSON.stringify({
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Ship it?" },
+    }), "utf8");
+
+    try {
+      await run(["issue", "update", ISSUE_ID, "--status", "in_review", "--comment-file", commentPath]);
+      await run(["issue", "interaction:create", ISSUE_ID, "--payload-file", payloadPath]);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      status: "in_review",
+      comment: "Line 1\n\n- bullet\n",
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toMatchObject({
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Ship it?" },
+    });
+  });
+
   it("wraps comments, approvals, markers, and recovery action endpoints", async () => {
     const fetchMock = vi
       .fn()
