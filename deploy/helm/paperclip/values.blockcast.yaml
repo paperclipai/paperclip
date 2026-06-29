@@ -232,33 +232,39 @@ env:
     # (inheritedEnvValueFrom) -- so these are fleet-wide defaults unless an
     # individual agent overrides them.
     #
-    # 2026-06-28: Anthropic is temporarily routed back through in-cluster
-    # ccrotate-serve after the Penstock Anthropic gateway returned empty or
-    # malformed HTTP 200 responses to Claude Code. Keep OpenAI/Codex on
-    # Penstock below; this is not a full provider rollback.
+    # 2026-06-29: Anthropic restored to the Penstock gateway. The temporary
+    # 2026-06-28 ccrotate fallback (added because the Penstock Anthropic gateway
+    # returned empty/malformed HTTP 200s to Claude Code) is no longer needed:
+    # root cause was api.penstock.run resolving to the node-channel-only mTLS
+    # quic-edge VIP (.146); DNS was repointed to the shared-gateway VIP (.135),
+    # and Anthropic streaming + non-streaming were re-verified end-to-end through
+    # the gateway. OpenAI/Codex never left Penstock. With this restored, legacy
+    # ccrotate-serve can be scaled to 0 (PEN-1039).
     #
-    # PREREQUISITES before Penstock Anthropic is restored (CI deploys
-    # values.blockcast.yaml on push to master, gated on PAPERCLIP_CI_DEPLOY):
+    # PREREQUISITES (CI deploys values.blockcast.yaml on push to master, gated
+    # on PAPERCLIP_CI_DEPLOY):
     #   1. Secret `paperclip-penstock-org-key` (key `token`) exists in ns paperclip
     #      -- the Penstock org API key (psk_... Bearer for api.penstock.run).
     #   2. Egress NetworkPolicy permits paperclip Job pods -> api.penstock.run:443.
-    #   3. Live Anthropic/OpenAI/Codex provider verification through the gateway
-    #      has passed (PEN-1075), and PEN-1039 is ready to scale legacy
-    #      ccrotate-serve to 0.
+    # ROLLBACK: revert Anthropic to http://ccrotate-serve.paperclip.svc:4001 +
+    #   paperclip-ccrotate-serve-secrets/serveToken (requires scaling ccrotate-serve
+    #   back up first -- it is at 0 replicas once PEN-1039 lands).
     # ANTHROPIC_AUTH_TOKEN is the Bearer-style var preferred by Claude Code /
     # Anthropic SDK >=0.30; ANTHROPIC_API_KEY mirrors it for older SDK paths.
     - name: ANTHROPIC_BASE_URL
-      value: "http://ccrotate-serve.paperclip.svc:4001"
+      value: "https://api.penstock.run/anthropic"
     - name: ANTHROPIC_AUTH_TOKEN
       valueFrom:
         secretKeyRef:
-          name: paperclip-ccrotate-serve-secrets
-          key: serveToken
+          name: paperclip-penstock-org-key
+          key: token
+          optional: true
     - name: ANTHROPIC_API_KEY
       valueFrom:
         secretKeyRef:
-          name: paperclip-ccrotate-serve-secrets
-          key: serveToken
+          name: paperclip-penstock-org-key
+          key: token
+          optional: true
     # OpenAI-compatible clients read the base URL aliases directly. Codex also
     # needs PAPERCLIP_CODEX_PROVIDERS so the adapter writes the Penstock provider
     # into the managed CODEX_HOME/config.toml before invoking the CLI.
