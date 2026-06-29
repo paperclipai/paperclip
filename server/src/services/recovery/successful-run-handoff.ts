@@ -329,6 +329,7 @@ export function decideSuccessfulRunHandoff(input: {
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
   hasActiveMissingDispositionRecoveryAction: boolean;
+  hasOpenScheduledChildren: boolean;
 }): SuccessfulRunHandoffDecision {
   const { run, issue, agent } = input;
 
@@ -369,6 +370,9 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (input.hasActiveMissingDispositionRecoveryAction) {
     return { kind: "skip", reason: "active missing-disposition recovery action owns the next action" };
+  }
+  if (input.hasOpenScheduledChildren) {
+    return { kind: "skip", reason: "issue has open scheduled children that provide a valid continuation path" };
   }
 
   const instruction = buildSuccessfulRunHandoffInstruction({

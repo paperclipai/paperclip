@@ -54,6 +54,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     budgetBlocked: false,
     idempotentWakeExists: false,
     hasActiveMissingDispositionRecoveryAction: false,
+    hasOpenScheduledChildren: false,
     ...overrides,
   });
 }
@@ -300,6 +301,13 @@ describe("successful run handoff decision", () => {
     expect(decide({ hasActiveMissingDispositionRecoveryAction: true })).toEqual({
       kind: "skip",
       reason: "active missing-disposition recovery action owns the next action",
+    });
+  });
+
+  it("does not queue when the issue has open scheduled children that provide a valid continuation path", () => {
+    expect(decide({ hasOpenScheduledChildren: true })).toEqual({
+      kind: "skip",
+      reason: "issue has open scheduled children that provide a valid continuation path",
     });
   });
 });

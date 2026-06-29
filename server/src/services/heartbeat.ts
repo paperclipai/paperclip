@@ -4045,6 +4045,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       budgetBlock,
       pauseHold,
       activeMissingDispositionRecoveryAction,
+      openScheduledChildren,
     ] = await Promise.all([
       issue
         ? db
@@ -4185,6 +4186,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .limit(1)
           .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, issue.companyId),
+              eq(issues.parentId, issue.id),
+              inArray(issues.status, ["backlog", "todo"]),
+              isNull(issues.hiddenAt),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -4203,6 +4219,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
       hasActiveMissingDispositionRecoveryAction: Boolean(activeMissingDispositionRecoveryAction),
+      hasOpenScheduledChildren: Boolean(openScheduledChildren),
     });
 
     if (decision.kind !== "enqueue" || !issue) return;

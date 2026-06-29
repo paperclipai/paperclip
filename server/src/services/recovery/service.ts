@@ -1925,6 +1925,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        const openScheduledChild = await db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, issue.companyId),
+              eq(issues.parentId, issue.id),
+              inArray(issues.status, ["backlog", "todo"]),
+              isNull(issues.hiddenAt),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (openScheduledChild) {
+          result.skipped += 1;
+          continue;
+        }
+
         const updated = await escalateStrandedAssignedIssue({
           issue,
           previousStatus: "in_progress",
