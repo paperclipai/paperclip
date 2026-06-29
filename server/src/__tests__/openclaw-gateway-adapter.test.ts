@@ -41,6 +41,7 @@ function buildContext(
 
 async function createMockGatewayServer(options?: {
   waitPayload?: Record<string, unknown>;
+  waitDelayMs?: number;
 }) {
   const server = createServer();
   const wss = new WebSocketServer({ server });
@@ -136,19 +137,26 @@ async function createMockGatewayServer(options?: {
       }
 
       if (frame.method === "agent.wait") {
-        socket.send(
-          JSON.stringify({
-            type: "res",
-            id: frame.id,
-            ok: true,
-            payload: options?.waitPayload ?? {
-              runId: frame.params?.runId,
-              status: "ok",
-              startedAt: 1,
-              endedAt: 2,
-            },
-          }),
-        );
+        const sendWaitResponse = () => {
+          socket.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: true,
+              payload: options?.waitPayload ?? {
+                runId: frame.params?.runId,
+                status: "ok",
+                startedAt: 1,
+                endedAt: 2,
+              },
+            }),
+          );
+        };
+        if (options?.waitDelayMs && options.waitDelayMs > 0) {
+          setTimeout(sendWaitResponse, options.waitDelayMs);
+        } else {
+          sendWaitResponse();
+        }
       }
     });
   });
@@ -510,6 +518,36 @@ describe("openclaw gateway adapter execute", () => {
       });
 
       expect(logs.some((entry) => entry.includes("[openclaw-gateway:event] run=run-123 stream=assistant"))).toBe(true);
+    } finally {
+      await gateway.close();
+    }
+  });
+
+  it("emits keepalive logs while waiting for long gateway runs", async () => {
+    const gateway = await createMockGatewayServer({ waitDelayMs: 1100 });
+    const logs: string[] = [];
+
+    try {
+      const result = await execute(
+        buildContext(
+          {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            waitTimeoutMs: 1300,
+            waitKeepaliveMs: 10,
+          },
+          {
+            onLog: async (_stream, chunk) => {
+              logs.push(chunk);
+            },
+          },
+        ),
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(logs.some((entry) => entry.includes("[openclaw-gateway] waiting for runId=run-123"))).toBe(true);
     } finally {
       await gateway.close();
     }

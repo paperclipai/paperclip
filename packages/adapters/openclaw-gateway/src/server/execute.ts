@@ -1090,6 +1090,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const timeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : 0;
   const connectTimeoutMs = timeoutMs > 0 ? Math.min(timeoutMs, 15_000) : 10_000;
   const waitTimeoutMs = parseOptionalPositiveInteger(ctx.config.waitTimeoutMs) ?? (timeoutMs > 0 ? timeoutMs : 30_000);
+  const waitKeepaliveMs = Math.max(
+    1_000,
+    Math.min(waitTimeoutMs, parseOptionalPositiveInteger(ctx.config.waitKeepaliveMs) ?? 45_000),
+  );
 
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
   const transportHint = nonEmpty(ctx.config.streamTransport) ?? nonEmpty(ctx.config.transport);
@@ -1349,11 +1353,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
 
       if (acceptedStatus !== "ok") {
-        const waitPayload = await client.request<Record<string, unknown>>(
+        const waitStartedAt = Date.now();
+        let keepaliveTimer: NodeJS.Timeout | null = null;
+        const waitPromise = client.request<Record<string, unknown>>(
           "agent.wait",
           { runId: acceptedRunId, timeoutMs: waitTimeoutMs },
           { timeoutMs: waitTimeoutMs + connectTimeoutMs },
         );
+        if (waitTimeoutMs > waitKeepaliveMs) {
+          keepaliveTimer = setInterval(() => {
+            void ctx.onLog(
+              "stdout",
+              `[openclaw-gateway] waiting for runId=${acceptedRunId} (${Date.now() - waitStartedAt}ms elapsed in current wait)\n`,
+            );
+          }, waitKeepaliveMs);
+          keepaliveTimer.unref?.();
+        }
+
+        let waitPayload: Record<string, unknown>;
+        try {
+          waitPayload = await waitPromise;
+        } finally {
+          if (keepaliveTimer) clearInterval(keepaliveTimer);
+        }
 
         latestResultPayload = waitPayload;
 
