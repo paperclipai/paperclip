@@ -217,6 +217,41 @@ export function parsePiJsonl(stdout: string): ParsedPiOutput {
   return result;
 }
 
+function normalizeFailureText(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): string {
+  return [input.errorMessage, input.stderr, input.stdout]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join("\n");
+}
+
+export function isPiTransientUpstreamError(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const haystack = normalizeFailureText(input);
+  if (!haystack) return false;
+
+  if (/unknown\s+session|session\s+not\s+found|session\s+.*\s+not\s+found|no\s+session/i.test(haystack)) {
+    return false;
+  }
+  if (/auth(?:entication)?\s+(?:required|failed)|please\s+log\s+in|invalid\s+(?:api\s+)?key|unauthorized/i.test(haystack)) {
+    return false;
+  }
+  if (/not_found_error|model:\s*[^\n]+|unknown\s+model|invalid_request_error|unknown\s+parameter/i.test(haystack)) {
+    return false;
+  }
+
+  return (
+    /\b(?:429|529|503)\b/i.test(haystack) ||
+    /rate[_ -]?limit|too\s+many\s+requests|resource[_ -]?exhausted|overloaded|temporarily\s+unavailable/i.test(haystack) ||
+    /weekly\s+limit|5-hour\s+limit|out\s+of\s+extra\s+usage|try\s+again\s+later/i.test(haystack)
+  );
+}
+
 export function isPiUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)
