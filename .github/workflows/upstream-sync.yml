@@ -114,20 +114,25 @@ jobs:
             echo "Review the upstream diff, pull this PR into an agent session, resolve any merge conflicts deliberately, then close/replace this notice PR once the resolved update lands in \`bermont\`."
           } > "$body_file"
 
-          # Detect an existing open PR for this head via REST. (gh's GraphQL
-          # lookups can also 403 under an App token; REST is the reliable path.)
-          open_count="$(gh api \
+          # Detect/update an existing open PR for this head via REST. (gh's
+          # GraphQL lookups can also 403 under an App token; REST is the reliable
+          # path.) Keep the title/body fresh after each force-push so the notice
+          # does not preserve stale merge-era wording or upstream counts.
+          existing_pr="$(gh api \
             "repos/${GITHUB_REPOSITORY}/pulls?base=bermont&state=open&head=${GITHUB_REPOSITORY_OWNER}:${SYNC_BRANCH}" \
-            --jq 'length')"
-          if [ "${open_count:-0}" -gt 0 ]; then
-            echo "Existing sync PR already open for ${SYNC_BRANCH} — updated via force-push."
+            --jq '.[0].number // empty')"
+          if [ -n "${existing_pr:-}" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${existing_pr}" \
+              --raw-field title="chore: review upstream/master update for bermont" \
+              --field "body=@${body_file}"
+            echo "Updated existing sync PR #${existing_pr} for ${SYNC_BRANCH}."
             exit 0
           fi
 
           # Create via REST, not `gh pr create` (GraphQL createPullRequest is not
           # accessible to App installation tokens). --field body=@file reads the body.
           gh api --method POST "repos/${GITHUB_REPOSITORY}/pulls" \
-            --raw-field title="chore: sync upstream/master into bermont" \
+            --raw-field title="chore: review upstream/master update for bermont" \
             --raw-field head="$SYNC_BRANCH" \
             --raw-field base="bermont" \
             --field "body=@${body_file}"
