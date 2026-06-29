@@ -100,6 +100,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     originId?: string | null;
     originFingerprint?: string | null;
     executionState?: Record<string, unknown> | null;
+    executionPolicy?: Record<string, unknown> | null;
+    monitorNextCheckAt?: Date | null;
     description?: string | null;
   }) {
     const id = input.id ?? randomUUID();
@@ -117,6 +119,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       originId: input.originId ?? null,
       originFingerprint: input.originFingerprint ?? "default",
       executionState: input.executionState ?? null,
+      executionPolicy: input.executionPolicy ?? null,
+      monitorNextCheckAt: input.monitorNextCheckAt ?? null,
       description: input.description ?? null,
     });
     return id;
@@ -421,6 +425,61 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       state: "covered",
       stalledBlockerCount: 0,
     });
+  });
+
+  it("treats a monitored in_review blocker as covered and includes monitor metadata in relation summaries", async () => {
+    const { companyId, agentId } = await createCompany("DYS");
+    const parentId = await insertIssue({ companyId, identifier: "DYS-913", title: "Blocked parent", status: "blocked" });
+    const monitorNextCheckAt = new Date(Date.now() + 60 * 60 * 1000);
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "DYS-1116",
+      title: "Monitored review blocker",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      executionState: {
+        monitor: {
+          status: "scheduled",
+          nextCheckAt: monitorNextCheckAt.toISOString(),
+        },
+      },
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        monitor: {
+          nextCheckAt: monitorNextCheckAt.toISOString(),
+          notes: "Daily PR #8681 monitor cadence",
+          scheduledBy: "assignee",
+        },
+      },
+      monitorNextCheckAt,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked", includeBlockedBy: true })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "DYS-1116",
+    });
+    expect(parent?.blockedBy).toEqual([
+      expect.objectContaining({
+        id: blockerId,
+        identifier: "DYS-1116",
+        monitorNextCheckAt,
+        executionPolicy: expect.objectContaining({
+          monitor: expect.objectContaining({
+            nextCheckAt: monitorNextCheckAt.toISOString(),
+          }),
+        }),
+      }),
+    ]);
   });
 
   it("flags a deep chain whose leaf is stalled in_review through multiple layers", async () => {
