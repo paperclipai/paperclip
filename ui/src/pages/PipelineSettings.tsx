@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   extractRoutineVariableNames,
@@ -1299,6 +1299,7 @@ export function PipelineSettings() {
   const [instructionsBody, setInstructionsBody] = useState("");
   const [instructionsVariables, setInstructionsVariables] = useState<RoutineVariable[]>([]);
   const issueTitleTemplateInputRef = useRef<HTMLInputElement>(null);
+  const pendingIssueTitleCursorRef = useRef<number | null>(null);
   const instructionsEditorRef = useRef<MarkdownEditorRef>(null);
   // Stage secrets (the automation routine's env). Edited independently of the
   // rest of the stage form and saved through the narrow automation-env route.
@@ -1469,14 +1470,20 @@ export function PipelineSettings() {
       const start = input.selectionStart ?? current.length;
       const end = input.selectionEnd ?? start;
       const next = `${current.slice(0, start)}${token}${current.slice(end)}`;
-      window.requestAnimationFrame(() => {
-        input.focus();
-        const cursor = start + token.length;
-        input.setSelectionRange(cursor, cursor);
-      });
+      pendingIssueTitleCursorRef.current = start + token.length;
       return next;
     });
   }, []);
+
+  useLayoutEffect(() => {
+    const cursor = pendingIssueTitleCursorRef.current;
+    if (cursor == null) return;
+    pendingIssueTitleCursorRef.current = null;
+    const input = issueTitleTemplateInputRef.current;
+    if (!input) return;
+    input.focus();
+    input.setSelectionRange(cursor, cursor);
+  }, [issueTitleTemplate]);
 
   const instructionsKey = selectedStage ? stageInstructionsKey(selectedStage.id) : null;
   const instructionsQuery = useQuery({
