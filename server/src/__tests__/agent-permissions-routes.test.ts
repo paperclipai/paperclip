@@ -1150,6 +1150,77 @@ describe.sequential("agent permission routes", () => {
     );
   });
 
+  it("redacts persisted config secrets in direct agent creation responses", async () => {
+    mockAgentService.create.mockResolvedValueOnce({
+      ...baseAgent,
+      adapterConfig: {
+        command: "paperclip-worker --token ghp_direct_secret",
+        env: {
+          OPENAI_API_KEY: { type: "plain", value: "sk-direct-secret" },
+          SAFE_VALUE: "visible",
+          SECRET_REF: {
+            type: "secret_ref",
+            secretId: "33333333-3333-4333-8333-333333333333",
+          },
+        },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            adapterConfig: {
+              env: {
+                API_TOKEN: { type: "plain", value: "runtime-direct-secret" },
+                SAFE_VALUE: "runtime-visible",
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {
+          env: {
+            OPENAI_API_KEY: { type: "plain", value: "sk-direct-secret" },
+            SAFE_VALUE: "visible",
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.adapterConfig).toEqual({
+      command: `paperclip-worker --token ${REDACTED_EVENT_VALUE}`,
+      env: {
+        OPENAI_API_KEY: { type: "plain", value: REDACTED_EVENT_VALUE },
+        SAFE_VALUE: "visible",
+        SECRET_REF: {
+          type: "secret_ref",
+          secretId: "33333333-3333-4333-8333-333333333333",
+        },
+      },
+    });
+    expect(res.body.runtimeConfig.modelProfiles.cheap.adapterConfig.env).toEqual({
+      API_TOKEN: { type: "plain", value: REDACTED_EVENT_VALUE },
+      SAFE_VALUE: "runtime-visible",
+    });
+    expect(JSON.stringify(res.body)).not.toContain("sk-direct-secret");
+    expect(JSON.stringify(res.body)).not.toContain("runtime-direct-secret");
+    expect(JSON.stringify(res.body)).not.toContain("ghp_direct_secret");
+  });
+
   it("rejects direct agent creation when new agents require board approval", async () => {
     const app = await createApp(
       {
@@ -1378,6 +1449,93 @@ describe.sequential("agent permission routes", () => {
         },
       }),
     );
+  });
+
+  it("redacts persisted config secrets in agent hire creation responses without changing approval payload", async () => {
+    const approval = {
+      id: "approval-1",
+      companyId,
+      type: "hire_agent",
+      status: "pending",
+      payload: {
+        adapterConfig: {
+          env: {
+            OPENAI_API_KEY: { type: "plain", value: REDACTED_EVENT_VALUE },
+            SAFE_VALUE: "visible",
+          },
+        },
+      },
+    };
+    mockApprovalService.create.mockImplementationOnce(async (_companyId, data) => ({
+      ...approval,
+      payload: data.payload,
+    }));
+    mockAgentService.create.mockResolvedValueOnce({
+      ...baseAgent,
+      adapterConfig: {
+        env: {
+          OPENAI_API_KEY: { type: "plain", value: "sk-hire-secret" },
+          SAFE_VALUE: "visible",
+        },
+      },
+      runtimeConfig: {
+        env: {
+          API_TOKEN: { type: "plain", value: "hire-runtime-secret" },
+          SAFE_VALUE: "runtime-visible",
+        },
+      },
+    });
+
+    const app = await createApp(
+      {
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      },
+      { requireBoardApprovalForNewAgents: true },
+    );
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {
+          env: {
+            OPENAI_API_KEY: { type: "plain", value: "sk-hire-secret" },
+            SAFE_VALUE: "visible",
+          },
+        },
+        runtimeConfig: {
+          env: {
+            API_TOKEN: { type: "plain", value: "hire-runtime-secret" },
+            SAFE_VALUE: "runtime-visible",
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.agent.adapterConfig.env).toEqual({
+      OPENAI_API_KEY: { type: "plain", value: REDACTED_EVENT_VALUE },
+      SAFE_VALUE: "visible",
+    });
+    expect(res.body.agent.runtimeConfig.env).toEqual({
+      API_TOKEN: { type: "plain", value: REDACTED_EVENT_VALUE },
+      SAFE_VALUE: "runtime-visible",
+    });
+    expect(res.body.approval.payload.adapterConfig.env).toEqual({
+      OPENAI_API_KEY: { type: "plain", value: REDACTED_EVENT_VALUE },
+      SAFE_VALUE: "visible",
+    });
+    expect(res.body.approval.payload.runtimeConfig.env).toEqual({
+      API_TOKEN: { type: "plain", value: REDACTED_EVENT_VALUE },
+      SAFE_VALUE: "runtime-visible",
+    });
+    expect(JSON.stringify(res.body)).not.toContain("sk-hire-secret");
+    expect(JSON.stringify(res.body)).not.toContain("hire-runtime-secret");
   });
 
   it("allows board users to directly approve pending agents", async () => {
