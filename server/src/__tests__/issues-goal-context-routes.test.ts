@@ -134,6 +134,18 @@ vi.mock("../services/execution-workspaces.js", () => ({
   executionWorkspaceService: () => mockExecutionWorkspaceService,
 }));
 
+// TWX-1103 added resolvePullRequestAssigneeForRootRequester() to the
+// heartbeat-context route. It imports instanceSettingsService from
+// "./instance-settings.js" directly (a path this suite does NOT mock), so on a
+// real human requester it ran against the stub `mockDb` and threw -> 500. The
+// PR-assignee projection has its own coverage (pull-request-assignee.test.ts);
+// here we only assert the issue/ancestor/rootHumanRequester projection, so stub
+// the resolver out deterministically.
+vi.mock("../services/pull-request-assignee.js", () => ({
+  resolvePullRequestAssignee: vi.fn(async () => null),
+  resolvePullRequestAssigneeForRootRequester: vi.fn(async () => null),
+}));
+
 function createApp() {
   const app = express();
   app.use(express.json());
