@@ -186,6 +186,14 @@ const PLUGIN_API_BODY_LIMIT_BYTES = 1_000_000;
 const PLUGIN_ACTION_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
 const DEFAULT_RAG_HEALTH_WINDOW_DAYS = 7;
 const MEMORY_PLUGIN_KEYWORDS = ["gbrain", "hindsight", "memory", "plugin-secrets"] as const;
+
+type RagHealthBucketCacheEntry = {
+  result: RagHealthGbrainBucket[];
+  ts: number;
+  loading: boolean;
+};
+export const ragHealthBucketCache = new Map<string, RagHealthBucketCacheEntry>();
+const RAG_HEALTH_CACHE_TTL_MS = 5 * 60 * 1000;
 const PLUGIN_SCOPED_API_RESPONSE_HEADER_ALLOWLIST = new Set([
   "cache-control",
   "etag",
@@ -493,6 +501,48 @@ interface PluginToolExecuteRequest {
    * board/MCP callers may omit it or supply only a companyId.
    */
   runContext?: unknown;
+}
+
+async function refreshRagHealthBuckets(
+  db: Db,
+  companyId: string,
+  since: Date,
+  cacheKey: string,
+): Promise<void> {
+  const entry = ragHealthBucketCache.get(cacheKey);
+  if (entry?.loading) return;
+  ragHealthBucketCache.set(cacheKey, { result: entry?.result ?? [], ts: entry?.ts ?? 0, loading: true });
+  try {
+    const rows = await db.transaction(async (tx) => {
+      // SET LOCAL overrides the role-level 30 s statement_timeout for this
+      // transaction only. The TOAST'd value_json aggregation can take ~115 s
+      // on large datasets; 180 s gives comfortable headroom.
+      await tx.execute(sql`SET LOCAL statement_timeout = '180s'`);
+      const gbrainStatus = sql<string>`coalesce(${pluginState.valueJson}->>'status', 'missing')`;
+      return tx
+        .select({ status: gbrainStatus, count: sql<number>`count(*)::int` })
+        .from(pluginState)
+        .innerJoin(heartbeatRuns, and(
+          eq(pluginState.scopeKind, "run"),
+          eq(pluginState.stateKey, "gbrain-context"),
+          sql`${pluginState.scopeId}::uuid = ${heartbeatRuns.id}`,
+        ))
+        .where(and(
+          eq(heartbeatRuns.companyId, companyId),
+          gte(pluginState.updatedAt, since),
+        ))
+        .groupBy(gbrainStatus)
+        .orderBy(gbrainStatus);
+    });
+    ragHealthBucketCache.set(cacheKey, {
+      result: rows.map((r): RagHealthGbrainBucket => ({ status: String(r.status), count: Number(r.count) })),
+      ts: Date.now(),
+      loading: false,
+    });
+  } catch {
+    const cur = ragHealthBucketCache.get(cacheKey);
+    if (cur) ragHealthBucketCache.set(cacheKey, { ...cur, loading: false });
+  }
 }
 
 /**
@@ -985,6 +1035,12 @@ export function pluginRoutes(
    * Narrow read-only health surface for agent-run RAG health routines. This
    * intentionally exposes only memory-plugin error rows and company-scoped
    * `gbrain-context` status buckets, not the broad plugin management API.
+   *
+   * The gbrainContextBuckets query aggregates TOAST'd value_json rows and can
+   * take >30 s on large datasets. Results are served from a 5-minute in-memory
+   * cache; stale/empty data is returned immediately while a background task
+   * refreshes using SET LOCAL statement_timeout = '180s' inside a transaction
+   * to bypass the role-level 30 s timeout.
    */
   router.get("/plugins/rag-health", async (req, res) => {
     const companyId = resolveRagHealthCompanyId(req);
@@ -1016,30 +1072,12 @@ export function pluginRoutes(
       ))
       .orderBy(desc(plugins.updatedAt));
 
-    const gbrainStatus = sql<string>`coalesce(${pluginState.valueJson}->>'status', 'missing')`;
-    const bucketRows = await db
-      .select({
-        status: gbrainStatus,
-        count: sql<number>`count(*)::int`,
-      })
-      .from(pluginState)
-      .innerJoin(heartbeatRuns, and(
-        eq(pluginState.scopeKind, "run"),
-        eq(pluginState.scopeId, sql<string>`${heartbeatRuns.id}::text`),
-      ))
-      .where(and(
-        eq(pluginState.stateKey, "gbrain-context"),
-        eq(heartbeatRuns.companyId, companyId),
-        gte(pluginState.updatedAt, since),
-      ))
-      .groupBy(gbrainStatus)
-      .orderBy(gbrainStatus);
-
-    const gbrainContextBuckets = bucketRows
-      .map((row): RagHealthGbrainBucket => ({
-        status: String(row.status),
-        count: Number(row.count),
-      }));
+    const cacheKey = `${companyId}:${days}`;
+    const cached = ragHealthBucketCache.get(cacheKey);
+    if (!cached || (Date.now() - cached.ts) > RAG_HEALTH_CACHE_TTL_MS) {
+      void refreshRagHealthBuckets(db, companyId, since, cacheKey);
+    }
+    const gbrainContextBuckets = cached?.result ?? null;
 
     res.json({
       companyId,

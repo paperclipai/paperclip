@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ragHealthBucketCache } from "../routes/plugins.js";
 
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -169,6 +170,7 @@ function readyPlugin() {
 describe.sequential("plugin install and upgrade authz", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    ragHealthBucketCache.clear();
   });
 
   it("lists bundled monorepo plugin packages", async () => {
@@ -250,11 +252,15 @@ describe.sequential("plugin install and upgrade authz", () => {
           updatedAt,
         },
       ],
-      [
-        { status: "ok", count: 3 },
-        { status: "island", count: "2" },
-      ],
+      [],
     );
+    // Pre-populate the cache so the handler returns it immediately without
+    // firing the background refresh (which uses db.transaction, not db.select).
+    ragHealthBucketCache.set(`${companyA}:7`, {
+      result: [{ status: "ok", count: 3 }, { status: "island", count: 2 }],
+      ts: Date.now(),
+      loading: false,
+    });
     const { app } = await createApp(agentActor(), {}, { db });
 
     const res = await request(app).get("/api/plugins/rag-health");
@@ -277,10 +283,8 @@ describe.sequential("plugin install and upgrade authz", () => {
         { status: "island", count: 2 },
       ],
     });
-    expect(db.select).toHaveBeenCalledTimes(2);
+    expect(db.select).toHaveBeenCalledTimes(1);
     expect(db.pluginWhere).toHaveBeenCalledOnce();
-    expect(db.bucketInnerJoin).toHaveBeenCalledOnce();
-    expect(db.bucketWhere).toHaveBeenCalledOnce();
   }, 20_000);
 
   it("ignores agent query overrides for the RAG health company scope", async () => {
@@ -294,7 +298,12 @@ describe.sequential("plugin install and upgrade authz", () => {
   }, 20_000);
 
   it("lets board users read RAG health for an accessible company", async () => {
-    const db = createRagHealthDb([], [{ status: "no-issue-page", count: 1 }]);
+    ragHealthBucketCache.set(`${companyA}:14`, {
+      result: [{ status: "no-issue-page", count: 1 }],
+      ts: Date.now(),
+      loading: false,
+    });
+    const db = createRagHealthDb([], []);
     const { app } = await createApp(boardActor(), {}, { db });
 
     const res = await request(app).get(`/api/plugins/rag-health?companyId=${companyA}&days=14`);
