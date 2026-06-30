@@ -851,9 +851,6 @@ export function environmentCustomImageService(
       await requireEnvironment(input.environmentId);
       const active = await resolveActiveTemplate(db, input);
       if (!active) throw notFound("Active environment customImage template not found");
-      if (input.deleteProviderTemplate) {
-        await callProviderDeleteTemplate({ template: active, reason: "disabled" });
-      }
       const now = input.now ?? new Date();
       const row = await db
         .update(environmentCustomImageTemplates)
@@ -862,7 +859,11 @@ export function environmentCustomImageService(
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!row) throw notFound("Active environment customImage template not found");
-      return environmentCustomImageTemplateFromRow(row);
+      const template = environmentCustomImageTemplateFromRow(row);
+      if (input.deleteProviderTemplate) {
+        await callProviderDeleteTemplate({ template, reason: "disabled" });
+      }
+      return template;
     },
 
     cleanupExpiredSetupSessions: async (input: {

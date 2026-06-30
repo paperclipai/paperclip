@@ -233,6 +233,49 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     expect(rollback.supersededTemplate.id).toBe(replacement.template.id);
   });
 
+  it("revokes the active template before deleting the provider template", async () => {
+    const { companyId, environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
+      companyId,
+      environmentId,
+      actor: { userId: "user-1" },
+    });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+    let statusAtProviderDelete: string | null = null;
+    workerManager.call.mockImplementation(async (_pluginId, method) => {
+      if (method !== "environmentDeleteTemplate") {
+        throw new Error(`Unexpected plugin call after setup: ${method}`);
+      }
+      const [row] = await db
+        .select({ status: environmentCustomImageTemplates.status })
+        .from(environmentCustomImageTemplates)
+        .where(eq(environmentCustomImageTemplates.id, promoted.template.id));
+      statusAtProviderDelete = row?.status ?? null;
+      return { deleted: true, metadata: { provider: "fake-plugin" } };
+    });
+
+    const disabled = await service.disableTemplate({
+      companyId,
+      environmentId,
+      deleteProviderTemplate: true,
+    });
+
+    expect(disabled.status).toBe("revoked");
+    expect(statusAtProviderDelete).toBe("revoked");
+    expect(workerManager.call).toHaveBeenLastCalledWith(
+      expect.any(String),
+      "environmentDeleteTemplate",
+      expect.objectContaining({
+        templateRef: promoted.template.templateRef,
+        reason: "disabled",
+      }),
+      undefined,
+    );
+  });
+
   it("cancels and times out setup sessions without changing the active template", async () => {
     const { companyId, environmentId } = await seed();
     const workerManager = createWorkerManager();
