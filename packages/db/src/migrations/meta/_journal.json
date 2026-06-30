@@ -904,6 +904,13 @@
       "when": 1782168300000,
       "tag": "0128_company_default_agent_cwd",
       "breakpoints": true
+    },
+    {
+      "idx": 129,
+      "version": "7",
+      "when": 1782254700000,
+      "tag": "0129_claude_account_usage",
+      "breakpoints": true
     }
   ]
 }

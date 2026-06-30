@@ -979,6 +979,16 @@ export {
   type PullRequestAssigneeRule,
 } from "./types/instance.js";
 
+export {
+  CLAUDE_ACCOUNT_TIERS,
+  DEFAULT_CLAUDE_ACCOUNT_TIERS,
+  inferClaudeAccountTier,
+  type ClaudeAccountTier,
+  type ClaudeUsageWindow,
+  type ClaudeAccountUsageSnapshot,
+  type ClaudeAccountsUsageResponse,
+} from "./types/claude-account-usage.js";
+
 export type {
   CloudUpstreamConnectStartResponse,
   CloudUpstreamActivationDecision,
