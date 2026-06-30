@@ -48,6 +48,10 @@ const mockAgentService = vi.hoisted(() => ({
   terminate: vi.fn(),
   update: vi.fn(),
   updatePermissions: vi.fn(),
+  pause: vi.fn(),
+  resume: vi.fn(),
+  clearError: vi.fn(),
+  rollbackConfigRevision: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
 }));
@@ -79,6 +83,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   resetRuntimeSession: vi.fn(),
   getRun: vi.fn(),
   cancelRun: vi.fn(),
+  cancelActiveForAgent: vi.fn(),
   cancelInvocationsForAgents: vi.fn(),
 }));
 
@@ -274,6 +279,51 @@ async function requestApp(
   }
 }
 
+function secretBearingAgent(overrides: Partial<typeof baseAgent> = {}) {
+  return {
+    ...baseAgent,
+    adapterConfig: {
+      command: "pnpm agent:run",
+      env: {
+        PAPERCLIP_API_KEY: "test-placeholder-paperclip-token",
+        SAFE_FLAG: { type: "plain", value: "test-placeholder-plain-binding" },
+      },
+    },
+    runtimeConfig: {
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          adapterConfig: {
+            env: {
+              GITHUB_TOKEN: "test-placeholder-github-token",
+              SAFE_PROFILE_FLAG: { type: "plain", value: "test-placeholder-profile-binding" },
+            },
+          },
+        },
+      },
+    },
+    ...overrides,
+  };
+}
+
+function expectAgentResponseRedacted(body: Record<string, unknown>) {
+  expect((body.adapterConfig as any).env.PAPERCLIP_API_KEY).toBe(REDACTED_EVENT_VALUE);
+  expect((body.adapterConfig as any).env.SAFE_FLAG).toEqual({
+    type: "plain",
+    value: REDACTED_EVENT_VALUE,
+  });
+  expect((body.runtimeConfig as any).modelProfiles.cheap.adapterConfig.env.GITHUB_TOKEN)
+    .toBe(REDACTED_EVENT_VALUE);
+  expect((body.runtimeConfig as any).modelProfiles.cheap.adapterConfig.env.SAFE_PROFILE_FLAG).toEqual({
+    type: "plain",
+    value: REDACTED_EVENT_VALUE,
+  });
+  expect(JSON.stringify(body)).not.toContain("test-placeholder-paperclip-token");
+  expect(JSON.stringify(body)).not.toContain("test-placeholder-plain-binding");
+  expect(JSON.stringify(body)).not.toContain("test-placeholder-github-token");
+  expect(JSON.stringify(body)).not.toContain("test-placeholder-profile-binding");
+}
+
 describe.sequential("agent permission routes", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -308,6 +358,10 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.terminate.mockReset();
     mockAgentService.update.mockReset();
     mockAgentService.updatePermissions.mockReset();
+    mockAgentService.pause.mockReset();
+    mockAgentService.resume.mockReset();
+    mockAgentService.clearError.mockReset();
+    mockAgentService.rollbackConfigRevision.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
     mockAgentService.resolveByReference.mockReset();
     mockAccessService.canUser.mockReset();
@@ -327,6 +381,7 @@ describe.sequential("agent permission routes", () => {
     mockHeartbeatService.resetRuntimeSession.mockReset();
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
+    mockHeartbeatService.cancelActiveForAgent.mockReset();
     mockHeartbeatService.cancelInvocationsForAgents.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
@@ -355,6 +410,10 @@ describe.sequential("agent permission routes", () => {
     });
     mockAgentService.update.mockResolvedValue(baseAgent);
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
+    mockAgentService.pause.mockResolvedValue(baseAgent);
+    mockAgentService.resume.mockResolvedValue(baseAgent);
+    mockAgentService.clearError.mockResolvedValue(baseAgent);
+    mockAgentService.rollbackConfigRevision.mockResolvedValue(baseAgent);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
       const allowed = Boolean(await mockAccessService.canUser());
@@ -400,6 +459,12 @@ describe.sequential("agent permission routes", () => {
     );
     mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
     mockSecretService.resolveAdapterConfigForRuntime.mockImplementation(async (_companyId, config) => ({ config }));
+    mockHeartbeatService.cancelActiveForAgent.mockResolvedValue(undefined);
+    mockHeartbeatService.cancelInvocationsForAgents.mockResolvedValue({
+      agentIds: [agentId],
+      runsCancelled: 0,
+      wakeupsCancelled: 0,
+    });
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
     });
@@ -622,6 +687,96 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.runtimeConfig.modelProfiles.cheap.adapterConfig.env.GITHUB_TOKEN).toBe(REDACTED_EVENT_VALUE);
     expect(JSON.stringify(res.body)).not.toContain("test-placeholder-paperclip-token");
     expect(JSON.stringify(res.body)).not.toContain("test-placeholder-github-token");
+  }, 20_000);
+
+  it("redacts structured plain bindings in agent read responses even under non-sensitive keys", async () => {
+    const agent = secretBearingAgent();
+    mockAgentService.getById.mockResolvedValue(agent);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
+  }, 20_000);
+
+  it("redacts agent configs returned by agent mutation and lifecycle routes", async () => {
+    const agent = secretBearingAgent();
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    mockAgentService.getById.mockResolvedValue(agent);
+    mockAgentService.rollbackConfigRevision.mockResolvedValue(agent);
+    let res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/config-revisions/revision-1/rollback`)
+      .send({}));
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
+
+    mockAgentService.getById.mockResolvedValue(agent);
+    mockAgentService.update.mockResolvedValue(agent);
+    res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ title: "Updated Builder" }));
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
+
+    mockAgentService.getById.mockResolvedValue(agent);
+    mockAgentService.pause.mockResolvedValue({ ...agent, status: "paused" });
+    res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/pause`)
+      .send({}));
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
+
+    mockAgentService.getById.mockResolvedValue(agent);
+    mockAgentService.resume.mockResolvedValue({ ...agent, status: "idle" });
+    res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/resume`)
+      .send({}));
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
+
+    mockAgentService.getById.mockResolvedValue(agent);
+    mockAgentService.clearError.mockResolvedValue({ ...agent, status: "idle" });
+    res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/clear-error`)
+      .send({}));
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
+
+    mockAgentService.getById.mockResolvedValue({ ...agent, status: "pending_approval" });
+    mockApprovalService.findOpenHireApprovalForAgent.mockResolvedValue(null);
+    mockAgentService.activatePendingApproval.mockResolvedValue({
+      agent: { ...agent, status: "idle" },
+      activated: true,
+    });
+    res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/approve`)
+      .send({}));
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
+
+    mockAgentService.getById.mockResolvedValue(agent);
+    mockApprovalService.findOpenHireApprovalForAgent.mockResolvedValue(null);
+    mockAgentService.terminate.mockResolvedValue({ ...agent, status: "terminated" });
+    res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/terminate`)
+      .send({}));
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
   }, 20_000);
 
   it("blocks agent updates for authenticated company members without agent admin permission", async () => {

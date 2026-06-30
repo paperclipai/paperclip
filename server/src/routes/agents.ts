@@ -2142,7 +2142,7 @@ export function agentRoutes(
       details: { revisionId },
     });
 
-    res.json(updated);
+    res.json(redactAgentConfigFields(updated));
   });
 
   router.get("/agents/:id/runtime-state", async (req, res) => {
@@ -2961,7 +2961,7 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    res.json(redactAgentConfigFields(agent));
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
@@ -2987,7 +2987,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentConfigFields(agent));
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
@@ -3018,7 +3018,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentConfigFields(agent));
   });
 
   router.post("/agents/:id/clear-error", async (req, res) => {
@@ -3050,7 +3050,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentConfigFields(agent));
   });
 
   router.post("/agents/:id/approve", async (req, res) => {
@@ -3104,7 +3104,7 @@ export function agentRoutes(
       details: { source: "agent_detail", approvalId: openApproval?.id ?? null },
     });
 
-    res.json(agent);
+    res.json(redactAgentConfigFields(agent));
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
@@ -3174,7 +3174,7 @@ export function agentRoutes(
       },
     });
 
-    res.json(agent);
+    res.json(redactAgentConfigFields(agent));
   });
 
   router.delete("/agents/:id", async (req, res) => {
