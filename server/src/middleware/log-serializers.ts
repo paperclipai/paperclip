@@ -25,7 +25,7 @@ interface SerializedError {
   details?: unknown;
 }
 
-const UNSERIALIZABLE: SerializedError = { message: "<unserializable error>" };
+const UNSERIALIZABLE: SerializedError = Object.freeze({ message: "<unserializable error>" });
 
 function pickPrimitive(value: unknown): string | number | undefined {
   return typeof value === "string" || typeof value === "number" ? value : undefined;
