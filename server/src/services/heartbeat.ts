@@ -948,35 +948,6 @@ export function stripWorkspaceRuntimeFromExecutionRunConfig(config: Record<strin
   return nextConfig;
 }
 
-export function buildRealizedExecutionWorkspaceFromPersisted(input: {
-  base: ExecutionWorkspaceInput;
-  workspace: ExecutionWorkspace;
-}): RealizedExecutionWorkspace | null {
-  const cwd = readNonEmptyString(input.workspace.cwd) ?? readNonEmptyString(input.workspace.providerRef);
-  if (!cwd) {
-    return null;
-  }
-
-  const strategy = input.workspace.strategyType === "git_worktree" ? "git_worktree" : "project_primary";
-  const baseRefSnapshot = parseObject(input.workspace.metadata?.baseRefSnapshot);
-  const baseRefSha = typeof baseRefSnapshot.resolvedSha === "string" ? baseRefSnapshot.resolvedSha : null;
-  return {
-    baseCwd: input.base.baseCwd,
-    source: input.workspace.mode === "shared_workspace" ? "project_primary" : "task_session",
-    projectId: input.workspace.projectId ?? input.base.projectId,
-    workspaceId: input.workspace.projectWorkspaceId ?? input.base.workspaceId,
-    repoUrl: input.workspace.repoUrl ?? input.base.repoUrl,
-    repoRef: input.workspace.baseRef ?? input.base.repoRef,
-    strategy,
-    cwd,
-    branchName: input.workspace.branchName ?? null,
-    worktreePath: strategy === "git_worktree" ? (readNonEmptyString(input.workspace.providerRef) ?? cwd) : null,
-    warnings: [],
-    created: false,
-    baseRefSha,
-  };
-}
-
 function buildExecutionWorkspaceConfigSnapshot(
   config: Record<string, unknown>,
   environmentId?: string | null,
@@ -9068,9 +9039,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             companyId: agent.companyId,
           },
           recorder: workspaceOperationRecorder,
-        }) ?? buildRealizedExecutionWorkspaceFromPersisted({
-          base: executionWorkspaceBase,
-          workspace: existingExecutionWorkspace,
         })
       : null;
     const executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
