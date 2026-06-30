@@ -1,0 +1,8 @@
+# graphify: commit graph.json/GRAPH_REPORT.md/.graphify_labels.json;
+# ignore the local interpreter pins, the HTML viz, cost accounting, and caches.
+cost.json
+.graphify_python
+.graphify_root
+graph.html
+cache/
+memory/
