@@ -168,6 +168,7 @@ import { runLifecycleHook } from "./lifecycle-hook.js";
 import {
   createCcrotateTierGate,
   createDefaultCcrotateSwitcher,
+  mapAdapterToCcrotateTarget,
   readDefaultCcrotateTierCache,
   type CcrotateTierGate,
 } from "./ccrotate-tier-gate.js";
@@ -8049,6 +8050,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           });
         }
         return { outcome: "not_promoted", run: rescheduled };
+      }
+      const contextSnapshot = parseObject(dueRun.contextSnapshot);
+      const resultJson = parseObject(dueRun.resultJson);
+      const ccrotateTarget =
+        readNonEmptyString(contextSnapshot.ccrotateTarget) ??
+        readNonEmptyString(resultJson.ccrotateTarget) ??
+        mapAdapterToCcrotateTarget(agent.adapterType);
+      if (ccrotateTarget) {
+        try {
+          await recovery.closeRecoveredCcrotateCapacityEscalations({
+            companyId: dueRun.companyId,
+            ccrotateTarget,
+            runId: dueRun.id,
+            now,
+          });
+        } catch (closeError) {
+          logger.warn(
+            { err: closeError, runId: dueRun.id, ccrotateTarget },
+            "ccrotate capacity recovery escalation close failed",
+          );
+        }
       }
     }
 

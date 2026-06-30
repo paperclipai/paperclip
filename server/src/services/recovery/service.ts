@@ -5251,6 +5251,88 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
   }
 
+  async function closeRecoveredCcrotateCapacityEscalations(input: {
+    companyId: string;
+    ccrotateTarget: string;
+    runId: string;
+    now: Date;
+  }): Promise<{ closed: number; issueIds: string[] }> {
+    const openEscalations = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, input.companyId),
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.ccrotateCapacityExhausted),
+          eq(issues.originId, input.ccrotateTarget),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      );
+
+    const issueIds = openEscalations.map((issue) => issue.id);
+    if (issueIds.length === 0) return { closed: 0, issueIds: [] };
+
+    const closedIssueIds: string[] = [];
+    for (const issueId of issueIds) {
+      const updated = await db
+        .update(issues)
+        .set({
+          status: "done",
+          completedAt: input.now,
+          cancelledAt: null,
+          checkoutRunId: null,
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: input.now,
+        })
+        .where(
+          and(
+            eq(issues.id, issueId),
+            eq(issues.companyId, input.companyId),
+            eq(issues.originKind, RECOVERY_ORIGIN_KINDS.ccrotateCapacityExhausted),
+            eq(issues.originId, input.ccrotateTarget),
+            isNull(issues.hiddenAt),
+            notInArray(issues.status, ["done", "cancelled"]),
+          ),
+        )
+        .returning({ id: issues.id })
+        .then((rows) => rows[0] ?? null);
+      if (!updated) continue;
+      closedIssueIds.push(issueId);
+
+      await issuesSvc.addComment(
+        issueId,
+        [
+          "ccrotate pool recovered; closing stale capacity escalation.",
+          "",
+          `- Target: ${input.ccrotateTarget}`,
+          `- Recovery run: \`${input.runId}\``,
+          `- Recovered at: ${input.now.toISOString()}`,
+        ].join("\n"),
+        { runId: input.runId },
+      );
+
+      await logActivity(db, {
+        companyId: input.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: input.runId,
+        action: "issue.ccrotate_capacity_recovered",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          source: "recovery.close_recovered_ccrotate_capacity_escalations",
+          ccrotateTarget: input.ccrotateTarget,
+        },
+      });
+    }
+
+    return { closed: closedIssueIds.length, issueIds: closedIssueIds };
+  }
+
   // Backstop sweeper: clears stale lock columns on issues whose checkoutRunId
   // or executionRunId points at a heartbeat_runs row that is either missing or
   // in a terminal status. Provides self-heal for stale locks that fell outside
@@ -5362,6 +5444,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   return {
     buildRunOutputSilence,
+    closeRecoveredCcrotateCapacityEscalations,
     escalateCcrotateCapacityExhausted,
     escalateStrandedRecoveryIssueInPlace,
     escalateStrandedAssignedIssue,

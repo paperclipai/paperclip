@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  issueComments,
   issues,
 } from "@paperclipai/db";
 import {
@@ -182,7 +183,7 @@ describeEmbeddedPostgres("heartbeat ccrotate capacity-defer → scheduled retry"
   });
 
   it("promotes the scheduled capacity retry when due and capacity has returned", async () => {
-    const { agentId } = await seedAgent();
+    const { companyId, agentId } = await seedAgent();
     const resumeAt = new Date("2026-04-20T03:02:00.000Z");
     // Defer with an exhausted gate to create the scheduled_retry row...
     const deferring = heartbeatService(db, {
@@ -194,6 +195,17 @@ describeEmbeddedPostgres("heartbeat ccrotate capacity-defer → scheduled retry"
     // Before due: still parked.
     const early = await deferring.promoteDueScheduledRetries(new Date("2026-04-20T03:01:59.000Z"));
     expect(early.promoted).toBe(0);
+
+    const escalationId = randomUUID();
+    await db.insert(issues).values({
+      id: escalationId,
+      companyId,
+      title: "ccrotate pool exhausted — claude",
+      status: "todo",
+      priority: "high",
+      originKind: "ccrotate_capacity_exhausted",
+      originId: "claude",
+    });
 
     // Due + capacity recovered: a fresh instance whose gate now allows promotes it.
     const recovered = heartbeatService(db, {
@@ -209,6 +221,35 @@ describeEmbeddedPostgres("heartbeat ccrotate capacity-defer → scheduled retry"
       .where(eq(heartbeatRuns.agentId, agentId))
       .then((rows) => rows[0] ?? null);
     expect(promoted?.status).toBe("queued");
+
+    const closedEscalation = await db
+      .select({ status: issues.status, completedAt: issues.completedAt })
+      .from(issues)
+      .where(eq(issues.id, escalationId))
+      .then((rows) => rows[0] ?? null);
+    expect(closedEscalation?.status, "recovered pool closes the stale escalation").toBe("done");
+    expect(closedEscalation?.completedAt, "closed escalation records completion time").not.toBeNull();
+
+    const recoveryComment = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, escalationId))
+      .then((rows) => rows[0] ?? null);
+    expect(recoveryComment?.body).toContain("ccrotate pool recovered");
+
+    // Closing the stale escalation removes it from the partial unique index so
+    // a later real outage for the same pool can open a fresh issue.
+    await expect(
+      db.insert(issues).values({
+        id: randomUUID(),
+        companyId,
+        title: "ccrotate pool exhausted — claude",
+        status: "todo",
+        priority: "high",
+        originKind: "ccrotate_capacity_exhausted",
+        originId: "claude",
+      }),
+    ).resolves.toBeDefined();
   });
 
   it("re-defers with backoff instead of promoting when capacity is still exhausted at promotion", async () => {
