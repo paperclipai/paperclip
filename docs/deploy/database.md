@@ -75,3 +75,18 @@ export function createDb(url: string) {
 | `postgres://...supabase.com...` | Hosted Supabase |
 
 The Drizzle schema (`packages/db/src/schema/`) is the same regardless of mode.
+
+## Notable migrations
+
+If you're upgrading an instance, these migrations are non-trivial and worth reading
+before applying:
+
+- `0125_heartbeat_runs_detoast_generated_columns.sql` — adds 13 STORED generated
+  columns on `heartbeat_runs` (8 from `context_snapshot`, 5 from `result_json`) and
+  a partial B-tree index `heartbeat_runs_context_issue_id_idx`. The list/poll
+  query stops paying the TOAST detoast + JSONB `->>` cost per row. No backfill
+  required — generated columns populate lazily on each INSERT/UPDATE and on first
+  read for existing rows. If you have a very large `heartbeat_runs` table, watch
+  the first `ALTER TABLE` for lock contention; consider running it during a low-
+  traffic window. (Companion diagnostic: `pg_stat_statements` for the heartbeat
+  list query should drop from ~60s mean to tens of ms.)

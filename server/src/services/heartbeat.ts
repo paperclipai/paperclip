@@ -1457,24 +1457,34 @@ const heartbeatRunSummaryListColumns = {
   resultJson: sql<Record<string, unknown> | null>`NULL`.as("resultJson"),
 } as const;
 
+// Detoast mirror columns: read scalar projections of `context_snapshot` as
+// ordinary (non-TOASTed) columns. Defined in
+// packages/db/src/migrations/0124_heartbeat_runs_detoast_generated_columns.sql.
 const heartbeatRunListContextColumns = {
-  contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("contextIssueId"),
-  contextTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskId'`.as("contextTaskId"),
-  contextTaskKey: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskKey'`.as("contextTaskKey"),
-  contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
-  contextWakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as("contextWakeCommentId"),
-  contextWakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeReason'`.as("contextWakeReason"),
-  contextWakeSource: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeSource'`.as("contextWakeSource"),
-  contextWakeTriggerDetail: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeTriggerDetail'`.as("contextWakeTriggerDetail"),
+  contextIssueId: heartbeatRuns.contextIssueId,
+  contextTaskId: heartbeatRuns.contextTaskId,
+  contextTaskKey: heartbeatRuns.contextTaskKey,
+  contextCommentId: heartbeatRuns.contextCommentId,
+  contextWakeCommentId: heartbeatRuns.contextWakeCommentId,
+  contextWakeReason: heartbeatRuns.contextWakeReason,
+  contextWakeSource: heartbeatRuns.contextWakeSource,
+  contextWakeTriggerDetail: heartbeatRuns.contextWakeTriggerDetail,
 } as const;
 
 const heartbeatRunListResultColumns = {
-  resultSummary: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'summary', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultSummary"),
-  resultResult: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultResult"),
-  resultMessage: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultMessage"),
-  resultError: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultError"),
+  // Detoast mirror columns: full scalar projections of `result_json` (no
+  // truncation at the column level; consumers may still `left(...)` if they
+  // need bounded output).
+  resultSummary: heartbeatRuns.resultSummary,
+  resultResult: heartbeatRuns.resultResult,
+  resultMessage: heartbeatRuns.resultMessage,
+  resultError: heartbeatRuns.resultError,
+  resultCostUsd: heartbeatRuns.resultCostUsd,
+  // Legacy aliases kept for backwards-compatible list response shape. They
+  // are not generated columns because the spec only asks for `cost_usd`;
+  // these are minor extra JSONB ->> extractions on the much-smaller
+  // result_json and do not detoast context_snapshot.
   resultTotalCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'total_cost_usd'`.as("resultTotalCostUsd"),
-  resultCostUsd: sql<string | null>`${heartbeatRuns.resultJson} ->> 'cost_usd'`.as("resultCostUsd"),
   resultCostUsdCamel: sql<string | null>`${heartbeatRuns.resultJson} ->> 'costUsd'`.as("resultCostUsdCamel"),
 } as const;
 
@@ -1551,8 +1561,8 @@ const heartbeatRunIssueSummaryColumns = {
   status: heartbeatRuns.status,
   invocationSource: heartbeatRuns.invocationSource,
   triggerDetail: heartbeatRuns.triggerDetail,
-  contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
-  contextWakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as("contextWakeCommentId"),
+  contextCommentId: heartbeatRuns.contextCommentId,
+  contextWakeCommentId: heartbeatRuns.contextWakeCommentId,
   startedAt: heartbeatRuns.startedAt,
   finishedAt: heartbeatRuns.finishedAt,
   createdAt: heartbeatRuns.createdAt,
@@ -1568,7 +1578,7 @@ const heartbeatRunIssueSummaryColumns = {
   lastOutputSeq: heartbeatRuns.lastOutputSeq,
   lastOutputStream: heartbeatRuns.lastOutputStream,
   lastOutputBytes: heartbeatRuns.lastOutputBytes,
-  issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+  issueId: heartbeatRuns.contextIssueId,
 } as const;
 
 function appendExcerpt(prev: string, chunk: string) {

@@ -400,7 +400,6 @@ export function activityService(db: Db) {
           continuationAttempt: heartbeatRuns.continuationAttempt,
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
-          contextSnapshot: heartbeatRuns.contextSnapshot,
         })
         .from(heartbeatRuns)
         .innerJoin(
@@ -414,7 +413,10 @@ export function activityService(db: Db) {
           and(
             eq(heartbeatRuns.companyId, companyId),
             or(
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+              // Detoast mirror column on `heartbeat_runs` (see migration 0124).
+              // Indexed via `heartbeat_runs_context_issue_id_idx` so this filter
+              // is a heap or index scan, not a JSONB ->> extraction.
+              eq(heartbeatRuns.contextIssueId, issueId),
               sql`exists (
                 select 1
                 from ${activityLog}
