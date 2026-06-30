@@ -36,7 +36,7 @@ import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
-import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
+import { ISSUE_EXECUTION_LOCK_TTL_MS, TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
@@ -3891,10 +3891,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   // Backstop sweeper: clears stale lock columns on issues whose checkoutRunId
   // or executionRunId points at a heartbeat_runs row that is either missing or
-  // in a terminal status. Provides self-heal for stale locks that fell outside
+  // in a terminal status or has not updated within the execution lock TTL.
+  // Provides self-heal for stale locks that fell outside
   // releaseIssueExecutionAndPromote / clearCheckoutRunIfTerminal / adoption.
   // Idempotent and safe: clears at most one row's worth of lock columns per
-  // candidate, and only when the referenced run row is unambiguously terminal.
+  // candidate, and only when the referenced run row is unambiguously dead.
   async function sweepStaleIssueLocks() {
     const result = {
       cleared: 0,
@@ -3923,18 +3924,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const runRows =
       referencedRunIds.length > 0
         ? await db
-            .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+            .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
             .from(heartbeatRuns)
             .where(inArray(heartbeatRuns.id, referencedRunIds))
         : [];
-    const runStatusById = new Map<string, string>();
-    for (const row of runRows) runStatusById.set(row.id, row.status);
+    const runById = new Map<string, { status: string; updatedAt: Date }>();
+    for (const row of runRows) runById.set(row.id, row);
 
     const isCleanable = (runId: string | null) => {
       if (!runId) return true;
-      const status = runStatusById.get(runId);
-      if (!status) return true; // missing run row → no real claim
-      return TERMINAL_HEARTBEAT_RUN_STATUSES.has(status);
+      const run = runById.get(runId);
+      if (!run) return true; // missing run row → no real claim
+      if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+      return run.updatedAt.getTime() <= Date.now() - ISSUE_EXECUTION_LOCK_TTL_MS;
     };
 
     for (const issue of candidates) {
@@ -3983,7 +3985,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           source: "recovery.sweep_stale_issue_locks",
           clearedCheckoutRunId: issue.checkoutRunId,
           clearedExecutionRunId: issue.executionRunId,
-          referencedRunStatuses: Object.fromEntries(runStatusById),
+          referencedRunStatuses: Object.fromEntries([...runById].map(([id, run]) => [id, run.status])),
         },
       });
     }
