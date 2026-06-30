@@ -148,11 +148,33 @@ The run response lists each step's created task. Follow the issues on the board
 real output. Group related runs under a **goal** when delivering a larger
 objective.
 
+### 7. Call integrator actions as tools (live APIs)
+
+Every connected integrator exposes its actions as callable tools. Discover them:
+
+```sh
+curl -sS "$PAPERCLIP_API_URL/api/companies/$COMPANY/integrators/tools" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY"   # → { tools: [...] }
+```
+
+Each tool lists its `endpoint` and `body`. Invoke one — credentials live in the
+secrets vault and are injected **server-side**, so you never handle secrets:
+
+```sh
+curl -sS -X POST "$PAPERCLIP_API_URL/api/companies/$COMPANY/integrators/servicenow/run-action" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "action": "incident.create", "inputs": { "short_description": "Laptop won'"'"'t boot" } }'
+```
+
+When a workflow step runs, its task body already lists the integrator tools
+available to the assigned agent — call them directly to do the real work.
+
 ## Notes
 
 - Don't build a parallel tracker. A "factory order" is just an issue (optionally
   under a goal). Lifecycle = issue status + plan decomposition.
-- Integrator actions are the authoring vocabulary; real external API calls are
-  delivered by Paperclip **plugins** (see the plugin system) — connect a plugin
-  for a system when you need live calls rather than agent-performed actions.
+- Integrator credentials are stored in the Paperclip **secrets vault**
+  (`local_encrypted`), never in plaintext config; `run-action` resolves them at
+  call time. Connect an integrator on the Integrators page to supply them.
 - Keep one agent per clear responsibility; grant only the integrators it needs.

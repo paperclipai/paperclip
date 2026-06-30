@@ -1729,6 +1729,35 @@ function resolveManagedSkillsRoot(companyId: string) {
   return path.resolve(resolvePaperclipInstanceRoot(), "skills", companyId);
 }
 
+/**
+ * Bundled skills ship inside the Paperclip repo and are re-seeded on every list
+ * refresh via `ensureBundledSkills`. A plain delete therefore "comes back". To
+ * let operators permanently remove an unwanted bundled skill we keep a tombstone
+ * of suppressed canonical keys per company; `ensureBundledSkills` skips them.
+ */
+function resolveSuppressedBundledSkillsPath(companyId: string) {
+  return path.resolve(resolvePaperclipInstanceRoot(), "skills", companyId, ".suppressed-bundled.json");
+}
+
+async function readSuppressedBundledSkillKeys(companyId: string): Promise<Set<string>> {
+  try {
+    const raw = await fs.readFile(resolveSuppressedBundledSkillsPath(companyId), "utf8");
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed.filter((k): k is string => typeof k === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+async function addSuppressedBundledSkillKey(companyId: string, key: string): Promise<void> {
+  const keys = await readSuppressedBundledSkillKeys(companyId);
+  if (keys.has(key)) return;
+  keys.add(key);
+  const target = resolveSuppressedBundledSkillsPath(companyId);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(target, JSON.stringify([...keys], null, 2), "utf8");
+}
+
 function resolveLocalSkillFilePath(skill: CompanySkill, relativePath: string) {
   const normalized = normalizePortablePath(relativePath);
   const skillDir = normalizeSkillDirectory(skill);
@@ -2151,7 +2180,11 @@ export function companySkillService(db: Db) {
         })))
         .catch(() => [] as ImportedSkill[]);
       if (bundledSkills.length === 0) continue;
-      return upsertImportedSkills(companyId, bundledSkills);
+      // Honor operator deletions: never resurrect a suppressed bundled skill.
+      const suppressed = await readSuppressedBundledSkillKeys(companyId);
+      const allowed = bundledSkills.filter((skill) => !suppressed.has(skill.key));
+      if (allowed.length === 0) return [];
+      return upsertImportedSkills(companyId, allowed);
     }
     return [];
   }
@@ -4435,6 +4468,12 @@ export function companySkillService(db: Db) {
           })),
         },
       );
+    }
+
+    // Bundled skills are re-seeded on every refresh; record a tombstone so the
+    // deletion is permanent rather than bouncing back on the next list call.
+    if (getSkillMeta(skill).sourceKind === "paperclip_bundled") {
+      await addSuppressedBundledSkillKey(companyId, skill.key);
     }
 
     // Delete DB row

@@ -14,10 +14,30 @@ import {
 } from "@paperclipai/shared";
 import { issueService } from "./issues.js";
 import { heartbeatService } from "./heartbeat.js";
+import { integratorsService, type IntegratorAgentTool } from "./integrators.js";
 import { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
 
+/** Render the connected-integrator tool catalog as agent-readable guidance. */
+function integratorToolsSection(tools: IntegratorAgentTool[]): string[] {
+  if (tools.length === 0) return [];
+  const lines = [
+    ``,
+    `## Integrator tools available to you`,
+    `Each tool below is a real, authenticated API call. To invoke one, call the`,
+    `Paperclip API (use the \`paperclip\` skill) — credentials are injected server-side,`,
+    `so you never handle secrets:`,
+    ``,
+  ];
+  for (const tool of tools) {
+    lines.push(`- \`${tool.name}\` — ${tool.description} (${tool.system})`);
+    lines.push(`  - ${tool.endpoint}`);
+    lines.push(`  - body: ${JSON.stringify(tool.body)}`);
+  }
+  return lines;
+}
+
 /** Build the task body an assigned agent reads to perform a workflow step. */
-function stepIssueBody(step: WorkflowStep): string {
+function stepIssueBody(step: WorkflowStep, tools: IntegratorAgentTool[] = []): string {
   const action = getConnectorAction(step.connector, step.action);
   const lines = [
     `Workflow step run by the AI Factory.`,
@@ -29,6 +49,7 @@ function stepIssueBody(step: WorkflowStep): string {
   if (step.config && Object.keys(step.config).length > 0) {
     lines.push(`- Inputs: ${JSON.stringify(step.config)}`);
   }
+  lines.push(...integratorToolsSection(tools));
   return lines.join("\n");
 }
 
@@ -271,6 +292,9 @@ export function agentsStudioService(db: Db) {
       const heartbeat = heartbeatService(db, {
         pluginWorkerManager: deps?.pluginWorkerManager as never,
       });
+      // Surface the connected-integrator tool catalog to every step so assigned
+      // agents can call real APIs autonomously while executing the work.
+      const integratorTools = await integratorsService(db).toolsCatalog(companyId).catch(() => []);
 
       const parent = await issues.create(companyId, {
         title: `Workflow: ${workflow.name}`,
@@ -293,7 +317,7 @@ export function agentsStudioService(db: Db) {
             child = await issues.create(companyId, {
               parentId: parent.id,
               title: step.name,
-              description: stepIssueBody(step),
+              description: stepIssueBody(step, integratorTools),
               status: "todo",
               priority: "medium",
               assigneeAgentId: step.assigneeAgentId ?? null,
@@ -304,7 +328,7 @@ export function agentsStudioService(db: Db) {
             child = await issues.create(companyId, {
               parentId: parent.id,
               title: step.name,
-              description: stepIssueBody(step),
+              description: stepIssueBody(step, integratorTools),
               status: "todo",
               priority: "medium",
               originKind: "ai_factory_workflow_step",

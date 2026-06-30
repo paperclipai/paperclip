@@ -70,6 +70,14 @@ export function agentsStudioRoutes(db: Db, options: { pluginWorkerManager?: unkn
     res.json({ integrator });
   });
 
+  // Agent tool catalog — every action of every connected integrator, described
+  // as a callable tool agents invoke autonomously during a workflow run.
+  router.get("/companies/:companyId/integrators/tools", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json({ tools: await integrators.toolsCatalog(companyId) });
+  });
+
   // Execute a real, live action against the connected system.
   router.post(
     "/companies/:companyId/integrators/:integratorKey/run-action",
