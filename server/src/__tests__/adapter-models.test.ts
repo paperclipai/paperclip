@@ -73,7 +73,7 @@ describe("adapter model listing", () => {
     });
   });
 
-  it("returns claude fallback models including the latest Opus alias when no Anthropic key is available", async () => {
+  it("returns claude fallback models including Sonnet 5 when no Anthropic key is available", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const models = await listAdapterModels("claude_local");
 
@@ -81,8 +81,20 @@ describe("adapter model listing", () => {
     expect(models.some((model) => model.id === "claude-opus-4-8")).toBe(true);
     // Newer flagship models are offered, but Opus 4.8 stays the default (first) option.
     expect(models[0]?.id).toBe("claude-opus-4-8");
+    expect(models.some((model) => model.id === "claude-sonnet-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-fable-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-mythos-5")).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("returns Bedrock-native Claude models including Sonnet 5 when Bedrock is enabled", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const models = await listAdapterModels("claude_local");
+
+    expect(models.some((model) => model.id === "us.anthropic.claude-sonnet-5")).toBe(true);
+    expect(models.every((model) => !model.id.startsWith("claude-"))).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -92,6 +104,7 @@ describe("adapter model listing", () => {
       ok: true,
       json: async () => ({
         data: [
+          { id: "claude-sonnet-5", display_name: "Claude Sonnet 5" },
           { id: "claude-sonnet-4-20250514", display_name: "Claude Sonnet 4" },
           { id: "claude-opus-4-8-20260529", display_name: "Claude Opus 4.8" },
         ],
@@ -103,6 +116,7 @@ describe("adapter model listing", () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(first).toEqual(second);
+    expect(first.some((model) => model.id === "claude-sonnet-5")).toBe(true);
     expect(first.some((model) => model.id === "claude-opus-4-8-20260529")).toBe(true);
     expect(first.some((model) => model.id === "claude-opus-4-8")).toBe(true);
   });

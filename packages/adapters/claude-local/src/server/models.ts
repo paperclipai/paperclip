@@ -10,6 +10,7 @@ const ANTHROPIC_API_VERSION = "2023-06-01";
 /** AWS Bedrock model IDs — region-qualified identifiers required by the Bedrock API. */
 const BEDROCK_MODELS: AdapterModel[] = [
   { id: "us.anthropic.claude-opus-4-8-v1", label: "Bedrock Opus 4.8" },
+  { id: "us.anthropic.claude-sonnet-5", label: "Bedrock Sonnet 5" },
   { id: "us.anthropic.claude-fable-5-v1", label: "Bedrock Fable 5" },
   { id: "us.anthropic.claude-opus-4-6-v1", label: "Bedrock Opus 4.6" },
   { id: "us.anthropic.claude-sonnet-4-5-20250929-v2:0", label: "Bedrock Sonnet 4.5" },
