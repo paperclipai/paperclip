@@ -7,6 +7,7 @@ import type {
   WorkflowRun,
   WorkflowRunDetail,
   WorkflowSchedule,
+  WorkflowInvocationResult,
 } from "@paperclipai/shared";
 import { activityApi } from "./activity";
 import { api } from "./client";
@@ -15,7 +16,24 @@ export interface WorkflowMutationInput {
   title: string;
   description?: string | null;
   status?: string;
+  workflowKey?: string | null;
+  capabilities?: string[];
   runnerConfig: Record<string, unknown>;
+}
+
+export interface WorkflowInvocationInput {
+  sourceRoutineRunId: string;
+  invocation: {
+    contractVersion: "workflow-invocation/v1";
+    target: {
+      workflowId?: string | null;
+      workflowKey?: string | null;
+      capability?: string | null;
+    };
+    payload:
+      | { kind: "markdown"; inputMarkdown: string }
+      | { kind: "json"; inputJson: Record<string, unknown> };
+  };
 }
 
 export interface ResolveWorkflowHandoffInput {
@@ -38,6 +56,8 @@ export const workflowsApi = {
     api.patch<Workflow>(`/workflows/${id}`, data),
   run: (id: string, data: { inputMarkdown: string }) =>
     api.post<WorkflowRun>(`/workflows/${id}/run`, data),
+  invokeFromRoutine: (routineId: string, data: WorkflowInvocationInput) =>
+    api.post<WorkflowInvocationResult>(`/routines/${routineId}/workflow-invocations`, data),
   listSchedules: (workflowId: string) => api.get<WorkflowSchedule[]>(`/workflows/${workflowId}/schedules`),
   createSchedule: (workflowId: string, data: WorkflowScheduleMutationInput) =>
     api.post<WorkflowSchedule>(`/workflows/${workflowId}/schedules`, data),

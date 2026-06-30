@@ -156,6 +156,7 @@ export const portabilityWorkflowManifestEntrySchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().nullable().optional(),
   adkPath: z.string().min(1),
+  capabilities: z.array(z.string().min(1)).optional(),
   workingDirectory: z.string().nullable().optional(),
   command: z.string().nullable().optional(),
   model: z.string().nullable().optional(),

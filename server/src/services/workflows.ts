@@ -1,13 +1,16 @@
 import fs from "node:fs/promises";
-import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   workflowDeliverables,
   workflowHandoffBridges,
   workflowHandoffs,
+  workflowInvocations,
   workflowRunPhases,
   workflowRuns,
   workflows,
+  routines,
+  routineRuns,
 } from "@paperclipai/db";
 import type {
   CreateWorkflow,
@@ -15,6 +18,7 @@ import type {
   ResolveWorkflowHandoff,
   RunWorkflow,
   UpdateWorkflow,
+  WorkflowInvocationTargetSelector,
   Workflow,
   WorkflowDetail,
   WorkflowDeliverableSummary,
@@ -22,6 +26,7 @@ import type {
   WorkflowListItem,
   WorkflowPhase,
   WorkflowPhaseEvent,
+  WorkflowRunInvocationSummary,
   WorkflowRun,
   WorkflowRunConsoleChunk,
   WorkflowRunDetail,
@@ -41,6 +46,11 @@ import {
 } from "./workflows-runtime.js";
 import { workflowHandoffBridgeService } from "./workflow-handoff-bridge.js";
 
+type WorkflowRunLaunchContext = {
+  invocation?: WorkflowRunInvocationSummary | null;
+  invocationInputJson?: Record<string, unknown> | null;
+};
+
 function toWorkflow(row: typeof workflows.$inferSelect): Workflow {
   return {
     id: row.id,
@@ -48,6 +58,8 @@ function toWorkflow(row: typeof workflows.$inferSelect): Workflow {
     title: row.title,
     description: row.description ?? null,
     status: row.status as Workflow["status"],
+    workflowKey: row.workflowKey ?? null,
+    capabilities: Array.isArray(row.capabilities) ? (row.capabilities as string[]) : [],
     runnerType: row.runnerType as "google_adk",
     runnerConfig: (row.runnerConfig as Record<string, unknown> | null) ?? {},
     pipelineDefinition: (row.pipelineDefinition as Workflow["pipelineDefinition"] | null) ?? {
@@ -60,6 +72,57 @@ function toWorkflow(row: typeof workflows.$inferSelect): Workflow {
     updatedByUserId: row.updatedByUserId ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+function normalizeWorkflowKey(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function deriveWorkflowKey(title: string) {
+  const slug = normalizeWorkflowKey(title);
+  if (slug.length > 0) return slug;
+  return "workflow";
+}
+
+function isWorkflowKeyUniqueViolation(error: unknown) {
+  if (!error || typeof error !== "object" || !("code" in error)) return false;
+  const candidate = error as { code?: string; constraint?: string; constraint_name?: string };
+  const constraint = candidate.constraint ?? candidate.constraint_name;
+  return candidate.code === "23505" && constraint === "workflows_company_workflow_key_uq";
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toWorkflowInvocationSummary(row: {
+  id: string;
+  contractVersion: string;
+  inputKind: string;
+  sourceRoutineId: string;
+  sourceRoutineRunId: string;
+  sourceRoutineTitle: string | null;
+  sourceRoutineRunSource: string | null;
+  targetWorkflowId: string;
+  targetWorkflowKey: string | null;
+  targetCapability: string | null;
+}): WorkflowRunInvocationSummary {
+  return {
+    id: row.id,
+    contractVersion: row.contractVersion as WorkflowRunInvocationSummary["contractVersion"],
+    inputKind: row.inputKind as WorkflowRunInvocationSummary["inputKind"],
+    sourceRoutineId: row.sourceRoutineId,
+    sourceRoutineTitle: row.sourceRoutineTitle,
+    sourceRoutineRunId: row.sourceRoutineRunId,
+    sourceRoutineRunSource: row.sourceRoutineRunSource,
+    targetWorkflowId: row.targetWorkflowId,
+    targetWorkflowKey: row.targetWorkflowKey,
+    targetCapability: row.targetCapability,
   };
 }
 
@@ -97,7 +160,7 @@ function readWorkflowRunResultJson(contextSnapshot: Record<string, unknown> | nu
 // Server-side filesystem paths stored in contextSnapshot must not be exposed to clients.
 const CONTEXT_SNAPSHOT_SERVER_KEYS = ["tempRoot", "copiedAgentPath", "runtimeRoot"] as const;
 
-function toWorkflowRun(row: typeof workflowRuns.$inferSelect): WorkflowRun {
+function toWorkflowRun(row: typeof workflowRuns.$inferSelect, invocation: WorkflowRunInvocationSummary | null = null): WorkflowRun {
   const contextSnapshot = (row.contextSnapshot as Record<string, unknown> | null) ?? null;
   let clientContextSnapshot: Record<string, unknown> | null = null;
   if (contextSnapshot !== null) {
@@ -126,6 +189,7 @@ function toWorkflowRun(row: typeof workflowRuns.$inferSelect): WorkflowRun {
     finishedAt: row.finishedAt ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    invocation,
   };
 }
 
@@ -193,7 +257,117 @@ async function selectLatestRunMap(db: Db, workflowIds: string[]) {
   for (const row of runs) {
     map.set(row.workflowId, toWorkflowRun(row));
   }
+  const invocationMap = await selectRunInvocationMap(db, runs.map((row) => row.id));
+  for (const [workflowId, run] of map.entries()) {
+    const invocation = invocationMap.get(run.id) ?? null;
+    if (invocation) {
+      run.invocation = invocation;
+    }
+  }
   return map;
+}
+
+async function selectRunInvocationMap(db: Db, runIds: string[]) {
+  if (runIds.length === 0) return new Map<string, WorkflowRunInvocationSummary>();
+  const rows = await db
+    .select({
+      id: workflowInvocations.id,
+      contractVersion: workflowInvocations.contractVersion,
+      inputKind: workflowInvocations.inputKind,
+      sourceRoutineId: workflowInvocations.sourceRoutineId,
+      sourceRoutineRunId: workflowInvocations.sourceRoutineRunId,
+      sourceRoutineTitle: routines.title,
+      sourceRoutineRunSource: routineRuns.source,
+      targetWorkflowId: workflowInvocations.targetWorkflowId,
+      targetWorkflowKey: workflowInvocations.targetWorkflowKey,
+      targetCapability: workflowInvocations.targetCapability,
+      workflowRunId: workflowInvocations.workflowRunId,
+    })
+    .from(workflowInvocations)
+    .leftJoin(routines, eq(workflowInvocations.sourceRoutineId, routines.id))
+    .leftJoin(routineRuns, eq(workflowInvocations.sourceRoutineRunId, routineRuns.id))
+    .where(inArray(workflowInvocations.workflowRunId, runIds));
+  const map = new Map<string, WorkflowRunInvocationSummary>();
+  for (const row of rows) {
+    if (!row.workflowRunId) continue;
+    map.set(row.workflowRunId, toWorkflowInvocationSummary(row));
+  }
+  return map;
+}
+
+async function ensureUniqueWorkflowKey(
+  db: Db,
+  companyId: string,
+  desiredKey: string,
+  excludeWorkflowId?: string | null,
+) {
+  const baseKey = normalizeWorkflowKey(desiredKey) || "workflow";
+  const rows = await db
+    .select({ workflowKey: workflows.workflowKey })
+    .from(workflows)
+    .where(and(
+      eq(workflows.companyId, companyId),
+      excludeWorkflowId ? notInArray(workflows.id, [excludeWorkflowId]) : sql`true`,
+      isNotNull(workflows.workflowKey),
+    ));
+  const taken = new Set(rows.map((row) => row.workflowKey).filter((value): value is string => typeof value === "string" && value.length > 0));
+  if (!taken.has(baseKey)) return baseKey;
+  for (let suffix = 2; suffix < 1_000; suffix += 1) {
+    const candidate = `${baseKey}-${suffix}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  throw unprocessable("Unable to allocate a unique workflow key");
+}
+
+export async function resolveWorkflowByInvocationTarget(
+  db: Db,
+  companyId: string,
+  target: WorkflowInvocationTargetSelector,
+) {
+  if (target.workflowId) {
+    const row = await db
+      .select()
+      .from(workflows)
+      .where(and(eq(workflows.id, target.workflowId), eq(workflows.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!row) {
+      throw unprocessable("Workflow id not found for this company");
+    }
+    return row;
+  }
+
+  const workflowKey = target.workflowKey?.trim() || null;
+  if (workflowKey) {
+    const row = await db
+      .select()
+      .from(workflows)
+      .where(and(eq(workflows.companyId, companyId), eq(workflows.workflowKey, workflowKey)))
+      .then((rows) => rows[0] ?? null);
+    if (!row) {
+      throw unprocessable("Workflow key not found for this company");
+    }
+    return row;
+  }
+
+  const capability = target.capability?.trim() || null;
+  if (capability) {
+    const rows = await db
+      .select()
+      .from(workflows)
+      .where(and(
+        eq(workflows.companyId, companyId),
+        sql`${workflows.capabilities} @> ${JSON.stringify([capability])}::jsonb`,
+      ));
+    if (rows.length === 0) {
+      throw unprocessable("No workflow matches the requested capability");
+    }
+    if (rows.length > 1) {
+      throw unprocessable("Capability selector is ambiguous; provide a workflow key or workflow id");
+    }
+    return rows[0] ?? null;
+  }
+
+  throw unprocessable("Missing workflow selector");
 }
 
 async function selectCurrentPhaseMap(db: Db, runIds: string[]) {
@@ -370,6 +544,7 @@ export function workflowService(db: Db) {
       workflow: Workflow;
       analysis: Awaited<ReturnType<typeof analyzeWorkflowProject>>;
     },
+    launchContext?: WorkflowRunLaunchContext,
   ) {
     const runRow = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId)).then((rows) => rows[0] ?? null);
     if (!runRow) return;
@@ -405,6 +580,16 @@ export function workflowService(db: Db) {
       stdoutExcerpt: "",
       stderrExcerpt: "",
       resultJson: null,
+      ...(launchContext?.invocation
+        ? {
+            invocation: {
+              ...launchContext.invocation,
+              inputMarkdown: runRow.inputMarkdown,
+              inputJson: launchContext.invocationInputJson ?? null,
+              contractVersion: launchContext.invocation.contractVersion,
+            },
+          }
+        : {}),
     };
 
     // try/finally starts here — before the DB update — so that temp directories
@@ -578,6 +763,61 @@ export function workflowService(db: Db) {
     }
   }
 
+  async function launchWorkflowRun(
+    workflow: Workflow,
+    analysis: Awaited<ReturnType<typeof analyzeWorkflowProject>>,
+    inputMarkdown: string,
+    launchContext?: WorkflowRunLaunchContext,
+  ) {
+    const runRow = await db.insert(workflowRuns).values({
+      companyId: workflow.companyId,
+      workflowId: workflow.id,
+      status: "queued",
+      inputMarkdown,
+    }).returning().then((rows) => rows[0] ?? null);
+    if (!runRow) throw unprocessable("Failed to create workflow run");
+    const phases = analysis.pipelineDefinition.phases;
+    if (phases.length > 0) {
+      try {
+        await db.insert(workflowRunPhases).values(
+          phases.map((phase: typeof phases[number]) => ({
+            companyId: workflow.companyId,
+            workflowRunId: runRow.id,
+            phaseKey: phase.key,
+            label: phase.label,
+            kind: phase.kind,
+            ordinal: phase.ordinal,
+            status: "idle",
+            metadata: {
+              filePath: phase.filePath,
+              functionName: phase.functionName,
+              parentKey: phase.parentKey ?? null,
+              depth: phase.depth ?? 0,
+              agentName: phase.agentName ?? null,
+              description: phase.description ?? null,
+            },
+          })),
+        );
+      } catch (err) {
+        await db.delete(workflowRuns).where(eq(workflowRuns.id, runRow.id)).catch(() => {});
+        throw err;
+      }
+    }
+    void executeRun(runRow.id, {
+      workflow,
+      analysis,
+    }, launchContext).catch((err) => {
+      void db.update(workflowRuns).set({
+        status: "failed",
+        error: err instanceof Error ? err.message : String(err),
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(and(eq(workflowRuns.id, runRow.id), notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled"])));
+      logger.error({ err, runId: runRow.id, workflowId: workflow.id }, "workflow execution failed");
+    });
+    return toWorkflowRun(runRow, launchContext?.invocation ?? null);
+  }
+
   return {
     failInterruptedActiveRuns: async () => {
       const now = new Date();
@@ -653,6 +893,7 @@ export function workflowService(db: Db) {
         .where(eq(workflowRuns.workflowId, id))
         .orderBy(desc(workflowRuns.createdAt), desc(workflowRuns.id))
         .limit(WORKFLOW_DETAIL_RUN_LIMIT);
+      const invocationMap = await selectRunInvocationMap(db, runs.map((run) => run.id));
       const latestDeliverable = await db
         .select()
         .from(workflowDeliverables)
@@ -662,24 +903,37 @@ export function workflowService(db: Db) {
         .then((rows) => rows[0] ?? null);
       return {
         ...workflow,
-        latestRun: runs[0] ? toWorkflowRun(runs[0]) : null,
-        runs: runs.map(toWorkflowRun),
+        latestRun: runs[0] ? toWorkflowRun(runs[0], invocationMap.get(runs[0].id) ?? null) : null,
+        runs: runs.map((run) => toWorkflowRun(run, invocationMap.get(run.id) ?? null)),
         latestDeliverable: latestDeliverable ? toWorkflowDeliverableSummary(latestDeliverable) : null,
       };
     },
 
     create: async (companyId: string, input: CreateWorkflow, actor: { userId: string | null }) => {
-      const inserted = await db.insert(workflows).values({
-        companyId,
-        title: input.title,
-        description: input.description ?? null,
-        status: input.status ?? "active",
-        runnerType: "google_adk",
-        runnerConfig: input.runnerConfig,
-        pipelineDefinition: {},
-        createdByUserId: actor.userId ?? "board",
-        updatedByUserId: actor.userId ?? "board",
-      }).returning().then((rows) => rows[0] ?? null);
+      const workflowKey = input.workflowKey === undefined
+        ? await ensureUniqueWorkflowKey(db, companyId, deriveWorkflowKey(input.title))
+        : input.workflowKey === null
+          ? null
+          : await ensureUniqueWorkflowKey(db, companyId, input.workflowKey);
+      let inserted;
+      try {
+        inserted = await db.insert(workflows).values({
+          companyId,
+          title: input.title,
+          description: input.description ?? null,
+          status: input.status ?? "active",
+          workflowKey,
+          capabilities: input.capabilities ?? [],
+          runnerType: "google_adk",
+          runnerConfig: input.runnerConfig,
+          pipelineDefinition: {},
+          createdByUserId: actor.userId ?? "board",
+          updatedByUserId: actor.userId ?? "board",
+        }).returning().then((rows) => rows[0] ?? null);
+      } catch (error) {
+        if (!isWorkflowKeyUniqueViolation(error)) throw error;
+        throw unprocessable("Workflow key already exists. Please retry.");
+      }
       if (!inserted) throw unprocessable("Failed to create workflow");
       try {
         const refreshed = await refreshWorkflowAnalysis(inserted);
@@ -700,14 +954,24 @@ export function workflowService(db: Db) {
             ...existingRunnerConfig,
             ...patch.runnerConfig,
           };
-      const updated = await db.update(workflows).set({
-        ...(patch.title !== undefined ? { title: patch.title } : {}),
-        ...(patch.description !== undefined ? { description: patch.description } : {}),
-        ...(patch.status !== undefined ? { status: patch.status } : {}),
-        ...(nextRunnerConfig !== undefined ? { runnerConfig: nextRunnerConfig } : {}),
-        updatedByUserId: actor.userId ?? "board",
-        updatedAt: new Date(),
-      }).where(eq(workflows.id, id)).returning().then((rows) => rows[0] ?? null);
+      let updated;
+      try {
+        updated = await db.update(workflows).set({
+          ...(patch.title !== undefined ? { title: patch.title } : {}),
+          ...(patch.description !== undefined ? { description: patch.description } : {}),
+          ...(patch.status !== undefined ? { status: patch.status } : {}),
+          ...(patch.workflowKey !== undefined
+            ? { workflowKey: patch.workflowKey === null ? null : await ensureUniqueWorkflowKey(db, existing.companyId, patch.workflowKey, existing.id) }
+            : {}),
+          ...(patch.capabilities !== undefined ? { capabilities: patch.capabilities } : {}),
+          ...(nextRunnerConfig !== undefined ? { runnerConfig: nextRunnerConfig } : {}),
+          updatedByUserId: actor.userId ?? "board",
+          updatedAt: new Date(),
+        }).where(eq(workflows.id, id)).returning().then((rows) => rows[0] ?? null);
+      } catch (error) {
+        if (!isWorkflowKeyUniqueViolation(error)) throw error;
+        throw unprocessable("Workflow key already exists. Please retry.");
+      }
       if (!updated) return null;
       const shouldRefresh = patch.runnerConfig !== undefined
         && typeof patch.runnerConfig.agentPath === "string"
@@ -724,53 +988,23 @@ export function workflowService(db: Db) {
       }
       assertWorkflowRuntimeJwtConfigured();
       const refreshed = await refreshWorkflowAnalysis(workflowRow);
-      const runRow = await db.insert(workflowRuns).values({
-        companyId: workflowRow.companyId,
-        workflowId,
-        status: "queued",
-        inputMarkdown: input.inputMarkdown,
-      }).returning().then((rows) => rows[0] ?? null);
-      if (!runRow) throw unprocessable("Failed to create workflow run");
-      const phases = refreshed.analysis.pipelineDefinition.phases;
-      if (phases.length > 0) {
-        try {
-          await db.insert(workflowRunPhases).values(
-            phases.map((phase: typeof phases[number]) => ({
-              companyId: workflowRow.companyId,
-              workflowRunId: runRow.id,
-              phaseKey: phase.key,
-              label: phase.label,
-              kind: phase.kind,
-              ordinal: phase.ordinal,
-              status: "idle",
-              metadata: {
-                filePath: phase.filePath,
-                functionName: phase.functionName,
-                parentKey: phase.parentKey ?? null,
-                depth: phase.depth ?? 0,
-                agentName: phase.agentName ?? null,
-                description: phase.description ?? null,
-              },
-            })),
-          );
-        } catch (err) {
-          await db.delete(workflowRuns).where(eq(workflowRuns.id, runRow.id)).catch(() => {});
-          throw err;
-        }
+      return launchWorkflowRun(refreshed.workflow, refreshed.analysis, input.inputMarkdown);
+    },
+
+    runInvocation: async (
+      workflowId: string,
+      input: { inputMarkdown: string; invocation: WorkflowRunLaunchContext["invocation"]; invocationInputJson?: Record<string, unknown> | null },
+    ) => {
+      const workflowRow = await db.select().from(workflows).where(eq(workflows.id, workflowId)).then((rows) => rows[0] ?? null);
+      if (!workflowRow) {
+        throw unprocessable("Workflow not found");
       }
-      void executeRun(runRow.id, {
-        workflow: refreshed.workflow,
-        analysis: refreshed.analysis,
-      }).catch((err) => {
-        void db.update(workflowRuns).set({
-          status: "failed",
-          error: err instanceof Error ? err.message : String(err),
-          finishedAt: new Date(),
-          updatedAt: new Date(),
-        }).where(and(eq(workflowRuns.id, runRow.id), notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled"])));
-        logger.error({ err, runId: runRow.id, workflowId }, "workflow execution failed");
+      assertWorkflowRuntimeJwtConfigured();
+      const refreshed = await refreshWorkflowAnalysis(workflowRow);
+      return launchWorkflowRun(refreshed.workflow, refreshed.analysis, input.inputMarkdown, {
+        invocation: input.invocation ?? null,
+        invocationInputJson: input.invocationInputJson ?? null,
       });
-      return toWorkflowRun(runRow);
     },
 
     getRunDetail: async (runId: string): Promise<WorkflowRunDetail | null> => {
@@ -778,6 +1012,7 @@ export function workflowService(db: Db) {
       if (!runRow) return null;
       const workflowRow = await db.select().from(workflows).where(eq(workflows.id, runRow.workflowId)).then((rows) => rows[0] ?? null);
       if (!workflowRow) return null;
+      const invocation = (await selectRunInvocationMap(db, [runId])).get(runId) ?? null;
       const phases = await db.select().from(workflowRunPhases).where(eq(workflowRunPhases.workflowRunId, runId)).orderBy(asc(workflowRunPhases.ordinal));
       const handoffs = await db.select().from(workflowHandoffs).where(eq(workflowHandoffs.workflowRunId, runId)).orderBy(asc(workflowHandoffs.createdAt));
       const handoffIds = handoffs.map((h) => h.id);
@@ -801,7 +1036,7 @@ export function workflowService(db: Db) {
       );
       const deliverables = await db.select().from(workflowDeliverables).where(eq(workflowDeliverables.workflowRunId, runId)).orderBy(desc(workflowDeliverables.createdAt));
       return {
-        ...toWorkflowRun(runRow),
+        ...toWorkflowRun(runRow, invocation),
         workflow: {
           id: workflowRow.id,
           title: workflowRow.title,

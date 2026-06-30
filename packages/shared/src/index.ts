@@ -57,6 +57,7 @@ export {
   WORKFLOW_PHASE_STATUSES,
   WORKFLOW_HANDOFF_KINDS,
   WORKFLOW_HANDOFF_STATUSES,
+  WORKFLOW_INVOCATION_CONTRACT_VERSION,
   PAUSE_REASONS,
   PROJECT_COLORS,
   APPROVAL_TYPES,
@@ -165,6 +166,7 @@ export {
   type WorkflowPhaseStatus,
   type WorkflowHandoffKind,
   type WorkflowHandoffStatus,
+  type WorkflowInvocationContractVersion,
   type PauseReason,
   type ApprovalType,
   type ApprovalStatus,
@@ -548,6 +550,7 @@ export type {
   WorkflowRunUsage,
   WorkflowRunConsoleChunk,
   WorkflowRun,
+  WorkflowRunInvocationSummary,
   WorkflowPhase,
   WorkflowHandoff,
   WorkflowDeliverableSummary,
@@ -555,6 +558,14 @@ export type {
   WorkflowRunDetail,
   WorkflowListItem,
   WorkflowDetail,
+} from "./types/index.js";
+export type {
+  WorkflowInvocationTargetSelector,
+  WorkflowInvocationMarkdownPayload,
+  WorkflowInvocationJsonPayload,
+  WorkflowInvocationPayload,
+  WorkflowInvocationEnvelope,
+  WorkflowInvocationResult,
 } from "./types/index.js";
 export {
   isIssueArtifactWorkProductMetadata,
@@ -781,6 +792,7 @@ export {
   workflowPipelineDefinitionSchema,
   workflowPromptTemplateSchema,
   workflowRunnerConfigSchema,
+  routineWorkflowInvocationRequestSchema,
   createWorkflowSchema,
   createWorkflowScheduleSchema,
   updateWorkflowSchema,

@@ -1416,6 +1416,9 @@ export function WorkflowDetail() {
               </CardContent>
             </Card>
 
+            {runDetail?.invocation ? (
+              <WorkflowInvocationCard runDetail={runDetail} />
+            ) : null}
             <WorkflowRunConsoleCard runDetail={runDetail} />
 
             <RunHistoryCard
@@ -1855,6 +1858,82 @@ function WorkflowRunConsoleCard({
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+function WorkflowInvocationCard({
+  runDetail,
+}: {
+  runDetail: WorkflowRunDetail | null;
+}) {
+  const invocation = runDetail?.invocation ?? null;
+  return (
+    <Card className={workflowPanelClassName}>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+          <Repeat className="h-4 w-4" />
+          Invocation bridge
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        {!runDetail ? (
+          <div className="text-muted-foreground">
+            Run a workflow to inspect the originating routine and contract.
+          </div>
+        ) : invocation ? (
+          <>
+            <div className="grid gap-2 md:grid-cols-2">
+              <InvocationField
+                label="Source routine"
+                value={invocation.sourceRoutineTitle ?? invocation.sourceRoutineId}
+              />
+              <InvocationField
+                label="Routine run"
+                value={invocation.sourceRoutineRunId}
+              />
+              <InvocationField
+                label="Contract"
+                value={invocation.contractVersion}
+              />
+              <InvocationField
+                label="Payload kind"
+                value={invocation.inputKind === "json" ? "JSON" : "Markdown"}
+              />
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              <InvocationField
+                label="Target workflow key"
+                value={invocation.targetWorkflowKey ?? "Explicit workflow id"}
+              />
+              <InvocationField
+                label="Target capability"
+                value={invocation.targetCapability ?? "None"}
+              />
+            </div>
+            {invocation.sourceRoutineRunSource ? (
+              <div className="rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-xs text-muted-foreground">
+                Routed from routine run source: {invocation.sourceRoutineRunSource}
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <div className="rounded-xl border border-border/70 bg-background/70 px-3 py-2 text-muted-foreground">
+            This run was started manually or from a schedule. No routine bridge record is attached.
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function InvocationField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-border/70 bg-background/70 px-3 py-2">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+        {label}
+      </div>
+      <div className="mt-1 break-words text-sm text-foreground">{value}</div>
+    </div>
   );
 }
 

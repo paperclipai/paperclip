@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   createRoutineSchema,
   createRoutineTriggerSchema,
+  routineWorkflowInvocationRequestSchema,
   rotateRoutineTriggerSecretSchema,
   runRoutineSchema,
   updateRoutineSchema,
@@ -10,7 +11,7 @@ import {
 } from "@paperclipai/shared";
 import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { accessService, logActivity, routineService } from "../services/index.js";
+import { accessService, logActivity, routineService, workflowInvocationService } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { forbidden, unauthorized } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -18,6 +19,7 @@ import { getTelemetryClient } from "../telemetry.js";
 export function routineRoutes(db: Db) {
   const router = Router();
   const svc = routineService(db);
+  const invocationSvc = workflowInvocationService(db);
   const access = accessService(db);
 
   async function assertBoardCanAssignTasks(req: Request, companyId: string) {
@@ -291,6 +293,43 @@ export function routineRoutes(db: Db) {
       details: { routineId: routine.id, source: run.source, status: run.status },
     });
     res.status(202).json(run);
+  });
+
+  router.post("/routines/:id/workflow-invocations", validate(routineWorkflowInvocationRequestSchema), async (req, res) => {
+    const routine = await assertCanManageExistingRoutine(req, req.params.id as string);
+    if (!routine) {
+      res.status(404).json({ error: "Routine not found" });
+      return;
+    }
+    await assertBoardCanAssignTasks(req, routine.companyId);
+    const result = await invocationSvc.invokeFromRoutine({
+      routineId: routine.id,
+      sourceRoutineRunId: req.body.sourceRoutineRunId,
+      envelope: req.body.invocation,
+    });
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: routine.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "workflow.run_started",
+      entityType: "workflow_run",
+      entityId: result.workflowRunId ?? result.id,
+      details: {
+        workflowId: result.targetWorkflowId,
+        workflowRunId: result.workflowRunId,
+        invocationId: result.id,
+        sourceRoutineId: result.sourceRoutineId,
+        sourceRoutineRunId: result.sourceRoutineRunId,
+        contractVersion: result.contractVersion,
+        inputKind: result.inputKind,
+        workflowKey: result.targetWorkflowKey,
+        capability: result.targetCapability,
+      },
+    });
+    res.status(201).json(result);
   });
 
   router.post("/routine-triggers/public/:publicId/fire", async (req, res) => {

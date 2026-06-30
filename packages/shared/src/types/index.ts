@@ -136,6 +136,7 @@ export type {
   WorkflowRunUsage,
   WorkflowRunConsoleChunk,
   WorkflowRun,
+  WorkflowRunInvocationSummary,
   WorkflowPhase,
   WorkflowHandoff,
   WorkflowDeliverableSummary,
@@ -144,6 +145,14 @@ export type {
   WorkflowListItem,
   WorkflowDetail,
 } from "./workflow.js";
+export type {
+  WorkflowInvocationTargetSelector,
+  WorkflowInvocationMarkdownPayload,
+  WorkflowInvocationJsonPayload,
+  WorkflowInvocationPayload,
+  WorkflowInvocationEnvelope,
+  WorkflowInvocationResult,
+} from "./workflow-invocation.js";
 export type {
   Issue,
   IssueAssigneeAdapterOverrides,

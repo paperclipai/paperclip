@@ -1,5 +1,12 @@
 import { z } from "zod";
 import { DELIVERABLE_AUDIENCES, WORKFLOW_STATUSES } from "../constants.js";
+import {
+  workflowInvocationEnvelopeSchema,
+  workflowInvocationJsonPayloadSchema,
+  workflowInvocationMarkdownPayloadSchema,
+  workflowInvocationTargetSelectorSchema,
+  routineWorkflowInvocationRequestSchema,
+} from "./workflow-invocation.js";
 
 export const workflowRunnerTypeSchema = z.literal("google_adk");
 export const workflowStatusSchema = z.enum(["active", "paused", "archived"]);
@@ -54,6 +61,8 @@ export const workflowRunnerConfigSchema = z.object({
   env: z.record(z.string(), z.string()).optional(),
 }).passthrough();
 
+export const workflowCapabilitySchema = z.string().trim().min(1).max(200);
+
 export const workflowPipelinePhaseSchema = z.object({
   key: z.string().trim().min(1).max(255),
   label: z.string().trim().min(1).max(200),
@@ -77,16 +86,32 @@ export const createWorkflowSchema = z.object({
   title: z.string().trim().min(1).max(200),
   description: z.string().nullable().optional(),
   status: workflowStatusSchema.optional().default("active"),
+  workflowKey: z.string().trim().min(1).max(200).optional().nullable(),
+  capabilities: z.array(workflowCapabilitySchema).optional().default([]),
   runnerType: workflowRunnerTypeSchema.optional().default("google_adk"),
   runnerConfig: workflowRunnerConfigSchema,
 });
 
 export type CreateWorkflow = z.infer<typeof createWorkflowSchema>;
 
-export const updateWorkflowSchema = createWorkflowSchema.partial().extend({
+export const updateWorkflowSchema = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+  description: z.string().nullable().optional(),
+  status: workflowStatusSchema.optional(),
+  workflowKey: z.string().trim().min(1).max(200).optional().nullable(),
+  capabilities: z.array(workflowCapabilitySchema).optional(),
+  runnerType: workflowRunnerTypeSchema.optional(),
   runnerConfig: workflowRunnerConfigSchema.partial().optional(),
 });
 export type UpdateWorkflow = z.infer<typeof updateWorkflowSchema>;
+
+export {
+  workflowInvocationEnvelopeSchema,
+  workflowInvocationJsonPayloadSchema,
+  workflowInvocationMarkdownPayloadSchema,
+  workflowInvocationTargetSelectorSchema,
+  routineWorkflowInvocationRequestSchema,
+};
 
 export const runWorkflowSchema = z.object({
   inputMarkdown: z.string().trim().min(1).max(200_000),

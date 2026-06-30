@@ -12,6 +12,8 @@ export interface CompanyPortabilityInclude {
 
 export interface CompanyPortabilityWorkflowManifestEntry {
   title: string;
+  workflowKey?: string | null;
+  capabilities?: string[];
   description: string | null;
   adkPath: string;
   workingDirectory: string | null;

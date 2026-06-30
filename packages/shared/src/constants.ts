@@ -311,6 +311,8 @@ export const WORKFLOW_HANDOFF_KINDS = ["approval", "response"] as const;
 export type WorkflowHandoffKind = (typeof WORKFLOW_HANDOFF_KINDS)[number];
 export const WORKFLOW_HANDOFF_STATUSES = ["pending", "approved", "rejected", "responded", "cancelled"] as const;
 export type WorkflowHandoffStatus = (typeof WORKFLOW_HANDOFF_STATUSES)[number];
+export const WORKFLOW_INVOCATION_CONTRACT_VERSION = "workflow-invocation/v1" as const;
+export type WorkflowInvocationContractVersion = typeof WORKFLOW_INVOCATION_CONTRACT_VERSION;
 
 export const PAUSE_REASONS = ["manual", "budget", "system"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];

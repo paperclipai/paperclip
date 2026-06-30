@@ -536,6 +536,35 @@ describe("WorkflowDetail page", () => {
     expect(container.textContent).toContain("older stderr");
     expect(container.textContent).toContain("boom");
   });
+
+  it("shows invocation metadata for routine-linked runs", async () => {
+    getRunMock.mockResolvedValueOnce({
+      ...latestRunDetail,
+      invocation: {
+        id: "invocation-1",
+        contractVersion: "workflow-invocation/v1",
+        inputKind: "json",
+        sourceRoutineId: "routine-1",
+        sourceRoutineTitle: "Brief intake",
+        sourceRoutineRunId: "routine-run-1",
+        sourceRoutineRunSource: "manual",
+        targetWorkflowId: "workflow-1",
+        targetWorkflowKey: "brief-generator",
+        targetCapability: "briefing",
+      },
+    });
+
+    await renderAt(container, "/workflows/workflow-1");
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Invocation bridge");
+    expect(container.textContent).toContain("Brief intake");
+    expect(container.textContent).toContain("workflow-invocation/v1");
+    expect(container.textContent).toContain("JSON");
+    expect(container.textContent).toContain("brief-generator");
+    expect(container.textContent).toContain("briefing");
+  });
 });
 
 describe("buildWorkflowGraph", () => {

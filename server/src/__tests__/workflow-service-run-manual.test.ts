@@ -151,6 +151,7 @@ describeEmbeddedPostgres("workflowService.runManual", () => {
 
     const svc = workflowService(db);
     const run = await svc.runManual(workflowId, { inputMarkdown: "generate" });
+    expect(run.invocation).toBeNull();
 
     await vi.waitFor(async () => {
       const updated = await db.select().from(workflowRuns).where(eq(workflowRuns.id, run.id)).then((rows) => rows[0] ?? null);

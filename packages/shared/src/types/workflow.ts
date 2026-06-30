@@ -1,3 +1,7 @@
+import type { WorkflowRunInvocationSummary } from "./workflow-invocation.js";
+
+export type { WorkflowRunInvocationSummary } from "./workflow-invocation.js";
+
 export interface WorkflowPipelinePhase {
   key: string;
   label: string;
@@ -24,6 +28,8 @@ export interface Workflow {
   title: string;
   description: string | null;
   status: string;
+  workflowKey?: string | null;
+  capabilities?: string[];
   runnerType: "google_adk";
   runnerConfig: Record<string, unknown>;
   pipelineDefinition: WorkflowPipelineDefinition;
@@ -60,6 +66,7 @@ export interface WorkflowRun {
   finishedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  invocation?: WorkflowRunInvocationSummary | null;
 }
 
 export interface WorkflowRunConsoleChunk {

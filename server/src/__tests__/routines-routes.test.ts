@@ -82,6 +82,10 @@ const mockAccessService = vi.hoisted(() => ({
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockTrackRoutineCreated = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
+const mockInvokeFromRoutine = vi.hoisted(() => vi.fn());
+const mockWorkflowInvocationService = vi.hoisted(() => vi.fn(() => ({
+  invokeFromRoutine: mockInvokeFromRoutine,
+})));
 
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
@@ -111,6 +115,7 @@ function registerModuleMocks() {
     accessService: () => mockAccessService,
     logActivity: mockLogActivity,
     routineService: () => mockRoutineService,
+    workflowInvocationService: mockWorkflowInvocationService,
   }));
 }
 
@@ -279,6 +284,36 @@ describe("routine routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("tasks:assign");
     expect(mockRoutineService.runRoutine).not.toHaveBeenCalled();
+  });
+
+  it("requires tasks:assign permission to start a workflow invocation from a routine", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/routines/${routineId}/workflow-invocations`)
+      .send({
+        sourceRoutineRunId: "77777777-7777-4777-8777-777777777777",
+        invocation: {
+          contractVersion: "workflow-invocation/v1",
+          target: {
+            workflowId: "88888888-8888-4888-8888-888888888888",
+          },
+          payload: {
+            kind: "markdown",
+            inputMarkdown: "Please do the thing.",
+          },
+        },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("tasks:assign");
+    expect(mockInvokeFromRoutine).not.toHaveBeenCalled();
   });
 
   it("allows routine creation when the board user has tasks:assign", async () => {

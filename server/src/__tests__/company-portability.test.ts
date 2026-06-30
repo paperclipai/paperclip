@@ -2597,7 +2597,9 @@ describe("company portability", () => {
     workflowSvc.list.mockResolvedValueOnce([
       {
         id: "workflow-existing",
-        title: "Content Strategist",
+        title: "Customer Onboarding Workflow v2",
+        workflowKey: "customer-onboarding",
+        capabilities: ["routine_handoff", "workflow_export"],
         description: "Plans content",
         runnerConfig: {
           agentPath: "agents/content-strategist",
@@ -2624,7 +2626,9 @@ describe("company portability", () => {
 
     expect(exported.manifest.workflows).toHaveLength(1);
     expect(exported.manifest.workflows[0]).toMatchObject({
-      title: "Content Strategist",
+      title: "Customer Onboarding Workflow v2",
+      workflowKey: "customer-onboarding",
+      capabilities: ["routine_handoff", "workflow_export"],
       description: "Plans content",
       adkPath: "agents/content-strategist",
       workingDirectory: "/workspace/content",
@@ -2663,8 +2667,10 @@ describe("company portability", () => {
     expect(workflowSvc.create).toHaveBeenCalledWith(
       "company-imported",
       expect.objectContaining({
-        title: "Content Strategist",
+        title: "Customer Onboarding Workflow v2",
         description: "Plans content",
+        workflowKey: "customer-onboarding",
+        capabilities: ["routine_handoff", "workflow_export"],
         status: "active",
         runnerType: "google_adk",
         runnerConfig: expect.objectContaining({
@@ -2689,6 +2695,80 @@ describe("company portability", () => {
   });
 
   it("does not clear existing workflow prompt templates when importing a legacy manifest", async () => {
+    const portability = companyPortabilityService({} as any);
+    const existingWorkflow = {
+      id: "workflow-existing",
+      title: "Content Strategist",
+      description: "Plans content",
+      runnerConfig: {
+        agentPath: "agents/content-strategist",
+        cwd: "/workspace/content",
+        command: "python run.py",
+        model: "gemini-2.5-pro",
+        promptTemplates: [
+          {
+            label: "Keep me",
+            promptMarkdown: "Keep this template on update.",
+          },
+        ],
+      },
+    };
+
+    workflowSvc.list.mockImplementation(async () => [existingWorkflow]);
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: false, workflows: true },
+    });
+
+    const workflowPath = `${exported.manifest.workflows[0].path}/WORKFLOW.yaml`;
+    const legacyWorkflowYaml = [
+      `title: "${existingWorkflow.title}"`,
+      `description: "${existingWorkflow.description}"`,
+      `workflowKey: "legacy-content-strategist"`,
+      `adkPath: "${existingWorkflow.runnerConfig.agentPath}"`,
+      `workingDirectory: "${existingWorkflow.runnerConfig.cwd}"`,
+      `command: "${existingWorkflow.runnerConfig.command}"`,
+      `model: "${existingWorkflow.runnerConfig.model}"`,
+    ].join("\n");
+    const legacyFiles = {
+      ...exported.files,
+      [workflowPath]: legacyWorkflowYaml,
+    };
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: legacyFiles,
+      },
+      include: { company: true, agents: false, projects: false, issues: false, workflows: true },
+      target: {
+        mode: "existing_company",
+        companyId: "company-1",
+      },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(workflowSvc.update).toHaveBeenCalledTimes(1);
+    expect(workflowSvc.update).toHaveBeenCalledWith(
+      "workflow-existing",
+      expect.objectContaining({
+        title: "Content Strategist",
+        description: "Plans content",
+        workflowKey: "legacy-content-strategist",
+        runnerConfig: expect.objectContaining({
+          agentPath: "agents/content-strategist",
+          cwd: "/workspace/content",
+          command: "python run.py",
+          model: "gemini-2.5-pro",
+        }),
+      }),
+      { userId: "user-1" },
+    );
+    expect(workflowSvc.update.mock.calls[0]?.[1]?.runnerConfig).not.toHaveProperty("promptTemplates");
+  });
+
+  it("keeps workflowKey unset when the manifest omits it during restore", async () => {
     const portability = companyPortabilityService({} as any);
     const existingWorkflow = {
       id: "workflow-existing",
@@ -2758,6 +2838,55 @@ describe("company portability", () => {
       { userId: "user-1" },
     );
     expect(workflowSvc.update.mock.calls[0]?.[1]?.runnerConfig).not.toHaveProperty("promptTemplates");
+    expect(workflowSvc.update.mock.calls[0]?.[1]).not.toHaveProperty("workflowKey");
+  });
+
+  it("imports workflows with an empty capabilities array when the manifest omits capabilities", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    workflowSvc.list.mockResolvedValueOnce([
+      {
+        id: "workflow-existing",
+        title: "Capabilityless Workflow",
+        description: "No declared capabilities",
+        runnerConfig: {
+          agentPath: "agents/capabilityless",
+        },
+      },
+    ]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: false, workflows: true },
+    });
+
+    expect(exported.manifest.workflows[0]).not.toHaveProperty("capabilities");
+
+    companySvc.create.mockResolvedValueOnce({ id: "company-imported", name: "Imported Paperclip" });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+
+    await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: exported.rootPath,
+        files: exported.files,
+      },
+      include: { company: true, agents: false, projects: false, issues: false, workflows: true },
+      target: {
+        mode: "new_company",
+        newCompanyName: "Imported Paperclip",
+      },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(workflowSvc.create).toHaveBeenCalledWith(
+      "company-imported",
+      expect.objectContaining({
+        title: "Capabilityless Workflow",
+        capabilities: [],
+      }),
+      { userId: "user-1" },
+    );
   });
 
   it("rejects dangerous adapter types on agent-safe imports", async () => {

@@ -568,6 +568,13 @@
       "when": 1780646400000,
       "tag": "0080_workflow_schedules",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1780732800000,
+      "tag": "0081_workflow_invocations",
+      "breakpoints": true
     }
   ]
 }
