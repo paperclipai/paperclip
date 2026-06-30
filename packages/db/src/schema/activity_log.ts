@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, jsonb, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -33,5 +34,11 @@ export const activityLog = pgTable(
     ),
     runIdIdx: index("activity_log_run_id_idx").on(table.runId),
     entityIdx: index("activity_log_entity_type_id_idx").on(table.entityType, table.entityId),
+    issueEntitySortIdx: index("activity_log_issue_entity_sort_idx")
+      .on(table.entityId, table.companyId, table.createdAt.desc())
+      .where(
+        sql`${table.entityType} = 'issue'
+          and ${table.action} not in ('issue.read_marked', 'issue.read_unmarked', 'issue.inbox_archived', 'issue.inbox_unarchived')`,
+      ),
   }),
 );
