@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gt, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, ilike, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -4850,11 +4850,11 @@ export function issueService(db: Db) {
       const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
       const startsWithPattern = `${escapedSearch}%`;
       const containsPattern = `%${escapedSearch}%`;
-      const titleStartsWithMatch = sql<boolean>`${issues.title} ILIKE ${startsWithPattern} ESCAPE '\\'`;
-      const titleContainsMatch = sql<boolean>`${issues.title} ILIKE ${containsPattern} ESCAPE '\\'`;
-      const identifierStartsWithMatch = sql<boolean>`${issues.identifier} ILIKE ${startsWithPattern} ESCAPE '\\'`;
-      const identifierContainsMatch = sql<boolean>`${issues.identifier} ILIKE ${containsPattern} ESCAPE '\\'`;
-      const descriptionContainsMatch = sql<boolean>`${issues.description} ILIKE ${containsPattern} ESCAPE '\\'`;
+      const titleStartsWithMatch = ilike(issues.title, startsWithPattern);
+      const titleContainsMatch = ilike(issues.title, containsPattern);
+      const identifierStartsWithMatch = ilike(issues.identifier, startsWithPattern);
+      const identifierContainsMatch = ilike(issues.identifier, containsPattern);
+      const descriptionContainsMatch = ilike(issues.description, containsPattern);
       const commentContainsMatch = sql<boolean>`
         EXISTS (
           SELECT 1
@@ -4862,7 +4862,7 @@ export function issueService(db: Db) {
           WHERE ${issueComments.issueId} = ${issues.id}
             AND ${issueComments.companyId} = ${companyId}
             AND ${issueComments.deletedAt} IS NULL
-            AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
+            AND ${ilike(issueComments.body, containsPattern)}
         )
       `;
       if (filters?.descendantOf) {
