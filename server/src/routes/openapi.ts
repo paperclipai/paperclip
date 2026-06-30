@@ -588,6 +588,10 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/issues/{id}/interactions/{interactionId}/respond",
 ]);
 
+const AUTHENTICATED_OPERATIONS = new Set([
+  "GET /api/plugins/rag-health",
+]);
+
 const INSTANCE_ADMIN_OPERATIONS = new Set([
   "POST /api/companies",
   "POST /api/plugins/install",
@@ -673,6 +677,7 @@ function isBoardOnlyOperation(method: string, path: string) {
 function resolveOperationAuthLevel(method: string, path: string): OpenApiAuthLevel {
   const key = operationKey(method, path);
   if (PUBLIC_OPERATIONS.has(key)) return "public";
+  if (AUTHENTICATED_OPERATIONS.has(key)) return "authenticated";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
   if (isBoardOnlyOperation(method, path)) return "board";
   return "authenticated";
@@ -3656,6 +3661,14 @@ registry.registerPath({
   tags: ["plugins"],
   summary: "List active plugin error alerts for paging integrations",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/plugins/rag-health",
+  tags: ["plugins"],
+  summary: "Read memory-plugin and gbrain-context health for RAG routines",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({

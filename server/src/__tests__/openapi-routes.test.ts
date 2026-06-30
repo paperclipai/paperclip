@@ -187,6 +187,14 @@ describe("openapi routes", () => {
       actor: "board",
       instanceAdmin: true,
     });
+    expect(spec.paths["/api/plugins/rag-health"].get.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+      { AgentBearerAuth: [] },
+    ]);
+    expect(spec.paths["/api/plugins/rag-health"].get["x-paperclip-authorization"]).toEqual({
+      actor: "board_or_agent",
+    });
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["403"]).toBeDefined();
     expect(spec.paths["/api/instance/database-backups"].post.responses["201"]).toBeDefined();
