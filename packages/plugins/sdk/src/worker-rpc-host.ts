@@ -93,6 +93,8 @@ import type {
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentProbeParams,
+  ResolveRunContextParams,
+  ResolveRunContextResult,
   PluginInvocationContext,
   WorkerToHostMethodName,
   WorkerToHostMethods,
@@ -1385,6 +1387,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "environmentExecute":
         return handleEnvironmentExecute(params as PluginEnvironmentExecuteParams);
 
+      case "resolveRunContext":
+        return handleResolveRunContext(params as ResolveRunContextParams);
+
       default:
         throw Object.assign(
           new Error(`Unknown method: ${method}`),
@@ -1429,6 +1434,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentDestroyLease) supportedMethods.push("environmentDestroyLease");
     if (plugin.definition.onEnvironmentRealizeWorkspace) supportedMethods.push("environmentRealizeWorkspace");
     if (plugin.definition.onEnvironmentExecute) supportedMethods.push("environmentExecute");
+    if (plugin.definition.onResolveRunContext) supportedMethods.push("resolveRunContext");
 
     return { ok: true, supportedMethods };
   }
@@ -1684,6 +1690,13 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw methodNotImplemented("environmentExecute");
     }
     return plugin.definition.onEnvironmentExecute(params);
+  }
+
+  async function handleResolveRunContext(params: ResolveRunContextParams): Promise<ResolveRunContextResult> {
+    if (!plugin.definition.onResolveRunContext) {
+      throw methodNotImplemented("resolveRunContext");
+    }
+    return plugin.definition.onResolveRunContext(params);
   }
 
   // -----------------------------------------------------------------------
