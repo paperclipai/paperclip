@@ -11,6 +11,7 @@ import {
   asBoolean,
   asNumber,
   asStringArray,
+  parseJson,
   parseObject,
   ensurePathInEnv,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -55,12 +56,20 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function lastNonEmptyLine(text: string): string {
+function lastNonInitStdoutLine(text: string): string {
   const lines = text
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
-  return lines[lines.length - 1] ?? "";
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]!;
+    const parsed = parseJson(line);
+    if (parsed && asString(parsed.type, "") === "system" && asString(parsed.subtype, "") === "init") {
+      continue;
+    }
+    return line;
+  }
+  return "";
 }
 
 function truncateDetail(value: string, max = 240): string {
@@ -69,7 +78,7 @@ function truncateDetail(value: string, max = 240): string {
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string): string | null {
-  const raw = firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
+  const raw = firstNonEmptyLine(stderr) || lastNonInitStdoutLine(stdout);
   if (!raw) return null;
   const clean = raw.replace(/\s+/g, " ").trim();
   const max = 240;
@@ -136,11 +145,12 @@ export async function testEnvironment(
   const hasExplicitClaudeConfigDir = isNonEmpty(env.CLAUDE_CONFIG_DIR);
   if (targetIsRemote && adapterExecutionTargetUsesManagedHome(target) && !hasExplicitClaudeConfigDir) {
     let tempWorkspaceDir: string | null = null;
+    let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
     try {
       const seedDir = await prepareClaudeConfigSeed(process.env, async () => {}, ctx.companyId);
       const managedRemoteCwd = target?.kind === "remote" ? target.remoteCwd : cwd;
       tempWorkspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-envtest-workspace-"));
-      const preparedRuntime = await prepareAdapterExecutionTargetRuntime({
+      preparedRuntime = await prepareAdapterExecutionTargetRuntime({
         runId,
         target,
         adapterKey: "claude",
@@ -188,6 +198,7 @@ export async function testEnvironment(
         detail: err instanceof Error ? err.message : String(err),
       });
     } finally {
+      await preparedRuntime?.restoreWorkspace().catch(() => undefined);
       if (tempWorkspaceDir) {
         await fs.rm(tempWorkspaceDir, { recursive: true, force: true }).catch(() => undefined);
       }
@@ -388,15 +399,15 @@ export async function testEnvironment(
         // Surface the actual failure instead of the leading stream-json
         // `system/init` line: the real error lives in the final `result`
         // event (parsed) or, when the CLI dies before emitting one, the last
-        // stdout line — never the first one `summarizeProbeDetail` returns.
+        // non-init stdout line — never the first one `summarizeProbeDetail`
+        // returns.
+        const stdoutFallback = lastNonInitStdoutLine(probe.stdout);
         const failureDetail =
           (parsed ? describeClaudeFailure(parsed) : null) ||
           (firstNonEmptyLine(probe.stderr)
             ? truncateDetail(firstNonEmptyLine(probe.stderr))
             : "") ||
-          (lastNonEmptyLine(probe.stdout)
-            ? truncateDetail(lastNonEmptyLine(probe.stdout))
-            : "") ||
+          (stdoutFallback ? truncateDetail(stdoutFallback) : "") ||
           detail ||
           "";
         const transient = isClaudeTransientUpstreamError({

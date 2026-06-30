@@ -141,4 +141,23 @@ describe("claude sandbox hello probe diagnostics", () => {
     const failed = result.checks.find((check) => check.code === "claude_hello_probe_failed");
     expect(failed?.detail).toContain("claude crashed unexpectedly");
   });
+
+  it("does not show the system/init event when it is the only stdout line", async () => {
+    probeResult.value = {
+      exitCode: 1,
+      stdout: initLine,
+      stderr: "",
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    const failed = result.checks.find((check) => check.code === "claude_hello_probe_failed");
+    expect(failed?.detail).toBeUndefined();
+  });
 });
