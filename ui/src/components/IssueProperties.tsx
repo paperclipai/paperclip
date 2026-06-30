@@ -1213,8 +1213,8 @@ export function IssueProperties({
     mutationFn: (data: { agentId: string; instructions: string | null }) =>
       issuesApi.upsertWatchdog(issue.id, data),
     onSuccess: (watchdog) => {
-      queryClient.setQueriesData<Issue>({ queryKey: ["issues", "detail"] }, (current) =>
-        current?.id === issue.id ? { ...current, watchdog } : current,
+      queryClient.setQueryData<Issue>(queryKeys.issues.detail(issue.id), (current) =>
+        current ? { ...current, watchdog } : current,
       );
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
       setWatchdogOpen(false);
@@ -1223,8 +1223,8 @@ export function IssueProperties({
   const deleteWatchdog = useMutation({
     mutationFn: () => issuesApi.deleteWatchdog(issue.id),
     onSuccess: () => {
-      queryClient.setQueriesData<Issue>({ queryKey: ["issues", "detail"] }, (current) =>
-        current?.id === issue.id ? { ...current, watchdog: null } : current,
+      queryClient.setQueryData<Issue>(queryKeys.issues.detail(issue.id), (current) =>
+        current ? { ...current, watchdog: null } : current,
       );
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
       setWatchdogOpen(false);

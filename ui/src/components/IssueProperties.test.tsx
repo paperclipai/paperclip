@@ -1881,12 +1881,14 @@ describe("IssueProperties", () => {
     });
     mockAgentsApi.list.mockResolvedValue([watchdogAgent]);
     const onUpdate = vi.fn();
-    const root = renderProperties(container, {
-      issue: createIssue({ watchdog: createWatchdogSummary() }),
+    const issue = createIssue({ watchdog: createWatchdogSummary() });
+    const { root, queryClient } = renderPropertiesWithQueryClient(container, {
+      issue,
       childIssues: [],
       onUpdate,
       inline: true,
     });
+    queryClient.setQueryData(queryKeys.issues.detail(issue.id), issue);
     await flush();
 
     await waitForAssertion(() => {
@@ -1909,6 +1911,8 @@ describe("IssueProperties", () => {
     await flush();
 
     expect(mockIssuesApi.deleteWatchdog).toHaveBeenCalledWith("issue-1");
+    expect(queryClient.getQueryData<Issue>(queryKeys.issues.detail(issue.id))?.watchdog)
+      .toBeNull();
 
     act(() => root.unmount());
   });
