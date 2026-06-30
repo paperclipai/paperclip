@@ -177,19 +177,9 @@ async function probePenstockAnthropicModel(input: {
       signal: controller.signal,
     });
 
-    if (response.status === 429 || response.status === 503) {
+    if (response.status === 401 || response.status === 403 || response.status === 429 || response.status === 503) {
       const text = await response.text().catch(() => "");
       const parsed = parseCapacityRetry(text, response.headers, input.defaultRetryDelayMs, input.now());
-      if (response.status === 429 && !parsed) {
-        input.log.warn(
-          {
-            status: response.status,
-            model: input.model,
-          },
-          "penstock availability probe saw provider 429 without capacity retry signal; failing open",
-        );
-        return { allow: true };
-      }
       const retry = parsed ?? defaultCapacityRetry(input.defaultRetryDelayMs, input.now());
       const result: PenstockAvailabilityGateDenyResult = {
         allow: false,

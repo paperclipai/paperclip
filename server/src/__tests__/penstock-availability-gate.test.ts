@@ -100,7 +100,7 @@ describe("createPenstockAvailabilityGate", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("fails open for provider-shaped Anthropic 429 without a capacity retry signal", async () => {
+  it("defers for provider-shaped Anthropic 429 without a capacity retry signal", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(
         JSON.stringify({
@@ -124,12 +124,48 @@ describe("createPenstockAvailabilityGate", () => {
       env: { ANTHROPIC_API_KEY: "psk_test" },
     });
 
-    expect(result).toEqual({ allow: true });
-    expect(log.warn).toHaveBeenCalledWith(
+    expect(result).toMatchObject({
+      allow: false,
+      provider: "anthropic",
+      reason: "penstock.model_capacity_unavailable",
+      model: "claude-sonnet-4-6[1m]",
+      retryAfterSeconds: 300,
+    });
+    expect(result.allow === false ? result.resumeAt?.toISOString() : null).toBe("2026-06-30T08:05:00.000Z");
+    expect(log.info).toHaveBeenCalledWith(
       expect.objectContaining({ status: 429, model: "claude-sonnet-4-6[1m]" }),
-      "penstock availability probe saw provider 429 without capacity retry signal; failing open",
+      "heartbeat dispatch deferred: penstock model unavailable",
     );
-    expect(log.info).not.toHaveBeenCalled();
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("defers for Penstock auth failures instead of launching doomed runs", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 }));
+    const gate = gateWith(fetchMock as unknown as typeof fetch);
+
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "agent-1",
+      adapterConfig: {
+        model: "claude-sonnet-4-6[1m]",
+        env: { ANTHROPIC_BASE_URL: { value: "https://api.penstock.run/anthropic" } },
+      },
+      now: new Date("2026-06-30T08:00:00.000Z"),
+      env: { ANTHROPIC_API_KEY: "psk_test" },
+    });
+
+    expect(result).toMatchObject({
+      allow: false,
+      provider: "anthropic",
+      reason: "penstock.model_temporarily_unavailable",
+      model: "claude-sonnet-4-6[1m]",
+      retryAfterSeconds: 300,
+    });
+    expect(result.allow === false ? result.resumeAt?.toISOString() : null).toBe("2026-06-30T08:05:00.000Z");
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 401, model: "claude-sonnet-4-6[1m]" }),
+      "heartbeat dispatch deferred: penstock model unavailable",
+    );
   });
 
   it("defers when Penstock reports temporary unavailability", async () => {
