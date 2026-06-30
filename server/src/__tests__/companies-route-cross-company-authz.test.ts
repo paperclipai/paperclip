@@ -290,7 +290,7 @@ describe.sequential("company route cross-company authorization", () => {
     expect(remove.body.error).toContain("Board access required");
   });
 
-  it("covers board actor access for non-member, viewer, active member, local trusted board, and instance admin without target membership", async () => {
+  it("covers board actor access for non-member, viewer, active member, local trusted board, self-hosted instance admin, and cloud-tenant isolation", async () => {
     const nonMemberApp = await createApp(boardActor({ userId: "outsider" }));
     const nonMember = await request(nonMemberApp).get(`/api/companies/${companyBId}`);
     expect(nonMember.status).toBe(403);
@@ -336,18 +336,36 @@ describe.sequential("company route cross-company authorization", () => {
     await request(localTrustedApp).get(`/api/companies/${companyBId}`).expect(200);
     await request(localTrustedApp).patch(`/api/companies/${companyBId}`).send({ description: "Local" }).expect(200);
 
+    // Self-hosted (non-cloud) instance admins are instance-wide superusers: an admin
+    // without explicit membership in company B may both read and write it. This matches
+    // the deliberate TWX-695 carve-out and is locked in by authz-company-access.test.ts
+    // ("allows signed-in instance admins to access any company outside cloud tenant mode").
     vi.clearAllMocks();
     resetMockDefaults();
-    const adminWithoutMembershipApp = await createApp(boardActor({
+    const selfHostedAdminApp = await createApp(boardActor({
       userId: "instance-admin",
+      source: "session",
       isInstanceAdmin: true,
     }));
-    const adminRead = await request(adminWithoutMembershipApp).get(`/api/companies/${companyBId}`);
-    expect(adminRead.status).toBe(403);
-    expect(adminRead.body.error).toContain("access to this company");
-    const adminWrite = await request(adminWithoutMembershipApp).patch(`/api/companies/${companyBId}`).send({ description: "Admin" });
-    expect(adminWrite.status).toBe(403);
-    expect(adminWrite.body.error).toContain("access to this company");
+    await request(selfHostedAdminApp).get(`/api/companies/${companyBId}`).expect(200);
+    await request(selfHostedAdminApp).patch(`/api/companies/${companyBId}`).send({ description: "Admin" }).expect(200);
+
+    // Cloud-tenant mode is the multi-tenant isolation boundary: isInstanceAdmin does NOT
+    // grant cross-company access, so a cloud-tenant admin without membership is denied
+    // with no target mutation side-effects.
+    vi.clearAllMocks();
+    resetMockDefaults();
+    const cloudTenantAdminApp = await createApp(boardActor({
+      userId: "cloud-instance-admin",
+      source: "cloud_tenant",
+      isInstanceAdmin: true,
+    }));
+    const cloudRead = await request(cloudTenantAdminApp).get(`/api/companies/${companyBId}`);
+    expect(cloudRead.status).toBe(403);
+    expect(cloudRead.body.error).toContain("access to this company");
+    const cloudWrite = await request(cloudTenantAdminApp).patch(`/api/companies/${companyBId}`).send({ description: "Admin" });
+    expect(cloudWrite.status).toBe(403);
+    expect(cloudWrite.body.error).toContain("access to this company");
     assertNoTargetMutationSideEffects();
   });
 });

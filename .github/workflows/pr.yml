@@ -111,8 +111,15 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
+        # Only the manifest-changing path uploads pr-lockfile (policy job,
+        # regenerated=1). Gate on that output so non-manifest PRs skip the
+        # download instead of logging a benign "Artifact not found" error that
+        # trained reviewers to ignore the gate. On the regenerated=1 path the
+        # step is required (no continue-on-error): a genuine upload flake then
+        # fails loudly here rather than silently no-opping into a confusing
+        # frozen-lockfile mismatch downstream.
+        if: ${{ needs.policy.outputs.lockfile_regenerated == '1' }}
         uses: actions/download-artifact@v8
-        continue-on-error: true
         with:
           name: pr-lockfile
           path: .
@@ -171,8 +178,15 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
+        # Only the manifest-changing path uploads pr-lockfile (policy job,
+        # regenerated=1). Gate on that output so non-manifest PRs skip the
+        # download instead of logging a benign "Artifact not found" error that
+        # trained reviewers to ignore the gate. On the regenerated=1 path the
+        # step is required (no continue-on-error): a genuine upload flake then
+        # fails loudly here rather than silently no-opping into a confusing
+        # frozen-lockfile mismatch downstream.
+        if: ${{ needs.policy.outputs.lockfile_regenerated == '1' }}
         uses: actions/download-artifact@v8
-        continue-on-error: true
         with:
           name: pr-lockfile
           path: .
@@ -230,8 +244,15 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
+        # Only the manifest-changing path uploads pr-lockfile (policy job,
+        # regenerated=1). Gate on that output so non-manifest PRs skip the
+        # download instead of logging a benign "Artifact not found" error that
+        # trained reviewers to ignore the gate. On the regenerated=1 path the
+        # step is required (no continue-on-error): a genuine upload flake then
+        # fails loudly here rather than silently no-opping into a confusing
+        # frozen-lockfile mismatch downstream.
+        if: ${{ needs.policy.outputs.lockfile_regenerated == '1' }}
         uses: actions/download-artifact@v8
-        continue-on-error: true
         with:
           name: pr-lockfile
           path: .
@@ -280,8 +301,15 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
+        # Only the manifest-changing path uploads pr-lockfile (policy job,
+        # regenerated=1). Gate on that output so non-manifest PRs skip the
+        # download instead of logging a benign "Artifact not found" error that
+        # trained reviewers to ignore the gate. On the regenerated=1 path the
+        # step is required (no continue-on-error): a genuine upload flake then
+        # fails loudly here rather than silently no-opping into a confusing
+        # frozen-lockfile mismatch downstream.
+        if: ${{ needs.policy.outputs.lockfile_regenerated == '1' }}
         uses: actions/download-artifact@v8
-        continue-on-error: true
         with:
           name: pr-lockfile
           path: .
@@ -314,8 +342,15 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
+        # Only the manifest-changing path uploads pr-lockfile (policy job,
+        # regenerated=1). Gate on that output so non-manifest PRs skip the
+        # download instead of logging a benign "Artifact not found" error that
+        # trained reviewers to ignore the gate. On the regenerated=1 path the
+        # step is required (no continue-on-error): a genuine upload flake then
+        # fails loudly here rather than silently no-opping into a confusing
+        # frozen-lockfile mismatch downstream.
+        if: ${{ needs.policy.outputs.lockfile_regenerated == '1' }}
         uses: actions/download-artifact@v8
-        continue-on-error: true
         with:
           name: pr-lockfile
           path: .
@@ -368,8 +403,15 @@ jobs:
           version: 9.15.4
 
       - name: Restore regenerated PR lockfile (if policy uploaded one)
+        # Only the manifest-changing path uploads pr-lockfile (policy job,
+        # regenerated=1). Gate on that output so non-manifest PRs skip the
+        # download instead of logging a benign "Artifact not found" error that
+        # trained reviewers to ignore the gate. On the regenerated=1 path the
+        # step is required (no continue-on-error): a genuine upload flake then
+        # fails loudly here rather than silently no-opping into a confusing
+        # frozen-lockfile mismatch downstream.
+        if: ${{ needs.policy.outputs.lockfile_regenerated == '1' }}
         uses: actions/download-artifact@v8
-        continue-on-error: true
         with:
           name: pr-lockfile
           path: .
