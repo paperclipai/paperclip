@@ -704,6 +704,9 @@ export async function startServer(): Promise<StartedServer> {
     resolveSessionFromHeaders,
   });
 
+  const runtimeIntervals: Array<ReturnType<typeof setInterval>> = [];
+  let heartbeat: ReturnType<typeof heartbeatService> | null = null;
+
   void reconcilePersistedRuntimeServicesOnStartup(db as any)
     .then((result) => {
       if (result.reconciled > 0) {
@@ -774,7 +777,8 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const heartbeatScheduler = heartbeatService(db as any, { pluginWorkerManager });
+    heartbeat = heartbeatScheduler;
     const routines = routineService(db as any, { pluginWorkerManager });
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
@@ -851,8 +855,8 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup heartbeat recovery failed");
     });
 
-    setInterval(() => {
-      const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
+    const schedulerInterval = setInterval(() => {
+      const sweptRuntimeStatuses = heartbeatScheduler.sweepExpiredRuntimeStatuses();
       if (sweptRuntimeStatuses > 0) {
         logger.info(
           { swept: sweptRuntimeStatuses },
@@ -860,7 +864,7 @@ export async function startServer(): Promise<StartedServer> {
         );
       }
 
-      void heartbeat
+      void heartbeatScheduler
         .tickTimers(new Date())
         .then((result) => {
           if (result.enqueued > 0) {
@@ -881,15 +885,15 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "routine scheduler tick failed");
         });
-  
+
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
-      void heartbeat
+      void heartbeatScheduler
         .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-        .then(() => heartbeat.promoteDueScheduledRetries())
+        .then(() => heartbeatScheduler.promoteDueScheduledRetries())
         .then(async (promotion) => {
-          await heartbeat.resumeQueuedRuns();
-          const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+          await heartbeatScheduler.resumeQueuedRuns();
+          const reconciled = await heartbeatScheduler.reconcileStrandedAssignedIssues();
           if (
             promotion.promoted > 0 ||
             reconciled.assignmentDispatched > 0 ||
@@ -905,31 +909,31 @@ export async function startServer(): Promise<StartedServer> {
           }
         })
         .then(async () => {
-          const reconciled = await heartbeat.reconcileIssueGraphLiveness();
+          const reconciled = await heartbeatScheduler.reconcileIssueGraphLiveness();
           if (reconciled.escalationsCreated > 0) {
             logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
           }
         })
         .then(async () => {
-          const reconciled = await heartbeat.reconcileTaskWatchdogs();
+          const reconciled = await heartbeatScheduler.reconcileTaskWatchdogs();
           if (reconciled.triggered > 0) {
             logger.warn({ ...reconciled }, "periodic task-watchdog reconciliation triggered watchdog work");
           }
         })
         .then(async () => {
-          const scanned = await heartbeat.scanSilentActiveRuns();
+          const scanned = await heartbeatScheduler.scanSilentActiveRuns();
           if (scanned.created > 0 || scanned.escalated > 0) {
             logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
           }
         })
         .then(async () => {
-          const swept = await heartbeat.sweepStaleIssueLocks();
+          const swept = await heartbeatScheduler.sweepStaleIssueLocks();
           if (swept.cleared > 0) {
             logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
           }
         })
         .then(async () => {
-          const reviewed = await heartbeat.reconcileProductivityReviews();
+          const reviewed = await heartbeatScheduler.reconcileProductivityReviews();
           if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
             logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
           }
@@ -938,6 +942,7 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "periodic heartbeat recovery failed");
         });
     }, config.heartbeatSchedulerIntervalMs);
+    runtimeIntervals.push(schedulerInterval);
   }
   
   if (config.databaseBackupEnabled) {
@@ -951,11 +956,12 @@ export async function startServer(): Promise<StartedServer> {
       },
       "Automatic database backups enabled",
     );
-    setInterval(() => {
+    const backupInterval = setInterval(() => {
       void runServerDatabaseBackup("scheduled").catch(() => {
         // runServerDatabaseBackup already logs the failure with context.
       });
     }, backupIntervalMs);
+    runtimeIntervals.push(backupInterval);
   }
   
   // Wait for external adapters to finish loading before accepting requests.
@@ -1038,7 +1044,43 @@ export async function startServer(): Promise<StartedServer> {
   });
   
   {
+    let shuttingDown = false;
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+
+      for (const interval of runtimeIntervals) {
+        clearInterval(interval);
+      }
+
+      // Stop accepting new connections immediately. server.close() refuses new
+      // connections synchronously; the callback only fires once existing
+      // connections drain, which can block indefinitely on long-running
+      // requests (long-polls, WebSockets). Capture the close promise here —
+      // before the heartbeat drain — so:
+      //   1. The drain always runs even if a long-lived request is in flight
+      //      (otherwise SIGKILL from the process manager skips it).
+      //   2. No new HTTP request can come in between drain completion and
+      //      server.close() to spawn a fresh heartbeat run we'd miss.
+      const serverClosed = new Promise<void>((resolveClose) => {
+        server.close(() => resolveClose());
+      });
+
+      if (heartbeat) {
+        try {
+          const drainedCount = await heartbeat.drainRunningRunsForShutdown(
+            `Cancelled due to server shutdown (${signal})`,
+          );
+          if (drainedCount > 0) {
+            logger.warn({ signal, drainedCount }, "drained running heartbeat runs before shutdown");
+          }
+        } catch (err) {
+          logger.error({ err, signal }, "failed to drain heartbeat runs during shutdown");
+        }
+      }
+
+      await serverClosed;
+
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();
