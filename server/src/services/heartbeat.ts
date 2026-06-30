@@ -3190,6 +3190,7 @@ export function resolveTaskSessionConfigFreshness(input: {
   taskSessionParams: Record<string, unknown> | null | undefined;
   configMetadata: EffectiveRunSessionConfigMetadata | null;
   wakeResetReason?: string | null;
+  preserveLegacySessionWithoutConfigMetadata?: boolean;
 }): TaskSessionConfigFreshnessDecision {
   if (!input.hasTaskSession) {
     return {
@@ -3214,15 +3215,15 @@ export function resolveTaskSessionConfigFreshness(input: {
 
   let changedCategories: EffectiveRunSessionConfigCategory[] = [];
   if (input.configMetadata) {
-    if (!storedConfig) {
+    if (!storedConfig && !input.preserveLegacySessionWithoutConfigMetadata) {
       changedCategories = [...input.configMetadata.categories];
       reasons.push("effective run configuration fingerprint metadata is missing");
-    } else if (storedConfig.version !== input.configMetadata.version) {
+    } else if (storedConfig && storedConfig.version !== input.configMetadata.version) {
       changedCategories = [...input.configMetadata.categories];
       reasons.push(
         `effective run configuration fingerprint version changed from ${storedConfig.version} to ${input.configMetadata.version}`,
       );
-    } else if (storedConfig.fingerprint !== input.configMetadata.fingerprint) {
+    } else if (storedConfig && storedConfig.fingerprint !== input.configMetadata.fingerprint) {
       changedCategories = changedEffectiveRunSessionConfigCategories({
         previous: storedConfig.categoryFingerprints,
         next: input.configMetadata.categoryFingerprints,
@@ -9317,19 +9318,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
+    const acceptedPlanContinuationWake = issueContext
+      ? readNonEmptyString(context.workspaceRefreshReason) === "accepted_plan_confirmation"
+        || (
+          issueContext.workMode === "planning"
+          && readNonEmptyString(context.interactionKind) === "request_confirmation"
+          && readNonEmptyString(context.interactionStatus) === "accepted"
+        )
+      : false;
     const acceptedPlanWakeRoutingDecision = issueContext
       ? await resolveAcceptedPlanWakeRoutingDecision({
           db,
           companyId: agent.companyId,
           agentId: agent.id,
           issueId,
-          acceptedPlanContinuationWake:
-            readNonEmptyString(context.workspaceRefreshReason) === "accepted_plan_confirmation"
-            || (
-              issueContext.workMode === "planning"
-              && readNonEmptyString(context.interactionKind) === "request_confirmation"
-              && readNonEmptyString(context.interactionStatus) === "accepted"
-            ),
+          acceptedPlanContinuationWake,
           contextSnapshot: context,
         })
       : null;
@@ -9759,6 +9762,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       taskSessionParams: taskSessionDecodedParams,
       configMetadata: sessionConfigMetadata,
       wakeResetReason: wakeSessionResetReason,
+      preserveLegacySessionWithoutConfigMetadata: acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision,
     });
     const resetTaskSession = shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
     const sessionResetReason = sessionConfigFreshness.reasons.join("; ") || null;

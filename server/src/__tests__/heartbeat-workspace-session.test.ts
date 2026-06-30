@@ -1446,6 +1446,25 @@ describe("effective run session config freshness", () => {
     expect(decision.reasons).toEqual(["effective run configuration fingerprint metadata is missing"]);
   });
 
+  it("preserves legacy metadata gaps only for active accepted-plan continuation sessions", async () => {
+    const metadata = await buildSessionConfigMetadata();
+
+    const decision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: {
+        sessionId: "thread-1",
+        __paperclipConfiguredModel: "gpt-5.4-mini",
+      },
+      configMetadata: metadata,
+      preserveLegacySessionWithoutConfigMetadata: true,
+    });
+
+    expect(decision.reset).toBe(false);
+    expect(decision.changedCategories).toEqual([]);
+    expect(decision.reasons).toEqual([]);
+  });
+
   it("names safe categories for model profile, issue override, env, secret, and runtime skill drift", async () => {
     const base = await buildSessionConfigMetadata();
     const cases: Array<{
