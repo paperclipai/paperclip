@@ -4355,7 +4355,6 @@ registerCurrentRoute({
 });
 
 for (const route of [
-  ["get", "/api/ccrotate/status", "Get ccrotate pool status"],
   ["post", "/api/metrics/claude-k8s/concurrent-run-blocked", "Record a Claude Kubernetes concurrent-run block metric"],
   ["post", "/api/metrics/claude-k8s/isolated-run-started", "Record a Claude Kubernetes isolated-run start metric"],
   ["post", "/api/workspace/scan", "Scan a local workspace"],

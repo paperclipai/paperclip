@@ -136,8 +136,8 @@ export interface RunQuotaExhaustedHookInput {
   companyId: string;
   runId: string | null;
   /** The adapter type that surfaced the quota exhaustion. Forwarded to the
-   *  hook command as `PAPERCLIP_ADAPTER_TYPE` so e.g. ccrotate-relogin-trigger
-   *  can map adapter → ccrotate target without an extra DB lookup. */
+   *  configured hook command as `PAPERCLIP_ADAPTER_TYPE` so it can route the
+   *  recovery action per adapter without an extra DB lookup. */
   adapterType: string;
   errorCode: string;
   onSuccess?: (() => void | Promise<void>) | null;

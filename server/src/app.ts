@@ -44,7 +44,6 @@ import {
   type InstanceDatabaseBackupService,
 } from "./routes/instance-database-backups.js";
 import { llmRoutes } from "./routes/llms.js";
-import { ccrotateRoutes } from "./routes/ccrotate.js";
 import { agentImageBumpRoutes } from "./routes/agent-image-bump.js";
 import { authRoutes } from "./routes/auth.js";
 import { linearAuthRoutes } from "./routes/linear-auth.js";
@@ -626,10 +625,6 @@ ${error ? "" : "setTimeout(function(){window.close()},2000)"}
   // guardrail and increments the counter exposed on /metrics.
   api.use(metricsIngestRoutes(db));
   api.use(workspaceScanRoutes());
-  // ccrotate pool status — used by in-cluster health-check CronJob and any
-  // agent that wants to query pool depth without `kubectl exec`. Mounts at
-  // /api/ccrotate/status (the inner router defines /status).
-  api.use("/ccrotate", ccrotateRoutes());
   api.use(agentImageBumpRoutes(db));
   api.use(
     accessRoutes(db, {

@@ -163,7 +163,6 @@ import {
 import { instanceSettingsService } from "./instance-settings.js";
 import { normalizeIsolationMode, recordHeartbeatRunFailed } from "./metrics.js";
 import { runQuotaExhaustedHook } from "./quota-exhausted-hook.js";
-import { captureQuotaBurnIntoCcrotateTierCache } from "./ccrotate-quota-writeback.js";
 import { runLifecycleHook } from "./lifecycle-hook.js";
 import { mapAdapterToCcrotateTarget } from "./ccrotate-target.js";
 import {
@@ -9866,22 +9865,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (recoverable) {
       const hookAgentId = existing.id;
       const hookCompanyId = existing.companyId;
-      // Best-effort: write the burn into ccrotate's shared tier-cache so
-      // subsequent `ccrotate next` skips this account before refresh probes
-      // can update it (Anthropic's per-org Usage API throttles after a 429,
-      // leaving ccrotate's own probe blind for minutes). The hook below
-      // separately drives re-login; this writeback closes the rotation
-      // candidate-scoring gap that caused the 2026-05-08 retry storm.
-      void captureQuotaBurnIntoCcrotateTierCache({
-        adapterType: existing.adapterType,
-        retryNotBefore: opts?.retryNotBefore ?? null,
-        log: logger,
-      }).catch((err) => {
-        logger.warn(
-          { err, agentId: hookAgentId },
-          "ccrotate tier-cache writeback failed",
-        );
-      });
       void runQuotaExhaustedHook({
         db,
         agentId: hookAgentId,
