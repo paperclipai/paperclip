@@ -1073,6 +1073,63 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
   });
 
+  it("infers capital-Date variables, preserves builtin date, and validates submitted date values", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const dateRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "date check {{startDate}} on {{date}}",
+        description: "Range {{startDate}} to {{endDate}}",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    expect(dateRoutine.variables).toEqual([
+      { name: "startDate", label: null, type: "date", defaultValue: null, required: true, options: [] },
+      { name: "endDate", label: null, type: "date", defaultValue: null, required: true, options: [] },
+    ]);
+
+    await expect(
+      svc.runRoutine(dateRoutine.id, {
+        source: "manual",
+        variables: { startDate: "2024-02-30", endDate: "2024-03-01" },
+      }),
+    ).rejects.toThrow(/valid YYYY-MM-DD date/i);
+
+    const run = await svc.runRoutine(dateRoutine.id, {
+      source: "manual",
+      variables: { startDate: "2024-02-29", endDate: "2024-03-01" },
+    });
+
+    const storedIssue = await db
+      .select({ title: issues.title, description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    const storedRun = await db
+      .select({ triggerPayload: routineRuns.triggerPayload })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, run.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(storedIssue?.title).toMatch(/^date check 2024-02-29 on \d{4}-\d{2}-\d{2}$/);
+    expect(storedIssue?.description).toBe("Range 2024-02-29 to 2024-03-01");
+    expect(storedRun?.triggerPayload).toEqual({
+      variables: {
+        startDate: "2024-02-29",
+        endDate: "2024-03-01",
+      },
+    });
+  });
+
   it("attaches the selected execution workspace to manually triggered routine issues", async () => {
     const { companyId, projectId, routine, svc } = await seedFixture();
     const projectWorkspaceId = randomUUID();
@@ -1364,6 +1421,32 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         timezone: "UTC",
       }, {}),
     ).rejects.toThrow(/require defaults for required variables/i);
+  });
+
+  it("rejects invalid date defaults before persisting routine variables", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+
+    await expect(
+      svc.create(
+        companyId,
+        {
+          projectId,
+          goalId: null,
+          parentIssueId: null,
+          title: "date check {{startDate}}",
+          description: null,
+          assigneeAgentId: agentId,
+          priority: "medium",
+          status: "active",
+          concurrencyPolicy: "coalesce_if_active",
+          catchUpPolicy: "skip_missed",
+          variables: [
+            { name: "startDate", label: null, type: "date", defaultValue: "2024-02-30", required: true, options: [] },
+          ],
+        },
+        {},
+      ),
+    ).rejects.toThrow(/valid YYYY-MM-DD date/i);
   });
 
   it("serializes concurrent dispatches until the first execution issue is linked to a queued run", async () => {

@@ -32,6 +32,8 @@ const UUIDS: Record<string, string> = {
   "att-1": "11111111-1111-4111-8111-111111111111",
   "att-vid": "22222222-2222-4222-8222-222222222222",
   "att-pdf": "33333333-3333-4333-8333-333333333333",
+  "att-img": "44444444-4444-4444-8444-444444444444",
+  "att-webm": "55555555-5555-4555-8555-555555555555",
 };
 
 function metadata(key: string, contentType: string, filename: string) {
@@ -74,6 +76,27 @@ describe("IssueOutputSection", () => {
     // Section header + size formatting
     expect(markup).toContain("Output");
     expect(markup).toContain("18.4 MB");
+  });
+
+  it("keeps the open action for primary videos when gallery browsing is enabled", () => {
+    const markup = renderToStaticMarkup(
+      <IssueOutputSection
+        workProducts={[
+          makeWorkProduct({
+            id: "wp-video",
+            title: "Demo walkthrough",
+            isPrimary: true,
+            metadata: metadata("att-1", "video/mp4", "demo.mp4"),
+          }),
+        ]}
+        onMediaClick={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Browse");
+    expect(markup).toContain("Open");
+    expect(markup).toContain(`href="/api/attachments/${UUIDS["att-1"]}/content"`);
+    expect(markup).toContain("Download");
   });
 
   it("renders nothing when the issue has no artifact outputs (empty state)", () => {
@@ -128,6 +151,38 @@ describe("IssueOutputSection", () => {
     expect(markup).toContain("talking-points.pdf");
     // PDF glyph tile label appears for the secondary row
     expect(markup).toContain("PDF");
+  });
+
+  it("renders secondary image and video outputs as preview tiles", () => {
+    const markup = renderToStaticMarkup(
+      <IssueOutputSection
+        workProducts={[
+          makeWorkProduct({
+            id: "wp-primary",
+            isPrimary: true,
+            metadata: metadata("att-pdf", "application/pdf", "brief.pdf"),
+          }),
+          makeWorkProduct({
+            id: "wp-image",
+            createdAt: new Date("2026-05-30T11:00:00Z"),
+            metadata: metadata("att-img", "image/png", "screenshot.png"),
+          }),
+          makeWorkProduct({
+            id: "wp-video",
+            createdAt: new Date("2026-05-30T10:00:00Z"),
+            metadata: metadata("att-webm", "video/webm", "clip.webm"),
+          }),
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Also produced");
+    expect(markup).toContain("screenshot.png");
+    expect(markup).toContain("clip.webm");
+    expect(markup).toContain("<img");
+    expect(markup).toContain("<video");
+    expect(markup).toContain("Open screenshot.png");
+    expect(markup).toContain("Open clip.webm");
   });
 
   it("surfaces an output with failed/invalid attachment metadata without crashing", () => {

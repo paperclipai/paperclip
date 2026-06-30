@@ -44,10 +44,10 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const startBtn = page.getByRole("button", { name: /Start Onboarding|New Company|Add Agent/ });
   if (await startBtn.count()) await startBtn.first().click();
 
-  const createCard = page.getByRole("button", { name: /Build a new team/ });
+  const createCard = page.getByRole("button", { name: /Build a new company/ });
   if (await createCard.count()) await createCard.first().click();
 
-  await expect(page.getByRole("heading", { name: "Name your team" })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: "Name your company" })).toBeVisible({ timeout: 15_000 });
 
   await page.locator('input[placeholder="Acme Corp"]').fill(companyName);
   await page.getByRole("button", { name: /^Next/ }).click();

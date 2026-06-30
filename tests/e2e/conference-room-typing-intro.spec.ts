@@ -60,10 +60,10 @@ test.describe("Dashboard launch after onboarding wizard", () => {
     if (await startBtn.count()) await startBtn.first().click();
 
     // Step 0: front door (skipped when the wizard opens on the create path).
-    const frontDoor = page.getByText("Build a new team");
+    const frontDoor = page.getByText("Build a new company");
     if (await frontDoor.count()) await frontDoor.first().click();
 
-    // Step 1: team name.
+    // Step 1: company name.
     await page.getByPlaceholder("Acme Corp").fill(COMPANY_NAME);
     await page.getByRole("button", { name: /^Next/ }).click();
 

@@ -122,6 +122,7 @@ import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
+import { buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
@@ -415,11 +416,17 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+// Routes and the scheduler construct separate heartbeatService instances, but
+// they must agree on in-process adapter executions when reaping stale runs.
+const activeRunExecutions = new Set<string>();
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
-  "resolveAdapterConfigForRuntime" | "resolveEnvBindings" | "collectMissingRuntimeBindings"
+  | "resolveAdapterConfigForRuntime"
+  | "resolveEnvBindings"
+  | "collectMissingRuntimeBindings"
+  | "collectMissingAdapterConfigRuntimeBindings"
 >;
 
 function formatMissingBindingForOperator(missing: MissingRuntimeBinding): string {
@@ -501,6 +508,7 @@ function assertLowTrustEnvConfigAllowed(envValue: unknown, source: string) {
 export async function resolveExecutionRunAdapterConfig(input: {
   companyId: string;
   agentId?: string | null;
+  adapterType?: string | null;
   issueId?: string | null;
   heartbeatRunId?: string | null;
   environmentId?: string | null;
@@ -581,6 +589,16 @@ export async function resolveExecutionRunAdapterConfig(input: {
           { consumerType: "agent", consumerId: input.agentId },
         )),
       );
+      if (typeof input.secretsSvc.collectMissingAdapterConfigRuntimeBindings === "function") {
+        missingBindings.push(
+          ...(await input.secretsSvc.collectMissingAdapterConfigRuntimeBindings(
+            input.companyId,
+            executionRunConfig,
+            input.adapterType ?? null,
+            { consumerType: "agent", consumerId: input.agentId },
+          )),
+        );
+      }
     }
     if (projectEnv && input.projectId) {
       missingBindings.push(
@@ -673,6 +691,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
           ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
         }
       : undefined,
+    { adapterType: input.adapterType ?? null },
   );
   if (Object.keys(environmentEnvResolution.env).length > 0) {
     resolvedConfig.env = {
@@ -3631,7 +3650,7 @@ export async function buildPaperclipWakePayload(input: {
     });
   }
 
-  const annotationDeltas = annotationCommentId
+  const annotationDeltas = annotationCommentId && issueId
     ? await input.db
       .select({
         id: documentAnnotationComments.id,
@@ -3655,7 +3674,10 @@ export async function buildPaperclipWakePayload(input: {
       .innerJoin(documentAnnotationThreads, eq(documentAnnotationComments.threadId, documentAnnotationThreads.id))
       .where(and(
         eq(documentAnnotationComments.companyId, input.companyId),
+        eq(documentAnnotationComments.issueId, issueId),
         eq(documentAnnotationComments.id, annotationCommentId),
+        eq(documentAnnotationThreads.companyId, input.companyId),
+        eq(documentAnnotationThreads.issueId, issueId),
       ))
       .then((rows) => rows.map((row) => ({
         id: row.id,
@@ -3681,6 +3703,21 @@ export async function buildPaperclipWakePayload(input: {
             : { type: row.authorType, id: null },
       })))
     : [];
+  const interactionId = readNonEmptyString(input.contextSnapshot.interactionId);
+  const interactionKind = readNonEmptyString(input.contextSnapshot.interactionKind);
+  const interactionStatus = readNonEmptyString(input.contextSnapshot.interactionStatus);
+  const planReviewContext = issueId
+    ? await buildPlanReviewContext({
+      db: input.db,
+      companyId: input.companyId,
+      issueId,
+      issueWorkMode: issueSummary?.workMode ?? null,
+      includeForIssueComment: commentIds.length > 0,
+      includeForAnnotationDelta: annotationDeltas.length > 0,
+      interactionId,
+    })
+    : null;
+  const payloadTruncated = truncated || planReviewContext?.truncated === true;
 
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
@@ -3711,8 +3748,8 @@ export async function buildPaperclipWakePayload(input: {
           instruction: readNonEmptyString(input.contextSnapshot.livenessContinuationInstruction),
         }
       : null,
-    interactionKind: readNonEmptyString(input.contextSnapshot.interactionKind),
-    interactionStatus: readNonEmptyString(input.contextSnapshot.interactionStatus),
+    interactionKind,
+    interactionStatus,
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
     dependencyBlockedInteraction: input.contextSnapshot.dependencyBlockedInteraction === true,
     treeHoldInteraction: input.contextSnapshot.treeHoldInteraction === true,
@@ -3742,13 +3779,14 @@ export async function buildPaperclipWakePayload(input: {
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
     annotationDeltas,
+    planReviewContext,
     commentWindow: {
       requestedCount: commentIds.length,
       includedCount: comments.length,
       missingCount: missingCommentCount,
     },
-    truncated,
-    fallbackFetchNeeded: truncated || missingCommentCount > 0,
+    truncated: payloadTruncated,
+    fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
   };
 }
 
@@ -3869,6 +3907,13 @@ export function buildPaperclipTaskMarkdown(input: {
     workMode?: string | null;
     description?: string | null;
   } | null;
+  ancestors?: Array<{
+    id: string;
+    identifier?: string | null;
+    title?: string | null;
+    status?: string | null;
+    priority?: string | null;
+  }> | null;
   wakeComment?: {
     id: string;
     body: string;
@@ -3889,6 +3934,7 @@ export function buildPaperclipTaskMarkdown(input: {
     return [fence + "text", value, fence].join("\n");
   };
   const issue = input.issue;
+  const ancestors = (input.ancestors ?? []).slice(0, 6);
   const wakeComment = input.wakeComment ?? null;
   const acceptedPlanContinuation =
     !wakeComment &&
@@ -3939,6 +3985,19 @@ export function buildPaperclipTaskMarkdown(input: {
     const description = issue.description?.trim();
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
+    }
+  }
+  if (ancestors.length > 0) {
+    lines.push("", "Authoritative parent / ancestor context:");
+    for (const [index, ancestor] of ancestors.entries()) {
+      const label = ancestor.identifier || ancestor.id;
+      const status = ancestor.status ? ` (${ancestor.status})` : "";
+      const priority = ancestor.priority ? ` [${ancestor.priority}]` : "";
+      const title = ancestor.title ? ` ${ancestor.title}` : "";
+      lines.push(`- ${index === 0 ? "Parent" : `Ancestor ${index + 1}`}: ${label}${title}${status}${priority}`);
+    }
+    if ((input.ancestors ?? []).length > ancestors.length) {
+      lines.push(`- [ancestor context truncated after ${ancestors.length} entries]`);
     }
   }
   if (wakeComment?.body.trim()) {
@@ -4229,7 +4288,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     environmentRuntime,
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
-  const activeRunExecutions = new Set<string>();
   const liveRunExecutions = {
     has(id: string) {
       return runningProcesses.has(id) || activeRunExecutions.has(id);
@@ -9366,6 +9424,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       wakeCommentContext && !exposeLowTrustRaw
         ? sanitizeQuarantinedCommentForHigherTrust(wakeCommentContext)
         : wakeCommentContext;
+    const issueAncestors = issueRef
+      ? await issuesSvc.getAncestors(issueRef.id)
+      : [];
     if (continuationSummary) {
       context.paperclipContinuationSummary = {
         key: safeContinuationSummary!.key,
@@ -9411,6 +9472,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             description: issueRef.description,
           }
         : null,
+      ancestors: issueAncestors,
       wakeComment: safeWakeCommentContext,
       interaction: {
         kind: readNonEmptyString(context.interactionKind),
@@ -9588,6 +9650,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,
+      adapterType: agent.adapterType,
       issueId,
       heartbeatRunId: run.id,
       environmentId: selectedEnvironmentForConfig?.id ?? null,

@@ -27,6 +27,8 @@ export { projectWorkspaces } from "./project_workspaces.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
 export { environments } from "./environments.js";
 export { environmentLeases } from "./environment_leases.js";
+export { environmentCustomImageTemplates } from "./environment_custom_image_templates.js";
+export { environmentCustomImageSetupSessions } from "./environment_custom_image_setup_sessions.js";
 export { workspaceOperations } from "./workspace_operations.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
@@ -40,6 +42,16 @@ export { externalObjects } from "./external_objects.js";
 export { externalObjectMentions } from "./external_object_mentions.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";
+export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
+export {
+  pipelineCases,
+  pipelineCaseIssueLinks,
+  pipelineCaseBlockers,
+  pipelineDocuments,
+  pipelineCaseDocuments,
+  pipelineAutomationExecutions,
+} from "./pipeline_cases.js";
+export { pipelineCaseEvents } from "./pipeline_case_events.js";
 export { issueWorkProducts } from "./issue_work_products.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";

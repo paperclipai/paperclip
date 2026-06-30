@@ -792,6 +792,97 @@
       "when": 1781902600000,
       "tag": "0112_rename_skill_create_permission_key",
       "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "7",
+      "when": 1781902700000,
+      "tag": "0113_pipeline_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 114,
+      "version": "7",
+      "when": 1781902800000,
+      "tag": "0114_pipeline_case_issue_unlinked_event",
+      "breakpoints": true
+    },
+    {
+      "idx": 115,
+      "version": "7",
+      "when": 1781902900000,
+      "tag": "0115_pipeline_routine_origin",
+      "breakpoints": true
+    },
+    {
+      "idx": 116,
+      "version": "7",
+      "when": 1781903000000,
+      "tag": "0116_pipeline_upstream_drift_event",
+      "breakpoints": true
+    },
+    {
+      "idx": 117,
+      "version": "7",
+      "when": 1781903100000,
+      "tag": "0117_pipeline_transition_forced_event",
+      "breakpoints": true
+    },
+    {
+      "idx": 118,
+      "version": "7",
+      "when": 1781903200000,
+      "tag": "0118_pipeline_case_agent_fanout",
+      "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "7",
+      "when": 1781903300000,
+      "tag": "0119_pipeline_drift_acknowledged_event",
+      "breakpoints": true
+    },
+    {
+      "idx": 120,
+      "version": "7",
+      "when": 1781903400000,
+      "tag": "0120_pipeline_stage_working_primitives",
+      "breakpoints": true
+    },
+    {
+      "idx": 121,
+      "version": "7",
+      "when": 1781903500000,
+      "tag": "0121_pipeline_automation_retry_effects",
+      "breakpoints": true
+    },
+    {
+      "idx": 122,
+      "version": "7",
+      "when": 1781903600000,
+      "tag": "0122_pipeline_case_documents",
+      "breakpoints": true
+    },
+    {
+      "idx": 123,
+      "version": "7",
+      "when": 1781903700000,
+      "tag": "0123_document_annotation_source_trust",
+      "breakpoints": true
+    },
+    {
+      "idx": 124,
+      "version": "7",
+      "when": 1782440000000,
+      "tag": "0124_agent_api_key_scope_config",
+      "breakpoints": true
+    },
+    {
+      "idx": 125,
+      "version": "7",
+      "when": 1782440100000,
+      "tag": "0125_environment_custom_image_templates",
+      "breakpoints": true
     }
   ]
 }

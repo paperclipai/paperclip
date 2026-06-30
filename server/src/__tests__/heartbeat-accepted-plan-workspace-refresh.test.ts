@@ -54,6 +54,11 @@ vi.mock("../adapters/index.js", () => ({
     execute: adapterExecute,
     supportsLocalAgentJwt: false,
   }),
+  findActiveServerAdapter: () => ({
+    type: "codex_local",
+    execute: adapterExecute,
+    supportsLocalAgentJwt: false,
+  }),
   listAdapterModelProfiles: async () => [],
   runningProcesses: new Map(),
 }));

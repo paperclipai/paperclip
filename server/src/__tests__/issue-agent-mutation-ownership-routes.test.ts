@@ -669,6 +669,22 @@ describe("agent issue mutation checkout ownership", () => {
     mockStorageService.deleteObject.mockResolvedValue(undefined);
   });
 
+  it("denies company-wide issue list routes for task bridge keys", async () => {
+    const app = await createApp(peerActor({
+      keyId: "99999999-9999-4999-8999-999999999999",
+      keyScope: {
+        kind: "task_bridge",
+        parentIssueId: issueId,
+      },
+    }));
+
+    const res = await request(app).get(`/api/companies/${companyId}/issues`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Task bridge keys cannot use company-wide issue list APIs");
+    expect(mockIssueService.list).not.toHaveBeenCalled();
+  });
+
   it("uses the company-scope fast path on the issue list route", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
       if (input.action === "company_scope:read") {

@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent, Issue, IssueAttachment, IssueTreeControlPreview, IssueTreeHold, IssueWorkProduct } from "@paperclipai/shared";
+import type { Agent, Issue, IssueAttachment, IssueComment, IssueTreeControlPreview, IssueTreeHold, IssueWorkProduct } from "@paperclipai/shared";
 import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from "react";
 import { NavigationType } from "react-router-dom";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { canBoardResolveRecoveryAction, IssueDetail, shouldScrollIssueDetailToTopOnNavigation } from "./IssueDetail";
+import { queryKeys } from "../lib/queryKeys";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -290,7 +291,7 @@ vi.mock("../components/IssueWorkspaceCard", () => ({
 }));
 
 vi.mock("../components/ImageGalleryModal", () => ({
-  ImageGalleryModal: (props: { images: IssueAttachment[]; initialIndex: number; open: boolean }) => {
+  ImageGalleryModal: (props: { items: IssueAttachment[]; initialIndex: number; open: boolean }) => {
     mockImageGalleryRender(props);
     return null;
   },
@@ -449,6 +450,23 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     documentSummaries: [],
     ...overrides,
   } as Issue;
+}
+
+function createIssueComment(overrides: Partial<IssueComment> = {}): IssueComment {
+  return {
+    id: "comment-1",
+    companyId: "company-1",
+    issueId: "issue-1",
+    authorType: "user",
+    authorAgentId: null,
+    authorUserId: "user-1",
+    body: "Fresh comment",
+    presentation: null,
+    metadata: null,
+    createdAt: new Date("2026-04-21T00:00:05.000Z"),
+    updatedAt: new Date("2026-04-21T00:00:05.000Z"),
+    ...overrides,
+  };
 }
 
 function createAttachment(overrides: Partial<IssueAttachment> & { id: string }): IssueAttachment {
@@ -981,6 +999,122 @@ describe("IssueDetail", () => {
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("does not mark the wake comment for the current live run as queued when active-run cache is stale", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_progress",
+      executionRunId: "run-stale",
+    }));
+    mockIssuesApi.listComments.mockResolvedValue([
+      createIssueComment({
+        id: "comment-fresh",
+        createdAt: new Date("2026-04-21T00:00:05.000Z"),
+        updatedAt: new Date("2026-04-21T00:00:05.000Z"),
+      }),
+    ]);
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue({
+      id: "run-stale",
+      status: "running",
+      invocationSource: "issue",
+      triggerDetail: null,
+      contextCommentId: null,
+      contextWakeCommentId: null,
+      startedAt: "2026-04-21T00:00:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-04-21T00:00:00.000Z",
+      agentId: "agent-1",
+      agentName: "Coder",
+      adapterType: "codex_local",
+      issueId: "issue-1",
+    });
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([
+      {
+        id: "run-current",
+        status: "running",
+        invocationSource: "issue",
+        triggerDetail: null,
+        contextCommentId: "comment-fresh",
+        contextWakeCommentId: "comment-fresh",
+        startedAt: "2026-04-21T00:00:01.000Z",
+        finishedAt: null,
+        createdAt: "2026-04-21T00:00:01.000Z",
+        agentId: "agent-1",
+        agentName: "Coder",
+        adapterType: "codex_local",
+        issueId: "issue-1",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as { comments?: Array<{ id: string; queueState?: string }> };
+    const freshComment = props.comments?.find((comment) => comment.id === "comment-fresh");
+    expect(freshComment?.queueState).toBeUndefined();
+  });
+
+  it("does not optimistically queue a fresh comment from an unlocked stale active-run cache", async () => {
+    const postedComment = createDeferred<IssueComment>();
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "todo",
+      executionRunId: null,
+    }));
+    mockIssuesApi.addComment.mockReturnValue(postedComment.promise);
+    queryClient.setQueryData(queryKeys.issues.activeRun("PAP-1"), {
+      id: "run-stale",
+      status: "running",
+      invocationSource: "issue",
+      triggerDetail: null,
+      contextCommentId: null,
+      contextWakeCommentId: null,
+      startedAt: "2026-04-21T00:00:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-04-21T00:00:00.000Z",
+      agentId: "agent-1",
+      agentName: "Coder",
+      adapterType: "codex_local",
+      issueId: "issue-1",
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      onAdd: (body: string) => Promise<void>;
+      comments?: Array<{ body: string; clientStatus?: string; queueState?: string }>;
+    };
+    await act(async () => {
+      void props.onAdd("Fresh comment");
+      await Promise.resolve();
+    });
+    await flushReact();
+
+    const nextProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      comments?: Array<{ body: string; clientStatus?: string; queueState?: string }>;
+    };
+    const optimisticComment = nextProps.comments?.find((comment) => comment.body === "Fresh comment");
+    expect(optimisticComment).toMatchObject({ clientStatus: "pending" });
+    expect(optimisticComment?.queueState).toBeUndefined();
+
+    await act(async () => {
+      postedComment.resolve(createIssueComment({ body: "Fresh comment" }));
+    });
+    await flushReact();
   });
 
   it("hides the plan decomposition panel by default", async () => {
@@ -1642,6 +1776,11 @@ describe("IssueDetail", () => {
     const execCommand = vi.fn(() => true);
     const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
     const originalExecCommand = Object.getOwnPropertyDescriptor(document, "execCommand");
+    const originalSecureContext = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+    Object.defineProperty(window, "isSecureContext", {
+      configurable: true,
+      value: false,
+    });
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: clipboardWrite },
@@ -1675,7 +1814,7 @@ describe("IssueDetail", () => {
         await Promise.resolve();
       });
 
-      expect(clipboardWrite).toHaveBeenCalledWith("# PAP-1: Copy me\n\nTask body");
+      expect(clipboardWrite).not.toHaveBeenCalled();
       expect(execCommand).toHaveBeenCalledWith("copy");
       expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
         title: "Copied to clipboard",
@@ -1693,6 +1832,12 @@ describe("IssueDetail", () => {
       } else {
         // @ts-expect-error test cleanup for optional browser API
         delete document.execCommand;
+      }
+      if (originalSecureContext) {
+        Object.defineProperty(window, "isSecureContext", originalSecureContext);
+      } else {
+        // @ts-expect-error test cleanup for optional browser API
+        delete window.isSecureContext;
       }
     }
   });
@@ -1864,7 +2009,8 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("report.md");
     expect(container.textContent).toContain("Attachments1");
     expect(container.querySelectorAll("video")).toHaveLength(1);
-    expect(mockImageGalleryRender.mock.calls.at(-1)?.[0].images.map((attachment: IssueAttachment) => attachment.id)).toEqual([
+    expect(mockImageGalleryRender.mock.calls.at(-1)?.[0].items.map((attachment: IssueAttachment) => attachment.id)).toEqual([
+      videoAttachment.id,
       imageAttachment.id,
     ]);
   });

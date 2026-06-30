@@ -40,6 +40,7 @@ import { ExternalObjectStatusIcon } from "./ExternalObjectStatusIcon";
 import type { IssueExternalObjectGroup } from "../hooks/useIssueExternalObjects";
 import {
   externalObjectCategoryLabel,
+  externalObjectDisplayLabel,
   externalObjectIconForKey,
   externalObjectProviderLabel,
   externalObjectToneSeverity,
@@ -214,7 +215,7 @@ function externalObjectRowDisplayKey(group: IssueExternalObjectGroup): string {
     if (pill.objectType === "pull_request") return "Github Pull Request";
     if (pill.objectType === "issue") return "Github Issue";
   }
-  return `${externalObjectProviderLabel(pill.providerKey)} ${externalObjectTypeLabel(pill.objectType)}`;
+  return externalObjectDisplayLabel(pill.providerKey, pill.objectType);
 }
 
 function externalObjectRowLabel(group: IssueExternalObjectGroup): React.ReactNode {
@@ -1211,7 +1212,10 @@ export function IssueProperties({
   const upsertWatchdog = useMutation({
     mutationFn: (data: { agentId: string; instructions: string | null }) =>
       issuesApi.upsertWatchdog(issue.id, data),
-    onSuccess: () => {
+    onSuccess: (watchdog) => {
+      queryClient.setQueryData<Issue>(queryKeys.issues.detail(issue.id), (current) =>
+        current ? { ...current, watchdog } : current,
+      );
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
       setWatchdogOpen(false);
     },
@@ -1219,6 +1223,9 @@ export function IssueProperties({
   const deleteWatchdog = useMutation({
     mutationFn: () => issuesApi.deleteWatchdog(issue.id),
     onSuccess: () => {
+      queryClient.setQueryData<Issue>(queryKeys.issues.detail(issue.id), (current) =>
+        current ? { ...current, watchdog: null } : current,
+      );
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
       setWatchdogOpen(false);
     },
@@ -1249,14 +1256,16 @@ export function IssueProperties({
     (child) => child.id === issue.watchdog?.watchdogIssueId,
   );
   const watchdogTrigger = issue.watchdog ? (
-    <span className="inline-flex min-w-0 items-center gap-1.5 text-sm">
+    <span className="inline-flex min-w-0 max-w-full flex-wrap items-start gap-x-1.5 gap-y-0.5 text-sm leading-5">
       {(() => {
         const agent = (agents ?? []).find((candidate) => candidate.id === issue.watchdog?.watchdogAgentId);
         return agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null;
       })()}
-      <span className="truncate">{agentName(issue.watchdog.watchdogAgentId)}</span>
+      <span className="min-w-0 max-w-40 truncate">{agentName(issue.watchdog.watchdogAgentId)}</span>
       {issue.watchdog.instructions?.trim() ? (
-        <span className="truncate text-muted-foreground">· {issue.watchdog.instructions.trim()}</span>
+        <span className="min-w-0 flex-1 basis-32 whitespace-normal break-words text-muted-foreground">
+          · {issue.watchdog.instructions.trim()}
+        </span>
       ) : null}
       {issue.watchdog.status === "disabled" ? (
         <span className="shrink-0 text-xs text-muted-foreground">(disabled)</span>
