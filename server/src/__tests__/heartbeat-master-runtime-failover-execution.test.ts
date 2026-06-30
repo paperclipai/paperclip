@@ -52,6 +52,10 @@ vi.mock("../adapters/index.js", () => ({
     };
   },
   listAdapterModelProfiles: async () => [],
+  // No registered "active" server adapter in this mock: secret-field normalization
+  // (secrets.listAdapterSchemaSecretFieldKeys) optional-chains getConfigSchema and
+  // falls back, matching how an unregistered adapter type behaves at runtime.
+  findActiveServerAdapter: () => null,
   runningProcesses: new Map(),
 }));
 
