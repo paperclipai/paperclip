@@ -123,6 +123,7 @@ import {
   createAcceptedPlanDecompositionSchema,
   resolveIssueRecoveryActionSchema,
   cancelIssueThreadInteractionSchema,
+  patchIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
   updateSecretProviderConfigSchema,
@@ -4621,6 +4622,14 @@ registerCurrentRoute({
   tags: ["issues"],
   summary: "Cancel an issue question interaction",
   body: cancelIssueThreadInteractionSchema,
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/issues/{id}/interactions/{interactionId}",
+  tags: ["issues"],
+  summary: "Cancel or expire a pending issue thread interaction (request_confirmation or ask_user_questions)",
+  body: patchIssueThreadInteractionSchema,
 });
 
 for (const route of [

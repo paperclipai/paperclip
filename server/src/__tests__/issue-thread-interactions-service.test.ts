@@ -566,6 +566,141 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
   });
 
+  it("expires pending request_confirmation interactions via cancelInteraction", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Cancel a request_confirmation");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Push to upstream?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const cancelled = await interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      status: "expired",
+      reason: "Superseded by bulk cleanup",
+    }, {
+      userId: "local-board",
+    });
+
+    // request_confirmation-like interactions terminate as "expired" regardless of
+    // the requested status, matching the existing expire convention (FUL-10323).
+    expect(cancelled.kind).toBe("request_confirmation");
+    expect(cancelled.status).toBe("expired");
+    expect(cancelled.result).toEqual({
+      version: 1,
+      outcome: "cancelled",
+      reason: "Superseded by bulk cleanup",
+    });
+    expect(cancelled.resolvedByUserId).toBe("local-board");
+    expect(cancelled.resolvedAt).not.toBeNull();
+  });
+
+  it("cancels pending ask_user_questions interactions via cancelInteraction", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Cancel ask via PATCH path");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Choose the scope",
+          selectionMode: "single",
+          required: true,
+          options: [
+            { id: "phase-1", label: "Phase 1" },
+            { id: "phase-2", label: "Phase 2" },
+          ],
+        }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const cancelled = await interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      status: "cancelled",
+      reason: "No longer needed",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(cancelled.kind).toBe("ask_user_questions");
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.result).toEqual({
+      version: 1,
+      answers: [],
+      cancelled: true,
+      cancellationReason: "No longer needed",
+      summaryMarkdown: null,
+    });
+  });
+
+  it("rejects cancelInteraction on an already-resolved interaction with a conflict", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Double cancel conflict");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Confirm?" },
+    }, {
+      userId: "local-board",
+    });
+
+    await interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, { status: "expired" }, { userId: "local-board" });
+
+    await expect(interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, { status: "expired" }, { userId: "local-board" }))
+      .rejects.toThrow("Interaction has already been resolved");
+  });
+
+  it("rejects cancelInteraction for non-cancellable interaction kinds", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Suggest tasks not cancellable");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      payload: {
+        version: 1,
+        tasks: [{ clientKey: "t1", title: "Do the thing" }],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await expect(interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, { status: "cancelled" }, { userId: "local-board" }))
+      .rejects.toThrow("cannot be cancelled");
+  });
+
   it("reuses the existing interaction when the same idempotency key is submitted twice", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
