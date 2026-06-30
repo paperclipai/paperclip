@@ -172,6 +172,10 @@ import {
   readDefaultCcrotateTierCache,
   type CcrotateTierGate,
 } from "./ccrotate-tier-gate.js";
+import {
+  createPenstockAvailabilityGate,
+  type PenstockAvailabilityGate,
+} from "./penstock-availability-gate.js";
 import { createCcrotateServeVerifier } from "./ccrotate-serve-verifier.js";
 import {
   evaluateExecutionAllowlist,
@@ -4821,6 +4825,11 @@ export interface HeartbeatServiceOptions {
    */
   ccrotateGate?: CcrotateTierGate;
   /**
+   * Optional pre-dispatch provider availability gate for Penstock-backed
+   * claude_k8s agents. Tests inject a deterministic gate.
+   */
+  penstockAvailabilityGate?: PenstockAvailabilityGate;
+  /**
    * When true, `startNextQueuedRunForAgent` is a no-op — no queued runs are
    * claimed and no fire-and-forget `void executeRun(...)` background work is
    * spawned. Tests that exercise heartbeat methods which transitively trigger
@@ -4924,6 +4933,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
     verifier: ccrotateVerifier,
   });
+  const penstockAvailabilityGate: PenstockAvailabilityGate = options.penstockAvailabilityGate ?? createPenstockAvailabilityGate({
+    log: {
+      info: (payload, msg) => logger.info(payload, msg),
+      warn: (payload, msg) => logger.warn(payload, msg),
+    },
+  });
+
+  async function checkPenstockAvailabilityForAgent(input: {
+    agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "adapterConfig">;
+    now: Date;
+    issueId?: string | null;
+    heartbeatRunId?: string | null;
+  }) {
+    let adapterConfig = parseObject(input.agent.adapterConfig);
+    if (input.agent.adapterType === "claude_k8s") {
+      try {
+        const resolved = await secretsSvc.resolveAdapterConfigForRuntime(
+          input.agent.companyId,
+          adapterConfig,
+          {
+            consumerType: "agent",
+            consumerId: input.agent.id,
+            actorType: "agent",
+            actorId: input.agent.id,
+            issueId: input.issueId ?? null,
+            heartbeatRunId: input.heartbeatRunId ?? null,
+          },
+        );
+        adapterConfig = resolved.config;
+      } catch (err) {
+        logger.warn(
+          {
+            agentId: input.agent.id,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "penstock availability probe could not resolve agent secret bindings; using unresolved adapter config",
+        );
+      }
+    }
+    return penstockAvailabilityGate.checkAdapter({
+      adapterType: input.agent.adapterType,
+      agentId: input.agent.id,
+      adapterConfig,
+      now: input.now,
+    });
+  }
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
@@ -7956,12 +8011,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // pool is still exhausted, re-defer with backoff instead of promoting a run
     // that would dispatch and immediately 429. PEN-382.
     if (dueRun.scheduledRetryReason === CCROTATE_CAPACITY_RETRY_REASON) {
-      const capacity = await ccrotateGate.checkAdapter({
-        adapterType: agent.adapterType,
-        agentId: dueRun.agentId,
+      let capacity: {
+        target: "claude" | "codex";
+        reason: string;
+        resumeAt: Date | null;
+        penstockProvider?: string;
+        penstockModel?: string;
+        penstockRetryAfterSeconds?: number | null;
+      } | null = null;
+      const penstockCapacity = await checkPenstockAvailabilityForAgent({
+        agent,
         now,
+        issueId: readNonEmptyString(contextSnapshot.issueId),
+        heartbeatRunId: dueRun.id,
       });
-      if (!capacity.allow) {
+      if (!penstockCapacity.allow) {
+        capacity = {
+          target: "claude",
+          reason: penstockCapacity.reason,
+          resumeAt: penstockCapacity.resumeAt,
+          penstockProvider: penstockCapacity.provider,
+          penstockModel: penstockCapacity.model,
+          penstockRetryAfterSeconds: penstockCapacity.retryAfterSeconds,
+        };
+      } else {
+        const ccrotateCapacity = await ccrotateGate.checkAdapter({
+          adapterType: agent.adapterType,
+          agentId: dueRun.agentId,
+          now,
+        });
+        if (!ccrotateCapacity.allow) {
+          capacity = {
+            target: ccrotateCapacity.target,
+            reason: ccrotateCapacity.reason,
+            resumeAt: ccrotateCapacity.resumeAt,
+          };
+        }
+      }
+      if (capacity) {
         const nextAttempt = (dueRun.scheduledRetryAttempt ?? 0) + 1;
         if (nextAttempt > CCROTATE_CAPACITY_MAX_RETRY_ATTEMPTS) {
           // The pool never recovered within the retry budget. Terminate the
@@ -7972,7 +8059,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .set({
               status: "cancelled",
               finishedAt: now,
-              error: `ccrotate capacity retry exhausted after ${dueRun.scheduledRetryAttempt ?? 0} attempts; pool did not recover`,
+              error: `provider capacity retry exhausted after ${dueRun.scheduledRetryAttempt ?? 0} attempts; pool did not recover`,
               errorCode: "rate_limit_exhausted",
               updatedAt: now,
             })
@@ -7990,11 +8077,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eventType: "lifecycle",
               stream: "system",
               level: "warn",
-              message: "ccrotate capacity retry exhausted; pool did not recover within the retry budget",
+              message: "provider capacity retry exhausted; pool did not recover within the retry budget",
               payload: {
                 scheduledRetryAttempt: dueRun.scheduledRetryAttempt ?? 0,
                 maxAttempts: CCROTATE_CAPACITY_MAX_RETRY_ATTEMPTS,
                 ccrotateTarget: capacity.target,
+                providerCapacityReason: capacity.reason,
+                ...(capacity.penstockProvider ? { penstockProvider: capacity.penstockProvider } : {}),
+                ...(capacity.penstockModel ? { penstockModel: capacity.penstockModel } : {}),
               },
             });
             // Surface the stuck pool as a coalesced, operator-visible issue so a
@@ -8041,20 +8131,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             eventType: "lifecycle",
             stream: "system",
             level: "info",
-            message: "ccrotate capacity still exhausted at promotion; re-deferred with backoff",
+            message: "provider capacity still exhausted at promotion; re-deferred with backoff",
             payload: {
               scheduledRetryAttempt: nextAttempt,
               scheduledRetryAt: nextDueAt.toISOString(),
               ccrotateTarget: capacity.target,
+              providerCapacityReason: capacity.reason,
+              ...(capacity.penstockProvider ? { penstockProvider: capacity.penstockProvider } : {}),
+              ...(capacity.penstockModel ? { penstockModel: capacity.penstockModel } : {}),
+              ...(capacity.penstockRetryAfterSeconds !== undefined
+                ? { penstockRetryAfterSeconds: capacity.penstockRetryAfterSeconds }
+                : {}),
             },
           });
         }
         return { outcome: "not_promoted", run: rescheduled };
       }
-      const contextSnapshot = parseObject(dueRun.contextSnapshot);
+      const retryContextSnapshot = parseObject(dueRun.contextSnapshot);
       const resultJson = parseObject(dueRun.resultJson);
       const ccrotateTarget =
-        readNonEmptyString(contextSnapshot.ccrotateTarget) ??
+        readNonEmptyString(retryContextSnapshot.ccrotateTarget) ??
         readNonEmptyString(resultJson.ccrotateTarget) ??
         mapAdapterToCcrotateTarget(agent.adapterType);
       if (ccrotateTarget) {
@@ -14335,6 +14431,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       source === "automation" ||
       source === "assignment";
     if (gateAppliesToWake) {
+      const penstockGateResult = await checkPenstockAvailabilityForAgent({
+        agent,
+        now: new Date(),
+        issueId,
+      });
+      if (!penstockGateResult.allow) {
+        const resumeAtIso = penstockGateResult.resumeAt ? penstockGateResult.resumeAt.toISOString() : null;
+        const scheduledRetryAt =
+          penstockGateResult.resumeAt ?? new Date(Date.now() + CCROTATE_CAPACITY_DEFAULT_RETRY_DELAY_MS);
+        await db.insert(heartbeatRuns).values({
+          companyId: agent.companyId,
+          agentId,
+          invocationSource: source,
+          triggerDetail,
+          status: "scheduled_retry",
+          scheduledRetryAt,
+          scheduledRetryReason: CCROTATE_CAPACITY_RETRY_REASON,
+          scheduledRetryAttempt: 0,
+          errorCode: "rate_limit_exhausted",
+          resultJson: {
+            errorFamily: "rate_limit_exhausted",
+            ...(resumeAtIso ? { retryNotBefore: resumeAtIso, transientRetryNotBefore: resumeAtIso } : {}),
+            penstockProvider: penstockGateResult.provider,
+            penstockModel: penstockGateResult.model,
+            penstockReason: penstockGateResult.reason,
+            penstockRetryAfterSeconds: penstockGateResult.retryAfterSeconds,
+          },
+          contextSnapshot: {
+            ...enrichedContextSnapshot,
+            wakeSource: source,
+            wakeTriggerDetail: triggerDetail,
+            penstockProvider: penstockGateResult.provider,
+            penstockModel: penstockGateResult.model,
+            ...(resumeAtIso ? { penstockResumeAt: resumeAtIso } : {}),
+          },
+        });
+        return null;
+      }
+
       const gateResult = await ccrotateGate.checkAdapter({
         adapterType: agent.adapterType,
         agentId,

@@ -133,7 +133,9 @@ WORKDIR /vendor
 # Bumped 2026-06-28 to ddbaa94: split pod scheduling and startup waits so
 # first pulls of large agent images after a bump are not killed as false
 # k8s_pod_schedule_failed errors after Kubernetes has already assigned a node.
-ARG CLAUDE_K8S_REF=ddbaa94a79799fbbda0f973863cae5b97195fe0a
+# Bumped 2026-06-30 to 56811ea: add 1M model IDs and record the configured
+# model in session params so Claude jobs do not resume stale non-1M sessions.
+ARG CLAUDE_K8S_REF=56811ea11d09753324cb1aee3bce071198ea214d
 # Re-pinned 2026-06-14 to kkroo/paperclip-adapter-opencode-k8s master a533d11
 # (was 168688e): BLO-10448 — a transient k8s status-read error during the
 # completion poll was mislabeled as a deadline, surfacing as the bogus
