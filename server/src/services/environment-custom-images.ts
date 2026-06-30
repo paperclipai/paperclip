@@ -41,6 +41,7 @@ import {
   ENVIRONMENT_CUSTOM_IMAGE_RUNTIME_CONFIG_BINDING_METADATA_KEY,
   defaultEnvironmentCustomImageRuntimeConfigBinding,
   normalizeEnvironmentCustomImageRuntimeConfigBinding,
+  environmentCustomImageTemplateFromRow,
   readEnvironmentCustomImageTemplateKind as readTemplateKind,
 } from "./environment-custom-image-runtime.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -49,7 +50,6 @@ const ACTIVE_SETUP_STATUSES = ["starting", "waiting_for_user", "capturing"] as c
 const DEFAULT_SETUP_TTL_SECONDS = 60 * 60;
 const DEFAULT_CONNECTION_EXPIRES_IN_MINUTES = 15;
 
-type TemplateRow = typeof environmentCustomImageTemplates.$inferSelect;
 type SetupSessionRow = typeof environmentCustomImageSetupSessions.$inferSelect;
 
 export interface EnvironmentCustomImageOverview {
@@ -67,28 +67,6 @@ export interface EnvironmentCustomImageSetupCleanupResult {
   scanned: number;
   timedOut: number;
   failed: number;
-}
-
-function toTemplate(row: TemplateRow): EnvironmentCustomImageTemplate {
-  return {
-    id: row.id,
-    companyId: row.companyId,
-    environmentId: row.environmentId,
-    provider: row.provider,
-    templateKind: readTemplateKind(row.templateKind),
-    templateRef: row.templateRef,
-    sourceTemplateRef: row.sourceTemplateRef ?? null,
-    sourceEnvironmentConfigFingerprint: row.sourceEnvironmentConfigFingerprint ?? null,
-    status: row.status,
-    createdByUserId: row.createdByUserId ?? null,
-    createdByAgentId: row.createdByAgentId ?? null,
-    capturedAt: row.capturedAt ?? null,
-    lastUsedAt: row.lastUsedAt ?? null,
-    supersededByTemplateId: row.supersededByTemplateId ?? null,
-    metadata: row.metadata ?? null,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  };
 }
 
 function toSession(row: SetupSessionRow): EnvironmentCustomImageSetupSession {
@@ -217,7 +195,7 @@ async function resolveActiveTemplate(
     .where(and(...conditions))
     .orderBy(desc(environmentCustomImageTemplates.capturedAt), desc(environmentCustomImageTemplates.createdAt))
     .then((rows) => rows[0] ?? null);
-  return row ? toTemplate(row) : null;
+  return row ? environmentCustomImageTemplateFromRow(row) : null;
 }
 
 export function environmentCustomImageService(
@@ -232,7 +210,7 @@ export function environmentCustomImageService(
       .from(environmentCustomImageTemplates)
       .where(eq(environmentCustomImageTemplates.id, id))
       .then((rows) => rows[0] ?? null);
-    return row ? toTemplate(row) : null;
+    return row ? environmentCustomImageTemplateFromRow(row) : null;
   }
 
   async function getSessionById(id: string): Promise<EnvironmentCustomImageSetupSession | null> {
@@ -789,7 +767,7 @@ export function environmentCustomImageService(
         }
         return {
           session: promotedSession,
-          template: toTemplate(templateRow),
+          template: environmentCustomImageTemplateFromRow(templateRow),
           connectionPayload: null,
         };
       } catch (error) {
@@ -859,8 +837,8 @@ export function environmentCustomImageService(
       });
       if (!supersededRow || !activeRow) throw new Error("Failed to roll back environment customImage template");
       return {
-        activeTemplate: toTemplate(activeRow),
-        supersededTemplate: toTemplate(supersededRow),
+        activeTemplate: environmentCustomImageTemplateFromRow(activeRow),
+        supersededTemplate: environmentCustomImageTemplateFromRow(supersededRow),
       };
     },
 
@@ -884,7 +862,7 @@ export function environmentCustomImageService(
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!row) throw notFound("Active environment customImage template not found");
-      return toTemplate(row);
+      return environmentCustomImageTemplateFromRow(row);
     },
 
     cleanupExpiredSetupSessions: async (input: {

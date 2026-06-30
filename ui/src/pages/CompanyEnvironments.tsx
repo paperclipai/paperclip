@@ -395,7 +395,7 @@ function EnvironmentImageTemplatePanel({
     mutationFn: () => environmentsApi.disableCustomImageTemplate(environment.id, companyId),
     onSuccess: (template) => {
       queryClient.setQueryData(overviewKey, (current: typeof overviewQuery.data) => ({
-        activeTemplate: template.status === "active" ? template : null,
+        activeTemplate: null,
         activeSession: null,
         latestSession: current?.latestSession ?? null,
       }));

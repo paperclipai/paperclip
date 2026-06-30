@@ -111,7 +111,7 @@ export function applyCustomImageTemplateToSandboxConfig(
   return next as SandboxEnvironmentConfig;
 }
 
-function toTemplate(row: TemplateRow): EnvironmentCustomImageTemplate {
+export function environmentCustomImageTemplateFromRow(row: TemplateRow): EnvironmentCustomImageTemplate {
   return {
     id: row.id,
     companyId: row.companyId,
@@ -156,7 +156,7 @@ export async function resolveActiveEnvironmentCustomImageTemplateForRuntime(
     .then((rows) => rows[0] ?? null);
   if (!row) return input.runtimeConfig;
 
-  const active = toTemplate(row);
+  const active = environmentCustomImageTemplateFromRow(row);
   if (!active.templateRef) return input.runtimeConfig;
 
   // An active template is an explicit, environment+provider-scoped artifact: the

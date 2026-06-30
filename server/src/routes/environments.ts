@@ -173,7 +173,9 @@ export function environmentRoutes(
     }
     const companyIds = await instanceSettings.listCompanyIds();
     if (companyIds.length === 1 && companyIds[0]) {
-      return companyIds[0];
+      const companyId = companyIds[0];
+      assertCustomImageCompanyAccess(req, companyId);
+      return companyId;
     }
     throw unprocessable("companyId query parameter is required for environment customImage setup.");
   }

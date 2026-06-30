@@ -346,6 +346,20 @@ describe("environment customImage setup routes", () => {
     expect(mockEnvironmentCustomImageService.refreshSetupSession).not.toHaveBeenCalled();
   });
 
+  it("denies single-company fallback when the board actor is not a member", async () => {
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-2"]);
+
+    const res = await request(createApp(boardActor({
+      companyIds: ["company-1"],
+      isInstanceAdmin: false,
+    })))
+      .post("/api/environments/env-1/custom-image-setup-sessions")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(mockEnvironmentCustomImageService.startSetupSession).not.toHaveBeenCalled();
+  });
+
   it("finishes and promotes a template while logging redacted template details", async () => {
     mockEnvironmentCustomImageService.getSessionById.mockResolvedValue(createSession());
 
