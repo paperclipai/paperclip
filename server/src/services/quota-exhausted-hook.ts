@@ -4,21 +4,19 @@ import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
-// 60s gives `ccrotate next`'s pool-probe step room to finish under load —
-// when Anthropic's per-org Usage API throttles, probing 10 accounts can
-// take 30–45s. The earlier 30s ceiling was killing `next` mid-probe in
-// ~85% of hook fires (observed 2026-05-09 00:11–00:48Z) so the active
-// account never got switched and the agent's onSuccess wakeup never fired,
-// leaving runs to self-recover only via the writeback's tier-cache
-// candidate-skip on the NEXT heartbeat.
+// 60s gives the configured recovery command room to finish under load — a
+// quota-recovery action (e.g. rotating/refreshing credentials) can take
+// 30–45s when the upstream provider is throttling. An earlier 30s ceiling was
+// killing such commands mid-run in ~85% of hook fires (observed 2026-05-09
+// 00:11–00:48Z), so the recovery never completed and the agent's onSuccess
+// wakeup never fired.
 //
 // 60s == DEBOUNCE_MS is intentional: the inFlight guard already coalesces
 // concurrent hooks onto a single shared promise, so a hook that takes the
-// full 60s simply holds the debounce window; we never get two snaps racing.
+// full 60s simply holds the debounce window; we never get two runs racing.
 const HOOK_TIMEOUT_MS = 60_000;
 const DEBOUNCE_MS = 60_000;
 const MAX_OUTPUT_BYTES = 16 * 1024;
-const LOCAL_CCROTATE_COMMAND_RE = /(^|[\s;&|()])ccrotate(?=\s|$)/;
 
 interface RunResult {
   ok: boolean;
@@ -50,26 +48,14 @@ function resolveCommand(configured: string | null): {
   source: "instance_settings" | "env" | null;
 } {
   if (configured) {
-    return {
-      command: removeRetiredLocalCcrotateFragments(configured),
-      source: "instance_settings",
-    };
+    return { command: configured, source: "instance_settings" };
   }
   if (process.env.PAPERCLIP_QUOTA_HOOK_ALLOW_ENV !== "1") {
     return { command: null, source: null };
   }
   const envCmd = process.env.PAPERCLIP_QUOTA_EXHAUSTED_CMD?.trim();
   if (!envCmd) return { command: null, source: null };
-  return { command: removeRetiredLocalCcrotateFragments(envCmd), source: "env" };
-}
-
-function removeRetiredLocalCcrotateFragments(command: string): string | null {
-  if (!process.env.CCROTATE_STATE_URL?.trim()) return command;
-  const kept = command
-    .split(";")
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0 && !LOCAL_CCROTATE_COMMAND_RE.test(part));
-  return kept.length > 0 ? kept.join("; ") : null;
+  return { command: envCmd, source: "env" };
 }
 
 function runCommand(command: string, env: Record<string, string>): Promise<RunResult> {
