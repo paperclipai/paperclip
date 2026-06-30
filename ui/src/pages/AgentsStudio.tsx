@@ -9,6 +9,7 @@ import {
   Factory,
   Play,
   Plus,
+  Rocket,
   Server,
   ShoppingCart,
   Trash2,
@@ -246,6 +247,13 @@ function WorkflowRow({
     enabled: expanded,
   });
 
+  const [channel, setChannel] = useState<{ token: string; path: string } | null>(null);
+  const deployMutation = useMutation({
+    mutationFn: () => agentsStudioApi.deployChannel(companyId, workflow.id),
+    onSuccess: (res) => setChannel({ token: res.token, path: res.path }),
+  });
+  const channelUrl = channel ? `${window.location.origin}${channel.path}` : "";
+
   return (
     <div className="rounded-lg border bg-card p-4 shadow-sm">
       <div className="flex items-start justify-between gap-3">
@@ -278,6 +286,16 @@ function WorkflowRow({
             <Play className="mr-1.5 h-3.5 w-3.5" />
             {running ? "Running…" : "Run"}
           </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => deployMutation.mutate()}
+            disabled={deployMutation.isPending}
+            title="Mint a channel URL + token so Slack/Teams/web can run this workflow"
+          >
+            <Rocket className="mr-1.5 h-3.5 w-3.5" />
+            {deployMutation.isPending ? "Deploying…" : "Deploy"}
+          </Button>
           <Button size="sm" variant="ghost" onClick={onToggleRuns}>
             {expanded ? "Hide runs" : "Runs"}
           </Button>
@@ -286,6 +304,21 @@ function WorkflowRow({
           </Button>
         </div>
       </div>
+
+      {channel && (
+        <div className="mt-3 rounded-md border border-dashed bg-muted/40 p-3">
+          <p className="mb-1 text-xs font-medium">Channel deployed — point Slack / Teams / web at:</p>
+          <pre className="overflow-x-auto whitespace-pre-wrap break-all text-[10px] text-muted-foreground">
+{`curl -X POST ${channelUrl} \\
+  -H "Authorization: Bearer ${channel.token}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"message":"Onboard Jane Doe"}'`}
+          </pre>
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            Save the token now — it isn’t shown again. Re-deploy to rotate it.
+          </p>
+        </div>
+      )}
 
       {expanded && (
         <div className="mt-3 border-t pt-3">

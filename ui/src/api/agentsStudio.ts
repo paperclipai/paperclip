@@ -57,6 +57,12 @@ export const agentsStudioApi = {
   run: (companyId: string, id: string, trigger = "manual") =>
     api.post<{ run: AgentWorkflowRun }>(`/companies/${companyId}/workflows/${id}/run`, { trigger }),
 
+  deployChannel: (companyId: string, id: string) =>
+    api.post<{ token: string; workflowId: string; path: string }>(
+      `/companies/${companyId}/workflows/${id}/deploy-channel`,
+      {},
+    ),
+
   listAgents: (companyId: string) =>
     api.get<{ agents: FactoryAgentSummary[] }>(`/companies/${companyId}/agents-studio/agents`),
 

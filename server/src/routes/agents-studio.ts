@@ -172,6 +172,17 @@ export function agentsStudioRoutes(db: Db, options: { pluginWorkerManager?: unkn
     res.json({ ok: true });
   });
 
+  // Deploy a workflow to a generic inbound channel — mints a bearer token an
+  // external surface (Slack/Teams/web) presents to POST /api/channels/:id.
+  router.post("/companies/:companyId/workflows/:id/deploy-channel", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const id = req.params.id as string;
+    assertCompanyAccess(req, companyId);
+    const result = await svc.deployChannel(companyId, id);
+    if (!result) throw notFound("Workflow not found");
+    res.status(201).json(result);
+  });
+
   router.get("/companies/:companyId/workflows/:id/runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     const id = req.params.id as string;

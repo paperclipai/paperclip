@@ -13,6 +13,9 @@ export const agentWorkflows = pgTable(
     steps: jsonb("steps").$type<WorkflowStep[]>().notNull().default([]),
     templateKey: text("template_key"),
     tags: jsonb("tags").$type<string[]>().notNull().default([]),
+    // Channel deploy token — bearer secret an external surface (Slack/Teams/web)
+    // presents to run this workflow inbound. Null until deployed.
+    deployToken: text("deploy_token"),
     createdByAgentId: uuid("created_by_agent_id"),
     createdByUserId: text("created_by_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -1,3 +1,4 @@
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWorkflowRuns, agentWorkflows, agents } from "@paperclipai/db";
@@ -324,7 +325,7 @@ export function agentsStudioService(db: Db) {
       companyId: string,
       workflowId: string,
       trigger: string,
-      deps?: { pluginWorkerManager?: unknown },
+      deps?: { pluginWorkerManager?: unknown; message?: string },
     ) {
       const workflow = await db
         .select()
@@ -343,7 +344,9 @@ export function agentsStudioService(db: Db) {
 
       const parent = await issues.create(companyId, {
         title: `Workflow: ${workflow.name}`,
-        description: `Created by Agents Studio to run the "${workflow.name}" workflow on the AI Factory.`,
+        description:
+          `Created by Agents Studio to run the "${workflow.name}" workflow on the AI Factory.` +
+          (deps?.message ? `\n\nInbound request from channel:\n${deps.message}` : ""),
         status: "todo",
         priority: "medium",
         originKind: "ai_factory_workflow",
@@ -423,6 +426,54 @@ export function agentsStudioService(db: Db) {
         })
         .returning()
         .then((rows) => rows[0]!);
+    },
+
+    /** Mint (or rotate) a channel deploy token for a workflow. */
+    async deployChannel(companyId: string, workflowId: string) {
+      const token = randomBytes(24).toString("hex");
+      const row = await db
+        .update(agentWorkflows)
+        .set({ deployToken: token, status: "active", updatedAt: new Date() })
+        .where(and(eq(agentWorkflows.companyId, companyId), eq(agentWorkflows.id, workflowId)))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      return { token, workflowId, path: `/api/channels/${workflowId}` };
+    },
+
+    /**
+     * Inbound channel entry point: verify the bearer token against the
+     * workflow's deploy token (constant-time), run it, and return an ack.
+     * Returns null when the workflow is unknown or the token is wrong/absent —
+     * the route maps that to 401 without leaking which.
+     */
+    async runByToken(
+      workflowId: string,
+      token: string | undefined,
+      deps?: { pluginWorkerManager?: unknown; message?: string },
+    ) {
+      const workflow = await db
+        .select()
+        .from(agentWorkflows)
+        .where(eq(agentWorkflows.id, workflowId))
+        .then((rows) => rows[0] ?? null);
+      if (!workflow?.deployToken || !token) return null;
+      const a = Buffer.from(token);
+      const b = Buffer.from(workflow.deployToken);
+      if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+
+      const run = await this.run(workflow.companyId, workflowId, "channel", {
+        pluginWorkerManager: deps?.pluginWorkerManager,
+        message: deps?.message,
+      });
+      if (!run) return null;
+      return {
+        ok: true as const,
+        runId: run.id,
+        status: run.status,
+        message: `Workflow "${workflow.name}" initiated.`,
+        steps: run.stepResults,
+      };
     },
   };
 }
