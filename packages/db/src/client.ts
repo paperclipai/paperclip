@@ -26,8 +26,9 @@ const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journa
  * (the only project route that uses a transaction) after an embedded-Postgres flap.
  */
 export const APP_POOL_OPTIONS = {
-  // Bound how long a single statement waits for an idle pooled connection,
-  // and how long establishing a fresh connection may take (seconds).
+  // Bound how long establishing a fresh TCP connection may take (seconds).
+  // Note: postgres-js has no option to limit how long a query waits for an
+  // idle pooled connection; that is governed by the `max` pool cap instead.
   connect_timeout: 30,
   // Close connections after this many seconds idle so stale/half-open sockets
   // do not sit in the pool waiting to be handed to the next transaction.
