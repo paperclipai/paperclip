@@ -3083,6 +3083,20 @@ export function SkillDetailPage({
                 <span className="hidden sm:inline">Fork</span>
                 <span className="font-medium text-foreground">{detail.forkCount}</span>
               </button>
+              <button
+                type="button"
+                onClick={onDelete}
+                disabled={deletePending}
+                className="inline-flex items-center gap-1.5 border-l border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                title={
+                  detail.usedByAgents.length > 0
+                    ? "Detach this skill from all agents before deleting it."
+                    : "Delete this skill from the company library."
+                }
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">{deletePending ? "Deleting…" : "Delete"}</span>
+              </button>
             </div>
           </div>
         </div>
