@@ -69,6 +69,17 @@ export {
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
 } from "./instance.js";
+export type {
+  ClaudeAccountTier,
+  ClaudeUsageWindow,
+  ClaudeAccountUsageSnapshot,
+  ClaudeAccountsUsageResponse,
+} from "./claude-account-usage.js";
+export {
+  CLAUDE_ACCOUNT_TIERS,
+  DEFAULT_CLAUDE_ACCOUNT_TIERS,
+  inferClaudeAccountTier,
+} from "./claude-account-usage.js";
 export {
   TRUST_PRESETS,
   DEFAULT_TRUST_PRESET,

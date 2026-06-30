@@ -12,6 +12,7 @@ export { goalRoutes } from "./goals.js";
 export { approvalRoutes } from "./approvals.js";
 export { secretRoutes } from "./secrets.js";
 export { costRoutes } from "./costs.js";
+export { claudeAccountsRoutes } from "./claude-accounts.js";
 export { activityRoutes } from "./activity.js";
 export { dashboardRoutes } from "./dashboard.js";
 export { managementRoutes } from "./management.js";
