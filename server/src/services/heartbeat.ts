@@ -121,6 +121,7 @@ import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
+import { buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
@@ -408,6 +409,9 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+// Routes and the scheduler construct separate heartbeatService instances, but
+// they must agree on in-process adapter executions when reaping stale runs.
+const activeRunExecutions = new Set<string>();
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
@@ -2917,7 +2921,7 @@ export async function buildPaperclipWakePayload(input: {
     });
   }
 
-  const annotationDeltas = annotationCommentId
+  const annotationDeltas = annotationCommentId && issueId
     ? await input.db
       .select({
         id: documentAnnotationComments.id,
@@ -2941,7 +2945,10 @@ export async function buildPaperclipWakePayload(input: {
       .innerJoin(documentAnnotationThreads, eq(documentAnnotationComments.threadId, documentAnnotationThreads.id))
       .where(and(
         eq(documentAnnotationComments.companyId, input.companyId),
+        eq(documentAnnotationComments.issueId, issueId),
         eq(documentAnnotationComments.id, annotationCommentId),
+        eq(documentAnnotationThreads.companyId, input.companyId),
+        eq(documentAnnotationThreads.issueId, issueId),
       ))
       .then((rows) => rows.map((row) => ({
         id: row.id,
@@ -2967,6 +2974,21 @@ export async function buildPaperclipWakePayload(input: {
             : { type: row.authorType, id: null },
       })))
     : [];
+  const interactionId = readNonEmptyString(input.contextSnapshot.interactionId);
+  const interactionKind = readNonEmptyString(input.contextSnapshot.interactionKind);
+  const interactionStatus = readNonEmptyString(input.contextSnapshot.interactionStatus);
+  const planReviewContext = issueId
+    ? await buildPlanReviewContext({
+      db: input.db,
+      companyId: input.companyId,
+      issueId,
+      issueWorkMode: issueSummary?.workMode ?? null,
+      includeForIssueComment: commentIds.length > 0,
+      includeForAnnotationDelta: annotationDeltas.length > 0,
+      interactionId,
+    })
+    : null;
+  const payloadTruncated = truncated || planReviewContext?.truncated === true;
 
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
@@ -2997,8 +3019,8 @@ export async function buildPaperclipWakePayload(input: {
           instruction: readNonEmptyString(input.contextSnapshot.livenessContinuationInstruction),
         }
       : null,
-    interactionKind: readNonEmptyString(input.contextSnapshot.interactionKind),
-    interactionStatus: readNonEmptyString(input.contextSnapshot.interactionStatus),
+    interactionKind,
+    interactionStatus,
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
     dependencyBlockedInteraction: input.contextSnapshot.dependencyBlockedInteraction === true,
     treeHoldInteraction: input.contextSnapshot.treeHoldInteraction === true,
@@ -3028,13 +3050,14 @@ export async function buildPaperclipWakePayload(input: {
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
     annotationDeltas,
+    planReviewContext,
     commentWindow: {
       requestedCount: commentIds.length,
       includedCount: comments.length,
       missingCount: missingCommentCount,
     },
-    truncated,
-    fallbackFetchNeeded: truncated || missingCommentCount > 0,
+    truncated: payloadTruncated,
+    fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
   };
 }
 
@@ -3536,7 +3559,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     environmentRuntime,
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
-  const activeRunExecutions = new Set<string>();
   const liveRunExecutions = {
     has(id: string) {
       return runningProcesses.has(id) || activeRunExecutions.has(id);

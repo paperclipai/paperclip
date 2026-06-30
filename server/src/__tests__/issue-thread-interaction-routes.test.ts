@@ -667,6 +667,21 @@ describe.sequential("issue thread interaction routes", () => {
           interactionId: "interaction-plan",
           interactionKind: "request_confirmation",
           interactionStatus: "accepted",
+          planReviewInteraction: expect.objectContaining({
+            id: "interaction-plan",
+            kind: "request_confirmation",
+            status: "accepted",
+            acceptedTargetRevision: expect.objectContaining({
+              issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              documentId: "document-plan",
+              key: "plan",
+              revisionId: "revision-plan",
+              revisionNumber: 1,
+            }),
+            result: expect.objectContaining({
+              outcome: "accepted",
+            }),
+          }),
           forceFreshSession: true,
           workspaceRefreshReason: "accepted_plan_confirmation",
         }),

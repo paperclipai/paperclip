@@ -686,7 +686,7 @@ function ImageGalleryModalStory() {
       description="The image gallery opens full-screen with attachment metadata, download action, and previous/next navigation."
       badges={["full-screen", "navigation", "visual attachment"]}
     >
-      <ImageGalleryModal images={galleryImages} initialIndex={0} open onOpenChange={() => undefined} />
+      <ImageGalleryModal items={galleryImages} initialIndex={0} open onOpenChange={() => undefined} />
     </DialogStory>
   );
 }

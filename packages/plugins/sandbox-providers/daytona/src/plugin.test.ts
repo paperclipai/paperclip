@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockCreate = vi.hoisted(() => vi.fn());
 const mockGet = vi.hoisted(() => vi.fn());
+const mockSnapshotGet = vi.hoisted(() => vi.fn());
+const mockSnapshotDelete = vi.hoisted(() => vi.fn());
 const { MockDaytonaNotFoundError, MockDaytonaTimeoutError } = vi.hoisted(() => {
   class MockDaytonaNotFoundError extends Error {}
   class MockDaytonaTimeoutError extends Error {}
@@ -12,6 +14,10 @@ vi.mock("@daytonaio/sdk", () => ({
   Daytona: class MockDaytona {
     create = mockCreate;
     get = mockGet;
+    snapshot = {
+      get: mockSnapshotGet,
+      delete: mockSnapshotDelete,
+    };
     constructor(_config?: unknown) {}
   },
   DaytonaNotFoundError: MockDaytonaNotFoundError,
@@ -42,6 +48,11 @@ function createMockSandbox(overrides: {
     recover: vi.fn().mockResolvedValue(undefined),
     resize: vi.fn().mockResolvedValue(undefined),
     delete: vi.fn().mockResolvedValue(undefined),
+    createSshAccess: vi.fn().mockResolvedValue({
+      token: "ssh-token-secret",
+      command: "ssh ssh-token-secret@ssh.app.daytona.io",
+    }),
+    _experimental_createSnapshot: vi.fn().mockResolvedValue(undefined),
     fs: {
       createFolder: vi.fn().mockResolvedValue(undefined),
       uploadFile: vi.fn().mockResolvedValue(undefined),
@@ -61,6 +72,8 @@ describe("Daytona sandbox provider plugin", () => {
   beforeEach(() => {
     mockCreate.mockReset();
     mockGet.mockReset();
+    mockSnapshotGet.mockReset();
+    mockSnapshotDelete.mockReset();
     vi.restoreAllMocks();
     delete process.env.DAYTONA_API_KEY;
   });
@@ -72,6 +85,15 @@ describe("Daytona sandbox provider plugin", () => {
     });
     expect(plugin.definition.onEnvironmentAcquireLease).toBeTypeOf("function");
     expect(plugin.definition.onEnvironmentExecute).toBeTypeOf("function");
+    expect(plugin.definition.onEnvironmentStartInteractiveSetup).toBeTypeOf("function");
+    expect(plugin.definition.onEnvironmentCaptureTemplate).toBeTypeOf("function");
+    expect(manifest.environmentDrivers?.[0]).toMatchObject({
+      supportsInteractiveSetup: true,
+      interactiveSetupConnectionTypes: ["ssh"],
+      supportsTemplateCapture: true,
+      templateRefKind: "snapshot",
+      supportsTemplateDelete: true,
+    });
   });
 
   it("normalizes config and validates the API key fallback", async () => {
@@ -282,6 +304,271 @@ describe("Daytona sandbox provider plugin", () => {
     );
   });
 
+  it("starts an interactive setup sandbox with redacted metadata and one-time SSH payload", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockCreate.mockResolvedValue(sandbox);
+
+    const session = await plugin.definition.onEnvironmentStartInteractiveSetup?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      sessionId: "setup-1",
+      sourceTemplateRef: "existing-secret-snapshot",
+      sourceTemplateKind: "snapshot",
+      connectionExpiresInMinutes: 30,
+      config: {
+        image: "node:20",
+        timeoutMs: 300000,
+        reuseLease: false,
+      },
+    });
+
+    const [createParams] = mockCreate.mock.calls[0] as [Record<string, unknown>];
+    expect(createParams).toMatchObject({
+      snapshot: "existing-secret-snapshot",
+      labels: {
+        "paperclip-provider": "daytona",
+        "paperclip-setup-session-id": "setup-1",
+        "paperclip-purpose": "interactive_setup",
+      },
+    });
+    expect(createParams).not.toHaveProperty("image");
+    expect(sandbox.createSshAccess).toHaveBeenCalledWith(30);
+    expect(session).toMatchObject({
+      providerLeaseId: "sandbox-123",
+      status: "waiting_for_user",
+      connectionSummary: {
+        type: "ssh",
+        username: "token",
+        hostRedacted: true,
+        portRedacted: true,
+        commandRedacted: true,
+      },
+      connectionPayload: {
+        type: "ssh",
+        command: "ssh ssh-token-secret@ssh.app.daytona.io",
+        token: "ssh-token-secret",
+      },
+      metadata: {
+        provider: "daytona",
+        connectionRedacted: true,
+        sourceTemplateRefRedacted: true,
+      },
+    });
+    expect(JSON.stringify(session?.metadata)).not.toContain("ssh-token-secret");
+    expect(JSON.stringify(session?.metadata)).not.toContain("existing-secret-snapshot");
+    expect(JSON.stringify(session?.connectionSummary)).not.toContain("ssh-token-secret");
+  });
+
+  it("starts interactive setup from an image source when the environment is image-backed", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockCreate.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentStartInteractiveSetup?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      sessionId: "setup-image-1",
+      sourceTemplateRef: "node:20",
+      sourceTemplateKind: "image",
+      connectionExpiresInMinutes: 30,
+      config: {
+        snapshot: "base-snapshot",
+        timeoutMs: 300000,
+        reuseLease: false,
+      },
+    });
+
+    const [createParams] = mockCreate.mock.calls[0] as [Record<string, unknown>];
+    expect(createParams).toMatchObject({
+      image: "node:20",
+      labels: {
+        "paperclip-provider": "daytona",
+        "paperclip-setup-session-id": "setup-image-1",
+        "paperclip-purpose": "interactive_setup",
+      },
+    });
+    expect(createParams).not.toHaveProperty("snapshot");
+  });
+
+  it("cleans up the setup sandbox if SSH access is unsupported", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    delete (sandbox as { createSshAccess?: unknown }).createSshAccess;
+    mockCreate.mockResolvedValue(sandbox);
+
+    await expect(plugin.definition.onEnvironmentStartInteractiveSetup?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      sessionId: "setup-1",
+      config: {
+        snapshot: "base-snapshot",
+        timeoutMs: 300000,
+        reuseLease: false,
+      },
+    })).rejects.toThrow("Sandbox.createSshAccess");
+
+    expect(sandbox.delete).toHaveBeenCalledWith(300);
+  });
+
+  it("returns setup status without minting SSH access unless requested", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-setup" });
+    mockGet.mockResolvedValue(sandbox);
+
+    const session = await plugin.definition.onEnvironmentGetInteractiveSetup?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      providerLeaseId: "sandbox-setup",
+      includeConnectionPayload: false,
+      config: {
+        snapshot: "base-snapshot",
+        timeoutMs: 300000,
+        reuseLease: false,
+      },
+    });
+
+    expect(sandbox.createSshAccess).not.toHaveBeenCalled();
+    expect(session).toMatchObject({
+      providerLeaseId: "sandbox-setup",
+      status: "waiting_for_user",
+      connectionSummary: {
+        type: "ssh",
+        hostRedacted: true,
+        portRedacted: true,
+      },
+      connectionPayload: null,
+    });
+  });
+
+  it("returns missing setup status when the Daytona sandbox is gone", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    mockGet.mockRejectedValue(new MockDaytonaNotFoundError("missing"));
+
+    await expect(plugin.definition.onEnvironmentGetInteractiveSetup?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      providerLeaseId: "sandbox-missing",
+      includeConnectionPayload: true,
+      config: {
+        snapshot: "base-snapshot",
+        timeoutMs: 300000,
+        reuseLease: false,
+      },
+    })).resolves.toEqual({
+      providerLeaseId: null,
+      status: "missing",
+      connectionSummary: null,
+      connectionPayload: null,
+      metadata: {
+        provider: "daytona",
+        missing: true,
+      },
+    });
+  });
+
+  it("captures a Daytona snapshot from a live setup sandbox with redacted metadata", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-setup" });
+    mockGet.mockResolvedValue(sandbox);
+
+    const result = await plugin.definition.onEnvironmentCaptureTemplate?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      providerLeaseId: "sandbox-setup",
+      templateLabel: " Paperclip Env 1 ",
+      sourceTemplateRef: "source-secret-snapshot",
+      previousTemplateRef: "previous-secret-snapshot",
+      timeoutMs: 120000,
+      config: {
+        snapshot: "base-snapshot",
+        timeoutMs: 300000,
+        reuseLease: false,
+      },
+    });
+
+    expect(sandbox._experimental_createSnapshot).toHaveBeenCalledWith("paperclip-env-1", 120);
+    expect(result).toMatchObject({
+      templateKind: "snapshot",
+      templateRef: "paperclip-env-1",
+      metadata: {
+        provider: "daytona",
+        sandboxId: "sandbox-setup",
+        sourceTemplateRefRedacted: true,
+        previousTemplateRefRedacted: true,
+      },
+    });
+    expect(JSON.stringify(result?.metadata)).not.toContain("source-secret-snapshot");
+    expect(JSON.stringify(result?.metadata)).not.toContain("previous-secret-snapshot");
+  });
+
+  it("cancels an interactive setup sandbox by deleting it", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-setup" });
+    mockGet.mockResolvedValue(sandbox);
+
+    const result = await plugin.definition.onEnvironmentCancelInteractiveSetup?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      providerLeaseId: "sandbox-setup",
+      reason: "user_cancelled",
+      config: {
+        snapshot: "base-snapshot",
+        timeoutMs: 300000,
+        reuseLease: false,
+      },
+    });
+
+    expect(sandbox.delete).toHaveBeenCalledWith(300);
+    expect(result).toMatchObject({
+      status: "cancelled",
+      metadata: {
+        provider: "daytona",
+        sandboxId: "sandbox-setup",
+        reason: "user_cancelled",
+      },
+    });
+  });
+
+  it("deletes Daytona snapshot templates through the snapshot service", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const snapshot = { name: "captured-template" };
+    mockSnapshotGet.mockResolvedValue(snapshot);
+
+    const result = await plugin.definition.onEnvironmentDeleteTemplate?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      templateRef: "captured-template",
+      templateKind: "snapshot",
+      reason: "cleanup",
+      config: {
+        snapshot: "base-snapshot",
+        timeoutMs: 300000,
+        reuseLease: false,
+      },
+    });
+
+    expect(mockSnapshotGet).toHaveBeenCalledWith("captured-template");
+    expect(mockSnapshotDelete).toHaveBeenCalledWith(snapshot);
+    expect(result).toEqual({
+      deleted: true,
+      metadata: {
+        provider: "daytona",
+        templateKind: "snapshot",
+        templateRefRedacted: true,
+        reason: "cleanup",
+      },
+    });
+  });
+
   it("passes configured resources to Daytona for image-based creation", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
@@ -315,6 +602,36 @@ describe("Daytona sandbox provider plugin", () => {
     expect(sandbox.resize).not.toHaveBeenCalled();
   });
 
+  it("drops resource settings for snapshot-backed runtime creation instead of failing", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockCreate.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-1",
+      agentId: "agent-1",
+      executionWorkspaceId: "workspace-1",
+      adapterType: "codex_local",
+      config: {
+        snapshot: "captured-snapshot",
+        cpu: 4,
+        memory: 8,
+        disk: 20,
+        timeoutMs: 300000,
+        reuseLease: true,
+      },
+    });
+
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    const [createParams] = mockCreate.mock.calls[0] as [Record<string, unknown>];
+    expect(createParams).toMatchObject({ snapshot: "captured-snapshot" });
+    expect(createParams).not.toHaveProperty("resources");
+    expect(createParams).not.toHaveProperty("image");
+  });
+
   it("rejects resource settings for snapshot-backed creation", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const result = await plugin.definition.onEnvironmentValidateConfig?.({
@@ -337,7 +654,7 @@ describe("Daytona sandbox provider plugin", () => {
     });
   });
 
-  it("rejects resource settings for default snapshot creation before creating a sandbox", async () => {
+  it("rejects resource settings for default sandbox creation before creating a sandbox", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
 
     await expect(plugin.definition.onEnvironmentAcquireLease?.({
@@ -355,7 +672,7 @@ describe("Daytona sandbox provider plugin", () => {
         reuseLease: false,
       },
     })).rejects.toThrow(
-      "Daytona resource settings require image-backed sandbox creation; snapshot/default sandbox creation cannot override CPU, memory, disk, or GPU.",
+      "Daytona resource settings require image-backed sandbox creation; default sandbox creation cannot override CPU, memory, disk, or GPU.",
     );
 
     expect(mockCreate).not.toHaveBeenCalled();

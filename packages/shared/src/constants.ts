@@ -334,6 +334,7 @@ export type IssueTreeHoldReleasePolicyStrategy = (typeof ISSUE_TREE_HOLD_RELEASE
 
 export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY = "continuation-summary" as const;
 export const PIPELINE_CASE_BODY_DOCUMENT_KEY = "pipeline-case-body" as const;
+export const PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE = "{{pipeline_name}} / {{stage_name}}: {{case_title}}" as const;
 export const SYSTEM_ISSUE_DOCUMENT_KEYS = [
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   PIPELINE_CASE_BODY_DOCUMENT_KEY,
@@ -487,6 +488,42 @@ export type EnvironmentLeasePolicy = (typeof ENVIRONMENT_LEASE_POLICIES)[number]
 
 export const ENVIRONMENT_LEASE_CLEANUP_STATUSES = ["pending", "success", "failed"] as const;
 export type EnvironmentLeaseCleanupStatus = (typeof ENVIRONMENT_LEASE_CLEANUP_STATUSES)[number];
+
+export const ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_KINDS = [
+  "snapshot",
+  "image",
+  "provider_template",
+  "unknown",
+] as const;
+export type EnvironmentCustomImageTemplateKind = (typeof ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_KINDS)[number];
+
+export const ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_STATUSES = [
+  "active",
+  "superseded",
+  "revoked",
+  "failed",
+] as const;
+export type EnvironmentCustomImageTemplateStatus = (typeof ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_STATUSES)[number];
+
+export const ENVIRONMENT_CUSTOM_IMAGE_SETUP_SESSION_STATUSES = [
+  "starting",
+  "waiting_for_user",
+  "capturing",
+  "promoted",
+  "cancelled",
+  "timed_out",
+  "failed",
+] as const;
+export type EnvironmentCustomImageSetupSessionStatus =
+  (typeof ENVIRONMENT_CUSTOM_IMAGE_SETUP_SESSION_STATUSES)[number];
+
+export const ENVIRONMENT_CUSTOM_IMAGE_SETUP_CONNECTION_TYPES = [
+  "ssh",
+  "browser_terminal",
+  "unknown",
+] as const;
+export type EnvironmentCustomImageSetupConnectionType =
+  (typeof ENVIRONMENT_CUSTOM_IMAGE_SETUP_CONNECTION_TYPES)[number];
 
 export const ROUTINE_STATUSES = ["active", "paused", "archived"] as const;
 export type RoutineStatus = (typeof ROUTINE_STATUSES)[number];

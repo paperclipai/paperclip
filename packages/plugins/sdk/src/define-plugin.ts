@@ -53,6 +53,15 @@ import type {
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentStartInteractiveSetupParams,
+  PluginEnvironmentInteractiveSetupSession,
+  PluginEnvironmentGetInteractiveSetupParams,
+  PluginEnvironmentCaptureTemplateParams,
+  PluginEnvironmentCaptureTemplateResult,
+  PluginEnvironmentCancelInteractiveSetupParams,
+  PluginEnvironmentCancelInteractiveSetupResult,
+  PluginEnvironmentDeleteTemplateParams,
+  PluginEnvironmentDeleteTemplateResult,
   PluginEnvironmentLease,
   PluginEnvironmentProbeParams,
   PluginEnvironmentProbeResult,
@@ -324,6 +333,31 @@ export interface PluginDefinition {
   onEnvironmentExecute?(
     params: PluginEnvironmentExecuteParams,
   ): Promise<PluginEnvironmentExecuteResult>;
+
+  /** Called to start an interactive setup sandbox and return redacted connection metadata. */
+  onEnvironmentStartInteractiveSetup?(
+    params: PluginEnvironmentStartInteractiveSetupParams,
+  ): Promise<PluginEnvironmentInteractiveSetupSession>;
+
+  /** Called to read setup status and, when authorized, a one-time connection payload. */
+  onEnvironmentGetInteractiveSetup?(
+    params: PluginEnvironmentGetInteractiveSetupParams,
+  ): Promise<PluginEnvironmentInteractiveSetupSession>;
+
+  /** Called to capture a reusable provider template from a live setup sandbox. */
+  onEnvironmentCaptureTemplate?(
+    params: PluginEnvironmentCaptureTemplateParams,
+  ): Promise<PluginEnvironmentCaptureTemplateResult>;
+
+  /** Called to cancel and clean up a setup sandbox without promoting a template. */
+  onEnvironmentCancelInteractiveSetup?(
+    params: PluginEnvironmentCancelInteractiveSetupParams,
+  ): Promise<PluginEnvironmentCancelInteractiveSetupResult>;
+
+  /** Called for optional best-effort cleanup of a captured provider template. */
+  onEnvironmentDeleteTemplate?(
+    params: PluginEnvironmentDeleteTemplateParams,
+  ): Promise<PluginEnvironmentDeleteTemplateResult>;
 }
 
 // ---------------------------------------------------------------------------

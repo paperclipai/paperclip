@@ -19,7 +19,6 @@ import {
   resolveAdapterExecutionTargetTimeoutSec,
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
-  runAdapterExecutionTargetShellCommand,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
@@ -45,7 +44,6 @@ import {
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
-import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import {
   parseClaudeStreamJson,
   describeClaudeFailure,
@@ -58,7 +56,11 @@ import {
   isClaudePoisonedPreviousMessageIdError,
   isClaudeImageProcessingError,
 } from "./parse.js";
-import { prepareClaudeConfigSeed, resolveSharedClaudeConfigDir } from "./claude-config.js";
+import {
+  materializeRemoteClaudeConfig,
+  prepareClaudeConfigSeed,
+  resolveSharedClaudeConfigDir,
+} from "./claude-config.js";
 import { claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
@@ -555,21 +557,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       "stdout",
       `[paperclip] Materializing Claude auth/config into ${remoteClaudeConfigDir}.\n`,
     );
-    await runAdapterExecutionTargetShellCommand(
+    await materializeRemoteClaudeConfig({
       runId,
-      executionTarget,
-      `mkdir -p ${shellQuote(remoteClaudeConfigDir)} && ` +
-        `if [ -d ${shellQuote(remoteClaudeConfigSeedDir)} ]; then ` +
-        `cp -R ${shellQuote(`${remoteClaudeConfigSeedDir}/.`)} ${shellQuote(remoteClaudeConfigDir)}/; ` +
-        `fi`,
-      {
+      target: executionTarget,
+      remoteClaudeConfigDir,
+      remoteClaudeConfigSeedDir,
+      options: {
         cwd,
         env,
         timeoutSec: Math.max(timeoutSec, 15),
         graceSec,
         onLog,
       },
-    );
+    });
   }
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
   if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {

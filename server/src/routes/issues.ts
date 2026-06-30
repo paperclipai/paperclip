@@ -97,6 +97,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
   resolveTaskWatchdogMutationScope,
@@ -385,6 +386,33 @@ const ISSUE_WORKSPACE_AUDIT_FIELDS = new Set([
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readObject(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function readPlanConfirmationTargetForIssue(payload: unknown, issueId: string) {
+  const target = readObject(readObject(payload).target);
+  if (target.type !== "issue_document" || target.key !== "plan") return null;
+  if (readNonEmptyString(target.issueId) !== issueId) return null;
+  return {
+    issueId,
+    documentId: readNonEmptyString(target.documentId),
+    key: "plan",
+    revisionId: readNonEmptyString(target.revisionId),
+    revisionNumber: typeof target.revisionNumber === "number" ? target.revisionNumber : null,
+  };
+}
+
+function readConfirmationResultForWake(result: unknown) {
+  const parsed = readObject(result);
+  if (Object.keys(parsed).length === 0) return null;
+  return {
+    outcome: readNonEmptyString(parsed.outcome),
+    reason: readNonEmptyString(parsed.reason) ?? readNonEmptyString(parsed.rejectionReason),
+    commentId: readNonEmptyString(parsed.commentId),
+  };
 }
 
 function hasIssueWorkspaceAuditChange(previous: Record<string, unknown>) {
@@ -916,6 +944,8 @@ function queueResolvedInteractionContinuationWakeup(input: {
     continuationPolicy: string;
     sourceCommentId?: string | null;
     sourceRunId?: string | null;
+    payload?: unknown;
+    result?: unknown;
   };
   actor: { actorType: "user" | "agent"; actorId: string };
   source: string;
@@ -935,6 +965,19 @@ function queueResolvedInteractionContinuationWakeup(input: {
 
   const forceFreshSession = input.forceFreshSession === true;
   const workspaceRefreshReason = readNonEmptyString(input.workspaceRefreshReason);
+  const planTarget = readPlanConfirmationTargetForIssue(input.interaction.payload, input.issue.id);
+  const interactionResult = readConfirmationResultForWake(input.interaction.result);
+  const planReviewInteraction =
+    planTarget && input.interaction.kind === "request_confirmation"
+      ? {
+          id: input.interaction.id,
+          kind: input.interaction.kind,
+          status: input.interaction.status,
+          target: planTarget,
+          acceptedTargetRevision: input.interaction.status === "accepted" ? planTarget : null,
+          result: interactionResult,
+        }
+      : null;
   void input.heartbeat.wakeup(input.issue.assigneeAgentId, {
     source: "automation",
     triggerDetail: "system",
@@ -946,6 +989,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionStatus: input.interaction.status,
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
+      ...(planReviewInteraction ? { planReviewInteraction } : {}),
       mutation: "interaction",
     },
     requestedByActorType: input.actor.actorType,
@@ -958,6 +1002,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       interactionStatus: input.interaction.status,
       sourceCommentId: input.interaction.sourceCommentId ?? null,
       sourceRunId: input.interaction.sourceRunId ?? null,
+      ...(planReviewInteraction ? { planReviewInteraction } : {}),
       wakeReason: "issue_commented",
       source: input.source,
       ...(forceFreshSession ? { forceFreshSession: true } : {}),
@@ -3360,6 +3405,13 @@ export function issueRoutes(
       continuationSummary && redactLowTrust
         ? redactQuarantinedBodyForHigherTrust(continuationSummary)
         : continuationSummary;
+    const planReviewContext = await buildPlanReviewContext({
+      db,
+      companyId: issue.companyId,
+      issueId: issue.id,
+      issueWorkMode: issue.workMode,
+      includeForIssueComment: wakeCommentId !== null,
+    });
 
     res.json({
       issue: {
@@ -3430,6 +3482,7 @@ export function issueRoutes(
             sourceTrust: safeContinuationSummary.sourceTrust ?? null,
           }
         : null,
+      planReviewContext,
       currentExecutionWorkspace,
     });
   });

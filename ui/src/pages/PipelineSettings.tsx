@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   extractRoutineVariableNames,
   groupWarningsByStage,
   isBuiltinRoutineVariable,
   isPipelineTerminalStageKind,
+  PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE,
   syncRoutineVariablesWithTemplate,
   type ExecutionWorkspaceMode,
   type ExecutionWorkspaceSummary,
@@ -126,6 +127,7 @@ type StageConfig = {
   disabledReason?: string | null;
   automation?: {
     assigneeAgentId?: string | null;
+    titleTemplate?: string | null;
     instructionsBody?: string | null;
     projectId?: string | null;
     projectWorkspaceId?: string | null;
@@ -337,6 +339,48 @@ function nullableExecutionWorkspaceSettings(value: unknown): IssueExecutionWorks
     : null;
 }
 
+export function pipelineAutomationTitleTemplate(value: unknown): string {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE;
+}
+
+export function syncPipelineStageAutomationVariables(
+  titleTemplate: string,
+  instructionsBody: string,
+  existing: RoutineVariable[],
+): RoutineVariable[] {
+  const synced = syncRoutineVariablesWithTemplate([titleTemplate, instructionsBody], existing);
+  const syncedNames = new Set(synced.map((variable) => variable.name));
+  return [...synced, ...existing.filter((variable) => !syncedNames.has(variable.name))];
+}
+
+export function buildStageAutomationForSave(input: {
+  assigneeAgentId: string;
+  titleTemplate: string;
+  instructionsBody: string;
+  projectId: string;
+  projectWorkspaceId: string;
+  executionWorkspaceId: string;
+  executionWorkspacePreference: ExecutionWorkspaceMode | "";
+  executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+}) {
+  return {
+    assigneeAgentId: input.assigneeAgentId || null,
+    titleTemplate: pipelineAutomationTitleTemplate(input.titleTemplate),
+    instructionsBody: input.instructionsBody,
+    projectId: input.projectId || null,
+    projectWorkspaceId: input.projectId && input.projectWorkspaceId ? input.projectWorkspaceId : null,
+    executionWorkspaceId:
+      input.projectId && input.executionWorkspacePreference === "reuse_existing" && input.executionWorkspaceId
+        ? input.executionWorkspaceId
+        : null,
+    executionWorkspacePreference:
+      input.projectId && input.executionWorkspacePreference ? input.executionWorkspacePreference : null,
+    executionWorkspaceSettings: input.executionWorkspaceSettings,
+  };
+}
+
 function executionWorkspaceSettingsForPreference(
   preference: ExecutionWorkspaceMode | "",
   reusableWorkspace: Pick<ExecutionWorkspaceSummary, "mode"> | null,
@@ -354,6 +398,7 @@ function stageAutomation(stage: PipelineStage | null | undefined) {
   if (!automation || typeof automation !== "object" || Array.isArray(automation)) {
     return {
       assigneeAgentId: "",
+      titleTemplate: PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE,
       instructionsBody: null as string | null,
       projectId: "",
       projectWorkspaceId: "",
@@ -365,6 +410,7 @@ function stageAutomation(stage: PipelineStage | null | undefined) {
   const executionWorkspaceSettings = nullableExecutionWorkspaceSettings(automation.executionWorkspaceSettings);
   return {
     assigneeAgentId: nullableString(automation.assigneeAgentId),
+    titleTemplate: pipelineAutomationTitleTemplate(automation.titleTemplate),
     instructionsBody: typeof automation.instructionsBody === "string" ? automation.instructionsBody : null,
     projectId: nullableString(automation.projectId),
     projectWorkspaceId: nullableString(automation.projectWorkspaceId),
@@ -406,11 +452,13 @@ function stageAutomationDetail(stage: PipelineStage | null | undefined) {
  * body-driven. Placeholder-derived fields are added while existing manual
  * fields stay in place when instructions change.
  */
-function savedStageVariables(stage: PipelineStage | null | undefined, savedBody: string): RoutineVariable[] {
+function savedStageVariables(
+  stage: PipelineStage | null | undefined,
+  savedTitleTemplate: string,
+  savedBody: string,
+): RoutineVariable[] {
   const existing = toRoutineVariables(stageConfig(stage).variables);
-  const synced = syncRoutineVariablesWithTemplate(["", savedBody], existing);
-  const syncedNames = new Set(synced.map((variable) => variable.name));
-  return [...synced, ...existing.filter((variable) => !syncedNames.has(variable.name))];
+  return syncPipelineStageAutomationVariables(savedTitleTemplate, savedBody, existing);
 }
 
 function stripVariableEditorMetadata(variables: RoutineVariable[]): RoutineVariable[] {
@@ -693,6 +741,7 @@ type StageFormValues = {
   automationExecutionWorkspaceId: string;
   automationExecutionWorkspacePreference: ExecutionWorkspaceMode | "";
   automationExecutionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  automationTitleTemplate: string;
 };
 
 type PipelineTransitionRecord = { fromStageId: string; toStageId: string; label?: string | null };
@@ -737,6 +786,7 @@ function computeStageForm(
     automationExecutionWorkspaceId: automation.executionWorkspaceId,
     automationExecutionWorkspacePreference: automation.executionWorkspacePreference,
     automationExecutionWorkspaceSettings: automation.executionWorkspaceSettings,
+    automationTitleTemplate: automation.titleTemplate,
   };
 }
 
@@ -1077,16 +1127,18 @@ function CarriedFieldTokenHelper({
 function AutomationVariableTokenHelper({
   groups,
   onInsert,
+  label = "Available variables",
 }: {
   groups: AutomationVariableGroup[];
   onInsert: (fieldKey: string) => void;
+  label?: string;
 }) {
   if (groups.length === 0) return null;
   return (
     <div className="rounded-md border border-border bg-muted/20 px-3 py-2">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <span className="text-xs font-semibold uppercase text-muted-foreground">
-          Available variables
+          {label}
         </span>
       </div>
       <div className="space-y-2">
@@ -1243,8 +1295,11 @@ export function PipelineSettings() {
   const [stageExecutionWorkspaceSettings, setStageExecutionWorkspaceSettings] =
     useState<IssueExecutionWorkspaceSettings | null>(null);
   const [selectedApproval, setSelectedApproval] = useState("any_human");
+  const [issueTitleTemplate, setIssueTitleTemplate] = useState<string>(PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE);
   const [instructionsBody, setInstructionsBody] = useState("");
   const [instructionsVariables, setInstructionsVariables] = useState<RoutineVariable[]>([]);
+  const issueTitleTemplateInputRef = useRef<HTMLInputElement>(null);
+  const pendingIssueTitleCursorRef = useRef<number | null>(null);
   const instructionsEditorRef = useRef<MarkdownEditorRef>(null);
   // Stage secrets (the automation routine's env). Edited independently of the
   // rest of the stage form and saved through the narrow automation-env route.
@@ -1399,7 +1454,7 @@ export function PipelineSettings() {
     () => [...new Set([...incomingCarryOverFieldKeys, ...automationVariableKeys])],
     [automationVariableKeys, incomingCarryOverFieldKeys],
   );
-  const insertAutomationVariableToken = useCallback((fieldKey: string) => {
+  const insertInstructionsVariableToken = useCallback((fieldKey: string) => {
     const token = `{{${fieldKey}}}`;
     if (instructionsEditorRef.current) {
       instructionsEditorRef.current.insertMarkdown(token);
@@ -1407,6 +1462,28 @@ export function PipelineSettings() {
     }
     setInstructionsBody((current) => `${current}${current ? " " : ""}${token}`);
   }, []);
+  const insertIssueTitleVariableToken = useCallback((fieldKey: string) => {
+    const token = `{{${fieldKey}}}`;
+    setIssueTitleTemplate((current) => {
+      const input = issueTitleTemplateInputRef.current;
+      if (!input) return `${current}${current ? " " : ""}${token}`;
+      const start = input.selectionStart ?? current.length;
+      const end = input.selectionEnd ?? start;
+      const next = `${current.slice(0, start)}${token}${current.slice(end)}`;
+      pendingIssueTitleCursorRef.current = start + token.length;
+      return next;
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    const cursor = pendingIssueTitleCursorRef.current;
+    if (cursor == null) return;
+    pendingIssueTitleCursorRef.current = null;
+    const input = issueTitleTemplateInputRef.current;
+    if (!input) return;
+    input.focus();
+    input.setSelectionRange(cursor, cursor);
+  }, [issueTitleTemplate]);
 
   const instructionsKey = selectedStage ? stageInstructionsKey(selectedStage.id) : null;
   const instructionsQuery = useQuery({
@@ -1429,13 +1506,14 @@ export function PipelineSettings() {
   const savedInstructionsBody = instructionsDocument
     ? stageAutomation(selectedStage).instructionsBody ?? instructionsDocument.revision?.body ?? instructionsDocument.document?.latestBody ?? ""
     : stageAutomation(selectedStage).instructionsBody ?? stageConfig(selectedStage).whatHappensHere ?? "";
+  const savedIssueTitleTemplate = stageAutomation(selectedStage).titleTemplate;
   const savedInstructionsVariables = useMemo(
-    () => savedStageVariables(selectedStage, savedInstructionsBody),
-    [selectedStage, savedInstructionsBody],
+    () => savedStageVariables(selectedStage, savedIssueTitleTemplate, savedInstructionsBody),
+    [selectedStage, savedInstructionsBody, savedIssueTitleTemplate],
   );
   const savedManualVariableNames = useMemo(
-    () => manualVariableNamesForTemplate(savedInstructionsVariables, [selectedStage?.name ?? "", savedInstructionsBody]),
-    [savedInstructionsBody, savedInstructionsVariables, selectedStage?.name],
+    () => manualVariableNamesForTemplate(savedInstructionsVariables, [savedIssueTitleTemplate, savedInstructionsBody]),
+    [savedInstructionsBody, savedInstructionsVariables, savedIssueTitleTemplate],
   );
 
   const mentionOptions = useStandardMarkdownMentionOptions({
@@ -1602,6 +1680,7 @@ export function PipelineSettings() {
     setStageExecutionWorkspacePreference(form.automationExecutionWorkspacePreference);
     setStageExecutionWorkspaceId(form.automationExecutionWorkspaceId);
     setStageExecutionWorkspaceSettings(form.automationExecutionWorkspaceSettings);
+    setIssueTitleTemplate(form.automationTitleTemplate);
     setSelectedApproval(form.approval);
     setApproveTarget(form.approveTarget);
     setRejectTarget(form.rejectTarget);
@@ -1650,12 +1729,14 @@ export function PipelineSettings() {
     }
   }, [activeStageSection, requestedStageSection, selectedStage]);
 
-  // Instructions body + variables hydrate from the per-stage document (or the
-  // legacy field). Resetting on the saved value clears dirty after save/reload.
+  // Instructions body + title + variables hydrate from the backing automation
+  // routine (or legacy fields). Resetting on the saved value clears dirty after
+  // save/reload.
   useEffect(() => {
+    setIssueTitleTemplate(savedIssueTitleTemplate);
     setInstructionsBody(savedInstructionsBody);
     setInstructionsVariables(savedInstructionsVariables);
-  }, [selectedStage?.id, savedInstructionsBody, savedInstructionsVariables]);
+  }, [selectedStage?.id, savedInstructionsBody, savedInstructionsVariables, savedIssueTitleTemplate]);
 
   // Stage secrets hydrate from the backing routine's derived env. Re-running on
   // the serialized saved env clears the dirty state after a save/refetch.
@@ -1703,19 +1784,16 @@ export function PipelineSettings() {
         variables: stripVariablesByName(instructionsVariables, resolvedAutomationVariableKeys),
         disabled: newEntriesDisabled,
         disabledReason: newEntriesDisabled ? disableReason.trim() || null : null,
-        automation: {
-          assigneeAgentId: stageAssigneeAgentId || null,
+        automation: buildStageAutomationForSave({
+          assigneeAgentId: stageAssigneeAgentId,
+          titleTemplate: issueTitleTemplate,
           instructionsBody,
-          projectId: stageProjectId || null,
-          projectWorkspaceId: stageProjectId && stageProjectWorkspaceId ? stageProjectWorkspaceId : null,
-          executionWorkspaceId:
-            stageProjectId && stageExecutionWorkspacePreference === "reuse_existing" && stageExecutionWorkspaceId
-              ? stageExecutionWorkspaceId
-              : null,
-          executionWorkspacePreference:
-            stageProjectId && stageExecutionWorkspacePreference ? stageExecutionWorkspacePreference : null,
+          projectId: stageProjectId,
+          projectWorkspaceId: stageProjectWorkspaceId,
+          executionWorkspaceId: stageExecutionWorkspaceId,
+          executionWorkspacePreference: stageExecutionWorkspacePreference,
           executionWorkspaceSettings: currentAutomationExecutionWorkspaceSettings,
-        },
+        }),
         requireApproval: nextRequiresApproval,
         approver: nextRequiresApproval && parsedApproval.kind !== "any_human"
           ? { kind: parsedApproval.kind, id: parsedApproval.id }
@@ -2113,11 +2191,14 @@ export function PipelineSettings() {
           stageProjectId && stageExecutionWorkspacePreference === "reuse_existing" ? stageExecutionWorkspaceId : "",
         automationExecutionWorkspacePreference: stageProjectId ? stageExecutionWorkspacePreference : "",
         automationExecutionWorkspaceSettings: currentAutomationExecutionWorkspaceSettings,
+        automationTitleTemplate: pipelineAutomationTitleTemplate(issueTitleTemplate),
       }
     : null;
   const selectedStageKindOption =
     STAGE_KIND_OPTIONS.find((option) => option.value === stageKind) ?? STAGE_KIND_OPTIONS[0]!;
   const SelectedStageKindIcon = selectedStageKindOption.icon;
+  const issueTitleTemplateDirty =
+    selectedStage != null && pipelineAutomationTitleTemplate(issueTitleTemplate) !== savedIssueTitleTemplate;
   const instructionsBodyDirty = selectedStage != null && instructionsBody !== savedInstructionsBody;
   const variablesDirty =
     selectedStage != null &&
@@ -2129,6 +2210,7 @@ export function PipelineSettings() {
     (savedStageForm != null &&
       currentStageForm != null &&
       JSON.stringify(savedStageForm) !== JSON.stringify(currentStageForm)) ||
+    issueTitleTemplateDirty ||
     instructionsBodyDirty ||
     variablesDirty;
 
@@ -2977,6 +3059,21 @@ export function PipelineSettings() {
                             <AgentIcon icon={selectedAutomationAgent.icon} className="h-4 w-4 shrink-0" />
                             <span>{selectedAutomationAgent.name} runs this step automatically.</span>
                           </div>
+                          <FieldRow label="Issue title">
+                            <Input
+                              ref={issueTitleTemplateInputRef}
+                              aria-label="Issue title template"
+                              value={issueTitleTemplate}
+                              onChange={(event) => setIssueTitleTemplate(event.target.value)}
+                              placeholder={PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE}
+                              className="font-mono text-sm"
+                            />
+                          </FieldRow>
+                          <AutomationVariableTokenHelper
+                            groups={automationVariableGroups}
+                            onInsert={insertIssueTitleVariableToken}
+                            label="Issue title variables"
+                          />
                           {breakdownEnabled ? (
                             <div className="space-y-1">
                               <h3 className="text-sm font-semibold text-foreground">What should the agent decide?</h3>
@@ -3007,11 +3104,11 @@ export function PipelineSettings() {
                           </div>
                           <AutomationVariableTokenHelper
                             groups={automationVariableGroups}
-                            onInsert={insertAutomationVariableToken}
+                            onInsert={insertInstructionsVariableToken}
                           />
                           <CarriedFieldTokenHelper
                             groups={incomingCarryOverFieldGroups}
-                            onInsert={insertAutomationVariableToken}
+                            onInsert={insertInstructionsVariableToken}
                           />
                         </>
                       ) : (
@@ -3021,11 +3118,10 @@ export function PipelineSettings() {
                         />
                       )}
                       <div className="space-y-3">
-                        <RoutineVariablesHint
-                        />
+                        <RoutineVariablesHint />
                         <RoutineVariablesEditor
                           key={selectedStage?.id ?? "stage"}
-                          title={stageName}
+                          title={issueTitleTemplate}
                           description={instructionsBody}
                           value={instructionsVariables}
                           onChange={setInstructionsVariables}

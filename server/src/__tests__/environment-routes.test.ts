@@ -36,6 +36,19 @@ const mockEnvironmentService = vi.hoisted(() => ({
   getLeaseById: vi.fn(),
 }));
 
+const mockEnvironmentCustomImageService = vi.hoisted(() => ({
+  getOverview: vi.fn(),
+  getActiveTemplate: vi.fn(),
+  getSessionById: vi.fn(),
+  startSetupSession: vi.fn(),
+  refreshSetupSession: vi.fn(),
+  finishSetupSession: vi.fn(),
+  cancelSetupSession: vi.fn(),
+  rollbackTemplate: vi.fn(),
+  disableTemplate: vi.fn(),
+  cleanupExpiredSetupSessions: vi.fn(),
+}));
+
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockProbeEnvironment = vi.hoisted(() => vi.fn());
 const mockSecretService = vi.hoisted(() => ({
@@ -52,11 +65,17 @@ const mockValidatePluginEnvironmentDriverConfig = vi.hoisted(() => vi.fn());
 const mockValidatePluginSandboxProviderConfig = vi.hoisted(() => vi.fn());
 const mockListReadyPluginEnvironmentDrivers = vi.hoisted(() => vi.fn());
 const mockResolvePluginSandboxProviderDriverByKey = vi.hoisted(() => vi.fn());
+const mockStartPluginEnvironmentInteractiveSetup = vi.hoisted(() => vi.fn());
+const mockGetPluginEnvironmentInteractiveSetup = vi.hoisted(() => vi.fn());
+const mockCapturePluginEnvironmentTemplate = vi.hoisted(() => vi.fn());
+const mockCancelPluginEnvironmentInteractiveSetup = vi.hoisted(() => vi.fn());
+const mockDeletePluginEnvironmentTemplate = vi.hoisted(() => vi.fn());
 const mockExecutionWorkspaceService = vi.hoisted(() => ({}));
 
 vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
   instanceSettingsService: () => mockInstanceSettingsService,
+  environmentCustomImageService: () => mockEnvironmentCustomImageService,
   environmentService: () => mockEnvironmentService,
   logActivity: mockLogActivity,
   projectService: () => mockProjectService,
@@ -81,6 +100,11 @@ vi.mock("../services/execution-workspaces.js", () => ({
 vi.mock("../services/plugin-environment-driver.js", () => ({
   listReadyPluginEnvironmentDrivers: mockListReadyPluginEnvironmentDrivers,
   resolvePluginSandboxProviderDriverByKey: mockResolvePluginSandboxProviderDriverByKey,
+  startPluginEnvironmentInteractiveSetup: mockStartPluginEnvironmentInteractiveSetup,
+  getPluginEnvironmentInteractiveSetup: mockGetPluginEnvironmentInteractiveSetup,
+  capturePluginEnvironmentTemplate: mockCapturePluginEnvironmentTemplate,
+  cancelPluginEnvironmentInteractiveSetup: mockCancelPluginEnvironmentInteractiveSetup,
+  deletePluginEnvironmentTemplate: mockDeletePluginEnvironmentTemplate,
   validatePluginEnvironmentDriverConfig: mockValidatePluginEnvironmentDriverConfig,
   validatePluginSandboxProviderConfig: mockValidatePluginSandboxProviderConfig,
 }));
@@ -163,6 +187,14 @@ describe("environment routes", () => {
     mockEnvironmentService.update.mockReset();
     mockEnvironmentService.listLeases.mockReset();
     mockEnvironmentService.getLeaseById.mockReset();
+    Object.values(mockEnvironmentCustomImageService).forEach((mock) => mock.mockReset());
+    mockEnvironmentCustomImageService.getOverview.mockResolvedValue({
+      activeTemplate: null,
+      activeSession: null,
+      latestSession: null,
+    });
+    mockEnvironmentCustomImageService.getActiveTemplate.mockResolvedValue(null);
+    mockEnvironmentCustomImageService.getSessionById.mockResolvedValue(null);
     mockLogActivity.mockReset();
     mockProbeEnvironment.mockReset();
     mockSecretService.create.mockReset();
@@ -223,6 +255,11 @@ describe("environment routes", () => {
     ));
     mockListReadyPluginEnvironmentDrivers.mockReset();
     mockListReadyPluginEnvironmentDrivers.mockResolvedValue([]);
+    mockStartPluginEnvironmentInteractiveSetup.mockReset();
+    mockGetPluginEnvironmentInteractiveSetup.mockReset();
+    mockCapturePluginEnvironmentTemplate.mockReset();
+    mockCancelPluginEnvironmentInteractiveSetup.mockReset();
+    mockDeletePluginEnvironmentTemplate.mockReset();
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
       explanation: "Allowed by test harness",
@@ -315,6 +352,15 @@ describe("environment routes", () => {
         driverKey: "secure-plugin",
         displayName: "Secure Sandbox",
         description: "Provisions schema-driven cloud sandboxes.",
+        supportsInteractiveSetup: true,
+        interactiveSetupConnectionTypes: ["ssh"],
+        supportsTemplateCapture: true,
+        templateRefKind: "snapshot",
+        templateConfigBinding: {
+          field: "template",
+          unsetFields: ["image"],
+        },
+        supportsTemplateDelete: true,
         configSchema: {
           type: "object",
           properties: {
@@ -337,6 +383,15 @@ describe("environment routes", () => {
       status: "supported",
       supportsRunExecution: true,
       supportsReusableLeases: true,
+      supportsInteractiveSetup: true,
+      interactiveSetupConnectionTypes: ["ssh"],
+      supportsTemplateCapture: true,
+      templateRefKind: "snapshot",
+      templateConfigBinding: {
+        field: "template",
+        unsetFields: ["image"],
+      },
+      supportsTemplateDelete: true,
       displayName: "Secure Sandbox",
       source: "plugin",
       pluginKey: "acme.secure-sandbox-provider",
