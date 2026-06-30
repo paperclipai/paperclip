@@ -777,6 +777,19 @@ registry.registerPath({
             shortSha: z.string(),
             subject: z.string(),
             committedAt: z.string().datetime().nullable(),
+            localChanges: z.union([
+              z.object({
+                available: z.literal(true),
+                hasLocalChanges: z.boolean(),
+                stagedFileCount: z.number().int().nonnegative(),
+                unstagedFileCount: z.number().int().nonnegative(),
+                untrackedFileCount: z.number().int().nonnegative(),
+              }).strict(),
+              z.object({
+                available: z.literal(false),
+                unavailableReason: z.enum(["git_status_unavailable"]),
+              }).strict(),
+            ]),
           }).strict(),
           z.object({
             available: z.literal(false),

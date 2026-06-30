@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Clock3, GitCommit, type LucideIcon } from "lucide-react";
+import { Clock3, FileDiff, GitCommit, type LucideIcon } from "lucide-react";
 import { healthApi, type HealthStatus } from "@/api/health";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
@@ -26,6 +26,25 @@ function commitLabel(health: HealthStatus | undefined): string {
   const git = health?.serverInfo?.git;
   if (!git?.available) return "Commit unavailable";
   return `${git.shortSha} · ${git.subject}`;
+}
+
+function localChangesLabel(health: HealthStatus | undefined): string {
+  const git = health?.serverInfo?.git;
+  if (!git?.available) return "Unavailable";
+  const localChanges = git.localChanges;
+  if (!localChanges) return "Change status unavailable";
+  if (!localChanges.available) return "Change status unavailable";
+  if (!localChanges.hasLocalChanges) return "Clean checkout";
+
+  const parts = [
+    [localChanges.stagedFileCount, "staged"],
+    [localChanges.unstagedFileCount, "unstaged"],
+    [localChanges.untrackedFileCount, "untracked"],
+  ]
+    .filter(([count]) => Number(count) > 0)
+    .map(([count, label]) => `${count} ${label}`);
+
+  return parts.length > 0 ? `Local changes present (${parts.join(", ")})` : "Local changes present";
 }
 
 function ServerInfoRow({
@@ -68,6 +87,15 @@ export function SidebarServerInfo() {
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
     enabled,
+    // The drawer only mounts while the account popover is open, so it cannot
+    // rely on Layout's background health poll (which is itself gated on
+    // devServer.enabled). Always refetch on open and poll while open so a server
+    // restart is reflected without leaving stale boot-time serverInfo on screen.
+    refetchOnMount: "always",
+    refetchInterval: (query) => {
+      const data = query.state.data as HealthStatus | undefined;
+      return data?.devServer?.enabled ? 2000 : false;
+    },
   });
 
   if (!enabled) return null;
@@ -87,6 +115,11 @@ export function SidebarServerInfo() {
     : isWaitingForHealth
       ? "Loading..."
       : commitLabel(health);
+  const localChanges = healthUnavailable
+    ? "Health unavailable"
+    : isWaitingForHealth
+      ? "Loading..."
+      : localChangesLabel(health);
 
   return (
     <div className="mt-2 border-t border-border pt-2">
@@ -100,6 +133,7 @@ export function SidebarServerInfo() {
         dateTime={!healthUnavailable && !isWaitingForHealth && restartedAtIsValid ? restartedAt : null}
       />
       <ServerInfoRow icon={GitCommit} label="Running commit" value={commit} />
+      <ServerInfoRow icon={FileDiff} label="Checkout state" value={localChanges} />
     </div>
   );
 }
