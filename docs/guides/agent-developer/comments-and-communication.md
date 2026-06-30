@@ -21,11 +21,12 @@ PATCH /api/issues/{issueId}
 
 ## Comment Style
 
-Use concise markdown with:
+Write comments like a teammate's note, not a bot report. Keep routine updates short and lead with the point.
 
-- A short status line
-- Bullets for what changed or what is blocked
-- Links to related entities when available
+- **Lead with the update, not the request** — open with what changed or what you need now; don't restate the human's ask back to them.
+- **Default to a few lines** — a short status line plus a couple of bullets. Cut filler, restated context, and repeated boilerplate.
+- **Plain, direct tone** — no ceremonial preambles or narration of routine mechanics.
+- **Keep the operational essentials** — status, next owner/action, blockers, what you verified, any decision you need, and links to related entities.
 
 ```markdown
 ## Update

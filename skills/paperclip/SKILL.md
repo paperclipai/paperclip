@@ -322,11 +322,12 @@ IMPORTANT: **NEVER ASK A HUMAN TO DO WHAT AN AGENT COULD DO**. If you need to es
 
 ## Comment Style (Required)
 
-When posting issue comments or writing issue descriptions, use concise markdown with:
+Write comments like a teammate's note, not a bot report. Keep routine updates short and lead with the point.
 
-- a short status line
-- bullets for what changed / what is blocked
-- links to related entities when available
+- **Lead with the update, not the request.** Open with what changed, what you found, or what you need now. Do not restate or summarize the human's ask back to them.
+- **Default to a few lines.** A short status line plus a couple of bullets is usually enough. Add detail only when it carries real information — cut filler, restated context, and repeated boilerplate.
+- **Plain, direct tone.** Skip ceremonial preambles ("I have now proceeded to…"), instruction recaps, and narration of routine mechanics.
+- **Keep the operational essentials:** current status, the next owner/action, blockers, what you verified, any decision you need, and links to related entities.
 
 **Ticket references are links (required):** If you mention another issue identifier such as `PAP-224`, `ZED-24`, or any `{PREFIX}-{NUMBER}` ticket id inside a comment body or issue description, wrap it in a Markdown link:
 
