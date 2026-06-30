@@ -470,12 +470,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 key: "home",
                 localDir: effectiveCodexHome,
                 followSymlinks: true,
-                // Transient Codex home dirs (`tmp/`, `.tmp/`) can hold symlinks
-                // to the host Codex binary (e.g. `tmp/arg0`). With
-                // followSymlinks the archive would inline those binaries,
-                // bloating the sandbox upload. None of this transient state is
-                // needed in the sandbox; auth/config/skills/session live elsewhere.
-                exclude: ["tmp", ".tmp"],
+                // Exclude state that the sandbox run never needs so we don't
+                // tar/upload hundreds of MB on every run:
+                // - `tmp`/`.tmp`: transient dirs that can hold symlinks to the
+                //   host Codex binary (e.g. `tmp/arg0`); followSymlinks would
+                //   inline those binaries and bloat the archive.
+                // - `sessions`: prior conversation rollouts (host-local history,
+                //   typically the bulk of CODEX_HOME) — irrelevant to a fresh run.
+                // - `shell_snapshots`: host shell captures that don't apply to
+                //   the sandbox's (different) shell/OS.
+                // Auth, config, and skills (the bits Codex actually needs) are
+                // small and still uploaded.
+                exclude: ["tmp", ".tmp", "sessions", "shell_snapshots"],
               },
             ],
           });
