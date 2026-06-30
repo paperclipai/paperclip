@@ -520,6 +520,7 @@ const AUTHENTICATED_SECURITY: Array<Record<string, string[]>> = [
 const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
   "GET /api/openapi.json",
+  "POST /api/github/webhook",
   "GET /api/board-claim/{token}",
   "POST /api/cli-auth/challenges",
   "GET /api/cli-auth/challenges/{id}",
@@ -808,6 +809,33 @@ registry.registerPath({
   tags: ["health"],
   summary: "Get the generated OpenAPI document",
   responses: { 200: r.ok() },
+});
+
+
+registry.registerPath({
+  method: "post",
+  path: "/api/github/webhook",
+  tags: ["integrations"],
+  summary: "Receive GitHub pull request review webhook events",
+  description: "Accepts signed GitHub webhook payloads for pull request review feedback and creates or updates Paperclip tasks for actionable comments. Requires X-GitHub-Event and X-Hub-Signature-256 headers; X-GitHub-Delivery is optional.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: {
+            type: "object",
+            additionalProperties: true,
+          },
+        },
+      },
+    },
+  },
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    401: r.unauthorized,
+    500: r.serverError,
+  },
 });
 
 // ─── Companies ───────────────────────────────────────────────────────────────

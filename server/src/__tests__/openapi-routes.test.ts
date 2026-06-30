@@ -28,6 +28,7 @@ const apiPrefixes: Record<string, string> = {
   "execution-workspaces.ts": "/api",
   "file-resources.ts": "/api",
   "goals.ts": "/api",
+  "github-webhook.ts": "/api",
   "health.ts": "/api/health",
   "inbox-dismissals.ts": "/api",
   "instance-database-backups.ts": "/api",
@@ -143,6 +144,7 @@ describe("openapi routes", () => {
       AgentBearerAuth: { type: "http", scheme: "bearer" },
     });
     expect(res.body.paths["/api/health"].get.security).toEqual([]);
+    expect(res.body.paths["/api/github/webhook"].post.security).toEqual([]);
     expect(res.body.paths["/api/companies"].post.responses["201"]).toBeDefined();
     expect(res.body.paths["/api/companies"].post.requestBody.content["application/json"].schema).toMatchObject({
       type: "object",
@@ -177,6 +179,8 @@ describe("openapi routes", () => {
     const { spec } = loadSpecRoutes();
 
     expect(spec.paths["/api/openapi.json"].get.security).toEqual([]);
+    expect(spec.paths["/api/github/webhook"].post.security).toEqual([]);
+    expect(spec.paths["/api/github/webhook"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/plugins/install"].post.security).toEqual([
       { BoardSessionAuth: [] },
       { BoardApiKeyAuth: [] },
