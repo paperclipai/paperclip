@@ -100,6 +100,38 @@ describe("createPenstockAvailabilityGate", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("fails open for provider-shaped Anthropic 429 without a capacity retry signal", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          type: "error",
+          error: { type: "rate_limit_error", message: "Error" },
+          request_id: "req_011CcZYx",
+        }),
+        { status: 429 },
+      ),
+    );
+    const gate = gateWith(fetchMock as unknown as typeof fetch);
+
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "agent-1",
+      adapterConfig: {
+        model: "claude-sonnet-4-6[1m]",
+        env: { ANTHROPIC_BASE_URL: { value: "https://api.penstock.run/anthropic" } },
+      },
+      now: new Date("2026-06-30T08:00:00.000Z"),
+      env: { ANTHROPIC_API_KEY: "psk_test" },
+    });
+
+    expect(result).toEqual({ allow: true });
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 429, model: "claude-sonnet-4-6[1m]" }),
+      "penstock availability probe saw provider 429 without capacity retry signal; failing open",
+    );
+    expect(log.info).not.toHaveBeenCalled();
+  });
+
   it("defers when Penstock reports temporary unavailability", async () => {
     const fetchMock = vi.fn(async () => new Response("unavailable", { status: 503 }));
     const gate = gateWith(fetchMock as unknown as typeof fetch);

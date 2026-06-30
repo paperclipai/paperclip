@@ -180,6 +180,17 @@ async function probePenstockAnthropicModel(input: {
     if (response.status === 429 || response.status === 503) {
       const text = await response.text().catch(() => "");
       const parsed = parseCapacityRetry(text, response.headers, input.defaultRetryDelayMs, input.now());
+      if (response.status === 429 && !parsed) {
+        input.log.warn(
+          {
+            status: response.status,
+            model: input.model,
+          },
+          "penstock availability probe saw provider 429 without capacity retry signal; failing open",
+        );
+        return { allow: true };
+      }
+      const retry = parsed ?? defaultCapacityRetry(input.defaultRetryDelayMs, input.now());
       const result: PenstockAvailabilityGateDenyResult = {
         allow: false,
         provider: "anthropic",
@@ -188,8 +199,8 @@ async function probePenstockAnthropicModel(input: {
             ? "penstock.model_capacity_unavailable"
             : "penstock.model_temporarily_unavailable",
         model: input.model,
-        resumeAt: parsed.resumeAt,
-        retryAfterSeconds: parsed.retryAfterSeconds,
+        resumeAt: retry.resumeAt,
+        retryAfterSeconds: retry.retryAfterSeconds,
       };
       input.log.info(
         {
@@ -234,7 +245,7 @@ function parseCapacityRetry(
   headers: Headers,
   defaultRetryDelayMs: number,
   now: Date,
-): { resumeAt: Date | null; retryAfterSeconds: number | null } {
+): { resumeAt: Date | null; retryAfterSeconds: number | null } | null {
   const message = readErrorMessage(bodyText);
   const retryAfterHeader = headers.get("retry-after");
   const retryAfterSeconds = parseRetryAfterSeconds(retryAfterHeader);
@@ -248,10 +259,30 @@ function parseCapacityRetry(
       retryAfterSeconds,
     };
   }
+  if (isPenstockCapacityBody(bodyText, message)) return defaultCapacityRetry(defaultRetryDelayMs, now);
+  return null;
+}
+
+function defaultCapacityRetry(
+  defaultRetryDelayMs: number,
+  now: Date,
+): { resumeAt: Date; retryAfterSeconds: number } {
   return {
     resumeAt: new Date(now.getTime() + defaultRetryDelayMs),
     retryAfterSeconds: Math.ceil(defaultRetryDelayMs / 1000),
   };
+}
+
+function isPenstockCapacityBody(bodyText: string, message: string): boolean {
+  if (/all subscriptions .*rate-limited/i.test(message)) return true;
+  if (/capacity resets at /i.test(message)) return true;
+  try {
+    const parsed = JSON.parse(bodyText) as unknown;
+    const record = asRecord(parsed);
+    return readNonEmptyString(record?.code) === "capacity_retry_exhausted";
+  } catch {
+    return false;
+  }
 }
 
 function readErrorMessage(bodyText: string): string {
