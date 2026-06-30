@@ -93,6 +93,11 @@ import type {
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentProbeParams,
+  PluginEnvironmentStartInteractiveSetupParams,
+  PluginEnvironmentGetInteractiveSetupParams,
+  PluginEnvironmentCaptureTemplateParams,
+  PluginEnvironmentCancelInteractiveSetupParams,
+  PluginEnvironmentDeleteTemplateParams,
   PluginInvocationContext,
   WorkerToHostMethodName,
   WorkerToHostMethods,
@@ -1393,6 +1398,21 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "environmentExecute":
         return handleEnvironmentExecute(params as PluginEnvironmentExecuteParams);
 
+      case "environmentStartInteractiveSetup":
+        return handleEnvironmentStartInteractiveSetup(params as PluginEnvironmentStartInteractiveSetupParams);
+
+      case "environmentGetInteractiveSetup":
+        return handleEnvironmentGetInteractiveSetup(params as PluginEnvironmentGetInteractiveSetupParams);
+
+      case "environmentCaptureTemplate":
+        return handleEnvironmentCaptureTemplate(params as PluginEnvironmentCaptureTemplateParams);
+
+      case "environmentCancelInteractiveSetup":
+        return handleEnvironmentCancelInteractiveSetup(params as PluginEnvironmentCancelInteractiveSetupParams);
+
+      case "environmentDeleteTemplate":
+        return handleEnvironmentDeleteTemplate(params as PluginEnvironmentDeleteTemplateParams);
+
       default:
         throw Object.assign(
           new Error(`Unknown method: ${method}`),
@@ -1437,6 +1457,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentDestroyLease) supportedMethods.push("environmentDestroyLease");
     if (plugin.definition.onEnvironmentRealizeWorkspace) supportedMethods.push("environmentRealizeWorkspace");
     if (plugin.definition.onEnvironmentExecute) supportedMethods.push("environmentExecute");
+    if (plugin.definition.onEnvironmentStartInteractiveSetup) supportedMethods.push("environmentStartInteractiveSetup");
+    if (plugin.definition.onEnvironmentGetInteractiveSetup) supportedMethods.push("environmentGetInteractiveSetup");
+    if (plugin.definition.onEnvironmentCaptureTemplate) supportedMethods.push("environmentCaptureTemplate");
+    if (plugin.definition.onEnvironmentCancelInteractiveSetup) supportedMethods.push("environmentCancelInteractiveSetup");
+    if (plugin.definition.onEnvironmentDeleteTemplate) supportedMethods.push("environmentDeleteTemplate");
 
     return { ok: true, supportedMethods };
   }
@@ -1723,6 +1748,41 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       { companyId: params.companyId },
       () => plugin.definition.onEnvironmentExecute!(params),
     );
+  }
+
+  async function handleEnvironmentStartInteractiveSetup(params: PluginEnvironmentStartInteractiveSetupParams) {
+    if (!plugin.definition.onEnvironmentStartInteractiveSetup) {
+      throw methodNotImplemented("environmentStartInteractiveSetup");
+    }
+    return plugin.definition.onEnvironmentStartInteractiveSetup(params);
+  }
+
+  async function handleEnvironmentGetInteractiveSetup(params: PluginEnvironmentGetInteractiveSetupParams) {
+    if (!plugin.definition.onEnvironmentGetInteractiveSetup) {
+      throw methodNotImplemented("environmentGetInteractiveSetup");
+    }
+    return plugin.definition.onEnvironmentGetInteractiveSetup(params);
+  }
+
+  async function handleEnvironmentCaptureTemplate(params: PluginEnvironmentCaptureTemplateParams) {
+    if (!plugin.definition.onEnvironmentCaptureTemplate) {
+      throw methodNotImplemented("environmentCaptureTemplate");
+    }
+    return plugin.definition.onEnvironmentCaptureTemplate(params);
+  }
+
+  async function handleEnvironmentCancelInteractiveSetup(params: PluginEnvironmentCancelInteractiveSetupParams) {
+    if (!plugin.definition.onEnvironmentCancelInteractiveSetup) {
+      throw methodNotImplemented("environmentCancelInteractiveSetup");
+    }
+    return plugin.definition.onEnvironmentCancelInteractiveSetup(params);
+  }
+
+  async function handleEnvironmentDeleteTemplate(params: PluginEnvironmentDeleteTemplateParams) {
+    if (!plugin.definition.onEnvironmentDeleteTemplate) {
+      throw methodNotImplemented("environmentDeleteTemplate");
+    }
+    return plugin.definition.onEnvironmentDeleteTemplate(params);
   }
 
   // -----------------------------------------------------------------------

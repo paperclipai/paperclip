@@ -42,6 +42,24 @@ export {
   type ProbeEnvironmentConfig,
 } from "./environment.js";
 export {
+  environmentCustomImageTemplateKindSchema,
+  environmentCustomImageTemplateStatusSchema,
+  environmentCustomImageSetupSessionStatusSchema,
+  environmentCustomImageSetupConnectionTypeSchema,
+  environmentCustomImageSetupConnectionSummarySchema,
+  environmentCustomImageTemplateSchema,
+  environmentCustomImageSetupSessionSchema,
+  startEnvironmentCustomImageSetupSessionSchema,
+  finishEnvironmentCustomImageSetupSessionSchema,
+  cancelEnvironmentCustomImageSetupSessionSchema,
+  type EnvironmentCustomImageSetupConnectionSummary,
+  type EnvironmentCustomImageTemplate,
+  type EnvironmentCustomImageSetupSession,
+  type StartEnvironmentCustomImageSetupSession,
+  type FinishEnvironmentCustomImageSetupSession,
+  type CancelEnvironmentCustomImageSetupSession,
+} from "./environment-custom-images.js";
+export {
   feedbackDataSharingPreferenceSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,

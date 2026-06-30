@@ -123,6 +123,13 @@ export interface PluginToolDeclaration {
  *
  * Requires the `environment.drivers.register` capability.
  */
+export interface PluginEnvironmentTemplateConfigBinding {
+  /** Top-level provider config field that should receive the captured template ref. */
+  field: string;
+  /** Top-level provider config fields to remove when the captured template ref is applied. */
+  unsetFields?: string[];
+}
+
 export interface PluginEnvironmentDriverDeclaration {
   /** Stable driver key, unique within the plugin. Namespaced by plugin ID at runtime. */
   driverKey: string;
@@ -144,6 +151,21 @@ export interface PluginEnvironmentDriverDeclaration {
    * behavior even if their config schema exposes a reuse-like setting.
    */
   supportsReusableLeases?: boolean;
+  /** Provider can keep a temporary setup sandbox alive for user-driven sandbox customization and capture. */
+  supportsInteractiveSetup?: boolean;
+  /** Connection types the setup sandbox can expose. Initially `ssh`; providers may add custom values. */
+  interactiveSetupConnectionTypes?: string[];
+  /** Provider can capture a reusable template from a live setup sandbox. */
+  supportsTemplateCapture?: boolean;
+  /** Kind of template reference returned by the provider's capture hook. */
+  templateRefKind?: "snapshot" | "image" | "provider_template" | "unknown" | (string & {});
+  /**
+   * How Paperclip should apply a captured template ref back into this provider's
+   * runtime config. Omit to use the standard key for `templateRefKind`.
+   */
+  templateConfigBinding?: PluginEnvironmentTemplateConfigBinding;
+  /** Provider supports best-effort deletion/cleanup of captured templates. */
+  supportsTemplateDelete?: boolean;
   /** JSON Schema describing the driver's provider-specific configuration. */
   configSchema: JsonSchema;
 }

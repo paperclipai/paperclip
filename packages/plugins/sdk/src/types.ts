@@ -59,6 +59,7 @@ export type {
   PluginWebhookDeclaration,
   PluginToolDeclaration,
   PluginEnvironmentDriverDeclaration,
+  PluginEnvironmentTemplateConfigBinding,
   PluginManagedAgentDeclaration,
   PluginManagedAgentResolution,
   PluginManagedProjectDeclaration,
