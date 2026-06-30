@@ -4,6 +4,7 @@ export {
   buildRunLivenessContinuationIdempotencyKey,
   decideRunLivenessContinuation,
   findExistingRunLivenessContinuationWake,
+  isAbnormalRunTermination,
   readContinuationAttempt,
 } from "./recovery/run-liveness-continuations.js";
 export type {

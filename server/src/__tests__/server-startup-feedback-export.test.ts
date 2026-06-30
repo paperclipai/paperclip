@@ -146,6 +146,7 @@ vi.mock("../services/index.js", () => ({
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
   heartbeatService: vi.fn(() => ({
     reapOrphanedRuns: vi.fn(async () => undefined),
+    reapOrphanCheckouts: vi.fn(async () => ({ reaped: 0, issueIds: [], entries: [] })),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
     resumeQueuedRuns: vi.fn(async () => undefined),
     reconcileStrandedAssignedIssues: vi.fn(async () => ({
