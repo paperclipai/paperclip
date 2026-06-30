@@ -164,6 +164,15 @@ import { productivityReviewService } from "./productivity-review.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
+  computeLocalRunAdmissionSlots,
+  isLocalModelRun,
+  LOCAL_RUN_ADAPTER_TYPE,
+  resolveLocalRunCaps,
+  withLocalRunAdmissionLock,
+  type LocalRunCaps,
+  type LocalRunState,
+} from "./local-run-concurrency.js";
+import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
   shouldCancelRunsForNonInvokableAgent,
@@ -3536,6 +3545,12 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  /**
+   * Global caps on concurrent local (Ollama-backed) chats. Defaults to the
+   * env-derived caps so every service instance in the process agrees on the
+   * same budget; tests may override.
+   */
+  localRunCaps?: LocalRunCaps;
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
@@ -3543,6 +3558,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
   });
+
+  const localRunCaps = options.localRunCaps ?? resolveLocalRunCaps();
 
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
@@ -7424,6 +7441,88 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  /**
+   * Snapshot of running local (Ollama-backed) chats across the whole instance.
+   * Joins running heartbeat runs to their agents, keeps only `opencode_local`
+   * agents whose model provider is local (per the caps), and reports the count
+   * plus the set of distinct loaded models. This is the authoritative,
+   * cross-instance source of truth for enforcing the global caps.
+   */
+  async function getGlobalLocalRunState(): Promise<LocalRunState> {
+    const rows = await db
+      .select({ adapterConfig: agents.adapterConfig })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(
+        and(
+          eq(heartbeatRuns.status, "running"),
+          eq(agents.adapterType, LOCAL_RUN_ADAPTER_TYPE),
+        ),
+      );
+    const loadedModels = new Set<string>();
+    let runningCount = 0;
+    for (const row of rows) {
+      const model = readConfiguredModelFromAdapterConfig(parseObject(row.adapterConfig));
+      if (!isLocalModelRun(LOCAL_RUN_ADAPTER_TYPE, model, localRunCaps)) continue;
+      runningCount += 1;
+      if (model) loadedModels.add(model);
+    }
+    return { runningCount, loadedModels };
+  }
+
+  /**
+   * When a local (Ollama-backed) run leaves the running state it frees a slot in
+   * the global concurrency budget and may free a distinct-model slot. The normal
+   * completion path only re-evaluates the *same* agent's queue, so without this a
+   * queued local run belonging to a *different* agent would wait for the next
+   * periodic `resumeQueuedRuns` sweep. This nudges other agents that have a
+   * queued local run so a freed global slot is picked up promptly.
+   *
+   * Self-gating and cheap: a single indexed query returns early when no other
+   * agent has a queued local run (the common case). Admission itself stays
+   * authoritative inside `startNextQueuedRunForAgent` (per-agent + global
+   * admission lock), so this only ever *offers* a start and can never over-admit.
+   */
+  async function startQueuedLocalRunsForOtherAgents(excludeAgentId: string | null) {
+    const rows = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        adapterType: agents.adapterType,
+        adapterConfig: agents.adapterConfig,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
+      .where(
+        and(
+          eq(heartbeatRuns.status, "queued"),
+          eq(agents.adapterType, LOCAL_RUN_ADAPTER_TYPE),
+          eq(companies.status, "active"),
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.createdAt));
+    if (rows.length === 0) return;
+
+    const candidateAgentIds: string[] = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      if (row.agentId === excludeAgentId) continue;
+      if (seen.has(row.agentId)) continue;
+      seen.add(row.agentId);
+      const model = readConfiguredModelFromAdapterConfig(parseObject(row.adapterConfig));
+      if (!isLocalModelRun(row.adapterType, model, localRunCaps)) continue;
+      candidateAgentIds.push(row.agentId);
+    }
+    if (candidateAgentIds.length === 0) return;
+
+    for (const agentId of candidateAgentIds) {
+      const state = await getGlobalLocalRunState();
+      // No concurrency slot free -> nothing else can start regardless of model.
+      if (state.runningCount >= localRunCaps.maxConcurrentRuns) break;
+      await startNextQueuedRunForAgent(agentId);
+    }
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -8242,6 +8341,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
+      // Reaped runs freed their global local-run slots; let queued local runs on
+      // other agents start without waiting for the next periodic sweep.
+      await startQueuedLocalRunsForOtherAgents(null).catch((err) => {
+        logger.error({ err }, "failed to start queued local runs for other agents after reaping");
+      });
     }
     return { reaped: reaped.length, runIds: reaped };
   }
@@ -8433,12 +8537,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return left.createdAt.getTime() - right.createdAt.getTime();
       });
 
-      const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of prioritizedRuns) {
-        if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun, companyAgents);
-        if (claimed) claimedRuns.push(claimed);
-      }
+      const claimRuns = async (slots: number) => {
+        const claimed: Array<typeof heartbeatRuns.$inferSelect> = [];
+        for (const queuedRun of prioritizedRuns) {
+          if (claimed.length >= slots) break;
+          const claimedRun = await claimQueuedRun(queuedRun, companyAgents);
+          if (claimedRun) claimed.push(claimedRun);
+        }
+        return claimed;
+      };
+
+      // Local (Ollama-backed) chats are also bounded by a global, cross-agent
+      // cap on concurrent runs and distinct loaded models. The per-agent start
+      // lock only serializes one agent, so read-the-global-state + claim must
+      // run under a process-wide lock to avoid two agents over-admitting.
+      const agentModel = readConfiguredModelFromAdapterConfig(parseObject(agent.adapterConfig));
+      const subjectToLocalCap = isLocalModelRun(agent.adapterType, agentModel, localRunCaps);
+
+      const claimedRuns = subjectToLocalCap
+        ? await withLocalRunAdmissionLock(async () => {
+            const state = await getGlobalLocalRunState();
+            const globalSlots = computeLocalRunAdmissionSlots({
+              state,
+              agentModel,
+              perAgentSlots: availableSlots,
+              caps: localRunCaps,
+            });
+            if (globalSlots <= 0) return [];
+            return claimRuns(globalSlots);
+          })
+        : await claimRuns(availableSlots);
       if (claimedRuns.length === 0) return [];
 
       for (const claimedRun of claimedRuns) {
@@ -10310,6 +10438,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
+          // This run leaving "running" may have freed a global local-run slot;
+          // give queued local runs on *other* agents a chance to start now
+          // instead of waiting for the next periodic resumeQueuedRuns sweep.
+          await startQueuedLocalRunsForOtherAgents(run.agentId).catch((err) => {
+            logger.error({ err, runId: run.id }, "failed to start queued local runs for other agents");
+          });
         }
   }
 
@@ -12018,6 +12152,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     await finalizeAgentStatus(run.agentId, "cancelled");
     await startNextQueuedRunForAgent(run.agentId);
+    // Cancelling a local run also frees a global local-run slot.
+    await startQueuedLocalRunsForOtherAgents(run.agentId).catch((err) => {
+      logger.error({ err, runId: run.id }, "failed to start queued local runs for other agents after cancel");
+    });
     return cancelled;
   }
 

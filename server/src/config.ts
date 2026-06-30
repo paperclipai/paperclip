@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { resolvePaperclipEnvPath } from "./paths.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
+import { resolveLocalRunCaps } from "./services/local-run-concurrency.js";
 import {
   AUTH_BASE_URL_MODES,
   BIND_MODES,
@@ -85,6 +86,9 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  maxConcurrentLocalRuns: number;
+  maxDistinctLocalModels: number;
+  localModelProviders: string[];
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
 }
@@ -285,6 +289,8 @@ export function loadConfig(): Config {
     throw new Error(resolvedBind.errors[0]);
   }
 
+  const localRunCaps = resolveLocalRunCaps();
+
   return {
     deploymentMode,
     deploymentExposure,
@@ -331,6 +337,9 @@ export function loadConfig(): Config {
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    maxConcurrentLocalRuns: localRunCaps.maxConcurrentRuns,
+    maxDistinctLocalModels: localRunCaps.maxDistinctModels,
+    localModelProviders: localRunCaps.localModelProviders,
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };
