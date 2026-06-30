@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/teams-catalog",
   "packageVersion": "0.1.0",
-  "generatedAt": "2026-06-30T14:50:45.550Z",
+  "generatedAt": "2026-06-30T15:00:59.165Z",
   "teams": [
     {
       "id": "paperclipai:bundled:company-defaults:core-exec-team",
@@ -355,8 +355,8 @@
         {
           "path": "agents/senior-coder/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 1592,
-          "sha256": "003d4e834afa6c2a7b0f80f8df5422e75bffa80733da1ceab1e3ada575ffd0b8"
+          "sizeBytes": 1652,
+          "sha256": "926276d56eb17689e2903ef2cec278df0327fa27a480deaa9e5e6c28a501320c"
         },
         {
           "path": "projects/product-engineering/PROJECT.md",
@@ -373,7 +373,7 @@
       ],
       "trustLevel": "assets",
       "compatibility": "compatible",
-      "contentHash": "sha256:69183456e07b5396799975046ab8aa9da386870bce6d96a12fc20ed8b4df3cb7"
+      "contentHash": "sha256:44105a9dafc21eb48df74829b56e57a0d59ad2f16cb83c140bfa47c2e3fb2cdf"
     },
     {
       "id": "paperclipai:optional:content:content-machine",

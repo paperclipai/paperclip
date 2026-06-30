@@ -32,4 +32,4 @@ When you wake up, follow the Paperclip skill — it contains the full heartbeat 
 
 - Never commit secrets, credentials, or customer data.
 - Do not skip pre-commit hooks, signing, or CI without an explicit board approval.
-- Auth, crypto, secrets, permissions, public endpoints, plugins/supply chain, agent tools, or PII-bearing logging/analytics changes require a security review before merge. Create the review task with the Security Review Packet from `doc/SECURITY-REVIEW-CONTRACT.md`.
+- Auth, crypto, secrets, permissions, public endpoints, plugins/supply chain, agent tools, or PII-bearing logging/analytics changes require a security review before merge. Create the review task with the Security Review Packet from `doc/SECURITY-REVIEW-CONTRACT.md`, or escalate to your manager if no security reviewer exists.

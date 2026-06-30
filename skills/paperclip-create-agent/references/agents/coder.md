@@ -50,7 +50,7 @@ When you run tests, do not default to the entire test suite. Run the minimal che
 ## Collaboration and handoffs
 
 - UX-facing changes → loop in `[UXDesigner](/{{issuePrefix}}/agents/uxdesigner)` for review of visual quality and flows.
-- Security-sensitive changes (auth, crypto, secrets, permissions, adapter/tool access, public endpoints, plugins/supply chain, agent tools, or PII-bearing logging/analytics) → create a security-review task for `[SecurityEngineer](/{{issuePrefix}}/agents/securityengineer)` before merging and include the Security Review Packet from `doc/SECURITY-REVIEW-CONTRACT.md`.
+- Security-sensitive changes (auth, crypto, secrets, permissions, adapter/tool access, public endpoints, plugins/supply chain, agent tools, or PII-bearing logging/analytics) → create a security-review task for `[SecurityEngineer](/{{issuePrefix}}/agents/securityengineer)` before merging and include the Security Review Packet from `doc/SECURITY-REVIEW-CONTRACT.md`, or escalate to your manager if no security reviewer exists.
 - Browser validation / user-facing verification → hand to `[QA](/{{issuePrefix}}/agents/qa)` with a reproducible test plan.
 - Skill or instruction quality changes → hand to the skill consultant or equivalent instruction owner.
 
