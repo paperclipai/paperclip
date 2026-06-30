@@ -69,9 +69,22 @@ export const attachmentArtifactWorkProductMetadataSchema = z.object({
 
 export type AttachmentArtifactWorkProductMetadata = z.infer<typeof attachmentArtifactWorkProductMetadataSchema>;
 
+export const pullRequestAssigneeMetadataSchema = z.object({
+  userId: z.string().min(1),
+  source: z.literal("issue_tree_root_requester_rule"),
+  rootRequesterUserId: z.string().min(1),
+  rootRequesterIssueId: z.string().nullable().optional(),
+});
+
+export type PullRequestAssigneeMetadata = z.infer<typeof pullRequestAssigneeMetadataSchema>;
+
 export const issueWorkProductMetadataSchema = z
   .object({
     resourceRef: workspaceFileRefSchema.optional().nullable(),
+    // Set server-side for `pull_request` work products by the instance-wide PR
+    // assignment rule (TWX-1103). Records the board user the PR should belong
+    // to based on the issue tree's rootmost human requester.
+    assignee: pullRequestAssigneeMetadataSchema.optional().nullable(),
   })
   .passthrough();
 

@@ -29,10 +29,18 @@ export const backupRetentionPolicySchema = z.object({
   monthlyMonths: presetSchema(MONTHLY_RETENTION_PRESETS, "monthlyMonths").default(DEFAULT_BACKUP_RETENTION.monthlyMonths),
 });
 
+export const pullRequestAssigneeRuleSchema = z.object({
+  rootRequesterUserId: z.string().trim().min(1).max(160),
+  assigneeUserId: z.string().trim().min(1).max(160),
+}).strict();
+
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
   keyboardShortcuts: z.boolean().default(false),
   defaultDecisionOwnerUserId: z.string().trim().min(1).max(160).nullable().default(null),
+  // null => fall back to the server-side built-in default rules; an explicit
+  // array (including []) replaces the default. See PullRequestAssigneeRule.
+  pullRequestAssigneeRules: z.array(pullRequestAssigneeRuleSchema).nullable().default(null),
   feedbackDataSharingPreference: feedbackDataSharingPreferenceSchema.default(
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),

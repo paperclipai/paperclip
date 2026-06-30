@@ -103,6 +103,10 @@ import {
   taskWatchdogScopeAllowsIssueMutation,
 } from "../services/task-watchdog-scope.js";
 import { resolveRootHumanRequesterFromIssuePath } from "../services/issue-requester.js";
+import {
+  resolvePullRequestAssignee,
+  resolvePullRequestAssigneeForRootRequester,
+} from "../services/pull-request-assignee.js";
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
@@ -3410,6 +3414,12 @@ export function issueRoutes(
       activeRecoveryAction,
     });
     const rootHumanRequester = resolveRootHumanRequesterFromIssuePath({ issue, ancestors });
+    // TWX-1103: surface the instance-wide PR assignee so an agent that opens the
+    // actual GitHub PR for this tree knows who to assign it to.
+    const pullRequestAssignee = await resolvePullRequestAssigneeForRootRequester(db, {
+      companyId: issue.companyId,
+      rootRequester: rootHumanRequester,
+    });
     const redactLowTrust = await shouldRedactLowTrustForHeartbeatContext(issue, getActorInfo(req));
     const safeWakeComment =
       wakeComment && wakeComment.issueId === issue.id
@@ -3460,6 +3470,7 @@ export function issueRoutes(
         createdByUserId: ancestor.createdByUserId,
       })),
       rootHumanRequester,
+      pullRequestAssignee,
       project: project
         ? {
             id: project.id,
@@ -4652,6 +4663,25 @@ export function issueRoutes(
         metadata: req.body.metadata ?? null,
       });
     }
+    // TWX-1103: stamp the instance-wide PR assignee onto pull_request work
+    // products, derived from the issue tree's rootmost human requester. An
+    // explicit assignee in the request payload is preserved; trees that match no
+    // rule (or whose assignee is not an active company member) are untouched.
+    if (createInput.type === "pull_request") {
+      const existingMetadata =
+        createInput.metadata && typeof createInput.metadata === "object"
+          ? (createInput.metadata as Record<string, unknown>)
+          : null;
+      if (!existingMetadata?.assignee) {
+        const assignee = await resolvePullRequestAssignee(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+        });
+        if (assignee) {
+          createInput.metadata = { ...(existingMetadata ?? {}), assignee };
+        }
+      }
+    }
     const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, createInput);
     if (!product) {
       res.status(422).json({ error: "Invalid work product payload" });
@@ -4851,6 +4881,33 @@ export function issueRoutes(
       } else if (!requiresPaperclipAttachmentMetadata(existing)) {
         res.status(422).json({ error: "Attachment-backed artifact metadata is required" });
         return;
+      }
+    }
+    // TWX-1109: the instance-wide PR-assignee invariant must also hold when a
+    // work product is updated INTO or AS a pull_request (e.g. a branch promoted
+    // to a PR, or a PR whose metadata is replaced) — not just at creation. Stamp
+    // the assignee when the post-update work product is a pull_request that
+    // carries no explicit assignee. An explicit assignee — supplied in this
+    // patch's metadata, or already on the existing record's retained metadata —
+    // is preserved.
+    const effectiveType = patch.type ?? existing.type;
+    if (effectiveType === "pull_request") {
+      const metadataInPatch = Object.prototype.hasOwnProperty.call(patch, "metadata");
+      const effectiveMetadata = metadataInPatch
+        ? patch.metadata && typeof patch.metadata === "object"
+          ? (patch.metadata as Record<string, unknown>)
+          : null
+        : existing.metadata && typeof existing.metadata === "object"
+          ? (existing.metadata as Record<string, unknown>)
+          : null;
+      if (!effectiveMetadata?.assignee) {
+        const assignee = await resolvePullRequestAssignee(db, {
+          companyId: issue.companyId,
+          issueId: issue.id,
+        });
+        if (assignee) {
+          patch.metadata = { ...(effectiveMetadata ?? {}), assignee };
+        }
       }
     }
     const sourceTrust = await sourceTrustForActorWrite(issue, actor);

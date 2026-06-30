@@ -60,12 +60,33 @@ export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
  */
 export type InstanceExecutionMode = "kubernetes" | "any";
 
+/**
+ * Instance-wide rule that assigns a pull request to a board user when the PR is
+ * produced by an issue tree whose rootmost human requester matches
+ * `rootRequesterUserId`. Resolution is company-scoped and only applies when the
+ * resolved `assigneeUserId` is an active member of the PR's company, so company
+ * boundaries are preserved. See `resolvePullRequestAssignee`.
+ *
+ * This type is instance-agnostic. The shipped instance default (and any
+ * specific board-user ids) lives in the server config/default layer
+ * (`server/src/services/pull-request-assignee.ts`), not in this shared package.
+ */
+export interface PullRequestAssigneeRule {
+  rootRequesterUserId: string;
+  assigneeUserId: string;
+}
+
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
   keyboardShortcuts: boolean;
   defaultDecisionOwnerUserId: string | null;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
+  /**
+   * Instance-wide PR assignment rules. `null` = use the server-side built-in
+   * default rules; an explicit array (including `[]`) replaces the default.
+   */
+  pullRequestAssigneeRules: PullRequestAssigneeRule[] | null;
   /**
    * Execution policy. Absent/`"any"` = unrestricted; `"kubernetes"` forces the
    * Kubernetes sandbox provider and denies local/ssh execution.

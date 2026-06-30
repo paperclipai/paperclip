@@ -28,6 +28,8 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
       censorUsernameInLogs: parsed.data.censorUsernameInLogs ?? false,
       keyboardShortcuts: parsed.data.keyboardShortcuts ?? false,
       defaultDecisionOwnerUserId: parsed.data.defaultDecisionOwnerUserId ?? null,
+      // null => fall back to the built-in default at resolution time.
+      pullRequestAssigneeRules: parsed.data.pullRequestAssigneeRules ?? null,
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
@@ -39,6 +41,7 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
     censorUsernameInLogs: false,
     keyboardShortcuts: false,
     defaultDecisionOwnerUserId: null,
+    pullRequestAssigneeRules: null,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
   };

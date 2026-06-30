@@ -56,6 +56,7 @@ export type {
   InstanceGeneralSettings,
   InstanceSettings,
   BackupRetentionPolicy,
+  PullRequestAssigneeRule,
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "./instance.js";

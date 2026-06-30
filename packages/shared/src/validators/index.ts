@@ -1,6 +1,7 @@
 export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
+  pullRequestAssigneeRuleSchema,
   patchInstanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
   type PatchInstanceGeneralSettings,
