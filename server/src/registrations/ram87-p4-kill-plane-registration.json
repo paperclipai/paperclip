@@ -1,0 +1,90 @@
+{
+  "_comment": "RAM-87 §6.1 P4 dashboard registration record — Kill-Plane Observability. Canonical, machine-readable copy of the registration record the dashboard service ingests (RAM-396 attachment e70aea13-8a43-434c-b330-aa87cd511079). Committed as JSON so the forbidden-cross-tenant-field control has ONE auditable source of truth that native JSON.parse can load with zero parsing ambiguity (no YAML anchors/flow-vs-block edge cases). The RAM-400 validator sources `aggregation_constraints.forbidden_cross_tenant_fields` from THIS file and never duplicates it. Source of truth for layout: RAM-393 acceptance spec §4.1 (rev 1); proof-spec RAM-160 §4.2.",
+  "apiVersion": "dashboard.ram/v1",
+  "kind": "DashboardRegistration",
+  "metadata": {
+    "id": "ram87-p4-kill-plane",
+    "name": "RAM-87 P4 — Kill-Plane Observability",
+    "project": "paperclip-control-plane",
+    "registration_target": "ram87-p4-dashboard",
+    "wave_gate": true,
+    "spec_revision": 1,
+    "spec_source": {
+      "issue": "RAM-396",
+      "spec_document": "RAM-393 acceptance spec §4.1 (rev 1)",
+      "proof_spec": "RAM-160 proof-spec §4.2"
+    }
+  },
+  "ownership": {
+    "owner_team": "security-engineering",
+    "backup_team": "sre-on-call",
+    "visibility": ["ciso", "secops", "seceng", "ir-on-call"]
+  },
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": "kill-lease-latency",
+      "title": "Kill-lease p50/p95/p99 by tier",
+      "type": "timeseries",
+      "query": "kill_lease_acquire_latency_seconds{tier=~'tier_0_read|tier_1_write_internal|tier_2_write_prod|tier_3_spend_secrets_deploy_data_export'}",
+      "alert_on_breach": true,
+      "severity_on_breach": "Sev2"
+    },
+    {
+      "id": "replay-detect",
+      "title": "Replay-detect rate (window 1m)",
+      "type": "counter",
+      "query": "rate(kill_lease_replay_total[1m])",
+      "severity_on_breach": "Sev1"
+    },
+    {
+      "id": "ttl-oversize",
+      "title": "TTL-oversize rate",
+      "type": "counter",
+      "query": "rate(kill_lease_ttl_oversize_total[1m])",
+      "severity_on_breach": "Sev1"
+    },
+    {
+      "id": "thundering-herd",
+      "title": "Thundering-herd distribution (renewal timestamp spread)",
+      "type": "heatmap",
+      "query": "kill_lease_renewal_jitter_ratio",
+      "severity_on_breach": "Sev2"
+    },
+    {
+      "id": "epoch-propagation-latency",
+      "title": "Epoch propagation latency per scope",
+      "type": "timeseries",
+      "query": "epoch_propagation_latency_seconds{scope=~'kill_fleet|kill_tenant|kill_agent'}",
+      "severity_on_breach": "Sev1"
+    },
+    {
+      "id": "per-scope-epoch-state",
+      "title": "Per-scope epoch state",
+      "type": "stat",
+      "query": "kill_epoch{scope=~'kill_fleet|kill_tenant|kill_agent'}"
+    },
+    {
+      "id": "cold-start",
+      "title": "Fresh-PEP bootstrap p99 (cold-start alarm input)",
+      "type": "timeseries",
+      "query": "kill_lease_cold_start_seconds",
+      "severity_on_breach": "Sev2"
+    },
+    {
+      "id": "findings",
+      "title": "Open findings (kill-plane)",
+      "type": "table",
+      "query": "kill_plane_findings{status='open'}",
+      "columns": ["id", "title", "severity", "opened_at", "owner"],
+      "severity_on_breach": "Sev2_meta"
+    }
+  ],
+  "aggregation_constraints": {
+    "cross_tenant_only_fields": ["bundle_hash", "window", "count"],
+    "forbidden_cross_tenant_fields": ["tenant_id", "agent_id", "lease_id", "source_spiiffe"],
+    "enforcement": "dashboard_query_layer"
+  },
+  "pii_allowlist_only": true,
+  "pii_rejection_patterns": ["ssn", "email", "credit_card", "freeform_string_unbound"]
+}

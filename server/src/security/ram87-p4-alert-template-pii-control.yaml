@@ -1,0 +1,111 @@
+# ram87-p4-alert-template-pii-control — Alert-template PII enforcement control
+#
+# Issue:          RAM-401 (RAM-396.F3)
+# Parent:         RAM-396 (kill-plane dashboard registration)
+# Spec evidence:  RAM-396 attachment e70aea13 — registration record declares
+#                 `pii_allowlist_only: true` and
+#                 `pii_rejection_patterns: [ssn, email, credit_card,
+#                 freeform_string_unbound]`. That is a documentation control at
+#                 the DASHBOARD layer. THIS control is the structural
+#                 enforcement at the separate ALERT-TEMPLATE-ENGINE layer.
+# Owner:          SRE / Alerting Platform.
+# Sec Eng review: @SecurityEngineering.
+# CISO sign-off:  bound to RAM-396 sign-off.
+#
+# This file is the human-auditable / control-pipeline view of the alert-template
+# PII control. It is NOT the source of the patterns — it declares the shared
+# canonical source (alert-template-pii-patterns.ts) and mirrors its pattern ids
+# + kinds. The regression suite asserts this file and the module cannot drift.
+#
+apiVersion: alerting.ram/v1
+kind: AlertTemplatePiiControl
+metadata:
+  id: ram87-p4-alert-template-pii-control
+  display_name: "RAM-87 P4 — Alert-Template PII Enforcement"
+  spec_revision: 1
+  spec_source:
+    issue: RAM-401
+    parent: RAM-396
+    registration_record: "RAM-396 attachment e70aea13 (pii_rejection_patterns)"
+
+# -- Shared canonical source ---------------------------------------------------
+control:
+  source: alert-template-pii-patterns.ts
+  validator: alert-template-pii.ts
+  enforced_at: template_registration
+  revalidation: on_startup_and_deploy
+
+# -- Enforcement model ---------------------------------------------------------
+# 1. SHAPE-FIRST: a value proven to match a bounded safe shape is accepted and
+#    never content-scanned (prevents false positives AND closes unbound leaks).
+# 2. DEFAULT-REJECT: any free-text value not proven safe is freeform_string_unbound.
+# 3. CONTENT-SCAN: free-text literals scanned for ssn / email / credit_card.
+# 4. credit_card = candidate-regex -> issuer-prefix + exact length + Luhn (code).
+# 5. The rejection error always NAMES the matching pattern id.
+
+# -- Rejection patterns (mirror of PII_REJECTION_PATTERNS in the module) -------
+pii_rejection_patterns:
+  - id: ssn
+    kind: regex
+    description: >-
+      US SSN; boundary-guarded; rejects invalid area 000/666/900-999,
+      group 00, serial 0000; accepts dashed, spaced, or bare 9-digit.
+  - id: email
+    kind: regex
+    description: >-
+      Pragmatic email detector (intentionally not full RFC 5322; ReDoS/
+      readability hazard avoided).
+  - id: credit_card
+    kind: detector
+    description: >-
+      Candidate digit-run regex confirmed by issuer prefix + exact length +
+      Luhn. Visa 13/16, Mastercard (51-55, 2221-2720), Amex 15, Discover.
+      Luhn-alone and fixed \d{16} are explicitly rejected as unsafe.
+  - id: freeform_string_unbound
+    kind: schema_rule
+    description: >-
+      A template field reference whose schema is unknown or an unconstrained
+      string (no enum/const, no safe piiSafeKind/type, maxLength alone does NOT
+      qualify). Default-reject (Fail Securely).
+
+# -- Bounded safe shapes (allowlist; mirror of SAFE_SHAPES) --------------------
+# numeric is intentionally NOT a safe literal shape: a bare numeric literal can be
+# a raw SSN or PAN, so literal content must always be content-scanned. numeric
+# remains a safe_field_kind for schema-bound interpolated values only.
+safe_shapes:
+  - metric_ref
+  - sha256
+  - uuid
+  - duration
+  - template_var
+safe_field_kinds:
+  - enum
+  - const
+  - metric_ref
+  - dashboard_ref
+  - panel_ref
+  - sha256
+  - uuid
+  - slug
+  - bounded_label
+  - numeric
+  - number
+  - boolean
+  - duration
+  - timestamp
+
+# -- Acceptance gates (machine-checkable; RAM-401 acceptance) ------------------
+acceptance_gates:
+  rejects_pii_at_registration_with_named_pattern: true
+  control_sourced_from_shared_resource_not_duplicated: true
+  credit_card_regression_present: true
+  existing_templates_revalidated: pending
+  regression_test_in_ci: true
+
+# -- Sign-off ------------------------------------------------------------------
+sign_off:
+  required_role: ciso
+  required_before: wave_1
+  reviewers:
+    - "@SecurityEngineering"
+  artifact_reference: "request_confirmation on RAM-396"
