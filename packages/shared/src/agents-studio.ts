@@ -742,5 +742,17 @@ export const AI_FACTORY_ORG_TEMPLATE: AiFactoryOrgMember[] = [
     connector: "core",
     capabilities: "Promotes tested workflows to live and owns the deploy step of the factory pipeline.",
   },
+  // ponytail: one build node makes this a generalist factory (apps + workflows);
+  // QA + Release + Director already serve both lanes. Add a full SDLC team only
+  // when this single engineer is a measured bottleneck.
+  {
+    key: "software-engineer",
+    name: "Software Engineer",
+    role: "engineer",
+    title: "App Build / Refactor",
+    reportsToKey: "director",
+    connector: "core",
+    capabilities: "Builds and refactors applications end to end; the SDLC build lane of the factory.",
+  },
 ];
 
