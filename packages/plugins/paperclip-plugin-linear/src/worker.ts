@@ -3403,12 +3403,32 @@ async function handleWebhookEvent(
         // enough context for downstream linkifiers to build correct urls.
         const dataUrl = (data.url as string | null | undefined) ?? null;
         const workspaceSlug = await resolveLinearWorkspaceSlug(ctx, dataUrl);
-        const rawDescription = (data.description as string | null | undefined) ?? null;
+        const rawWebhookDescription = (data.description as string | null | undefined) ?? null;
+        // Linear webhook payloads truncate description at ~1024 bytes. Fetch
+        // the full description from the Linear API to avoid silently clipping
+        // long issue bodies (BLO-12818). Failure falls back to the truncated
+        // payload so the issue creation still proceeds.
+        let fullRawDescription: string | null = rawWebhookDescription;
+        if (rawWebhookDescription) {
+          try {
+            const descToken = await resolveToken(ctx);
+            const fullIssue = await linear.getIssue(
+              ctx.http.fetch.bind(ctx.http),
+              descToken,
+              linearIssueId,
+            );
+            fullRawDescription = fullIssue.description ?? rawWebhookDescription;
+          } catch (err) {
+            ctx.logger.warn(
+              `Webhook create: failed to fetch full description for ${identifier ?? linearIssueId}; using truncated webhook payload: ${err}`,
+            );
+          }
+        }
         // Same bug class as comment ingest: bare BLO-N in a Linear-side
         // description would otherwise mis-route via paperclip's UI linkifier
         // to paperclip's own /issues/<id>.
-        const description = rawDescription
-          ? linkifyBareLinearIssueRefs(rawDescription, workspaceSlug)
+        const description = fullRawDescription
+          ? linkifyBareLinearIssueRefs(fullRawDescription, workspaceSlug)
           : undefined;
 
         // BLO-2350: webhook payloads carry `data.projectId` (and sometimes a

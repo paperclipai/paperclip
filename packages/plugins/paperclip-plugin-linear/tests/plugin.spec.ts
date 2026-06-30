@@ -2644,6 +2644,69 @@ describe("paperclip-plugin-linear", () => {
       expect(syncModule.createLink).toHaveBeenCalled();
     });
 
+    it("uses full Linear API description instead of truncated webhook payload (BLO-12818)", async () => {
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.companyId },
+        "comp-1",
+      );
+      // resolveToken reads STATE_KEYS.oauthToken; without it the description
+      // fetch try/catch would silently fall back to the truncated webhook payload.
+      await harness.ctx.state.set(
+        { scopeKind: "instance", stateKey: STATE_KEYS.oauthToken },
+        "lin_token_test",
+      );
+
+      const truncated = "short payload (simulating Linear webhook truncation at ~1024 bytes)";
+      const full = `${"x".repeat(1100)} — full description fetched from Linear API`;
+
+      const { getIssue } = await import("../src/linear.js");
+      (getIssue as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        id: "lin-long-desc-2",
+        identifier: "LUC-61",
+        title: "Long description issue",
+        description: full,
+        state: { name: "Backlog", type: "backlog" },
+        url: "https://linear.app/lucitra/issue/LUC-61",
+        assignee: null,
+        labels: { nodes: [] },
+        project: null,
+        createdAt: "",
+        updatedAt: "",
+      });
+
+      const createSpy = vi.spyOn(harness.ctx.issues, "create");
+
+      await plugin.definition.onWebhook!({
+        endpointKey: "linear-events",
+        parsedBody: {
+          type: "Issue",
+          action: "create",
+          data: {
+            id: "lin-long-desc-2",
+            identifier: "LUC-61",
+            title: "Long description issue",
+            description: truncated,
+            priority: 0,
+            state: { type: "backlog", name: "Backlog" },
+          },
+        },
+        headers: {},
+        rawBody: "",
+        requestId: "test-webhook-full-desc",
+      });
+
+      // Must have called getIssue to fetch the full description
+      expect(getIssue).toHaveBeenCalledWith(
+        expect.any(Function),
+        expect.any(String),
+        "lin-long-desc-2",
+      );
+      // Paperclip issue must carry the full description, not the webhook payload
+      expect(createSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ description: full }),
+      );
+    });
+
     it("syncs issue updates even when Linear-originated creates are disabled", async () => {
       harness.setConfig({ disableLinearOriginatedCreates: true });
       syncModule.getLinkByLinear.mockResolvedValueOnce({
