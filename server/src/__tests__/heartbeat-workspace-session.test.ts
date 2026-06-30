@@ -414,21 +414,129 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
     }
   });
 
-  it("rejects a workspace-linked issue when adapter cwd has no git metadata", async () => {
+  it("rejects a git-backed workspace-linked issue when adapter cwd has no git metadata", async () => {
     const input = buildWorkspaceValidationInput();
     const cwd = "/tmp/paperclip-workspace-without-git-metadata";
 
     await expectWorkspaceValidationFailure(
       buildWorkspaceValidationInput({
-        resolvedWorkspace: buildResolvedWorkspace({ cwd }),
+        resolvedWorkspace: buildResolvedWorkspace({ cwd, repoUrl: "https://example.com/repo.git" }),
         executionWorkspace: {
           ...input.executionWorkspace,
           baseCwd: cwd,
           cwd,
+          repoUrl: "https://example.com/repo.git",
         },
         persistedExecutionWorkspace: {
           ...input.persistedExecutionWorkspace!,
           cwd,
+          repoUrl: "https://example.com/repo.git",
+        },
+      }),
+      "missing_git_metadata",
+      "has no .git metadata",
+    );
+  });
+
+  it("allows a non-git local_folder project (repoUrl null) to launch without .git metadata", async () => {
+    const input = buildWorkspaceValidationInput();
+    const cwd = "/tmp/paperclip-non-git-local-folder";
+
+    await expect(
+      assertGitSensitiveAdapterWorkspaceValid(
+        buildWorkspaceValidationInput({
+          resolvedWorkspace: buildResolvedWorkspace({ cwd, repoUrl: null }),
+          executionWorkspace: {
+            ...input.executionWorkspace,
+            baseCwd: cwd,
+            cwd,
+            repoUrl: null,
+            strategy: "project_primary",
+          },
+          persistedExecutionWorkspace: {
+            ...input.persistedExecutionWorkspace!,
+            cwd,
+            repoUrl: null,
+            strategyType: "project_primary",
+          },
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("still requires .git metadata for git-backed projects (repoUrl set)", async () => {
+    const input = buildWorkspaceValidationInput();
+    const cwd = "/tmp/paperclip-git-backed-without-git-metadata";
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        resolvedWorkspace: buildResolvedWorkspace({ cwd, repoUrl: "https://example.com/repo.git" }),
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          baseCwd: cwd,
+          cwd,
+          repoUrl: "https://example.com/repo.git",
+          strategy: "project_primary",
+        },
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          cwd,
+          repoUrl: "https://example.com/repo.git",
+          strategyType: "project_primary",
+        },
+      }),
+      "missing_git_metadata",
+      "has no .git metadata",
+    );
+  });
+
+  it("still requires .git metadata for git_worktree strategy even when repoUrl is null", async () => {
+    const input = buildWorkspaceValidationInput();
+    const cwd = "/tmp/paperclip-worktree-without-git-metadata";
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        resolvedWorkspace: buildResolvedWorkspace({ cwd, repoUrl: null }),
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          baseCwd: cwd,
+          cwd,
+          repoUrl: null,
+          strategy: "git_worktree",
+        },
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          cwd,
+          repoUrl: null,
+          strategyType: "git_worktree",
+          providerRef: cwd,
+        },
+      }),
+      "missing_git_metadata",
+      "has no .git metadata",
+    );
+  });
+
+  it("still requires .git metadata when the persisted strategy is git_worktree even if the realized strategy degraded", async () => {
+    const input = buildWorkspaceValidationInput();
+    const cwd = "/tmp/paperclip-persisted-worktree-without-git-metadata";
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        resolvedWorkspace: buildResolvedWorkspace({ cwd, repoUrl: null }),
+        executionWorkspace: {
+          ...input.executionWorkspace,
+          baseCwd: cwd,
+          cwd,
+          repoUrl: null,
+          strategy: "project_primary",
+        },
+        persistedExecutionWorkspace: {
+          ...input.persistedExecutionWorkspace!,
+          cwd,
+          repoUrl: null,
+          strategyType: "git_worktree",
+          providerRef: cwd,
         },
       }),
       "missing_git_metadata",
