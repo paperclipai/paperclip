@@ -134,7 +134,9 @@ WORKDIR /vendor
 # k8s_pod_schedule_failed errors after Kubernetes has already assigned a node.
 # Bumped 2026-06-30 to 56811ea: add 1M model IDs and record the configured
 # model in session params so Claude jobs do not resume stale non-1M sessions.
-ARG CLAUDE_K8S_REF=56811ea11d09753324cb1aee3bce071198ea214d
+# Bumped 2026-06-30 to 4e3cc38: add Claude Sonnet 5 model IDs and stop
+# tracking generated dist artifacts; CI now builds and pack-verifies them.
+ARG CLAUDE_K8S_REF=4e3cc3881fa8c7281568328906b5a411e69de7e8
 # Re-pinned 2026-06-14 to kkroo/paperclip-adapter-opencode-k8s master a533d11
 # (was 168688e): BLO-10448 — a transient k8s status-read error during the
 # completion poll was mislabeled as a deadline, surfacing as the bogus
