@@ -407,10 +407,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }
     return [...runnableEnvironments, currentDefaultEnvironment];
   }, [currentDefaultEnvironment, runnableEnvironments]);
+  // `runnableEnvironments` excludes the always-available Local environment, so a
+  // single entry already means the user has more than one environment configured
+  // (Local + that environment) and the override selector is meaningful.
   const showEnvironmentOverrideControl = environmentsEnabled && (
     forcedKubernetes ||
     currentDefaultEnvironmentId.length > 0 ||
-    runnableEnvironments.length > 1
+    runnableEnvironments.length >= 1
   );
   const inheritedEnvironmentLabel = instanceDefaultEnvironment
     ? `${instanceDefaultEnvironment.name} (${instanceDefaultEnvironment.driver})`
@@ -1023,16 +1026,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-            <Field
-              label="Environment override"
-              hint="Leave this unset to inherit the instance default. Agent-specific overrides only appear when there is a real alternative."
-            >
+            <Field label="Environment override">
               <div className="space-y-2">
-                <div className="text-xs text-muted-foreground">
-                  {currentDefaultEnvironment
-                    ? `Overriding the instance default with ${currentDefaultEnvironment.name}.`
-                    : `Inheriting the instance default: ${inheritedEnvironmentLabel}.`}
-                </div>
                 <select
                   className={inputClass}
                   value={currentDefaultEnvironmentId}
@@ -1045,7 +1040,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     mark("identity", "defaultEnvironmentId", nextValue || null);
                   }}
                 >
-                  <option value="">Inherit instance default ({inheritedEnvironmentLabel})</option>
+                  <option value="">Default: {inheritedEnvironmentLabel}</option>
                   {environmentOptions.map((environment) => (
                     <option key={environment.id} value={environment.id}>
                       {environment.name} · {environment.driver}
