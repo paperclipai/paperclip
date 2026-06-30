@@ -11,6 +11,7 @@ import {
   executionWorkspaces,
   goals,
   heartbeatRuns,
+  issueComments,
   issueInboxArchives,
   issueReadStates,
   issues,
@@ -2849,6 +2850,168 @@ export function routineService(
         });
       }
       return null;
+    },
+
+    // Watchdog for routine runs that finalized to `issue_created` but whose
+    // execution issue never had an agent dispatched (TWB-2930). Without this an
+    // intermittent issue->execution dispatch failure leaves the run silently
+    // stuck at `issue_created` forever — no failure signal — and for a paced
+    // routine the missed fire stalls the work invisibly until a chance catch.
+    //
+    // For each stale `issue_created` run this:
+    //   - reconciles terminal issue states (done -> completed; blocked/cancelled
+    //     -> failed; missing issue -> failed) the same way syncRunStatusForIssue
+    //     would, in case its issue-status-change trigger was missed;
+    //   - for an issue still sitting at its creation status (`todo`) with no live
+    //     heartbeat run and no agent comment (the "never dispatched" signature),
+    //     re-dispatches the assignment wakeup. The live-run check makes this
+    //     naturally idempotent: a wake that takes produces a queued/running run
+    //     that suppresses further attempts, so a healthy dispatch is re-woken at
+    //     most until it sticks;
+    //   - if it is still in that state past `escalateAfterMs`, gives up: posts a
+    //     system comment on the execution issue and fails the run so the
+    //     coalesce_if_active slot is freed for the next fire.
+    sweepStaleIssueCreatedRuns: async (opts?: {
+      redispatchAfterMs?: number;
+      escalateAfterMs?: number;
+    }) => {
+      const redispatchAfterMs = opts?.redispatchAfterMs ?? 3 * 60 * 1000;
+      const escalateAfterMs = opts?.escalateAfterMs ?? 6 * 60 * 1000;
+      const now = new Date();
+      const cutoff = new Date(now.getTime() - redispatchAfterMs);
+
+      const stale = await db
+        .select({
+          runId: routineRuns.id,
+          companyId: routineRuns.companyId,
+          runUpdatedAt: routineRuns.updatedAt,
+          issueId: issues.id,
+          issueStatus: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(routineRuns)
+        .leftJoin(issues, eq(issues.id, routineRuns.linkedIssueId))
+        .where(
+          and(
+            eq(routineRuns.status, "issue_created"),
+            lte(routineRuns.updatedAt, cutoff),
+          ),
+        );
+
+      const result = { scanned: stale.length, reconciled: 0, redispatched: 0, escalated: 0, orphaned: 0 };
+
+      for (const row of stale) {
+        // The execution issue is gone (deleted) but the run was never finalized.
+        if (!row.issueId) {
+          await finalizeRun(row.runId, {
+            status: "failed",
+            failureReason: "Execution issue missing; run never left issue_created",
+            completedAt: now,
+          });
+          result.orphaned += 1;
+          continue;
+        }
+
+        // Reconcile terminal issue states syncRunStatusForIssue may have missed.
+        if (row.issueStatus === "done") {
+          await finalizeRun(row.runId, { status: "completed", completedAt: now });
+          result.reconciled += 1;
+          continue;
+        }
+        if (row.issueStatus === "blocked" || row.issueStatus === "cancelled") {
+          await finalizeRun(row.runId, {
+            status: "failed",
+            failureReason: `Execution issue moved to ${row.issueStatus}`,
+            completedAt: now,
+          });
+          result.reconciled += 1;
+          continue;
+        }
+
+        // Only the "never dispatched" signature is actioned here: an issue still
+        // sitting at its creation status (`todo`). Issues that progressed to
+        // in_progress/in_review (or backlog, which is not dispatchable) are owned
+        // by the heartbeat reconcilers, not this watchdog.
+        if (row.issueStatus !== "todo") continue;
+
+        // Is an agent already (or still) working this issue?
+        const liveRun = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, row.companyId),
+              inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
+              or(
+                row.executionRunId ? eq(heartbeatRuns.id, row.executionRunId) : sql`false`,
+                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = cast(${row.issueId} as text)`,
+              ),
+            ),
+          )
+          .limit(1);
+        if (liveRun.length > 0) continue;
+
+        // Did an agent ever engage (post a comment)? If so this is a stalled-agent
+        // case, not a missed dispatch — leave it to the other reconcilers.
+        const agentComment = await db
+          .select({ id: issueComments.id })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.issueId, row.issueId),
+              isNotNull(issueComments.authorAgentId),
+              isNull(issueComments.deletedAt),
+            ),
+          )
+          .limit(1);
+        if (agentComment.length > 0) continue;
+
+        const ageMs = now.getTime() - new Date(row.runUpdatedAt).getTime();
+
+        if (ageMs >= escalateAfterMs) {
+          const minutes = Math.round(ageMs / 60000);
+          await issueSvc.addComment(
+            row.issueId,
+            `⚠️ Routine execution watchdog: this execution issue was created ~${minutes} min ago but no agent was ever dispatched (run stuck at \`issue_created\`, no agent activity). Re-dispatch did not take. Failing routine run \`${row.runId}\` so the routine's concurrency slot is freed for the next fire — this issue needs manual attention or a fresh routine fire.`,
+            {},
+          );
+          await finalizeRun(row.runId, {
+            status: "failed",
+            failureReason: `Stalled at issue_created for ~${minutes}m: no agent ever dispatched`,
+            completedAt: now,
+          });
+          await logActivity(db, {
+            companyId: row.companyId,
+            actorType: "system",
+            actorId: "routine-watchdog",
+            action: "routine.run_watchdog_escalated",
+            entityType: "routine_run",
+            entityId: row.runId,
+            details: { issueId: row.issueId, ageMs },
+          }).catch(() => {});
+          result.escalated += 1;
+          continue;
+        }
+
+        // Within the re-dispatch window: wake the assignee again. Idempotent via
+        // the live-run check above — a wake that takes produces a queued run that
+        // suppresses further attempts on the next sweep.
+        if (row.assigneeAgentId) {
+          await queueIssueAssignmentWakeup({
+            heartbeat,
+            issue: { id: row.issueId, assigneeAgentId: row.assigneeAgentId, status: row.issueStatus },
+            reason: "routine_execution_redispatch",
+            mutation: "watchdog_redispatch",
+            contextSource: "routine.watchdog",
+            requestedByActorType: "system",
+            rethrowOnError: false,
+          });
+          result.redispatched += 1;
+        }
+      }
+
+      return result;
     },
   };
 }

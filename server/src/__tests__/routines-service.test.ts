@@ -14,6 +14,7 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   instanceSettings,
+  issueComments,
   issueDocuments,
   issueInboxArchives,
   issueReadStates,
@@ -77,6 +78,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(companySecrets);
     await db.delete(heartbeatRuns);
     await db.delete(issueDocuments);
+    await db.delete(issueComments);
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(issues);
@@ -279,6 +281,149 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues).toHaveLength(2);
     expect(routineIssues.map((issue) => issue.id)).toContain(previousIssue.id);
     expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+  });
+
+  // TWB-2930: watchdog for runs that finalized to `issue_created` but whose
+  // execution issue never had an agent dispatched (silent dispatch stall).
+  async function seedStaleIssueCreatedRun(opts: {
+    companyId: string;
+    issueSvc: ReturnType<typeof issueService>;
+    routine: Awaited<ReturnType<ReturnType<typeof routineService>["create"]>>;
+    runUpdatedAt: Date;
+    issueStatus?: string;
+  }) {
+    const runId = randomUUID();
+    const issue = await opts.issueSvc.create(opts.companyId, {
+      projectId: opts.routine.projectId,
+      title: opts.routine.title,
+      description: opts.routine.description,
+      status: opts.issueStatus ?? "todo",
+      priority: opts.routine.priority,
+      assigneeAgentId: opts.routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: opts.routine.id,
+      originRunId: runId,
+    });
+    await db.insert(routineRuns).values({
+      id: runId,
+      companyId: opts.companyId,
+      routineId: opts.routine.id,
+      triggerId: null,
+      source: "schedule",
+      status: "issue_created",
+      triggeredAt: opts.runUpdatedAt,
+      linkedIssueId: issue.id,
+      updatedAt: opts.runUpdatedAt,
+    });
+    return { runId, issue };
+  }
+
+  it("re-dispatches a stale issue_created run, then is idempotent once a live run exists", async () => {
+    const { companyId, issueSvc, routine, svc, wakeups } = await seedFixture();
+    // 4 min old: past the 3-min re-dispatch threshold, under the 6-min escalate threshold.
+    const { runId } = await seedStaleIssueCreatedRun({
+      companyId,
+      issueSvc,
+      routine,
+      runUpdatedAt: new Date(Date.now() - 4 * 60 * 1000),
+    });
+
+    const first = await svc.sweepStaleIssueCreatedRuns();
+    expect(first.redispatched).toBe(1);
+    expect(first.escalated).toBe(0);
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.opts.reason).toBe("routine_execution_redispatch");
+
+    // The harness wakeup created a queued heartbeat run for the issue; the run is
+    // still issue_created (waiting for the agent to drive it), and a second sweep
+    // must NOT re-dispatch again because a live run now exists.
+    const runAfter = await db
+      .select({ status: routineRuns.status })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(runAfter?.status).toBe("issue_created");
+
+    const second = await svc.sweepStaleIssueCreatedRuns();
+    expect(second.redispatched).toBe(0);
+    expect(second.escalated).toBe(0);
+    expect(wakeups).toHaveLength(1);
+  });
+
+  it("escalates and fails a run stuck at issue_created with no agent ever dispatched", async () => {
+    const { companyId, issueSvc, routine, svc, wakeups } = await seedFixture();
+    // 7 min old: past the 6-min escalate threshold.
+    const { runId, issue } = await seedStaleIssueCreatedRun({
+      companyId,
+      issueSvc,
+      routine,
+      runUpdatedAt: new Date(Date.now() - 7 * 60 * 1000),
+    });
+
+    const result = await svc.sweepStaleIssueCreatedRuns();
+    expect(result.escalated).toBe(1);
+    expect(result.redispatched).toBe(0);
+    expect(wakeups).toHaveLength(0);
+
+    const runAfter = await db
+      .select({ status: routineRuns.status, failureReason: routineRuns.failureReason })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(runAfter?.status).toBe("failed");
+    expect(runAfter?.failureReason).toContain("no agent ever dispatched");
+
+    const comments = await issueSvc.listComments(issue.id);
+    const systemComment = comments.find((c) => c.body.includes("Routine execution watchdog"));
+    expect(systemComment).toBeTruthy();
+    expect(systemComment?.authorType).toBe("system");
+  });
+
+  it("reconciles a stale issue_created run whose issue already completed", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const { runId } = await seedStaleIssueCreatedRun({
+      companyId,
+      issueSvc,
+      routine,
+      runUpdatedAt: new Date(Date.now() - 10 * 60 * 1000),
+      issueStatus: "done",
+    });
+
+    const result = await svc.sweepStaleIssueCreatedRuns();
+    expect(result.reconciled).toBe(1);
+    expect(result.escalated).toBe(0);
+
+    const runAfter = await db
+      .select({ status: routineRuns.status })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(runAfter?.status).toBe("completed");
+  });
+
+  it("leaves a stale run alone when an agent already engaged the issue", async () => {
+    const { agentId, companyId, issueSvc, routine, svc, wakeups } = await seedFixture();
+    const { runId, issue } = await seedStaleIssueCreatedRun({
+      companyId,
+      issueSvc,
+      routine,
+      runUpdatedAt: new Date(Date.now() - 7 * 60 * 1000),
+    });
+    // An agent posted a comment, so this is a stalled-agent case (owned by the
+    // heartbeat reconcilers), not a missed dispatch.
+    await issueSvc.addComment(issue.id, "working on it", { agentId });
+
+    const result = await svc.sweepStaleIssueCreatedRuns();
+    expect(result.escalated).toBe(0);
+    expect(result.redispatched).toBe(0);
+    expect(wakeups).toHaveLength(0);
+
+    const runAfter = await db
+      .select({ status: routineRuns.status })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(runAfter?.status).toBe("issue_created");
   });
 
   it("creates draft routines without a project or default assignee", async () => {

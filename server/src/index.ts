@@ -924,6 +924,14 @@ export async function startServer(): Promise<StartedServer> {
           }
         })
         .then(async () => {
+          // TWB-2930: catch routine runs that finalized to `issue_created` but
+          // whose execution issue never had an agent dispatched (silent stall).
+          const swept = await routines.sweepStaleIssueCreatedRuns();
+          if (swept.redispatched > 0 || swept.escalated > 0 || swept.reconciled > 0 || swept.orphaned > 0) {
+            logger.warn({ ...swept }, "periodic routine issue_created watchdog re-dispatched or escalated stalled runs");
+          }
+        })
+        .then(async () => {
           const swept = await heartbeat.sweepStaleIssueLocks();
           if (swept.cleared > 0) {
             logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
