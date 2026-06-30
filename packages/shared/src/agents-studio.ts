@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AGENT_ADAPTER_TYPES } from "./constants.js";
 
 /**
  * Agents Studio / AI Factory
@@ -422,6 +423,7 @@ export const factoryAgentCreateSchema = z.object({
   domain: z.enum(AGENT_DOMAINS).default("general"),
   instructions: z.string().trim().max(4000).default(""),
   allowedIntegrators: z.array(z.enum(WORKFLOW_CONNECTORS)).max(20).default([]),
+  adapterType: z.enum(AGENT_ADAPTER_TYPES).default("claude_local"),
 });
 
 export type FactoryAgentCreateInput = z.infer<typeof factoryAgentCreateSchema>;

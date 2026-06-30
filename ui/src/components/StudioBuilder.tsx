@@ -5,10 +5,13 @@ import type { AgentDomain, ConnectorDefinition, WorkflowConnector } from "@paper
 import { agentsStudioApi } from "../api/agentsStudio";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
+import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 const DOMAINS: AgentDomain[] = ["it", "hr", "finance", "procurement", "general"];
+// Model runtimes an agent can use. OpenCode is multi-provider (Qwen, GLM, etc.).
+const ADAPTERS = ["claude_local", "codex_local", "gemini_local", "opencode_local", "pi_local", "cursor"] as const;
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring";
@@ -36,6 +39,7 @@ export function StudioBuilder({ companyId }: { companyId: string }) {
   // --- Create Agent state ---
   const [agentName, setAgentName] = useState("");
   const [agentDomain, setAgentDomain] = useState<AgentDomain>("it");
+  const [agentAdapter, setAgentAdapter] = useState<(typeof ADAPTERS)[number]>("claude_local");
   const [agentInstructions, setAgentInstructions] = useState("");
   const [allowed, setAllowed] = useState<WorkflowConnector[]>([]);
 
@@ -44,6 +48,7 @@ export function StudioBuilder({ companyId }: { companyId: string }) {
       agentsStudioApi.createAgent(companyId, {
         name: agentName.trim(),
         domain: agentDomain,
+        adapterType: agentAdapter,
         instructions: agentInstructions.trim(),
         allowedIntegrators: allowed,
       }),
@@ -129,6 +134,13 @@ export function StudioBuilder({ companyId }: { companyId: string }) {
               {DOMAINS.map((d) => (
                 <option key={d} value={d}>
                   {d.toUpperCase()}
+                </option>
+              ))}
+            </select>
+            <select className={selectCls} value={agentAdapter} onChange={(e) => setAgentAdapter(e.target.value as (typeof ADAPTERS)[number])}>
+              {ADAPTERS.map((a) => (
+                <option key={a} value={a}>
+                  {getAdapterLabel(a)}
                 </option>
               ))}
             </select>

@@ -260,7 +260,7 @@ export function agentsStudioService(db: Db) {
           title: `${input.domain.toUpperCase()} Agent`,
           reportsTo,
           capabilities: input.instructions || null,
-          adapterType: "claude_local",
+          adapterType: input.adapterType,
           status: "idle",
           metadata: {
             aiFactoryAgent: true,
