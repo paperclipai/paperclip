@@ -306,7 +306,6 @@ COPY --from=deps /app /app
 COPY . .
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
-RUN pnpm --filter @kkroo/paperclip-plugin-ccrotate build
 RUN pnpm --filter @kkroo/paperclip-plugin-gbrain build
 RUN pnpm --filter @kkroo/paperclip-plugin-linear build
 RUN pnpm --filter paperclip-plugin-alertmanager build
