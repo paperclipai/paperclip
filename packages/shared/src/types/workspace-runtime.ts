@@ -76,12 +76,14 @@ export interface ExecutionWorkspaceStrategy {
   branchTemplate?: string | null;
   worktreeParentDir?: string | null;
   provisionCommand?: string | null;
+  syncCommand?: string | null;
   teardownCommand?: string | null;
 }
 
 export interface ExecutionWorkspaceConfig {
   environmentId?: string | null;
   provisionCommand: string | null;
+  syncCommand: string | null;
   teardownCommand: string | null;
   cleanupCommand: string | null;
   workspaceRuntime: Record<string, unknown> | null;
