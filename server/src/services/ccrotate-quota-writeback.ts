@@ -23,7 +23,7 @@ import path from "node:path";
 
 import { markAccountExhausted, type TierCacheTarget } from "@paperclipai/shared/ccrotate-state";
 
-import { mapAdapterToCcrotateTarget } from "./ccrotate-tier-gate.js";
+import { mapAdapterToCcrotateTarget } from "./ccrotate-target.js";
 
 export interface QuotaWritebackLogger {
   info(payload: Record<string, unknown>, msg: string): void;

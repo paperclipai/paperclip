@@ -9,9 +9,9 @@
  * Phase 2 (BLO-4828): caller throws on `verdict === "block"`. The evaluator
  * is identical in both phases — only the call-site behavior changes.
  *
- * Symmetric with `evaluateTierCacheSnapshot` in `ccrotate-tier-gate.ts`:
- * pure function, no IO, no DB, no clock-side-effects beyond what the caller
- * passes in. Caller is responsible for fetching comments + work_products.
+ * Designed as a pure evaluator: no IO, no DB, no clock-side-effects beyond
+ * what the caller passes in. Caller is responsible for fetching comments +
+ * work_products.
  */
 
 import type {

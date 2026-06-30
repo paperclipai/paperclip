@@ -165,10 +165,7 @@ import { normalizeIsolationMode, recordHeartbeatRunFailed } from "./metrics.js";
 import { runQuotaExhaustedHook } from "./quota-exhausted-hook.js";
 import { captureQuotaBurnIntoCcrotateTierCache } from "./ccrotate-quota-writeback.js";
 import { runLifecycleHook } from "./lifecycle-hook.js";
-import {
-  mapAdapterToCcrotateTarget,
-  readDefaultCcrotateTierCache,
-} from "./ccrotate-tier-gate.js";
+import { mapAdapterToCcrotateTarget } from "./ccrotate-target.js";
 import {
   createPenstockAvailabilityGate,
   type PenstockAvailabilityGate,
