@@ -1049,7 +1049,7 @@ export function CompanyEnvironments() {
           <DialogHeader className="border-b border-border/60 px-6 pb-4 pr-12 pt-6">
             <DialogTitle>{editingEnvironmentId ? "Edit environment" : "Add environment"}</DialogTitle>
             <DialogDescription>
-              Configure a reusable execution target for your agents.
+              Configure a reusable execution target for your agents. Saved changes affect future runs; Paperclip may start fresh sessions or sandbox leases after environment config changes.
             </DialogDescription>
           </DialogHeader>
 
