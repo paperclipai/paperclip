@@ -16,10 +16,10 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { CCROTATE_CAPACITY_MAX_RETRY_ATTEMPTS, heartbeatService } from "../services/heartbeat.js";
 import type {
-  CcrotateGateCheckInput,
-  CcrotateGateResult,
-  CcrotateTierGate,
-} from "../services/ccrotate-tier-gate.js";
+  PenstockAvailabilityGate,
+  PenstockAvailabilityGateCheckInput,
+  PenstockAvailabilityGateResult,
+} from "../services/penstock-availability-gate.js";
 
 vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => ({ track: vi.fn() }),
@@ -60,20 +60,32 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-/** Deterministic gate that always defers with a fixed resumeAt. */
-function denyingGate(resumeAt: Date | null): CcrotateTierGate {
+/**
+ * Deterministic Penstock availability gate that always defers with a fixed
+ * resumeAt. Capacity gating now runs entirely through the Penstock gate; the
+ * defer path still persists `scheduledRetryReason: "ccrotate_capacity"` and the
+ * `ccrotate_capacity_exhausted` escalation origin (stable persisted contract).
+ */
+function denyingGate(resumeAt: Date | null): PenstockAvailabilityGate {
   return {
-    async checkAdapter(_input: CcrotateGateCheckInput): Promise<CcrotateGateResult> {
-      return { allow: false, target: "claude", reason: "ccrotate.no_usable_account", resumeAt };
+    async checkAdapter(_input: PenstockAvailabilityGateCheckInput): Promise<PenstockAvailabilityGateResult> {
+      return {
+        allow: false,
+        provider: "anthropic",
+        reason: "penstock.model_capacity_unavailable",
+        model: "claude-test",
+        resumeAt,
+        retryAfterSeconds: null,
+      };
     },
     _resetForTesting() {},
   };
 }
 
-/** Deterministic gate that always allows (pool recovered). */
-function allowingGate(): CcrotateTierGate {
+/** Deterministic gate that always allows (capacity recovered). */
+function allowingGate(): PenstockAvailabilityGate {
   return {
-    async checkAdapter(_input: CcrotateGateCheckInput): Promise<CcrotateGateResult> {
+    async checkAdapter(_input: PenstockAvailabilityGateCheckInput): Promise<PenstockAvailabilityGateResult> {
       return { allow: true };
     },
     _resetForTesting() {},
@@ -124,7 +136,7 @@ describeEmbeddedPostgres("heartbeat ccrotate capacity-defer → scheduled retry"
     const { agentId } = await seedAgent();
     const resumeAt = new Date("2026-04-20T03:02:00.000Z");
     const heartbeat = heartbeatService(db, {
-      ccrotateGate: denyingGate(resumeAt),
+      penstockAvailabilityGate: denyingGate(resumeAt),
       skipQueuedRunDispatch: true,
     });
 
@@ -163,7 +175,7 @@ describeEmbeddedPostgres("heartbeat ccrotate capacity-defer → scheduled retry"
     const { agentId } = await seedAgent();
     const before = Date.now();
     const heartbeat = heartbeatService(db, {
-      ccrotateGate: denyingGate(null),
+      penstockAvailabilityGate: denyingGate(null),
       skipQueuedRunDispatch: true,
     });
 
@@ -187,7 +199,7 @@ describeEmbeddedPostgres("heartbeat ccrotate capacity-defer → scheduled retry"
     const resumeAt = new Date("2026-04-20T03:02:00.000Z");
     // Defer with an exhausted gate to create the scheduled_retry row...
     const deferring = heartbeatService(db, {
-      ccrotateGate: denyingGate(resumeAt),
+      penstockAvailabilityGate: denyingGate(resumeAt),
       skipQueuedRunDispatch: true,
     });
     await deferring.wakeup(agentId, { source: "assignment", triggerDetail: "system" });
@@ -209,7 +221,7 @@ describeEmbeddedPostgres("heartbeat ccrotate capacity-defer → scheduled retry"
 
     // Due + capacity recovered: a fresh instance whose gate now allows promotes it.
     const recovered = heartbeatService(db, {
-      ccrotateGate: allowingGate(),
+      penstockAvailabilityGate: allowingGate(),
       skipQueuedRunDispatch: true,
     });
     const promotion = await recovered.promoteDueScheduledRetries(resumeAt);
@@ -259,13 +271,13 @@ describeEmbeddedPostgres("heartbeat ccrotate capacity-defer → scheduled retry"
     // Same instance keeps denying — at promotion the re-gate must re-defer,
     // not dispatch a run that would immediately 429.
     const heartbeat = heartbeatService(db, {
-      ccrotateGate: denyingGate(nextResumeAt),
+      penstockAvailabilityGate: denyingGate(nextResumeAt),
       skipQueuedRunDispatch: true,
     });
 
     // Seed the scheduled_retry row directly via a deferring wake.
     const seeding = heartbeatService(db, {
-      ccrotateGate: denyingGate(resumeAt),
+      penstockAvailabilityGate: denyingGate(resumeAt),
       skipQueuedRunDispatch: true,
     });
     await seeding.wakeup(agentId, { source: "assignment", triggerDetail: "system" });
@@ -306,7 +318,7 @@ describeEmbeddedPostgres("heartbeat ccrotate capacity-defer → scheduled retry"
     });
 
     const heartbeat = heartbeatService(db, {
-      ccrotateGate: denyingGate(new Date("2026-04-20T09:00:00.000Z")),
+      penstockAvailabilityGate: denyingGate(new Date("2026-04-20T09:00:00.000Z")),
       skipQueuedRunDispatch: true,
     });
     const promotion = await heartbeat.promoteDueScheduledRetries(due);
@@ -337,7 +349,7 @@ describeEmbeddedPostgres("heartbeat ccrotate capacity-defer → scheduled retry"
     const { companyId, agentId: agentA } = await seedAgent();
     const due = new Date("2026-04-20T03:02:00.000Z");
     const heartbeat = heartbeatService(db, {
-      ccrotateGate: denyingGate(new Date("2026-04-20T09:00:00.000Z")),
+      penstockAvailabilityGate: denyingGate(new Date("2026-04-20T09:00:00.000Z")),
       skipQueuedRunDispatch: true,
     });
 

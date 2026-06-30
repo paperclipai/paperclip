@@ -24,8 +24,9 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-const allowCcrotateGate = {
+const allowPenstockGate = {
   checkAdapter: async () => ({ allow: true as const }),
+  _resetForTesting: () => {},
 };
 
 describeEmbeddedPostgres("heartbeat timer wake coalescing", () => {
@@ -108,7 +109,7 @@ describeEmbeddedPostgres("heartbeat timer wake coalescing", () => {
     });
 
     const heartbeat = heartbeatService(db, {
-      ccrotateGate: allowCcrotateGate,
+      penstockAvailabilityGate: allowPenstockGate,
       skipQueuedRunDispatch: true,
     });
 

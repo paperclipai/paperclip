@@ -66,7 +66,7 @@ const adapterExecute = vi.hoisted(() =>
   })),
 );
 
-const allowCcrotateGate = {
+const allowPenstockGate = {
   checkAdapter: async () => ({ allow: true as const }),
   _resetForTesting: () => {},
 };
@@ -328,7 +328,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       };
     });
 
-    const heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    const heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -508,7 +508,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       };
     });
 
-    const heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    const heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -669,7 +669,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       };
     });
 
-    const heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    const heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -815,7 +815,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       };
     });
 
-    const heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    const heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",

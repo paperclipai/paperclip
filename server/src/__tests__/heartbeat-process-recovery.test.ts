@@ -181,7 +181,7 @@ import type { PluginEvent } from "@paperclipai/plugin-sdk";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-const allowCcrotateGate = {
+const allowPenstockGate = {
   checkAdapter: async () => ({ allow: true as const }),
   _resetForTesting: () => {},
 };
@@ -325,7 +325,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
     const noopScopedBus: ScopedPluginEventBus = {
       subscribe: vi.fn(),
       emit: vi.fn(async () => ({ errors: [] })),
@@ -2445,7 +2445,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       })
       .where(eq(issues.id, issueId));
 
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
 
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, runId, 5_000);
@@ -2529,7 +2529,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       })
       .where(eq(agents.id, agentId));
 
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, runId, 5_000);
 
@@ -2615,7 +2615,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         model: "test-model",
       };
     });
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
 
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, runId, 5_000);
@@ -2719,7 +2719,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         model: "test-model",
       };
     });
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
 
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, runId, 5_000);
@@ -2803,7 +2803,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         model: "test-model",
       };
     });
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
 
     await heartbeat.resumeQueuedRuns();
     const settledRun = await waitForRunToSettle(heartbeat, runId, 5_000);
@@ -2869,7 +2869,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       provider: "test",
       model: "test-model",
     });
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
 
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, runId, 5_000);
@@ -2933,7 +2933,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         },
       })
       .where(eq(heartbeatRuns.id, runId));
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.continuationRequeued).toBe(0);
@@ -3022,7 +3022,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         },
       })
       .where(eq(heartbeatRuns.id, runId));
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.continuationRequeued).toBe(0);
@@ -3092,7 +3092,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
     ]);
 
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
     expect(result.waitingOnReviewResolved).toBe(1);
@@ -3174,7 +3174,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       { companyId, issueId: doneBlockerId, relatedIssueId: issueId, type: "blocks" },
     ]);
 
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
     expect(result.waitingOnReviewResolved).toBe(1);
@@ -3216,7 +3216,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runError: "Continuation parked: issue is waiting on review/approval",
     });
 
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
     // With no real waiting target, the deliberate-wait conversion must not fire;
@@ -3263,7 +3263,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentStatus: "running",
       includeIssue: false,
     });
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
     runningProcesses.set(runId, {
       child: { pid: 12345 } as ChildProcess,
       graceSec: 1,
@@ -3366,7 +3366,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentStatus: "running",
       includeIssue: true,
     });
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
 
     const cancelled = await heartbeat.cancelRun(runId, "Interrupted by board comment", {
       errorCode: "operator_interrupted",
@@ -3991,7 +3991,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       payload: { version: 1, prompt: "Approve the plan?" },
     });
 
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
     expect(result.continuationRequeued).toBe(0);
@@ -5498,7 +5498,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       authorAgentId: agentId,
       body: "frame 02/08 generated, attaching shortly",
     });
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.escalated).toBe(0);
@@ -5543,7 +5543,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       createdAt: stale,
       updatedAt: stale,
     });
-    heartbeat = heartbeatService(db, { ccrotateGate: allowCcrotateGate });
+    heartbeat = heartbeatService(db, { penstockAvailabilityGate: allowPenstockGate });
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.escalated).toBe(1);

@@ -495,7 +495,7 @@ describeEmbeddedPostgres("github-webhook route", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
   const webhookSecret = "test-webhook-secret-do-not-use-in-prod";
-  const allowCcrotateGate: NonNullable<GithubWebhookConfig["heartbeatOptions"]>["ccrotateGate"] = {
+  const allowPenstockGate: NonNullable<GithubWebhookConfig["heartbeatOptions"]>["penstockAvailabilityGate"] = {
     checkAdapter: async () => ({ allow: true }),
     _resetForTesting: () => {},
   };
@@ -552,7 +552,7 @@ describeEmbeddedPostgres("github-webhook route", () => {
       webhookSecret,
       ...config,
       heartbeatOptions: {
-        ccrotateGate: allowCcrotateGate,
+        penstockAvailabilityGate: allowPenstockGate,
         skipQueuedRunDispatch: true,
         ...config.heartbeatOptions,
       },

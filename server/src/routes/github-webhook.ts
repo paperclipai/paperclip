@@ -82,7 +82,7 @@ export interface GithubWebhookConfig {
    * Test/service override for heartbeat dispatch behavior. Production callers
    * normally leave this unset so queued webhook wakes dispatch immediately.
    */
-  heartbeatOptions?: Pick<HeartbeatServiceOptions, "ccrotateGate" | "skipQueuedRunDispatch">;
+  heartbeatOptions?: Pick<HeartbeatServiceOptions, "penstockAvailabilityGate" | "skipQueuedRunDispatch">;
 }
 
 // Identifier extraction (`extractPaperclipIdentifiers`) lives in

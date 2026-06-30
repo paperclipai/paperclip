@@ -166,17 +166,13 @@ import { runQuotaExhaustedHook } from "./quota-exhausted-hook.js";
 import { captureQuotaBurnIntoCcrotateTierCache } from "./ccrotate-quota-writeback.js";
 import { runLifecycleHook } from "./lifecycle-hook.js";
 import {
-  createCcrotateTierGate,
-  createDefaultCcrotateSwitcher,
   mapAdapterToCcrotateTarget,
   readDefaultCcrotateTierCache,
-  type CcrotateTierGate,
 } from "./ccrotate-tier-gate.js";
 import {
   createPenstockAvailabilityGate,
   type PenstockAvailabilityGate,
 } from "./penstock-availability-gate.js";
-import { createCcrotateServeVerifier } from "./ccrotate-serve-verifier.js";
 import {
   evaluateExecutionAllowlist,
   isExecutionForcedToKubernetes,
@@ -4819,12 +4815,6 @@ export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   /**
-   * Optional override for the ccrotate tier-gate. Defaults to a gate that
-   * reads ~/.ccrotate/tier-cache(.codex).json on disk. Tests inject a
-   * deterministic gate.
-   */
-  ccrotateGate?: CcrotateTierGate;
-  /**
    * Optional pre-dispatch provider availability gate for Penstock-backed
    * claude_k8s agents. Tests inject a deterministic gate.
    */
@@ -4894,45 +4884,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const sweepWakePreflightGbrain = createServerGbrainClient();
   const recovery = recoveryService(db, { enqueueWakeup });
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
-  const ccrotateServeBaseUrl =
-    process.env.CCROTATE_SERVE_BASE_URL ??
-    (process.env.CCROTATE_SERVE_SERVICE_HOST && process.env.CCROTATE_SERVE_SERVICE_PORT_SERVE
-      ? `http://${process.env.CCROTATE_SERVE_SERVICE_HOST}:${process.env.CCROTATE_SERVE_SERVICE_PORT_SERVE}`
-      : undefined);
-  const ccrotateServeToken = process.env.CCROTATE_SERVE_TOKEN;
-  const ccrotateVerifier = ccrotateServeBaseUrl && ccrotateServeToken
-    ? createCcrotateServeVerifier({
-        baseUrl: ccrotateServeBaseUrl,
-        token: ccrotateServeToken,
-        timeoutMs: 3_000,
-        retries: 1,
-        circuitBreakerThreshold: 3,
-        circuitBreakerCooldownMs: 30_000,
-        memoTtlMs: 30_000,
-        log: {
-          info: (payload, msg) => logger.info(payload, msg),
-          warn: (payload, msg) => logger.warn(payload, msg),
-          error: (payload, msg) => logger.warn(payload, msg),
-        },
-      })
-    : undefined;
-  if (ccrotateVerifier) {
-    logger.info({ baseUrl: ccrotateServeBaseUrl }, "ccrotate.verifier_enabled");
-  } else {
-    logger.warn(
-      {},
-      "ccrotate.verifier_disabled — set CCROTATE_SERVE_BASE_URL + CCROTATE_SERVE_TOKEN to enable",
-    );
-  }
-  const ccrotateGate: CcrotateTierGate = options.ccrotateGate ?? createCcrotateTierGate({
-    readCache: readDefaultCcrotateTierCache,
-    switcher: createDefaultCcrotateSwitcher(),
-    log: {
-      info: (payload, msg) => logger.info(payload, msg),
-      warn: (payload, msg) => logger.warn(payload, msg),
-    },
-    verifier: ccrotateVerifier,
-  });
   const penstockAvailabilityGate: PenstockAvailabilityGate = options.penstockAvailabilityGate ?? createPenstockAvailabilityGate({
     log: {
       info: (payload, msg) => logger.info(payload, msg),
@@ -8034,19 +7985,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           penstockModel: penstockCapacity.model,
           penstockRetryAfterSeconds: penstockCapacity.retryAfterSeconds,
         };
-      } else {
-        const ccrotateCapacity = await ccrotateGate.checkAdapter({
-          adapterType: agent.adapterType,
-          agentId: dueRun.agentId,
-          now,
-        });
-        if (!ccrotateCapacity.allow) {
-          capacity = {
-            target: ccrotateCapacity.target,
-            reason: ccrotateCapacity.reason,
-            resumeAt: ccrotateCapacity.resumeAt,
-          };
-        }
       }
       if (capacity) {
         const nextAttempt = (dueRun.scheduledRetryAttempt ?? 0) + 1;
@@ -14465,49 +14403,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             penstockProvider: penstockGateResult.provider,
             penstockModel: penstockGateResult.model,
             ...(resumeAtIso ? { penstockResumeAt: resumeAtIso } : {}),
-          },
-        });
-        return null;
-      }
-
-      const gateResult = await ccrotateGate.checkAdapter({
-        adapterType: agent.adapterType,
-        agentId,
-        now: new Date(),
-      });
-      if (!gateResult.allow) {
-        // Capacity exhausted. Instead of dropping the wake as terminal
-        // `skipped` (which left `resumeAt` decorative and required a human
-        // re-ping), persist it as a `scheduled_retry` heartbeat run so the
-        // existing scheduled-retry sweep (`promoteDueScheduledRetries`)
-        // re-fires it when capacity returns. Tagging it `rate_limit_exhausted`
-        // + `retryNotBefore = resumeAt` makes the existing bounded-retry
-        // backoff honor `resumeAt` as the retry floor. PEN-382.
-        const resumeAtIso = gateResult.resumeAt ? gateResult.resumeAt.toISOString() : null;
-        const scheduledRetryAt =
-          gateResult.resumeAt ?? new Date(Date.now() + CCROTATE_CAPACITY_DEFAULT_RETRY_DELAY_MS);
-        await db.insert(heartbeatRuns).values({
-          companyId: agent.companyId,
-          agentId,
-          invocationSource: source,
-          triggerDetail,
-          status: "scheduled_retry",
-          scheduledRetryAt,
-          scheduledRetryReason: CCROTATE_CAPACITY_RETRY_REASON,
-          scheduledRetryAttempt: 0,
-          errorCode: "rate_limit_exhausted",
-          resultJson: {
-            errorFamily: "rate_limit_exhausted",
-            ...(resumeAtIso ? { retryNotBefore: resumeAtIso, transientRetryNotBefore: resumeAtIso } : {}),
-            ccrotateTarget: gateResult.target,
-            ccrotateReason: gateResult.reason,
-          },
-          contextSnapshot: {
-            ...enrichedContextSnapshot,
-            wakeSource: source,
-            wakeTriggerDetail: triggerDetail,
-            ccrotateTarget: gateResult.target,
-            ...(resumeAtIso ? { ccrotateResumeAt: resumeAtIso } : {}),
           },
         });
         return null;
