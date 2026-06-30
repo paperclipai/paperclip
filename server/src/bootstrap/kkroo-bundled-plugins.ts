@@ -8,8 +8,8 @@
  * land here at most — and `index.ts` keeps a stable two-call surface.
  *
  * What lives here:
- *   - Local-path install fallbacks for chat, ccrotate, and linear plugins
- *     bundled in-image at `packages/plugins/*` (no npm publish).
+ *   - Local-path install fallbacks for chat and first-party plugins bundled
+ *     in-image at `packages/plugins/*` (no npm publish).
  *   - Auto-configuration of the Linear plugin from
  *     `PAPERCLIP_LINEAR_CLIENT_ID`/`PAPERCLIP_LINEAR_CLIENT_SECRET` env vars.
  *
@@ -315,7 +315,7 @@ async function forceReinstallLocalPlugin(
  * Runs after the upstream npm-based `autoInstallBundledPlugins` loop has had
  * a chance to install npm-published plugins. The chat plugin gets a fallback
  * install from a sibling repo path (used in dev where npm install may have
- * failed); ccrotate and linear are vendored as workspace packages and always
+ * failed); first-party plugins are vendored as workspace packages and always
  * install from `packages/plugins/*`.
  */
 export async function installKkrooLocalPlugins(ctx: BootstrapContext): Promise<void> {
@@ -324,13 +324,6 @@ export async function installKkrooLocalPlugins(ctx: BootstrapContext): Promise<v
     pluginKey: "paperclip-chat",
     absPath: resolve(process.cwd(), "../paperclip-plugin-chat"),
     displayName: "chat",
-  });
-
-  // ccrotate: bundled in-image (no npm publish), always install from local path.
-  await installLocalPluginIfAbsent(ctx, {
-    pluginKey: "kkroo.ccrotate",
-    absPath: resolve(process.cwd(), "packages/plugins/paperclip-plugin-ccrotate"),
-    displayName: "ccrotate",
   });
 
   // gbrain: bundled in-image (no npm publish), always install from local path.
