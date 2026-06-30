@@ -218,9 +218,9 @@ describe("codex remote environment diagnostics", () => {
   });
 
   it("does not override CODEX_HOME when the host has no credentials to seed", async () => {
-    // Pre-authenticated sandbox flow: the login lives inside the sandbox image,
-    // and the host has no Codex auth.json. The probe must not upload an empty
-    // home or set CODEX_HOME, so Codex falls back to the sandbox's baked-in login.
+    // Custom-image flow: the login lives inside the captured snapshot, and the
+    // host has no Codex auth.json. The probe must not upload an empty home or
+    // set CODEX_HOME, so Codex falls back to the sandbox's baked-in login.
     prepareManagedCodexHome.mockImplementationOnce(async () => {
       const dir = await fs.mkdtemp(`${os.tmpdir()}/paperclip-managed-codex-home-noauth-`);
       // No auth.json — only a config file.

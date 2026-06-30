@@ -72,8 +72,13 @@ import {
   workspaceRuntimeControlTargetSchema,
   // Environments
   createEnvironmentSchema,
+  cancelEnvironmentCustomImageSetupSessionSchema,
+  environmentCustomImageSetupSessionSchema,
+  environmentCustomImageTemplateSchema,
+  finishEnvironmentCustomImageSetupSessionSchema,
   updateEnvironmentSchema,
   probeEnvironmentConfigSchema,
+  startEnvironmentCustomImageSetupSessionSchema,
   // Company skills
   companySkillCreateSchema,
   companySkillFileUpdateSchema,
@@ -456,6 +461,36 @@ const refreshExternalObjectsBodySchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
 }).strict();
 
+const environmentCustomImageCompanyQuerySchema = z.object({
+  companyId: z.string().optional(),
+}).strict();
+
+const disableEnvironmentCustomImageTemplateQuerySchema =
+  environmentCustomImageCompanyQuerySchema.extend({
+    deleteProviderTemplate: z.enum(["true", "false"]).optional(),
+  });
+
+const environmentCustomImageOverviewSchema = z.object({
+  activeTemplate: environmentCustomImageTemplateSchema.nullable(),
+  activeSession: environmentCustomImageSetupSessionSchema.nullable(),
+  latestSession: environmentCustomImageSetupSessionSchema.nullable(),
+}).strict();
+
+const environmentCustomImageSetupSessionResultSchema = z.object({
+  session: environmentCustomImageSetupSessionSchema,
+  connectionPayload: z.record(z.string(), z.unknown()).nullable(),
+}).strict();
+
+const environmentCustomImageSetupSessionFinishResultSchema =
+  environmentCustomImageSetupSessionResultSchema.extend({
+    template: environmentCustomImageTemplateSchema,
+  });
+
+const environmentCustomImageTemplateRollbackResultSchema = z.object({
+  activeTemplate: environmentCustomImageTemplateSchema,
+  supersededTemplate: environmentCustomImageTemplateSchema,
+}).strict();
+
 function paramsSchemaFromPath(routePath: string): z.ZodObject<z.ZodRawShape> | undefined {
   const names = [...routePath.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((match) => match[1]);
   if (names.length === 0) return undefined;
@@ -618,6 +653,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/finance-events",
   "POST /api/companies/{companyId}/secret-provider-configs",
   "POST /api/companies/{companyId}/environments",
+  "POST /api/environments/{environmentId}/custom-image-setup-sessions",
   "POST /api/companies/{companyId}/goals",
   "POST /api/companies/{companyId}/labels",
   "POST /api/issues/{id}/documents/{key}/annotations",
@@ -3482,6 +3518,122 @@ registry.registerPath({
     body: jsonBody(probeEnvironmentConfigSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/environments/{environmentId}/custom-image-template",
+  tags: ["environments"],
+  summary: "Get the active customImage template and setup status for an environment",
+  request: {
+    params: z.object({ environmentId: z.string() }),
+    query: environmentCustomImageCompanyQuerySchema,
+  },
+  responses: { 200: r.ok(environmentCustomImageOverviewSchema), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/environments/{environmentId}/custom-image-setup-sessions",
+  tags: ["environments"],
+  summary: "Start an interactive environment customImage setup session",
+  request: {
+    params: z.object({ environmentId: z.string() }),
+    query: environmentCustomImageCompanyQuerySchema,
+    body: jsonBody(startEnvironmentCustomImageSetupSessionSchema),
+  },
+  responses: {
+    201: r.ok(environmentCustomImageSetupSessionResultSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/environment-custom-image-setup-sessions/{sessionId}",
+  tags: ["environments"],
+  summary: "Get and refresh an environment customImage setup session",
+  request: { params: z.object({ sessionId: z.string() }) },
+  responses: {
+    200: r.ok(environmentCustomImageSetupSessionResultSchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/environment-custom-image-setup-sessions/{sessionId}/finish",
+  tags: ["environments"],
+  summary: "Capture and promote an environment customImage setup session",
+  request: {
+    params: z.object({ sessionId: z.string() }),
+    body: jsonBody(finishEnvironmentCustomImageSetupSessionSchema),
+  },
+  responses: {
+    200: r.ok(environmentCustomImageSetupSessionFinishResultSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/environment-custom-image-setup-sessions/{sessionId}/cancel",
+  tags: ["environments"],
+  summary: "Cancel an environment customImage setup session",
+  request: {
+    params: z.object({ sessionId: z.string() }),
+    body: jsonBody(cancelEnvironmentCustomImageSetupSessionSchema),
+  },
+  responses: {
+    200: r.ok(environmentCustomImageSetupSessionSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/environments/{environmentId}/custom-image-template/rollback",
+  tags: ["environments"],
+  summary: "Roll back an environment customImage template to the previous captured template",
+  request: {
+    params: z.object({ environmentId: z.string() }),
+    query: environmentCustomImageCompanyQuerySchema,
+  },
+  responses: {
+    200: r.ok(environmentCustomImageTemplateRollbackResultSchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/environments/{environmentId}/custom-image-template",
+  tags: ["environments"],
+  summary: "Disable the active environment customImage template",
+  request: {
+    params: z.object({ environmentId: z.string() }),
+    query: disableEnvironmentCustomImageTemplateQuerySchema,
+  },
+  responses: {
+    200: r.ok(environmentCustomImageTemplateSchema),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
 });
 
 // ─── Adapters (full) ──────────────────────────────────────────────────────────

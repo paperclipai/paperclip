@@ -1776,6 +1776,11 @@ describe("IssueDetail", () => {
     const execCommand = vi.fn(() => true);
     const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
     const originalExecCommand = Object.getOwnPropertyDescriptor(document, "execCommand");
+    const originalSecureContext = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+    Object.defineProperty(window, "isSecureContext", {
+      configurable: true,
+      value: false,
+    });
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText: clipboardWrite },
@@ -1809,7 +1814,7 @@ describe("IssueDetail", () => {
         await Promise.resolve();
       });
 
-      expect(clipboardWrite).toHaveBeenCalledWith("# PAP-1: Copy me\n\nTask body");
+      expect(clipboardWrite).not.toHaveBeenCalled();
       expect(execCommand).toHaveBeenCalledWith("copy");
       expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
         title: "Copied to clipboard",
@@ -1827,6 +1832,12 @@ describe("IssueDetail", () => {
       } else {
         // @ts-expect-error test cleanup for optional browser API
         delete document.execCommand;
+      }
+      if (originalSecureContext) {
+        Object.defineProperty(window, "isSecureContext", originalSecureContext);
+      } else {
+        // @ts-expect-error test cleanup for optional browser API
+        delete window.isSecureContext;
       }
     }
   });

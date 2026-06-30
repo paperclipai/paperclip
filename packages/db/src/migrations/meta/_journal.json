@@ -876,6 +876,13 @@
       "when": 1782440000000,
       "tag": "0124_agent_api_key_scope_config",
       "breakpoints": true
+    },
+    {
+      "idx": 125,
+      "version": "7",
+      "when": 1782440100000,
+      "tag": "0125_environment_custom_image_templates",
+      "breakpoints": true
     }
   ]
 }

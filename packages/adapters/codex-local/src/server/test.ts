@@ -117,8 +117,8 @@ async function prepareCodexHelloProbe(input: {
 
     // When the host has no Codex credentials to seed, don't override CODEX_HOME.
     // Pointing Codex at an empty uploaded home would mask any login already
-    // baked into a prepared sandbox image; leaving CODEX_HOME unset lets the
-    // probe exercise that in-sandbox login instead.
+    // baked into the sandbox (e.g. a captured custom-image snapshot); leaving
+    // CODEX_HOME unset lets the probe exercise that in-sandbox login instead.
     if (!seededAuth) {
       return {
         command: input.command,

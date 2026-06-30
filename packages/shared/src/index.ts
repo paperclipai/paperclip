@@ -164,6 +164,10 @@ export {
   ENVIRONMENT_LEASE_STATUSES,
   ENVIRONMENT_LEASE_POLICIES,
   ENVIRONMENT_LEASE_CLEANUP_STATUSES,
+  ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_KINDS,
+  ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_STATUSES,
+  ENVIRONMENT_CUSTOM_IMAGE_SETUP_SESSION_STATUSES,
+  ENVIRONMENT_CUSTOM_IMAGE_SETUP_CONNECTION_TYPES,
   ROUTINE_STATUSES,
   ROUTINE_CONCURRENCY_POLICIES,
   ROUTINE_CATCH_UP_POLICIES,
@@ -298,6 +302,10 @@ export {
   type EnvironmentLeaseStatus,
   type EnvironmentLeasePolicy,
   type EnvironmentLeaseCleanupStatus,
+  type EnvironmentCustomImageTemplateKind,
+  type EnvironmentCustomImageTemplateStatus,
+  type EnvironmentCustomImageSetupSessionStatus,
+  type EnvironmentCustomImageSetupConnectionType,
   type RoutineStatus,
   type RoutineConcurrencyPolicy,
   type RoutineCatchUpPolicy,
@@ -374,6 +382,15 @@ export {
   resolveRuntimeBind,
   validateConfiguredBindMode,
 } from "./network-bind.js";
+
+export {
+  REDACTED_ENVIRONMENT_CUSTOM_IMAGE_VALUE,
+  redactEnvironmentCustomImageSetupSession,
+  redactEnvironmentCustomImageTemplate,
+  redactEnvironmentCustomImageValue,
+  type EnvironmentCustomImageSetupSessionRedactionInput,
+  type EnvironmentCustomImageTemplateRedactionInput,
+} from "./environment-custom-images.js";
 
 export type {
   Company,
@@ -846,6 +863,7 @@ export type {
   PluginWebhookDeclaration,
   PluginToolDeclaration,
   PluginEnvironmentDriverDeclaration,
+  PluginEnvironmentTemplateConfigBinding,
   PluginManagedAgentDeclaration,
   PluginManagedProjectDeclaration,
   PluginManagedRoutineDeclaration,
@@ -1581,3 +1599,22 @@ export {
   adapterRegistrySchema,
   type AdapterRegistryEntryParsed,
 } from "./validators/adapter-registry.js";
+
+export {
+  environmentCustomImageTemplateKindSchema,
+  environmentCustomImageTemplateStatusSchema,
+  environmentCustomImageSetupSessionStatusSchema,
+  environmentCustomImageSetupConnectionTypeSchema,
+  environmentCustomImageSetupConnectionSummarySchema,
+  environmentCustomImageTemplateSchema,
+  environmentCustomImageSetupSessionSchema,
+  startEnvironmentCustomImageSetupSessionSchema,
+  finishEnvironmentCustomImageSetupSessionSchema,
+  cancelEnvironmentCustomImageSetupSessionSchema,
+  type EnvironmentCustomImageSetupConnectionSummary,
+  type EnvironmentCustomImageTemplate,
+  type EnvironmentCustomImageSetupSession,
+  type StartEnvironmentCustomImageSetupSession,
+  type FinishEnvironmentCustomImageSetupSession,
+  type CancelEnvironmentCustomImageSetupSession,
+} from "./validators/environment-custom-images.js";
