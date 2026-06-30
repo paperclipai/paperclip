@@ -561,7 +561,14 @@ export async function startServer(): Promise<StartedServer> {
       "Authenticated mode auth origin configuration",
     );
     const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
-    betterAuthHandler = createBetterAuthHandler(auth);
+    const { wrapBetterAuthHandlerWithPasswordAudit } = await import("./auth/password-audit.js");
+    // CMP-60: instrument password-write endpoints with actor audit logging +
+    // append-only `account_password_change_log` rows. Observation-only;
+    // never blocks or alters the underlying auth request.
+    betterAuthHandler = wrapBetterAuthHandlerWithPasswordAudit(createBetterAuthHandler(auth), {
+      db: db as any,
+      enabled: true,
+    });
     resolveSession = (req) => resolveBetterAuthSession(auth, req);
     resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
     await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
