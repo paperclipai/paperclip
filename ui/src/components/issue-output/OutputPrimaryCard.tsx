@@ -31,11 +31,12 @@ export function OutputPrimaryCard({ item, creatorName, onMediaClick }: OutputPri
     isImageContentType(contentType) ||
     isVideoLikeOutput(contentType, meta.originalFilename)
   ));
+  const isVideo = Boolean(meta && isVideoLikeOutput(contentType, meta.originalFilename));
 
   return (
     <div className="overflow-hidden rounded-md border border-border bg-card">
       {/* Media region */}
-      {meta && isVideoLikeOutput(contentType, meta.originalFilename) ? (
+      {isVideo && meta ? (
         <OutputVideoPlayer src={meta.contentPath} title={filename} />
       ) : meta && isImageContentType(contentType) ? (
         onMediaClick ? (
@@ -102,14 +103,15 @@ export function OutputPrimaryCard({ item, creatorName, onMediaClick }: OutputPri
                 <Maximize2 className="h-4 w-4" />
                 Browse
               </Button>
-            ) : (
+            ) : null}
+            {!isMedia || !onMediaClick || isVideo ? (
               <Button asChild variant="outline" size="sm" className="max-md:flex-1">
                 <a href={meta.openPath} target="_blank" rel="noreferrer">
                   <ExternalLink className="h-4 w-4" />
                   Open
                 </a>
               </Button>
-            )}
+            ) : null}
             <Button asChild size="sm" className="max-md:flex-1">
               <a href={meta.downloadPath} aria-label={`Download ${filename}`}>
                 <Download className="h-4 w-4" />

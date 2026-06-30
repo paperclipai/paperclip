@@ -78,6 +78,27 @@ describe("IssueOutputSection", () => {
     expect(markup).toContain("18.4 MB");
   });
 
+  it("keeps the open action for primary videos when gallery browsing is enabled", () => {
+    const markup = renderToStaticMarkup(
+      <IssueOutputSection
+        workProducts={[
+          makeWorkProduct({
+            id: "wp-video",
+            title: "Demo walkthrough",
+            isPrimary: true,
+            metadata: metadata("att-1", "video/mp4", "demo.mp4"),
+          }),
+        ]}
+        onMediaClick={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Browse");
+    expect(markup).toContain("Open");
+    expect(markup).toContain(`href="/api/attachments/${UUIDS["att-1"]}/content"`);
+    expect(markup).toContain("Download");
+  });
+
   it("renders nothing when the issue has no artifact outputs (empty state)", () => {
     const markup = renderToStaticMarkup(
       <IssueOutputSection

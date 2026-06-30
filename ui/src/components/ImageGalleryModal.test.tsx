@@ -2,7 +2,7 @@
 
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ImageGalleryModal, type GalleryMediaItem } from "./ImageGalleryModal";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -79,5 +79,56 @@ describe("ImageGalleryModal", () => {
     expect(
       document.body.querySelector('a[aria-label="Download demo.webm"]')?.getAttribute("href"),
     ).toBe("/api/attachments/video-1/content?download=1");
+  });
+
+  it("supports keyboard navigation and Escape close", async () => {
+    const onOpenChange = vi.fn();
+    const first = makeMediaItem({
+      id: "first",
+      contentPath: "/api/attachments/first/content",
+      originalFilename: "first.png",
+    });
+    const second = makeMediaItem({
+      id: "second",
+      contentPath: "/api/attachments/second/content",
+      originalFilename: "second.png",
+    });
+
+    await act(async () => {
+      root.render(
+        <ImageGalleryModal
+          items={[first, second]}
+          initialIndex={0}
+          open
+          onOpenChange={onOpenChange}
+        />,
+      );
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("first.png");
+    expect(document.body.textContent).toContain("1 / 2");
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("second.png");
+    expect(document.body.textContent).toContain("2 / 2");
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft" }));
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("first.png");
+    expect(document.body.textContent).toContain("1 / 2");
+
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 });
