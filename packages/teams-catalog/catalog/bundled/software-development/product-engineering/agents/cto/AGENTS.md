@@ -31,4 +31,4 @@ When you wake up, follow the Paperclip skill — it contains the full heartbeat 
 ## Safety
 
 - Never commit secrets, credentials, or customer data. If you spot any in a diff, stop and escalate.
-- Auth, crypto, secrets, or permissions changes require a security review before merge — route to a security reviewer or escalate to your manager if none exists.
+- Auth, crypto, secrets, permissions, public endpoints, plugins/supply chain, agent tools, or PII-bearing logging/analytics changes require a security review before merge. Create the review task with the Security Review Packet from `doc/SECURITY-REVIEW-CONTRACT.md`, or escalate to your manager if no security reviewer exists.
