@@ -2,10 +2,12 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   CONNECTOR_CATALOG,
-  INTEGRATOR_CATALOG,
+  INTEGRATOR_REGISTRY,
+  INTEGRATOR_CATEGORIES,
   WORKFLOW_TEMPLATES,
   factoryAgentCreateSchema,
   integratorConnectInputSchema,
+  integratorRunActionSchema,
   workflowCreateSchema,
   workflowUpdateSchema,
   workflowDeployTemplateSchema,
@@ -36,7 +38,7 @@ export function agentsStudioRoutes(db: Db, options: { pluginWorkerManager?: unkn
   });
 
   router.get("/agents-studio/integrators", (_req, res) => {
-    res.json({ integrators: INTEGRATOR_CATALOG });
+    res.json({ integrators: INTEGRATOR_REGISTRY, categories: INTEGRATOR_CATEGORIES });
   });
 
   // Per-company integrator connections.
@@ -67,6 +69,19 @@ export function agentsStudioRoutes(db: Db, options: { pluginWorkerManager?: unkn
     if (!integrator) throw notFound("Unknown integrator");
     res.json({ integrator });
   });
+
+  // Execute a real, live action against the connected system.
+  router.post(
+    "/companies/:companyId/integrators/:integratorKey/run-action",
+    validate(integratorRunActionSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const integratorKey = req.params.integratorKey as string;
+      assertCompanyAccess(req, companyId);
+      const result = await integrators.runAction(companyId, integratorKey, req.body.action, req.body.inputs);
+      res.json({ result });
+    },
+  );
 
   router.post("/companies/:companyId/agents-studio/provision-org", async (req, res) => {
     const companyId = req.params.companyId as string;

@@ -11,6 +11,17 @@ import type {
 } from "@paperclipai/shared";
 import { api } from "./client";
 
+export interface IntegratorRunResult {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  url: string;
+  method: string;
+  durationMs: number;
+  data: unknown;
+  error?: string;
+}
+
 export const agentsStudioApi = {
   listConnectors: () => api.get<{ connectors: ConnectorDefinition[] }>(`/agents-studio/connectors`),
 
@@ -60,6 +71,9 @@ export const agentsStudioApi = {
 
   disconnectIntegrator: (companyId: string, key: string) =>
     api.post<{ integrator: CompanyIntegrator }>(`/companies/${companyId}/integrators/${key}/disconnect`, {}),
+
+  runIntegratorAction: (companyId: string, key: string, action: string, inputs: Record<string, unknown>) =>
+    api.post<{ result: IntegratorRunResult }>(`/companies/${companyId}/integrators/${key}/run-action`, { action, inputs }),
 
   provisionOrg: (companyId: string) =>
     api.post<{ created: { key: string; id: string; name: string }[]; createdCount: number; skippedCount: number; totalMembers: number }>(

@@ -386,24 +386,31 @@ export function getIntegrator(key: string): ConnectorDefinition | undefined {
 export const INTEGRATOR_CONNECTION_STATUSES = ["available", "connected", "error"] as const;
 export type IntegratorConnectionStatus = (typeof INTEGRATOR_CONNECTION_STATUSES)[number];
 
-/** Per-company integrator state merged with its catalog definition (for the UI). */
+/** Per-company integrator state merged with its registry definition (for the UI). */
 export interface CompanyIntegrator {
-  key: WorkflowConnector;
-  label: string;
-  system: string;
+  key: string;
+  name: string;
+  category: string;
   description: string;
   icon: string;
-  accent: string;
-  authType: IntegratorAuthType;
-  authFields: ConnectorActionField[];
-  actionCount: number;
+  authScheme: string;
+  /** Credential/config fields to collect on connect (labels only; no values). */
+  authFields: Array<{ key: string; label: string; type?: string; required?: boolean; secret?: boolean; placeholder?: string }>;
+  /** Actions this system exposes (key + label) for the test/run picker. */
+  actions: Array<{ key: string; label: string; description: string; fields: Array<{ key: string; label: string; required?: boolean; placeholder?: string; type?: string }> }>;
   status: IntegratorConnectionStatus;
+  /** Non-secret connection config echoed back (secrets redacted). */
   config: Record<string, unknown>;
   connectedAt: string | null;
 }
 
 export const integratorConnectInputSchema = z.object({
   config: z.record(z.unknown()).default({}),
+});
+
+export const integratorRunActionSchema = z.object({
+  action: z.string().trim().min(1).max(120),
+  inputs: z.record(z.unknown()).default({}),
 });
 
 /** Domains a studio-created agent can specialize in. */

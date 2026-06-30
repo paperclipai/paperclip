@@ -41,6 +41,19 @@ export {
   type SourceTrustMetadata,
 } from "./trust-policy.js";
 export {
+  INTEGRATOR_REGISTRY,
+  INTEGRATOR_CATEGORIES,
+  getIntegratorSystem,
+  getRegistryAction,
+  type IntegratorAuthScheme,
+  type IntegratorAuth,
+  type IntegratorSystem,
+  type IntegratorCategory,
+  type RegistryAction,
+  type RegistryField,
+  type IntegratorActionRequest,
+} from "./integrators-registry.js";
+export {
   WORKFLOW_CONNECTORS,
   WORKFLOW_STATUSES,
   WORKFLOW_RUN_STATUSES,
@@ -54,6 +67,7 @@ export {
   isValidConnectorAction,
   getIntegrator,
   integratorConnectInputSchema,
+  integratorRunActionSchema,
   AGENT_DOMAINS,
   factoryAgentCreateSchema,
   getWorkflowTemplate,
