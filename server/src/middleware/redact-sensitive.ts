@@ -48,12 +48,23 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEYS.has(key.toLowerCase());
 }
 
+function isPlainEnvBinding(value: Record<string, unknown>): boolean {
+  return value.type === "plain" && Object.prototype.hasOwnProperty.call(value, "value");
+}
+
 export function redactSensitive(value: unknown, depth = 0): unknown {
-  if (depth > MAX_DEPTH) return undefined;
   if (value === null || typeof value !== "object") return value;
+  if (depth > MAX_DEPTH) return undefined;
   if (Array.isArray(value)) {
     if (depth + 1 > MAX_DEPTH) return undefined;
     return value.map((entry) => redactSensitive(entry, depth + 1));
+  }
+  if (isPlainEnvBinding(value as Record<string, unknown>)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = key === "value" ? REDACTED : redactSensitive(entry, depth + 1);
+    }
+    return out;
   }
   const out: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
