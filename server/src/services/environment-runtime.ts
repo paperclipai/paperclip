@@ -288,14 +288,48 @@ async function buildEnvironmentSecretMetadataForLeaseFingerprint(input: {
   });
   if (refs.length === 0) return [];
 
+  const secretIds = [...new Set(refs.map((ref) => ref.secretId))];
+  const secretRows = await input.db
+    .select()
+    .from(companySecrets)
+    .where(inArray(companySecrets.id, secretIds));
+  const secretsById = new Map(
+    secretRows
+      .filter((secret) => secret.companyId === input.companyId)
+      .map((secret) => [secret.id, secret]),
+  );
+
+  const versionRequests = refs.flatMap((ref) => {
+    const secret = secretsById.get(ref.secretId);
+    if (!secret) return [];
+    const resolvedVersion = ref.versionSelector === "latest" || ref.versionSelector === undefined
+      ? secret.latestVersion
+      : ref.versionSelector;
+    return typeof resolvedVersion === "number"
+      ? [{ secretId: secret.id, version: resolvedVersion }]
+      : [];
+  });
+  const versionSecretIds = [...new Set(versionRequests.map((request) => request.secretId))];
+  const versions = [...new Set(versionRequests.map((request) => request.version))];
+  const versionRows = versionSecretIds.length > 0 && versions.length > 0
+    ? await input.db
+        .select()
+        .from(companySecretVersions)
+        .where(
+          and(
+            inArray(companySecretVersions.secretId, versionSecretIds),
+            inArray(companySecretVersions.version, versions),
+          ),
+        )
+    : [];
+  const versionsBySecretAndNumber = new Map(
+    versionRows.map((row) => [`${row.secretId}:${row.version}`, row]),
+  );
+
   const metadata: EffectiveRunConfigSecretVersionMetadata[] = [];
   for (const ref of refs) {
-    const secret = await input.db
-      .select()
-      .from(companySecrets)
-      .where(eq(companySecrets.id, ref.secretId))
-      .then((rows) => rows[0] ?? null);
-    if (!secret || secret.companyId !== input.companyId) {
+    const secret = secretsById.get(ref.secretId);
+    if (!secret) {
       metadata.push({
         configPath: ref.configPath,
         envKey: null,
@@ -310,16 +344,7 @@ async function buildEnvironmentSecretMetadataForLeaseFingerprint(input: {
       ? secret.latestVersion
       : ref.versionSelector;
     const versionRow = typeof resolvedVersion === "number"
-      ? await input.db
-          .select()
-          .from(companySecretVersions)
-          .where(
-            and(
-              eq(companySecretVersions.secretId, secret.id),
-              eq(companySecretVersions.version, resolvedVersion),
-            ),
-          )
-          .then((rows) => rows[0] ?? null)
+      ? versionsBySecretAndNumber.get(`${secret.id}:${resolvedVersion}`) ?? null
       : null;
 
     metadata.push({

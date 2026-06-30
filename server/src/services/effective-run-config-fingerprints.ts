@@ -238,6 +238,37 @@ function stableStringify(value: EffectiveRunConfigCanonicalValue): string {
   return JSON.stringify(value);
 }
 
+function canonicalizePlainEnvValueForHash(value: unknown): EffectiveRunConfigCanonicalValue {
+  if (value === undefined || value === null) return null;
+  if (Array.isArray(value)) {
+    return value.map((entry) => canonicalizePlainEnvValueForHash(entry));
+  }
+  if (isPlainObject(value)) {
+    const out: Record<string, EffectiveRunConfigCanonicalValue> = {};
+    for (const key of Object.keys(value).sort()) {
+      const next = canonicalizePlainEnvValueForHash(value[key]);
+      if (next !== null) out[key] = next;
+    }
+    return out;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
+  if (typeof value === "boolean" || typeof value === "string") {
+    return value;
+  }
+  return String(value);
+}
+
+function hashPlainEnvValue(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  const canonicalJson = stableStringify(canonicalizePlainEnvValueForHash(value));
+  return `sha256:${createHash("sha256").update(canonicalJson).digest("hex")}`;
+}
+
 function canonicalizeEnvRecord(
   envValue: unknown,
   context: CanonicalizeContext,
@@ -256,7 +287,11 @@ function canonicalizeEnvRecord(
       canonicalEnv[key] = canonicalSecretRefBinding(rawBinding, `env.${key}`);
       continue;
     }
-    canonicalEnv[key] = { type: "plain_env", present: rawBinding !== undefined && rawBinding !== null };
+    canonicalEnv[key] = omitNullish({
+      type: "plain_env",
+      present: rawBinding !== undefined && rawBinding !== null,
+      valueHash: hashPlainEnvValue(rawBinding),
+    });
   }
   return Object.keys(canonicalEnv).length > 0 ? canonicalEnv : OMIT;
 }
@@ -344,6 +379,59 @@ function createCategoryFingerprint(input: {
     fingerprint: `v${EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION}:sha256:${digest}`,
     canonicalJson,
   };
+}
+
+function createCategoryFingerprintFromCanonicalValue(input: {
+  category: EffectiveRunConfigFingerprintCategory;
+  value: EffectiveRunConfigCanonicalValue;
+}): EffectiveRunConfigFingerprint {
+  const canonicalJson = stableStringify({
+    version: EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION,
+    category: input.category,
+    value: input.value,
+  });
+  const digest = createHash("sha256").update(canonicalJson).digest("hex");
+  return {
+    version: EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION,
+    category: input.category,
+    algorithm: EFFECTIVE_RUN_CONFIG_FINGERPRINT_ALGORITHM,
+    fingerprint: `v${EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION}:sha256:${digest}`,
+    canonicalJson,
+  };
+}
+
+function canonicalRecord(value: EffectiveRunConfigCanonicalValue) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, EffectiveRunConfigCanonicalValue>
+    : {};
+}
+
+export function createEffectiveRunConfigSubcategoryFingerprints<T extends string>(input: {
+  category: EffectiveRunConfigFingerprintCategory;
+  value: Record<T, unknown>;
+  subcategories: readonly T[];
+  secretManifest?: readonly EffectiveRunConfigSecretManifestEntry[];
+}): Record<T, string> {
+  const canonicalValue = canonicalizeEffectiveRunConfigCategory({
+    category: input.category,
+    value: input.value,
+    secretManifest: input.secretManifest,
+  });
+  const record = canonicalRecord(canonicalValue);
+  return Object.fromEntries(
+    input.subcategories.map((subcategory) => {
+      const value = Object.prototype.hasOwnProperty.call(record, subcategory)
+        ? { [subcategory]: record[subcategory] ?? null }
+        : {};
+      return [
+        subcategory,
+        createCategoryFingerprintFromCanonicalValue({
+          category: input.category,
+          value,
+        }).fingerprint,
+      ];
+    }),
+  ) as Record<T, string>;
 }
 
 export function createEffectiveRunConfigFingerprints(

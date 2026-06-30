@@ -47,7 +47,7 @@ describe("effective run config fingerprints", () => {
           services: [
             {
               command: "pnpm dev",
-              env: { FEATURE_FLAG: "changed-but-still-plain", PORT: "9999" },
+              env: { FEATURE_FLAG: "enabled", PORT: "3100" },
             },
           ],
         },
@@ -59,8 +59,8 @@ describe("effective run config fingerprints", () => {
           model: "gpt-5.2",
           env: {
             PAPERCLIP_RUN_ID: "run-two",
-            ALPHA: "changed-but-still-plain",
-            ZETA: "changed-too",
+            ALPHA: "raw-alpha",
+            ZETA: "raw-zeta",
           },
         },
         adapterType: "codex_local",
@@ -117,7 +117,7 @@ describe("effective run config fingerprints", () => {
     ).changedCategories).toEqual(["lease"]);
   });
 
-  it("uses resolved secret version metadata without raw secret values or value hashes", () => {
+  it("uses resolved secret version metadata without raw secret values", () => {
     const v7 = createEffectiveRunConfigFingerprints({
       session: {
         adapterConfig: {
@@ -155,7 +155,7 @@ describe("effective run config fingerprints", () => {
         adapterConfig: {
           env: {
             OPENAI_API_KEY: "different-resolved-secret-value",
-            PLAIN_TEXT: "different plain env value",
+            PLAIN_TEXT: "plain env value",
           },
         },
       },
@@ -179,7 +179,7 @@ describe("effective run config fingerprints", () => {
         adapterConfig: {
           env: {
             OPENAI_API_KEY: "different-resolved-secret-value",
-            PLAIN_TEXT: "different plain env value",
+            PLAIN_TEXT: "plain env value",
           },
         },
       },
@@ -197,6 +197,32 @@ describe("effective run config fingerprints", () => {
       ],
     });
     expect(versionChanged.sessionFingerprint.fingerprint).not.toBe(v7.sessionFingerprint.fingerprint);
+  });
+
+  it("detects plain env value drift without storing raw values", () => {
+    const base = createEffectiveRunConfigFingerprints({
+      session: {
+        adapterConfig: {
+          env: {
+            FEATURE_FLAG: "enabled",
+          },
+        },
+      },
+    });
+    const changed = createEffectiveRunConfigFingerprints({
+      session: {
+        adapterConfig: {
+          env: {
+            FEATURE_FLAG: "disabled",
+          },
+        },
+      },
+    });
+
+    expect(changed.sessionFingerprint.fingerprint).not.toBe(base.sessionFingerprint.fingerprint);
+    expect(base.sessionFingerprint.canonicalJson).toContain('"valueHash":"sha256:');
+    expect(base.sessionFingerprint.canonicalJson).not.toContain("enabled");
+    expect(changed.sessionFingerprint.canonicalJson).not.toContain("disabled");
   });
 
   it("excludes generated run values, sensitive tokens, timestamps, and session path noise", () => {
@@ -238,7 +264,7 @@ describe("effective run config fingerprints", () => {
           },
           env: {
             PAPERCLIP_API_KEY: "runtime-api-key-two",
-            NORMAL_VALUE: "second",
+            NORMAL_VALUE: "first",
           },
         },
       },

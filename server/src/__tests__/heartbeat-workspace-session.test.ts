@@ -1562,6 +1562,9 @@ describe("effective run session config freshness", () => {
       effectiveAdapterConfig: {
         command: "codex",
         model: "gpt-5.4-mini",
+        instructionsBundleMode: "managed",
+        instructionsRootPath: root,
+        instructionsEntryFile: "AGENTS.md",
         instructionsFilePath: instructionsPath,
       },
     });
@@ -1570,6 +1573,9 @@ describe("effective run session config freshness", () => {
       effectiveAdapterConfig: {
         command: "codex",
         model: "gpt-5.4-mini",
+        instructionsBundleMode: "managed",
+        instructionsRootPath: root,
+        instructionsEntryFile: "AGENTS.md",
         instructionsFilePath: instructionsPath,
       },
     });
@@ -1584,6 +1590,25 @@ describe("effective run session config freshness", () => {
     expect(decision.reset).toBe(true);
     expect(decision.changedCategories).toContain("instructions");
     expect(next.fingerprints.sessionFingerprint.canonicalJson).not.toContain("Version two instructions");
+  });
+
+  it("does not read unbounded legacy instructions paths for config fingerprints", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-session-fingerprint-"));
+    const instructionsPath = path.join(root, "AGENTS.md");
+    await fs.writeFile(instructionsPath, "Legacy direct-path instructions.\n", "utf8");
+    const metadata = await buildSessionConfigMetadata({
+      effectiveAdapterConfig: {
+        command: "codex",
+        model: "gpt-5.4-mini",
+        instructionsFilePath: instructionsPath,
+      },
+    });
+
+    const canonical = metadata.fingerprints.sessionFingerprint.canonicalJson;
+
+    expect(canonical).toContain("missing_absolute_root");
+    expect(canonical).not.toContain("Legacy direct-path instructions");
+    expect(canonical).not.toContain("contentHash");
   });
 
   it("does not include raw secret or plain env values in canonical session metadata", async () => {

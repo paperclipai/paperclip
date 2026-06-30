@@ -211,6 +211,7 @@ import {
 import { resolveCoreTrustPreset, type TrustPresetResolution } from "./trust-preset-resolver.js";
 import {
   createEffectiveRunConfigFingerprints,
+  createEffectiveRunConfigSubcategoryFingerprints,
   EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION,
   type EffectiveRunConfigFingerprints,
   type EffectiveRunConfigSecretManifestEntry,
@@ -2786,11 +2787,52 @@ async function hashFileContentsForConfigFingerprint(filePath: string) {
   return `sha256:${createHash("sha256").update(contents).digest("hex")}`;
 }
 
+function isPathInsideRoot(input: { rootPath: string; filePath: string }) {
+  const relative = path.relative(input.rootPath, input.filePath);
+  return relative === "" || (
+    relative.length > 0
+    && !relative.startsWith("..")
+    && !path.isAbsolute(relative)
+  );
+}
+
+function resolveRootBoundInstructionsFingerprintPath(input: {
+  instructionsFilePath: string | null;
+  instructionsRootPath: string | null;
+  instructionsEntryFile: string | null;
+}): { filePath: string; skippedReason: null } | { filePath: null; skippedReason: string | null } {
+  if (!input.instructionsRootPath || !path.isAbsolute(input.instructionsRootPath)) {
+    return {
+      filePath: null,
+      skippedReason: input.instructionsFilePath ? "missing_absolute_root" : null,
+    };
+  }
+
+  const rootPath = path.resolve(input.instructionsRootPath);
+  const candidatePath = input.instructionsEntryFile ?? input.instructionsFilePath;
+  if (!candidatePath) return { filePath: null, skippedReason: "missing_entry_file" };
+
+  const resolvedPath = path.isAbsolute(candidatePath)
+    ? path.resolve(candidatePath)
+    : path.resolve(rootPath, candidatePath);
+
+  if (!isPathInsideRoot({ rootPath, filePath: resolvedPath })) {
+    return { filePath: null, skippedReason: "outside_root" };
+  }
+
+  return { filePath: resolvedPath, skippedReason: null };
+}
+
 async function resolveInstructionsConfigFingerprintMetadata(config: Record<string, unknown>) {
   const instructionsFilePath = readNonEmptyString(config.instructionsFilePath);
   const instructionsRootPath = readNonEmptyString(config.instructionsRootPath);
   const instructionsEntryFile = readNonEmptyString(config.instructionsEntryFile);
-  const configuredPath = instructionsFilePath ?? (
+  const resolved = resolveRootBoundInstructionsFingerprintPath({
+    instructionsFilePath,
+    instructionsRootPath,
+    instructionsEntryFile,
+  });
+  const configuredPath = resolved.filePath ?? instructionsFilePath ?? (
     instructionsRootPath && instructionsEntryFile
       ? path.resolve(instructionsRootPath, instructionsEntryFile)
       : null
@@ -2802,10 +2844,12 @@ async function resolveInstructionsConfigFingerprintMetadata(config: Record<strin
     bundleMode: readNonEmptyString(config.instructionsBundleMode),
     entryFile: instructionsEntryFile,
     pathKind: configuredPath ? (path.isAbsolute(configuredPath) ? "absolute" : "relative") : null,
+    readPolicy: "root_bound",
   };
-  if (configuredPath && path.isAbsolute(configuredPath)) {
+  if (resolved.skippedReason) metadata.readSkippedReason = resolved.skippedReason;
+  if (resolved.filePath) {
     try {
-      metadata.contentHash = await hashFileContentsForConfigFingerprint(configuredPath);
+      metadata.contentHash = await hashFileContentsForConfigFingerprint(resolved.filePath);
       metadata.readable = true;
     } catch {
       metadata.readable = false;
@@ -2890,15 +2934,12 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
     session: categoryValues,
     secretManifest,
   });
-  const categoryFingerprints = Object.fromEntries(
-    EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES.map((category) => [
-      category,
-      createEffectiveRunConfigFingerprints({
-        session: { [category]: categoryValues[category] },
-        secretManifest,
-      }).sessionFingerprint.fingerprint,
-    ]),
-  ) as Record<EffectiveRunSessionConfigCategory, string>;
+  const categoryFingerprints = createEffectiveRunConfigSubcategoryFingerprints({
+    category: "session",
+    value: categoryValues,
+    subcategories: EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES,
+    secretManifest,
+  });
   return {
     version: EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION,
     fingerprint: fingerprints.sessionFingerprint.fingerprint,
@@ -2987,15 +3028,12 @@ export function buildEffectiveRunWorkspaceConfigMetadata(input: {
     workspace: categoryValues,
     secretManifest,
   });
-  const categoryFingerprints = Object.fromEntries(
-    EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES.map((category) => [
-      category,
-      createEffectiveRunConfigFingerprints({
-        workspace: { [category]: categoryValues[category] },
-        secretManifest,
-      }).workspaceFingerprint.fingerprint,
-    ]),
-  ) as Record<EffectiveRunWorkspaceConfigCategory, string>;
+  const categoryFingerprints = createEffectiveRunConfigSubcategoryFingerprints({
+    category: "workspace",
+    value: categoryValues,
+    subcategories: EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES,
+    secretManifest,
+  });
   const evaluatedAt = input.evaluatedAt instanceof Date
     ? input.evaluatedAt.toISOString()
     : readNonEmptyString(input.evaluatedAt) ?? new Date().toISOString();
