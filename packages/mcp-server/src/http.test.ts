@@ -27,7 +27,8 @@ describe("createPaperclipHttpAuthenticator", () => {
   it("never takes apiUrl from the token binding (pinned to server env)", () => {
     const authenticate = createPaperclipHttpAuthenticator({
       env: ENV,
-      readParameter: () => JSON.stringify({ apiKey: "sk-1", apiUrl: "https://evil.example.com" }),
+      readParameter: () =>
+        JSON.stringify({ apiKey: "sk-1", companyId: "c1", apiUrl: "https://evil.example.com" }),
     });
     const config = authenticate(reqWith("Bearer tok1"));
     expect(config.apiUrl).toBe("https://cp.example.com/api");
@@ -41,16 +42,54 @@ describe("createPaperclipHttpAuthenticator", () => {
     expect(() => authenticate(reqWith("Bearer tok1"))).toThrow(/apiKey/);
   });
 
-  it("leaves optional company/agent null when absent", () => {
+  it("rejects a binding without a companyId (single-company scope required)", () => {
     const authenticate = createPaperclipHttpAuthenticator({
       env: ENV,
       readParameter: () => JSON.stringify({ apiKey: "sk-1" }),
     });
+    expect(() => authenticate(reqWith("Bearer tok1"))).toThrow(/companyId/);
+  });
+
+  it("leaves the optional agent null when absent", () => {
+    const authenticate = createPaperclipHttpAuthenticator({
+      env: ENV,
+      readParameter: () => JSON.stringify({ apiKey: "sk-1", companyId: "c1" }),
+    });
     expect(authenticate(reqWith("Bearer tok1"))).toMatchObject({
       apiKey: "sk-1",
-      companyId: null,
+      companyId: "c1",
       agentId: null,
     });
+  });
+
+  it("rejects a token at or past its expiresAt (TTL / revocation-by-expiry)", () => {
+    const authenticate = createPaperclipHttpAuthenticator({
+      env: ENV,
+      now: () => Date.parse("2026-07-01T00:15:00Z"),
+      readParameter: () =>
+        JSON.stringify({ apiKey: "sk-1", companyId: "c1", expiresAt: "2026-07-01T00:14:59Z" }),
+    });
+    expect(() => authenticate(reqWith("Bearer tok1"))).toThrow(UnauthorizedError);
+    expect(() => authenticate(reqWith("Bearer tok1"))).toThrow(/expired/i);
+  });
+
+  it("accepts a token before its expiresAt", () => {
+    const authenticate = createPaperclipHttpAuthenticator({
+      env: ENV,
+      now: () => Date.parse("2026-07-01T00:05:00Z"),
+      readParameter: () =>
+        JSON.stringify({ apiKey: "sk-1", companyId: "c1", expiresAt: "2026-07-01T00:15:00Z" }),
+    });
+    expect(authenticate(reqWith("Bearer tok1"))).toMatchObject({ apiKey: "sk-1", companyId: "c1" });
+  });
+
+  it("rejects a binding whose expiresAt is unparseable (fails closed)", () => {
+    const authenticate = createPaperclipHttpAuthenticator({
+      env: ENV,
+      readParameter: () =>
+        JSON.stringify({ apiKey: "sk-1", companyId: "c1", expiresAt: "not-a-date" }),
+    });
+    expect(() => authenticate(reqWith("Bearer tok1"))).toThrow(/expiresAt/);
   });
 
   it("honors PAPERCLIP_MCP_TOKEN_PREFIX for the SSM path", () => {
@@ -59,7 +98,7 @@ describe("createPaperclipHttpAuthenticator", () => {
       env: { ...ENV, PAPERCLIP_MCP_TOKEN_PREFIX: "/custom/prefix" } as NodeJS.ProcessEnv,
       readParameter: (name) => {
         seen = name;
-        return JSON.stringify({ apiKey: "sk-1" });
+        return JSON.stringify({ apiKey: "sk-1", companyId: "c1" });
       },
     });
     authenticate(reqWith("Bearer tok1"));

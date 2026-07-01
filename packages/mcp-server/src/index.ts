@@ -5,15 +5,23 @@ import { PaperclipApiClient } from "./client.js";
 import { readConfigFromEnv, type PaperclipMcpConfig } from "./config.js";
 import { createPaperclipHttpAuthenticator } from "./http.js";
 import { createToolDefinitions } from "./tools.js";
+import { createStderrTelemetrySink, type ToolTelemetry } from "./telemetry.js";
 
-export function createPaperclipMcpServer(config: PaperclipMcpConfig = readConfigFromEnv()) {
+export function createPaperclipMcpServer(
+  config: PaperclipMcpConfig = readConfigFromEnv(),
+  options: { telemetry?: ToolTelemetry } = {},
+) {
   const server = new McpServer({
     name: "paperclip",
     version: "0.1.0",
   });
 
   const client = new PaperclipApiClient(config);
-  const tools = createToolDefinitions(client);
+  // Every tool call emits one structured telemetry event (actor, company, tool,
+  // status, duration) for audit + anomaly detection (NEO-296). The default sink
+  // writes JSON lines to stderr; stdout is reserved for the MCP JSON-RPC stream.
+  const telemetry = options.telemetry ?? { sink: createStderrTelemetrySink() };
+  const tools = createToolDefinitions(client, telemetry);
   for (const tool of tools) {
     server.tool(tool.name, tool.description, tool.schema.shape, tool.execute);
   }

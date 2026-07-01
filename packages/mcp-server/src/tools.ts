@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/shared";
 import { PaperclipApiClient } from "./client.js";
 import { formatErrorResponse, formatTextResponse } from "./format.js";
+import type { ToolTelemetry } from "./telemetry.js";
 
 export interface ToolDefinition {
   name: string;
@@ -23,27 +24,6 @@ export interface ToolDefinition {
   execute: (input: Record<string, unknown>) => Promise<{
     content: Array<{ type: "text"; text: string }>;
   }>;
-}
-
-function makeTool<TSchema extends z.ZodRawShape>(
-  name: string,
-  description: string,
-  schema: z.ZodObject<TSchema>,
-  execute: (input: z.infer<typeof schema>) => Promise<unknown>,
-): ToolDefinition {
-  return {
-    name,
-    description,
-    schema,
-    execute: async (input) => {
-      try {
-        const parsed = schema.parse(input);
-        return formatTextResponse(await execute(parsed));
-      } catch (error) {
-        return formatErrorResponse(error);
-      }
-    },
-  };
 }
 
 function parseOptionalJson(raw: string | undefined | null): unknown {
@@ -233,7 +213,52 @@ async function getIssueWorkspaceRuntime(client: PaperclipApiClient, issueId: str
   };
 }
 
-export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
+export function createToolDefinitions(
+  client: PaperclipApiClient,
+  telemetry?: ToolTelemetry,
+): ToolDefinition[] {
+  // The actor/company are fixed by the resolved config (token binding in --http
+  // mode, env in --stdio mode) and are the security-relevant identity behind
+  // every call, so they are captured once here for all tool telemetry.
+  const emit = telemetry?.sink;
+  const actor = client.defaults.agentId;
+  const company = client.defaults.companyId;
+
+  function makeTool<TSchema extends z.ZodRawShape>(
+    name: string,
+    description: string,
+    schema: z.ZodObject<TSchema>,
+    execute: (input: z.infer<typeof schema>) => Promise<unknown>,
+  ): ToolDefinition {
+    return {
+      name,
+      description,
+      schema,
+      execute: async (input) => {
+        const startedAt = Date.now();
+        let status: "ok" | "error" = "ok";
+        let errorName: string | undefined;
+        try {
+          const parsed = schema.parse(input);
+          return formatTextResponse(await execute(parsed));
+        } catch (error) {
+          status = "error";
+          errorName = error instanceof Error ? error.name : "Error";
+          return formatErrorResponse(error);
+        } finally {
+          emit?.({
+            tool: name,
+            actor,
+            company,
+            status,
+            durationMs: Date.now() - startedAt,
+            ...(errorName ? { errorName } : {}),
+          });
+        }
+      },
+    };
+  }
+
   return [
     makeTool(
       "paperclipMe",
