@@ -93,7 +93,7 @@ async function ensureEmbeddedPostgresConnection(
   preferredPort: number,
 ): Promise<MigrationConnection> {
   const EmbeddedPostgres = await loadEmbeddedPostgresCtor();
-  await prepareEmbeddedPostgresNativeRuntime();
+  await prepareEmbeddedPostgresNativeRuntime(dataDir);
   const selectedPort = await findAvailablePort(preferredPort);
   const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
   const pgVersionFile = path.resolve(dataDir, "PG_VERSION");

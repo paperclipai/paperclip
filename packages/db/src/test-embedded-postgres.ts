@@ -47,9 +47,9 @@ function getReservedTestPorts(): Set<number> {
   return new Set(configuredPorts.filter((port) => Number.isInteger(port) && port > 0 && port <= 65535));
 }
 
-async function getEmbeddedPostgresCtor(): Promise<EmbeddedPostgresCtor> {
+async function getEmbeddedPostgresCtor(dataDir: string): Promise<EmbeddedPostgresCtor> {
   const mod = await import("embedded-postgres");
-  await prepareEmbeddedPostgresNativeRuntime();
+  await prepareEmbeddedPostgresNativeRuntime(dataDir);
   return mod.default as EmbeddedPostgresCtor;
 }
 
@@ -87,7 +87,7 @@ async function getAvailablePort(): Promise<number> {
 async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), tempDirPrefix));
   const port = await getAvailablePort();
-  const EmbeddedPostgres = await getEmbeddedPostgresCtor();
+  const EmbeddedPostgres = await getEmbeddedPostgresCtor(dataDir);
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
     user: "paperclip",
