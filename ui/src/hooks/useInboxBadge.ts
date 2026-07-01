@@ -49,6 +49,8 @@ export function useDismissedInboxAlerts() {
   return { dismissed, dismiss };
 }
 
+type InboxDismissOptions = { resolveFailedRun?: boolean };
+
 export function useInboxDismissals(companyId: string | null | undefined) {
   const queryClient = useQueryClient();
   const queryKey = companyId
@@ -62,7 +64,11 @@ export function useInboxDismissals(companyId: string | null | undefined) {
   });
 
   const dismissMutation = useMutation({
-    mutationFn: ({ itemKey }: { itemKey: string }) => inboxDismissalsApi.dismiss(companyId!, itemKey),
+    mutationFn: ({ itemKey, options }: { itemKey: string; options?: InboxDismissOptions }) => {
+      const runId = itemKey.startsWith("run:") ? itemKey.slice("run:".length) : null;
+      if (options?.resolveFailedRun && runId) return heartbeatsApi.resolveFailedRun(runId);
+      return inboxDismissalsApi.dismiss(companyId!, itemKey);
+    },
     onMutate: async ({ itemKey }) => {
       if (!companyId) return { previous: [] as typeof dismissals };
       await queryClient.cancelQueries({ queryKey });
@@ -101,7 +107,7 @@ export function useInboxDismissals(companyId: string | null | undefined) {
   return {
     dismissals,
     dismissedAtByKey,
-    dismiss: (itemKey: string) => dismissMutation.mutate({ itemKey }),
+    dismiss: (itemKey: string, options?: InboxDismissOptions) => dismissMutation.mutate({ itemKey, options }),
     isPending: dismissMutation.isPending,
   };
 }
