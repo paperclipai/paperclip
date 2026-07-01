@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -93,6 +94,7 @@ interface ClaudeRuntimeConfig {
   timeoutSec: number;
   graceSec: number;
   extraArgs: string[];
+  mcpConfigPath: string | null;
 }
 
 export function claudeSessionCwdMatchesExecutionTarget(input: {
@@ -181,6 +183,22 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     executionCwd: effectiveExecutionCwd,
   });
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+
+  const mcpServersConfig = parseObject(config.mcpServers);
+  let mcpConfigPath: string | null = null;
+  if (Object.keys(mcpServersConfig).length > 0) {
+    const tmpRoot = path.join(os.tmpdir(), "paperclip-mcp");
+    await fs.mkdir(tmpRoot, { recursive: true });
+    mcpConfigPath = path.join(tmpRoot, `mcp-${runId}.json`);
+    await fs.writeFile(
+      mcpConfigPath,
+      JSON.stringify({ mcpServers: mcpServersConfig }, null, 2),
+    );
+    await onLog(
+      "stdout",
+      `[paperclip] Materialized ${Object.keys(mcpServersConfig).length} MCP server config(s) at ${mcpConfigPath} (via --mcp-config).\n`,
+    );
+  }
 
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
@@ -325,6 +343,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     timeoutSec,
     graceSec,
     extraArgs,
+    mcpConfigPath,
   };
 }
 
@@ -425,6 +444,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutSec,
     graceSec,
     extraArgs,
+    mcpConfigPath,
   } = runtimeConfig;
   let loggedEnv = initialLoggedEnv;
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
@@ -733,6 +753,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
+    if (mcpConfigPath) {
+      args.push("--mcp-config", mcpConfigPath);
+    }
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
