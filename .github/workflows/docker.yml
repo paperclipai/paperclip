@@ -143,7 +143,8 @@ jobs:
     needs: build-and-push
     runs-on: arc-deploy
     if: ${{ vars.PAPERCLIP_CI_DEPLOY == 'true' && github.ref == 'refs/heads/master' }}
-    timeout-minutes: 15
+    # Must exceed helm upgrade's --timeout 30m below, plus checkout/cleanup margin.
+    timeout-minutes: 40
     concurrency:
       # Serialize deploys to the same target so a fast-followup push doesn't
       # race with an in-flight upgrade.
