@@ -99,3 +99,19 @@ export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): b
     haystack,
   );
 }
+
+// Detects the Anthropic API "invalid message at index N" error that surfaces
+// when a resumed session contains empty assistant messages (no text or tool
+// calls). The session's stored message data is corrupted and cannot be fixed
+// by retrying — the session must be discarded and restarted fresh.
+export function isOpenCodeInvalidMessageError(stdout: string, stderr: string): boolean {
+  const haystack = `${stdout}\n${stderr}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+
+  return /invalid\s+message\s+provided\s+at\s+index\s+\d+|must\s+have\s+non[- ]empty\s+content\s+or\s+tool\s+calls/i.test(
+    haystack,
+  );
+}
