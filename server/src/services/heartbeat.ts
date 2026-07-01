@@ -9113,6 +9113,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function listRunningRunsForAgent(agentId: string) {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        startedAt: heartbeatRuns.startedAt,
+        lastOutputAt: heartbeatRuns.lastOutputAt,
+        lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")));
+  }
+
   async function hasAdapterInvocationEvent(runId: string) {
     const row = await db
       .select({ id: heartbeatRunEvents.id })
@@ -11083,7 +11096,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (hasExternalLifecycle(agent.adapterType)) {
         await reapOrphanedRuns({ suppressDispatchAfterReap: true });
       }
-      const runningCount = await countRunningRunsForAgent(agentId);
+      // BLO-12990 Fix #1: stale/silent running runs must not block new high-priority
+      // work. Fetch full run rows so we can partition into active vs. stale using
+      // the same silence metric the reaper uses (EXTERNAL_LIFECYCLE_STALE_MS). A run
+      // is stale when its most-recent signal (lastUsefulActionAt > lastOutputAt >
+      // startedAt) is older than the threshold. Only non-stale runs count toward the
+      // slot gate — a k8s Job that has been silent for >15 min should not starve
+      // newly-queued high-priority work indefinitely.
+      const dispatchNow = new Date();
+      const staleFloorMs = dispatchNow.getTime() - EXTERNAL_LIFECYCLE_STALE_MS;
+      const runningRunRows = await listRunningRunsForAgent(agentId);
+      const nonStaleRunningRuns = runningRunRows.filter((r) => {
+        const signalMs = r.lastUsefulActionAt
+          ? new Date(r.lastUsefulActionAt).getTime()
+          : r.lastOutputAt
+          ? new Date(r.lastOutputAt).getTime()
+          : r.startedAt
+          ? new Date(r.startedAt).getTime()
+          : 0;
+        return signalMs >= staleFloorMs;
+      });
+      const runningCount = nonStaleRunningRuns.length;
+
       if (runningCount > 0 && hasExternalLifecycle(agent.adapterType)) {
         await pruneStaleQueuedMaintenanceRunsForAgent(agentId);
         logger.debug(
@@ -11184,13 +11218,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // run), suppress it instead of letting two dispatches race for the same
       // k8s Job slot. Cross-agent and null-issueId (autonomous) runs are
       // unaffected — withAgentStartLock already scopes this to one agent and
-      // the gate only fires when issueId is present.
+      // the gate only fires when issueId is present. Stale runs are excluded
+      // (consistent with Fix #1 above) so a queued retry for a stale issue
+      // can proceed once the stale run's job is gone.
       const inFlightIssueIds = new Set<string>();
-      const runningRows = await db
-        .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")));
-      for (const row of runningRows) {
+      for (const row of nonStaleRunningRuns) {
         const id = readNonEmptyString(parseObject(row.contextSnapshot).issueId);
         if (id) inFlightIssueIds.add(id);
       }

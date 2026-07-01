@@ -1,11 +1,20 @@
 /**
  * BLO-12990: high-priority `todo` starved behind low-priority `in_progress`.
  *
- * Verifies that startNextQueuedRunForAgent selects a high-priority `todo`
- * run ahead of a low-priority `in_progress` run when a slot opens. The old
- * sort made status the primary key (in_progress always won regardless of
- * priority gap); the new sort uses priority * 2 + statusBonus so priority
- * can cross the status boundary.
+ * Covers two independent fixes:
+ *
+ * Fix #3 (priority sort): verifies that startNextQueuedRunForAgent selects a
+ * high-priority `todo` run ahead of a low-priority `in_progress` run when a
+ * slot opens. The old sort made status the primary key (in_progress always won
+ * regardless of priority gap); the new sort uses priority * 2 + statusBonus so
+ * priority can cross the status boundary.
+ *
+ * Fix #1 (stale-run exclusion): verifies that a stale/silent running run does
+ * not hold a dispatch slot hostage. A run is stale when its most-recent signal
+ * (lastUsefulActionAt > lastOutputAt > startedAt) is older than
+ * EXTERNAL_LIFECYCLE_STALE_MS (15 min). Before the fix, stale runs counted as
+ * "running" and blocked all dispatch for external-lifecycle agents via the hard
+ * early-return gate — even when the k8s Job was already gone.
  */
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
@@ -279,6 +288,171 @@ describeEmbeddedPostgres("heartbeat dispatch priority sort (BLO-12990)", () => {
       .then((rows) => rows[0] ?? null);
 
     // todo/high should have been dispatched (left the queued state).
+    expect(todoRun?.status).not.toBe("queued");
+  });
+
+  it("dispatches queued run despite a stale silent running run (BLO-12990 Fix #1)", async () => {
+    // A running run that has been silent for > EXTERNAL_LIFECYCLE_STALE_MS (15 min)
+    // must NOT consume a concurrency slot. With maxConcurrentRuns: 2 and 2 stale
+    // "running" runs in the DB, the old code saw runningCount = 2 = maxConcurrentRuns
+    // and returned availableSlots = 0 (no dispatch). Fix #1 excludes stale runs from
+    // the count so nonStaleRunningRuns = 0, runningCount = 0, availableSlots = 2, and
+    // the queued run dispatches.
+    //
+    // codex_local is intentionally used here: for non-external-lifecycle adapters
+    // reapOrphanedRuns is NOT called inside startNextQueuedRunForAgent, so the stale
+    // runs remain "running" in the DB untouched during the dispatch cycle, isolating
+    // the stale-exclusion logic cleanly without reaper interference.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const staleIssueId1 = randomUUID();
+    const staleIssueId2 = randomUUID();
+    const todoIssueId = randomUUID();
+    const issuePrefix = `S${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "StaleTestCo",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "StaleTestAgent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 2 } },
+      permissions: {},
+    });
+
+    await db.insert(issues).values([
+      {
+        id: staleIssueId1,
+        companyId,
+        title: "Stale in-flight issue 1",
+        status: "in_progress",
+        priority: "low",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+        startedAt: new Date(),
+      },
+      {
+        id: staleIssueId2,
+        companyId,
+        title: "Stale in-flight issue 2",
+        status: "in_progress",
+        priority: "low",
+        assigneeAgentId: agentId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+        startedAt: new Date(),
+      },
+      {
+        id: todoIssueId,
+        companyId,
+        title: "New high-priority work",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+        issueNumber: 3,
+        identifier: `${issuePrefix}-3`,
+      },
+    ]);
+
+    // Two stale running runs: lastOutputAt = 20 minutes ago (> EXTERNAL_LIFECYCLE_STALE_MS = 15 min).
+    // These fill maxConcurrentRuns: 2 under the old code, leaving availableSlots = 0.
+    const staleOutputAt = new Date(Date.now() - 20 * 60 * 1000);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "heartbeat",
+        triggerDetail: "timer",
+        status: "running",
+        contextSnapshot: { issueId: staleIssueId1, wakeReason: "heartbeat_timer" },
+        startedAt: staleOutputAt,
+        lastOutputAt: staleOutputAt,
+        createdAt: staleOutputAt,
+        updatedAt: staleOutputAt,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "heartbeat",
+        triggerDetail: "timer",
+        status: "running",
+        contextSnapshot: { issueId: staleIssueId2, wakeReason: "heartbeat_timer" },
+        startedAt: staleOutputAt,
+        lastOutputAt: staleOutputAt,
+        createdAt: staleOutputAt,
+        updatedAt: staleOutputAt,
+      },
+    ]);
+
+    // The queued high-priority run.
+    const todoWakeId = randomUUID();
+    const todoRunId = randomUUID();
+    const queuedTime = new Date();
+    await db.insert(agentWakeupRequests).values({
+      id: todoWakeId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: todoIssueId },
+      status: "queued",
+      runId: todoRunId,
+      requestedAt: queuedTime,
+      updatedAt: queuedTime,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: todoRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: todoWakeId,
+      contextSnapshot: { issueId: todoIssueId, wakeReason: "issue_assigned" },
+      createdAt: queuedTime,
+      updatedAt: queuedTime,
+    });
+
+    const dispatchedRunIds: string[] = [];
+    mockAdapterExecute.mockImplementation(async (args: { runId: string }) => {
+      dispatchedRunIds.push(args.runId);
+      return {
+        exitCode: 0,
+        signal: null as string | null,
+        timedOut: false,
+        errorMessage: null as string | null,
+        resultJson: { exitCode: 0 },
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, todoRunId);
+
+    // REGRESSION GUARD (Fix #1): the stale running runs must NOT block dispatch.
+    // The todo/high-priority run must have been dispatched despite filling both slots.
+    expect(dispatchedRunIds[0]).toBe(todoRunId);
+
+    // The todo run should have left the queued state.
+    const todoRun = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, todoRunId))
+      .then((rows) => rows[0] ?? null);
     expect(todoRun?.status).not.toBe("queued");
   });
 });
