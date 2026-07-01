@@ -246,11 +246,16 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     try {
       plugin = await registry.getById(pluginId);
     } catch (error) {
-      const maybeCode =
-        typeof error === "object" && error !== null && "code" in error
-          ? (error as { code?: unknown }).code
-          : undefined;
-      if (maybeCode !== "22P02") {
+      // DrizzleQueryError (drizzle-orm 0.45+) wraps the original pg error on
+      // .cause rather than exposing .code directly. Check both paths for
+      // 22P02 (invalid_text_representation) so non-UUID :pluginId values
+      // fall through to the getByKey lookup instead of propagating as 500.
+      const pgCode = (obj: unknown): unknown => {
+        if (typeof obj !== "object" || obj === null) return undefined;
+        const e = obj as Record<string, unknown>;
+        return "code" in e ? e.code : (e.cause as Record<string, unknown> | undefined)?.code;
+      };
+      if (pgCode(error) !== "22P02") {
         throw error;
       }
     }
