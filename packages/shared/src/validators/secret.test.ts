@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createSecretProviderConfigSchema,
   createSecretSchema,
+  envConfigSchema,
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
   secretProviderConfigDiscoveryPreviewSchema,
@@ -188,5 +189,22 @@ describe("secret validators", () => {
         secrets: [],
       }),
     ).toThrow();
+  });
+
+  it("rejects env key starting with PAPERCLIP_", () => {
+    const result = envConfigSchema.safeParse({ PAPERCLIP_SOME_VAR: "value" });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0].message).toContain("reserved PAPERCLIP_ prefix");
+  });
+
+  it("accepts normal env keys alongside rejected PAPERCLIP_ keys", () => {
+    const result = envConfigSchema.safeParse({
+      OPENAI_API_KEY: "sk-1234",
+      PAPERCLIP_FORBIDDEN: "should-fail",
+      DATABASE_URL: "postgres://localhost/db",
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.length).toBe(1);
+    expect(result.error?.issues[0].path).toEqual(["PAPERCLIP_FORBIDDEN"]);
   });
 });
