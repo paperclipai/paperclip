@@ -227,7 +227,7 @@ export async function syncDraftAdvisory(fetchImpl, token, repo, prNumber, prTitl
 
     // PATCH rejects `vulnerabilities: []` with 422 ("Advisory must have at least one vulnerability").
     // The field is only valid on POST when creating the draft; updates must omit it.
-    const { vulnerabilities, ...patchPayload } = payload;
+    const { vulnerabilities: _vulnerabilities, ...patchPayload } = payload;
 
     return fetchImpl(`/repos/${repo}/security-advisories/${advisoryId}`, token, {
       method: 'PATCH',

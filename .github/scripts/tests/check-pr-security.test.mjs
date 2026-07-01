@@ -177,7 +177,7 @@ test('syncDraftAdvisory: patches an existing advisory with the latest flags', as
   assert.equal(calls[1].path, '/repos/paperclipai/paperclip/security-advisories/GHSA-test-1234');
   assert.equal(calls[1].options.method, 'PATCH');
   const patchBody = JSON.parse(calls[1].options.body);
-  const { vulnerabilities, ...expectedPatch } = buildAdvisoryPayload(6469, 'My PR', flags);
+  const { vulnerabilities: _vulnerabilities, ...expectedPatch } = buildAdvisoryPayload(6469, 'My PR', flags);
   assert.deepEqual(patchBody, expectedPatch);
   assert.ok(!('vulnerabilities' in patchBody), 'PATCH must omit vulnerabilities (GitHub rejects empty array with 422)');
 });
