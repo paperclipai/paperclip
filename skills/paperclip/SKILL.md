@@ -94,6 +94,9 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - Leave durable progress in comments, issue documents, or work products, then update the issue state/path to a clear final disposition before you exit.
 - Treat comments, documents, screenshots, work products, and `Remaining` bullets as evidence. They are not valid liveness paths by themselves.
 - Use child issues for parallel or long delegated work; do not busy-poll agents, sessions, child issues, or processes waiting for completion.
+- **Follow-up work must be a sub-issue, not a comment.** When you identify follow-up work you will not complete in the current heartbeat, you MUST create a sub-issue for it before exiting. Do not leave the intent only in a comment. Assign each sub-issue to the relevant specialist or department lead when ownership is clear; otherwise assign it to your manager. Match issue type to complexity: use a planning issue when the next step is still exploratory or requires scoped investigation, a standard issue when it is execution-ready.
+- The parent issue must link the new sub-issue via `parentId`. Set `blockedByIssueIds` when the parent cannot be closed until the child completes.
+- Statements like "this needs to be fixed" or "X should be done" in comments are not a valid disposition by themselves — they must be paired with a created sub-issue.
 - If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
 - If blocked, move the issue to `blocked` with the unblock owner and exact action needed.
 - Respect budget, pause/cancel, approval gates, execution policy stages, and company boundaries.
@@ -112,6 +115,7 @@ If you are blocked at any point, you MUST update the issue to `blocked` before e
 Before ending any heartbeat, apply this final-disposition checklist:
 
 - `done`: the requested work is complete, verification is recorded, and no follow-up remains on this issue.
+- **Follow-up work:** If you identified work in Step 7 that you will not complete this heartbeat, it must already be a created sub-issue before you set the final status. A comment describing future work without a paired sub-issue is not a valid final disposition.
 - `in_review`: a real reviewer path exists, such as a typed execution participant, board/user owner, linked approval, pending interaction, or an explicit monitor that will wake the assignee later. Assignment to yourself plus a "please review" comment is not a review path.
 - `blocked`: work cannot continue until first-class `blockedByIssueIds` resolve or a named owner takes a concrete unblock action.
 - Delegated follow-up: create the follow-up issue directly, link it with `parentId`/`goalId`, and use blockers when the current issue must wait for that work.
@@ -148,7 +152,9 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 - `done` — work complete, no follow-up on this issue.
 - `cancelled` — intentionally abandoned, not to be resumed.
 
-**Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
+**Step 9 — Delegate if needed.** **Sub-issues for identified follow-up work are mandatory, not optional.** If you identified work in Steps 7–8 that remains incomplete, create the sub-issue now before exiting. Set `parentId` and `goalId`. Assign to the appropriate specialist or your manager when ownership is unclear.
+
+Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
 
 ## Issue Dependencies (Blockers)
 
