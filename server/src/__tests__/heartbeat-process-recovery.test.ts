@@ -26,6 +26,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueLabels,
   issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
@@ -34,6 +35,7 @@ import {
   issueTreeHolds,
   issueWorkProducts,
   issues,
+  labels,
   projects,
   projectWorkspaces,
   workspaceOperations,
@@ -648,6 +650,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runSource?: string | null;
     assignToUser?: boolean;
     activePauseHold?: boolean;
+    perpetualTracker?: boolean;
+    monitorNextCheckAt?: Date | null;
     livenessState?: "completed" | "advanced" | "plan_only" | "empty_response" | "blocked" | "failed" | "needs_followup" | null;
     runErrorCode?: string | null;
     runError?: string | null;
@@ -752,6 +756,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         issueNumber: input.activePauseHold ? 2 : 1,
         identifier: `${issuePrefix}-${input.activePauseHold ? 2 : 1}`,
         startedAt: input.status === "in_progress" ? now : null,
+        monitorNextCheckAt: input.monitorNextCheckAt ?? null,
       },
     ]);
 
@@ -763,6 +768,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         status: "active",
         reason: "pause recovery subtree",
         releasePolicy: { strategy: "manual" },
+      });
+    }
+
+    if (input.perpetualTracker) {
+      const labelId = randomUUID();
+      await db.insert(labels).values({
+        id: labelId,
+        companyId,
+        name: "perpetual-tracker",
+        color: "#888888",
+      });
+      await db.insert(issueLabels).values({
+        issueId,
+        labelId,
+        companyId,
       });
     }
 
@@ -3107,6 +3127,88 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+  });
+
+  it("does not flip perpetual-tracker issues to blocked (BLU-15638)", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      perpetualTracker: true,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    // The perpetual-tracker label must keep the issue out of the candidate
+    // set entirely: no escalation, no requeue, nothing touched.
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.assigneeAgentId).toBe(agentId);
+
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.companyId, companyId));
+    expect(recoveryActions).toHaveLength(0);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
+  it("does not flip issues with a future scheduled monitor to blocked (BLU-16005)", async () => {
+    // A scheduled monitor (monitorNextCheckAt in the future) is a live
+    // continuation path: the monitor scheduler will wake the assignee at that
+    // time. Without honoring it, perpetual-tracker EPICs (e.g. SOC 2 BLU-9829)
+    // that sit idle between scheduled checks get flipped to `blocked` every
+    // recovery cycle. No perpetual-tracker label here — the nextCheckAt guard
+    // must protect the issue on its own.
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.assigneeAgentId).toBe(agentId);
+
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.companyId, companyId));
+    expect(recoveryActions).toHaveLength(0);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+  });
+
+  it("still flips a stranded issue once its scheduled monitor is overdue (BLU-16005)", async () => {
+    // Guard is bounded to *future* checks: a monitor whose nextCheckAt has
+    // already elapsed is not a live path, so genuine strandings are still
+    // recovered.
+    const { issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      monitorNextCheckAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
   });
 
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {
