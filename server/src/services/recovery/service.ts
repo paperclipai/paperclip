@@ -130,6 +130,40 @@ type SuccessfulRunHandoffRecoveryEvidence = {
   maxHandoffAttempts: number;
 };
 
+function readMonitorRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readDateMs(value: unknown): number | null {
+  if (!(typeof value === "string" || value instanceof Date)) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  const time = date.getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+function readPositiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function hasScheduledIssueMonitor(issue: typeof issues.$inferSelect, nowMs = Date.now()): boolean {
+  const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
+  if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
+
+  const policyMonitor = readMonitorRecord(readMonitorRecord(issue.executionPolicy)?.monitor);
+  const stateMonitor = readMonitorRecord(readMonitorRecord(issue.executionState)?.monitor);
+  const timeoutAtMs = readDateMs(policyMonitor?.timeoutAt ?? stateMonitor?.timeoutAt);
+  if (timeoutAtMs !== null && timeoutAtMs <= nowMs) return false;
+
+  const maxAttempts = readPositiveInteger(policyMonitor?.maxAttempts ?? stateMonitor?.maxAttempts);
+  const stateAttemptCount = readPositiveInteger(stateMonitor?.attemptCount) ?? 0;
+  const attemptCount = issue.monitorAttemptCount ?? stateAttemptCount;
+  if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
+
+  return true;
+}
+
 type WatchdogDecisionActor =
   | { type: "board"; userId?: string | null; runId?: string | null }
   | { type: "agent"; agentId?: string | null; runId?: string | null }
@@ -2761,6 +2795,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (issue.status === "in_progress" && hasScheduledIssueMonitor(issue)) {
         result.skipped += 1;
         continue;
       }
