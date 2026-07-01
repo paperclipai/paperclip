@@ -27,6 +27,27 @@ export function buildIssueTree(items: Issue[]): IssueTree {
 }
 
 /**
+ * Returns the flat list of issue ids in the order they are rendered on screen
+ * (DFS pre-order over `buildIssueTree`). When nesting is disabled or no
+ * parent/child relationships exist within `items`, this is equivalent to the
+ * input order. Mirrors the `roots`/`children` walk in `IssuesList`'s row
+ * renderer so shift-click ranges line up with the visual selection.
+ */
+export function buildRenderedIssueOrder(items: Issue[], nestingEnabled: boolean): string[] {
+  if (!nestingEnabled) return items.map((i) => i.id);
+  const { roots, childMap } = buildIssueTree(items);
+  const order: string[] = [];
+  const visit = (issue: Issue) => {
+    order.push(issue.id);
+    const children = childMap.get(issue.id);
+    if (!children) return;
+    for (const child of children) visit(child);
+  };
+  for (const root of roots) visit(root);
+  return order;
+}
+
+/**
  * Returns the total number of descendants (all depths) of `id` in `childMap`.
  * Used to accurately label collapsed parent badges like "(3 sub-tasks)".
  */
