@@ -170,6 +170,27 @@ interface TreeHoldListOptions extends BaseClientOptions {
 export function registerIssueCommands(program: Command): void {
   const issue = program.command("issue").description("Issue operations");
 
+  issue.addHelpText(
+    "after",
+    [
+      "",
+      "Flag matrix (per-subcommand support — flags are NOT uniform across subcommands):",
+      "  issue list     : -C/--company-id (optional, profile fallback), --status, --assignee-agent-id, --project-id, --match",
+      "  issue get      : -C optional, --api-key may be required for agent-scoped reads. Accepts UUID or identifier (PC-12).",
+      "  issue create   : -C optional (profile fallback, PAPERCLIP_COMPANY_ID env), --title (required), --description, --assignee-agent-id, --project-id, --parent-id, --goal-id, --priority, --status",
+      "  issue update   : -C NOT accepted. Argument = full issue UUID. --status, --description, --comment (activity-log), etc.",
+      "  issue comment  : -C NOT accepted. Argument = full issue UUID. --body (required), --reopen.",
+      "  issue checkout : --agent-id (required), --expected-statuses (csv, default todo,backlog,blocked)",
+      "  issue release  : no extra flags (argument = full issue UUID)",
+      "",
+      "UUID rule: issue update/get/comment require the FULL UUID, not the 8-char Slack prefix.",
+      "  First resolve with `paperclipai issue list --json` or `paperclipai issue get <identifier>` to get the full UUID.",
+      "Project names: this CLI accepts --project-id only. There is no --project-name flag.",
+      "  Resolve names via REST: curl -u admin:... http://localhost:3100/api/companies/$CID/projects",
+      "",
+    ].join("\n"),
+  );
+
   addCommonClientOptions(
     issue
       .command("list")
@@ -276,7 +297,10 @@ export function registerIssueCommands(program: Command): void {
     issue
       .command("create")
       .description("Create an issue")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option(
+        "-C, --company-id <id>",
+        "Company ID (falls back to PAPERCLIP_COMPANY_ID or default context profile)",
+      )
       .requiredOption("--title <title>", "Issue title")
       .option("--description <text>", "Issue description")
       .option("--status <status>", "Issue status")
@@ -287,6 +311,10 @@ export function registerIssueCommands(program: Command): void {
       .option("--parent-id <id>", "Parent issue ID")
       .option("--request-depth <n>", "Request depth integer")
       .option("--billing-code <code>", "Billing code")
+      .addHelpText(
+        "after",
+        "\nNotes:\n  --company-id is optional if a default context profile is set or PAPERCLIP_COMPANY_ID is exported.\n  Parent issue uses --parent-id (not --parent-issue-id).\n  Use --project-id <id> to attach a project (use `paperclipai --help` → project list via REST API).\n",
+      )
       .action(async (opts: IssueCreateOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
@@ -309,6 +337,11 @@ export function registerIssueCommands(program: Command): void {
           handleCommandError(err);
         }
       }),
+    // `includeCompany: false` is intentional: this subcommand registers its
+    // own `-C/--company-id` option inline (above) as an OPTIONAL flag with
+    // explicit help text describing the profile/env fallback, so the shared
+    // `addCommonClientOptions` helper must NOT re-register it. Keep these two
+    // in sync: if inline `-C` is removed, flip this back to the default.
     { includeCompany: false },
   );
 
@@ -316,7 +349,7 @@ export function registerIssueCommands(program: Command): void {
     issue
       .command("update")
       .description("Update an issue")
-      .argument("<issueId>", "Issue ID")
+      .argument("<issueId>", "Issue ID (full UUID — 8-char prefix not accepted)")
       .option("--title <title>", "Issue title")
       .option("--description <text>", "Issue description")
       .option("--status <status>", "Issue status")
@@ -329,6 +362,10 @@ export function registerIssueCommands(program: Command): void {
       .option("--billing-code <code>", "Billing code")
       .option("--comment <text>", "Optional comment to add with update")
       .option("--hidden-at <iso8601|null>", "Set hiddenAt timestamp or literal 'null'")
+      .addHelpText(
+        "after",
+        "\nNotes:\n  `issue update` resolves the issue directly from <issueId>; -C/--company-id is NOT accepted here (use it on `issue create`/`issue list`).\n  Status transitions go through this command with --status and optional --comment (comment becomes an activity-log entry).\n",
+      )
       .action(async (issueId: string, opts: IssueUpdateOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
