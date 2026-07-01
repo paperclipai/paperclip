@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
   getRelationSummaries: vi.fn(),
+  mirrorGateConfirmationToParent: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
 }));
@@ -176,6 +177,7 @@ describe("issue activity event routes", () => {
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.mirrorGateConfirmationToParent.mockResolvedValue(null);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockAccessService.canUser.mockResolvedValue(false);
@@ -383,6 +385,10 @@ describe("issue activity event routes", () => {
 
     expect(res.status).toBe(200);
     await vi.waitFor(() => {
+      expect(mockIssueService.mirrorGateConfirmationToParent).toHaveBeenCalledWith(issue.id);
+      expect(mockIssueService.mirrorGateConfirmationToParent.mock.invocationCallOrder[0]).toBeLessThan(
+        mockIssueService.listWakeableBlockedDependents.mock.invocationCallOrder[0],
+      );
       expect(mockLogActivity).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -395,6 +401,66 @@ describe("issue activity event routes", () => {
             resolvedByStatus: "done",
           }),
         }),
+      );
+    });
+  });
+
+  it("mirrors gate confirmations before dependency wakeups when an approval comment completes the issue", async () => {
+    const stageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const issue = {
+      ...makeIssue(),
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      executionPolicy: normalizeIssueExecutionPolicy({
+        stages: [{
+          id: stageId,
+          type: "review",
+          participants: [{ type: "user", userId: "local-board" }],
+        }],
+      }),
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "user", userId: "local-board" },
+        returnAssignee: { type: "user", userId: "local-board" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    const approvalBody = "kind: review\ndecision: approved";
+    mockIssueService.addComment.mockResolvedValue({
+      id: "33333333-3333-4333-8333-333333333333",
+      body: approvalBody,
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const tx = {
+      insert: () => ({
+        values: async () => [],
+      }),
+    };
+    const dbMock = {
+      transaction: async (callback: (tx: unknown) => unknown) => callback(tx),
+    };
+
+    const res = await request(await createApp(dbMock))
+      .post(`/api/issues/${issue.id}/comments`)
+      .send({ body: approvalBody });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => {
+      expect(mockIssueService.mirrorGateConfirmationToParent).toHaveBeenCalledWith(issue.id);
+      expect(mockIssueService.mirrorGateConfirmationToParent.mock.invocationCallOrder[0]).toBeLessThan(
+        mockIssueService.listWakeableBlockedDependents.mock.invocationCallOrder[0],
       );
     });
   });

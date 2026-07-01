@@ -2891,6 +2891,122 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(child.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
   });
+
+  it("persists server-owned gate-confirmation mirror state and mirrors a done child once", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const goalId = randomUUID();
+    const parentIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Ship gate confirmations",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      goalId,
+      name: "Gate project",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      projectId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const { issue: child } = await svc.createChild(parentIssueId, {
+      title: "Security <gate> **bold** [x](y) `code` # heading | table!",
+      status: "todo",
+      gateConfirmationMirror: true,
+    });
+
+    expect(child.executionState).toMatchObject({
+      gateConfirmationMirror: {
+        version: 1,
+        parentIssueId,
+      },
+    });
+
+    await svc.addComment(child.id, "Approved. The implementation keeps the system write bounded.", {});
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, child.id));
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: parentIssueId,
+      authorType: "user",
+      body: `A user pasted the mirror marker: <!-- gate-confirmation-mirror:${child.id} -->`,
+    });
+
+    const mirrorResults = await Promise.all([
+      svc.mirrorGateConfirmationToParent(child.id),
+      svc.mirrorGateConfirmationToParent(child.id),
+    ]);
+    expect(mirrorResults.filter(Boolean)).toHaveLength(1);
+    expect(mirrorResults.filter((result) => result === null)).toHaveLength(1);
+    const mirrored = mirrorResults.find(Boolean);
+    expect(mirrored).toMatchObject({
+      issueId: parentIssueId,
+      authorType: "system",
+    });
+    expect(mirrored?.body).toContain("## Gate Confirmation");
+    expect(mirrored?.body).toContain(child.identifier);
+    expect(mirrored?.body).toContain(
+      String.raw`Security &lt;gate&gt; \*\*bold\*\* \[x\]\(y\) \`code\` \# heading \| table\!`,
+    );
+    expect(mirrored?.body).not.toContain("Security <gate> **bold** [x](y) `code` # heading | table!");
+    expect(mirrored?.body).toContain("Approved. The implementation keeps the system write bounded.");
+
+    await expect(svc.mirrorGateConfirmationToParent(child.id)).resolves.toBeNull();
+    const parentComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, parentIssueId));
+    expect(parentComments).toHaveLength(2);
+  });
+
+  it("does not mirror unflagged done children", async () => {
+    const companyId = randomUUID();
+    const parentIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const { issue: child } = await svc.createChild(parentIssueId, {
+      title: "Normal child",
+      status: "done",
+    });
+
+    await expect(svc.mirrorGateConfirmationToParent(child.id)).resolves.toBeNull();
+    const parentComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, parentIssueId));
+    expect(parentComments).toHaveLength(0);
+  });
 });
 
 describeEmbeddedPostgres("issueService blockers and dependency wake readiness", () => {

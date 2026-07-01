@@ -101,6 +101,7 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
+const GATE_CONFIRMATION_MIRROR_SUMMARY_MAX_CHARS = 1200;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
@@ -370,6 +371,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
   blockParentUntilDone?: boolean;
+  gateConfirmationMirror?: boolean;
   actorAgentId?: string | null;
   actorUserId?: string | null;
 };
@@ -409,6 +411,12 @@ export type ChildIssueCompletionSummary = {
   summary: string | null;
 };
 
+type GateConfirmationMirrorState = {
+  version: 1;
+  parentIssueId: string;
+  createdAt: string;
+};
+
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   if (actorRunId) return checkoutRunId === actorRunId;
   return checkoutRunId == null;
@@ -438,6 +446,79 @@ function truncateInlineSummary(value: string | null | undefined, maxChars = CHIL
   const normalized = value?.trim();
   if (!normalized) return null;
   return normalized.length > maxChars ? `${normalized.slice(0, Math.max(0, maxChars - 15)).trimEnd()} [truncated]` : normalized;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function buildGateConfirmationMirrorState(
+  executionState: unknown,
+  parentIssueId: string,
+): Record<string, unknown> {
+  return {
+    ...(readRecord(executionState) ?? {}),
+    gateConfirmationMirror: {
+      version: 1,
+      parentIssueId,
+      createdAt: new Date().toISOString(),
+    } satisfies GateConfirmationMirrorState,
+  };
+}
+
+function readGateConfirmationMirrorState(executionState: unknown): GateConfirmationMirrorState | null {
+  const mirror = readRecord(readRecord(executionState)?.gateConfirmationMirror);
+  if (!mirror) return null;
+  if (mirror.version !== 1) return null;
+  if (typeof mirror.parentIssueId !== "string" || !isUuidLike(mirror.parentIssueId)) return null;
+  if (typeof mirror.createdAt !== "string") return null;
+  return {
+    version: 1,
+    parentIssueId: mirror.parentIssueId,
+    createdAt: mirror.createdAt,
+  };
+}
+
+function buildGateConfirmationMirrorMarker(childIssueId: string) {
+  return `<!-- gate-confirmation-mirror:${childIssueId} -->`;
+}
+
+function escapeMarkdownText(value: string) {
+  return value
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/[\\`*_{}[\]()#+\-.!|]/g, "\\$&");
+}
+
+function indentMarkdownCodeBlock(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((line) => `    ${line}`)
+    .join("\n");
+}
+
+function buildGateConfirmationMirrorComment(input: {
+  childIssueId: string;
+  childIdentifier: string | null;
+  childTitle: string;
+  childSummary: string | null;
+}) {
+  const prefix = input.childIdentifier?.match(/^([A-Z][A-Z0-9]*)-\d+$/)?.[1] ?? null;
+  const childLabel = input.childIdentifier
+    ? `[${input.childIdentifier}](${prefix ? `/${prefix}/issues/${input.childIdentifier}` : "#"})`
+    : `child issue ${input.childIssueId}`;
+  const summary = input.childSummary ? `\n\nLatest child update:\n\n${indentMarkdownCodeBlock(input.childSummary)}` : "";
+  return [
+    "## Gate Confirmation",
+    "",
+    `${childLabel} completed the delegated gate-confirmation task: ${escapeMarkdownText(input.childTitle)}.`,
+    summary,
+    "",
+    buildGateConfirmationMirrorMarker(input.childIssueId),
+  ].join("\n");
 }
 
 function truncateByCodePoint(value: string, maxChars: number): string {
@@ -4674,6 +4755,66 @@ export function issueService(db: Db) {
       };
     },
 
+    mirrorGateConfirmationToParent: async (childIssueId: string) => db.transaction(async (tx) => {
+      const child = await tx
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          parentId: issues.parentId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          executionState: issues.executionState,
+        })
+        .from(issues)
+        .where(eq(issues.id, childIssueId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!child || child.status !== "done" || !child.parentId) return null;
+
+      const mirror = readGateConfirmationMirrorState(child.executionState);
+      if (!mirror || mirror.parentIssueId !== child.parentId) return null;
+
+      const marker = buildGateConfirmationMirrorMarker(child.id);
+      const existingMirror = await tx
+        .select({ id: issueComments.id })
+        .from(issueComments)
+        .where(and(
+          eq(issueComments.companyId, child.companyId),
+          eq(issueComments.issueId, child.parentId),
+          eq(issueComments.authorType, "system"),
+          like(issueComments.body, `%${marker}%`),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingMirror) return null;
+
+      const latestChildComment = await tx
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(and(
+          eq(issueComments.companyId, child.companyId),
+          eq(issueComments.issueId, child.id),
+          isNull(issueComments.deletedAt),
+        ))
+        .orderBy(desc(issueComments.createdAt), desc(issueComments.id))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      return issueService(db).addComment(
+        child.parentId,
+        buildGateConfirmationMirrorComment({
+          childIssueId: child.id,
+          childIdentifier: child.identifier,
+          childTitle: child.title,
+          childSummary: truncateInlineSummary(latestChildComment?.body, GATE_CONFIRMATION_MIRROR_SUMMARY_MAX_CHARS),
+        }),
+        {},
+        { authorType: "system" },
+        tx,
+      );
+    }),
+
     createChild: async (
       parentIssueId: string,
       data: IssueChildCreateInput,
@@ -4696,6 +4837,7 @@ export function issueService(db: Db) {
       const {
         acceptanceCriteria,
         blockParentUntilDone,
+        gateConfirmationMirror,
         actorAgentId,
         actorUserId,
         ...issueData
@@ -4709,6 +4851,9 @@ export function issueService(db: Db) {
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
         description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
+        ...(gateConfirmationMirror
+          ? { executionState: buildGateConfirmationMirrorState(issueData.executionState, parent.id) }
+          : {}),
         inheritExecutionWorkspaceFromIssueId: parent.id,
       });
 
