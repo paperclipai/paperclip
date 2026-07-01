@@ -280,6 +280,46 @@ describe("runAdapterExecutionTargetProcess", () => {
       }),
     );
   });
+
+  it("forwards streamIdleWatchdogMs to runChildProcess on the local path", async () => {
+    // Regression guard: the local execution wrapper must thread the per-stream
+    // idle watchdog through to runChildProcess. If it silently drops the option
+    // the watchdog ships disabled on the claude-local path while still appearing
+    // configured.
+    const runChildProcessSpy = vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: null,
+      startedAt: new Date().toISOString(),
+    });
+
+    await runAdapterExecutionTargetProcess(
+      "run-local-process",
+      null,
+      "agent-cli",
+      ["--json"],
+      {
+        cwd: "/tmp/local",
+        env: { SAFE_VALUE: "visible" },
+        timeoutSec: 5,
+        graceSec: 1,
+        streamIdleWatchdogMs: 60_000,
+        onLog: async () => {},
+      },
+    );
+
+    expect(runChildProcessSpy).toHaveBeenCalledWith(
+      "run-local-process",
+      "agent-cli",
+      ["--json"],
+      expect.objectContaining({
+        streamIdleWatchdogMs: 60_000,
+      }),
+    );
+  });
 });
 
 describe("ensureAdapterExecutionTargetRuntimeCommandInstalled", () => {

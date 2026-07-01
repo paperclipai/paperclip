@@ -595,6 +595,83 @@ describe("runChildProcess", () => {
       }
     }
   });
+
+  it("reaps a stdout-silent subprocess once the idle watchdog elapses", async () => {
+    const watchdogMs = 300;
+    const startedAt = Date.now();
+
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      // Emit one early chunk, then go silent well past the watchdog window.
+      ["-e", "process.stdout.write('starting');setTimeout(() => {}, 10000);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 30,
+        graceSec: 1,
+        streamIdleWatchdogMs: watchdogMs,
+        onLog: async () => {},
+        onSpawn: async () => {},
+      },
+    );
+    const elapsed = Date.now() - startedAt;
+
+    expect(result.idleWatchdogFired).toBe(true);
+    expect(result.timedOut).toBe(false);
+    expect(result.silenceAgeMs).not.toBeNull();
+    expect(result.silenceAgeMs!).toBeGreaterThanOrEqual(watchdogMs - 50);
+    // Fired off the idle window, not the 30s wall-clock cap.
+    expect(elapsed).toBeLessThan(5_000);
+  });
+
+  it("re-arms the idle watchdog on each stdout chunk so a chatty subprocess survives", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        // Write every 100ms for ~600ms (under the 300ms watchdog each gap), then exit.
+        "let n=0;const t=setInterval(()=>{process.stdout.write('tick'+n);if(++n>=6){clearInterval(t);process.exit(0);}},100);",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 30,
+        graceSec: 1,
+        streamIdleWatchdogMs: 300,
+        onLog: async () => {},
+        onSpawn: async () => {},
+      },
+    );
+
+    expect(result.idleWatchdogFired).toBe(false);
+    expect(result.silenceAgeMs ?? null).toBeNull();
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("tick5");
+  });
+
+  it("disables the idle watchdog when streamIdleWatchdogMs is not positive", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      // Silent for 500ms — would trip a 200ms watchdog if one were armed.
+      ["-e", "setTimeout(() => process.exit(0), 500);"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 30,
+        graceSec: 1,
+        streamIdleWatchdogMs: 0,
+        onLog: async () => {},
+        onSpawn: async () => {},
+      },
+    );
+
+    expect(result.idleWatchdogFired).toBe(false);
+    expect(result.silenceAgeMs ?? null).toBeNull();
+    expect(result.exitCode).toBe(0);
+  });
 });
 
 describe("renderPaperclipWakePrompt", () => {
