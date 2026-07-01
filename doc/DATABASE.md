@@ -4,7 +4,7 @@ Paperclip uses PostgreSQL via [Drizzle ORM](https://orm.drizzle.team/). There ar
 
 ## 1. Embedded PostgreSQL — zero config
 
-If you don't set `DATABASE_URL`, the server automatically starts an embedded PostgreSQL instance and manages a local data directory.
+If you don't set `PAPERCLIP_DATABASE_URL`, the server automatically starts an embedded PostgreSQL instance and manages a local data directory.
 
 ```sh
 pnpm dev
@@ -25,7 +25,7 @@ If you need to apply pending migrations manually, run:
 pnpm db:migrate
 ```
 
-When `DATABASE_URL` is unset, this command targets the current embedded PostgreSQL instance for your active Paperclip config/instance.
+When `PAPERCLIP_DATABASE_URL` is unset, this command targets the current embedded PostgreSQL instance for your active Paperclip config/instance.
 
 Issue reference mentions follow the normal migration path: the schema migration creates the tracking table, but it does not backfill historical issue titles, descriptions, comments, or documents automatically.
 
@@ -56,13 +56,13 @@ This starts PostgreSQL 17 on `localhost:5432`. Then set the connection string:
 ```sh
 cp .env.example .env
 # .env already contains:
-# DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip
+# PAPERCLIP_DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip
 ```
 
 Run migrations:
 
 ```sh
-DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip \
+PAPERCLIP_DATABASE_URL=postgres://paperclip:paperclip@localhost:5432/paperclip \
   pnpm db:migrate
 ```
 
@@ -103,13 +103,13 @@ postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:
 For the application runtime, use a direct PostgreSQL connection unless the database client has explicit prepared-statement configuration for your pooling mode:
 
 ```sh
-DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
+PAPERCLIP_DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
 ```
 
 If you later run the app with a pooled runtime URL, set `DATABASE_MIGRATION_URL` to the direct connection URL. Paperclip uses it for startup schema checks/migrations and plugin namespace migrations, while the app continues to use `DATABASE_URL` for runtime queries:
 
 ```sh
-DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
+PAPERCLIP_DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
 DATABASE_MIGRATION_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
 ```
 
@@ -119,7 +119,7 @@ If your hosted database requires transaction-pooling-only connections, use a dir
 
 ```sh
 # Use the direct connection (port 5432) for schema changes
-DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
+PAPERCLIP_DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
   pnpm db:migrate
 ```
 
@@ -135,7 +135,7 @@ See [Supabase pricing](https://supabase.com/pricing) for current details.
 
 The database mode is controlled by `DATABASE_URL`:
 
-| `DATABASE_URL` | Mode |
+| `PAPERCLIP_DATABASE_URL` | Mode |
 |---|---|
 | Not set | Embedded PostgreSQL (`~/.paperclip/instances/default/db/`) |
 | `postgres://...localhost...` | Local Docker PostgreSQL |
