@@ -27,7 +27,15 @@ import type {
   PaperclipPluginManifestV1,
   PluginRecord,
 } from "@paperclipai/shared";
+import {
+  executionWorkspaces,
+  heartbeatRuns,
+  issues,
+  projectWorkspaces,
+} from "@paperclipai/db";
 import type { ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
+import { eq, and } from "drizzle-orm";
+import { checkRepoDestination } from "@paperclipai/adapter-utils/authorized-repo-guard";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import {
@@ -43,6 +51,11 @@ import { logger } from "../middleware/logger.js";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+const GITHUB_CREATE_PULL_REQUEST_TOOLS = new Set([
+  "github:create_pull_request",
+  "github.create_pull_request",
+]);
 
 /**
  * An agent-facing tool descriptor — the shape returned when agents
@@ -241,6 +254,135 @@ export function createPluginToolDispatcher(
 
   let initialized = false;
 
+  async function enforcePublishGuard(
+    namespacedName: string,
+    parameters: unknown,
+    runContext: ToolRunContext,
+  ): Promise<void> {
+    if (!GITHUB_CREATE_PULL_REQUEST_TOOLS.has(namespacedName)) return;
+    if (!db) {
+      throw new Error(
+        `Blocked GitHub publish tool "${namespacedName}": server database access is required to resolve the authorized repository (fail-closed).`,
+      );
+    }
+
+    const repositoryFullName = readNonEmptyString(
+      typeof parameters === "object" && parameters !== null
+        ? (parameters as Record<string, unknown>).repository_full_name
+        : null,
+    );
+    if (!repositoryFullName) {
+      throw new Error(
+        `Blocked GitHub publish tool "${namespacedName}": missing required repository_full_name target (fail-closed).`,
+      );
+    }
+
+    const [run] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, runContext.runId),
+        eq(heartbeatRuns.companyId, runContext.companyId),
+        eq(heartbeatRuns.agentId, runContext.agentId),
+      ))
+      .limit(1);
+    const issueId = readNonEmptyString(run?.contextSnapshot?.issueId)
+      ?? readNonEmptyString(run?.contextSnapshot?.taskId);
+    if (!issueId) {
+      throw new Error(
+        `Blocked GitHub publish tool "${namespacedName}": run ${runContext.runId} is not linked to an issue/task context, so the authorized repository cannot be resolved (fail-closed).`,
+      );
+    }
+
+    const [issue] = await db
+      .select({
+        projectId: issues.projectId,
+        projectWorkspaceId: issues.projectWorkspaceId,
+        executionWorkspaceId: issues.executionWorkspaceId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, runContext.companyId)))
+      .limit(1);
+    if (!issue) {
+      throw new Error(
+        `Blocked GitHub publish tool "${namespacedName}": issue ${issueId} was not found in company scope, so the authorized repository cannot be resolved (fail-closed).`,
+      );
+    }
+
+    const issueWorkspaceRepoUrl = issue.executionWorkspaceId
+      ? await readExecutionWorkspaceRepoUrl(issue.executionWorkspaceId, runContext.companyId)
+      : null;
+    const projectRepoUrl = await readProjectRepoUrl({
+      companyId: runContext.companyId,
+      projectId: issue.projectId ?? runContext.projectId,
+      projectWorkspaceId: issue.projectWorkspaceId,
+    });
+
+    const decision = checkRepoDestination(
+      repositoryFullName.includes("://") || repositoryFullName.startsWith("github.com/")
+        ? repositoryFullName
+        : `https://github.com/${repositoryFullName}`,
+      {
+        issueWorkspaceRepoUrl,
+        projectRepoUrl,
+      },
+    );
+    if (decision.decision !== "authorized") {
+      throw new Error(
+        `Blocked GitHub publish tool "${namespacedName}": ${decision.message}`,
+      );
+    }
+  }
+
+  async function readExecutionWorkspaceRepoUrl(
+    executionWorkspaceId: string,
+    companyId: string,
+  ): Promise<string | null> {
+    const [row] = await db!
+      .select({ repoUrl: executionWorkspaces.repoUrl })
+      .from(executionWorkspaces)
+      .where(and(
+        eq(executionWorkspaces.id, executionWorkspaceId),
+        eq(executionWorkspaces.companyId, companyId),
+      ))
+      .limit(1);
+    return row?.repoUrl ?? null;
+  }
+
+  async function readProjectRepoUrl(input: {
+    companyId: string;
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+  }): Promise<string | null> {
+    if (input.projectWorkspaceId) {
+      const [workspace] = await db!
+        .select({ repoUrl: projectWorkspaces.repoUrl })
+        .from(projectWorkspaces)
+        .where(and(
+          eq(projectWorkspaces.id, input.projectWorkspaceId),
+          eq(projectWorkspaces.companyId, input.companyId),
+        ))
+        .limit(1);
+      if (workspace?.repoUrl) return workspace.repoUrl;
+    }
+
+    if (!input.projectId) return null;
+    const [primaryWorkspace] = await db!
+      .select({ repoUrl: projectWorkspaces.repoUrl })
+      .from(projectWorkspaces)
+      .where(and(
+        eq(projectWorkspaces.projectId, input.projectId),
+        eq(projectWorkspaces.companyId, input.companyId),
+        eq(projectWorkspaces.isPrimary, true),
+      ))
+      .limit(1);
+    return primaryWorkspace?.repoUrl ?? null;
+  }
+
+  function readNonEmptyString(value: unknown): string | null {
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  }
+
   // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------
@@ -412,6 +554,8 @@ export function createPluginToolDispatcher(
         },
         "dispatching tool execution",
       );
+
+      await enforcePublishGuard(namespacedName, parameters, runContext);
 
       const result = await registry.executeTool(
         namespacedName,
