@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
@@ -176,7 +177,12 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (existing) return;
   await ensureParentDir(target);
-  await fs.copyFile(source, target);
+  // COPYFILE_EXCL closes the TOCTOU window between the lstat above and this
+  // copy: if anything (e.g. a symlink an attacker raced into place) now exists
+  // at `target`, the copy fails with EEXIST instead of following the link and
+  // writing the shared file through it. Under normal operation the target was
+  // just confirmed absent, so this never changes behaviour.
+  await fs.copyFile(source, target, fsConstants.COPYFILE_EXCL);
 }
 
 /**
