@@ -357,13 +357,44 @@ function toRuntimeServiceRef(record: RuntimeServiceRecord, overrides?: Partial<R
   };
 }
 
-function sanitizeSlugPart(value: string | null | undefined, fallback: string): string {
-  const raw = (value ?? "").trim().toLowerCase();
+function sanitizeSlugPart(
+  value: string | null | undefined,
+  fallback: string,
+  issueIdentifier?: string | null,
+): string {
+  const raw = stripPaperclipIssueIdentifiers(value ?? "", issueIdentifier).trim();
+  return normalizeSlugPart(raw, fallback);
+}
+
+function normalizeSlugPart(value: string, fallback: string): string {
+  const raw = value.trim().toLowerCase();
   const normalized = raw
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^[-_]+|[-_]+$/g, "");
   return normalized.length > 0 ? normalized : fallback;
+}
+
+function stripPaperclipIssueIdentifiers(value: string, issueIdentifier?: string | null): string {
+  const normalizedIdentifier = issueIdentifier?.trim().toUpperCase() ?? null;
+  return value
+    .split("/")
+    .map((segment) => segment
+      .replace(
+        normalizedIdentifier
+          ? new RegExp(`(^|[._-])${escapeRegExp(normalizedIdentifier)}(?=$|[._-])`, "gi")
+          : /$^/,
+        "$1",
+      )
+      .replace(/(^|[._-])[A-Z][A-Z0-9]{1,3}-\d+(?=$|[._-])/g, "$1")
+      .replace(/[._-]{2,}/g, "-")
+      .replace(/^[._-]+|[._-]+$/g, ""))
+    .filter((segment) => segment.length > 0)
+    .join("/");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function renderWorkspaceTemplate(template: string, input: {
@@ -373,11 +404,16 @@ function renderWorkspaceTemplate(template: string, input: {
   repoRef: string | null;
 }) {
   const issueIdentifier = input.issue?.identifier ?? input.issue?.id ?? "issue";
-  const slug = sanitizeSlugPart(input.issue?.title, sanitizeSlugPart(issueIdentifier, "issue"));
+  const hasIssueTitle = typeof input.issue?.title === "string" && input.issue.title.trim().length > 0;
+  const slug = sanitizeSlugPart(
+    input.issue?.title,
+    normalizeSlugPart(issueIdentifier, "issue"),
+    issueIdentifier,
+  );
   return renderTemplate(template, {
     issue: {
       id: input.issue?.id ?? "",
-      identifier: input.issue?.identifier ?? "",
+      identifier: hasIssueTitle ? (input.issue?.identifier ?? "") : "",
       title: input.issue?.title ?? "",
     },
     agent: {
@@ -394,13 +430,18 @@ function renderWorkspaceTemplate(template: string, input: {
   });
 }
 
-function sanitizeBranchName(value: string): string {
-  return value
-    .trim()
-    .replace(/[^A-Za-z0-9._/-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^[-/.]+|[-/.]+$/g, "")
-    .slice(0, 120) || "paperclip-work";
+function sanitizeBranchName(value: string, issueIdentifier?: string | null): string {
+  const sanitized = stripPaperclipIssueIdentifiers(value.trim(), issueIdentifier)
+    .split("/")
+    .map((segment) => segment
+      .replace(/[^A-Za-z0-9._-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/\.{2,}/g, ".")
+      .replace(/^[-._]+|[-._]+$/g, ""))
+    .filter((segment) => segment.length > 0)
+    .join("/")
+    .slice(0, 120);
+  return sanitized || "paperclip-work";
 }
 
 function isAbsolutePath(value: string) {
@@ -1241,7 +1282,8 @@ export async function realizeExecutionWorkspace(input: {
     projectId: input.base.projectId,
     repoRef: input.base.repoRef,
   });
-  const branchName = sanitizeBranchName(renderedBranch);
+  const hasIssueTitle = typeof input.issue?.title === "string" && input.issue.title.trim().length > 0;
+  const branchName = sanitizeBranchName(renderedBranch, hasIssueTitle ? input.issue?.identifier : null);
   const configuredParentDir = asString(rawStrategy.worktreeParentDir, "");
   const worktreeParentDir = configuredParentDir
     ? resolveConfiguredPath(configuredParentDir, repoRoot)
