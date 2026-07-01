@@ -497,6 +497,35 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews).toHaveLength(1);
   });
 
+  it("treats a recently cancelled review as a snooze window", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 10,
+      now,
+    });
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+    await db
+      .update(issues)
+      .set({ status: "cancelled", updatedAt: now })
+      .where(eq(issues.id, review!.id));
+
+    const result = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + 30 * 60 * 1000),
+      companyId: seeded.companyId,
+    });
+    const reviews = await listProductivityReviews(seeded.companyId);
+
+    expect(result.snoozed).toBe(1);
+    expect(result.created).toBe(0);
+    expect(reviews).toHaveLength(1);
+  });
+
   it("reports and logs soft-stop holds for open no-comment reviews", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
