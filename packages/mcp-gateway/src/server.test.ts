@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { MCP_SESSION_HEADER } from "./session-keepalive.js";
 import { buildInitializeReplayHeaders, createGatewayServer, type GatewayState } from "./server.js";
+import { CircuitBreaker } from "./circuit-breaker.js";
 
 interface StrictMcpUpstream {
   server: http.Server;
@@ -29,6 +30,7 @@ async function readBody(req: http.IncomingMessage): Promise<string> {
 
 function closeServer(server: http.Server): Promise<void> {
   return new Promise((resolve, reject) => {
+    server.closeAllConnections?.();
     server.close((err) => {
       if (err) reject(err);
       else resolve();
@@ -135,8 +137,31 @@ function postChunked(url: string, body: string, headers: Record<string, string>)
   });
 }
 
-async function createGateway(upstreamUrl: string): Promise<{ url: string; state: GatewayState }> {
-  const state: GatewayState = { upstreams: { "k8s-admin": upstreamUrl }, sessions: new Map() };
+async function createHangingUpstream(): Promise<{ url: string }> {
+  // Never responds — models a hung/dead upstream (figma's OOM / websocket-drop
+  // state) so the gateway's own timeout + circuit breaker are exercised rather
+  // than inheriting undici's ~300s default timeout.
+  const server = http.createServer(() => {
+    /* intentionally never calls res.end() */
+  });
+  const url = await listen(server);
+  return { url };
+}
+
+async function createGateway(
+  upstreamUrl: string,
+  opts?: { timeoutMs?: number; failureThreshold?: number },
+): Promise<{ url: string; state: GatewayState }> {
+  const state: GatewayState = {
+    upstreams: { "k8s-admin": upstreamUrl },
+    sessions: new Map(),
+    upstreamTimeoutMs: opts?.timeoutMs ?? 60_000,
+    breaker: new CircuitBreaker({
+      failureThreshold: opts?.failureThreshold ?? 5,
+      openCooldownMs: 30_000,
+      halfOpenMaxProbes: 1,
+    }),
+  };
   const server = createGatewayServer(state);
   const url = await listen(server);
   return { url: url.replace(/\/mcp$/, "/k8s-admin/mcp"), state };
@@ -298,5 +323,61 @@ describe("mcp gateway lifecycle compatibility", () => {
       "notifications/initialized",
       "tools/list",
     ]);
+  });
+});
+
+describe("upstream resilience: timeout + circuit breaker", () => {
+  it("returns 504 when the upstream hangs past the configured timeout", async () => {
+    const hanging = await createHangingUpstream();
+    const gateway = await createGateway(hanging.url, { timeoutMs: 200 });
+
+    const start = Date.now();
+    const res = await fetch(gateway.url, {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    const elapsed = Date.now() - start;
+
+    expect(res.status).toBe(504);
+    // Aborted at ~200ms, not undici's ~300s default header/body timeout.
+    expect(elapsed).toBeLessThan(3000);
+  });
+
+  it("opens the circuit after repeated failures and then fast-fails with 503", async () => {
+    const hanging = await createHangingUpstream();
+    const gateway = await createGateway(hanging.url, { timeoutMs: 150, failureThreshold: 2 });
+    const call = () =>
+      fetch(gateway.url, {
+        method: "POST",
+        headers: jsonHeaders(),
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+      });
+
+    // First two calls reach the hung upstream and time out (504), tripping the breaker.
+    expect((await call()).status).toBe(504);
+    expect((await call()).status).toBe(504);
+    expect(gateway.state.breaker.stateOf("k8s-admin")).toBe("open");
+
+    // Third call is short-circuited by the open breaker: 503 (only reachable
+    // via the breaker gate) with a retry-after hint, without touching upstream.
+    const res = await call();
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBeTruthy();
+  });
+
+  it("keeps a healthy upstream closed across many calls", async () => {
+    const upstream = await createStrictMcpUpstream();
+    const gateway = await createGateway(upstream.url, { failureThreshold: 2 });
+
+    for (let i = 0; i < 5; i += 1) {
+      const res = await fetch(gateway.url, {
+        method: "POST",
+        headers: jsonHeaders(),
+        body: JSON.stringify({ jsonrpc: "2.0", id: i, method: "tools/list", params: {} }),
+      });
+      expect(res.status).toBe(200);
+    }
+    expect(gateway.state.breaker.stateOf("k8s-admin")).toBe("closed");
   });
 });
