@@ -126,6 +126,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    outputs:
+      verified_sha: ${{ steps.verified_ref.outputs.sha }}
 
     steps:
       - name: Checkout repository
@@ -147,6 +149,10 @@ jobs:
 
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
+
+      - name: Record verified source commit
+        id: verified_ref
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
@@ -173,7 +179,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ needs.verify_stable.outputs.verified_sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -217,7 +223,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ needs.verify_stable.outputs.verified_sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
