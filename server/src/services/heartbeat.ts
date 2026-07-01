@@ -109,6 +109,7 @@ import { issueService } from "./issues.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
+  issueHasFutureScheduledMonitor,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "./issue-execution-policy.js";
@@ -11706,6 +11707,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "released" as const };
       }
       if (options.suppressImmediateRecovery) {
+        return { kind: "released" as const };
+      }
+      if (issue.status === "in_progress" && issueHasFutureScheduledMonitor(issue)) {
         return { kind: "released" as const };
       }
 
