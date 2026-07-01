@@ -639,33 +639,44 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   ) {
     const existing = await findOpenProductivityReview(evidence.sourceIssue.companyId, evidence.sourceIssue.id);
     if (existing) {
-      const refreshState = await getRefreshCommentState(evidence.sourceIssue.companyId, existing.id);
-      const lastRefreshOrCreationAt = refreshState.latestCreatedAt ?? existing.createdAt;
-      if (
-        refreshState.count >= opts.thresholds.maxRefreshComments ||
-        evidence.generatedAt.getTime() - lastRefreshOrCreationAt.getTime() < opts.thresholds.refreshIntervalMs
-      ) {
-        return { kind: "existing" as const, reviewIssueId: existing.id };
-      }
-      await addRefreshComment(existing.id, buildRefreshComment(evidence, opts.prefix), evidence.generatedAt);
-      await logActivity(db, {
-        companyId: evidence.sourceIssue.companyId,
-        actorType: "system",
-        actorId: "system",
-        action: "issue.productivity_review_updated",
-        entityType: "issue",
-        entityId: existing.id,
-        agentId: existing.assigneeAgentId,
-        details: {
-          source: "productivity_review.reconcile",
-          sourceIssueId: evidence.sourceIssue.id,
-          trigger: evidence.trigger,
-          noCommentStreak: evidence.noCommentStreak,
-          runCountLastHour: evidence.runCountLastHour,
-          commentCountLastHour: evidence.commentCountLastHour,
-        },
+      // Serialize cap + interval evaluation per review issue. The SELECT-then-INSERT
+      // pattern below would otherwise race across concurrent reconcile runs (each
+      // server process fires reconcileProductivityReviews on a 30s setInterval),
+      // letting every racer see the same pre-burst count and all racers insert.
+      // BLU-7718: BLU-7325 accumulated 3,754 refresh comments through this race.
+      // pg_advisory_xact_lock auto-releases when the transaction commits.
+      return db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${`productivity_review_refresh:${existing.id}`}, 0))`,
+        );
+        const refreshState = await getRefreshCommentState(evidence.sourceIssue.companyId, existing.id);
+        const lastRefreshOrCreationAt = refreshState.latestCreatedAt ?? existing.createdAt;
+        if (
+          refreshState.count >= opts.thresholds.maxRefreshComments ||
+          evidence.generatedAt.getTime() - lastRefreshOrCreationAt.getTime() < opts.thresholds.refreshIntervalMs
+        ) {
+          return { kind: "existing" as const, reviewIssueId: existing.id };
+        }
+        await addRefreshComment(existing.id, buildRefreshComment(evidence, opts.prefix), evidence.generatedAt);
+        await logActivity(db, {
+          companyId: evidence.sourceIssue.companyId,
+          actorType: "system",
+          actorId: "system",
+          action: "issue.productivity_review_updated",
+          entityType: "issue",
+          entityId: existing.id,
+          agentId: existing.assigneeAgentId,
+          details: {
+            source: "productivity_review.reconcile",
+            sourceIssueId: evidence.sourceIssue.id,
+            trigger: evidence.trigger,
+            noCommentStreak: evidence.noCommentStreak,
+            runCountLastHour: evidence.runCountLastHour,
+            commentCountLastHour: evidence.commentCountLastHour,
+          },
+        });
+        return { kind: "updated" as const, reviewIssueId: existing.id };
       });
-      return { kind: "updated" as const, reviewIssueId: existing.id };
     }
 
     const recentCreationCount = await countRecentProductivityReviews(
