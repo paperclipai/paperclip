@@ -55,6 +55,12 @@ describeEmbeddedPostgres("productivity review service", () => {
     startedAt?: Date;
     parentId?: string | null;
     originKind?: string;
+    executionPolicy?: Record<string, unknown> | null;
+    executionState?: Record<string, unknown> | null;
+    monitorNextCheckAt?: Date | null;
+    monitorAttemptCount?: number;
+    monitorNotes?: string | null;
+    monitorScheduledBy?: string | null;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
@@ -106,6 +112,12 @@ describeEmbeddedPostgres("productivity review service", () => {
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       startedAt: opts?.startedAt ?? createdAt,
+      executionPolicy: opts?.executionPolicy ?? null,
+      executionState: opts?.executionState ?? null,
+      monitorNextCheckAt: opts?.monitorNextCheckAt ?? null,
+      monitorAttemptCount: opts?.monitorAttemptCount ?? 0,
+      monitorNotes: opts?.monitorNotes ?? null,
+      monitorScheduledBy: opts?.monitorScheduledBy ?? null,
       createdAt,
       updatedAt: createdAt,
     });
@@ -358,6 +370,179 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(review?.description).toContain("Primary trigger: `long_active_duration`");
     expect(review?.priority).toBe("medium");
     expect(hold.held).toBe(false);
+  });
+
+  it("skips long-active review for RR-4120-shaped in-progress issues with a future scheduled monitor", async () => {
+    const now = new Date("2026-07-01T21:00:00.000Z");
+    const nextCheckAt = "2026-08-03T14:00:00.000Z";
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date("2026-06-20T12:00:00.000Z"),
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        monitor: {
+          nextCheckAt,
+          notes: "Publish scheduled LinkedIn post.",
+          scheduledBy: "assignee",
+          kind: "external",
+          serviceName: "LinkedIn",
+        },
+      },
+      executionState: {
+        status: "idle",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: null,
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: {
+          status: "scheduled",
+          nextCheckAt,
+          lastTriggeredAt: null,
+          attemptCount: 0,
+          notes: "Publish scheduled LinkedIn post.",
+          scheduledBy: "assignee",
+          kind: "external",
+          serviceName: "LinkedIn",
+          timeoutAt: null,
+          maxAttempts: null,
+          recoveryPolicy: null,
+          clearedAt: null,
+          clearReason: null,
+        },
+      },
+      monitorNextCheckAt: new Date(nextCheckAt),
+      monitorAttemptCount: 0,
+      monitorNotes: "Publish scheduled LinkedIn post.",
+      monitorScheduledBy: "assignee",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("still creates long-active reviews for past-due scheduled monitors", async () => {
+    const now = new Date("2026-07-01T21:00:00.000Z");
+    const nextCheckAt = "2026-07-01T14:00:00.000Z";
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date("2026-06-30T12:00:00.000Z"),
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        monitor: {
+          nextCheckAt,
+          scheduledBy: "assignee",
+        },
+      },
+      executionState: {
+        status: "idle",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: null,
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: {
+          status: "scheduled",
+          nextCheckAt,
+          lastTriggeredAt: null,
+          attemptCount: 0,
+          notes: null,
+          scheduledBy: "assignee",
+          kind: null,
+          serviceName: null,
+          timeoutAt: null,
+          maxAttempts: null,
+          recoveryPolicy: null,
+          clearedAt: null,
+          clearReason: null,
+        },
+      },
+      monitorNextCheckAt: new Date(nextCheckAt),
+      monitorScheduledBy: "assignee",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+  });
+
+  it("still creates long-active reviews for cleared stale monitor state", async () => {
+    const now = new Date("2026-07-01T21:00:00.000Z");
+    const nextCheckAt = "2026-08-03T14:00:00.000Z";
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date("2026-06-30T12:00:00.000Z"),
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        monitor: {
+          nextCheckAt,
+          scheduledBy: "assignee",
+        },
+      },
+      executionState: {
+        status: "idle",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: null,
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: {
+          status: "cleared",
+          nextCheckAt: null,
+          lastTriggeredAt: null,
+          attemptCount: 0,
+          notes: null,
+          scheduledBy: "assignee",
+          kind: null,
+          serviceName: null,
+          timeoutAt: null,
+          maxAttempts: null,
+          recoveryPolicy: null,
+          clearedAt: "2026-07-01T20:00:00.000Z",
+          clearReason: "cancelled",
+        },
+      },
+      monitorNextCheckAt: new Date(nextCheckAt),
+      monitorScheduledBy: "assignee",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
   });
 
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
