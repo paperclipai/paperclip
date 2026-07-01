@@ -151,6 +151,9 @@ describe("ActiveAgentsPanel", () => {
       minCount: 4,
       limit: undefined,
     });
+    expect(container.textContent).toContain("running");
+    expect(container.textContent).toContain("Live now");
+    expect(container.textContent).toContain("Waiting for run activity.");
 
     const moreLink = [...container.querySelectorAll("a")].find((anchor) =>
       anchor.textContent?.includes("more active/recent"),
@@ -226,6 +229,45 @@ describe("ActiveAgentsPanel", () => {
       );
       expect(issueLink?.textContent).toBe("PAP-3562 - Phase 4B: Implement LLM Wiki distillation UI");
       expect(issueLink?.getAttribute("href")).toBe("/issues/PAP-3562");
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("surfaces blocked issue state and backend next action in run cards", async () => {
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([{
+      ...createIssueRun(1, "65274215-0000-4000-8000-000000000000"),
+      nextAction: "Waiting for COO to confirm deployment window.",
+      lastUsefulActionAt: "2026-04-24T12:05:00.000Z",
+    }]);
+    mockIssuesApi.get.mockResolvedValue({
+      ...createIssue(
+        "65274215-0000-4000-8000-000000000000",
+        "PAP-3562",
+        "Phase 4B: Implement LLM Wiki distillation UI",
+      ),
+      status: "blocked",
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ActiveAgentsPanel companyId="company-1" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await waitForMicrotaskAssertion(() => {
+      expect(container.textContent).toContain("blocked");
+      expect(container.textContent).toContain("Waiting for COO to confirm deployment window.");
+      expect(container.textContent).toContain("Progress");
     });
 
     await act(async () => {
