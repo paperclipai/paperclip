@@ -365,6 +365,51 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
     );
   });
 
+  it("rejects a git worktree persisted workspace when the checked-out branch differs from the recorded branch", async () => {
+    const repoRoot = await createGitCheckout({ withRemote: false });
+    const worktreeParent = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-branch-worktree-"));
+    const worktreePath = path.join(worktreeParent, "workspace");
+    const recordedBranch = "PAP-1-recorded-branch";
+    const actualBranch = "PAP-1-push-pr-head";
+    try {
+      await runGit(repoRoot, ["config", "user.email", "test@example.com"]);
+      await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
+      await fs.writeFile(path.join(repoRoot, "README.md"), "initial\n", "utf8");
+      await runGit(repoRoot, ["add", "README.md"]);
+      await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
+      await runGit(repoRoot, ["worktree", "add", "-b", recordedBranch, worktreePath, "HEAD"]);
+      await runGit(worktreePath, ["checkout", "-b", actualBranch]);
+
+      const input = buildWorkspaceValidationInput();
+      await expectWorkspaceValidationFailure(
+        buildWorkspaceValidationInput({
+          resolvedWorkspace: buildResolvedWorkspace({ cwd: worktreePath }),
+          executionWorkspace: {
+            ...input.executionWorkspace,
+            strategy: "git_worktree",
+            baseCwd: repoRoot,
+            cwd: worktreePath,
+            branchName: recordedBranch,
+            worktreePath,
+          },
+          persistedExecutionWorkspace: {
+            ...input.persistedExecutionWorkspace!,
+            strategyType: "git_worktree",
+            cwd: worktreePath,
+            providerType: "git_worktree",
+            providerRef: worktreePath,
+            branchName: recordedBranch,
+          },
+        }),
+        "git_worktree_branch_mismatch",
+        `expected git worktree branch "${recordedBranch}"`,
+      );
+    } finally {
+      await fs.rm(repoRoot, { recursive: true, force: true });
+      await fs.rm(worktreeParent, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a workspace-linked issue when adapter cwd has no git metadata", async () => {
     const input = buildWorkspaceValidationInput();
     const cwd = "/tmp/paperclip-workspace-without-git-metadata";

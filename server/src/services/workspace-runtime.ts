@@ -994,6 +994,22 @@ type GitWorktreeListEntry = {
   branch: string | null;
 };
 
+export type ManagedGitWorktreeBranchInspection = {
+  valid: boolean;
+  reason: string | null;
+  reasonCode:
+    | "missing_worktree"
+    | "not_a_git_checkout"
+    | "not_registered"
+    | "wrong_repository_root"
+    | "branch_mismatch"
+    | null;
+  repoRoot: string | null;
+  worktreePath: string;
+  expectedBranchName: string | null;
+  actualBranchName: string | null;
+};
+
 function parseGitWorktreeListPorcelain(raw: string): GitWorktreeListEntry[] {
   const entries: GitWorktreeListEntry[] = [];
   let current: Partial<GitWorktreeListEntry> = {};
@@ -1119,6 +1135,89 @@ async function listLinkedGitWorktreePaths(repoRoot: string): Promise<Set<string>
   return paths;
 }
 
+export async function inspectManagedGitWorktreeBranch(input: {
+  worktreePath: string;
+  expectedBranchName: string | null | undefined;
+  repoRoot?: string | null;
+}): Promise<ManagedGitWorktreeBranchInspection> {
+  const worktreePath = await resolvePathForWorktreeComparison(input.worktreePath);
+  const expectedBranchName = asString(input.expectedBranchName, "").trim() || null;
+  const base = {
+    worktreePath,
+    expectedBranchName,
+    actualBranchName: null,
+  };
+
+  if (!await directoryExists(worktreePath)) {
+    return {
+      ...base,
+      valid: false,
+      reason: `worktree path "${worktreePath}" does not exist`,
+      reasonCode: "missing_worktree",
+      repoRoot: input.repoRoot ? path.resolve(input.repoRoot) : null,
+    };
+  }
+
+  const repoRoot = input.repoRoot
+    ? path.resolve(input.repoRoot)
+    : await resolveGitOwnerRepoRoot(worktreePath).catch(() => null);
+  if (!repoRoot) {
+    return {
+      ...base,
+      valid: false,
+      reason: "path is not a git checkout",
+      reasonCode: "not_a_git_checkout",
+      repoRoot: null,
+    };
+  }
+
+  const listedWorktrees = await listLinkedGitWorktreePaths(repoRoot).catch(() => null);
+  if (!listedWorktrees?.has(worktreePath)) {
+    return {
+      ...base,
+      valid: false,
+      reason: "path is not registered in `git worktree list`",
+      reasonCode: "not_registered",
+      repoRoot,
+    };
+  }
+
+  const worktreeTopLevel = await runGit(["rev-parse", "--show-toplevel"], worktreePath).catch(() => null);
+  if (!worktreeTopLevel || path.resolve(worktreeTopLevel) !== worktreePath) {
+    return {
+      ...base,
+      valid: false,
+      reason: "git resolves this path to a different repository root",
+      reasonCode: "wrong_repository_root",
+      repoRoot,
+    };
+  }
+
+  const actualBranchName = await runGit(
+    ["symbolic-ref", "--quiet", "--short", "HEAD"],
+    worktreePath,
+  ).catch(() => null);
+  if (expectedBranchName && actualBranchName !== expectedBranchName) {
+    return {
+      ...base,
+      valid: false,
+      reason: `worktree HEAD is on "${actualBranchName ?? "<detached>"}" instead of "${expectedBranchName}"`,
+      reasonCode: "branch_mismatch",
+      repoRoot,
+      actualBranchName,
+    };
+  }
+
+  return {
+    ...base,
+    valid: true,
+    reason: null,
+    reasonCode: null,
+    repoRoot,
+    actualBranchName,
+  };
+}
+
 async function validateLinkedGitWorktree(input: {
   repoRoot: string;
   worktreePath: string;
@@ -1128,45 +1227,35 @@ async function validateLinkedGitWorktree(input: {
   | {
     valid: false;
     reason: string;
-    reasonCode: "not_registered" | "wrong_repository_root" | "branch_mismatch";
+    reasonCode: Exclude<ManagedGitWorktreeBranchInspection["reasonCode"], null>;
     actualBranchName?: string | null;
   }
 > {
-  const resolvedWorktreePath = await resolvePathForWorktreeComparison(input.worktreePath);
-  const listedWorktrees = await listLinkedGitWorktreePaths(input.repoRoot);
-  if (!listedWorktrees.has(resolvedWorktreePath)) {
-    return {
-      valid: false,
-      reasonCode: "not_registered",
-      reason: "path is not registered in `git worktree list`",
-    };
-  }
-
-  const worktreeTopLevel = await runGit(["rev-parse", "--show-toplevel"], resolvedWorktreePath).catch(() => null);
-  if (!worktreeTopLevel || path.resolve(worktreeTopLevel) !== resolvedWorktreePath) {
-    return {
-      valid: false,
-      reasonCode: "wrong_repository_root",
-      reason: "git resolves this path to a different repository root",
-    };
-  }
-
-  if (input.expectedBranchName) {
-    const currentBranch = await runGit(
-      ["symbolic-ref", "--quiet", "--short", "HEAD"],
-      resolvedWorktreePath,
-    ).catch(() => null);
-    if (currentBranch !== input.expectedBranchName) {
-      return {
+  const inspection = await inspectManagedGitWorktreeBranch({
+    repoRoot: input.repoRoot,
+    worktreePath: input.worktreePath,
+    expectedBranchName: input.expectedBranchName,
+  });
+  return inspection.valid
+    ? { valid: true }
+    : {
         valid: false,
-        reasonCode: "branch_mismatch",
-        actualBranchName: currentBranch,
-        reason: `worktree HEAD is on "${currentBranch ?? "<detached>"}" instead of "${input.expectedBranchName}"`,
+        reason: inspection.reason ?? "unknown git worktree mismatch",
+        reasonCode: inspection.reasonCode ?? "not_a_git_checkout",
+        actualBranchName: inspection.actualBranchName,
       };
-    }
-  }
+}
 
-  return { valid: true };
+export function formatManagedGitWorktreeBranchInspection(input: ManagedGitWorktreeBranchInspection) {
+  return {
+    valid: input.valid,
+    reason: input.reason,
+    reasonCode: input.reasonCode,
+    repoRoot: input.repoRoot,
+    worktreePath: input.worktreePath,
+    expectedBranchName: input.expectedBranchName,
+    actualBranchName: input.actualBranchName,
+  };
 }
 
 function terminateChildProcess(child: ChildProcess) {
@@ -1781,6 +1870,14 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
         executionWorkspaceId: input.workspace.id ?? null,
         recorder: input.recorder ?? null,
       });
+    }
+    const validation = await validateLinkedGitWorktree({
+      repoRoot,
+      worktreePath: reuseWorktreePath,
+      expectedBranchName: realized.branchName,
+    });
+    if (!validation.valid) {
+      throw new Error(`Persisted git worktree "${reuseWorktreePath}" is not reusable (${validation.reason}).`);
     }
     const baseRefreshWarnings = reuseBaseRef
       ? await refreshRemoteTrackingBaseRef(repoRoot, reuseBaseRef)

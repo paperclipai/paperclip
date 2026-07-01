@@ -2213,6 +2213,101 @@ describe("realizeExecutionWorkspace", () => {
     });
   }, 15_000);
 
+  it("rejects an existing persisted git worktree when the checked-out branch changed to a different commit", async () => {
+    const repoRoot = await createTempRepo();
+
+    const initial = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-456",
+        title: "Keep persisted branch coherent",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    const actualBranch = "PAP-456-push-pr-head";
+    await runGit(initial.cwd, ["checkout", "-b", actualBranch]);
+    await fs.writeFile(path.join(initial.cwd, "publish.txt"), "publish\n", "utf8");
+    await runGit(initial.cwd, ["add", "publish.txt"]);
+    await runGit(initial.cwd, ["commit", "-m", "Add publish branch work"]);
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        id: "execution-workspace-3",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: initial.cwd,
+        providerRef: initial.worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: initial.branchName,
+      },
+      issue: {
+        id: "issue-3",
+        identifier: "PAP-456",
+        title: "Keep persisted branch coherent",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_branch_incoherence",
+          fingerprint: expect.stringMatching(/^workspace_incoherence:v1:sha256:/),
+          sourceIssueId: "issue-3",
+          sourceIdentifier: "PAP-456",
+          executionWorkspaceId: "execution-workspace-3",
+          expectedBranch: initial.branchName,
+          actualBranch,
+          cleanliness: "clean",
+          provenance: expect.objectContaining({
+            expectedBranchExists: true,
+            actualBranchExists: true,
+            sameHead: false,
+          }),
+          safeRepair: expect.objectContaining({
+            eligible: false,
+            attempted: false,
+            succeeded: false,
+            reason: "expected branch and current HEAD differ",
+          }),
+        }),
+      },
+    });
+  }, 15_000);
+
   it("does not reuse a missing persisted local filesystem workspace", async () => {
     const baseCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-base-"));
     const missingCwd = path.join(baseCwd, "missing-workspace");
