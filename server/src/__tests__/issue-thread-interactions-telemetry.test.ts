@@ -181,7 +181,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
     expectNoRawInteractionIds(dimensions);
   });
 
-  it("emits accepted checkbox telemetry with allowlisted role, target, and counts", async () => {
+  it("emits accepted checkbox telemetry with raw role, target, and counts", async () => {
     const { companyId, goalId, issueId } = await seedIssue("Accept checkbox telemetry");
     const creatorAgentId = await seedAgent(companyId, "Backend Engineer");
 
@@ -225,7 +225,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       resolved_by_kind: "user",
       resolution_reason: "accepted",
       created_by_kind: "agent",
-      creator_agent_role: "engineer",
+      creator_agent_role: "Backend Engineer",
       continuation_policy: "wake_assignee",
       target_type: "custom",
       option_count: 2,
@@ -275,7 +275,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
     expectNoRawInteractionIds(dimensions);
   });
 
-  it("emits answered question telemetry with system resolver and other fallback dimensions", async () => {
+  it("emits answered question telemetry with system resolver and raw creator role", async () => {
     const { companyId, issueId } = await seedIssue("Answer question telemetry");
     const creatorAgentId = await seedAgent(companyId, "Wizard");
 
@@ -325,12 +325,12 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       status: "answered",
       resolved_by_kind: "system",
       created_by_kind: "agent",
-      creator_agent_role: "other",
-      continuation_policy: "other",
+      creator_agent_role: "Wizard",
       target_type: "none",
       question_count: 2,
       answered_question_count: 1,
     });
+    expect(dimensions).not.toHaveProperty("continuation_policy");
     expect(dimensions).not.toHaveProperty("summaryMarkdown");
     expect(dimensions).not.toHaveProperty("answers");
     expectNoRawInteractionIds(dimensions);

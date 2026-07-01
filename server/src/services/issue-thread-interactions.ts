@@ -10,7 +10,7 @@ import {
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
-import { trackInteractionResolved, type EventDimensionsMap } from "@paperclipai/shared/telemetry";
+import { trackInteractionResolved } from "@paperclipai/shared/telemetry";
 import type {
   AcceptIssueThreadInteraction,
   AskUserQuestionsAnswer,
@@ -67,7 +67,6 @@ type ResolvedInteractionResult = {
 
 type IssueThreadInteractionRow = typeof issueThreadInteractions.$inferSelect;
 type IssueTouchDb = Pick<Db, "update">;
-type InteractionResolvedDimensions = EventDimensionsMap["interaction.resolved"];
 
 type IssueResolutionContext = {
   id: string;
@@ -251,102 +250,6 @@ function buildSupersededByCommentResult(row: IssueThreadInteractionRow, commentI
   } as const;
 }
 
-function allowlistedDimension<T extends string>(
-  value: string | null | undefined,
-  allowedValues: ReadonlySet<T>,
-): T | "other" | undefined {
-  if (value == null) return undefined;
-  return allowedValues.has(value as T) ? (value as T) : "other";
-}
-
-const INTERACTION_KIND_VALUES = new Set<InteractionResolvedDimensions["interaction_kind"]>([
-  "suggest_tasks",
-  "ask_user_questions",
-  "request_confirmation",
-  "request_checkbox_confirmation",
-  "other",
-]);
-
-const INTERACTION_STATUS_VALUES = new Set<InteractionResolvedDimensions["status"]>([
-  "accepted",
-  "rejected",
-  "answered",
-  "cancelled",
-  "expired",
-  "failed",
-  "other",
-]);
-
-const INTERACTION_RESOLUTION_REASON_VALUES = new Set<NonNullable<InteractionResolvedDimensions["resolution_reason"]>>([
-  "accepted",
-  "rejected",
-  "stale_target",
-  "superseded_by_comment",
-  "expired",
-  "cancelled",
-  "other",
-]);
-
-const INTERACTION_CONTINUATION_POLICY_VALUES = new Set<
-  NonNullable<InteractionResolvedDimensions["continuation_policy"]>
->([
-  "none",
-  "wake_assignee",
-  "wake_assignee_on_accept",
-  "other",
-]);
-
-const INTERACTION_TARGET_TYPE_VALUES = new Set<NonNullable<InteractionResolvedDimensions["target_type"]>>([
-  "issue_document",
-  "custom",
-  "none",
-  "other",
-]);
-
-const CREATOR_AGENT_ROLE_BY_NORMALIZED_ROLE = new Map<
-  string,
-  NonNullable<InteractionResolvedDimensions["creator_agent_role"]>
->([
-  ["ceo", "ceo"],
-  ["cto", "cto"],
-  ["cmo", "cmo"],
-  ["cfo", "cfo"],
-  ["security", "security"],
-  ["securityengineer", "security"],
-  ["securityreviewer", "security"],
-  ["engineer", "engineer"],
-  ["backendengineer", "engineer"],
-  ["frontendengineer", "engineer"],
-  ["fullstackengineer", "engineer"],
-  ["softwareengineer", "engineer"],
-  ["developer", "engineer"],
-  ["coder", "engineer"],
-  ["designer", "designer"],
-  ["productdesigner", "designer"],
-  ["pm", "pm"],
-  ["productmanager", "pm"],
-  ["product", "pm"],
-  ["qa", "qa"],
-  ["qualityassurance", "qa"],
-  ["tester", "qa"],
-  ["devops", "devops"],
-  ["sre", "devops"],
-  ["infrastructure", "devops"],
-  ["researcher", "researcher"],
-  ["research", "researcher"],
-  ["general", "general"],
-  ["generalist", "general"],
-]);
-
-function normalizeAgentRoleKey(role: string) {
-  return role.toLowerCase().replace(/[^a-z0-9]+/g, "");
-}
-
-function mapCreatorAgentRole(role: string | null | undefined) {
-  if (!role) return undefined;
-  return CREATOR_AGENT_ROLE_BY_NORMALIZED_ROLE.get(normalizeAgentRoleKey(role)) ?? "other";
-}
-
 function resolveActorKind(interaction: Pick<IssueThreadInteraction, "resolvedByAgentId" | "resolvedByUserId">) {
   if (interaction.resolvedByAgentId) return "agent";
   if (interaction.resolvedByUserId) return "user";
@@ -363,10 +266,7 @@ function deriveTargetType(interaction: IssueThreadInteraction) {
   if (interaction.kind !== "request_confirmation" && interaction.kind !== "request_checkbox_confirmation") {
     return "none";
   }
-  return allowlistedDimension(
-    interaction.payload.target?.type ?? "none",
-    INTERACTION_TARGET_TYPE_VALUES,
-  );
+  return interaction.payload.target?.type ?? "none";
 }
 
 function deriveResolutionReason(interaction: IssueThreadInteraction) {
@@ -379,10 +279,10 @@ function deriveResolutionReason(interaction: IssueThreadInteraction) {
       return "cancelled";
     case "expired": {
       if (interaction.kind === "ask_user_questions") {
-        return allowlistedDimension(interaction.result?.expirationReason ?? "expired", INTERACTION_RESOLUTION_REASON_VALUES);
+        return interaction.result?.expirationReason ?? "expired";
       }
       if (interaction.kind === "request_confirmation" || interaction.kind === "request_checkbox_confirmation") {
-        return allowlistedDimension(interaction.result?.outcome ?? "expired", INTERACTION_RESOLUTION_REASON_VALUES);
+        return interaction.result?.outcome ?? "expired";
       }
       return "expired";
     }
@@ -458,17 +358,17 @@ async function emitInteractionResolvedTelemetry(
       }
     }
     const creatorAgentRole = interaction.createdByAgentId
-      ? mapCreatorAgentRole(roleByAgentId.get(interaction.createdByAgentId))
+      ? roleByAgentId.get(interaction.createdByAgentId) ?? undefined
       : undefined;
 
     trackInteractionResolved(telemetryClient, {
-      interactionKind: allowlistedDimension(interaction.kind, INTERACTION_KIND_VALUES) ?? "other",
-      status: allowlistedDimension(interaction.status, INTERACTION_STATUS_VALUES) ?? "other",
+      interactionKind: interaction.kind,
+      status: interaction.status,
       resolvedByKind: resolveActorKind(interaction),
       resolutionReason: deriveResolutionReason(interaction),
       createdByKind: resolveCreatorKind(interaction),
       creatorAgentRole,
-      continuationPolicy: allowlistedDimension(interaction.continuationPolicy, INTERACTION_CONTINUATION_POLICY_VALUES),
+      continuationPolicy: interaction.continuationPolicy,
       targetType: deriveTargetType(interaction),
       ...buildInteractionResolvedCounts(interaction, {
         createdTaskCount: args?.createdTaskCount,
