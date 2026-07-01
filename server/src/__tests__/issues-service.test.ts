@@ -2127,6 +2127,72 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result?.description).toHaveLength(1200);
     expect(result?.description?.endsWith("—")).toBe(true);
   });
+
+  it("strips ASCII control characters from description previews so list JSON parses with strict parsers", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    // Embed terminal-capture-style bytes: BEL, BS, ESC, FS, US, DEL.
+    // Preserve TAB / LF / CR which are normal whitespace.
+    const description = "before\x07\x08\x1b[31mred\x1b[0m\x1c\x1f\x7fkeep\there\nand\rcr-after";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Control char issue",
+      description,
+      status: "todo",
+      priority: "medium",
+    });
+
+    const [result] = await svc.list(companyId);
+
+    expect(result?.description).toBe("before[31mred[0mkeep\there\nand\rcr-after");
+    // No raw ASCII control bytes 0x00-0x1F (except TAB/LF/CR) or 0x7F.
+    expect(result?.description).not.toMatch(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/);
+
+    // Round-trip through strict JSON parsers — re-parse must succeed and
+    // the serialized form must contain no raw control bytes (RFC 8259 §7).
+    const serialized = JSON.stringify(result);
+    expect(() => JSON.parse(serialized)).not.toThrow();
+    expect(serialized).not.toMatch(/[\x00-\x1F]/);
+  });
+
+  it("strips control bytes before truncation so the preview fills the visible budget", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    // 400 stripped control bytes followed by 1300 visible chars. With strip-then-truncate
+    // the preview is the first 1200 visible chars; with truncate-then-strip it would be
+    // ~800 visible chars (control bytes wasted budget).
+    const description = "\x07".repeat(400) + "v".repeat(1300);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Budget-fill issue",
+      description,
+      status: "todo",
+      priority: "medium",
+    });
+
+    const [result] = await svc.list(companyId);
+
+    expect(result?.description).toHaveLength(1200);
+    expect(result?.description).toBe("v".repeat(1200));
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
