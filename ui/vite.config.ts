@@ -4,9 +4,15 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { createUiDevWatchOptions } from "./src/lib/vite-watch";
 
+// esbuild 0.28.x no longer supports lowering destructuring for Vite's legacy
+// module target list; keep both production and dev prebundle paths on the
+// modern baseline already expected by the app.
+const UI_ESBUILD_TARGET = "es2022";
+
 export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss()],
   build: {
+    target: UI_ESBUILD_TARGET,
     minify: "esbuild",
     chunkSizeWarningLimit: 600,
     rollupOptions: {
@@ -58,6 +64,11 @@ export default defineConfig(({ mode }) => ({
           legalComments: "none",
         }
       : undefined,
+  optimizeDeps: {
+    esbuildOptions: {
+      target: UI_ESBUILD_TARGET,
+    },
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

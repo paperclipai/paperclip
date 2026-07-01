@@ -38,7 +38,7 @@
     "check:relay-ssl-multicert": "node scripts/check-relay-ssl-multicert.mjs",
     "check:no-git-push": "node scripts/check-no-git-push.mjs",
     "test:check-no-git-push": "node --test scripts/check-no-git-push.test.mjs",
-    "test:security-audit-overrides": "node scripts/security-audit-overrides.test.mjs",
+    "test:security-audit-overrides": "node scripts/security-audit-overrides.test.js",
     "docs:dev": "cd docs && npx mintlify dev",
     "smoke:openclaw-join": "./scripts/smoke/openclaw-join.sh",
     "smoke:openclaw-docker-ui": "./scripts/smoke/openclaw-docker-ui.sh",
@@ -93,6 +93,25 @@
           "GHSA-72gw-mp4g-v24j",
           "GHSA-3p4h-7m6x-2hcm"
         ]
+      },
+      "@babel/core": {
+        "patchedRange": ">=7.29.7 <8",
+        "advisories": [
+          "GHSA-67x4-qrhh-j7vf"
+        ]
+      },
+      "js-yaml": {
+        "patchedRange": ">=4.3.0 <5",
+        "advisories": [
+          "GHSA-h67p-54hq-rp68"
+        ]
+      },
+      "esbuild": {
+        "patchedRange": ">=0.28.1 <0.29",
+        "advisories": [
+          "GHSA-67mh-4wv8-2f99",
+          "GHSA-g7r4-m6w7-qqqr"
+        ]
       }
     }
   },
@@ -121,6 +140,9 @@
       "brace-expansion@5": "^5.0.6",
       "@tootallnate/once": "^2.0.1",
       "form-data": ">=4.0.6",
+      "@babel/core": ">=7.29.7 <8",
+      "js-yaml": ">=4.3.0 <5",
+      "esbuild": ">=0.28.1 <0.29",
       "@connectrpc/connect-node>undici": ">=6.27.0 <7",
       "jsdom>undici": ">=7.28.0 <8",
       "multer": ">=2.2.0 <3",
