@@ -2252,8 +2252,14 @@ export function secretService(db: Db) {
       context?: SecretConsumerContext,
     ): Promise<RuntimeSecretResolution | null> => {
       const responsibleUserId = input.responsibleUserId ?? context?.responsibleUserId ?? null;
-      const definition = await resolveUserSecretDefinition(companyId, input);
       const optionalBinding = input.allowMissingOverride || input.required === false;
+      let definition: typeof userSecretDefinitions.$inferSelect;
+      try {
+        definition = await resolveUserSecretDefinition(companyId, input);
+      } catch (error) {
+        if (optionalBinding && error instanceof HttpError && error.status === 404) return null;
+        throw error;
+      }
       if (definition.status !== "active") {
         if (optionalBinding) return null;
         throw unprocessable("User secret definition is not active");
