@@ -19,6 +19,12 @@ export interface RunProcessResult {
   stderr: string;
   pid: number | null;
   startedAt: string | null;
+  // True when the runner already delivered stdout/stderr live via `onOutput`
+  // (chunk-by-chunk) during execution. Callers use this to suppress the
+  // trailing buffered `onLog(result.stdout/stderr)` dump so live-streamed
+  // output is not logged a second time at the end. Undefined/false means the
+  // caller should fall back to the buffered dump (unchanged legacy behavior).
+  streamed?: boolean;
 }
 
 export interface TerminalResultCleanupOptions {

@@ -61,6 +61,14 @@ export async function execInPod(
   command: string[],
   stdin?: string | Buffer,
   timeoutMs?: number,
+  // Optional live-output sink. Called once per stdout/stderr data frame as it
+  // arrives, in addition to the frame being accumulated into the buffered
+  // result. Lets callers stream command output to the UI as it happens instead
+  // of only seeing it in the resolved `{stdout, stderr}` at the end. Sync,
+  // best-effort, fire-and-forget: it MUST NOT be awaited here (awaiting inside
+  // the data handler would stall the stream) and a throwing consumer must never
+  // break output capture — hence the try/catch guard below.
+  onChunk?: (stream: "stdout" | "stderr", text: string) => void,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const exec = new Exec(kc);
   const stdoutStream = new PassThrough();
@@ -92,11 +100,25 @@ export async function execInPod(
   let stdoutData = "";
   let stderrData = "";
 
+  const forwardChunk = (stream: "stdout" | "stderr", text: string) => {
+    if (!onChunk) return;
+    try {
+      onChunk(stream, text);
+    } catch {
+      // A throwing live-output consumer must never break output capture or the
+      // exec result. Swallow it; the buffered {stdout, stderr} is authoritative.
+    }
+  };
+
   stdoutStream.on("data", (chunk: Buffer) => {
-    stdoutData += chunk.toString("utf-8");
+    const text = chunk.toString("utf-8");
+    stdoutData += text;
+    forwardChunk("stdout", text);
   });
   stderrStream.on("data", (chunk: Buffer) => {
-    stderrData += chunk.toString("utf-8");
+    const text = chunk.toString("utf-8");
+    stderrData += text;
+    forwardChunk("stderr", text);
   });
 
   return await new Promise<{ exitCode: number; stdout: string; stderr: string }>(

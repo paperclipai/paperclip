@@ -183,6 +183,14 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
+  // Optional live-output sink. When a driver executes in-process it can forward
+  // stdout/stderr chunks here as they arrive and set `streamed: true` on its
+  // result. NOTE: for plugin-backed sandbox providers the actual execute runs
+  // in a worker behind a JSON-RPC boundary (see the `execute` impl below), and
+  // a function cannot cross that boundary — so this sink is not delivered to the
+  // worker today and those providers fall back to buffered-at-end output. The
+  // last-mile RPC forwarding of chunks (worker -> host) is a separate change.
+  onOutput?: (stream: "stdout" | "stderr", text: string) => void | Promise<void>;
 }
 
 export interface EnvironmentRuntimeDriver {

@@ -523,6 +523,26 @@ const plugin = definePlugin({
   ): Promise<PluginEnvironmentExecuteResult> {
     const { lease, timeoutMs } = params;
 
+    // Live-output sink. When present (in-process callers only; not delivered
+    // over the plugin worker RPC boundary), forward each stdout/stderr chunk as
+    // the command produces it so the caller can live-tail progress instead of
+    // only seeing the buffered output at the end. `onChunk` is a sync,
+    // fire-and-forget shim over the possibly-async `onOutput`: it must not be
+    // awaited inside the exec data handler (that would stall the stream) and a
+    // throwing consumer must never break capture — hence the guard here and in
+    // execInPod. Providers that receive `onOutput` set `streamed: true` on the
+    // result so the caller can suppress the trailing buffered log dump.
+    const onOutput = params.onOutput;
+    const onChunk = onOutput
+      ? (stream: "stdout" | "stderr", text: string) => {
+          try {
+            void onOutput(stream, text);
+          } catch {
+            /* best-effort live streaming; buffered result is authoritative */
+          }
+        }
+      : undefined;
+
     if (!lease.providerLeaseId) {
       return {
         exitCode: 1,
@@ -760,6 +780,7 @@ const plugin = definePlugin({
           execCommand,
           typeof params.stdin === "string" ? params.stdin : undefined,
           remainingTimeoutMs,
+          onChunk,
         );
       } catch (err) {
         // Watchdog-fired or WebSocket-setup error. Surface as a timeout so
@@ -784,6 +805,9 @@ const plugin = definePlugin({
         timedOut: false,
         stdout: execResult.stdout,
         stderr: execResult.stderr,
+        // Output was delivered live via onChunk -> onOutput; flag it so the
+        // caller suppresses the trailing buffered log dump (no double logging).
+        ...(onChunk ? { streamed: true } : {}),
         metadata: {
           provider: "kubernetes",
           backend: "sandbox-cr",
@@ -839,6 +863,9 @@ const plugin = definePlugin({
           async (stream, text) => {
             if (stream === "stdout") stdoutChunks.push(text);
             else stderrChunks.push(text);
+            // Forward each streamed log chunk live so the caller can tail Job
+            // output as it arrives, not only after the Job completes.
+            onChunk?.(stream, text);
           },
         );
       }
@@ -848,6 +875,9 @@ const plugin = definePlugin({
         timedOut,
         stdout: stdoutChunks.join(""),
         stderr: stderrChunks.join(""),
+        // Chunks were forwarded live above; flag it so the caller does not log
+        // the buffered output a second time.
+        ...(onChunk ? { streamed: true } : {}),
         metadata: {
           provider: "kubernetes",
           backend: "job",

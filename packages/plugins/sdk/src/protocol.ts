@@ -636,6 +636,14 @@ export interface PluginEnvironmentExecuteParams extends PluginEnvironmentDriverB
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
+  // Optional live-output sink. When present, the provider should forward each
+  // stdout/stderr chunk here AS the command produces it (in addition to
+  // returning the buffered output) and set `streamed: true` on the result so
+  // the caller can suppress the trailing buffered log dump. This callback is
+  // NOT serializable across the plugin worker RPC boundary, so it is only
+  // delivered on in-process execute paths; over RPC it is absent and the
+  // provider falls back to buffered-at-end behavior (streamed stays unset).
+  onOutput?: (stream: "stdout" | "stderr", text: string) => void | Promise<void>;
 }
 
 export interface PluginEnvironmentExecuteResult {
@@ -645,6 +653,10 @@ export interface PluginEnvironmentExecuteResult {
   stdout: string;
   stderr: string;
   metadata?: Record<string, unknown>;
+  // True when the provider already delivered stdout/stderr live via
+  // `onOutput`. Callers use this to avoid logging the buffered output a second
+  // time. Unset/false preserves the legacy buffered-dump behavior.
+  streamed?: boolean;
 }
 
 export type PluginEnvironmentInteractiveSetupStatus =
