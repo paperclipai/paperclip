@@ -112,7 +112,7 @@ type RecoveryWakeup = (
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
+  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "retryOfRunId"
 > | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
@@ -375,8 +375,12 @@ function isProductiveContinuationRun(latestRun: LatestIssueRun) {
 
 function isRepeatedProductiveContinuationRecovery(latestRun: SuccessfulLatestIssueRun) {
   const latestContext = parseObject(latestRun.contextSnapshot);
-  return readNonEmptyString(latestContext.retryReason) === "issue_continuation_needed" &&
-    readNonEmptyString(latestContext.source) === "issue.productive_terminal_continuation_recovery" &&
+  const retryReason = readNonEmptyString(latestContext.retryReason) ?? readNonEmptyString(latestContext.wakeReason);
+  const source = readNonEmptyString(latestContext.source);
+  const hasProductiveTerminalSource = source === "issue.productive_terminal_continuation_recovery";
+  const hasAdapterPreservedRetryLink = latestRun.retryOfRunId !== null && source !== "issue.continuation_recovery";
+  return retryReason === "issue_continuation_needed" &&
+    (hasProductiveTerminalSource || hasAdapterPreservedRetryLink) &&
     isProductiveContinuationRun(latestRun);
 }
 
@@ -497,6 +501,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        retryOfRunId: heartbeatRuns.retryOfRunId,
       })
       .from(heartbeatRuns)
       .where(
