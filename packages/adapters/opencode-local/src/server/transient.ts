@@ -62,11 +62,16 @@ const OPENCODE_TRANSIENT_UPSTREAM_PATTERNS: ReadonlyArray<{ name: string; re: Re
   },
 ];
 
-// Provider retry hints, in precedence order.
-const RETRY_AFTER_SECONDS_RE = /retry[-_\s]?after["'`\s:=]+["'`]?(\d+(?:\.\d+)?)(?!\s*(?:gmt|utc)\b)/i;
-const RETRY_AFTER_DATE_RE = /retry[-_\s]?after["'`\s:=]+["'`]?([A-Z][a-z]{2},\s?[^"'`\n]+?(?:GMT|UTC))/;
+// Provider retry hints, declared in the precedence order they are checked:
+// RetryInfo retryDelay, then Retry-After HTTP-date, then Retry-After seconds,
+// then prose.
 // Google RESOURCE_EXHAUSTED RetryInfo: `"retryDelay": "27s"` (also seen unquoted).
 const RETRY_DELAY_RE = /retry[-_\s]?delay["'`\s:=]+["'`]?(\d+(?:\.\d+)?)\s*s\b/i;
+const RETRY_AFTER_DATE_RE = /retry[-_\s]?after["'`\s:=]+["'`]?([A-Z][a-z]{2},\s?[^"'`\n]+?(?:GMT|UTC))/;
+// `(?![\d.])` pins the capture to the full number so backtracking cannot shrink
+// it to a prefix digit and slip past the GMT/UTC negative lookahead
+// (e.g. "retry-after: 30 GMT" must not match "3").
+const RETRY_AFTER_SECONDS_RE = /retry[-_\s]?after["'`\s:=]+["'`]?(\d+(?:\.\d+)?)(?![\d.])(?!\s*(?:gmt|utc)\b)/i;
 // OpenAI-style prose: "Please try again in 1.2s." / "retry in 20 seconds".
 const RETRY_IN_PHRASE_RE =
   /(?:try\s+again|retry)\s+in\s+(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|secs?|seconds?|m|mins?|minutes?|h|hours?)\b/i;

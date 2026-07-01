@@ -179,6 +179,15 @@ describe("extractOpenCodeRetryHint", () => {
   it("returns null when no hint is present", () => {
     expect(extractOpenCodeRetryHint({ stderr: "RESOURCE_EXHAUSTED" }, NOW)).toBeNull();
   });
+
+  // Critic F-2 regression: backtracking must not shrink the number to a prefix
+  // digit ("3") and slip past the GMT/UTC negative lookahead.
+  it("does not misparse a bare 'retry-after: 30 GMT' as 3 seconds", () => {
+    expect(extractOpenCodeRetryHint({ stderr: "retry-after: 30 GMT" }, NOW)).toBeNull();
+    const plain = extractOpenCodeRetryHint({ stderr: "retry-after: 30" }, NOW);
+    expect(plain?.source).toBe("retry_after_seconds");
+    expect(plain?.retryNotBefore.toISOString()).toBe(new Date(NOW.getTime() + 30_000).toISOString());
+  });
 });
 
 describe("resolveOpenCodeTransientUpstreamMode", () => {
