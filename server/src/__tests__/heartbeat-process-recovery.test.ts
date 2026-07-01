@@ -3179,7 +3179,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("does not requeue continuation recovery for in-progress issues with a future monitor", async () => {
-    const monitorNextCheckAt = new Date("2026-07-29T14:00:00.000Z");
+    const monitorNextCheckAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
@@ -3214,6 +3214,54 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     expect(runs.map((run) => run.id)).toEqual([runId]);
+  });
+
+  it("requeues continuation recovery when a future issue monitor has exhausted max attempts", async () => {
+    const monitorNextCheckAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "adapter_failed",
+      runError: "ssh: connection reset",
+      monitorNextCheckAt,
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: monitorNextCheckAt.toISOString(),
+          maxAttempts: 0,
+        },
+      },
+      executionState: {
+        monitor: {
+          status: "scheduled",
+          nextCheckAt: monitorNextCheckAt.toISOString(),
+          attemptCount: 0,
+        },
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.monitorNextCheckAt?.toISOString()).toBe(monitorNextCheckAt.toISOString());
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(retryRun?.contextSnapshot as Record<string, unknown> | undefined).toMatchObject({
+      issueId,
+      retryReason: "issue_continuation_needed",
+      source: "issue.continuation_recovery",
+    });
+    if (retryRun) {
+      await waitForRunToSettle(heartbeat, retryRun.id);
+    }
   });
 
   it("escalates after repeated adapter_failed continuation retries with the cause in the comment", async () => {

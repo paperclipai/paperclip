@@ -143,8 +143,8 @@ function readDateMs(value: unknown): number | null {
   return Number.isNaN(time) ? null : time;
 }
 
-function readPositiveInteger(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+function readNonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
 function hasScheduledIssueMonitor(issue: typeof issues.$inferSelect, nowMs = Date.now()): boolean {
@@ -156,8 +156,8 @@ function hasScheduledIssueMonitor(issue: typeof issues.$inferSelect, nowMs = Dat
   const timeoutAtMs = readDateMs(policyMonitor?.timeoutAt ?? stateMonitor?.timeoutAt);
   if (timeoutAtMs !== null && timeoutAtMs <= nowMs) return false;
 
-  const maxAttempts = readPositiveInteger(policyMonitor?.maxAttempts ?? stateMonitor?.maxAttempts);
-  const stateAttemptCount = readPositiveInteger(stateMonitor?.attemptCount) ?? 0;
+  const maxAttempts = readNonNegativeInteger(policyMonitor?.maxAttempts ?? stateMonitor?.maxAttempts);
+  const stateAttemptCount = readNonNegativeInteger(stateMonitor?.attemptCount) ?? 0;
   const attemptCount = issue.monitorAttemptCount ?? stateAttemptCount;
   if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
 
