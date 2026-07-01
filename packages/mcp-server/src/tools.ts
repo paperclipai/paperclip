@@ -59,6 +59,18 @@ const goalIdSchema = z.string().uuid();
 const approvalIdSchema = z.string().uuid();
 const documentKeySchema = z.string().trim().min(1).max(64);
 
+// Per-call X-Paperclip-Run-Id override. Merged into every write tool schema
+// so callers (typically agent prompts) can attach the current dispatched
+// run id without relying on PAPERCLIP_RUN_ID at MCP-server startup. A
+// long-lived MCP server cannot pick up a per-run env var; this lets the
+// caller pass it explicitly per request. Optional — falls back to
+// PAPERCLIP_RUN_ID env when omitted.
+const writeRunIdOverrideShape = {
+  runId: z.string().uuid().nullable().optional()
+    .describe("Override X-Paperclip-Run-Id for this call. Set to the agent's current dispatched run id (e.g. $PAPERCLIP_RUN_ID)."),
+} as const;
+const writeRunIdOverrideSchema = z.object(writeRunIdOverrideShape);
+
 const listIssuesSchema = z.object({
   companyId: companyIdOptional,
   status: z.string().optional(),
@@ -92,25 +104,27 @@ const upsertDocumentToolSchema = z.object({
   body: z.string().max(524288),
   changeSummary: z.string().trim().max(500).nullable().optional(),
   baseRevisionId: z.string().uuid().nullable().optional(),
+  ...writeRunIdOverrideShape,
 });
 
 const createIssueToolSchema = z.object({
   companyId: companyIdOptional,
-}).merge(createIssueInputSchema);
+}).merge(createIssueInputSchema).merge(writeRunIdOverrideSchema);
 
 const updateIssueToolSchema = z.object({
   issueId: issueIdSchema,
-}).merge(updateIssueSchema);
+}).merge(updateIssueSchema).merge(writeRunIdOverrideSchema);
 
 const checkoutIssueToolSchema = z.object({
   issueId: issueIdSchema,
   agentId: agentIdOptional,
   expectedStatuses: checkoutIssueSchema.shape.expectedStatuses.optional(),
+  ...writeRunIdOverrideShape,
 });
 
 const addCommentToolSchema = z.object({
   issueId: issueIdSchema,
-}).merge(addIssueCommentSchema);
+}).merge(addIssueCommentSchema).merge(writeRunIdOverrideSchema);
 
 const createSuggestTasksToolSchema = z.object({
   issueId: issueIdSchema,
@@ -121,6 +135,7 @@ const createSuggestTasksToolSchema = z.object({
   summary: z.string().trim().max(1000).nullable().optional(),
   continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
   payload: suggestTasksPayloadSchema,
+  ...writeRunIdOverrideShape,
 });
 
 const createAskUserQuestionsToolSchema = z.object({
@@ -132,6 +147,7 @@ const createAskUserQuestionsToolSchema = z.object({
   summary: z.string().trim().max(1000).nullable().optional(),
   continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
   payload: askUserQuestionsPayloadSchema,
+  ...writeRunIdOverrideShape,
 });
 
 const createRequestConfirmationToolSchema = z.object({
@@ -143,6 +159,7 @@ const createRequestConfirmationToolSchema = z.object({
   summary: z.string().trim().max(1000).nullable().optional(),
   continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
   payload: requestConfirmationPayloadSchema,
+  ...writeRunIdOverrideShape,
 });
 
 const createRequestCheckboxConfirmationToolSchema = z.object({
@@ -161,16 +178,18 @@ const approvalDecisionSchema = z.object({
   action: z.enum(["approve", "reject", "requestRevision", "resubmit"]),
   decisionNote: z.string().optional(),
   payloadJson: z.string().optional(),
+  ...writeRunIdOverrideShape,
 });
 
 const createApprovalToolSchema = z.object({
   companyId: companyIdOptional,
-}).merge(createApprovalSchema);
+}).merge(createApprovalSchema).merge(writeRunIdOverrideSchema);
 
 const apiRequestSchema = z.object({
   method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
   path: z.string().min(1),
   jsonBody: z.string().optional(),
+  ...writeRunIdOverrideShape,
 });
 
 const workspaceRuntimeControlTargetSchema = z.object({
@@ -182,7 +201,7 @@ const workspaceRuntimeControlTargetSchema = z.object({
 const issueWorkspaceRuntimeControlSchema = z.object({
   issueId: issueIdSchema,
   action: z.enum(["start", "stop", "restart"]),
-}).merge(workspaceRuntimeControlTargetSchema);
+}).merge(workspaceRuntimeControlTargetSchema).merge(writeRunIdOverrideSchema);
 
 const waitForIssueWorkspaceServiceSchema = z.object({
   issueId: issueIdSchema,
@@ -366,7 +385,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipControlIssueWorkspaceServices",
       "Start, stop, or restart the current issue execution workspace runtime services",
       issueWorkspaceRuntimeControlSchema,
-      async ({ issueId, action, ...target }) => {
+      async ({ issueId, action, runId, ...target }) => {
         const runtime = await getIssueWorkspaceRuntime(client, issueId);
         const workspaceId = typeof runtime.workspace?.id === "string" ? runtime.workspace.id : null;
         if (!workspaceId) {
@@ -375,7 +394,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         return client.requestJson(
           "POST",
           `/execution-workspaces/${encodeURIComponent(workspaceId)}/runtime-services/${action}`,
-          { body: target },
+          { body: target, runIdOverride: runId },
         );
       },
     ),
@@ -430,9 +449,10 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipCreateApproval",
       "Create a board approval request, optionally linked to one or more issues",
       createApprovalToolSchema,
-      async ({ companyId, ...body }) =>
+      async ({ companyId, runId, ...body }) =>
         client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/approvals`, {
           body,
+          runIdOverride: runId,
         }),
     ),
     makeTool(
@@ -457,75 +477,92 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipCreateIssue",
       "Create a new issue",
       createIssueToolSchema,
-      async ({ companyId, ...body }) =>
-        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body }),
+      async ({ companyId, runId, ...body }) =>
+        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, {
+          body,
+          runIdOverride: runId,
+        }),
     ),
     makeTool(
       "paperclipUpdateIssue",
       "Patch an issue, optionally including a comment; include resume=true when intentionally requesting follow-up on resumable closed work",
       updateIssueToolSchema,
-      async ({ issueId, ...body }) =>
-        client.requestJson("PATCH", `/issues/${encodeURIComponent(issueId)}`, { body }),
+      async ({ issueId, runId, ...body }) =>
+        client.requestJson("PATCH", `/issues/${encodeURIComponent(issueId)}`, {
+          body,
+          runIdOverride: runId,
+        }),
     ),
     makeTool(
       "paperclipCheckoutIssue",
       "Checkout an issue for an agent",
       checkoutIssueToolSchema,
-      async ({ issueId, agentId, expectedStatuses }) =>
+      async ({ issueId, agentId, expectedStatuses, runId }) =>
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/checkout`, {
           body: {
             agentId: client.resolveAgentId(agentId),
             expectedStatuses: expectedStatuses ?? ["todo", "backlog", "blocked"],
           },
+          runIdOverride: runId,
         }),
     ),
     makeTool(
       "paperclipReleaseIssue",
       "Release an issue checkout",
-      z.object({ issueId: issueIdSchema }),
-      async ({ issueId }) => client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/release`, { body: {} }),
+      z.object({ issueId: issueIdSchema, ...writeRunIdOverrideShape }),
+      async ({ issueId, runId }) =>
+        client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/release`, {
+          body: {},
+          runIdOverride: runId,
+        }),
     ),
     makeTool(
       "paperclipAddComment",
       "Add a comment to an issue; include resume=true when intentionally requesting follow-up on resumable closed work",
       addCommentToolSchema,
-      async ({ issueId, ...body }) =>
-        client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/comments`, { body }),
+      async ({ issueId, runId, ...body }) =>
+        client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/comments`, {
+          body,
+          runIdOverride: runId,
+        }),
     ),
     makeTool(
       "paperclipSuggestTasks",
       "Create a suggest_tasks interaction on an issue",
       createSuggestTasksToolSchema,
-      async ({ issueId, ...body }) =>
+      async ({ issueId, runId, ...body }) =>
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/interactions`, {
           body: {
             kind: "suggest_tasks",
             ...body,
           },
+          runIdOverride: runId,
         }),
     ),
     makeTool(
       "paperclipAskUserQuestions",
       "Create an ask_user_questions interaction on an issue",
       createAskUserQuestionsToolSchema,
-      async ({ issueId, ...body }) =>
+      async ({ issueId, runId, ...body }) =>
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/interactions`, {
           body: {
             kind: "ask_user_questions",
             ...body,
           },
+          runIdOverride: runId,
         }),
     ),
     makeTool(
       "paperclipRequestConfirmation",
       "Create a request_confirmation interaction on an issue",
       createRequestConfirmationToolSchema,
-      async ({ issueId, ...body }) =>
+      async ({ issueId, runId, ...body }) =>
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/interactions`, {
           body: {
             kind: "request_confirmation",
             ...body,
           },
+          runIdOverride: runId,
         }),
     ),
     makeTool(
@@ -544,11 +581,11 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipUpsertIssueDocument",
       "Create or update an issue document",
       upsertDocumentToolSchema,
-      async ({ issueId, key, ...body }) =>
+      async ({ issueId, key, runId, ...body }) =>
         client.requestJson(
           "PUT",
           `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}`,
-          { body },
+          { body, runIdOverride: runId },
         ),
     ),
     makeTool(
@@ -558,38 +595,41 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         issueId: issueIdSchema,
         key: documentKeySchema,
         revisionId: z.string().uuid(),
+        ...writeRunIdOverrideShape,
       }),
-      async ({ issueId, key, revisionId }) =>
+      async ({ issueId, key, revisionId, runId }) =>
         client.requestJson(
           "POST",
           `/issues/${encodeURIComponent(issueId)}/documents/${encodeURIComponent(key)}/revisions/${encodeURIComponent(revisionId)}/restore`,
-          { body: {} },
+          { body: {}, runIdOverride: runId },
         ),
     ),
     makeTool(
       "paperclipLinkIssueApproval",
       "Link an approval to an issue",
-      z.object({ issueId: issueIdSchema }).merge(linkIssueApprovalSchema),
-      async ({ issueId, approvalId }) =>
+      z.object({ issueId: issueIdSchema, ...writeRunIdOverrideShape }).merge(linkIssueApprovalSchema),
+      async ({ issueId, approvalId, runId }) =>
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/approvals`, {
           body: { approvalId },
+          runIdOverride: runId,
         }),
     ),
     makeTool(
       "paperclipUnlinkIssueApproval",
       "Unlink an approval from an issue",
-      z.object({ issueId: issueIdSchema, approvalId: approvalIdSchema }),
-      async ({ issueId, approvalId }) =>
+      z.object({ issueId: issueIdSchema, approvalId: approvalIdSchema, ...writeRunIdOverrideShape }),
+      async ({ issueId, approvalId, runId }) =>
         client.requestJson(
           "DELETE",
           `/issues/${encodeURIComponent(issueId)}/approvals/${encodeURIComponent(approvalId)}`,
+          { runIdOverride: runId, includeRunId: true },
         ),
     ),
     makeTool(
       "paperclipApprovalDecision",
       "Approve, reject, request revision, or resubmit an approval",
       approvalDecisionSchema,
-      async ({ approvalId, action, decisionNote, payloadJson }) => {
+      async ({ approvalId, action, decisionNote, payloadJson, runId }) => {
         const path =
           action === "approve"
             ? `/approvals/${encodeURIComponent(approvalId)}/approve`
@@ -604,28 +644,30 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
             ? { payload: parseOptionalJson(payloadJson) ?? {} }
             : { decisionNote };
 
-        return client.requestJson("POST", path, { body });
+        return client.requestJson("POST", path, { body, runIdOverride: runId });
       },
     ),
     makeTool(
       "paperclipAddApprovalComment",
       "Add a comment to an approval",
-      z.object({ approvalId: approvalIdSchema, body: z.string().min(1) }),
-      async ({ approvalId, body }) =>
+      z.object({ approvalId: approvalIdSchema, body: z.string().min(1), ...writeRunIdOverrideShape }),
+      async ({ approvalId, body, runId }) =>
         client.requestJson("POST", `/approvals/${encodeURIComponent(approvalId)}/comments`, {
           body: { body },
+          runIdOverride: runId,
         }),
     ),
     makeTool(
       "paperclipApiRequest",
       "Make a JSON request to an existing Paperclip /api endpoint for unsupported operations",
       apiRequestSchema,
-      async ({ method, path, jsonBody }) => {
+      async ({ method, path, jsonBody, runId }) => {
         if (!path.startsWith("/") || path.includes("..")) {
           throw new Error("path must start with / and be relative to /api, and must not contain '..'");
         }
         return client.requestJson(method, path, {
           body: parseOptionalJson(jsonBody),
+          runIdOverride: runId,
         });
       },
     ),
