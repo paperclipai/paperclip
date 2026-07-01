@@ -7,6 +7,7 @@ import {
   getCheckboxConfirmationSelectedLabels,
   getRequestConfirmationTargetHref,
   getQuestionAnswerLabels,
+  isIssueThreadInteraction,
   normalizeRequestConfirmationTargetHref,
 } from "./issue-thread-interactions";
 
@@ -231,6 +232,40 @@ describe("issue thread interaction helpers", () => {
         href: "slack://channel?id=1",
       },
     })).toBe("/issues/issue-2#document-plan");
+  });
+
+  it("summarizes and recognizes record_context interactions", () => {
+    const base = {
+      id: "interaction-record-context",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "record_context" as const,
+      continuationPolicy: "none" as const,
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:00:00.000Z",
+      payload: {
+        version: 1 as const,
+        key: "context:deploy-runbook",
+        body: "Run `pnpm deploy`.",
+      },
+    };
+
+    expect(isIssueThreadInteraction({ ...base, status: "pending" })).toBe(true);
+
+    expect(buildIssueThreadInteractionSummary({ ...base, status: "pending" }))
+      .toBe('Proposed memory entry "context:deploy-runbook"');
+
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      status: "accepted",
+      result: { version: 1, outcome: "accepted", memoryEntryId: "entry-1" },
+    })).toBe('Saved memory entry "context:deploy-runbook"');
+
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      status: "rejected",
+      result: { version: 1, outcome: "rejected", reason: "Not needed" },
+    })).toBe("Declined memory entry");
   });
 
   it("maps stored option ids back to labels for answered summaries", () => {

@@ -72,6 +72,7 @@ import type {
   AskUserQuestionsAnswer,
   AskUserQuestionsInteraction,
   IssueThreadInteraction,
+  RecordContextInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
@@ -182,7 +183,8 @@ interface IssueChatMessageContext {
     interaction:
       | SuggestTasksInteraction
       | RequestConfirmationInteraction
-      | RequestCheckboxConfirmationInteraction,
+      | RequestCheckboxConfirmationInteraction
+      | RecordContextInteraction,
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
   ) => Promise<void> | void;
@@ -190,7 +192,8 @@ interface IssueChatMessageContext {
     interaction:
       | SuggestTasksInteraction
       | RequestConfirmationInteraction
-      | RequestCheckboxConfirmationInteraction,
+      | RequestCheckboxConfirmationInteraction
+      | RecordContextInteraction,
     reason?: string,
   ) => Promise<void> | void;
   onSubmitInteractionAnswers?: (
@@ -399,7 +402,8 @@ interface IssueChatThreadProps {
     interaction:
       | SuggestTasksInteraction
       | RequestConfirmationInteraction
-      | RequestCheckboxConfirmationInteraction,
+      | RequestCheckboxConfirmationInteraction
+      | RecordContextInteraction,
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
   ) => Promise<void> | void;
@@ -407,7 +411,8 @@ interface IssueChatThreadProps {
     interaction:
       | SuggestTasksInteraction
       | RequestConfirmationInteraction
-      | RequestCheckboxConfirmationInteraction,
+      | RequestCheckboxConfirmationInteraction
+      | RecordContextInteraction,
     reason?: string,
   ) => Promise<void> | void;
   onSubmitInteractionAnswers?: (

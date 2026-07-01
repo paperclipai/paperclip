@@ -852,6 +852,23 @@ export const requestConfirmationResultSchema = z.object({
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
 });
 
+export const recordContextPayloadSchema = z.object({
+  version: z.literal(1),
+  key: z.string().trim().min(1).max(64),
+  title: z.string().trim().max(240).nullable().optional(),
+  body: multilineTextSchema.pipe(z.string().min(1).max(524288)),
+  tags: z.array(z.string().trim().min(1).max(48)).max(20).optional(),
+  projectId: z.string().uuid().nullable().optional(),
+  goalId: z.string().uuid().nullable().optional(),
+});
+
+export const recordContextResultSchema = z.object({
+  version: z.literal(1),
+  outcome: z.enum(["accepted", "rejected"]),
+  memoryEntryId: z.string().uuid().nullable().optional(),
+  reason: z.string().trim().max(4000).nullable().optional(),
+});
+
 export const requestCheckboxConfirmationResultSchema = requestConfirmationResultSchema.extend({
   selectedOptionIds: z.array(z.string().trim().min(1).max(120))
     .max(REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT)
@@ -911,6 +928,16 @@ export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [
     summary: z.string().trim().max(1000).nullable().optional(),
     continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("wake_assignee"),
     payload: requestCheckboxConfirmationPayloadSchema,
+  }),
+  z.object({
+    kind: z.literal("record_context"),
+    idempotencyKey: z.string().trim().max(255).nullable().optional(),
+    sourceCommentId: z.string().uuid().nullable().optional(),
+    sourceRunId: z.string().uuid().nullable().optional(),
+    title: z.string().trim().max(240).nullable().optional(),
+    summary: z.string().trim().max(1000).nullable().optional(),
+    continuationPolicy: issueThreadInteractionContinuationPolicySchema.optional().default("none"),
+    payload: recordContextPayloadSchema,
   }),
 ]);
 

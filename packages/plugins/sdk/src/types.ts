@@ -28,6 +28,7 @@ import type {
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
+  RecordContextInteraction,
   CreateIssueThreadInteraction,
   PluginIssueOriginKind,
   IssueSurfaceVisibility,
@@ -124,6 +125,7 @@ export type {
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
+  RecordContextInteraction,
   CreateIssueThreadInteraction,
   PluginIssueOriginKind,
   IssueSurfaceVisibility,
@@ -1462,6 +1464,13 @@ export interface PluginIssuesClient {
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<RequestCheckboxConfirmationInteraction>;
+  /** Propose a keyed memory entry; written on accept. */
+  recordContext(
+    issueId: string,
+    interaction: Omit<Extract<CreateIssueThreadInteraction, { kind: "record_context" }>, "kind">,
+    companyId: string,
+    options?: { authorAgentId?: string },
+  ): Promise<RecordContextInteraction>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
   /** Read and write blocker relationships. */

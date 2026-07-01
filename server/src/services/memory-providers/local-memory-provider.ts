@@ -51,6 +51,10 @@ function normalizeLimit(limit: number | undefined, fallback: number) {
 export function localMemoryProvider(db: Db): MemoryProvider {
   return {
     async ingest(input: MemoryIngestInput) {
+      // Upsert by (company_id, key): a memory entry is a single addressable
+      // fact, so re-ingesting an existing key replaces its content instead of
+      // sprawling duplicate rows that `get`/`search`/`browse` would then have
+      // to disambiguate by recency alone.
       const [row] = await db
         .insert(memoryEntries)
         .values({
@@ -62,6 +66,18 @@ export function localMemoryProvider(db: Db): MemoryProvider {
           body: input.body,
           tags: input.tags ?? [],
           source: input.source ?? null,
+        })
+        .onConflictDoUpdate({
+          target: [memoryEntries.companyId, memoryEntries.key],
+          set: {
+            projectId: input.projectId ?? null,
+            goalId: input.goalId ?? null,
+            title: input.title ?? null,
+            body: input.body,
+            tags: input.tags ?? [],
+            source: input.source ?? null,
+            updatedAt: new Date(),
+          },
         })
         .returning();
       return toMemoryEntry(row);

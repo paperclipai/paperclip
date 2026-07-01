@@ -267,4 +267,54 @@ describe("issue thread interaction schemas", () => {
       selectedOptionIds: ["item-1", "item-1"],
     })).toThrow("selectedOptionIds must be unique");
   });
+
+  it("parses record_context payloads with default no-wake continuation", () => {
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "record_context",
+      payload: {
+        version: 1,
+        key: "context:deploy-runbook",
+        title: "Deploy runbook",
+        body: "# Deploy\n\nRun `pnpm deploy`.",
+        tags: ["ops", "deploy"],
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      kind: "record_context",
+      continuationPolicy: "none",
+      payload: {
+        key: "context:deploy-runbook",
+        title: "Deploy runbook",
+        body: "# Deploy\n\nRun `pnpm deploy`.",
+        tags: ["ops", "deploy"],
+      },
+    });
+  });
+
+  it("rejects record_context payloads with an empty key or oversized body", () => {
+    const base = {
+      kind: "record_context",
+      payload: {
+        version: 1,
+        key: "context:notes",
+        body: "Some notes",
+      },
+    } as const;
+
+    expect(() => createIssueThreadInteractionSchema.parse({
+      ...base,
+      payload: { ...base.payload, key: "" },
+    })).toThrow();
+
+    expect(() => createIssueThreadInteractionSchema.parse({
+      ...base,
+      payload: { ...base.payload, key: "x".repeat(65) },
+    })).toThrow();
+
+    expect(() => createIssueThreadInteractionSchema.parse({
+      ...base,
+      payload: { ...base.payload, body: "" },
+    })).toThrow();
+  });
 });

@@ -10,6 +10,9 @@ export type {
   IssueThreadInteractionBase,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionStatus,
+  RecordContextInteraction,
+  RecordContextPayload,
+  RecordContextResult,
   RequestCheckboxConfirmationInteraction,
   RequestCheckboxConfirmationOption,
   RequestCheckboxConfirmationPayload,
@@ -30,6 +33,7 @@ import type {
   AskUserQuestionsInteraction,
   AskUserQuestionsQuestion,
   IssueThreadInteraction,
+  RecordContextInteraction,
   RequestCheckboxConfirmationPayload,
   RequestCheckboxConfirmationResult,
   RequestConfirmationInteraction,
@@ -57,6 +61,7 @@ export function isIssueThreadInteraction(
       || candidate.kind === "ask_user_questions"
       || candidate.kind === "request_confirmation"
       || candidate.kind === "request_checkbox_confirmation"
+      || candidate.kind === "record_context"
     );
 }
 
@@ -149,6 +154,12 @@ export function buildIssueThreadInteractionSummary(
     return optionCount === 1
       ? "Requested a selection from 1 option"
       : `Requested a selection from ${optionCount} options`;
+  }
+
+  if (interaction.kind === "record_context") {
+    if (interaction.status === "accepted") return `Saved memory entry "${interaction.payload.key}"`;
+    if (interaction.status === "rejected") return "Declined memory entry";
+    return `Proposed memory entry "${interaction.payload.key}"`;
   }
 
   const count = interaction.payload.questions.length;

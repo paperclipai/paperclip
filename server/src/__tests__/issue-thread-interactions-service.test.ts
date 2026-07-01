@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -16,6 +17,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  memoryEntries,
   projectWorkspaces,
   projects,
   workspaceOperations,
@@ -45,6 +47,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(memoryEntries);
+    await db.delete(activityLog);
     await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
@@ -744,6 +748,165 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, requiresReason.id, {}, {
       userId: "local-board",
     })).rejects.toThrow("A decline reason is required for this confirmation");
+  });
+
+  it("writes a memory entry only on accept for record_context interactions, not at creation", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+    const assigneeAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Record context",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId,
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "record_context",
+      payload: {
+        version: 1,
+        key: "context:deploy-runbook",
+        title: "Deploy runbook",
+        body: "Run `pnpm deploy` from the repo root.",
+        tags: ["ops"],
+      },
+    }, {
+      agentId: assigneeAgentId,
+    });
+
+    expect(created.kind).toBe("record_context");
+    expect(created.status).toBe("pending");
+
+    // Not written yet — propose/accept contract means the memory row only
+    // appears once the interaction is accepted.
+    const beforeAccept = await db.select().from(memoryEntries).where(eq(memoryEntries.companyId, companyId));
+    expect(beforeAccept).toHaveLength(0);
+
+    const accepted = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      agentId: assigneeAgentId,
+    });
+
+    expect(accepted.createdIssues).toEqual([]);
+    expect(accepted.interaction.status).toBe("accepted");
+    if (accepted.interaction.kind !== "record_context") throw new Error("expected record_context");
+    const memoryEntryId = accepted.interaction.result?.memoryEntryId;
+    expect(memoryEntryId).toBeTruthy();
+
+    const rows = await db.select().from(memoryEntries).where(eq(memoryEntries.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: memoryEntryId,
+      companyId,
+      key: "context:deploy-runbook",
+      title: "Deploy runbook",
+      body: "Run `pnpm deploy` from the repo root.",
+      tags: ["ops"],
+    });
+
+    // Accepting again is rejected — the interaction is already resolved.
+    await expect(interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      agentId: assigneeAgentId,
+    })).rejects.toThrow("Interaction has already been resolved");
+  });
+
+  it("rejects record_context interactions without writing a memory entry", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Record context",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      goalId,
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "record_context",
+      payload: {
+        version: 1,
+        key: "context:notes",
+        body: "Not worth keeping.",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const rejected = await interactionsSvc.rejectInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, { reason: "Not needed" }, {
+      userId: "local-board",
+    });
+
+    expect(rejected.status).toBe("rejected");
+    if (rejected.kind !== "record_context") throw new Error("expected record_context");
+    expect(rejected.result).toMatchObject({ version: 1, outcome: "rejected", reason: "Not needed" });
+
+    const rows = await db.select().from(memoryEntries).where(eq(memoryEntries.companyId, companyId));
+    expect(rows).toHaveLength(0);
   });
 
   it("accepts request_checkbox_confirmation interactions with selected option ids", async () => {

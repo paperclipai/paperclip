@@ -43,6 +43,7 @@ import { fileURLToPath } from "node:url";
 import type {
   AskUserQuestionsInteraction,
   PaperclipPluginManifestV1,
+  RecordContextInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
@@ -929,6 +930,23 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             },
             authorAgentId: options?.authorAgentId,
           }) as Promise<RequestCheckboxConfirmationInteraction>;
+        },
+
+        async recordContext(
+          issueId: string,
+          interaction,
+          companyId: string,
+          options?: { authorAgentId?: string },
+        ): Promise<RecordContextInteraction> {
+          return callHost("issues.createInteraction", {
+            issueId,
+            companyId,
+            interaction: {
+              ...interaction,
+              kind: "record_context",
+            },
+            authorAgentId: options?.authorAgentId,
+          }) as Promise<RecordContextInteraction>;
         },
 
         documents: {

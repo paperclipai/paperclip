@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, jsonb, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { projects } from "./projects.js";
 import { goals } from "./goals.js";
@@ -26,6 +26,9 @@ export const memoryEntries = pgTable(
   (table) => ({
     companyCreatedAtIdx: index("memory_entries_company_created_at_idx").on(table.companyId, table.createdAt),
     companyProjectIdx: index("memory_entries_company_project_idx").on(table.companyId, table.projectId),
-    companyKeyIdx: index("memory_entries_company_key_idx").on(table.companyId, table.key),
+    // Enforces upsert-by-key: reads by key (get/search/browse) resolve to
+    // exactly one current row per (company_id, key) instead of the most
+    // recent of a growing set of duplicate-key rows.
+    companyKeyUq: uniqueIndex("memory_entries_company_key_uq").on(table.companyId, table.key),
   }),
 );

@@ -86,12 +86,12 @@ describeEmbeddedPostgres("memory service", () => {
 
     await svc.ingest(
       companyId,
-      { key: "context", title: "Deploy notes", body: "How to deploy the service to prod.", tags: [] },
+      { key: "deploy-notes", title: "Deploy notes", body: "How to deploy the service to prod.", tags: [] },
       testActor,
     );
     await svc.ingest(
       companyId,
-      { key: "context", title: "Unrelated", body: "Nothing to do with deployment.", tags: [] },
+      { key: "other-notes", title: "Unrelated", body: "Nothing to do with the topic at hand.", tags: [] },
       testActor,
     );
 
@@ -152,10 +152,42 @@ describeEmbeddedPostgres("memory service", () => {
     expect(await svc.usage(companyId)).toMatchObject({ count: 0, lastIngestedAt: null });
 
     await svc.ingest(companyId, { key: "context", body: "Body text" }, testActor);
-    await svc.ingest(companyId, { key: "context", body: "Body text 2" }, testActor);
+    await svc.ingest(companyId, { key: "other", body: "Body text 2" }, testActor);
 
     const usage = await svc.usage(companyId);
     expect(usage.count).toBe(2);
     expect(usage.lastIngestedAt).not.toBeNull();
+  });
+
+  it("upserts by (companyId, key) instead of sprawling duplicate rows", async () => {
+    const companyId = await insertCompany();
+    const svc = memoryService(db);
+
+    const first = await svc.ingest(
+      companyId,
+      { key: "context", title: "First", body: "Original body", tags: ["v1"] },
+      testActor,
+    );
+    const second = await svc.ingest(
+      companyId,
+      { key: "context", title: "Second", body: "Updated body", tags: ["v2"] },
+      testActor,
+    );
+
+    expect(second.id).toBe(first.id);
+
+    const usage = await svc.usage(companyId);
+    expect(usage.count).toBe(1);
+
+    const byKey = await svc.get(companyId, "context");
+    expect(byKey).toMatchObject({
+      id: first.id,
+      title: "Second",
+      body: "Updated body",
+      tags: ["v2"],
+    });
+
+    const browsed = await svc.browse({ companyId, key: "context" });
+    expect(browsed).toHaveLength(1);
   });
 });

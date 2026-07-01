@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  RecordContextInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
@@ -27,7 +28,8 @@ const BOARD_OPS_TITLE = "Board Operations";
 type ActionableInteraction =
   | SuggestTasksInteraction
   | RequestConfirmationInteraction
-  | RequestCheckboxConfirmationInteraction;
+  | RequestCheckboxConfirmationInteraction
+  | RecordContextInteraction;
 
 /**
  * CEO conversation screen (new `/:companyPrefix/ceo`). The home where the

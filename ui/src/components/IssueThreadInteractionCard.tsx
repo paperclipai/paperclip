@@ -12,6 +12,7 @@ import {
   type AskUserQuestionsAnswer,
   type AskUserQuestionsInteraction,
   type IssueThreadInteraction,
+  type RecordContextInteraction,
   type RequestCheckboxConfirmationInteraction,
   type RequestConfirmationInteraction,
   type RequestConfirmationTarget,
@@ -40,7 +41,8 @@ interface IssueThreadInteractionCardProps {
     interaction:
       | SuggestTasksInteraction
       | RequestConfirmationInteraction
-      | RequestCheckboxConfirmationInteraction,
+      | RequestCheckboxConfirmationInteraction
+      | RecordContextInteraction,
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
   ) => Promise<void> | void;
@@ -48,7 +50,8 @@ interface IssueThreadInteractionCardProps {
     interaction:
       | SuggestTasksInteraction
       | RequestConfirmationInteraction
-      | RequestCheckboxConfirmationInteraction,
+      | RequestCheckboxConfirmationInteraction
+      | RecordContextInteraction,
     reason?: string,
   ) => Promise<void> | void;
   onSubmitInteractionAnswers?: (
@@ -109,6 +112,8 @@ function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
       return "Confirmation";
     case "request_checkbox_confirmation":
       return "Checkbox confirmation";
+    case "record_context":
+      return "Memory entry";
     default:
       return kind;
   }
@@ -1872,6 +1877,115 @@ function RequestCheckboxConfirmationCard({
   );
 }
 
+function RecordContextCard({
+  interaction,
+  onAcceptInteraction,
+  onRejectInteraction,
+}: {
+  interaction: RecordContextInteraction;
+  onAcceptInteraction?: (interaction: RecordContextInteraction) => Promise<void> | void;
+  onRejectInteraction?: (interaction: RecordContextInteraction, reason?: string) => Promise<void> | void;
+}) {
+  const [working, setWorking] = useState<"accept" | "reject" | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  async function handleAccept() {
+    if (!onAcceptInteraction) return;
+    setWorking("accept");
+    setActionError(null);
+    try {
+      await onAcceptInteraction(interaction);
+    } catch {
+      setActionError("Try again");
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  async function handleReject() {
+    if (!onRejectInteraction) return;
+    setWorking("reject");
+    setActionError(null);
+    try {
+      await onRejectInteraction(interaction);
+    } catch {
+      setActionError("Try again");
+    } finally {
+      setWorking(null);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span className="rounded-sm border border-border/70 bg-transparent px-2 py-0.5 font-mono">
+            {interaction.payload.key}
+          </span>
+          {(interaction.payload.tags ?? []).map((tag) => (
+            <span key={tag} className="rounded-sm border border-border/70 bg-transparent px-2 py-0.5">
+              {tag}
+            </span>
+          ))}
+        </div>
+        <div className="border-t border-border/60 pt-3 text-sm">
+          <MarkdownBody>{interaction.payload.body}</MarkdownBody>
+        </div>
+        {interaction.status === "accepted" && interaction.result?.memoryEntryId ? (
+          <p className="text-xs text-muted-foreground">
+            Saved as memory entry {interaction.result.memoryEntryId.slice(0, 8)}
+          </p>
+        ) : null}
+        {interaction.status === "rejected" ? (
+          <p className="text-xs text-muted-foreground">
+            {interaction.result?.reason ?? "Declined without a reason."}
+          </p>
+        ) : null}
+      </div>
+
+      {interaction.status === "pending" ? (
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button
+            size="sm"
+            disabled={!onAcceptInteraction || working !== null}
+            onClick={() => void handleAccept()}
+          >
+            {working === "accept" ? (
+              <>
+                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              "Save to memory"
+            )}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!onRejectInteraction || working !== null}
+            onClick={() => void handleReject()}
+          >
+            {working === "reject" ? (
+              <>
+                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              "Discard"
+            )}
+          </Button>
+        </div>
+      ) : null}
+
+      {actionError ? (
+        <div className="rounded-sm border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {actionError}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function IssueThreadInteractionCard({
   interaction,
   agentMap,
@@ -1935,9 +2049,11 @@ export function IssueThreadInteractionCard({
                   ? interaction.payload.title ?? "Questions for the operator"
                 : interaction.kind === "request_checkbox_confirmation"
                   ? "Checkbox confirmation requested"
-                  : isPlan
-                    ? "Plan review"
-                    : "Confirmation requested")}
+                  : interaction.kind === "record_context"
+                    ? interaction.payload.title ?? `Save memory entry "${interaction.payload.key}"`
+                    : isPlan
+                      ? "Plan review"
+                      : "Confirmation requested")}
           </div>
           {interaction.summary ? (
             <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
@@ -1977,6 +2093,12 @@ export function IssueThreadInteractionCard({
           />
         ) : interaction.kind === "request_checkbox_confirmation" ? (
           <RequestCheckboxConfirmationCard
+            interaction={interaction}
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
+          />
+        ) : interaction.kind === "record_context" ? (
+          <RecordContextCard
             interaction={interaction}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}

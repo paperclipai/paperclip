@@ -6,6 +6,7 @@ import type {
 import type { IssueTimelineEvent } from "../lib/issue-timeline-events";
 import type {
   AskUserQuestionsInteraction,
+  RecordContextInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
@@ -278,6 +279,37 @@ function createRequestCheckboxConfirmationInteraction(
       acceptLabel: "Delete selected",
       rejectLabel: "Request changes",
       rejectRequiresReason: false,
+    },
+    result: null,
+    ...overrides,
+  };
+}
+
+function createRecordContextInteraction(
+  overrides: Partial<RecordContextInteraction>,
+): RecordContextInteraction {
+  return {
+    id: "interaction-record-context-default",
+    companyId: issueThreadInteractionFixtureMeta.companyId,
+    issueId: issueThreadInteractionFixtureMeta.issueId,
+    kind: "record_context",
+    title: null,
+    summary: "The agent found a durable fact worth remembering for future runs on this project.",
+    status: "pending",
+    continuationPolicy: "none",
+    createdByAgentId: "agent-codex",
+    createdByUserId: null,
+    resolvedByAgentId: null,
+    resolvedByUserId: null,
+    createdAt: new Date("2026-04-20T14:52:00.000Z"),
+    updatedAt: new Date("2026-04-20T14:52:00.000Z"),
+    resolvedAt: null,
+    payload: {
+      version: 1,
+      key: "context:deploy-runbook",
+      title: "Deploy runbook",
+      body: "# Deploy\n\nRun `pnpm deploy` from the repo root; the release workflow tags automatically.",
+      tags: ["ops", "deploy"],
     },
     result: null,
     ...overrides,
@@ -664,6 +696,34 @@ export const staleTargetRequestCheckboxConfirmationInteraction =
     },
   });
 
+export const pendingRecordContextInteraction = createRecordContextInteraction({});
+
+export const acceptedRecordContextInteraction = createRecordContextInteraction({
+  id: "interaction-record-context-accepted",
+  status: "accepted",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T14:53:00.000Z"),
+  updatedAt: new Date("2026-04-20T14:53:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "accepted",
+    memoryEntryId: "22222222-2222-4222-8222-222222222222",
+  },
+});
+
+export const rejectedRecordContextInteraction = createRecordContextInteraction({
+  id: "interaction-record-context-rejected",
+  status: "rejected",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T14:54:00.000Z"),
+  updatedAt: new Date("2026-04-20T14:54:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "rejected",
+    reason: "Already captured this in the project README.",
+  },
+});
+
 export const issueThreadInteractionComments: IssueChatComment[] = [
   createComment({
     id: "comment-thread-board",
@@ -736,4 +796,5 @@ export const mixedIssueThreadInteractions = [
   acceptedSuggestedTasksInteraction,
   pendingRequestConfirmationInteraction,
   pendingAskUserQuestionsInteraction,
+  pendingRecordContextInteraction,
 ];

@@ -1,10 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockCreateChild = vi.fn();
+const mockMemoryIngest = vi.fn();
 
 vi.mock("./issues.js", () => ({
   issueService: () => ({
     createChild: mockCreateChild,
+  }),
+}));
+
+vi.mock("./memory.js", () => ({
+  memoryService: () => ({
+    ingest: mockMemoryIngest,
   }),
 }));
 
@@ -76,6 +83,7 @@ describe("issueThreadInteractionService", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    mockMemoryIngest.mockReset();
   });
 
   it("create reuses an existing interaction for the same idempotency key", async () => {
@@ -208,6 +216,83 @@ describe("issueThreadInteractionService", () => {
         { questionId: "extras", optionIds: ["docs", "tests"] },
       ],
       summaryMarkdown: "Phase 1 with tests and docs.",
+    });
+    expect(state.interactionUpdates).toHaveLength(1);
+    expect(state.issueTouches).toHaveLength(1);
+  });
+
+  it("acceptRecordContext calls memoryService.ingest and stores the returned entry id on accept", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const interactionRow = {
+      id: "interaction-3",
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "record_context",
+      status: "pending",
+      continuationPolicy: "none",
+      sourceCommentId: null,
+      sourceRunId: "run-1",
+      title: null,
+      summary: null,
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      resolvedByAgentId: null,
+      resolvedByUserId: null,
+      payload: {
+        version: 1,
+        key: "context:deploy-runbook",
+        title: "Deploy runbook",
+        body: "Run `pnpm deploy`.",
+        tags: ["ops"],
+      },
+      result: null,
+      resolvedAt: null,
+      createdAt: new Date("2026-04-20T10:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T10:00:00.000Z"),
+    };
+    const state = createFakeDb({ interactionRow });
+    mockMemoryIngest.mockResolvedValue({
+      id: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      projectId: null,
+      goalId: null,
+      key: "context:deploy-runbook",
+      title: "Deploy runbook",
+      body: "Run `pnpm deploy`.",
+      tags: ["ops"],
+      source: { kind: "issue_thread_interaction", id: "interaction-3" },
+      createdAt: new Date("2026-04-20T10:05:00.000Z"),
+      updatedAt: new Date("2026-04-20T10:05:00.000Z"),
+    });
+
+    const svc = issueThreadInteractionService(state.db as never);
+    const result = await svc.acceptRecordContext({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      projectId: null,
+      goalId: null,
+    }, "interaction-3", {
+      agentId: "agent-2",
+    });
+
+    expect(mockMemoryIngest).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        key: "context:deploy-runbook",
+        title: "Deploy runbook",
+        body: "Run `pnpm deploy`.",
+        tags: ["ops"],
+      }),
+      expect.objectContaining({ actorType: "agent", actorId: "agent-2" }),
+    );
+    expect(result.interaction.status).toBe("accepted");
+    expect(result.createdIssues).toEqual([]);
+    if (result.interaction.kind !== "record_context") throw new Error("expected record_context");
+    expect(result.interaction.result).toMatchObject({
+      version: 1,
+      outcome: "accepted",
+      memoryEntryId: "33333333-3333-4333-8333-333333333333",
     });
     expect(state.interactionUpdates).toHaveLength(1);
     expect(state.issueTouches).toHaveLength(1);

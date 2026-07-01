@@ -173,6 +173,7 @@ import {
   type IssueWorkProduct,
   type IssueWorkMode,
   type IssueThreadInteraction,
+  type RecordContextInteraction,
   type RequestCheckboxConfirmationInteraction,
   type RequestConfirmationInteraction,
   type SuggestTasksInteraction,
@@ -203,7 +204,8 @@ type CommentReassignment = IssueCommentReassignment;
 type ActionableIssueThreadInteraction =
   | SuggestTasksInteraction
   | RequestConfirmationInteraction
-  | RequestCheckboxConfirmationInteraction;
+  | RequestCheckboxConfirmationInteraction
+  | RecordContextInteraction;
 type ResolveRecoveryActionOutcome = "restored" | "false_positive" | "blocked" | "cancelled";
 type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
   runId?: string | null;

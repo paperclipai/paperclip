@@ -11,12 +11,21 @@ const mockMemoryService = vi.hoisted(() => ({
   usage: vi.fn(),
 }));
 
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
+
 vi.mock("../services/memory.js", () => ({
   memoryService: () => mockMemoryService,
 }));
 
+vi.mock("../services/agents.js", () => ({
+  agentService: () => mockAgentService,
+}));
+
 vi.mock("../services/index.js", () => ({
   memoryService: () => mockMemoryService,
+  agentService: () => mockAgentService,
 }));
 
 async function createApp(
@@ -77,6 +86,7 @@ async function requestApp(
 describe.sequential("memory routes", () => {
   beforeEach(() => {
     for (const mock of Object.values(mockMemoryService)) mock.mockReset();
+    mockAgentService.getById.mockReset();
   });
 
   it("ingests a memory entry", async () => {
@@ -224,5 +234,114 @@ describe.sequential("memory routes", () => {
 
     expect(res.status).toBe(404);
     expect(mockMemoryService.forget).not.toHaveBeenCalled();
+  });
+
+  it("allows a standard-trust agent actor to ingest memory", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: {},
+    });
+    mockMemoryService.ingest.mockResolvedValue({
+      id: "entry-1",
+      companyId: "company-1",
+      key: "context",
+      title: null,
+      body: "Body",
+      tags: [],
+      source: null,
+      projectId: null,
+      goalId: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+      source: "agent_key",
+    });
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/memory")
+        .send({ key: "context", body: "Body text" }),
+    );
+
+    expect(res.status).toBe(201);
+    expect(mockMemoryService.ingest).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ key: "context", body: "Body text" }),
+      expect.objectContaining({ actorType: "agent", actorId: "agent-1" }),
+    );
+  });
+
+  it("denies a low-trust agent actor from writing memory via the raw route", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: { trustPreset: "low_trust_review" },
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+      source: "agent_key",
+    });
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/memory")
+        .send({ key: "context", body: "Body text" }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(mockMemoryService.ingest).not.toHaveBeenCalled();
+  });
+
+  it("denies a low-trust agent actor from deleting memory via the raw route", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: { trustPreset: "low_trust_review" },
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+      source: "agent_key",
+    });
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).delete("/api/companies/company-1/memory/entry-1"),
+    );
+
+    expect(res.status).toBe(403);
+    expect(mockMemoryService.forget).not.toHaveBeenCalled();
+  });
+
+  it("allows a standard-trust agent actor to read memory", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: {},
+    });
+    mockMemoryService.browse.mockResolvedValue([]);
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+      source: "agent_key",
+    });
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/memory"),
+    );
+
+    expect(res.status).toBe(200);
   });
 });

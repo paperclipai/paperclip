@@ -851,6 +851,23 @@ export interface RequestCheckboxConfirmationResult extends RequestConfirmationRe
   selectedOptionIds?: string[];
 }
 
+export interface RecordContextPayload {
+  version: 1;
+  key: string;
+  title?: string | null;
+  body: string;
+  tags?: string[];
+  projectId?: string | null;
+  goalId?: string | null;
+}
+
+export interface RecordContextResult {
+  version: 1;
+  outcome: "accepted" | "rejected";
+  memoryEntryId?: string | null;
+  reason?: string | null;
+}
+
 export interface IssueThreadInteractionBase extends IssueThreadInteractionActorFields {
   id: string;
   companyId: string;
@@ -892,23 +909,32 @@ export interface RequestCheckboxConfirmationInteraction extends IssueThreadInter
   result?: RequestCheckboxConfirmationResult | null;
 }
 
+export interface RecordContextInteraction extends IssueThreadInteractionBase {
+  kind: "record_context";
+  payload: RecordContextPayload;
+  result?: RecordContextResult | null;
+}
+
 export type IssueThreadInteraction =
   | SuggestTasksInteraction
   | AskUserQuestionsInteraction
   | RequestConfirmationInteraction
-  | RequestCheckboxConfirmationInteraction;
+  | RequestCheckboxConfirmationInteraction
+  | RecordContextInteraction;
 
 export type IssueThreadInteractionPayload =
   | SuggestTasksPayload
   | AskUserQuestionsPayload
   | RequestConfirmationPayload
-  | RequestCheckboxConfirmationPayload;
+  | RequestCheckboxConfirmationPayload
+  | RecordContextPayload;
 
 export type IssueThreadInteractionResult =
   | SuggestTasksResult
   | AskUserQuestionsResult
   | RequestConfirmationResult
-  | RequestCheckboxConfirmationResult;
+  | RequestCheckboxConfirmationResult
+  | RecordContextResult;
 
 export interface IssueAttachment {
   id: string;

@@ -1712,6 +1712,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async requestCheckboxConfirmation(issueId, interaction, companyId, options) {
         return this.createInteraction(issueId, { ...interaction, kind: "request_checkbox_confirmation" }, companyId, options) as Promise<any>;
       },
+      async recordContext(issueId, interaction, companyId, options) {
+        return this.createInteraction(issueId, { ...interaction, kind: "record_context" }, companyId, options) as Promise<any>;
+      },
       documents: {
         async list(issueId, companyId) {
           requireCapability(manifest, capabilitySet, "issue.documents.read");

@@ -907,4 +907,112 @@ describe.sequential("issue thread interaction routes", () => {
       },
     );
   });
+
+  it("allows agent-authored record_context interaction creation with the same gates as suggest_tasks", async () => {
+    mockInteractionService.create.mockResolvedValue({
+      id: "interaction-record-context",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "record_context",
+      status: "pending",
+      continuationPolicy: "none",
+      idempotencyKey: "interaction:record-context-1",
+      sourceCommentId: null,
+      sourceRunId: "run-1",
+      payload: {
+        version: 1,
+        key: "context:deploy-runbook",
+        body: "Run `pnpm deploy`.",
+      },
+      result: null,
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:00:00.000Z",
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "record_context",
+        idempotencyKey: "interaction:record-context-1",
+        payload: {
+          version: 1,
+          key: "context:deploy-runbook",
+          body: "Run `pnpm deploy`.",
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockInteractionService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      expect.objectContaining({
+        kind: "record_context",
+        idempotencyKey: "interaction:record-context-1",
+        sourceRunId: "run-1",
+      }),
+      {
+        agentId: CREATED_AGENT_ID,
+        userId: null,
+      },
+    );
+  });
+
+  it("accepts a record_context interaction and reports zero created/skipped task counts", async () => {
+    mockInteractionService.acceptInteraction.mockResolvedValue({
+      interaction: {
+        id: "interaction-record-context",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "record_context",
+        status: "accepted",
+        continuationPolicy: "none",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-1",
+        payload: {
+          version: 1,
+          key: "context:deploy-runbook",
+          body: "Run `pnpm deploy`.",
+        },
+        result: {
+          version: 1,
+          outcome: "accepted",
+          memoryEntryId: "33333333-3333-4333-8333-333333333333",
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      createdIssues: [],
+    });
+
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-record-context/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      kind: "record_context",
+      status: "accepted",
+      result: { outcome: "accepted", memoryEntryId: "33333333-3333-4333-8333-333333333333" },
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.thread_interaction_accepted",
+        details: expect.objectContaining({
+          interactionKind: "record_context",
+          createdTaskCount: 0,
+          skippedTaskCount: 0,
+        }),
+      }),
+    );
+  });
 });

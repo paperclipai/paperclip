@@ -16,6 +16,7 @@ import type {
   CancelIssueThreadInteraction,
   CreateIssueThreadInteraction,
   IssueThreadInteraction,
+  RecordContextInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   RequestConfirmationTarget,
@@ -30,6 +31,8 @@ import {
   askUserQuestionsResultSchema,
   cancelIssueThreadInteractionSchema,
   createIssueThreadInteractionSchema,
+  recordContextPayloadSchema,
+  recordContextResultSchema,
   rejectIssueThreadInteractionSchema,
   requestCheckboxConfirmationPayloadSchema,
   requestCheckboxConfirmationResultSchema,
@@ -40,6 +43,7 @@ import {
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { issueService, listUnfinalizedExecutionWorkspaceIds } from "./issues.js";
+import { memoryService } from "./memory.js";
 
 type InteractionActor = {
   agentId?: string | null;
@@ -151,6 +155,13 @@ function hydrateInteraction(
         payload: requestCheckboxConfirmationPayloadSchema.parse(row.payload),
         result: row.result ? requestCheckboxConfirmationResultSchema.parse(row.result) : null,
       } satisfies RequestCheckboxConfirmationInteraction;
+    case "record_context":
+      return {
+        ...base,
+        kind: "record_context",
+        payload: recordContextPayloadSchema.parse(row.payload),
+        result: row.result ? recordContextResultSchema.parse(row.result) : null,
+      } satisfies RecordContextInteraction;
     default:
       throw unprocessable(`Unknown interaction kind: ${row.kind}`);
   }
@@ -869,6 +880,11 @@ export function issueThreadInteractionService(db: Db) {
           // approve code state or move the source workspace forward, so the
           // workspace_finalize gate (PAPA-440) does not apply here.
           return issueThreadInteractionService(db).acceptSuggestedTasks(issue, interactionId, data, actor);
+        case "record_context":
+          // Accepting record_context only writes a memory entry; like
+          // suggest_tasks it does not approve code state or move the source
+          // workspace forward, so the workspace_finalize gate does not apply.
+          return issueThreadInteractionService(db).acceptRecordContext(issue, interactionId, actor);
         case "request_confirmation": {
           await assertIssueWorkspaceFinalizedForAccept({ db, issue });
           const accepted = await acceptRequestConfirmation({
@@ -1049,6 +1065,77 @@ export function issueThreadInteractionService(db: Db) {
       };
     },
 
+    acceptRecordContext: async (
+      issue: { id: string; companyId: string; projectId: string | null; goalId: string | null },
+      interactionId: string,
+      actor: InteractionActor,
+    ): Promise<ResolvedInteractionResult> => {
+      const current = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0] ?? null);
+
+      if (!current) throw notFound("Interaction not found");
+      if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
+        throw notFound("Interaction not found");
+      }
+      if (current.kind !== "record_context") {
+        throw unprocessable("Only record_context interactions can be accepted");
+      }
+      if (current.status !== "pending") {
+        throw conflict("Interaction has already been resolved");
+      }
+
+      const interaction = hydrateInteraction(current) as RecordContextInteraction;
+      const entry = await memoryService(db).ingest(issue.companyId, {
+        key: interaction.payload.key,
+        title: interaction.payload.title ?? null,
+        body: interaction.payload.body,
+        tags: interaction.payload.tags ?? [],
+        projectId: interaction.payload.projectId ?? issue.projectId,
+        goalId: interaction.payload.goalId ?? issue.goalId,
+        source: { kind: "issue_thread_interaction", id: interaction.id },
+      }, {
+        actorType: actor.agentId ? "agent" : "user",
+        actorId: actor.agentId ?? actor.userId ?? "unknown",
+        agentId: actor.agentId ?? null,
+        runId: current.sourceRunId ?? null,
+      });
+
+      const resolvedAt = new Date();
+      const [updated] = await db
+        .update(issueThreadInteractions)
+        .set({
+          status: "accepted",
+          result: {
+            version: 1,
+            outcome: "accepted",
+            memoryEntryId: entry.id,
+          },
+          resolvedByAgentId: actor.agentId ?? null,
+          resolvedByUserId: actor.userId ?? null,
+          resolvedAt,
+          updatedAt: resolvedAt,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
+
+      if (!updated) {
+        throw conflict("Interaction has already been resolved");
+      }
+
+      await touchIssue(db, issue.id);
+
+      return {
+        interaction: hydrateInteraction(updated),
+        createdIssues: [],
+      };
+    },
+
     rejectInteraction: async (
       issue: { id: string; companyId: string },
       interactionId: string,
@@ -1060,6 +1147,8 @@ export function issueThreadInteractionService(db: Db) {
       switch (current.kind) {
         case "suggest_tasks":
           return issueThreadInteractionService(db).rejectSuggestedTasks(issue, interactionId, data, actor, current);
+        case "record_context":
+          return issueThreadInteractionService(db).rejectRecordContext(issue, interactionId, data, actor, current);
         case "request_confirmation":
         case "request_checkbox_confirmation":
           return rejectRequestConfirmation({
@@ -1097,6 +1186,51 @@ export function issueThreadInteractionService(db: Db) {
           result: {
             version: 1,
             rejectionReason: input.reason?.trim() || null,
+          },
+          resolvedByAgentId: actor.agentId ?? null,
+          resolvedByUserId: actor.userId ?? null,
+          resolvedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
+
+      if (!updated) {
+        throw conflict("Interaction has already been resolved");
+      }
+
+      await touchIssue(db, issue.id);
+      return hydrateInteraction(updated);
+    },
+
+    rejectRecordContext: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      input: RejectIssueThreadInteraction,
+      actor: InteractionActor,
+      current: IssueThreadInteractionRow,
+    ) => {
+      if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
+        throw notFound("Interaction not found");
+      }
+      if (current.kind !== "record_context") {
+        throw unprocessable("Only record_context interactions can be rejected");
+      }
+      if (current.status !== "pending") {
+        throw conflict("Interaction has already been resolved");
+      }
+
+      const [updated] = await db
+        .update(issueThreadInteractions)
+        .set({
+          status: "rejected",
+          result: {
+            version: 1,
+            outcome: "rejected",
+            reason: input.reason?.trim() || null,
           },
           resolvedByAgentId: actor.agentId ?? null,
           resolvedByUserId: actor.userId ?? null,
