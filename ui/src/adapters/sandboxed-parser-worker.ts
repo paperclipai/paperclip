@@ -43,25 +43,41 @@ const WORKER_BOOTSTRAP = `
 
 const _undefined = void 0;
 
+// Helper to safely shadow globals on self without throwing getter-only TypeErrors
+function shadow(prop) {
+  try {
+    Object.defineProperty(self, prop, {
+      value: _undefined,
+      configurable: true,
+      writable: true,
+      enumerable: true
+    });
+  } catch (e) {
+    try {
+      self[prop] = _undefined;
+    } catch (err) {}
+  }
+}
+
 // Network
-self.fetch = _undefined;
-self.XMLHttpRequest = _undefined;
-self.WebSocket = _undefined;
-self.EventSource = _undefined;
-self.RTCPeerConnection = _undefined;
-self.RTCDataChannel = _undefined;
-self.Request = _undefined;
-self.Response = _undefined;
-self.Headers = _undefined;
-self.Cache = _undefined;
-self.CacheStorage = _undefined;
-self.caches = _undefined;
+shadow("fetch");
+shadow("XMLHttpRequest");
+shadow("WebSocket");
+shadow("EventSource");
+shadow("RTCPeerConnection");
+shadow("RTCDataChannel");
+shadow("Request");
+shadow("Response");
+shadow("Headers");
+shadow("Cache");
+shadow("CacheStorage");
+shadow("caches");
 
 // Import / eval escape hatches
-self.importScripts = _undefined;
-self.Worker = _undefined;
-self.SharedWorker = _undefined;
-self.Blob = _undefined;
+shadow("importScripts");
+shadow("Worker");
+shadow("SharedWorker");
+shadow("Blob");
 if (self.URL) {
   try { Object.defineProperty(self.URL, "createObjectURL", { value: _undefined, writable: false, configurable: false }); } catch {}
   try { Object.defineProperty(self.URL, "revokeObjectURL", { value: _undefined, writable: false, configurable: false }); } catch {}
@@ -73,11 +89,11 @@ if (self.navigator) {
 }
 
 // Service worker / broadcast channel
-self.BroadcastChannel = _undefined;
+shadow("BroadcastChannel");
 
 // IndexedDB (prevents persistent state exfiltration)
-self.indexedDB = _undefined;
-self.IDBFactory = _undefined;
+shadow("indexedDB");
+shadow("IDBFactory");
 
 // ── 2. Parser state ─────────────────────────────────────────────────────────
 
