@@ -24,6 +24,19 @@ describe("PF-4 shouldResetTaskSessionForWake", () => {
     ).toBe(true);
   });
 
+  it("resets the session when wakeReason is heartbeat_idle (gh#8015)", () => {
+    // An idle timer wake (no standing work) is even more exploratory than a
+    // regular timer wake, so it must get the same fresh-session treatment.
+    expect(
+      shouldResetTaskSessionForWake({
+        source: "scheduler",
+        reason: "interval_elapsed_idle",
+        idle: true,
+        wakeReason: "heartbeat_idle",
+      }),
+    ).toBe(true);
+  });
+
   it("still resets for the existing reset reasons", () => {
     for (const wakeReason of [
       "issue_assigned",
@@ -65,6 +78,15 @@ describe("PF-4 describeSessionResetReason", () => {
     expect(reason).toBe("wake reason is heartbeat_timer (timer-driven wake starts fresh)");
   });
 
+  it("describes heartbeat_idle wakes explicitly (gh#8015)", () => {
+    const reason = describeSessionResetReason({
+      wakeReason: "heartbeat_idle",
+    });
+    expect(reason).toBe(
+      "wake reason is heartbeat_idle (idle timer wake with no standing work starts fresh)",
+    );
+  });
+
   it("returns the existing reasons for the existing reset triggers", () => {
     expect(describeSessionResetReason({ wakeReason: "issue_assigned" })).toBe(
       "wake reason is issue_assigned",
@@ -97,6 +119,7 @@ describe("PF-4 describeSessionResetReason", () => {
   it("agrees with shouldResetTaskSessionForWake on every input — non-null reason iff should reset", () => {
     const cases: Array<Record<string, unknown> | null | undefined> = [
       { wakeReason: "heartbeat_timer" },
+      { wakeReason: "heartbeat_idle" },
       { wakeReason: "issue_assigned" },
       { wakeReason: "execution_review_requested" },
       { wakeReason: "execution_approval_requested" },
