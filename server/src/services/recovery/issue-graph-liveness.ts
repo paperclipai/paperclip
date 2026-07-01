@@ -180,7 +180,7 @@ function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
   const maxAttempts = readPositiveInteger(policyMonitor?.maxAttempts ?? stateMonitor?.maxAttempts);
   const stateAttemptCount = readPositiveInteger(stateMonitor?.attemptCount) ?? 0;
   const attemptCount = issue.monitorAttemptCount ?? stateAttemptCount;
-  if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
+  if (maxAttempts != null && attemptCount >= maxAttempts) return false;
 
   return true;
 }
