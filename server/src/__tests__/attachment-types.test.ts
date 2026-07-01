@@ -13,6 +13,19 @@ describe("parseAllowedTypes", () => {
     expect(parseAllowedTypes(undefined)).toEqual([...DEFAULT_ALLOWED_TYPES]);
   });
 
+  it("includes common analysis document and spreadsheet types by default", () => {
+    expect(DEFAULT_ALLOWED_TYPES).toEqual(expect.arrayContaining([
+      "text/csv",
+      "text/tab-separated-values",
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.oasis.opendocument.spreadsheet",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/zip",
+    ]));
+  });
+
   it("returns default image types when input is empty string", () => {
     expect(parseAllowedTypes("")).toEqual([...DEFAULT_ALLOWED_TYPES]);
   });
@@ -120,6 +133,7 @@ describe("isInlineAttachmentContentType", () => {
   it("rejects potentially unsafe or binary download types", () => {
     expect(INLINE_ATTACHMENT_TYPES).not.toContain("text/html");
     expect(isInlineAttachmentContentType("text/html")).toBe(false);
+    expect(isInlineAttachmentContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")).toBe(false);
     expect(isInlineAttachmentContentType("application/zip")).toBe(false);
   });
 });

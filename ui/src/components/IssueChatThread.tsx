@@ -558,6 +558,40 @@ function IssueChatFallbackThread({
 const DRAFT_DEBOUNCE_MS = 800;
 const COMPOSER_FOCUS_SCROLL_PADDING_PX = 96;
 const SUBMIT_SCROLL_RESERVE_VH = 0.4;
+const ISSUE_CHAT_ATTACHMENT_ACCEPT = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "application/pdf",
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "text/tab-separated-values",
+  "text/html",
+  "application/json",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-excel.sheet.macroenabled.12",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/zip",
+  "application/x-zip-compressed",
+  ".csv",
+  ".tsv",
+  ".xls",
+  ".xlsx",
+  ".xlsm",
+  ".ods",
+  ".doc",
+  ".docx",
+  ".ppt",
+  ".pptx",
+  ".zip",
+].join(",");
 
 type ComposerAttachmentItem = {
   id: string;
@@ -565,6 +599,7 @@ type ComposerAttachmentItem = {
   size: number;
   status: "uploading" | "attached" | "error";
   inline: boolean;
+  contentType?: string;
   contentPath?: string;
   error?: string;
 };
@@ -578,6 +613,33 @@ function formatAttachmentSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function escapeMarkdownLinkLabel(value: string) {
+  return value.replace(/[[\]]/g, "\\$&");
+}
+
+function buildComposerAttachmentReferences(attachments: ComposerAttachmentItem[]) {
+  return attachments
+    .filter((attachment) =>
+      attachment.status === "attached"
+      && !attachment.inline
+      && Boolean(attachment.contentPath)
+    )
+    .map((attachment) => {
+      const meta = [
+        attachment.contentType,
+        formatAttachmentSize(attachment.size),
+      ].filter(Boolean).join(", ");
+      return `- [${escapeMarkdownLinkLabel(attachment.name)}](${attachment.contentPath})${meta ? ` (${meta})` : ""}`;
+    });
+}
+
+function buildComposerSubmittedBody(body: string, attachments: ComposerAttachmentItem[]) {
+  const attachmentReferences = buildComposerAttachmentReferences(attachments);
+  if (attachmentReferences.length === 0) return body;
+  const base = body || "Please analyze the attached files.";
+  return `${base}\n\nAttached files for analysis:\n${attachmentReferences.join("\n")}`;
 }
 
 function toIsoString(value: string | Date | null | undefined): string | null {
@@ -3538,7 +3600,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
 
   async function handleSubmit() {
     const trimmed = body.trim();
-    if (!trimmed || submitting) return;
+    if (submitting) return;
+    if (composerAttachments.some((attachment) => attachment.status === "uploading")) return;
+    const submittedBody = buildComposerSubmittedBody(trimmed, composerAttachments);
+    if (!submittedBody.trim()) return;
 
     const composerHasAssigneePicker = enableReassign && reassignOptions.length > 0;
     if (
@@ -3562,7 +3627,6 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       issueStatus,
       hasReassignment ? reassignTarget : currentAssigneeValue,
     ) ? true : undefined;
-    const submittedBody = trimmed;
     const viewportSnapshot = captureComposerViewportSnapshot(composerContainerRef.current);
 
     const workModeChanged = pendingWorkMode !== resolvedIssueWorkMode;
@@ -3636,6 +3700,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                 ...item,
                 status: "attached",
                 contentPath: attachment?.contentPath,
+                contentType: attachment?.contentType ?? file.type,
                 name: attachment?.originalFilename ?? item.name,
               }
             : item,
@@ -3661,11 +3726,13 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   }
 
   async function handleAttachFile(evt: ChangeEvent<HTMLInputElement>) {
-    const file = evt.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(evt.target.files ?? []);
+    if (files.length === 0) return;
     setAttaching(true);
     try {
-      await attachFile(file);
+      for (const file of files) {
+        await attachFile(file);
+      }
     } finally {
       setAttaching(false);
       if (attachInputRef.current) attachInputRef.current.value = "";
@@ -3720,7 +3787,9 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     void handleDroppedFiles(evt.dataTransfer?.files);
   }
 
-  const canSubmit = !submitting && !!body.trim();
+  const hasUploadingAttachments = composerAttachments.some((attachment) => attachment.status === "uploading");
+  const hasAttachedAnalysisFiles = buildComposerAttachmentReferences(composerAttachments).length > 0;
+  const canSubmit = !submitting && !hasUploadingAttachments && (!!body.trim() || hasAttachedAnalysisFiles);
 
   if (composerDisabledReason) {
     return (
@@ -3837,7 +3906,8 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
               <input
                 ref={attachInputRef}
                 type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown,text/csv,text/html,application/json"
+                accept={ISSUE_CHAT_ATTACHMENT_ACCEPT}
+                multiple
                 className="hidden"
                 onChange={handleAttachFile}
               />

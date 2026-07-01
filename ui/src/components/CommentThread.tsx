@@ -108,6 +108,40 @@ interface CommentThreadProps {
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
+const COMMENT_ATTACHMENT_ACCEPT = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "application/pdf",
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "text/tab-separated-values",
+  "text/html",
+  "application/json",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-excel.sheet.macroenabled.12",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/zip",
+  "application/x-zip-compressed",
+  ".csv",
+  ".tsv",
+  ".xls",
+  ".xlsx",
+  ".xlsm",
+  ".ods",
+  ".doc",
+  ".docx",
+  ".ppt",
+  ".pptx",
+  ".zip",
+].join(",");
 
 function loadDraft(draftKey: string): string {
   try {
@@ -907,18 +941,20 @@ export function CommentThread({
   }
 
   async function handleAttachFile(evt: ChangeEvent<HTMLInputElement>) {
-    const file = evt.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(evt.target.files ?? []);
+    if (files.length === 0) return;
     setAttaching(true);
     try {
-      if (imageUploadHandler) {
-        const url = await imageUploadHandler(file);
-        const safeName = file.name.replace(/[[\]]/g, "\\$&");
-        const isImage = file.type.startsWith("image/");
-        const markdown = isImage ? `![${safeName}](${url})` : `[${safeName}](${url})`;
-        setBody((prev) => prev ? `${prev}\n\n${markdown}` : markdown);
-      } else if (onAttachImage) {
-        await onAttachImage(file);
+      for (const file of files) {
+        if (imageUploadHandler) {
+          const url = await imageUploadHandler(file);
+          const safeName = file.name.replace(/[[\]]/g, "\\$&");
+          const isImage = file.type.startsWith("image/");
+          const markdown = isImage ? `![${safeName}](${url})` : `[${safeName}](${url})`;
+          setBody((prev) => prev ? `${prev}\n\n${markdown}` : markdown);
+        } else if (onAttachImage) {
+          await onAttachImage(file);
+        }
       }
     } finally {
       setAttaching(false);
@@ -1021,7 +1057,8 @@ export function CommentThread({
                 <input
                   ref={attachInputRef}
                   type="file"
-                  accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown,text/csv,text/html,application/json"
+                  accept={COMMENT_ATTACHMENT_ACCEPT}
+                  multiple
                   className="hidden"
                   onChange={handleAttachFile}
                 />

@@ -2137,6 +2137,8 @@ describe("IssueChatThread", () => {
     expect(composer).not.toBeNull();
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement | null;
     expect(fileInput?.getAttribute("accept")).toContain("image/png");
+    expect(fileInput?.getAttribute("accept")).toContain(".xlsx");
+    expect(fileInput?.multiple).toBe(true);
 
     act(() => {
       composer?.dispatchEvent(createFileDragEvent("dragenter", [
@@ -2210,6 +2212,76 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("submits attached spreadsheet references for AI analysis", async () => {
+    const root = createRoot(container);
+    const onAttachImage = vi.fn(async (file: File) => ({
+      id: "attachment-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      issueCommentId: null,
+      assetId: "asset-1",
+      provider: "local_disk",
+      objectKey: "issues/issue-1/forecast.xlsx",
+      contentPath: "/api/attachments/attachment-1/content",
+      originalFilename: file.name,
+      contentType: file.type,
+      byteSize: file.size,
+      sha256: "abc123",
+      createdByAgentId: null,
+      createdByUserId: "user-1",
+      createdAt: new Date("2026-04-24T12:00:00.000Z"),
+      updatedAt: new Date("2026-04-24T12:00:00.000Z"),
+    }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            onAttachImage={onAttachImage}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const composer = container.querySelector('[data-testid="issue-chat-composer"]') as HTMLDivElement | null;
+    const submitButton = Array.from(container.querySelectorAll("button")).find(
+      (element) => element.textContent === "Send",
+    ) as HTMLButtonElement | undefined;
+    const file = new File(["forecast"], "forecast.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+
+    await act(async () => {
+      composer?.dispatchEvent(createFileDragEvent("drop", [file]));
+    });
+
+    expect(onAttachImage).toHaveBeenCalledWith(file);
+    expect(submitButton?.disabled).toBe(false);
+
+    await act(async () => {
+      submitButton?.click();
+    });
+
+    const appendCalls = appendMock.mock.calls as unknown as Array<[
+      { content?: Array<{ text?: string }> },
+    ]>;
+    const submittedText = appendCalls[0]?.[0]?.content?.[0]?.text;
+    expect(submittedText).toContain("Please analyze the attached files.");
+    expect(submittedText).toContain("Attached files for analysis:");
+    expect(submittedText).toContain("[forecast.xlsx](/api/attachments/attachment-1/content)");
+    expect(submittedText).toContain("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("shows only the outer composer drop overlay when dragging over the reply editor", () => {
     const root = createRoot(container);
 
@@ -2248,6 +2320,8 @@ describe("IssueChatThread", () => {
 
     const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement | null;
     expect(fileInput?.getAttribute("accept")).toContain("image/png");
+    expect(fileInput?.getAttribute("accept")).toContain(".xlsx");
+    expect(fileInput?.multiple).toBe(true);
 
     act(() => {
       root.unmount();

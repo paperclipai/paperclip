@@ -30,7 +30,18 @@ export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "text/plain",
   "application/json",
   "text/csv",
+  "text/tab-separated-values",
   "text/html",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-excel.sheet.macroenabled.12",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/zip",
+  "application/x-zip-compressed",
 ];
 
 export const DEFAULT_ATTACHMENT_CONTENT_TYPE = "application/octet-stream";

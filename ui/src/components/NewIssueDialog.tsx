@@ -109,7 +109,39 @@ import {
   type IssueModelLane,
 } from "../lib/issue-assignee-overrides";
 
-const STAGED_FILE_ACCEPT = "image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown";
+const STAGED_FILE_ACCEPT = [
+  "image/*",
+  "application/pdf",
+  "text/plain",
+  "text/markdown",
+  "application/json",
+  "text/csv",
+  "text/tab-separated-values",
+  "text/html",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-excel.sheet.macroenabled.12",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/zip",
+  "application/x-zip-compressed",
+  ".md",
+  ".markdown",
+  ".csv",
+  ".tsv",
+  ".xls",
+  ".xlsx",
+  ".xlsm",
+  ".ods",
+  ".doc",
+  ".docx",
+  ".ppt",
+  ".pptx",
+  ".zip",
+].join(",");
 
 const ISSUE_THINKING_EFFORT_OPTIONS = {
   claude_local: [
