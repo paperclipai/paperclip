@@ -1,0 +1,20 @@
+{
+  "positions": [
+    {
+      "symbol": "MEGAUSDT",
+      "exchange_a": "MEXC", "exchange_b": "BLOFIN",
+      "side_a": "buy", "side_b": "sell",
+      "size_usd_a": 25.0, "size_usd_b": 25.0,
+      "entry_spread_pct": 0.011,
+      "status": "open", "opened_at_ms": 1700000000000,
+      "fills": [
+        {"exchange":"MEXC","leg":"a","intent":"entry","order_id":"m-mega-1",
+         "side":"buy","size_usd":25.0,"fill_price":1.50,"fees_usd":0.025,
+         "filled_at_ms":1700000000500},
+        {"exchange":"BLOFIN","leg":"b","intent":"entry","order_id":"b-mega-1",
+         "side":"sell","size_usd":25.0,"fill_price":1.515,"fees_usd":0.025,
+         "filled_at_ms":1700000000600}
+      ]
+    }
+  ]
+}
