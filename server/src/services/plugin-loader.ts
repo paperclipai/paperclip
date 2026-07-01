@@ -1191,6 +1191,55 @@ export function pluginLoader(
         resolvedPackagePath = path.join(nodeModulesPath, resolvedPackageName);
       }
 
+      // If the path does not exist, try to resolve it from targetInstallDir's package.json dependencies
+      if (!existsSync(resolvedPackagePath)) {
+        const packageJsonPath = path.join(targetInstallDir, "package.json");
+        if (existsSync(packageJsonPath)) {
+          try {
+            const pkgJsonRaw = await readFile(packageJsonPath, "utf8");
+            const pkgJson = JSON.parse(pkgJsonRaw);
+            const deps = pkgJson.dependencies || {};
+            
+            const targetPackageName = packageName!;
+            // Find a dependency key where the value contains or ends with our packageName specifier
+            // or where the key itself matches
+            const matchedKey = Object.keys(deps).find((key) => {
+              const val = deps[key];
+              return (
+                key === targetPackageName ||
+                (typeof val === "string" && val === targetPackageName)
+              );
+            });
+            
+            // Valid npm package names: unscoped [a-z0-9][a-z0-9._-]* or scoped @scope/name
+            // Must start with alphanumeric (not . or _) to reject `.`, `..`, `.dotfiles`, etc.
+            const NPM_PKG_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*|[a-z0-9][a-z0-9._-]*)$/;
+            const isDirectoryTraversal = !!matchedKey && (matchedKey === "." || matchedKey === ".." || matchedKey.startsWith("."));
+
+            if (matchedKey && !isDirectoryTraversal && NPM_PKG_RE.test(matchedKey)) {
+              log.info(
+                { packageName: targetPackageName, matchedKey },
+                "plugin-loader: resolved alias for installed package",
+              );
+              resolvedPackageName = matchedKey;
+              if (resolvedPackageName.startsWith("@")) {
+                const [scope, name] = resolvedPackageName.split("/");
+                resolvedPackagePath = path.join(nodeModulesPath, scope!, name!);
+              } else {
+                resolvedPackagePath = path.join(nodeModulesPath, resolvedPackageName);
+              }
+            } else if (matchedKey) {
+              log.warn(
+                { matchedKey },
+                "plugin-loader: dependency key failed validation, skipping",
+              );
+            }
+          } catch (e) {
+            log.warn({ err: e }, "plugin-loader: failed to read package.json dependencies for resolution");
+          }
+        }
+      }
+
       if (!existsSync(resolvedPackagePath)) {
         throw new Error(
           `Package directory not found after installation: ${resolvedPackagePath}`,
