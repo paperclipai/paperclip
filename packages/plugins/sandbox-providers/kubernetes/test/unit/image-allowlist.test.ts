@@ -40,6 +40,18 @@ describe("resolveImage", () => {
     ).toBe("registry.example.com/paperclip/agent-runtime-claude:v1");
   });
 
+  it("preserves a configured runtime image tag when imageRegistry is set", () => {
+    expect(
+      resolveImage(
+        { imageOverride: null },
+        { runtimeImage: "ghcr.io/paperclipai/agent-runtime-claude:git-b18cbb0dd3d524d3d332f54143c84f00c694636c" },
+        { imageAllowList: [], imageRegistry: "registry.example.com/paperclip" },
+      ),
+    ).toBe(
+      "registry.example.com/paperclip/agent-runtime-claude:git-b18cbb0dd3d524d3d332f54143c84f00c694636c",
+    );
+  });
+
   it("accepts imageOverride when in allowlist", () => {
     expect(
       resolveImage(
