@@ -52,6 +52,7 @@ test('fails with no issue reference when no skip prefix', () => {
   const result = checkLinkedIssue('Added a cool feature, no issue linked', 'feat: something');
   assert.equal(result.passed, false);
   assert.ok(result.failures[0].includes('Fixes #NNN'));
+  assert.ok(result.failures[0].includes('Resolves #NNN'));
 });
 
 test('fails with cross-repo issue reference', () => {
