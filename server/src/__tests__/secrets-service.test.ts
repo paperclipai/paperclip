@@ -14,6 +14,8 @@ import {
   companySecrets,
   createDb,
   secretAccessEvents,
+  userSecretDeclarations,
+  userSecretDefinitions,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
@@ -47,9 +49,11 @@ describeEmbeddedPostgres("secretService", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await db.delete(secretAccessEvents);
+    await db.delete(userSecretDeclarations);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
+    await db.delete(userSecretDefinitions);
     await db.delete(companySecretProviderConfigs);
     await db.delete(companyMemberships);
     await db.delete(agents);
@@ -385,6 +389,80 @@ describeEmbeddedPostgres("secretService", () => {
       outcome: "success",
     });
     expect(JSON.stringify(events)).not.toContain("routine-super-secret");
+  });
+
+  it("resolves user secret refs through responsible-user values and records owner metadata", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    await seedCompanyMember(companyId, "user-2", "member");
+    const svc = secretService(db);
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+    const env = {
+      GITHUB_TOKEN: { type: "user_secret_ref" as const, key: "github_token", version: "latest" as const },
+    };
+
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: "agent-1" }, env);
+    const userOneSecret = await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionKey: "github_token",
+      value: "user-one-secret",
+    });
+
+    await expect(
+      svc.resolveEnvBindings(companyId, env, {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        actorType: "agent",
+        actorId: "agent-1",
+        responsibleUserId: "user-2",
+      }),
+    ).rejects.toThrow(/not configured/i);
+
+    const resolved = await svc.resolveEnvBindings(companyId, env, {
+      consumerType: "agent",
+      consumerId: "agent-1",
+      actorType: "agent",
+      actorId: "agent-1",
+      responsibleUserId: "user-1",
+    });
+
+    expect(resolved.env.GITHUB_TOKEN).toBe("user-one-secret");
+    expect(resolved.manifest[0]).toMatchObject({
+      configPath: "env.GITHUB_TOKEN",
+      envKey: "GITHUB_TOKEN",
+      secretId: userOneSecret.id,
+      secretKey: userOneSecret.key,
+      outcome: "success",
+    });
+    expect((await svc.list(companyId)).map((secret) => secret.id)).not.toContain(userOneSecret.id);
+    await expect(
+      svc.resolveSecretValue(companyId, userOneSecret.id, "latest", {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        configPath: "env.GITHUB_TOKEN",
+      }),
+    ).rejects.toThrow(/User-scoped secrets/i);
+
+    const events = await db
+      .select()
+      .from(secretAccessEvents)
+      .where(eq(secretAccessEvents.secretId, userOneSecret.id));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      companyId,
+      secretId: userOneSecret.id,
+      userSecretDefinitionId: definition.id,
+      secretScope: "user",
+      responsibleUserId: "user-1",
+      credentialOwnerUserId: "user-1",
+      credentialSubjectType: "user",
+      credentialSubjectId: "user-1",
+      outcome: "success",
+    });
+    expect(JSON.stringify(events)).not.toContain("user-one-secret");
   });
 
   it("records stable redacted failure codes for routine env secret resolution", async () => {

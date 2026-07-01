@@ -18,6 +18,20 @@ interface AgentSecretBindingSyncService {
     target: { targetType: "agent"; targetId: string; pathPrefix?: string },
     envValue: unknown,
   ) => Promise<unknown>;
+  syncUserSecretDeclarationsForTarget?: (
+    companyId: string,
+    target: { targetType: "agent"; targetId: string; pathPrefix?: string },
+    refs: Array<{
+      definitionKey: string;
+      configPath: string;
+      envKey: string;
+      versionSelector?: SecretVersionSelector;
+      required?: boolean;
+      allowMissingOverride?: boolean;
+      label?: string | null;
+    }>,
+    options?: { replaceAll?: boolean },
+  ) => Promise<unknown>;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -67,6 +81,60 @@ function collectSecretRefs(adapterConfig: unknown): Array<{
   return refs;
 }
 
+function collectUserSecretRefs(adapterConfig: unknown): Array<{
+  definitionKey: string;
+  configPath: string;
+  envKey: string;
+  versionSelector?: SecretVersionSelector;
+  required?: boolean;
+  allowMissingOverride?: boolean;
+}> {
+  const config = asRecord(adapterConfig);
+  if (!config) return [];
+  const refs: Array<{
+    definitionKey: string;
+    configPath: string;
+    envKey: string;
+    versionSelector?: SecretVersionSelector;
+    required?: boolean;
+    allowMissingOverride?: boolean;
+  }> = [];
+
+  const envValue = asRecord(config.env);
+  for (const [key, rawBinding] of Object.entries(envValue ?? {})) {
+    const parsed = envBindingSchema.safeParse(rawBinding);
+    if (!parsed.success) continue;
+    const binding = parsed.data;
+    if (typeof binding !== "object" || binding === null || binding.type !== "user_secret_ref") continue;
+    refs.push({
+      definitionKey: binding.key,
+      configPath: `env.${key}`,
+      envKey: key,
+      versionSelector: binding.version ?? "latest",
+      required: binding.required ?? true,
+      allowMissingOverride: binding.allowMissingOverride ?? false,
+    });
+  }
+
+  for (const [key, rawBinding] of Object.entries(config)) {
+    if (key === "env") continue;
+    const parsed = envBindingSchema.safeParse(rawBinding);
+    if (!parsed.success) continue;
+    const binding = parsed.data;
+    if (typeof binding !== "object" || binding === null || binding.type !== "user_secret_ref") continue;
+    refs.push({
+      definitionKey: binding.key,
+      configPath: key,
+      envKey: key,
+      versionSelector: binding.version ?? "latest",
+      required: binding.required ?? true,
+      allowMissingOverride: binding.allowMissingOverride ?? false,
+    });
+  }
+
+  return refs;
+}
+
 export async function syncAgentAdapterEnvBindings(input: {
   secretsSvc: AgentSecretBindingSyncService;
   companyId: string;
@@ -78,6 +146,12 @@ export async function syncAgentAdapterEnvBindings(input: {
       input.companyId,
       { targetType: "agent", targetId: input.agentId },
       collectSecretRefs(input.adapterConfig),
+      { replaceAll: true },
+    );
+    await input.secretsSvc.syncUserSecretDeclarationsForTarget?.(
+      input.companyId,
+      { targetType: "agent", targetId: input.agentId },
+      collectUserSecretRefs(input.adapterConfig),
       { replaceAll: true },
     );
     return;
