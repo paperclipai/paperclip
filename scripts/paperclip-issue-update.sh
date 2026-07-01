@@ -9,6 +9,10 @@ Usage:
 
 Reads a multiline markdown comment from stdin when stdin is piped. This preserves
 newlines when building the JSON payload for PATCH /api/issues/{issueId}.
+Prefer stdin/heredoc input for comments. The --comment argument is rejected when
+it contains newlines or shell-expansion-looking markdown such as $(), ${}, or
+backticks because those are easy to expand accidentally in shell commands before
+this helper receives them.
 
 Examples:
   scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status in_progress <<'MD'
@@ -33,9 +37,28 @@ require_command() {
   fi
 }
 
+guard_inline_comment() {
+  local value="$1"
+  if [[ "$value" == *$'\n'* || "$value" == *'$('* || "$value" == *'${'* || "$value" == *'`'* ]]; then
+    cat >&2 <<'EOF'
+Refusing shell-risky --comment content.
+
+Pass multiline or shell-looking markdown via stdin/heredoc instead, for example:
+
+  scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status in_progress <<'MD'
+  Update
+
+  - Literal examples like $(command), ${VAR}, and `code` remain data here.
+  MD
+EOF
+    exit 2
+  fi
+}
+
 issue_id="${PAPERCLIP_TASK_ID:-}"
 status=""
 comment_arg=""
+comment_from_arg=0
 dry_run=0
 
 while [[ $# -gt 0 ]]; do
@@ -50,6 +73,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --comment)
       comment_arg="${2:-}"
+      comment_from_arg=1
       shift 2
       ;;
     --dry-run)
@@ -74,7 +98,8 @@ if [[ -z "$issue_id" ]]; then
 fi
 
 comment=""
-if [[ -n "$comment_arg" ]]; then
+if [[ "$comment_from_arg" == "1" ]]; then
+  guard_inline_comment "$comment_arg"
   comment="$comment_arg"
 elif [[ ! -t 0 ]]; then
   comment="$(cat)"
