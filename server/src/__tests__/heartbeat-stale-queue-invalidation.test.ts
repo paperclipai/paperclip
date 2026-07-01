@@ -324,10 +324,39 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
     expect(wakeup?.payload).toMatchObject({
       heartbeatSkip: {
-        reason: expect.stringContaining("No assigned todo or in_progress issue"),
+        reason: expect.stringContaining("No assigned todo, in_progress, or in_review issue"),
       },
     });
     expect(runRows).toHaveLength(0);
+  });
+
+  it("skips generic timer wakes by default when no assigned work is actionable", async () => {
+    const { agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+      },
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "schedule",
+    });
+
+    expect(run).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const [wakeup] = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.timer.no_actionable_work",
+    });
   });
 
   it("rate-limits skipped generic timer wakes by advancing the timer baseline", async () => {
@@ -393,11 +422,38 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(run!.id)).toBe(1);
   });
 
-  it("runs generic timer wakes by default for proactive agents without assigned issue work", async () => {
+  it("allows generic timer wakes for explicitly configured proactive agents without assigned issue work", async () => {
     const { agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
         enabled: true,
+        allowIdleTimerWakes: true,
       },
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "schedule",
+    });
+
+    expect(run).not.toBeNull();
+    await waitForCondition(async () => countExecuteCallsForRun(run!.id) > 0);
+
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
+  });
+
+  it("allows generic timer wakes when the agent has assigned review work", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+      },
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Assigned review",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: agentId,
     });
 
     const run = await heartbeat.wakeup(agentId, {
