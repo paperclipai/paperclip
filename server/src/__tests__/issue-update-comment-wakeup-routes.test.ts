@@ -585,4 +585,129 @@ describe("issue update comment wakeups", () => {
       }),
     );
   });
+
+  it("suppresses mention wake for non-assignee agent on PATCH update", async () => {
+    const NON_ASSIGNEE_ID = "22222222-2222-4222-8222-222222222222";
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-mention-suppress-patch",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: `@NonAssignee please look at this`,
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([NON_ASSIGNEE_ID]);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ comment: `@NonAssignee please look at this` });
+
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const wakeupCalls = mockHeartbeatService.wakeup.mock.calls;
+    const mentionWakes = wakeupCalls.filter(
+      ([agentId, opts]: [string, any]) =>
+        agentId === NON_ASSIGNEE_ID && opts?.reason === "issue_comment_mentioned",
+    );
+    expect(mentionWakes).toHaveLength(0);
+  });
+
+  it("allows mention wake when mentioned agent is the assignee on PATCH update", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-mention-allow-patch",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: `@Assignee please check this`,
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([ASSIGNEE_AGENT_ID]);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ comment: `@Assignee please check this` });
+
+    expect(res.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const wakeupCalls = mockHeartbeatService.wakeup.mock.calls;
+    const mentionWakes = wakeupCalls.filter(
+      ([_agentId, opts]: [string, any]) => opts?.reason === "issue_comment_mentioned",
+    );
+    expect(mentionWakes.length).toBeGreaterThanOrEqual(1);
+    expect(mentionWakes[0][0]).toBe(ASSIGNEE_AGENT_ID);
+  });
+
+  it("suppresses mention wake for non-assignee agent on POST comment", async () => {
+    const NON_ASSIGNEE_ID = "33333333-3333-4333-8333-333333333333";
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-mention-suppress-post",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: `@NonAssignee can you help?`,
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([NON_ASSIGNEE_ID]);
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({ body: `@NonAssignee can you help?` });
+
+    expect(res.status).toBe(201);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const wakeupCalls = mockHeartbeatService.wakeup.mock.calls;
+    const mentionWakes = wakeupCalls.filter(
+      ([agentId, opts]: [string, any]) =>
+        agentId === NON_ASSIGNEE_ID && opts?.reason === "issue_comment_mentioned",
+    );
+    expect(mentionWakes).toHaveLength(0);
+  });
+
+  it("allows mention wake when mentioned agent is the assignee on POST comment", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-mention-allow-post",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: `@Assignee check this out`,
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([ASSIGNEE_AGENT_ID]);
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({ body: `@Assignee check this out` });
+
+    expect(res.status).toBe(201);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const wakeupCalls = mockHeartbeatService.wakeup.mock.calls;
+    const assigneeWakes = wakeupCalls.filter(
+      ([agentId]: [string, any]) => agentId === ASSIGNEE_AGENT_ID,
+    );
+    expect(assigneeWakes.length).toBeGreaterThanOrEqual(1);
+  });
 });
