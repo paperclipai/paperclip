@@ -391,7 +391,7 @@ export type {
   IssueTreePreviewTotals,
   IssueTreePreviewWarning,
 } from "./issue-tree-control.js";
-export type { Goal } from "./goal.js";
+export type { Goal, GoalProgressRow } from "./goal.js";
 export type { Approval, ApprovalComment } from "./approval.js";
 export type {
   BudgetPolicy,
@@ -456,7 +456,7 @@ export type {
   RoutineExecutionIssueOrigin,
   RoutineListItem,
 } from "./routine.js";
-export type { CostEvent, CostSummary, IssueCostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
+export type { CostEvent, CostSummary, IssueCostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject, DailySpendRow } from "./cost.js";
 export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } from "./finance.js";
 export type {
   AgentWakeupResponse,

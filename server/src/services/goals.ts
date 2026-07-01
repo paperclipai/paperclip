@@ -1,6 +1,6 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, count, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { goals } from "@paperclipai/db";
+import { goals, issues } from "@paperclipai/db";
 
 type GoalReader = Pick<Db, "select">;
 
@@ -76,5 +76,30 @@ export function goalService(db: Db) {
         .where(eq(goals.id, id))
         .returning()
         .then((rows) => rows[0] ?? null),
+
+    progressByCompany: async (companyId: string) => {
+      const rows = await db
+        .select({
+          goalId: issues.goalId,
+          totalTasks: count(issues.id),
+          doneTasks: sql<number>`count(*) filter (where ${issues.status} = 'done')::int`,
+        })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            sql`${issues.goalId} is not null`,
+            sql`${issues.hiddenAt} is null`,
+          ),
+        )
+        .groupBy(issues.goalId);
+      return rows
+        .filter((r) => r.goalId != null)
+        .map((r) => ({
+          goalId: r.goalId as string,
+          totalTasks: Number(r.totalTasks),
+          doneTasks: Number(r.doneTasks),
+        }));
+    },
   };
 }

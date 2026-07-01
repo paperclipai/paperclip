@@ -18,6 +18,13 @@ export function goalRoutes(db: Db) {
     res.json(result);
   });
 
+  router.get("/companies/:companyId/goals/progress", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const rows = await svc.progressByCompany(companyId);
+    res.json(rows);
+  });
+
   router.get("/goals/:id", async (req, res) => {
     const id = req.params.id as string;
     const goal = await svc.getById(id);

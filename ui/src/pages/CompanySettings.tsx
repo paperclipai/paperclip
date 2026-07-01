@@ -11,6 +11,7 @@ import { assetsApi } from "../api/assets";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Settings, CloudUpload, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
@@ -177,11 +178,11 @@ export function CompanySettings() {
       </div>
 
       {/* General */}
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          General
-        </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+      <Card>
+        <CardHeader className="px-5 pt-5 pb-3">
+          <CardTitle className="text-sm font-medium text-muted-foreground uppercase tracking-wide">General</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 px-5 pb-5 pt-0">
           <Field label="Company name" hint="The display name for your company.">
             <input
               className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
@@ -202,15 +203,15 @@ export function CompanySettings() {
               onChange={(e) => setDescription(e.target.value)}
             />
           </Field>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
       {/* Appearance */}
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Appearance
-        </div>
-        <div className="space-y-3 rounded-md border border-border px-4 py-4">
+      <Card>
+        <CardHeader className="px-5 pt-5 pb-3">
+          <CardTitle className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Appearance</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 px-5 pb-5 pt-0">
           <div className="flex items-start gap-4">
             <div className="shrink-0">
               <CompanyPatternIcon
@@ -323,8 +324,8 @@ export function CompanySettings() {
               </Field>
             </div>
           </div>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
       {/* Save button for General + Appearance */}
       {generalDirty && (
@@ -350,11 +351,11 @@ export function CompanySettings() {
       )}
 
       {/* Hiring */}
-      <div className="space-y-4" data-testid="company-settings-team-section">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Hiring
-        </div>
-        <div className="rounded-md border border-border px-4 py-3">
+      <Card data-testid="company-settings-team-section">
+        <CardHeader className="px-5 pt-5 pb-3">
+          <CardTitle className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Hiring</CardTitle>
+        </CardHeader>
+        <CardContent className="px-5 pb-5 pt-0">
           <ToggleField
             label="Require board approval for new hires"
             hint="New agent hires stay pending until approved by board."
@@ -362,15 +363,15 @@ export function CompanySettings() {
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
           />
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
       {/* Import / Export */}
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Company Packages
-        </div>
-        <div className="rounded-md border border-border px-4 py-4">
+      <Card>
+        <CardHeader className="px-5 pt-5 pb-3">
+          <CardTitle className="text-sm font-medium text-muted-foreground uppercase tracking-wide">Company Packages</CardTitle>
+        </CardHeader>
+        <CardContent className="px-5 pb-5 pt-0">
           <p className="text-sm text-muted-foreground">
             Import and export have moved to dedicated pages accessible from the{" "}
             <a href="/org" className="underline hover:text-foreground">Org Chart</a> header.
@@ -397,15 +398,15 @@ export function CompanySettings() {
               </a>
             </Button>
           </div>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
       {/* Danger Zone */}
-      <div className="space-y-4">
-        <div className="text-xs font-medium text-destructive uppercase tracking-wide">
-          Danger Zone
-        </div>
-        <div className="space-y-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-4">
+      <Card className="border-destructive/40 bg-destructive/5">
+        <CardHeader className="px-5 pt-5 pb-3">
+          <CardTitle className="text-sm font-medium text-destructive uppercase tracking-wide">Danger Zone</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 px-5 pb-5 pt-0">
           <p className="text-sm text-muted-foreground">
             Archive this company to hide it from the sidebar. This persists in
             the database.
@@ -450,8 +451,8 @@ export function CompanySettings() {
               </span>
             )}
           </div>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

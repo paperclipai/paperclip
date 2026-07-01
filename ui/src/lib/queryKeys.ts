@@ -180,6 +180,7 @@ export const queryKeys = {
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
+    progress: (companyId: string) => ["goals", "progress", companyId] as const,
   },
   artifacts: {
     list: (
@@ -258,6 +259,8 @@ export const queryKeys = {
   activity: (companyId: string) => ["activity", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>
     ["costs", companyId, from, to] as const,
+  dailyCosts: (companyId: string, from?: string, to?: string) =>
+    ["costs-daily", companyId, from, to] as const,
   usageByProvider: (companyId: string, from?: string, to?: string) =>
     ["usage-by-provider", companyId, from, to] as const,
   usageByBiller: (companyId: string, from?: string, to?: string) =>

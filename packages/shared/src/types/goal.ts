@@ -12,3 +12,10 @@ export interface Goal {
   createdAt: Date;
   updatedAt: Date;
 }
+
+/** task completion counts per goal, for rendering a progress bar */
+export interface GoalProgressRow {
+  goalId: string;
+  totalTasks: number;
+  doneTasks: number;
+}

@@ -207,9 +207,9 @@ describe("MarkdownBody", () => {
       { identifier: "PAP-1272", status: "blocked", title: "Fix hover state" },
     ]);
 
-    expect(html).toContain('aria-label="Issue PAP-1271"');
-    expect(html).toContain('aria-label="Issue PAP-1272: Fix hover state"');
-    expect(html).not.toContain('aria-label="Issue PAP-1271: PAP-1271"');
+    expect(html).toContain('aria-label="Task PAP-1271"');
+    expect(html).toContain('aria-label="Task PAP-1272: Fix hover state"');
+    expect(html).not.toContain('aria-label="Task PAP-1271: PAP-1271"');
   });
 
   it("preserves absolute issue URLs as external links", () => {

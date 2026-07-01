@@ -6,6 +6,7 @@ import type {
   CostByAgentModel,
   CostByProject,
   CostWindowSpendRow,
+  DailySpendRow,
   FinanceSummary,
   FinanceByBiller,
   FinanceByKind,
@@ -47,6 +48,8 @@ export const costsApi = {
     api.get<CostWindowSpendRow[]>(`/companies/${companyId}/costs/window-spend`),
   quotaWindows: (companyId: string) =>
     api.get<ProviderQuotaResult[]>(`/companies/${companyId}/costs/quota-windows`),
+  daily: (companyId: string, from?: string, to?: string) =>
+    api.get<DailySpendRow[]>(`/companies/${companyId}/costs/daily${dateParams(from, to)}`),
 };
 
 function dateParamsWithLimit(from?: string, to?: string, limit?: number): string {

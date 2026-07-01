@@ -282,7 +282,7 @@ export function CommandPalette() {
               }}
             >
               <FileCode2 className="mr-2 h-4 w-4" />
-              Open file in this issue...
+              Open file in this task...
               <span className="ml-auto text-xs text-muted-foreground">g f</span>
             </CommandItem>
           )}

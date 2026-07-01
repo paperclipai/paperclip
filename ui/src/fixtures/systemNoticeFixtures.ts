@@ -14,7 +14,7 @@ const HANDOFF_METADATA: SystemNoticeMetadataSection[] = [
     rows: [
       {
         kind: "issue",
-        label: "Recovery issue",
+        label: "Recovery task",
         identifier: "PAP-3440",
         href: "/PAP/issues/PAP-3440",
         title: "Successful run handoff missing disposition",
@@ -64,7 +64,7 @@ const REQUIRED_METADATA: SystemNoticeMetadataSection[] = [
     rows: [
       {
         kind: "issue",
-        label: "Source issue",
+        label: "Source task",
         identifier: "PAP-3440",
         href: "/PAP/issues/PAP-3440",
         title: "Successful run handoff missing disposition",
@@ -133,7 +133,7 @@ export const systemNoticeFixtures: readonly SystemNoticeFixture[] = [
     label: "System warning",
     source: { label: "Paperclip", href: "/PAP/agents" },
     timestamp: "2026-05-04T16:32:00.000Z",
-    body: "Paperclip needs a disposition before this issue can continue.",
+    body: "Paperclip needs a disposition before this task can continue.",
     metadata: REQUIRED_METADATA,
     detailsDefaultOpen: false,
   },
@@ -144,7 +144,7 @@ export const systemNoticeFixtures: readonly SystemNoticeFixture[] = [
     label: "System warning",
     source: { label: "Paperclip", href: "/PAP/agents" },
     timestamp: "2026-05-04T16:32:00.000Z",
-    body: "Paperclip needs a disposition before this issue can continue.",
+    body: "Paperclip needs a disposition before this task can continue.",
     metadata: REQUIRED_METADATA,
     detailsDefaultOpen: true,
   },
@@ -155,7 +155,7 @@ export const systemNoticeFixtures: readonly SystemNoticeFixture[] = [
     label: "System alert",
     source: { label: "Paperclip", href: "/PAP/agents" },
     timestamp: "2026-05-04T16:48:00.000Z",
-    body: "Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner.",
+    body: "Paperclip could not resolve this task's missing disposition automatically. The task is blocked on a recovery owner.",
     metadata: HANDOFF_METADATA,
     detailsDefaultOpen: false,
   },
@@ -166,7 +166,7 @@ export const systemNoticeFixtures: readonly SystemNoticeFixture[] = [
     label: "System alert",
     source: { label: "Paperclip", href: "/PAP/agents" },
     timestamp: "2026-05-04T16:48:00.000Z",
-    body: "Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner.",
+    body: "Paperclip could not resolve this task's missing disposition automatically. The task is blocked on a recovery owner.",
     metadata: HANDOFF_METADATA,
     detailsDefaultOpen: true,
   },
