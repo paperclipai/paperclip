@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog } from "@paperclipai/db";
+import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
@@ -62,7 +63,34 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
+/**
+ * Resolve a caller-supplied run_id against `heartbeat_runs` before it is written
+ * to the FK-constrained `activity_log.run_id` column. Process-adapter callers can
+ * self-mint a run_id that was never registered in `heartbeat_runs` (they did not go
+ * through the executor); writing it verbatim violates the FK and 500s an operation
+ * whose main row has already committed. When the run_id does not resolve we degrade
+ * gracefully to NULL — matching the existing behavior for null-run_id callers — and
+ * emit a warning for observability. The lookup runs on the same `db` handle (which
+ * may be a transaction), so the substitution happens before commit and the FK error
+ * is never triggered.
+ */
+async function resolveRunId(db: Db, runId: string | null | undefined): Promise<string | null> {
+  if (!runId) return null;
+  const [row] = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId))
+    .limit(1);
+  if (row) return runId;
+  logger.warn(
+    { runId },
+    "activity-log: run_id not found in heartbeat_runs; writing activity_log with run_id=null",
+  );
+  return null;
+}
+
 export async function logActivity(db: Db, input: LogActivityInput) {
+  const resolvedRunId = await resolveRunId(db, input.runId);
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
   };
@@ -78,7 +106,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId: resolvedRunId,
     details: redactedDetails,
   });
 
@@ -92,7 +120,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       entityType: input.entityType,
       entityId: input.entityId,
       agentId: input.agentId ?? null,
-      runId: input.runId ?? null,
+      runId: resolvedRunId,
       details: redactedDetails,
     },
   });
@@ -111,7 +139,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       payload: {
         ...redactedDetails,
         agentId: input.agentId ?? null,
-        runId: input.runId ?? null,
+        runId: resolvedRunId,
       },
     };
     publishPluginDomainEvent(event);
