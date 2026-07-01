@@ -1,0 +1,5 @@
+backend/.venv/
+backend/jarvis.db
+jarvis.db
+**/__pycache__/
+*.pyc
