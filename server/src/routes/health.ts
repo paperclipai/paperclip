@@ -163,10 +163,14 @@ export function healthRoutes(
     }
 
     if (!exposeFullDetails) {
+      // Redacted anonymous shape: omit deploymentExposure so it matches the
+      // "redacted authenticated" contract Paperclip Desktop remote preflight
+      // expects (aronprins/paperclip-desktop#17). When an unauthenticated
+      // caller sees deploymentExposure here, Desktop misclassifies the host as
+      // not_paperclip and refuses to connect.
       res.json({
         status: "ok",
         deploymentMode: opts.deploymentMode,
-        deploymentExposure: opts.deploymentExposure,
         bootstrapStatus,
         bootstrapInviteActive,
         ...(devServer ? { devServer } : {}),
