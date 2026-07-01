@@ -324,7 +324,7 @@ export const pluginsApi = {
    * @param version - Target version (optional; defaults to latest published).
    */
   upgrade: (pluginId: string, version?: string) =>
-    api.post<{ ok: boolean }>(`/plugins/${pluginId}/upgrade`, version ? { version } : {}),
+    api.post<PluginRecord>(`/plugins/${pluginId}/upgrade`, version ? { version } : {}),
 
   /**
    * Returns normalized UI contribution declarations for ready plugins.
