@@ -1516,6 +1516,7 @@ export function IssuesList({
             enableExternalObjectFilters={externalObjectsEnabled}
             enableRoutineVisibilityFilter={enableRoutineVisibilityFilter}
             iconOnly
+            buttonVariant="outline"
             workspaces={isolatedWorkspacesEnabled ? workspaceOptions : undefined}
           />
 
