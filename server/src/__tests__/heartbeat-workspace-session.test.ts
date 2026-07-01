@@ -365,7 +365,7 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
     );
   });
 
-  it("rejects a workspace-linked issue when adapter cwd has no git metadata", async () => {
+  it("rejects a workspace-linked issue when adapter cwd is outside a git worktree", async () => {
     const input = buildWorkspaceValidationInput();
     const cwd = "/tmp/paperclip-workspace-without-git-metadata";
 
@@ -383,8 +383,34 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
         },
       }),
       "missing_git_metadata",
-      "has no .git metadata",
+      "is not inside a git worktree",
     );
+  });
+
+  it("accepts a workspace-linked issue when adapter cwd is a subdirectory inside a git worktree", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-parent-"));
+    const cwd = path.join(root, "nested", "project");
+    await fs.mkdir(cwd, { recursive: true });
+    await execFile("git", ["init"], { cwd: root });
+
+    const input = buildWorkspaceValidationInput();
+
+    await expect(
+      assertGitSensitiveAdapterWorkspaceValid(
+        buildWorkspaceValidationInput({
+          resolvedWorkspace: buildResolvedWorkspace({ cwd }),
+          executionWorkspace: {
+            ...input.executionWorkspace,
+            baseCwd: cwd,
+            cwd,
+          },
+          persistedExecutionWorkspace: {
+            ...input.persistedExecutionWorkspace!,
+            cwd,
+          },
+        }),
+      ),
+    ).resolves.toBeUndefined();
   });
 
   it("does not apply the git-sensitive workspace guard to non-local execution targets", async () => {
