@@ -126,6 +126,9 @@ jobs:
       - name: Verify release registry test coverage
         run: pnpm run test:release-registry
 
+      - name: Check MCP tool schemas vs REST validators
+        run: pnpm run check:mcp-schema-drift
+
   general_tests:
     name: General tests (${{ matrix.group_label }})
     needs: [policy]
