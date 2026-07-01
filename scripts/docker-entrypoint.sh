@@ -37,6 +37,19 @@ fi
 
 if [ "$changed" = "1" ]; then
     chown -R node:node /paperclip
+    # Fix ownership on bind-mounted tenant directories so they remain writable
+    # after a UID/GID remap (e.g. /data/productioncity -> /data/paperclip/productioncity).
+    for extra_dir in /data/productioncity; do
+        if [ -d "$extra_dir" ]; then
+            chown "$PUID:$PGID" "$extra_dir"
+        fi
+    done
+fi
+
+# Ensure /data/productioncity exists even if the bind mount is not configured.
+# The node process requires this path to be writable before the upstream call.
+if [ ! -d /data/productioncity ]; then
+    mkdir -p /data/productioncity && chown "$PUID:$PGID" /data/productioncity
 fi
 
 exec gosu node "$@"
