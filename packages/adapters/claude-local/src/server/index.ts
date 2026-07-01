@@ -1,3 +1,10 @@
+export {
+  loadActiveMemories,
+  readAlwaysCheckMemories,
+  buildActiveMemorySection,
+  buildMemorySelfCheckBlock,
+} from "./active-memory.js";
+export type { MemoryTrigger, ActiveMemory, MemoryEntry } from "./active-memory.js";
 export { claudeSessionCwdMatchesExecutionTarget, execute, runClaudeLogin } from "./execute.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { listClaudeModels, refreshClaudeModels, resetClaudeModelsCacheForTests } from "./models.js";
