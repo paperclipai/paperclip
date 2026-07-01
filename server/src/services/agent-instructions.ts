@@ -34,6 +34,40 @@ type AgentLike = {
   adapterConfig: unknown;
 };
 
+/**
+ * A durable, storage-backed copy of a managed instructions bundle. Managed
+ * bundle files otherwise live only on the (possibly ephemeral) instance-root
+ * disk, so persisting this snapshot lets a run re-materialize the exact bundle
+ * after the disk is wiped (e.g. an emptyDir pod restart), preserving both the
+ * default persona and any hand-edited customizations.
+ */
+export type ManagedInstructionsSnapshot = {
+  entryFile: string;
+  files: Record<string, string>;
+};
+
+type EnsureManagedAgent = AgentLike & { role?: string | null };
+
+type EnsureManagedInstructionsInput = {
+  /** The durable snapshot persisted from a previous materialize/run, if any. */
+  durableSnapshot?: ManagedInstructionsSnapshot | null;
+  /** Loads the default bundle for the agent role as the guaranteed fallback. */
+  loadDefaults: (role: string) => Promise<Record<string, string>>;
+};
+
+type EnsureManagedInstructionsResult = {
+  /** "skipped" for non-managed agents, "present" when disk already had it, "restored" when re-materialized. */
+  status: "skipped" | "present" | "restored";
+  /** Where the on-disk content ended up coming from. */
+  source: "disk" | "durable" | "default" | null;
+  /** True only when files were (re)written because the entry file was missing. */
+  regenerated: boolean;
+  entryPath: string | null;
+  /** A snapshot the caller should durably persist (null when nothing changed). */
+  snapshotToPersist: ManagedInstructionsSnapshot | null;
+  warnings: string[];
+};
+
 type AgentInstructionsFileSummary = {
   path: string;
   size: number;
@@ -722,6 +756,137 @@ export function agentInstructionsService() {
     return { bundle, adapterConfig };
   }
 
+  async function readManagedBundleFromDisk(
+    rootPath: string,
+    entryFile: string,
+  ): Promise<ManagedInstructionsSnapshot> {
+    const relativePaths = await listFilesRecursive(rootPath);
+    const entries = await Promise.all(
+      relativePaths.map(async (relativePath) => {
+        const absolutePath = resolvePathWithinRoot(rootPath, relativePath);
+        const content = await fs.readFile(absolutePath, "utf8");
+        return [relativePath, content] as const;
+      }),
+    );
+    return { entryFile, files: Object.fromEntries(entries) };
+  }
+
+  async function writeSnapshotToDisk(rootPath: string, snapshot: ManagedInstructionsSnapshot) {
+    await fs.mkdir(rootPath, { recursive: true });
+    for (const [relativePath, content] of Object.entries(snapshot.files)) {
+      const absolutePath = resolvePathWithinRoot(rootPath, relativePath);
+      const existing = await statIfExists(absolutePath);
+      // Never clobber a file that survived a partial wipe.
+      if (existing?.isFile()) continue;
+      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+      await fs.writeFile(absolutePath, content, "utf8");
+    }
+    // Guarantee the configured entry file exists even if the snapshot used a
+    // different entry name (or was empty).
+    const entryPath = resolvePathWithinRoot(rootPath, snapshot.entryFile);
+    const entryStat = await statIfExists(entryPath);
+    if (!entryStat?.isFile()) {
+      const fallback = snapshot.files[snapshot.entryFile]
+        ?? snapshot.files[ENTRY_FILE_DEFAULT]
+        ?? Object.values(snapshot.files)[0]
+        ?? "";
+      await fs.mkdir(path.dirname(entryPath), { recursive: true });
+      await fs.writeFile(entryPath, fallback, "utf8");
+    }
+  }
+
+  /**
+   * Self-healing guard for the run path: idempotently ensures a MANAGED agent's
+   * instructions bundle exists on disk before the adapter reads it. Managed
+   * bundle files live under the (possibly ephemeral) instance root, so a pod
+   * restart on an emptyDir wipes them and the run would otherwise inject no
+   * persona/tools/hiring guidance. When the entry file is missing this restores
+   * the bundle from the durable snapshot (preserving hand edits) or, as a
+   * guaranteed fallback, regenerates the role default template. It never fails a
+   * run and never touches non-managed / external bundles.
+   */
+  async function ensureManagedInstructionsMaterialized(
+    agent: EnsureManagedAgent,
+    input: EnsureManagedInstructionsInput,
+  ): Promise<EnsureManagedInstructionsResult> {
+    const state = deriveBundleState(agent);
+    // Only ever self-heal MANAGED bundles. External/legacy bundles may
+    // legitimately point instructionsFilePath at a user-supplied optional file
+    // that we must never fabricate or overwrite.
+    if (state.mode !== "managed") {
+      return {
+        status: "skipped",
+        source: null,
+        regenerated: false,
+        entryPath: state.resolvedEntryPath,
+        snapshotToPersist: null,
+        warnings: [],
+      };
+    }
+
+    const managedRoot = resolveManagedInstructionsRoot(agent);
+    const entryFile = state.entryFile || ENTRY_FILE_DEFAULT;
+    const entryPath = resolvePathWithinRoot(managedRoot, entryFile);
+    const durableSnapshot = input.durableSnapshot ?? null;
+
+    const entryContent = await fs.readFile(entryPath, "utf8").catch(() => null);
+    if (entryContent !== null) {
+      // Bundle is present on disk. Opportunistically capture it durably so a
+      // future disk wipe can restore the exact content (including hand edits).
+      const needsCapture =
+        !durableSnapshot
+        || durableSnapshot.entryFile !== entryFile
+        || durableSnapshot.files[entryFile] !== entryContent;
+      const snapshotToPersist = needsCapture
+        ? await readManagedBundleFromDisk(managedRoot, entryFile)
+        : null;
+      return {
+        status: "present",
+        source: "disk",
+        regenerated: false,
+        entryPath,
+        snapshotToPersist,
+        warnings: [],
+      };
+    }
+
+    // Entry file missing: the managed bundle disk was wiped. Restore it,
+    // preferring durable content (preserves customizations) and falling back to
+    // the role default template (always available) so recovery never fails.
+    let restore: ManagedInstructionsSnapshot;
+    let source: "durable" | "default";
+    if (durableSnapshot && Object.keys(durableSnapshot.files).length > 0) {
+      restore = durableSnapshot;
+      source = "durable";
+    } else {
+      const role = typeof agent.role === "string" && agent.role.trim().length > 0
+        ? agent.role
+        : "general";
+      const files = await input.loadDefaults(role);
+      restore = { entryFile, files };
+      source = "default";
+    }
+
+    await writeSnapshotToDisk(managedRoot, restore);
+
+    // Persist the restored snapshot unless it already came from the durable
+    // store (in which case it is already persisted).
+    const snapshotToPersist = source === "durable"
+      ? null
+      : await readManagedBundleFromDisk(managedRoot, entryFile);
+
+    return {
+      status: "restored",
+      source,
+      regenerated: true,
+      entryPath,
+      snapshotToPersist,
+      warnings: [
+        `Re-materialized missing managed instructions bundle for agent ${agent.id} from ${source} source.`,
+      ],
+    };
+  }
+
   return {
     getBundle,
     readFile,
@@ -731,5 +896,6 @@ export function agentInstructionsService() {
     exportFiles,
     ensureManagedBundle: ensureWritableBundle,
     materializeManagedBundle,
+    ensureManagedInstructionsMaterialized,
   };
 }
