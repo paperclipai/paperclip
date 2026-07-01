@@ -457,7 +457,7 @@ export function createPluginWorkerHandle(
       message = parseMessage(line);
     } catch (err) {
       if (err instanceof JsonRpcParseError) {
-        log.warn({ rawLine: line.slice(0, 200) }, "unparseable message from worker");
+        log.warn({ rawLine: line.slice(0, 200) }, "unparsable message from worker");
       } else {
         log.warn({ err }, "error parsing worker message");
       }
