@@ -88,6 +88,41 @@ export function parseOpenCodeJsonl(stdout: string) {
   };
 }
 
+export function parseOpenCodeSessionExport(exportJson: string): {
+  summary: string;
+  usage: { inputTokens: number; outputTokens: number; cachedInputTokens: number };
+  costUsd: number;
+} | null {
+  try {
+    const d = JSON.parse(exportJson) as Record<string, unknown>;
+    const messages: string[] = [];
+    const info = (d.info ?? {}) as Record<string, unknown>;
+    const tokens = (info.tokens ?? {}) as Record<string, unknown>;
+    const cache = (tokens.cache ?? {}) as Record<string, unknown>;
+    for (const msg of (d.messages ?? []) as Array<Record<string, unknown>>) {
+      const role = (msg?.info as Record<string, unknown> | undefined)?.role;
+      if (role !== "assistant") continue;
+      for (const part of (msg.parts ?? []) as Array<Record<string, unknown>>) {
+        if (part.type === "text" && part.text) {
+          const text = String(part.text).trim();
+          if (text) messages.push(text);
+        }
+      }
+    }
+    return {
+      summary: messages.join("\n\n").trim(),
+      usage: {
+        inputTokens: Number(tokens.input) || 0,
+        outputTokens: (Number(tokens.output) || 0) + (Number(tokens.reasoning) || 0),
+        cachedInputTokens: Number(cache.read) || 0,
+      },
+      costUsd: Number(info.cost) || 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function isOpenCodeUnknownSessionError(stdout: string, stderr: string): boolean {
   const haystack = `${stdout}\n${stderr}`
     .split(/\r?\n/)
