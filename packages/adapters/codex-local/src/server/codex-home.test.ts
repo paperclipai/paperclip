@@ -302,6 +302,25 @@ describe("seedManagedCodexHome", () => {
     }
   });
 
+  it("copies shared config files as regular files (COPYFILE_EXCL happy path)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-config-"));
+    try {
+      const sharedCodexHome = path.join(root, "shared-codex-home");
+      const agentHome = path.join(root, "agent-home");
+      await fs.mkdir(sharedCodexHome, { recursive: true });
+      await fs.writeFile(path.join(sharedCodexHome, "config.toml"), 'model = "gpt-5"', "utf8");
+
+      await seedManagedCodexHome(agentHome, { CODEX_HOME: sharedCodexHome }, async () => {});
+
+      const copied = path.join(agentHome, "config.toml");
+      // Real file, not a symlink that a racing attacker could have redirected.
+      expect((await fs.lstat(copied)).isSymbolicLink()).toBe(false);
+      expect(await fs.readFile(copied, "utf8")).toBe('model = "gpt-5"');
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("writes an API-key auth.json into the home when an apiKey is supplied", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-seed-apikey-"));
     try {
