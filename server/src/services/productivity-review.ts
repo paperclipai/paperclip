@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, notExists, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
@@ -7,6 +7,7 @@ import {
   costEvents,
   heartbeatRuns,
   issueComments,
+  issueThreadInteractions,
   issues,
   projects,
 } from "@paperclipai/db";
@@ -776,6 +777,19 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           inArray(issues.status, ["todo", "in_progress"]),
           sql`${issues.assigneeAgentId} is not null`,
           sql`${issues.originKind} <> ${PRODUCTIVITY_REVIEW_ORIGIN_KIND}`,
+          notExists(
+            db
+              .select({ one: sql`1` })
+              .from(issueThreadInteractions)
+              .where(
+                and(
+                  eq(issueThreadInteractions.issueId, issues.id),
+                  eq(issueThreadInteractions.companyId, issues.companyId),
+                  eq(issueThreadInteractions.kind, "request_confirmation"),
+                  eq(issueThreadInteractions.status, "pending"),
+                ),
+              ),
+          ),
         ),
       )
       .orderBy(asc(issues.updatedAt), asc(issues.id))
