@@ -1,0 +1,42 @@
+{
+  "name": "@paperclipai/plugin-telegram-notifier",
+  "version": "0.1.0",
+  "description": "Pushes Paperclip escalations, approvals, mentions, and run failures to a Telegram chat via the Bot API.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/paperclipai/paperclip",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/plugins/paperclip-plugin-telegram-notifier"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@types/react": "^19.0.8",
+    "react": "^19.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.4"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}
