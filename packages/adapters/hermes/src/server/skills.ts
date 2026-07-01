@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import type {
   AdapterSkillContext,
@@ -12,6 +11,8 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { fileURLToPath } from "node:url";
 
+import { resolveHermesHomeSync } from "./hermes-home.js";
+
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
@@ -22,13 +23,16 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function resolveHermesHome(config: Record<string, unknown>): string {
-  const env =
-    typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
-      ? (config.env as Record<string, unknown>)
-      : {};
-  const configuredHome = asString(env.HOME);
-  return configuredHome ? path.resolve(configuredHome) : os.homedir();
+/**
+ * Extract the env sub-object from an adapter config payload. The server may
+ * pass either a plain object or a NodeJS.ProcessEnv-shaped map; both are
+ * accepted here so the shared resolver can read HOME / USERPROFILE /
+ * HERMES_HOME from the same source.
+ */
+function readConfigEnv(config: Record<string, unknown>): Record<string, unknown> | undefined {
+  const env = config.env;
+  if (typeof env !== "object" || env === null || Array.isArray(env)) return undefined;
+  return env as Record<string, unknown>;
 }
 
 interface SkillFrontmatter {
@@ -127,8 +131,8 @@ async function buildSkillEntry(
 // ---------------------------------------------------------------------------
 
 async function buildHermesSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
-  const home = resolveHermesHome(config);
-  const hermesSkillsHome = path.join(home, ".hermes", "skills");
+  const home = resolveHermesHomeSync({ env: readConfigEnv(config) });
+  const hermesSkillsHome = path.join(home, "skills");
 
   // 1. Scan Paperclip-managed skills (bundled with the adapter)
   const paperclipEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
