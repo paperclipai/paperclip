@@ -82,6 +82,50 @@ describe("RunTranscriptView", () => {
     });
   });
 
+  it("hides chronic codex rmcp invalid_grant stderr from nice mode normalization", () => {
+    const entries: TranscriptEntry[] = [
+      {
+        kind: "stderr",
+        ts: "2026-03-12T00:00:00.000Z",
+        text: 'ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(TokenRefreshFailed("Server returned error response: invalid_grant: Invalid refresh token"))',
+      },
+      {
+        kind: "assistant",
+        ts: "2026-03-12T00:00:01.000Z",
+        text: "Working on the task.",
+      },
+    ];
+
+    const blocks = normalizeTranscript(entries, false);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      type: "message",
+      role: "assistant",
+      text: "Working on the task.",
+    });
+  });
+
+  it("keeps mixed stderr chunks visible when rmcp invalid_grant appears with real signal", () => {
+    const entries: TranscriptEntry[] = [
+      {
+        kind: "stderr",
+        ts: "2026-03-12T00:00:00.000Z",
+        text: [
+          'ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Auth(TokenRefreshFailed("Server returned error response: invalid_grant: Invalid refresh token"))',
+          "Fatal: primary token refresh failed for the Codex CLI.",
+        ].join("\n"),
+      },
+    ];
+
+    const blocks = normalizeTranscript(entries, false);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      type: "stderr_group",
+    });
+  });
+
   it("renders successful result summaries as markdown in nice mode", () => {
     const html = renderToStaticMarkup(
       <ThemeProvider>
