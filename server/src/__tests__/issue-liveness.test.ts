@@ -128,6 +128,65 @@ describe("issue graph liveness classifier", () => {
     ]);
   });
 
+  it("prefers implementation-capable recovery owners over read-only handoff owners for implementation blockers", () => {
+    const pausedImplementerId = "paused-implementer";
+    const readOnlyHandoffId = "hilda";
+    const implementationOwnerId = "cto-implementation-owner";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Fix liveness recovery selector",
+          description: "Implement the platform change and add a regression test.",
+          status: "todo",
+          assigneeAgentId: pausedImplementerId,
+          createdByAgentId: null,
+        }),
+      ],
+      relations: blocks,
+      agents: [
+        agent(),
+        agent({
+          id: pausedImplementerId,
+          name: "Paused Implementer",
+          role: "engineer",
+          status: "paused",
+          reportsTo: readOnlyHandoffId,
+        }),
+        agent({
+          id: readOnlyHandoffId,
+          name: "Hilda",
+          role: "researcher",
+          title: "Documentation Indexer",
+          capabilities: "Read-only source indexing and handoff notes.",
+          status: "idle",
+          reportsTo: null,
+        }),
+        agent({
+          id: implementationOwnerId,
+          name: "CTO",
+          role: "cto",
+          title: "Engineering owner",
+          capabilities: "Can edit source, run tests, and release platform fixes.",
+          status: "idle",
+          reportsTo: null,
+        }),
+      ],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      state: "blocked_by_uninvokable_assignee",
+      recommendedOwnerAgentId: implementationOwnerId,
+    });
+    expect(findings[0]?.recommendedOwnerCandidateAgentIds).toEqual([implementationOwnerId]);
+    expect(findings[0]?.recommendedAction).toContain("implementation-capable active owner");
+    expect(findings[0]?.recommendedAction).toContain("diagnosis/handoff only");
+  });
+
   it("does not flag a live blocked chain with an active assignee and wake path", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [
