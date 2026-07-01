@@ -813,6 +813,13 @@ export async function startServer(): Promise<StartedServer> {
         logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
       }
 
+      // OTL-138: time out provably-dead runs BEFORE the sweep so their locks
+      // clear on this same tick rather than the next.
+      const deadTimedOut = await heartbeat.autoTimeoutDeadSilentRuns();
+      if (deadTimedOut.timedOut > 0) {
+        logger.warn({ ...deadTimedOut }, "startup dead-run auto-timeout released stuck runs");
+      }
+
       const swept = await heartbeat.sweepStaleIssueLocks();
       if (swept.cleared > 0) {
         logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
@@ -881,6 +888,14 @@ export async function startServer(): Promise<StartedServer> {
           const scanned = await heartbeat.scanSilentActiveRuns();
           if (scanned.created > 0 || scanned.escalated > 0) {
             logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
+          }
+        })
+        .then(async () => {
+          // OTL-138: time out provably-dead runs BEFORE the sweep so their
+          // locks clear on this same tick rather than the next.
+          const deadTimedOut = await heartbeat.autoTimeoutDeadSilentRuns();
+          if (deadTimedOut.timedOut > 0) {
+            logger.warn({ ...deadTimedOut }, "periodic dead-run auto-timeout released stuck runs");
           }
         })
         .then(async () => {
