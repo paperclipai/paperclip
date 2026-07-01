@@ -4861,17 +4861,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (input.run.responsibleUserId) return input.run.responsibleUserId;
     if (input.routineEnvContext.responsibleUserId) return input.routineEnvContext.responsibleUserId;
     if (input.issueContext?.responsibleUserId) return input.issueContext.responsibleUserId;
-    if (input.issueContext?.createdByUserId) return input.issueContext.createdByUserId;
     if (input.issueContext?.parentId) {
       const parent = await db
         .select({
           responsibleUserId: issues.responsibleUserId,
-          createdByUserId: issues.createdByUserId,
         })
         .from(issues)
         .where(and(eq(issues.companyId, input.run.companyId), eq(issues.id, input.issueContext.parentId)))
         .then((rows) => rows[0] ?? null);
-      return parent?.responsibleUserId ?? parent?.createdByUserId ?? null;
+      return parent?.responsibleUserId ?? null;
     }
     return null;
   }

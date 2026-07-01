@@ -19,7 +19,7 @@ import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
-import { forbidden } from "../errors.js";
+import { forbidden, unauthorized } from "../errors.js";
 
 function assertSecretDefinitionAdmin(req: Parameters<typeof assertBoard>[0], companyId: string) {
   assertBoard(req);
@@ -34,7 +34,8 @@ function assertSecretDefinitionAdmin(req: Parameters<typeof assertBoard>[0], com
 
 function currentUserId(req: Parameters<typeof assertBoard>[0]) {
   assertBoard(req);
-  return req.actor.userId ?? "board";
+  if (req.actor.userId) return req.actor.userId;
+  throw unauthorized("User identity required for user-specific secrets");
 }
 
 function isCompanyScopedSecret(secret: { scope?: string | null }) {

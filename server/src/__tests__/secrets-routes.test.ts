@@ -156,6 +156,23 @@ describe("secret routes", () => {
     expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("secret-value");
   });
 
+  it("rejects current-user secret values without a concrete user identity", async () => {
+    const res = await request(createApp({
+      type: "board",
+      source: "local_implicit",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "admin" }],
+    })).post("/api/companies/company-1/me/user-secrets").send({
+      definitionKey: "github_token",
+      value: "secret-value",
+    });
+
+    expect(res.status).toBe(401);
+    expect(res.body).toMatchObject({ error: "User identity required for user-specific secrets" });
+    expect(mockSecretService.createCurrentUserSecretValue).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("rejects empty current-user secret rotation payloads", async () => {
     const res = await request(createApp())
       .post("/api/companies/company-1/me/user-secrets/secret-1/rotate")
