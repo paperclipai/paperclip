@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { approvalComments, approvals } from "@paperclipai/db";
+import { approvalComments, approvals, issueApprovals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
@@ -282,6 +282,25 @@ export function approvalService(db: Db) {
         })
         .returning()
         .then((rows) => redactApprovalComment(rows[0], currentUserRedactionOptions.enabled));
+    },
+
+    findPendingForIssueIds: async (companyId: string, issueIds: string[], type: string) => {
+      if (issueIds.length === 0) return null;
+      const row = await db
+        .select({ approval: approvals })
+        .from(issueApprovals)
+        .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+        .where(
+          and(
+            inArray(issueApprovals.issueId, issueIds),
+            eq(approvals.companyId, companyId),
+            eq(approvals.type, type),
+            eq(approvals.status, "pending"),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0]?.approval ?? null);
+      return row;
     },
   };
 }

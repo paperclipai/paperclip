@@ -145,6 +145,15 @@ export function approvalRoutes(
           )
         : approvalInput.payload;
 
+    // Deduplicate: if a pending approval already exists for any of the issueIds+type, return it.
+    if (uniqueIssueIds.length > 0) {
+      const existingPending = await svc.findPendingForIssueIds(companyId, uniqueIssueIds, approvalInput.type);
+      if (existingPending) {
+        res.status(200).json(redactApprovalPayload(existingPending));
+        return;
+      }
+    }
+
     const actor = getActorInfo(req);
     const approval = await svc.create(companyId, {
       ...approvalInput,

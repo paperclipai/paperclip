@@ -12,6 +12,7 @@ const mockApprovalService = vi.hoisted(() => ({
   resubmit: vi.fn(),
   listComments: vi.fn(),
   addComment: vi.fn(),
+  findPendingForIssueIds: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -127,6 +128,7 @@ describe("approval routes idempotent retries", () => {
     mockApprovalService.resubmit.mockReset();
     mockApprovalService.listComments.mockReset();
     mockApprovalService.addComment.mockReset();
+    mockApprovalService.findPendingForIssueIds.mockReset();
     mockHeartbeatService.wakeup.mockReset();
     mockIssueApprovalService.listIssuesForApproval.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
@@ -443,5 +445,141 @@ describe("approval routes idempotent retries", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
     expect(mockApprovalService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("returns existing pending approval instead of creating a duplicate for same issueId+type", async () => {
+    const existingApproval = {
+      id: "approval-existing",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Approve hosting spend" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+    };
+
+    // First call: no existing pending approval, so it creates one
+    mockApprovalService.findPendingForIssueIds.mockResolvedValueOnce(null);
+    mockApprovalService.create.mockResolvedValueOnce(existingApproval);
+
+    // Second call: existing pending approval found, should return it without calling create
+    mockApprovalService.findPendingForIssueIds.mockResolvedValueOnce(existingApproval);
+
+    const agentApp = await createAgentApp();
+
+    // First POST — should create
+    const res1 = await request(agentApp)
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: { title: "Approve hosting spend" },
+      });
+    expect(res1.status).toBe(201);
+    expect(res1.body.id).toBe("approval-existing");
+    expect(mockApprovalService.create).toHaveBeenCalledTimes(1);
+    expect(mockIssueApprovalService.linkManyForApproval).toHaveBeenCalledTimes(1);
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+
+    // Reset mocks for second call
+    vi.clearAllMocks();
+    mockApprovalService.findPendingForIssueIds.mockResolvedValueOnce(existingApproval);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "company_scope:read",
+      reason: "allow_test",
+      explanation: "Allowed by test mock.",
+    });
+
+    // Second POST — should return existing, not create
+    const res2 = await request(agentApp)
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: { title: "Approve hosting spend" },
+      });
+    expect(res2.status).toBe(200);
+    expect(res2.body.id).toBe("approval-existing");
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+    expect(mockIssueApprovalService.linkManyForApproval).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("creates a new approval after previous one is resolved", async () => {
+    const firstApproval = {
+      id: "approval-first",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "approved",
+      payload: { title: "Approve hosting spend" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+    };
+
+    const secondApproval = {
+      id: "approval-second",
+      companyId: "company-1",
+      type: "request_board_approval",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: { title: "Approve hosting spend" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-06-02T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-02T00:00:00.000Z"),
+    };
+
+    // First POST: no pending approval found, creates first one
+    mockApprovalService.findPendingForIssueIds.mockResolvedValueOnce(null);
+    mockApprovalService.create.mockResolvedValueOnce(firstApproval);
+
+    const agentApp = await createAgentApp();
+
+    const res1 = await request(agentApp)
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: { title: "Approve hosting spend" },
+      });
+    expect(res1.status).toBe(201);
+    expect(res1.body.id).toBe("approval-first");
+    expect(mockApprovalService.create).toHaveBeenCalledTimes(1);
+
+    // Reset mocks
+    vi.clearAllMocks();
+    mockApprovalService.findPendingForIssueIds.mockResolvedValueOnce(null);
+    mockApprovalService.create.mockResolvedValueOnce(secondApproval);
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "company_scope:read",
+      reason: "allow_test",
+      explanation: "Allowed by test mock.",
+    });
+
+    // Second POST: first approval is resolved (approved), so no pending match, creates new one
+    const res2 = await request(agentApp)
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        issueIds: ["00000000-0000-0000-0000-000000000001"],
+        payload: { title: "Approve hosting spend" },
+      });
+    expect(res2.status).toBe(201);
+    expect(res2.body.id).toBe("approval-second");
+    expect(mockApprovalService.create).toHaveBeenCalledTimes(1);
   });
 });
