@@ -96,6 +96,7 @@ import {
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
+import { resolveBundleDraft } from "../lib/bundle-draft";
 import {
   resourceMembershipState,
   useResourceMembershipMutation,
@@ -1986,14 +1987,13 @@ function PromptsTab({
 
   useEffect(() => {
     if (!bundle) return;
-    setBundleDraft((current) => {
-      if (current) return current;
-      return {
+    setBundleDraft((current) =>
+      resolveBundleDraft(current, {
         mode: persistedMode,
         rootPath: persistedRootPath,
         entryFile: bundle.entryFile,
-      };
-    });
+      }),
+    );
   }, [bundle, persistedMode, persistedRootPath]);
 
   useEffect(() => {
