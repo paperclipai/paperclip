@@ -15,6 +15,7 @@ import type { IssueChatComment } from "../lib/issue-chat-messages";
 // switcher, error/loading states, send pass-through) is what we assert.
 vi.mock("./IssueChatThread", () => ({
   IssueChatThread: (props: {
+    preset?: string;
     emptyMessage?: string;
     emptyState?: ReactNode;
     showJumpToLatest?: boolean;
@@ -26,12 +27,15 @@ vi.mock("./IssueChatThread", () => ({
     onAttachImage?: (file: File) => Promise<unknown>;
   }) => (
     <div data-testid="issue-chat-thread">
+      <span data-testid="thread-preset">{props.preset}</span>
       <span data-testid="empty-message">{props.emptyState ? "" : props.emptyMessage}</span>
       <div data-testid="empty-state">{props.emptyState}</div>
-      <span data-testid="jump-to-latest">{String(props.showJumpToLatest)}</span>
+      <span data-testid="jump-to-latest">
+        {String(props.showJumpToLatest ?? (props.preset === "assistant" ? false : true))}
+      </span>
       <span data-testid="background-work-count">{props.backgroundWorkChildren?.length ?? 0}</span>
       <span data-testid="status-notices">
-        {props.suppressIssueStatusNotices ? "suppressed" : "visible"}
+        {(props.suppressIssueStatusNotices ?? props.preset === "assistant") ? "suppressed" : "visible"}
       </span>
       <span data-testid="composer-hint">{props.composerHint}</span>
       <span data-testid="image-upload-enabled">{String(Boolean(props.imageUploadHandler))}</span>
@@ -263,6 +267,8 @@ describe("SelectedAgentChatView", () => {
       "Send Sarah a message to start the conversation.",
     );
     expect(container.querySelector('[data-testid="jump-to-latest"]')?.textContent).toBe("false");
+    expect(container.querySelector('[data-testid="thread-preset"]')?.textContent).toBe("assistant");
+    expect(container.querySelector('[data-testid="status-notices"]')?.textContent).toBe("suppressed");
   });
 
   it("forwards attachment handlers to the shared issue chat composer", () => {

@@ -174,7 +174,7 @@ export function SelectedAgentChatView({
   projectId,
   currentUserId,
   backgroundWorkChildren = [],
-  suppressIssueStatusNotices = false,
+  suppressIssueStatusNotices,
   conferenceRoomMode = false,
   companyName = null,
   composerHint = null,
@@ -216,6 +216,7 @@ export function SelectedAgentChatView({
   );
 
   const targetName = targetAgent?.name ?? "Assistant";
+  const threadPreset = conferenceRoomMode ? "assistant" : "task";
   const targetRole = targetAgent ? roleLabels[targetAgent.role] ?? targetAgent.role : null;
   const canSwitch = showAgentSwitcher && invokableAgents.length > 1 && !!onTargetAgentChange;
   const starterPrompts = useMemo(
@@ -333,6 +334,7 @@ export function SelectedAgentChatView({
           className="min-w-0 px-4 pb-4 pt-3"
         >
           <IssueChatThread
+            preset={threadPreset}
             variant="full"
             composerRef={composerRef}
             comments={comments}
@@ -362,7 +364,6 @@ export function SelectedAgentChatView({
             onRejectInteraction={onRejectInteraction}
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
             onCancelInteraction={onCancelInteraction}
-            showJumpToLatest={!conferenceRoomMode}
           />
         </div>
       )}

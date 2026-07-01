@@ -174,6 +174,10 @@ import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRec
 import { SourceTrustBadge } from "./SourceTrustBadge";
 import { AnimatedPaperclipIcon } from "./AnimatedPaperclipIcon";
 import { BoardChatBackgroundWorkCard } from "./BoardChatBackgroundWorkCard";
+import {
+  resolveIssueChatThreadPreset,
+  type IssueChatThreadPresetName,
+} from "./chat-thread-presets";
 
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
@@ -356,6 +360,7 @@ interface IssueChatComposerProps {
 }
 
 interface IssueChatThreadProps {
+  preset?: IssueChatThreadPresetName;
   comments: IssueChatComment[];
   interactions?: IssueThreadInteraction[];
   feedbackVotes?: FeedbackVote[];
@@ -415,6 +420,7 @@ interface IssueChatThreadProps {
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   showComposer?: boolean;
   showJumpToLatest?: boolean;
+  showBackgroundWorkChildren?: boolean;
   autoScrollToLatestOnInitialLoad?: boolean;
   emptyMessage?: string;
   emptyState?: ReactNode;
@@ -4118,82 +4124,94 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
   );
 });
 
-export function IssueChatThread({
-  comments,
-  interactions = [],
-  feedbackVotes = [],
-  feedbackDataSharingPreference = "prompt",
-  feedbackTermsUrl = null,
-  linkedRuns = [],
-  timelineEvents = [],
-  liveRuns = [],
-  activeRun = null,
-  issueId = null,
-  blockedBy = [],
-  backgroundWorkChildren = [],
-  blockerAttention = null,
-  successfulRunHandoff = null,
-  scheduledRetry = null,
-  recoveryAction = null,
-  onResolveRecoveryAction,
-  canFalsePositiveRecoveryAction = false,
-  legacyRecoverySourceIssue = null,
-  companyId,
-  projectId,
-  issueStatus,
-  agentMap,
-  currentUserId,
-  userLabelMap,
-  userProfileMap,
-  onVote,
-  onAdd,
-  onCancelRun,
-  onStopRun,
-  stopRunLabel,
-  stoppingRunLabel,
-  stopRunVariant,
-  runFinalizationActions,
-  imageUploadHandler,
-  onAttachImage,
-  draftKey,
-  enableReassign = false,
-  reassignOptions = [],
-  currentAssigneeValue = "",
-  suggestedAssigneeValue,
-  mentions = [],
-  composerDisabledReason = null,
-  composerHint = null,
-  suppressIssueStatusNotices = false,
-  showComposer = true,
-  showJumpToLatest,
-  autoScrollToLatestOnInitialLoad = true,
-  emptyMessage,
-  emptyState,
-  footer,
-  variant = "full",
-  enableLiveTranscriptPolling = true,
-  transcriptsByRunId,
-  hasOutputForRun: hasOutputForRunOverride,
-  includeSucceededRunsWithoutOutput = false,
-  onInterruptQueued,
-  onCancelQueued,
-  onDeleteComment,
-  interruptingQueuedRunId = null,
-  stoppingRunId = null,
-  onImageClick,
-  onAcceptInteraction,
-  onRejectInteraction,
-  onSubmitInteractionAnswers,
-  onCancelInteraction,
-  composerRef,
-  issueWorkMode,
-  onWorkModeChange,
-  onRefreshLatestComments,
-  assigneeUserId = null,
-  onResumeFromBacklog,
-  resumeFromBacklogPending = false,
-  externalReferences,
-}: IssueChatThreadProps) {
+export function IssueChatThread(props: IssueChatThreadProps) {
+  const presetConfig = resolveIssueChatThreadPreset(props.preset, {
+    variant: props.variant,
+    showComposer: props.showComposer,
+    showJumpToLatest: props.showJumpToLatest,
+    showBackgroundWorkChildren: props.showBackgroundWorkChildren,
+    autoScrollToLatestOnInitialLoad: props.autoScrollToLatestOnInitialLoad,
+    emptyMessage: props.emptyMessage,
+    suppressIssueStatusNotices: props.suppressIssueStatusNotices,
+    enableReassign: props.enableReassign,
+  });
+  const {
+    comments,
+    interactions = [],
+    feedbackVotes = [],
+    feedbackDataSharingPreference = "prompt",
+    feedbackTermsUrl = null,
+    linkedRuns = [],
+    timelineEvents = [],
+    liveRuns = [],
+    activeRun = null,
+    issueId = null,
+    blockedBy = [],
+    backgroundWorkChildren = [],
+    blockerAttention = null,
+    successfulRunHandoff = null,
+    scheduledRetry = null,
+    recoveryAction = null,
+    onResolveRecoveryAction,
+    canFalsePositiveRecoveryAction = false,
+    legacyRecoverySourceIssue = null,
+    companyId,
+    projectId,
+    issueStatus,
+    agentMap,
+    currentUserId,
+    userLabelMap,
+    userProfileMap,
+    onVote,
+    onAdd,
+    onCancelRun,
+    onStopRun,
+    stopRunLabel,
+    stoppingRunLabel,
+    stopRunVariant,
+    runFinalizationActions,
+    imageUploadHandler,
+    onAttachImage,
+    draftKey,
+    enableReassign = presetConfig.enableReassign,
+    reassignOptions = [],
+    currentAssigneeValue = "",
+    suggestedAssigneeValue,
+    mentions = [],
+    composerDisabledReason = null,
+    composerHint = null,
+    suppressIssueStatusNotices = presetConfig.suppressIssueStatusNotices,
+    showComposer = presetConfig.showComposer,
+    showJumpToLatest = presetConfig.showJumpToLatest,
+    showBackgroundWorkChildren = presetConfig.showBackgroundWorkChildren,
+    autoScrollToLatestOnInitialLoad = presetConfig.autoScrollToLatestOnInitialLoad,
+    emptyMessage = presetConfig.emptyMessage,
+    emptyState,
+    footer,
+    variant = presetConfig.variant,
+    enableLiveTranscriptPolling = true,
+    transcriptsByRunId,
+    hasOutputForRun: hasOutputForRunOverride,
+    includeSucceededRunsWithoutOutput = false,
+    onInterruptQueued,
+    onCancelQueued,
+    onDeleteComment,
+    interruptingQueuedRunId = null,
+    stoppingRunId = null,
+    onImageClick,
+    onAcceptInteraction,
+    onRejectInteraction,
+    onSubmitInteractionAnswers,
+    onCancelInteraction,
+    composerRef,
+    issueWorkMode,
+    onWorkModeChange,
+    onRefreshLatestComments,
+    assigneeUserId = null,
+    onResumeFromBacklog,
+    resumeFromBacklogPending = false,
+    externalReferences,
+  } = props;
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
   const virtualizedThreadRef = useRef<VirtualizedIssueChatThreadListHandle | null>(null);
@@ -4759,11 +4777,8 @@ export function IssueChatThread({
     ],
   );
 
-  const resolvedShowJumpToLatest = showJumpToLatest ?? variant === "full";
-  const resolvedEmptyMessage = emptyMessage
-    ?? (variant === "embedded"
-      ? "No run output yet."
-      : "This task conversation is empty. Start with a message below.");
+  const resolvedShowJumpToLatest = showJumpToLatest;
+  const resolvedEmptyMessage = emptyMessage;
   const previousErrorBoundaryMessagesRef = useRef<readonly ThreadMessage[] | null>(null);
   const errorBoundaryResetVersionRef = useRef(0);
   if (previousErrorBoundaryMessagesRef.current !== messages) {
@@ -4838,10 +4853,12 @@ export function IssueChatThread({
             )}
               {showComposer ? (
                 <div data-testid="issue-chat-thread-notices" className="space-y-2">
-                  <BoardChatBackgroundWorkCard
-                    childrenIssues={backgroundWorkChildren}
-                    agentMap={agentMap}
-                  />
+                  {showBackgroundWorkChildren ? (
+                    <BoardChatBackgroundWorkCard
+                      childrenIssues={backgroundWorkChildren}
+                      agentMap={agentMap}
+                    />
+                  ) : null}
                   {!suppressIssueStatusNotices ? (
                     <>
                       <IssueAssignedBacklogNotice
