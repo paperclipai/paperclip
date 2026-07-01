@@ -431,6 +431,8 @@ function workspaceOperationPhaseLabel(phase: WorkspaceOperation["phase"]) {
   switch (phase) {
     case "worktree_prepare":
       return "Worktree setup";
+    case "workspace_config_freshness":
+      return "Config freshness";
     case "workspace_provision":
       return "Provision";
     case "workspace_teardown":
@@ -1671,6 +1673,9 @@ function ConfigurationTab({
         hideInstructionsFile={hideInstructionsFile}
         sectionLayout="cards"
       />
+      <p className="text-xs text-muted-foreground">
+        Saved adapter config affects the next run. Active runs keep the config they started with, and config changes may start a fresh adapter session.
+      </p>
 
       <TrustPresetSection
         permissions={agent.permissions}
@@ -2114,6 +2119,9 @@ function PromptsTab({
           ))}
         </div>
       )}
+      <p className="text-xs text-muted-foreground">
+        Saved instructions affect the next run. Active runs keep the instructions they started with, and instruction changes may start a fresh adapter session.
+      </p>
 
       <Collapsible defaultOpen={currentMode === "external"}>
         <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">

@@ -82,6 +82,13 @@ export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./clo
 export { companyPortabilityService } from "./company-portability.js";
 export { teamsCatalogService } from "./teams-catalog.js";
 export { environmentService } from "./environments.js";
+export {
+  applyCustomImageTemplateToSandboxConfig,
+  fingerprintEnvironmentSandboxProviderConfig,
+} from "./environment-custom-image-runtime.js";
+export {
+  environmentCustomImageService,
+} from "./environment-custom-images.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
 export { workspaceOperationService } from "./workspace-operations.js";
 export { workspaceFileResourceService } from "./workspace-file-resources.js";

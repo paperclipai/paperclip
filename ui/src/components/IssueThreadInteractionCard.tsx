@@ -983,6 +983,24 @@ function AskUserQuestionsCard({
             <p className="mt-1">No answer was recorded.</p>
           )}
         </div>
+      ) : interaction.status === "expired" ? (
+        <div className="rounded-2xl border border-amber-300/70 bg-amber-50/85 p-4 text-sm leading-6 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+          <div className="flex items-center gap-2 font-semibold">
+            <AlertTriangle className="h-4 w-4" />
+            {questions.length === 1 ? "Question expired by comment" : "Questions expired by comment"}
+          </div>
+          <p className="mt-1">
+            A later board/user comment superseded this question request. Create a fresh request if answers are still needed.
+          </p>
+          {interaction.result?.commentId ? (
+            <a
+              href={`#comment-${interaction.result.commentId}`}
+              className="mt-3 inline-flex text-sm font-medium underline underline-offset-4"
+            >
+              Jump to comment
+            </a>
+          ) : null}
+        </div>
       ) : (
         <div className="space-y-3">
           {questions.map((question) => {

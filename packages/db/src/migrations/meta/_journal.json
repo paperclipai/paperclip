@@ -880,8 +880,15 @@
     {
       "idx": 125,
       "version": "7",
+      "when": 1782440100000,
+      "tag": "0125_environment_custom_image_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 126,
+      "version": "7",
       "when": 1781490300000,
-      "tag": "0125_micro_registry",
+      "tag": "0126_micro_registry",
       "breakpoints": true
     }
   ]
