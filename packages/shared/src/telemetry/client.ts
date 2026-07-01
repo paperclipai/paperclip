@@ -34,11 +34,20 @@ export class TelemetryClient {
     this.version = version;
   }
 
+  /**
+   * Tracks first-party Paperclip telemetry events registered in the generated
+   * backend event schema.
+   */
   track<K extends TelemetryEventName>(eventName: K, ...args: TrackArgs<K>): void {
     const [dimensions] = args;
     this.enqueue(eventName, dimensions);
   }
 
+  /**
+   * Tracks plugin telemetry bridge events whose names are built dynamically
+   * from third-party plugin input. The backend accepts only explicitly
+   * registered plugin events.
+   */
   trackDynamic(eventName: string, dimensions?: TelemetryDimensions): void {
     this.enqueue(eventName, dimensions);
   }

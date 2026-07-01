@@ -1,144 +1,10 @@
 import type { TelemetryClient } from "./client.js";
 import type { EventDimensionsMap } from "./generated/paperclip-telemetry.js";
 
-type AgentRole = EventDimensionsMap["agent.created"]["agent_role"];
-type AdapterType = EventDimensionsMap["install.completed"]["adapter_type"];
-type SourceType = EventDimensionsMap["company.imported"]["source_type"];
-type GoalLevel = EventDimensionsMap["goal.created"]["goal_level"];
-type RoutineRunSource = EventDimensionsMap["routine.run"]["source"];
-type RoutineRunStatus = EventDimensionsMap["routine.run"]["status"];
-type InteractionKind = EventDimensionsMap["interaction.resolved"]["interaction_kind"];
-type InteractionStatus = EventDimensionsMap["interaction.resolved"]["status"];
-type InteractionResolutionReason = NonNullable<EventDimensionsMap["interaction.resolved"]["resolution_reason"]>;
-type InteractionResolvedByKind = EventDimensionsMap["interaction.resolved"]["resolved_by_kind"];
-type InteractionCreatedByKind = NonNullable<EventDimensionsMap["interaction.resolved"]["created_by_kind"]>;
-type InteractionContinuationPolicy = NonNullable<EventDimensionsMap["interaction.resolved"]["continuation_policy"]>;
-type InteractionTargetType = NonNullable<EventDimensionsMap["interaction.resolved"]["target_type"]>;
+type RawDimension<T extends string | undefined> = T | (string & {});
 
-const AGENT_ROLES = [
-  "ceo",
-  "cto",
-  "cmo",
-  "cfo",
-  "security",
-  "engineer",
-  "designer",
-  "pm",
-  "qa",
-  "devops",
-  "researcher",
-  "general",
-  "other",
-] as const satisfies readonly AgentRole[];
-
-const ADAPTER_TYPES = [
-  "process",
-  "http",
-  "acpx_local",
-  "claude_local",
-  "codex_local",
-  "cursor_cloud",
-  "gemini_local",
-  "hermes_gateway",
-  "hermes_local",
-  "opencode_local",
-  "pi_local",
-  "cursor",
-  "openclaw_gateway",
-  "grok_local",
-  "other",
-] as const satisfies readonly AdapterType[];
-
-const SOURCE_TYPES = [
-  "local_path",
-  "github",
-  "url",
-  "catalog",
-  "skills_sh",
-  "unknown",
-] as const satisfies readonly SourceType[];
-
-const GOAL_LEVELS = [
-  "company",
-  "team",
-  "agent",
-  "task",
-  "other",
-] as const satisfies readonly GoalLevel[];
-const ROUTINE_RUN_SOURCES = [
-  "schedule",
-  "manual",
-  "api",
-  "webhook",
-  "other",
-] as const satisfies readonly RoutineRunSource[];
-const ROUTINE_RUN_STATUSES = [
-  "received",
-  "coalesced",
-  "skipped",
-  "issue_created",
-  "completed",
-  "failed",
-  "other",
-] as const satisfies readonly RoutineRunStatus[];
-const INTERACTION_KINDS = [
-  "suggest_tasks",
-  "ask_user_questions",
-  "request_confirmation",
-  "request_checkbox_confirmation",
-  "other",
-] as const satisfies readonly InteractionKind[];
-const INTERACTION_STATUSES = [
-  "accepted",
-  "rejected",
-  "answered",
-  "cancelled",
-  "expired",
-  "failed",
-  "other",
-] as const satisfies readonly InteractionStatus[];
-const INTERACTION_RESOLUTION_REASONS = [
-  "accepted",
-  "rejected",
-  "stale_target",
-  "superseded_by_comment",
-  "expired",
-  "cancelled",
-  "other",
-] as const satisfies readonly InteractionResolutionReason[];
-const INTERACTION_RESOLVED_BY_KINDS = [
-  "user",
-  "agent",
-  "system",
-  "other",
-] as const satisfies readonly InteractionResolvedByKind[];
-const INTERACTION_CREATED_BY_KINDS = [
-  "agent",
-  "user",
-  "other",
-] as const satisfies readonly InteractionCreatedByKind[];
-const INTERACTION_CONTINUATION_POLICIES = [
-  "none",
-  "wake_assignee",
-  "wake_assignee_on_accept",
-  "other",
-] as const satisfies readonly InteractionContinuationPolicy[];
-const INTERACTION_TARGET_TYPES = [
-  "issue_document",
-  "custom",
-  "none",
-  "other",
-] as const satisfies readonly InteractionTargetType[];
-
-function normalizeEnum<T extends string>(
-  value: string | null | undefined,
-  allowed: readonly T[],
-  fallback: T,
-): T {
-  for (const allowedValue of allowed) {
-    if (value === allowedValue) return allowedValue;
-  }
-  return fallback;
+function asEventDimension<T extends string>(value: RawDimension<T>): T {
+  return value as T;
 }
 
 export function trackInstallStarted(client: TelemetryClient): void {
@@ -147,20 +13,24 @@ export function trackInstallStarted(client: TelemetryClient): void {
 
 export function trackInstallCompleted(
   client: TelemetryClient,
-  dims: { adapterType: string },
+  dims: { adapterType: RawDimension<EventDimensionsMap["install.completed"]["adapter_type"]> },
 ): void {
   client.track("install.completed", {
-    adapter_type: normalizeEnum(dims.adapterType, ADAPTER_TYPES, "other"),
+    adapter_type: asEventDimension(dims.adapterType),
   });
 }
 
 export function trackCompanyImported(
   client: TelemetryClient,
-  dims: { sourceType: string; sourceRef: string; isPrivate: boolean },
+  dims: {
+    sourceType: RawDimension<EventDimensionsMap["company.imported"]["source_type"]>;
+    sourceRef: string;
+    isPrivate: boolean;
+  },
 ): void {
   const ref = dims.isPrivate ? client.hashPrivateRef(dims.sourceRef) : dims.sourceRef;
   client.track("company.imported", {
-    source_type: normalizeEnum(dims.sourceType, SOURCE_TYPES, "unknown"),
+    source_type: asEventDimension(dims.sourceType),
     source_ref: ref,
     source_ref_hashed: dims.isPrivate,
   });
@@ -176,49 +46,61 @@ export function trackRoutineCreated(client: TelemetryClient): void {
 
 export function trackRoutineRun(
   client: TelemetryClient,
-  dims: { source: string; status: string },
+  dims: {
+    source: RawDimension<EventDimensionsMap["routine.run"]["source"]>;
+    status: RawDimension<EventDimensionsMap["routine.run"]["status"]>;
+  },
 ): void {
   client.track("routine.run", {
-    source: normalizeEnum(dims.source, ROUTINE_RUN_SOURCES, "other"),
-    status: normalizeEnum(dims.status, ROUTINE_RUN_STATUSES, "other"),
+    source: asEventDimension(dims.source),
+    status: asEventDimension(dims.status),
   });
 }
 
 export function trackGoalCreated(
   client: TelemetryClient,
-  dims?: { goalLevel?: string | null },
+  dims?: { goalLevel?: RawDimension<EventDimensionsMap["goal.created"]["goal_level"]> | null },
 ): void {
   client.track("goal.created", {
-    goal_level: normalizeEnum(dims?.goalLevel, GOAL_LEVELS, "other"),
+    goal_level: dims?.goalLevel ? asEventDimension(dims.goalLevel) : "other",
   });
 }
 
 export function trackAgentCreated(
   client: TelemetryClient,
-  dims: { agentRole: string; agentId: string },
+  dims: {
+    agentRole: RawDimension<EventDimensionsMap["agent.created"]["agent_role"]>;
+    agentId: string;
+  },
 ): void {
   client.track("agent.created", {
-    agent_role: normalizeEnum(dims.agentRole, AGENT_ROLES, "other"),
+    agent_role: asEventDimension(dims.agentRole),
     agent_id: dims.agentId,
   });
 }
 
 export function trackSkillImported(
   client: TelemetryClient,
-  dims: { sourceType: string; skillRef?: string | null },
+  dims: {
+    sourceType: RawDimension<EventDimensionsMap["skill.imported"]["source_type"]>;
+    skillRef?: string | null;
+  },
 ): void {
   client.track("skill.imported", {
-    source_type: normalizeEnum(dims.sourceType, SOURCE_TYPES, "unknown"),
+    source_type: asEventDimension(dims.sourceType),
     ...(dims.skillRef ? { skill_ref: dims.skillRef } : {}),
   });
 }
 
 export function trackAgentFirstHeartbeat(
   client: TelemetryClient,
-  dims: { agentRole: string; agentId: string },
+  dims: {
+    agentRole: RawDimension<EventDimensionsMap["agent.first_heartbeat"]["agent_role"]>;
+    agentId: string;
+  },
 ): void {
   client.track("agent.first_heartbeat", {
-    agent_role: normalizeEnum(dims.agentRole, AGENT_ROLES, "other"),
+    agent_role: asEventDimension(dims.agentRole),
     agent_id: dims.agentId,
   });
 }
@@ -226,16 +108,16 @@ export function trackAgentFirstHeartbeat(
 export function trackAgentTaskCompleted(
   client: TelemetryClient,
   dims: {
-    agentRole: string;
+    agentRole: RawDimension<EventDimensionsMap["agent.task_completed"]["agent_role"]>;
     agentId: string;
-    adapterType: string;
+    adapterType: RawDimension<EventDimensionsMap["agent.task_completed"]["adapter_type"]>;
     model?: string;
   },
 ): void {
   client.track("agent.task_completed", {
-    agent_role: normalizeEnum(dims.agentRole, AGENT_ROLES, "other"),
+    agent_role: asEventDimension(dims.agentRole),
     agent_id: dims.agentId,
-    adapter_type: normalizeEnum(dims.adapterType, ADAPTER_TYPES, "other"),
+    adapter_type: asEventDimension(dims.adapterType),
     ...(dims.model ? { model: dims.model } : {}),
   });
 }
@@ -250,14 +132,14 @@ export function trackErrorHandlerCrash(
 export function trackInteractionResolved(
   client: TelemetryClient,
   dims: {
-    interactionKind: string;
-    status: string;
-    resolvedByKind: string;
-    resolutionReason?: string | null;
-    createdByKind?: string | null;
-    creatorAgentRole?: string | null;
-    continuationPolicy?: string | null;
-    targetType?: string | null;
+    interactionKind: RawDimension<EventDimensionsMap["interaction.resolved"]["interaction_kind"]>;
+    status: RawDimension<EventDimensionsMap["interaction.resolved"]["status"]>;
+    resolvedByKind: RawDimension<EventDimensionsMap["interaction.resolved"]["resolved_by_kind"]>;
+    resolutionReason?: RawDimension<EventDimensionsMap["interaction.resolved"]["resolution_reason"]> | null;
+    createdByKind?: RawDimension<EventDimensionsMap["interaction.resolved"]["created_by_kind"]> | null;
+    creatorAgentRole?: RawDimension<EventDimensionsMap["interaction.resolved"]["creator_agent_role"]> | null;
+    continuationPolicy?: RawDimension<EventDimensionsMap["interaction.resolved"]["continuation_policy"]> | null;
+    targetType?: RawDimension<EventDimensionsMap["interaction.resolved"]["target_type"]> | null;
     optionCount?: number;
     selectedOptionCount?: number;
     questionCount?: number;
@@ -266,24 +148,14 @@ export function trackInteractionResolved(
   },
 ): void {
   client.track("interaction.resolved", {
-    interaction_kind: normalizeEnum(dims.interactionKind, INTERACTION_KINDS, "other"),
-    status: normalizeEnum(dims.status, INTERACTION_STATUSES, "other"),
-    resolved_by_kind: normalizeEnum(dims.resolvedByKind, INTERACTION_RESOLVED_BY_KINDS, "other"),
-    ...(dims.resolutionReason
-      ? { resolution_reason: normalizeEnum(dims.resolutionReason, INTERACTION_RESOLUTION_REASONS, "other") }
-      : {}),
-    ...(dims.createdByKind
-      ? { created_by_kind: normalizeEnum(dims.createdByKind, INTERACTION_CREATED_BY_KINDS, "other") }
-      : {}),
-    ...(dims.creatorAgentRole
-      ? { creator_agent_role: normalizeEnum(dims.creatorAgentRole, AGENT_ROLES, "other") }
-      : {}),
-    ...(dims.continuationPolicy
-      ? { continuation_policy: normalizeEnum(dims.continuationPolicy, INTERACTION_CONTINUATION_POLICIES, "other") }
-      : {}),
-    ...(dims.targetType
-      ? { target_type: normalizeEnum(dims.targetType, INTERACTION_TARGET_TYPES, "other") }
-      : {}),
+    interaction_kind: asEventDimension(dims.interactionKind),
+    status: asEventDimension(dims.status),
+    resolved_by_kind: asEventDimension(dims.resolvedByKind),
+    ...(dims.resolutionReason ? { resolution_reason: asEventDimension(dims.resolutionReason) } : {}),
+    ...(dims.createdByKind ? { created_by_kind: asEventDimension(dims.createdByKind) } : {}),
+    ...(dims.creatorAgentRole ? { creator_agent_role: asEventDimension(dims.creatorAgentRole) } : {}),
+    ...(dims.continuationPolicy ? { continuation_policy: asEventDimension(dims.continuationPolicy) } : {}),
+    ...(dims.targetType ? { target_type: asEventDimension(dims.targetType) } : {}),
     ...(dims.optionCount === undefined ? {} : { option_count: dims.optionCount }),
     ...(dims.selectedOptionCount === undefined ? {} : { selected_option_count: dims.selectedOptionCount }),
     ...(dims.questionCount === undefined ? {} : { question_count: dims.questionCount }),
