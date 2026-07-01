@@ -144,7 +144,11 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 - `todo` — ready and actionable, but not checked out yet. Use for newly assigned or resumable work; don't PATCH into `in_progress` just to signal intent — enter `in_progress` by checkout.
 - `in_progress` — actively owned, execution-backed work.
 - `in_review` — paused pending reviewer/approver/board/user feedback. Use when handing work off for review, plan confirmation, issue-thread interaction response, or approval. This is a healthy waiting path, not a synonym for done. If a human asks to take the task back, reassign to them and set `in_review`.
-- `blocked` — cannot proceed until something specific changes. Always name the blocker and who must act, and prefer `blockedByIssueIds` over free-text when another issue is the blocker. `parentId` alone does not imply a blocker.
+- `blocked` — cannot proceed until a **first-class blocker** resolves. `blocked` REQUIRES a non-empty `blockedByIssueIds` pointing at a live (non-terminal) issue. It is **not** a generic "waiting" or "parked" state. `parentId` alone does not imply a blocker. Specifically:
+  - **Waiting on a human decision/sign-off/action** (a person, not another issue) → do **not** use `blocked`. Route it: `PATCH` `assigneeUserId` = the decision owner, `assigneeAgentId: null`, `status: in_review` (optionally add a `request_confirmation`/`ask_user_questions` interaction). Resolve the owner via `rootHumanRequester`/`createdByUserId` per the routing rules. A one-way-door "waiting on your go-ahead" belongs here, never in `blocked`.
+  - **Waiting on external/infra work that has no issue yet** → **create the blocker issue first**, then set `blockedByIssueIds: [that-id]`. Never sit `blocked` pointing at nothing — the board can never auto-resume it.
+  - **Driven by a bound routine or a scheduled monitor** (the routine/monitor is the continuation path) → stay `in_review` (monitored) or `in_progress`, **never** `blocked`. Parking a routine-driven tracker as `blocked` to silence continuation nags is wrong; `in_review` is not scanned for stranded-recovery, so it won't churn.
+  - A blocker that goes `cancelled` (not `done`) does **not** auto-resume the dependent — replace or clear the `blockedByIssueIds` explicitly, or the dependent is a permanent dead-end.
 - `done` — work complete, no follow-up on this issue.
 - `cancelled` — intentionally abandoned, not to be resumed.
 

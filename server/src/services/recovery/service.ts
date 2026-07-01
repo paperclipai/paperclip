@@ -23,6 +23,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  routines,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -599,6 +600,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           eq(issueThreadInteractions.issueId, issueId),
           eq(issueThreadInteractions.status, "pending"),
           inArray(issueThreadInteractions.continuationPolicy, ["wake_assignee", "wake_assignee_on_accept"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  // A tracker issue whose continuation path is a bound, active routine is not
+  // "stranded" — the routine (its cron/webhook triggers) is what drives it forward.
+  // Nagging it as continuation-needed pushes agents to mis-park it as `blocked`.
+  async function hasActiveBoundRoutine(companyId: string, issueId: string) {
+    return db
+      .select({ id: routines.id })
+      .from(routines)
+      .where(
+        and(
+          eq(routines.companyId, companyId),
+          eq(routines.parentIssueId, issueId),
+          eq(routines.status, "active"),
         ),
       )
       .limit(1)
@@ -2756,6 +2775,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await hasPendingWakeInteraction(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await hasActiveBoundRoutine(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
       }
