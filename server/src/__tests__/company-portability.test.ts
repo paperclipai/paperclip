@@ -2304,6 +2304,72 @@ describe("company portability", () => {
     }));
   });
 
+  it("strips YAML single quotes from imported agent display fields", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Imported Paperclip",
+    });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.create.mockResolvedValue({
+      id: "agent-created",
+      name: "CEO / Editor",
+    });
+
+    const files = {
+      "COMPANY.md": [
+        "---",
+        "schema: agentcompanies/v1",
+        "name: 'Imported Paperclip'",
+        "---",
+        "",
+      ].join("\n"),
+      "agents/ceo/AGENTS.md": [
+        "---",
+        "name: 'CEO / Editor'",
+        "title: 'Editor''s Desk'",
+        "---",
+        "",
+        "# CEO / Editor",
+        "",
+        "You edit the company newsletter.",
+        "",
+      ].join("\n"),
+    };
+
+    const preview = await portability.previewImport({
+      source: { type: "inline", rootPath: "paperclip-demo", files },
+      include: { company: true, agents: true, projects: false, issues: false },
+      target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
+      agents: "all",
+      collisionStrategy: "rename",
+    });
+
+    expect(preview.errors).toEqual([]);
+    expect(preview.manifest.company?.name).toBe("Imported Paperclip");
+    expect(preview.manifest.agents).toEqual([
+      expect.objectContaining({
+        slug: "ceo",
+        name: "CEO / Editor",
+        title: "Editor's Desk",
+      }),
+    ]);
+
+    await portability.importBundle({
+      source: { type: "inline", rootPath: "paperclip-demo", files },
+      include: { company: true, agents: true, projects: false, issues: false },
+      target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(agentSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      name: "CEO / Editor",
+      title: "Editor's Desk",
+    }));
+  });
+
   it("preserves agent role from frontmatter when extension block omits it", async () => {
     const portability = companyPortabilityService({} as any);
 
