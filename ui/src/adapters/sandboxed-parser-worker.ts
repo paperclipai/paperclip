@@ -54,7 +54,11 @@ function shadow(prop) {
         writable: false,
         enumerable: true
       });
-    } catch (e) {}
+    } catch (e) {
+      if (curr === self) {
+        throw new Error("Failed to shadow sandbox global: " + prop);
+      }
+    }
     curr = Object.getPrototypeOf(curr);
   }
 }
