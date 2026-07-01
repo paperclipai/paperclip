@@ -550,6 +550,7 @@ export interface Issue {
   executionLockedAt: Date | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  responsibleUserId: string | null;
   issueNumber: number | null;
   identifier: string | null;
   originKind?: IssueOriginKind;

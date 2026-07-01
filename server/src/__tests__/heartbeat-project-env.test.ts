@@ -283,6 +283,72 @@ describe("resolveExecutionRunAdapterConfig", () => {
     });
   });
 
+  it("blocks required missing user secrets before runtime env resolution", async () => {
+    const resolveAdapterConfigForRuntime = vi.fn();
+    const resolveEnvBindings = vi.fn();
+    const collectMissingRuntimeBindings = vi.fn(async (_companyId, _env, context) =>
+      context.consumerType === "agent"
+        ? [
+            {
+              consumerType: "agent",
+              consumerId: "agent-1",
+              configPath: "env.GITHUB_TOKEN",
+              envKey: "GITHUB_TOKEN",
+              bindingType: "user_secret_ref",
+              secretId: null,
+              secretName: null,
+              userSecretDefinitionId: "definition-1",
+              userSecretDefinitionKey: "github_token",
+              userSecretDefinitionName: "GitHub token",
+              responsibleUserId: context.responsibleUserId,
+              errorCode: "user_secret_missing",
+            },
+          ]
+        : [],
+    );
+
+    await expect(resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      responsibleUserId: "user-1",
+      executionRunConfig: {
+        env: {
+          GITHUB_TOKEN: { type: "user_secret_ref", key: "github_token", required: true },
+        },
+      },
+      projectEnv: null,
+      secretsSvc: {
+        resolveAdapterConfigForRuntime,
+        resolveEnvBindings,
+        collectMissingRuntimeBindings,
+      } as any,
+    })).rejects.toMatchObject({
+      code: "configuration_incomplete",
+      resultJson: {
+        configurationIncomplete: {
+          reason: "secret_binding_missing",
+          companyId: "company-1",
+          agentId: "agent-1",
+          issueId: "issue-1",
+          missingBindings: [
+            expect.objectContaining({
+              bindingType: "user_secret_ref",
+              userSecretDefinitionKey: "github_token",
+              responsibleUserId: "user-1",
+            }),
+          ],
+        },
+      },
+    });
+    expect(collectMissingRuntimeBindings.mock.calls[0]?.[2]).toMatchObject({
+      responsibleUserId: "user-1",
+    });
+    expect(resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
+    expect(resolveEnvBindings).not.toHaveBeenCalled();
+  });
+
   it("rejects inline sensitive env values for low-trust runs", async () => {
     await expect(resolveExecutionRunAdapterConfig({
       companyId: "company-1",

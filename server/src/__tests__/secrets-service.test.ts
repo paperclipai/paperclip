@@ -14,6 +14,8 @@ import {
   companySecrets,
   createDb,
   secretAccessEvents,
+  userSecretDeclarations,
+  userSecretDefinitions,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
@@ -47,9 +49,11 @@ describeEmbeddedPostgres("secretService", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await db.delete(secretAccessEvents);
+    await db.delete(userSecretDeclarations);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
+    await db.delete(userSecretDefinitions);
     await db.delete(companySecretProviderConfigs);
     await db.delete(companyMemberships);
     await db.delete(agents);
@@ -342,6 +346,56 @@ describeEmbeddedPostgres("secretService", () => {
     expect(resolved.manifest[0]?.bindingId).toBe(binding!.id);
   });
 
+  it("denies user secret resolution outside the low-trust declaration allowlist", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+    const env = {
+      GITHUB_TOKEN: { type: "user_secret_ref" as const, key: "github_token", version: "latest" as const },
+    };
+
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: "agent-1" }, env);
+    await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionKey: "github_token",
+      value: "user-one-secret",
+    });
+    const [declaration] = await db
+      .select()
+      .from(userSecretDeclarations)
+      .where(eq(userSecretDeclarations.userSecretDefinitionId, definition.id));
+    expect(declaration?.id).toBeTruthy();
+
+    await expect(
+      svc.resolveEnvBindings(companyId, env, {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        actorType: "agent",
+        actorId: "agent-1",
+        responsibleUserId: "user-1",
+        allowedBindingIds: ["11111111-1111-4111-8111-111111111111"],
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "binding_not_allowed" },
+    });
+
+    const resolved = await svc.resolveEnvBindings(companyId, env, {
+      consumerType: "agent",
+      consumerId: "agent-1",
+      actorType: "agent",
+      actorId: "agent-1",
+      responsibleUserId: "user-1",
+      allowedBindingIds: [declaration!.id],
+    });
+    expect(resolved.env.GITHUB_TOKEN).toBe("user-one-secret");
+    expect(resolved.manifest[0]?.bindingId).toBe(declaration!.id);
+  });
+
   it("resolves routine env secret refs through routine bindings and records value-free access metadata", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -385,6 +439,264 @@ describeEmbeddedPostgres("secretService", () => {
       outcome: "success",
     });
     expect(JSON.stringify(events)).not.toContain("routine-super-secret");
+  });
+
+  it("resolves user secret refs through responsible-user values and records owner metadata", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    await seedCompanyMember(companyId, "user-2", "member");
+    const svc = secretService(db);
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+    const env = {
+      GITHUB_TOKEN: { type: "user_secret_ref" as const, key: "github_token", version: "latest" as const },
+    };
+
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: "agent-1" }, env);
+    const userOneSecret = await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionKey: "github_token",
+      value: "user-one-secret",
+    });
+
+    await expect(
+      svc.resolveEnvBindings(companyId, env, {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        actorType: "agent",
+        actorId: "agent-1",
+        responsibleUserId: "user-2",
+      }),
+    ).rejects.toThrow(/not configured/i);
+    await expect(
+      svc.collectMissingRuntimeBindings(companyId, env, {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        responsibleUserId: "user-2",
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        bindingType: "user_secret_ref",
+        configPath: "env.GITHUB_TOKEN",
+        envKey: "GITHUB_TOKEN",
+        userSecretDefinitionId: definition.id,
+        userSecretDefinitionKey: "github_token",
+        responsibleUserId: "user-2",
+        errorCode: "user_secret_missing",
+      }),
+    ]);
+
+    const optionalEnv = {
+      OPTIONAL_GITHUB_TOKEN: {
+        type: "user_secret_ref" as const,
+        key: "github_token",
+        version: "latest" as const,
+        required: false,
+      },
+    };
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: "agent-optional" }, optionalEnv);
+    await expect(
+      svc.collectMissingRuntimeBindings(companyId, optionalEnv, {
+        consumerType: "agent",
+        consumerId: "agent-optional",
+        responsibleUserId: "user-2",
+      }),
+    ).resolves.toEqual([]);
+    await expect(
+      svc.resolveEnvBindings(companyId, optionalEnv, {
+        consumerType: "agent",
+        consumerId: "agent-optional",
+        actorType: "agent",
+        actorId: "agent-optional",
+        responsibleUserId: "user-2",
+      }),
+    ).resolves.toMatchObject({
+      env: {},
+      manifest: [],
+    });
+
+    await db
+      .update(userSecretDefinitions)
+      .set({ status: "disabled" })
+      .where(eq(userSecretDefinitions.id, definition.id));
+    await expect(
+      svc.resolveEnvBindings(companyId, optionalEnv, {
+        consumerType: "agent",
+        consumerId: "agent-optional",
+        actorType: "agent",
+        actorId: "agent-optional",
+        responsibleUserId: "user-2",
+      }),
+    ).resolves.toMatchObject({
+      env: {},
+      manifest: [],
+    });
+    await db
+      .update(userSecretDefinitions)
+      .set({ status: "deleted", deletedAt: new Date() })
+      .where(eq(userSecretDefinitions.id, definition.id));
+    await expect(
+      svc.resolveEnvBindings(companyId, optionalEnv, {
+        consumerType: "agent",
+        consumerId: "agent-optional",
+        actorType: "agent",
+        actorId: "agent-optional",
+        responsibleUserId: "user-2",
+      }),
+    ).resolves.toMatchObject({
+      env: {},
+      manifest: [],
+    });
+    await db
+      .update(userSecretDefinitions)
+      .set({ status: "active", deletedAt: null })
+      .where(eq(userSecretDefinitions.id, definition.id));
+
+    const resolved = await svc.resolveEnvBindings(companyId, env, {
+      consumerType: "agent",
+      consumerId: "agent-1",
+      actorType: "agent",
+      actorId: "agent-1",
+      responsibleUserId: "user-1",
+    });
+
+    expect(resolved.env.GITHUB_TOKEN).toBe("user-one-secret");
+    expect(resolved.manifest[0]).toMatchObject({
+      configPath: "env.GITHUB_TOKEN",
+      envKey: "GITHUB_TOKEN",
+      secretId: userOneSecret.id,
+      secretKey: userOneSecret.key,
+      outcome: "success",
+    });
+    expect((await svc.list(companyId)).map((secret) => secret.id)).not.toContain(userOneSecret.id);
+    await expect(
+      svc.resolveSecretValue(companyId, userOneSecret.id, "latest", {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        configPath: "env.GITHUB_TOKEN",
+      }),
+    ).rejects.toThrow(/User-scoped secrets/i);
+
+    const events = await db
+      .select()
+      .from(secretAccessEvents)
+      .where(eq(secretAccessEvents.secretId, userOneSecret.id));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      companyId,
+      secretId: userOneSecret.id,
+      userSecretDefinitionId: definition.id,
+      secretScope: "user",
+      responsibleUserId: "user-1",
+      credentialOwnerUserId: "user-1",
+      credentialSubjectType: "user",
+      credentialSubjectId: "user-1",
+      outcome: "success",
+    });
+    expect(JSON.stringify(events)).not.toContain("user-one-secret");
+  });
+
+  it("treats nullable user-secret value patches as non-rotation updates", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+    const secret = await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionKey: "github_token",
+      value: "user-one-secret",
+    });
+
+    const updated = await svc.updateCurrentUserSecretValue(companyId, "user-1", secret.id, {
+      value: null,
+      externalRef: null,
+      providerVersionRef: null,
+      providerConfigId: null,
+    });
+
+    expect(updated.latestVersion).toBe(secret.latestVersion);
+    expect(updated.status).toBe(secret.status);
+    const versions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, secret.id));
+    expect(versions).toHaveLength(1);
+    expect(versions[0]).toMatchObject({ version: secret.latestVersion, status: "current" });
+    expect(versions[0]?.material).toBeTruthy();
+  });
+
+  it("reports missing adapter-config user secret refs before runtime resolution", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "hermes_api_key",
+      name: "Hermes API key",
+      provider: "local_encrypted",
+    });
+    const adapterConfig = {
+      apiBaseUrl: "http://127.0.0.1:9119/api",
+      apiKey: { type: "user_secret_ref" as const, key: "hermes_api_key", version: "latest" as const },
+    };
+    await svc.syncUserSecretDeclarationsForTarget(companyId, {
+      targetType: "agent",
+      targetId: "agent-1",
+    }, [
+      {
+        definitionKey: "hermes_api_key",
+        configPath: "apiKey",
+        envKey: "apiKey",
+      },
+    ]);
+
+    await expect(
+      svc.collectMissingAdapterConfigRuntimeBindings(
+        companyId,
+        adapterConfig,
+        "hermes_gateway",
+        {
+          consumerType: "agent",
+          consumerId: "agent-1",
+          responsibleUserId: "user-1",
+        },
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        bindingType: "user_secret_ref",
+        configPath: "apiKey",
+        envKey: "apiKey",
+        userSecretDefinitionId: definition.id,
+        userSecretDefinitionKey: "hermes_api_key",
+        responsibleUserId: "user-1",
+        errorCode: "user_secret_missing",
+      }),
+    ]);
+
+    await expect(
+      svc.collectMissingAdapterConfigRuntimeBindings(
+        companyId,
+        {
+          ...adapterConfig,
+          apiKey: {
+            type: "user_secret_ref" as const,
+            key: "hermes_api_key",
+            version: "latest" as const,
+            required: false,
+          },
+        },
+        "hermes_gateway",
+        {
+          consumerType: "agent",
+          consumerId: "agent-1",
+          responsibleUserId: "user-1",
+        },
+      ),
+    ).resolves.toEqual([]);
   });
 
   it("records stable redacted failure codes for routine env secret resolution", async () => {

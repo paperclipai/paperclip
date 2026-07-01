@@ -712,6 +712,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         id: issues.id,
         assigneeAgentId: issues.assigneeAgentId,
         createdByUserId: issues.createdByUserId,
+        responsibleUserId: issues.responsibleUserId,
       })
       .from(issues)
       .where(eq(issues.id, run.linkedIssueId!));
@@ -719,6 +720,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       id: run.linkedIssueId,
       assigneeAgentId: agentId,
       createdByUserId: userId,
+      responsibleUserId: userId,
     });
 
     const inboxIssues = await issueSvc.list(companyId, {
@@ -727,6 +729,45 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       includeRoutineExecutions: true,
     });
     expect(inboxIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+  });
+
+  it("uses the routine revision responsible-user snapshot for automatic runs", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const responsibleUserId = randomUUID();
+    const driftUserId = randomUUID();
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "snapshotted owner routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      { userId: responsibleUserId },
+    );
+
+    await db
+      .update(routines)
+      .set({ responsibleUserId: driftUserId, updatedAt: new Date() })
+      .where(eq(routines.id, routine.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.responsibleUserId).toBe(responsibleUserId);
+    const [createdIssue] = await db
+      .select({
+        responsibleUserId: issues.responsibleUserId,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!));
+    expect(createdIssue?.responsibleUserId).toBe(responsibleUserId);
   });
 
   it("waits for the assignee wakeup to be queued before returning the routine run", async () => {

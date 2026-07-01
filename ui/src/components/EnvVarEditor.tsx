@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import type { CompanySecret, EnvBinding, SecretVersionSelector } from "@paperclipai/shared";
-import { AlertCircle, KeyRound, X } from "lucide-react";
+import type {
+  CompanySecret,
+  EnvBinding,
+  SecretVersionSelector,
+  UserSecretDefinition,
+} from "@paperclipai/shared";
+import { AlertCircle, KeyRound, UserRound, X } from "lucide-react";
 import { cn } from "../lib/utils";
 import {
   Select,
@@ -30,60 +35,78 @@ function envKeyFromSecretName(name: string): string {
     .slice(0, 64);
 }
 
+type RowSource = "plain" | "secret" | "user_secret";
+
 type Row = {
   key: string;
-  source: "plain" | "secret";
+  source: RowSource;
   plainValue: string;
   secretId: string;
   version: SecretVersionSelector;
+  /** For user_secret rows: the user-secret definition key this env var resolves from. */
+  userSecretKey: string;
+  /** For user_secret rows: whether a run must fail if the responsible user has not set a value. */
+  required: boolean;
 };
 
 function emptyRow(): Row {
-  return { key: "", source: "plain", plainValue: "", secretId: "", version: "latest" };
+  return {
+    key: "",
+    source: "plain",
+    plainValue: "",
+    secretId: "",
+    version: "latest",
+    userSecretKey: "",
+    required: true,
+  };
 }
 
 function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
   if (!rec || typeof rec !== "object") {
     return [emptyRow()];
   }
-  const entries = Object.entries(rec).map(([key, binding]) => {
+  const entries = Object.entries(rec).map(([key, binding]): Row => {
     if (typeof binding === "string") {
-      return { key, source: "plain" as const, plainValue: binding, secretId: "", version: "latest" as const };
+      return { ...emptyRow(), key, source: "plain", plainValue: binding };
     }
-    if (
-      typeof binding === "object" &&
-      binding !== null &&
-      "type" in binding &&
-      (binding as { type?: unknown }).type === "secret_ref"
-    ) {
-      const record = binding as { secretId?: unknown; version?: unknown };
-      const version: SecretVersionSelector = typeof record.version === "number"
-        ? record.version
-        : "latest";
-      return {
-        key,
-        source: "secret" as const,
-        plainValue: "",
-        secretId: typeof record.secretId === "string" ? record.secretId : "",
-        version,
-      };
+    if (typeof binding === "object" && binding !== null && "type" in binding) {
+      const type = (binding as { type?: unknown }).type;
+      if (type === "secret_ref") {
+        const record = binding as { secretId?: unknown; version?: unknown };
+        const version: SecretVersionSelector =
+          typeof record.version === "number" ? record.version : "latest";
+        return {
+          ...emptyRow(),
+          key,
+          source: "secret",
+          secretId: typeof record.secretId === "string" ? record.secretId : "",
+          version,
+        };
+      }
+      if (type === "user_secret_ref") {
+        const record = binding as { key?: unknown; version?: unknown; required?: unknown };
+        const version: SecretVersionSelector =
+          typeof record.version === "number" ? record.version : "latest";
+        return {
+          ...emptyRow(),
+          key,
+          source: "user_secret",
+          userSecretKey: typeof record.key === "string" ? record.key : "",
+          version,
+          required: record.required !== false,
+        };
+      }
+      if (type === "plain") {
+        const record = binding as { value?: unknown };
+        return {
+          ...emptyRow(),
+          key,
+          source: "plain",
+          plainValue: typeof record.value === "string" ? record.value : "",
+        };
+      }
     }
-    if (
-      typeof binding === "object" &&
-      binding !== null &&
-      "type" in binding &&
-      (binding as { type?: unknown }).type === "plain"
-    ) {
-      const record = binding as { value?: unknown };
-      return {
-        key,
-        source: "plain" as const,
-        plainValue: typeof record.value === "string" ? record.value : "",
-        secretId: "",
-        version: "latest" as const,
-      };
-    }
-    return { key, source: "plain" as const, plainValue: "", secretId: "", version: "latest" as const };
+    return { ...emptyRow(), key, source: "plain" };
   });
   return [...entries, emptyRow()];
 }
@@ -91,12 +114,19 @@ function toRows(rec: Record<string, EnvBinding> | null | undefined): Row[] {
 export function EnvVarEditor({
   value,
   secrets,
+  userSecretDefinitions,
   onCreateSecret,
   onChange,
   recentlyUsedSecrets,
 }: {
   value: Record<string, EnvBinding>;
   secrets: CompanySecret[];
+  /**
+   * Optional company user-secret definitions. When present, the "User secret"
+   * source becomes a picker over these definitions; otherwise the user types
+   * the definition key directly. Absent for non-admin contexts.
+   */
+  userSecretDefinitions?: UserSecretDefinition[];
   onCreateSecret: (name: string, value: string) => Promise<CompanySecret>;
   onChange: (env: Record<string, EnvBinding> | undefined) => void;
   /**
@@ -109,6 +139,7 @@ export function EnvVarEditor({
   const [sealError, setSealError] = useState<string | null>(null);
   const valueRef = useRef(value);
   const emittingRef = useRef(false);
+  const userSecretsEnabled = (userSecretDefinitions?.length ?? 0) > 0;
 
   useEffect(() => {
     if (emittingRef.current) {
@@ -133,6 +164,18 @@ export function EnvVarEditor({
         } else {
           rec[key] = { type: "plain", value: row.plainValue };
         }
+      } else if (row.source === "user_secret") {
+        const definitionKey = row.userSecretKey.trim();
+        if (definitionKey) {
+          rec[key] = {
+            type: "user_secret_ref",
+            key: definitionKey,
+            version: row.version,
+            required: row.required,
+          };
+        } else {
+          rec[key] = { type: "plain", value: row.plainValue };
+        }
       } else {
         rec[key] = { type: "plain", value: row.plainValue };
       }
@@ -145,11 +188,8 @@ export function EnvVarEditor({
     const withPatch: Row[] = rows.map((row, rowIndex) =>
       rowIndex === index ? { ...row, ...patch, version: patch.version ?? row.version } : row,
     );
-    if (
-      withPatch[withPatch.length - 1].key ||
-      withPatch[withPatch.length - 1].plainValue ||
-      withPatch[withPatch.length - 1].secretId
-    ) {
+    const last = withPatch[withPatch.length - 1];
+    if (last.key || last.plainValue || last.secretId || last.userSecretKey) {
       withPatch.push(emptyRow());
     }
     setRows(withPatch);
@@ -158,12 +198,8 @@ export function EnvVarEditor({
 
   function removeRow(index: number) {
     const next = rows.filter((_, rowIndex) => rowIndex !== index);
-    if (
-      next.length === 0 ||
-      next[next.length - 1].key ||
-      next[next.length - 1].plainValue ||
-      next[next.length - 1].secretId
-    ) {
+    const last = next[next.length - 1];
+    if (next.length === 0 || last.key || last.plainValue || last.secretId || last.userSecretKey) {
       next.push(emptyRow());
     }
     setRows(next);
@@ -175,7 +211,13 @@ export function EnvVarEditor({
     const next = rows.map((row) => ({ ...row }));
     const trailing = next[next.length - 1];
     let target: Row;
-    if (trailing && !trailing.key && !trailing.plainValue && !trailing.secretId) {
+    if (
+      trailing &&
+      !trailing.key &&
+      !trailing.plainValue &&
+      !trailing.secretId &&
+      !trailing.userSecretKey
+    ) {
       target = trailing;
     } else {
       target = emptyRow();
@@ -226,7 +268,8 @@ export function EnvVarEditor({
           index === rows.length - 1 &&
           !row.key &&
           !row.plainValue &&
-          !row.secretId;
+          !row.secretId &&
+          !row.userSecretKey;
         return (
           <div key={index} className="flex items-center gap-1.5">
             <input
@@ -239,8 +282,10 @@ export function EnvVarEditor({
               value={row.source}
               onValueChange={(next) =>
                 updateRow(index, {
-                  source: next === "secret" ? "secret" : "plain",
-                  ...(next === "plain" ? { secretId: "" } : {}),
+                  source: next as RowSource,
+                  ...(next === "plain" ? { secretId: "", userSecretKey: "" } : {}),
+                  ...(next === "secret" ? { userSecretKey: "" } : {}),
+                  ...(next === "user_secret" ? { secretId: "" } : {}),
                 })
               }
             >
@@ -249,7 +294,8 @@ export function EnvVarEditor({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="plain">Plain</SelectItem>
-                <SelectItem value="secret">Secret</SelectItem>
+                <SelectItem value="secret">Company secret</SelectItem>
+                <SelectItem value="user_secret">User secret</SelectItem>
               </SelectContent>
             </Select>
             {row.source === "secret" ? (
@@ -324,6 +370,75 @@ export function EnvVarEditor({
                 >
                   New
                 </button>
+              </>
+            ) : row.source === "user_secret" ? (
+              <>
+                {userSecretsEnabled ? (
+                  <Select
+                    value={row.userSecretKey || SECRET_UNSET}
+                    onValueChange={(next) => {
+                      const definitionKey = next === SECRET_UNSET ? "" : next;
+                      const definition = userSecretDefinitions?.find((d) => d.key === definitionKey);
+                      updateRow(index, {
+                        userSecretKey: definitionKey,
+                        ...(definition && !row.key.trim()
+                          ? { key: envKeyFromSecretName(definition.key) }
+                          : {}),
+                      });
+                    }}
+                  >
+                    <SelectTrigger
+                      aria-label="User secret"
+                      className={cn(
+                        selectTriggerClass,
+                        "flex-[3]",
+                        row.userSecretKey &&
+                          !userSecretDefinitions?.some((d) => d.key === row.userSecretKey) &&
+                          "border-destructive text-destructive",
+                      )}
+                    >
+                      <SelectValue placeholder="Select user secret..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {row.userSecretKey &&
+                      !userSecretDefinitions?.some((d) => d.key === row.userSecretKey) ? (
+                        <SelectItem value={row.userSecretKey}>
+                          Unknown ({row.userSecretKey})
+                        </SelectItem>
+                      ) : null}
+                      {(userSecretDefinitions ?? []).map((definition) => (
+                        <SelectItem key={definition.id} value={definition.key}>
+                          {definition.name}
+                          {definition.status !== "active" ? ` (${definition.status})` : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <input
+                    className={cn(inputClass, "flex-[3]")}
+                    placeholder="user-secret key"
+                    aria-label="User secret key"
+                    value={row.userSecretKey}
+                    onChange={(event) => updateRow(index, { userSecretKey: event.target.value })}
+                  />
+                )}
+                <Select
+                  value={row.required ? "required" : "optional"}
+                  onValueChange={(next) => updateRow(index, { required: next === "required" })}
+                >
+                  <SelectTrigger
+                    className={cn(selectTriggerClass, "flex-[1]")}
+                    aria-label="Requirement"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="required">Required</SelectItem>
+                    <SelectItem value="optional">Optional</SelectItem>
+                  </SelectContent>
+                </Select>
+                <div className="w-[34px] shrink-0" />
               </>
             ) : (
               <>
@@ -416,9 +531,23 @@ export function EnvVarEditor({
           </p>
         );
       })()}
+      {(() => {
+        const userRows = rows.filter((row) => row.source === "user_secret" && row.userSecretKey);
+        if (!userRows.length) return null;
+        return (
+          <p className="text-[11px] text-muted-foreground inline-flex items-start gap-1">
+            <UserRound className="h-3 w-3 mt-0.5 shrink-0" />
+            <span>
+              User secrets resolve to the value set by the user responsible for the run. Required
+              bindings fail the run until that user sets their value under Secrets → My secrets.
+            </span>
+          </p>
+        );
+      })()}
       <p className="text-[11px] text-muted-foreground/60">
-        Set KEY to the env var name the process expects, for example GH_TOKEN. Choose Secret to resolve a stored
-        value at run start. PAPERCLIP_* variables are injected automatically.
+        Set KEY to the env var name the process expects, for example GH_TOKEN. Choose Company secret
+        to resolve a shared stored value, or User secret to resolve each user&apos;s own value at run
+        start. PAPERCLIP_* variables are injected automatically.
       </p>
     </div>
   );

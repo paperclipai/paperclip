@@ -28,6 +28,7 @@ import {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const execFileAsync = promisify(execFile);
+let seedGraphSequence = 0;
 
 type TestGraph = {
   companyId: string;
@@ -63,6 +64,8 @@ async function seedGraph(db: Db, input: {
   projectSourceType?: string;
   targetProjectSourceType?: string;
 }): Promise<TestGraph> {
+  seedGraphSequence += 1;
+  const prefixSuffix = seedGraphSequence.toString(36).toUpperCase().padStart(4, "0");
   const suffix = crypto.randomUUID().slice(0, 8);
   const companyId = crypto.randomUUID();
   const otherCompanyId = crypto.randomUUID();
@@ -79,8 +82,8 @@ async function seedGraph(db: Db, input: {
   const otherIssueId = crypto.randomUUID();
 
   await db.insert(companies).values([
-    { id: companyId, name: `Company ${suffix}`, issuePrefix: `F${suffix.slice(0, 4).toUpperCase()}` },
-    { id: otherCompanyId, name: `Other ${suffix}`, issuePrefix: `G${suffix.slice(0, 4).toUpperCase()}` },
+    { id: companyId, name: `Company ${suffix}`, issuePrefix: `F${prefixSuffix}` },
+    { id: otherCompanyId, name: `Other ${suffix}`, issuePrefix: `G${prefixSuffix}` },
   ]);
   await db.insert(goals).values([
     { id: goalId, companyId, title: "Goal", level: "company", status: "active" },

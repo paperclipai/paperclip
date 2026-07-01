@@ -2151,6 +2151,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(goals);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(environments);
     await db.delete(instanceSettings);
@@ -2235,6 +2236,57 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       mode: "isolated_workspace",
       workspaceRuntime: { profile: "agent" },
     });
+  });
+
+  it("inherits responsible user for agent-created child issues", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const responsibleUserId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Coder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const parent = await svc.create(companyId, {
+      title: "Parent issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      createdByUserId: responsibleUserId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "running",
+      responsibleUserId,
+      contextSnapshot: { issueId: parent.id },
+    });
+
+    const child = await svc.create(companyId, {
+      parentId: parent.id,
+      title: "Agent-created child",
+      createdByAgentId: agentId,
+      actorRunId: runId,
+    });
+
+    expect(parent.responsibleUserId).toBe(responsibleUserId);
+    expect(child.responsibleUserId).toBe(responsibleUserId);
   });
 
   it("does not stamp the assignee default environment onto new issues", async () => {

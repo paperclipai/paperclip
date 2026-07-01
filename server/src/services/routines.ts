@@ -452,6 +452,7 @@ function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSna
     catchUpPolicy: routine.catchUpPolicy as RoutineRevisionSnapshotV1["routine"]["catchUpPolicy"],
     variables: routine.variables ?? [],
     env: routine.env ?? null,
+    responsibleUserId: routine.responsibleUserId ?? null,
   };
 }
 
@@ -819,6 +820,7 @@ export function routineService(
         createdByAgentId: actor.agentId ?? null,
         createdByUserId: actor.userId ?? null,
         createdByRunId: actor.runId ?? null,
+        responsibleUserId: snapshot.routine.responsibleUserId ?? null,
         createdAt: now,
       })
       .returning();
@@ -1136,6 +1138,7 @@ export function routineService(
           completedAt: triggeredAt,
           linkedIssueId: null,
           routineRevisionId: input.routine.latestRevisionId,
+          responsibleUserId: input.routine.responsibleUserId ?? null,
         })
         .returning();
       await updateRoutineTouchedState({
@@ -1485,6 +1488,26 @@ export function routineService(
 
       const triggeredAt = new Date();
       const manualRunnerUserId = input.source === "manual" ? input.actor?.userId ?? null : null;
+      const latestRevisionResponsibleUserId = input.routine.latestRevisionId
+        ? await txDb
+            .select({
+              responsibleUserId: routineRevisions.responsibleUserId,
+              snapshot: routineRevisions.snapshot,
+            })
+            .from(routineRevisions)
+            .where(and(
+              eq(routineRevisions.companyId, input.routine.companyId),
+              eq(routineRevisions.routineId, input.routine.id),
+              eq(routineRevisions.id, input.routine.latestRevisionId),
+            ))
+            .then((rows) => {
+              const row = rows[0] ?? null;
+              const snapshot = row?.snapshot as RoutineRevisionSnapshotV1 | undefined;
+              return row?.responsibleUserId ?? snapshot?.routine.responsibleUserId ?? null;
+            })
+        : null;
+      const responsibleUserId =
+        manualRunnerUserId ?? latestRevisionResponsibleUserId ?? input.routine.responsibleUserId ?? null;
       const [createdRun] = await txDb
         .insert(routineRuns)
         .values({
@@ -1498,6 +1521,7 @@ export function routineService(
           triggerPayload,
           dispatchFingerprint,
           routineRevisionId: input.routine.latestRevisionId,
+          responsibleUserId,
         })
         .returning();
 
@@ -1551,6 +1575,7 @@ export function routineService(
             assigneeAgentId,
             createdByAgentId: input.source === "manual" ? input.actor?.agentId ?? null : null,
             createdByUserId: manualRunnerUserId,
+            responsibleUserId,
             originKind: issueOriginKind,
             originId: issueOriginId,
             originRunId: createdRun.id,
@@ -1860,6 +1885,7 @@ export function routineService(
             catchUpPolicy: input.catchUpPolicy,
             variables,
             env,
+            responsibleUserId: actor.userId ?? null,
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             updatedByAgentId: actor.agentId ?? null,
