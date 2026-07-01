@@ -430,7 +430,7 @@ export interface PluginConfigClient {
    * Values are validated against the plugin's `instanceConfigSchema` by the
    * host before being passed to the worker.
    */
-  get(): Promise<Record<string, unknown>>;
+  get(params?: { companyId?: string | null }): Promise<Record<string, unknown>>;
 }
 
 export interface PluginLocalFolderProblem {
@@ -659,9 +659,10 @@ export interface PluginSecretsClient {
    * written to logs, config, or other persistent storage.
    *
    * @param secretRef - The secret reference string from plugin config
+   * @param companyId - Optional company context for startup and job handlers
    * @returns The resolved secret value
    */
-  resolve(secretRef: string): Promise<string>;
+  resolve(secretRef: string, companyId?: string | null): Promise<string>;
 }
 
 /**

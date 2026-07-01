@@ -13,6 +13,7 @@ export type CreateApproval = z.infer<typeof createApprovalSchema>;
 
 export const resolveApprovalSchema = z.object({
   decisionNote: multilineTextSchema.optional().nullable(),
+  decidedByUserId: z.string().max(200).optional(),
 });
 
 export type ResolveApproval = z.infer<typeof resolveApprovalSchema>;

@@ -21,6 +21,30 @@ function sendNestedHostRequest(originalRequest, invocationId) {
     },
   };
 
+  if (mode === "stateCompany") {
+    nestedRequest.method = "state.get";
+    nestedRequest.params = {
+      scopeKind: "company",
+      scopeId: requestedCompanyId,
+      stateKey: "probe",
+    };
+  }
+
+  if (mode === "stateInstance") {
+    nestedRequest.method = "state.get";
+    nestedRequest.params = {
+      scopeKind: "instance",
+      stateKey: "probe",
+    };
+  }
+
+  if (mode === "configCompany") {
+    nestedRequest.method = "config.get";
+    nestedRequest.params = {
+      companyId: requestedCompanyId,
+    };
+  }
+
   if (mode === "echo") {
     nestedRequest.paperclipInvocationId = invocationId;
   } else if (mode === "unknown") {

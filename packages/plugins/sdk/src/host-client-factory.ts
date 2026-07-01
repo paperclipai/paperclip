@@ -31,7 +31,7 @@
  *   pluginId: "acme.linear",
  *   capabilities: manifest.capabilities,
  *   services: {
- *     config:    { get: () => registry.getConfig(pluginId) },
+ *     config:    { get: (params) => registry.getConfig(pluginId, params?.companyId ?? null) },
  *     state:     { get: ..., set: ..., delete: ... },
  *     entities:  { upsert: ..., list: ... },
  *     // ... all services
@@ -100,7 +100,7 @@ export class InvocationScopeDeniedError extends Error {
 export interface HostServices {
   /** Provides `config.get`. */
   config: {
-    get(): Promise<Record<string, unknown>>;
+    get(params?: WorkerToHostMethods["config.get"][0]): Promise<Record<string, unknown>>;
   };
 
   /** Provides trusted company-scoped local folder helpers. */
@@ -627,8 +627,8 @@ export function createHostClientHandlers(
 
   return {
     // Config
-    "config.get": gated("config.get", async () => {
-      return services.config.get();
+    "config.get": gated("config.get", async (params = {}) => {
+      return services.config.get(params);
     }),
 
     "localFolders.declarations": gated("localFolders.declarations", async (params) => {

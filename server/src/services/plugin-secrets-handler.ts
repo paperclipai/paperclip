@@ -34,14 +34,17 @@
  */
 
 import type { Db } from "@paperclipai/db";
+import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import {
   collectSecretRefPaths,
   isUuidSecretRef,
   readConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
+import { pluginRegistryService } from "./plugin-registry.js";
+import { secretService } from "./secrets.js";
 
-export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
-  "Plugin secret references are disabled until company-scoped plugin config lands";
+export const PLUGIN_SECRET_REFS_REQUIRE_COMPANY_MESSAGE =
+  "Plugin secret references require an active company-scoped runtime context";
 
 // ---------------------------------------------------------------------------
 // Error helpers
@@ -96,9 +99,10 @@ export function extractSecretRefPathsFromConfig(
     return refs;
   }
 
-  // Fallback: no schema or no secret-ref annotations — collect all UUIDs.
-  // This preserves backwards compatibility for plugins that omit
-  // instanceConfigSchema.
+  // Backward-compatibility fallback: no schema or no secret-ref annotations
+  // means older plugins may still store secret UUIDs directly in config.
+  // Prefer schema-declared `format: "secret-ref"` for new plugins because this
+  // fallback cannot distinguish secret UUIDs from ordinary UUID config values.
   function walkAll(value: unknown): void {
     if (typeof value === "string") {
       if (isUuidSecretRef(value)) addRef(value, "$");
@@ -125,6 +129,8 @@ export function extractSecretRefPathsFromConfig(
 export interface PluginSecretsResolveParams {
   /** The secret reference string (a secret UUID). */
   secretRef: string;
+  /** The company whose scoped plugin config is being used. */
+  companyId?: string | null;
 }
 
 /**
@@ -139,6 +145,8 @@ export interface PluginSecretsHandlerOptions {
    * that reach the plugin worker.
    */
   pluginId: string;
+  /** Plugin manifest, used to identify schema-declared secret-ref paths. */
+  manifest?: PaperclipPluginManifestV1 | null;
 }
 
 /**
@@ -199,23 +207,16 @@ function createRateLimiter(maxAttempts: number, windowMs: number) {
 export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
-  const { pluginId } = options;
+  const { pluginId, manifest } = options;
+  const registry = pluginRegistryService(options.db);
+  const secrets = secretService(options.db);
 
-  // Rate limit: max 30 resolution attempts per plugin per minute
+  // Rate limit: max 30 resolution attempts per plugin+company per minute.
   const rateLimiter = createRateLimiter(30, 60_000);
 
   return {
     async resolve(params: PluginSecretsResolveParams): Promise<string> {
       const { secretRef } = params;
-
-      // ---------------------------------------------------------------
-      // 0. Rate limiting — prevent brute-force UUID enumeration
-      // ---------------------------------------------------------------
-      if (!rateLimiter.check(pluginId)) {
-        const err = new Error("Rate limit exceeded for secret resolution");
-        err.name = "RateLimitExceededError";
-        throw err;
-      }
 
       // ---------------------------------------------------------------
       // 1. Validate the ref format
@@ -230,9 +231,41 @@ export function createPluginSecretsHandler(
         throw invalidSecretRef(trimmedRef);
       }
 
-      // Fail closed until plugin config and worker runtime both carry an
-      // explicit company scope for secret bindings and resolution.
-      throw new Error(PLUGIN_SECRET_REFS_DISABLED_MESSAGE);
+      const companyId = typeof params.companyId === "string" ? params.companyId.trim() : "";
+      const rateLimitKey = `${pluginId}:${companyId || "__no_company__"}`;
+      if (!rateLimiter.check(rateLimitKey)) {
+        const err = new Error("Rate limit exceeded for secret resolution");
+        err.name = "RateLimitExceededError";
+        throw err;
+      }
+
+      if (!companyId) {
+        throw new Error(PLUGIN_SECRET_REFS_REQUIRE_COMPANY_MESSAGE);
+      }
+
+      const configRow = await registry.getConfig(pluginId, companyId);
+      const refsBySecret = extractSecretRefPathsFromConfig(
+        configRow?.configJson ?? {},
+        manifest?.instanceConfigSchema,
+      );
+      const paths = [...(refsBySecret.get(trimmedRef) ?? [])];
+      if (paths.length === 0) {
+        throw new Error("Secret is not referenced by this company's plugin config");
+      }
+      if (paths.length > 1) {
+        throw new Error(
+          `Secret reference is ambiguous in this company's plugin config at: ${paths.join(", ")}`,
+        );
+      }
+
+      return secrets.resolveSecretValue(companyId, trimmedRef, "latest", {
+        consumerType: "plugin",
+        consumerId: pluginId,
+        configPath: paths[0],
+        actorType: "plugin",
+        actorId: pluginId,
+        pluginId,
+      });
     },
   };
 }
