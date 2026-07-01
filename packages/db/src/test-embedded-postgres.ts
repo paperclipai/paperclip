@@ -103,7 +103,20 @@ async function createEmbeddedPostgresTestInstance(tempDirPrefix: string) {
 }
 
 function cleanupEmbeddedPostgresTestDirs(dataDir: string) {
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  try {
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  } catch (error) {
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error.code === "EPERM" || error.code === "ENOENT" || error.code === "EBUSY")
+    ) {
+      console.warn(`[test-embedded-postgres] Warning: Could not clean up directory ${dataDir}: ${error.code}`);
+      return;
+    }
+    throw error;
+  }
 }
 
 function formatEmbeddedPostgresError(error: unknown): string {

@@ -26,4 +26,10 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+try {
+  await main();
+  process.exit(0);
+} catch (error) {
+  console.error("Migration failed:", error);
+  process.exit(1);
+}
