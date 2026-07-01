@@ -541,4 +541,36 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+
+  it(
+    "handles relation-already-exists (42P07) errors idempotently when re-running a migration whose table already exists",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const fastNorthstarHash = await migrationHash("0001_fast_northstar.sql");
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${fastNorthstarHash}'`,
+        );
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0001_fast_northstar.sql"],
+        reason: "pending-migrations",
+      });
+
+      await expect(applyPendingMigrations(connectionString)).resolves.not.toThrow();
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+    },
+    20_000,
+  );
 });
