@@ -1,5 +1,17 @@
 ARG HERMES_AGENT_IMAGE=nousresearch/hermes-agent:v2026.6.19
-FROM ${HERMES_AGENT_IMAGE} AS hermes_runtime
+# Fail-fast verifier — identical contract to the root image. If the pinned
+# Hermes source image restructures, both Dockerfiles abort at build time
+# with the same diagnostic instead of producing a silently broken runtime.
+# Probe paths come from
+# openspec/changes/fix-docker-deploy-and-verify-hermes/image-inspection.md
+# (PR #1).
+FROM ${HERMES_AGENT_IMAGE} AS hermes_runtime_verify
+RUN set -eux; \
+  test -f /opt/hermes/.venv/bin/hermes      || { echo "Hermes verify FAILED: /opt/hermes/.venv/bin/hermes missing (probe 4)"; exit 1; }; \
+  test -f /opt/hermes/.venv/bin/hermes-agent || { echo "Hermes verify FAILED: /opt/hermes/.venv/bin/hermes-agent missing (probe 5)"; exit 1; }; \
+  test -f /opt/hermes/.venv/bin/hermes-acp   || { echo "Hermes verify FAILED: /opt/hermes/.venv/bin/hermes-acp missing (probe 6)"; exit 1; }; \
+  test -f /usr/local/bin/uv                 || { echo "Hermes verify FAILED: /usr/local/bin/uv missing (probe 7)"; exit 1; }; \
+  test -f /usr/local/bin/uvx                || { echo "Hermes verify FAILED: /usr/local/bin/uvx missing (probe 8)"; exit 1; }
 
 FROM node:lts-trixie-slim
 
@@ -25,10 +37,11 @@ RUN corepack enable \
 
 RUN useradd --create-home --shell /bin/bash reviewer
 
-# Hermes runtime from pinned image
-COPY --from=hermes_runtime /opt/hermes /opt/hermes
-COPY --from=hermes_runtime /usr/local/bin/uv /usr/local/bin/uv
-COPY --from=hermes_runtime /usr/local/bin/uvx /usr/local/bin/uvx
+# Hermes runtime from pinned image (production COPYs chain through
+# hermes_runtime_verify, so the test-f probes above must succeed first).
+COPY --from=hermes_runtime_verify /opt/hermes /opt/hermes
+COPY --from=hermes_runtime_verify /usr/local/bin/uv /usr/local/bin/uv
+COPY --from=hermes_runtime_verify /usr/local/bin/uvx /usr/local/bin/uvx
 RUN ln -s /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes \
   && ln -s /opt/hermes/.venv/bin/hermes-agent /usr/local/bin/hermes-agent \
   && ln -s /opt/hermes/.venv/bin/hermes-acp /usr/local/bin/hermes-acp \
