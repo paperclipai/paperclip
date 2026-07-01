@@ -104,6 +104,10 @@ function issueRunScopeSql(issueId: string) {
   )`;
 }
 
+function includeInChurnSql() {
+  return sql`coalesce(${heartbeatRuns.resultJson} ->> 'blockedRelayCommentDeduped', 'false') != 'true'`;
+}
+
 function msToHuman(ms: number | null) {
   if (ms === null) return "unknown";
   const minutes = Math.floor(ms / 60_000);
@@ -355,6 +359,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.agentId, agentId),
           issueRunScopeSql(issueId),
+          includeInChurnSql(),
           sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${since.toISOString()}::timestamptz`,
         ),
       )
@@ -374,6 +379,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.agentId, agentId),
           issueRunScopeSql(issueId),
+          includeInChurnSql(),
           since ? sql`${issueComments.createdAt} >= ${since.toISOString()}::timestamptz` : undefined,
         ),
       )
@@ -397,6 +403,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(heartbeatRuns.companyId, sourceIssue.companyId),
           eq(heartbeatRuns.agentId, sourceAgent.id),
           issueRunScopeSql(sourceIssue.id),
+          includeInChurnSql(),
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
