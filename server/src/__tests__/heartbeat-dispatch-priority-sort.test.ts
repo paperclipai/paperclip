@@ -105,7 +105,7 @@ describeEmbeddedPostgres("heartbeat dispatch priority sort (BLO-12990)", () => {
   };
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase();
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-dispatch-priority-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db, { penstockGate: allowPenstockGate });
   });
