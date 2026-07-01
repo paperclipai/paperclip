@@ -1050,8 +1050,13 @@ async function findRegisteredGitWorktreeByPath(repoRoot: string, worktreePath: s
   const raw = await runGit(["worktree", "list", "--porcelain"], repoRoot).catch(() => null);
   if (!raw) return null;
 
-  const expectedPath = path.resolve(worktreePath);
-  return parseGitWorktreeListPorcelain(raw).find((entry) => path.resolve(entry.worktree) === expectedPath) ?? null;
+  const expectedPath = await resolvePathForWorktreeComparison(worktreePath);
+  for (const entry of parseGitWorktreeListPorcelain(raw)) {
+    if (await resolvePathForWorktreeComparison(entry.worktree) === expectedPath) {
+      return entry;
+    }
+  }
+  return null;
 }
 
 async function isGitCheckout(cwd: string): Promise<boolean> {
@@ -1097,6 +1102,11 @@ async function directoryExists(value: string) {
   return fs.stat(value).then((stats) => stats.isDirectory()).catch(() => false);
 }
 
+async function resolvePathForWorktreeComparison(value: string): Promise<string> {
+  const resolved = path.resolve(value);
+  return fs.realpath(resolved).then((realPath) => path.resolve(realPath)).catch(() => resolved);
+}
+
 async function listLinkedGitWorktreePaths(repoRoot: string): Promise<Set<string>> {
   const output = await runGit(["worktree", "list", "--porcelain"], repoRoot);
   const paths = new Set<string>();
@@ -1104,7 +1114,7 @@ async function listLinkedGitWorktreePaths(repoRoot: string): Promise<Set<string>
     if (!line.startsWith("worktree ")) continue;
     const worktree = line.slice("worktree ".length).trim();
     if (!worktree) continue;
-    paths.add(path.resolve(worktree));
+    paths.add(await resolvePathForWorktreeComparison(worktree));
   }
   return paths;
 }
@@ -1122,7 +1132,7 @@ async function validateLinkedGitWorktree(input: {
     actualBranchName?: string | null;
   }
 > {
-  const resolvedWorktreePath = path.resolve(input.worktreePath);
+  const resolvedWorktreePath = await resolvePathForWorktreeComparison(input.worktreePath);
   const listedWorktrees = await listLinkedGitWorktreePaths(input.repoRoot);
   if (!listedWorktrees.has(resolvedWorktreePath)) {
     return {

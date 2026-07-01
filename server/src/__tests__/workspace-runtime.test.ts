@@ -2080,10 +2080,14 @@ describe("realizeExecutionWorkspace", () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-454-repair-clean-branch-mismatch";
     const actualBranch = "PAP-454-publish-head";
-    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
-    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    const realWorktreeRoot = path.join(repoRoot, ".paperclip", "real-worktrees");
+    const symlinkedWorktreeRoot = path.join(repoRoot, ".paperclip", "worktrees");
+    const realWorktreePath = path.join(realWorktreeRoot, expectedBranch);
+    const worktreePath = path.join(symlinkedWorktreeRoot, expectedBranch);
+    await fs.mkdir(realWorktreeRoot, { recursive: true });
     await runGit(repoRoot, ["branch", expectedBranch]);
-    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, "HEAD"]);
+    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, realWorktreePath, "HEAD"]);
+    await fs.symlink(realWorktreeRoot, symlinkedWorktreeRoot, "dir");
     const { recorder, operations } = createWorkspaceOperationRecorderDouble();
 
     const restored = await ensurePersistedExecutionWorkspaceAvailable({
