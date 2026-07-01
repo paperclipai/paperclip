@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   BudgetPolicySummary,
@@ -34,6 +35,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const NO_COMPANY = "__none__";
+
+const VALID_TABS = ["overview", "budgets", "providers", "billers", "finance"] as const;
+type MainTab = (typeof VALID_TABS)[number];
 
 function currentWeekRange(): { from: string; to: string } {
   const now = new Date();
@@ -151,7 +155,22 @@ export function Costs() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
-  const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance">("overview");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawTab = searchParams.get("tab");
+  const mainTab: MainTab = (VALID_TABS as readonly string[]).includes(rawTab ?? "")
+    ? (rawTab as MainTab)
+    : "overview";
+  function setMainTab(value: MainTab) {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("tab", value);
+        return next;
+      },
+      { replace: false },
+    );
+  }
+
   const [activeProvider, setActiveProvider] = useState("all");
   const [activeBiller, setActiveBiller] = useState("all");
 
@@ -617,7 +636,7 @@ export function Costs() {
           </div>
       </div>
 
-      <Tabs value={mainTab} onValueChange={(value) => setMainTab(value as typeof mainTab)}>
+      <Tabs value={mainTab} onValueChange={(value) => setMainTab(value as MainTab)}>
         <TabsList variant="line" className="justify-start">
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="budgets">Budgets</TabsTrigger>
