@@ -2051,6 +2051,25 @@ export function buildHostServices(
         });
         return interaction as any;
       },
+      async listInteractions(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
+        let rows = await issueThreadInteractionService(db).listForIssue(params.issueId);
+        if (params.status) {
+          rows = rows.filter((interaction) => interaction.status === params.status);
+        }
+        if (params.kind) {
+          rows = rows.filter((interaction) => interaction.kind === params.kind);
+        }
+        return applyWindow(rows, params);
+      },
+      async getInteraction(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const interaction = await issueThreadInteractionService(db).getById(params.interactionId);
+        return inCompany(interaction, companyId) ? interaction : null;
+      },
     },
 
     issueDocuments: {

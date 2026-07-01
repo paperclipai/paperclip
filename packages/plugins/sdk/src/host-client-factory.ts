@@ -215,7 +215,7 @@ export interface HostServices {
     managedReset(params: WorkerToHostMethods["skills.managed.reset"][0]): Promise<WorkerToHostMethods["skills.managed.reset"][1]>;
   };
 
-  /** Provides issue read/write, relation, checkout, wakeup, summary, comment methods. */
+  /** Provides issue read/write, relation, checkout, wakeup, summary, comment, and interaction methods. */
   issues: {
     list(params: WorkerToHostMethods["issues.list"][0]): Promise<WorkerToHostMethods["issues.list"][1]>;
     get(params: WorkerToHostMethods["issues.get"][0]): Promise<WorkerToHostMethods["issues.get"][1]>;
@@ -233,6 +233,8 @@ export interface HostServices {
     listComments(params: WorkerToHostMethods["issues.listComments"][0]): Promise<WorkerToHostMethods["issues.listComments"][1]>;
     createComment(params: WorkerToHostMethods["issues.createComment"][0]): Promise<WorkerToHostMethods["issues.createComment"][1]>;
     createInteraction(params: WorkerToHostMethods["issues.createInteraction"][0]): Promise<WorkerToHostMethods["issues.createInteraction"][1]>;
+    listInteractions(params: WorkerToHostMethods["issues.interactions.list"][0]): Promise<WorkerToHostMethods["issues.interactions.list"][1]>;
+    getInteraction(params: WorkerToHostMethods["issues.interactions.get"][0]): Promise<WorkerToHostMethods["issues.interactions.get"][1]>;
   };
 
   /** Provides `issues.documents.list`, `issues.documents.get`, `issues.documents.upsert`, `issues.documents.delete`. */
@@ -439,6 +441,8 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.listComments": "issue.comments.read",
   "issues.createComment": "issue.comments.create",
   "issues.createInteraction": "issue.interactions.create",
+  "issues.interactions.list": "issue.interactions.read",
+  "issues.interactions.get": "issue.interactions.read",
 
   // Issue Documents
   "issues.documents.list": "issue.documents.read",
@@ -838,6 +842,12 @@ export function createHostClientHandlers(
     }),
     "issues.createInteraction": gated("issues.createInteraction", async (params) => {
       return services.issues.createInteraction(params);
+    }),
+    "issues.interactions.list": gated("issues.interactions.list", async (params) => {
+      return services.issues.listInteractions(params);
+    }),
+    "issues.interactions.get": gated("issues.interactions.get", async (params) => {
+      return services.issues.getInteraction(params);
     }),
 
     // Issue Documents

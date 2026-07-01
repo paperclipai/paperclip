@@ -14,6 +14,7 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   issueRelations,
+  issueThreadInteractions,
   issues,
   pluginManagedResources,
   plugins,
@@ -66,6 +67,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
@@ -233,6 +235,56 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         }),
       ]),
     );
+  });
+
+  it("reads issue thread interactions through host services scoped to the company", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other",
+      issuePrefix: issuePrefix(otherCompanyId),
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.interactions", createEventBusStub());
+    const issue = await services.issues.create({
+      companyId,
+      title: "Needs operator confirmation",
+      status: "todo",
+      actorAgentId: agentId,
+    });
+    const interaction = await services.issues.createInteraction({
+      issueId: issue.id,
+      companyId,
+      authorAgentId: agentId,
+      interaction: {
+        kind: "request_confirmation",
+        idempotencyKey: "confirm-plan",
+        title: "Confirm plan",
+        continuationPolicy: "none",
+        payload: {
+          version: 1,
+          prompt: "Approve this plan?",
+        },
+      },
+    });
+
+    await expect(
+      services.issues.listInteractions({
+        issueId: issue.id,
+        companyId,
+        status: "pending",
+        kind: "request_confirmation",
+      }),
+    ).resolves.toEqual([expect.objectContaining({ id: interaction.id, idempotencyKey: "confirm-plan" })]);
+    await expect(services.issues.getInteraction({ interactionId: interaction.id, companyId })).resolves.toMatchObject({
+      id: interaction.id,
+      issueId: issue.id,
+      companyId,
+    });
+    await expect(services.issues.listInteractions({ issueId: issue.id, companyId: otherCompanyId })).resolves.toEqual([]);
+    await expect(services.issues.getInteraction({ interactionId: interaction.id, companyId: otherCompanyId })).resolves.toBeNull();
   });
 
   it("enforces plugin origin namespaces", async () => {

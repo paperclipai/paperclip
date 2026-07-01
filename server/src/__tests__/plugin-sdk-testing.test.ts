@@ -160,4 +160,72 @@ describe("plugin SDK test harness", () => {
     expect(JSON.stringify(comments)).not.toContain("secret plugin-visible body");
     expect(JSON.stringify(comments)).not.toContain("secret plugin metadata");
   });
+
+  it("reads issue thread interactions from the in-memory issue helper", async () => {
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.test-interaction-read",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Interaction Read",
+      description: "Test plugin",
+      author: "Paperclip",
+      categories: ["automation"],
+      capabilities: ["issue.interactions.create", "issue.interactions.read"],
+      entrypoints: { worker: "./dist/worker.js" },
+    };
+    const harness = createTestHarness({ manifest });
+    harness.seed({
+      issues: [{
+        id: "issue-1",
+        companyId: "company-1",
+        title: "Interaction read",
+        status: "todo",
+        priority: "medium",
+      }],
+    });
+
+    const created = await harness.ctx.issues.requestConfirmation(
+      "issue-1",
+      {
+        title: "Confirm",
+        payload: {
+          version: 1,
+          prompt: "Continue?",
+        },
+      },
+      "company-1",
+    );
+
+    await expect(
+      harness.ctx.issues.interactions.list("issue-1", "company-1", { kind: "request_confirmation" }),
+    ).resolves.toEqual([expect.objectContaining({ id: created.id, status: "pending" })]);
+    await expect(harness.ctx.issues.interactions.get(created.id, "company-1")).resolves.toMatchObject({
+      id: created.id,
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Continue?",
+      },
+    });
+    await expect(harness.ctx.issues.interactions.get(created.id, "company-2")).resolves.toBeNull();
+  });
+
+  it("requires issue.interactions.read before reading interactions", async () => {
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.test-missing-interaction-read",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Missing Interaction Read Capability",
+      description: "Test plugin",
+      author: "Paperclip",
+      categories: ["automation"],
+      capabilities: [],
+      entrypoints: { worker: "./dist/worker.js" },
+    };
+    const harness = createTestHarness({ manifest });
+
+    await expect(harness.ctx.issues.interactions.list("issue-1", "company-1")).rejects.toThrow(
+      "missing required capability 'issue.interactions.read'",
+    );
+  });
 });
