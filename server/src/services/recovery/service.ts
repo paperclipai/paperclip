@@ -390,6 +390,10 @@ function readPositiveInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 }
 
+function readNonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
 function hasFutureScheduledMonitor(issue: Pick<
   typeof issues.$inferSelect,
   "executionPolicy" | "executionState" | "monitorAttemptCount" | "monitorNextCheckAt"
@@ -415,8 +419,9 @@ function hasFutureScheduledMonitor(issue: Pick<
   if (timeoutAt && timeoutAt.getTime() <= now) return false;
 
   const maxAttempts = readPositiveInteger(policyMonitor.maxAttempts ?? stateMonitor.maxAttempts);
-  const stateAttemptCount = readPositiveInteger(stateMonitor.attemptCount) ?? 0;
-  const attemptCount = issue.monitorAttemptCount ?? stateAttemptCount;
+  const columnAttemptCount = readNonNegativeInteger(issue.monitorAttemptCount) ?? 0;
+  const stateAttemptCount = readNonNegativeInteger(stateMonitor.attemptCount) ?? 0;
+  const attemptCount = Math.max(columnAttemptCount, stateAttemptCount);
   if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
 
   return true;

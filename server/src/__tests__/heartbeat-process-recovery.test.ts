@@ -2926,9 +2926,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         maxAttempts: 1,
       },
     },
+    {
+      name: "exhausted execution-state attempts",
+      monitorAttemptCount: 0,
+      stateMonitorAttemptCount: 1,
+      monitorPolicy: {
+        maxAttempts: 1,
+      },
+    },
   ])(
     "re-enqueues continuation for stranded in-progress work with a future scheduled monitor that is $name",
-    async ({ monitorAttemptCount, monitorPolicy }) => {
+    async ({ monitorAttemptCount, stateMonitorAttemptCount, monitorPolicy }) => {
       const monitorNextCheckAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
       const { agentId, issueId, runId } = await seedStrandedIssueFixture({
         status: "in_progress",
@@ -2949,7 +2957,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           monitor: {
             status: "scheduled",
             nextCheckAt: monitorNextCheckAt.toISOString(),
-            attemptCount: monitorAttemptCount,
+            attemptCount: stateMonitorAttemptCount ?? monitorAttemptCount,
             ...monitorPolicy,
           },
         },
