@@ -2121,7 +2121,7 @@ export function secretService(db: Db) {
     ) => {
       const secret = await getUserSecretValueById(companyId, ownerUserId, secretId);
       if (
-        patch.value !== undefined ||
+        patch.value != null ||
         patch.externalRef !== undefined ||
         patch.providerVersionRef !== undefined ||
         patch.providerConfigId !== undefined

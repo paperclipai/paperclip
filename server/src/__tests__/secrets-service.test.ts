@@ -598,6 +598,35 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(events)).not.toContain("user-one-secret");
   });
 
+  it("treats null user-secret value patches as non-rotation updates", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+    const secret = await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionKey: "github_token",
+      value: "user-one-secret",
+    });
+
+    const updated = await svc.updateCurrentUserSecretValue(companyId, "user-1", secret.id, {
+      value: null,
+    });
+
+    expect(updated.latestVersion).toBe(secret.latestVersion);
+    expect(updated.status).toBe(secret.status);
+    const versions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, secret.id));
+    expect(versions).toHaveLength(1);
+    expect(versions[0]).toMatchObject({ version: secret.latestVersion, status: "current" });
+    expect(versions[0]?.material).toBeTruthy();
+  });
+
   it("reports missing adapter-config user secret refs before runtime resolution", async () => {
     const companyId = await seedCompany();
     await seedCompanyMember(companyId, "user-1", "owner");
