@@ -20,8 +20,6 @@ import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
 import { routineRoutes } from "./routes/routines.js";
-import { agentsStudioRoutes } from "./routes/agents-studio.js";
-import { channelRoutes } from "./routes/channel.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
@@ -207,10 +205,6 @@ export async function createApp(
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
 
-  // Public, token-authed inbound channel — mounted before the session-auth API
-  // router so external surfaces (Slack/Teams/web) can run a deployed workflow.
-  app.use(channelRoutes(db, { pluginWorkerManager: workerManager }));
-
   // Mount API routes
   const api = Router();
   api.use(boardMutationGuard());
@@ -238,7 +232,6 @@ export async function createApp(
   api.use(issueTreeControlRoutes(db));
   api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
-  api.use(agentsStudioRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(executionWorkspaceRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(goalRoutes(db));

@@ -125,15 +125,6 @@ export const queryKeys = {
     documentAnnotations: (routineId: string, key: "description", status: "open" | "resolved" | "all" = "all") =>
       ["routines", "document-annotations", routineId, key, status] as const,
   },
-  agentsStudio: {
-    connectors: () => ["agents-studio", "connectors"] as const,
-    templates: () => ["agents-studio", "templates"] as const,
-    list: (companyId: string) => ["agents-studio", "workflows", companyId] as const,
-    detail: (companyId: string, id: string) => ["agents-studio", "workflow", companyId, id] as const,
-    runs: (companyId: string, id: string) => ["agents-studio", "runs", companyId, id] as const,
-    integrators: (companyId: string) => ["agents-studio", "integrators", companyId] as const,
-    agents: (companyId: string) => ["agents-studio", "agents", companyId] as const,
-  },
   executionWorkspaces: {
     list: (companyId: string, filters?: Record<string, string | boolean | undefined>) =>
       ["execution-workspaces", companyId, filters ?? {}] as const,
