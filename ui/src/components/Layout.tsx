@@ -30,6 +30,7 @@ import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
+import { isBoardPathWithoutPrefix } from "../lib/company-routes";
 import {
   DEFAULT_INSTANCE_SETTINGS_PATH,
   normalizeRememberedInstanceSettingsPath,
@@ -116,8 +117,18 @@ export function Layout() {
     const requestedPrefix = companyPrefix.toUpperCase();
     return companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix) ?? null;
   }, [companies, companyPrefix]);
+  const shouldRedirectUnprefixedBoardRoute =
+    Boolean(companyPrefix)
+    && !companiesLoading
+    && companies.length > 0
+    && !matchedCompany
+    && isBoardPathWithoutPrefix(location.pathname);
   const hasUnknownCompanyPrefix =
-    Boolean(companyPrefix) && !companiesLoading && companies.length > 0 && !matchedCompany;
+    Boolean(companyPrefix)
+    && !companiesLoading
+    && companies.length > 0
+    && !matchedCompany
+    && !shouldRedirectUnprefixedBoardRoute;
   const pluginRoutePath = useMemo(
     () => getCompanyRouteSegment(location.pathname, companyPrefix),
     [companyPrefix, location.pathname],
@@ -185,6 +196,13 @@ export function Layout() {
       const fallback = (selectedCompanyId ? companies.find((company) => company.id === selectedCompanyId) : null)
         ?? companies[0]
         ?? null;
+      if (fallback && isBoardPathWithoutPrefix(location.pathname)) {
+        navigate(
+          `/${fallback.issuePrefix}${location.pathname}${location.search}${location.hash}`,
+          { replace: true },
+        );
+        return;
+      }
       if (fallback && selectedCompanyId !== fallback.id) {
         setSelectedCompanyId(fallback.id, { source: "route_sync" });
       }
@@ -218,6 +236,7 @@ export function Layout() {
     matchedCompany,
     location.pathname,
     location.search,
+    location.hash,
     navigate,
     selectionSource,
     selectedCompanyId,
@@ -518,6 +537,8 @@ export function Layout() {
                     scope="invalid_company_prefix"
                     requestedPrefix={companyPrefix ?? selectedCompany?.issuePrefix}
                   />
+                ) : shouldRedirectUnprefixedBoardRoute ? (
+                  <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>
                 ) : (
                   <Outlet />
                 )}

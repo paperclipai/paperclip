@@ -180,6 +180,13 @@ function parseOptionalIntegerInput(value: string, max: number): number | null {
   return Math.min(max, Math.max(0, parsed));
 }
 
+function formatOptionalIntegerInput(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  return String(Math.max(0, Math.floor(value)));
+}
+
+const STORY_POINTS_MAX = 1000;
+const ESTIMATE_HOURS_MAX = 10000;
 const LEAD_DAYS_PRESETS = [0, 1, 3, 7, 14] as const;
 
 function computeStartDate(dueDate: Date | string, leadDays: number): Date {
@@ -601,6 +608,39 @@ export function IssueProperties({
   const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
   const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
+  const [storyPointsInput, setStoryPointsInput] = useState(() => formatOptionalIntegerInput(issue.storyPoints));
+  const [estimateHoursInput, setEstimateHoursInput] = useState(() => formatOptionalIntegerInput(issue.estimateHours));
+  const pendingPlanningValuesRef = useRef<{
+    issueId: string;
+    storyPoints?: number | null;
+    estimateHours?: number | null;
+  }>({ issueId: issue.id });
+
+  useEffect(() => {
+    const pending = pendingPlanningValuesRef.current;
+    if (pending.issueId !== issue.id) {
+      pendingPlanningValuesRef.current = { issueId: issue.id };
+      setStoryPointsInput(formatOptionalIntegerInput(issue.storyPoints));
+      setEstimateHoursInput(formatOptionalIntegerInput(issue.estimateHours));
+      return;
+    }
+
+    if (pending.storyPoints !== undefined) {
+      if ((issue.storyPoints ?? null) === pending.storyPoints) {
+        delete pending.storyPoints;
+      }
+    } else {
+      setStoryPointsInput(formatOptionalIntegerInput(issue.storyPoints));
+    }
+
+    if (pending.estimateHours !== undefined) {
+      if ((issue.estimateHours ?? null) === pending.estimateHours) {
+        delete pending.estimateHours;
+      }
+    } else {
+      setEstimateHoursInput(formatOptionalIntegerInput(issue.estimateHours));
+    }
+  }, [issue.id, issue.storyPoints, issue.estimateHours]);
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -703,6 +743,30 @@ export function IssueProperties({
       : [...ids, labelId];
     onUpdate({ labelIds: next });
   };
+
+  const commitStoryPointsInput = useCallback(() => {
+    const next = parseOptionalIntegerInput(storyPointsInput, STORY_POINTS_MAX);
+    setStoryPointsInput(formatOptionalIntegerInput(next));
+    if ((issue.storyPoints ?? null) === next) return;
+    pendingPlanningValuesRef.current = {
+      ...pendingPlanningValuesRef.current,
+      issueId: issue.id,
+      storyPoints: next,
+    };
+    onUpdate({ storyPoints: next });
+  }, [issue.id, issue.storyPoints, onUpdate, storyPointsInput]);
+
+  const commitEstimateHoursInput = useCallback(() => {
+    const next = parseOptionalIntegerInput(estimateHoursInput, ESTIMATE_HOURS_MAX);
+    setEstimateHoursInput(formatOptionalIntegerInput(next));
+    if ((issue.estimateHours ?? null) === next) return;
+    pendingPlanningValuesRef.current = {
+      ...pendingPlanningValuesRef.current,
+      issueId: issue.id,
+      estimateHours: next,
+    };
+    onUpdate({ estimateHours: next });
+  }, [estimateHoursInput, issue.estimateHours, issue.id, onUpdate]);
 
   const agentName = (id: string | null) => {
     if (!id || !agents) return null;
@@ -1983,10 +2047,16 @@ export function IssueProperties({
           <input
             type="number"
             min={0}
-            max={1000}
+            max={STORY_POINTS_MAX}
             step={1}
-            value={issue.storyPoints ?? ""}
-            onChange={(event) => onUpdate({ storyPoints: parseOptionalIntegerInput(event.target.value, 1000) })}
+            value={storyPointsInput}
+            onChange={(event) => setStoryPointsInput(event.target.value)}
+            onBlur={commitStoryPointsInput}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.currentTarget.blur();
+              }
+            }}
             className="h-7 w-20 rounded border border-border bg-background px-2 text-sm tabular-nums text-foreground outline-none transition-colors focus:border-ring focus:ring-1 focus:ring-ring"
             placeholder="0"
             aria-label="Story points"
@@ -1999,10 +2069,16 @@ export function IssueProperties({
           <input
             type="number"
             min={0}
-            max={10000}
+            max={ESTIMATE_HOURS_MAX}
             step={1}
-            value={issue.estimateHours ?? ""}
-            onChange={(event) => onUpdate({ estimateHours: parseOptionalIntegerInput(event.target.value, 10000) })}
+            value={estimateHoursInput}
+            onChange={(event) => setEstimateHoursInput(event.target.value)}
+            onBlur={commitEstimateHoursInput}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.currentTarget.blur();
+              }
+            }}
             className="h-7 w-20 rounded border border-border bg-background px-2 text-sm tabular-nums text-foreground outline-none transition-colors focus:border-ring focus:ring-1 focus:ring-ring"
             placeholder="0"
             aria-label="Estimate hours"
