@@ -75,6 +75,78 @@ describe("heartbeat model profile application", () => {
     });
   });
 
+  it("keeps the primary local OSS model when the adapter default cheap profile is hosted Codex", async () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: await listAdapterModelProfiles("codex_local"),
+      agentRuntimeConfig: {},
+      issueModelProfile: "cheap",
+      contextSnapshot: {},
+    });
+
+    const merged = mergeModelProfileAdapterConfig({
+      baseConfig: {
+        model: "gpt-oss:20b",
+        modelReasoningEffort: "high",
+        extraArgs: ["--oss", "--local-provider=ollama"],
+      },
+      modelProfile,
+      issueAdapterConfig: null,
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "cheap",
+      applied: "cheap",
+      configSource: "adapter_default",
+      adapterConfig: {
+        model: "gpt-5.3-codex-spark",
+      },
+    });
+    expect(merged).toEqual({
+      model: "gpt-oss:20b",
+      modelReasoningEffort: "high",
+      extraArgs: ["--oss", "--local-provider=ollama"],
+    });
+  });
+
+  it("allows an explicit runtime cheap profile to choose a local OSS model", async () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: await listAdapterModelProfiles("codex_local"),
+      agentRuntimeConfig: {
+        modelProfiles: {
+          cheap: {
+            adapterConfig: {
+              model: "qwen2.5-coder:1.5b",
+              modelReasoningEffort: "medium",
+            },
+          },
+        },
+      },
+      issueModelProfile: "cheap",
+      contextSnapshot: {},
+    });
+
+    const merged = mergeModelProfileAdapterConfig({
+      baseConfig: {
+        model: "gpt-oss:20b",
+        modelReasoningEffort: "high",
+        extraArgs: ["--oss", "--local-provider=ollama"],
+      },
+      modelProfile,
+      issueAdapterConfig: null,
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "cheap",
+      applied: "cheap",
+      configSource: "agent_runtime",
+    });
+    expect(merged).toEqual({
+      model: "qwen2.5-coder:1.5b",
+      modelReasoningEffort: "medium",
+      extraArgs: ["--oss", "--local-provider=ollama"],
+    });
+  });
+
   it("lets agent runtime profile config customize adapter defaults", () => {
     const modelProfile = resolveModelProfileApplication({
       adapterModelProfiles: [cheapProfile],
