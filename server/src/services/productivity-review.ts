@@ -573,6 +573,12 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return [
       "Paperclip detected an unusual productivity/progression pattern on an assigned issue.",
       "",
+      "## Manager Decision",
+      "",
+      "- Close as productive if this pattern is expected.",
+      "- Continue with a snooze window if the current work should keep running without repeat review spam.",
+      "- Request decomposition, reroute, block with an unblock owner, or stop/cancel the source work if the work is inefficient.",
+      "",
       "## Source",
       "",
       `- Source issue: ${issueUiLink(evidence.sourceIssue, prefix)}`,
@@ -611,12 +617,6 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       "## Usage Samples",
       "",
       usage,
-      "",
-      "## Manager Decision",
-      "",
-      "- Close as productive if this pattern is expected.",
-      "- Continue with a snooze window if the current work should keep running without repeat review spam.",
-      "- Request decomposition, reroute, block with an unblock owner, or stop/cancel the source work if the work is inefficient.",
     ].join("\n");
   }
 
@@ -679,6 +679,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     }
 
     const ownerAgentId = await resolveReviewOwnerAgentId(evidence.sourceIssue, evidence.sourceAgent);
+    if (!ownerAgentId) {
+      // No invokable reviewer found — skip creation rather than creating an orphaned
+      // review with null assignee that would be stuck in_review forever.
+      return { kind: "no_owner" as const, reviewIssueId: null };
+    }
     let review: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
       review = await issuesSvc.create(evidence.sourceIssue.companyId, {
@@ -781,6 +786,21 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .orderBy(asc(issues.updatedAt), asc(issues.id))
       .limit(MAX_CANDIDATE_ISSUES);
 
+    // Reap existing orphaned reviews (null assignee, stuck in_review) to prevent permanent noise.
+    const orphanedReviews = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          isNull(issues.assigneeAgentId),
+          eq(issues.status, "in_review"),
+          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+        ),
+      );
+    for (const orphan of orphanedReviews) {
+      await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, orphan.id));
+    }
+
     const result = {
       scanned: candidates.length,
       created: 0,
@@ -788,8 +808,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       existing: 0,
       snoozed: 0,
       creationCapped: 0,
+      noOwner: 0,
       skipped: 0,
       failed: 0,
+      reaped: orphanedReviews.length,
       reviewIssueIds: [] as string[],
       failedIssueIds: [] as string[],
     };
@@ -828,6 +850,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         if (outcome.kind === "created") result.created += 1;
         else if (outcome.kind === "updated") result.updated += 1;
         else if (outcome.kind === "creation_capped") result.creationCapped += 1;
+        else if (outcome.kind === "no_owner") result.noOwner += 1;
         else result.existing += 1;
         if (outcome.reviewIssueId) result.reviewIssueIds.push(outcome.reviewIssueId);
       } catch (err) {
