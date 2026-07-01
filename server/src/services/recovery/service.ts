@@ -386,12 +386,17 @@ function readDate(value: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function readPositiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
 function hasFutureScheduledMonitor(issue: Pick<
   typeof issues.$inferSelect,
-  "executionPolicy" | "executionState" | "monitorNextCheckAt"
+  "executionPolicy" | "executionState" | "monitorAttemptCount" | "monitorNextCheckAt"
 >) {
+  const now = Date.now();
   const monitorNextCheckAt = readDate(issue.monitorNextCheckAt);
-  if (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= Date.now()) return false;
+  if (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now) return false;
 
   const executionState = parseObject(issue.executionState);
   const stateStatus = readNonEmptyString(executionState.status);
@@ -405,6 +410,14 @@ function hasFutureScheduledMonitor(issue: Pick<
   if (policyNextCheckAt && Math.abs(policyNextCheckAt.getTime() - monitorNextCheckAt.getTime()) > 1_000) {
     return false;
   }
+
+  const timeoutAt = readDate(policyMonitor.timeoutAt ?? stateMonitor.timeoutAt);
+  if (timeoutAt && timeoutAt.getTime() <= now) return false;
+
+  const maxAttempts = readPositiveInteger(policyMonitor.maxAttempts ?? stateMonitor.maxAttempts);
+  const stateAttemptCount = readPositiveInteger(stateMonitor.attemptCount) ?? 0;
+  const attemptCount = issue.monitorAttemptCount ?? stateAttemptCount;
+  if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
 
   return true;
 }
