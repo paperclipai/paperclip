@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
+import postgres from "postgres";
 import {
   activityLog,
   agents,
+  applyPendingMigrations,
   companies,
   createDb,
   documentRevisions,
@@ -143,6 +145,89 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres issue service tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
+
+describeEmbeddedPostgres("issueService.list legacy SQL_ASCII descriptions", () => {
+  let adminSql!: ReturnType<typeof postgres>;
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let sqlAscii!: ReturnType<typeof postgres>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-sql-ascii-");
+    const adminUrl = new URL(tempDb.connectionString);
+    adminUrl.pathname = "/postgres";
+    adminSql = postgres(adminUrl.toString(), { connection: { client_encoding: "UTF8" } });
+
+    const legacyDbName = `paperclip_legacy_${randomUUID().replace(/-/g, "")}`;
+    await adminSql.unsafe(`CREATE DATABASE "${legacyDbName}" WITH TEMPLATE template0 ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C'`);
+
+    const legacyUrl = new URL(tempDb.connectionString);
+    legacyUrl.pathname = `/${legacyDbName}`;
+    await applyPendingMigrations(legacyUrl.toString());
+
+    db = createDb(legacyUrl.toString());
+    svc = issueService(db);
+    sqlAscii = postgres(legacyUrl.toString(), { connection: { client_encoding: "SQL_ASCII" } });
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(goals);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await sqlAscii.end();
+    await db.$client.end();
+    await adminSql.end();
+    await tempDb?.cleanup();
+  });
+
+  it("returns list rows instead of throwing when a description contains legacy non-UTF8 bytes", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await sqlAscii.unsafe(
+      `INSERT INTO "issues" ("id", "company_id", "title", "description", "status", "priority")
+       VALUES (
+         $1,
+         $2,
+         'Legacy description bytes',
+         convert_from(E'\\xe2'::bytea, 'SQL_ASCII'),
+         'todo',
+         'medium'
+       )`,
+      [issueId, companyId],
+    );
+
+    const result = await svc.list(companyId);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(expect.objectContaining({
+      id: issueId,
+      title: "Legacy description bytes",
+      description: "�",
+    }));
+  });
+});
 
 describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   let db!: ReturnType<typeof createDb>;
