@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
+  discoverOpenCodeModels,
   ensureOpenCodeModelConfiguredAndAvailable,
   listOpenCodeModels,
   requireOpenCodeModelId,
@@ -73,5 +77,18 @@ describe("openCode models", () => {
         env: { OPENCODE_ALLOW_ALL_MODELS: "true" },
       }),
     ).rejects.toThrow("OpenCode requires `adapterConfig.model`");
+  });
+
+  it("honours modelsProbeTimeoutSec override and reports the actual timeout", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-timeout-test-"));
+    const slowScript = path.join(tmpDir, "slow-opencode-models.sh");
+    await fs.writeFile(slowScript, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+    try {
+      await expect(
+        discoverOpenCodeModels({ command: slowScript, modelsProbeTimeoutSec: 1 }),
+      ).rejects.toThrow("`opencode models` timed out after 1s.");
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });

@@ -124,6 +124,7 @@ Core fields:
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
+- modelsProbeTimeoutSec (number, optional): timeout in seconds for the \`opencode models\` availability probe; defaults to 60s
 
 Notes:
 - OpenCode supports multiple providers and models. Use \
