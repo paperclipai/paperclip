@@ -31,21 +31,21 @@ describe("issue validators", () => {
       .toBeUndefined();
   });
 
-  it("normalizes JSON-escaped line breaks in issue descriptions", () => {
+  it("preserves literal backslash sequences in issue descriptions (RENA-14562)", () => {
     const parsed = createIssueSchema.parse({
       title: "Follow up PR",
       description: "PR: https://example.com/pr/1\\n\\nShip the follow-up.",
     });
 
-    expect(parsed.description).toBe("PR: https://example.com/pr/1\n\nShip the follow-up.");
+    expect(parsed.description).toBe("PR: https://example.com/pr/1\\n\\nShip the follow-up.");
   });
 
-  it("normalizes escaped line breaks in issue update comments", () => {
+  it("preserves literal backslash sequences in issue update comments (RENA-14562)", () => {
     const parsed = updateIssueSchema.parse({
-      comment: "Done\\n\\n- Verified the route",
+      comment: "Done\\n\\n- Verified C:\\register",
     });
 
-    expect(parsed.comment).toBe("Done\n\n- Verified the route");
+    expect(parsed.comment).toBe("Done\\n\\n- Verified C:\\register");
   });
 
   it("allows false-positive recovery resolutions to atomically restore the source issue status", () => {
@@ -131,12 +131,24 @@ describe("issue validators", () => {
     ).toBe(false);
   });
 
-  it("normalizes escaped line breaks in issue comment bodies", () => {
+  it("preserves literal backslash sequences in issue comment bodies (RENA-14562)", () => {
     const parsed = addIssueCommentSchema.parse({
       body: "Progress update\\r\\n\\r\\nNext action.",
     });
 
-    expect(parsed.body).toBe("Progress update\n\nNext action.");
+    expect(parsed.body).toBe("Progress update\\r\\n\\r\\nNext action.");
+  });
+
+  it("roundtrips Windows paths and escape sequences byte-for-byte (RENA-14562)", () => {
+    // Exact acceptance-criteria probe: literal backslash+r/n/t must survive untouched.
+    const body = "\\register \\new \\team";
+    expect(addIssueCommentSchema.parse({ body }).body).toBe(body);
+
+    const winPath = "BUG-TEST: path is C:\\Claude\\register-task.ps1 and \\node_modules and C:\\new";
+    expect(addIssueCommentSchema.parse({ body: winPath }).body).toBe(winPath);
+
+    // Real newlines (already decoded by the JSON parser) still pass through unchanged.
+    expect(addIssueCommentSchema.parse({ body: "Line 1\nLine 2" }).body).toBe("Line 1\nLine 2");
   });
 
   it("accepts structured issue comment presentation and metadata", () => {
@@ -181,17 +193,17 @@ describe("issue validators", () => {
     expect(parsed.success).toBe(false);
   });
 
-  it("normalizes escaped line breaks in generated task drafts", () => {
+  it("preserves literal backslash sequences in generated task drafts (RENA-14562)", () => {
     const parsed = suggestedTaskDraftSchema.parse({
       clientKey: "task-1",
       title: "Follow up",
       description: "Line 1\\n\\nLine 2",
     });
 
-    expect(parsed.description).toBe("Line 1\n\nLine 2");
+    expect(parsed.description).toBe("Line 1\\n\\nLine 2");
   });
 
-  it("normalizes escaped line breaks in thread summaries and documents", () => {
+  it("preserves literal backslash sequences in thread summaries and documents (RENA-14562)", () => {
     const response = respondIssueThreadInteractionSchema.parse({
       answers: [],
       summaryMarkdown: "Summary\\n\\nNext action",
@@ -201,8 +213,8 @@ describe("issue validators", () => {
       body: "# Plan\\n\\nShip it",
     });
 
-    expect(response.summaryMarkdown).toBe("Summary\n\nNext action");
-    expect(document.body).toBe("# Plan\n\nShip it");
+    expect(response.summaryMarkdown).toBe("Summary\\n\\nNext action");
+    expect(document.body).toBe("# Plan\\n\\nShip it");
   });
 
   it("clamps oversized requestDepth values on create", () => {
