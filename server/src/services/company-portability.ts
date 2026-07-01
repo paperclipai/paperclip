@@ -2207,6 +2207,14 @@ async function withSkillSourceMetadata(skill: CompanySkill, markdown: string) {
 }
 
 
+export function parseYamlSingleQuotedScalar(value: string): string {
+  // YAML single-quoted scalars: '' inside is escaped by doubling.
+  // e.g. 'CEO / Editor' -> CEO / Editor, 'it''s' -> it's
+  if (value.length < 2) return value;
+  const inner = value.slice(1, -1);
+  return inner.replace(/''/g, "'");
+}
+
 function parseYamlScalar(rawValue: string): unknown {
   const trimmed = rawValue.trim();
   if (trimmed === "") return "";
@@ -2216,6 +2224,9 @@ function parseYamlScalar(rawValue: string): unknown {
   if (trimmed === "[]") return [];
   if (trimmed === "{}") return {};
   if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return parseYamlSingleQuotedScalar(trimmed);
+  }
   if (
     trimmed.startsWith("\"") ||
     trimmed.startsWith("[") ||
