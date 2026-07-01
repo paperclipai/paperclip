@@ -9,6 +9,7 @@ import {
   remoteSecretImportSchema,
   secretProviderConfigDiscoveryPreviewSchema,
   secretProviderConfigPayloadSchema,
+  updateUserSecretDefinitionSchema,
   updateSecretProviderConfigSchema,
 } from "./secret.js";
 
@@ -47,6 +48,17 @@ describe("secret validators", () => {
         value: "secret-value",
       }),
     ).toThrow(/definitionId or definitionKey/);
+  });
+
+  it("does not allow user secret definition keys to be renamed through updates", () => {
+    expect(
+      updateUserSecretDefinitionSchema.parse({
+        key: "renamed_key",
+        name: "Renamed",
+      }),
+    ).toEqual({
+      name: "Renamed",
+    });
   });
 
   it("rejects externalRef on managed secrets", () => {

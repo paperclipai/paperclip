@@ -103,17 +103,19 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
 
   const save = useMutation({
     mutationFn: async () => {
-      const payload = {
+      const sharedPayload = {
         name: form.name.trim(),
-        key: form.key.trim(),
         description: form.description.trim() || null,
         usageGuidance: form.usageGuidance.trim() || null,
         status: form.status,
       };
       if (editing) {
-        return secretsApi.updateUserSecretDefinition(companyId, editing.id, payload);
+        return secretsApi.updateUserSecretDefinition(companyId, editing.id, sharedPayload);
       }
-      return secretsApi.createUserSecretDefinition(companyId, payload);
+      return secretsApi.createUserSecretDefinition(companyId, {
+        ...sharedPayload,
+        key: form.key.trim(),
+      });
     },
     onSuccess: (definition) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.userDefinitions(companyId) });

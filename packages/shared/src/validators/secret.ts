@@ -130,7 +130,6 @@ export const createUserSecretDefinitionSchema = z.object({
 export type CreateUserSecretDefinition = z.infer<typeof createUserSecretDefinitionSchema>;
 
 export const updateUserSecretDefinitionSchema = z.object({
-  key: secretKeySchema.optional(),
   name: z.string().trim().min(1).max(160).optional(),
   description: z.string().trim().max(500).optional().nullable(),
   status: z.enum(SECRET_STATUSES).optional(),

@@ -561,6 +561,75 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(events)).not.toContain("user-one-secret");
   });
 
+  it("reports missing adapter-config user secret refs before runtime resolution", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "hermes_api_key",
+      name: "Hermes API key",
+      provider: "local_encrypted",
+    });
+    const adapterConfig = {
+      apiBaseUrl: "http://127.0.0.1:9119/api",
+      apiKey: { type: "user_secret_ref" as const, key: "hermes_api_key", version: "latest" as const },
+    };
+    await svc.syncUserSecretDeclarationsForTarget(companyId, {
+      targetType: "agent",
+      targetId: "agent-1",
+    }, [
+      {
+        definitionKey: "hermes_api_key",
+        configPath: "apiKey",
+        envKey: "apiKey",
+      },
+    ]);
+
+    await expect(
+      svc.collectMissingAdapterConfigRuntimeBindings(
+        companyId,
+        adapterConfig,
+        "hermes_gateway",
+        {
+          consumerType: "agent",
+          consumerId: "agent-1",
+          responsibleUserId: "user-1",
+        },
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        bindingType: "user_secret_ref",
+        configPath: "apiKey",
+        envKey: "apiKey",
+        userSecretDefinitionId: definition.id,
+        userSecretDefinitionKey: "hermes_api_key",
+        responsibleUserId: "user-1",
+        errorCode: "user_secret_missing",
+      }),
+    ]);
+
+    await expect(
+      svc.collectMissingAdapterConfigRuntimeBindings(
+        companyId,
+        {
+          ...adapterConfig,
+          apiKey: {
+            type: "user_secret_ref" as const,
+            key: "hermes_api_key",
+            version: "latest" as const,
+            required: false,
+          },
+        },
+        "hermes_gateway",
+        {
+          consumerType: "agent",
+          consumerId: "agent-1",
+          responsibleUserId: "user-1",
+        },
+      ),
+    ).resolves.toEqual([]);
+  });
+
   it("records stable redacted failure codes for routine env secret resolution", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

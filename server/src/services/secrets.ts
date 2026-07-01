@@ -3616,7 +3616,16 @@ export function secretService(db: Db) {
         if (binding.type !== "secret_ref") return [];
         return [{ key, configPath: key, secretId: binding.secretId }];
       });
-      if (secretRefs.length === 0) return [];
+      const userSecretRefs = secretFieldKeys.flatMap((key) => {
+        const parsed = envBindingSchema.safeParse(adapterConfig[key]);
+        if (!parsed.success) return [];
+        const binding = canonicalizeBinding(parsed.data as EnvBinding);
+        if (binding.type !== "user_secret_ref") return [];
+        if (!binding.required || binding.allowMissingOverride) return [];
+        return [{ key, configPath: key, binding }];
+      });
+      if (secretRefs.length === 0 && userSecretRefs.length === 0) return [];
+
       const bindingChecks = await Promise.all(secretRefs.map(async (entry) => ({
         entry,
         found: await getBinding({
@@ -3630,7 +3639,6 @@ export function secretService(db: Db) {
       const missingEntries = bindingChecks
         .filter((check) => !check.found)
         .map((check) => check.entry);
-      if (missingEntries.length === 0) return [];
 
       const secretRows = await Promise.all(
         [...new Set(missingEntries.map((entry) => entry.secretId))].map(async (secretId) => [
@@ -3640,14 +3648,108 @@ export function secretService(db: Db) {
       );
       const secretsById = new Map(secretRows);
 
-      return missingEntries.map((entry) => ({
+      const missingSecretBindings: MissingRuntimeBinding[] = missingEntries.map((entry) => ({
         consumerType: context.consumerType,
         consumerId: context.consumerId,
         configPath: entry.configPath,
         envKey: entry.key,
+        bindingType: "secret_ref",
         secretId: entry.secretId,
         secretName: secretsById.get(entry.secretId)?.name ?? null,
       }));
+
+      const missingUserSecretBindings: MissingRuntimeBinding[] = [];
+      for (const entry of userSecretRefs) {
+        let definition: typeof userSecretDefinitions.$inferSelect | null = null;
+        try {
+          definition = await resolveUserSecretDefinition(companyId, { definitionKey: entry.binding.key });
+        } catch {
+          missingUserSecretBindings.push({
+            consumerType: context.consumerType,
+            consumerId: context.consumerId,
+            configPath: entry.configPath,
+            envKey: entry.key,
+            bindingType: "user_secret_ref",
+            secretId: null,
+            secretName: null,
+            userSecretDefinitionKey: entry.binding.key,
+            responsibleUserId: context.responsibleUserId ?? null,
+            errorCode: "user_secret_definition_missing",
+          });
+          continue;
+        }
+
+        const declaration = await db
+          .select()
+          .from(userSecretDeclarations)
+          .where(and(
+            eq(userSecretDeclarations.companyId, companyId),
+            eq(userSecretDeclarations.userSecretDefinitionId, definition.id),
+            eq(userSecretDeclarations.targetType, context.consumerType),
+            eq(userSecretDeclarations.targetId, context.consumerId),
+            eq(userSecretDeclarations.configPath, entry.configPath),
+          ))
+          .then((rows) => rows[0] ?? null);
+        if (!declaration) {
+          missingUserSecretBindings.push({
+            consumerType: context.consumerType,
+            consumerId: context.consumerId,
+            configPath: entry.configPath,
+            envKey: entry.key,
+            bindingType: "user_secret_ref",
+            secretId: null,
+            secretName: null,
+            userSecretDefinitionId: definition.id,
+            userSecretDefinitionKey: definition.key,
+            userSecretDefinitionName: definition.name,
+            responsibleUserId: context.responsibleUserId ?? null,
+            errorCode: "binding_missing",
+          });
+          continue;
+        }
+
+        if (!context.responsibleUserId?.trim()) {
+          missingUserSecretBindings.push({
+            consumerType: context.consumerType,
+            consumerId: context.consumerId,
+            configPath: entry.configPath,
+            envKey: entry.key,
+            bindingType: "user_secret_ref",
+            secretId: null,
+            secretName: null,
+            userSecretDefinitionId: definition.id,
+            userSecretDefinitionKey: definition.key,
+            userSecretDefinitionName: definition.name,
+            responsibleUserId: null,
+            errorCode: "responsible_user_missing",
+          });
+          continue;
+        }
+
+        const secret = await getUserSecretValue({
+          companyId,
+          ownerUserId: context.responsibleUserId,
+          definitionId: definition.id,
+        });
+        if (!secret || secret.status !== "active") {
+          missingUserSecretBindings.push({
+            consumerType: context.consumerType,
+            consumerId: context.consumerId,
+            configPath: entry.configPath,
+            envKey: entry.key,
+            bindingType: "user_secret_ref",
+            secretId: secret?.id ?? null,
+            secretName: null,
+            userSecretDefinitionId: definition.id,
+            userSecretDefinitionKey: definition.key,
+            userSecretDefinitionName: definition.name,
+            responsibleUserId: context.responsibleUserId,
+            errorCode: secret ? "secret_inactive" : "user_secret_missing",
+          });
+        }
+      }
+
+      return [...missingSecretBindings, ...missingUserSecretBindings];
     },
 
     resolveAdapterConfigForRuntime: async (
