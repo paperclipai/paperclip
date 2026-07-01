@@ -8,7 +8,18 @@ export type HeartbeatRunStopReason =
   | "paused"
   | "max_turns_exhausted"
   | "process_lost"
+  | "billing_limit_exhausted"
   | "adapter_failed";
+
+export const BILLING_LIMIT_ERROR_CODE = "billing_limit_exhausted" as const;
+
+const BILLING_LIMIT_ERROR_RE =
+  /spending\s*limit|monthly\s*spending\s*limit|billing[.\s_-]*(?:limit|balance|threshold).*(?:exhaust|exceed|reached|insufficient)|workspace.*(spending|billing).*limit|credit.*(exhaust|insufficient)|quota.*exhaust/i;
+
+export function isBillingLimitErrorMessage(message: string | null | undefined): boolean {
+  if (!message) return false;
+  return BILLING_LIMIT_ERROR_RE.test(message);
+}
 
 export interface HeartbeatRunTimeoutPolicy {
   effectiveTimeoutSec: number | null;
@@ -92,6 +103,9 @@ export function inferHeartbeatRunStopReason(input: {
     if (message.includes("budget")) return "budget_paused";
     if (message.includes("pause") || message.includes("paused")) return "paused";
     return "cancelled";
+  }
+  if (input.outcome === "failed" && isBillingLimitErrorMessage(input.errorMessage)) {
+    return "billing_limit_exhausted";
   }
   return "adapter_failed";
 }

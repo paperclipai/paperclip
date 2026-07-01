@@ -47,6 +47,18 @@ describe("PF-4 shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "transient_failure_retry" })).toBe(false);
   });
 
+  it("resets for issue_monitor_due (routine re-check starts fresh — ALAA-1613 R3)", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "issue_monitor_due" })).toBe(true);
+  });
+
+  it("resets for issue_assignment_recovery (recovery re-check starts fresh — ALAA-1613 R3)", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assignment_recovery" })).toBe(true);
+  });
+
+  it("resets for issue_continuation_needed (continuation re-check starts fresh — ALAA-1613 R3)", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "issue_continuation_needed" })).toBe(true);
+  });
+
   it("does not reset for unknown wake reasons", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "unknown_reason" })).toBe(false);
   });
@@ -94,6 +106,18 @@ describe("PF-4 describeSessionResetReason", () => {
     expect(describeSessionResetReason(undefined)).toBeNull();
   });
 
+  it("returns explicit reasons for ALAA-1613 R3 routine re-check wake reasons", () => {
+    expect(describeSessionResetReason({ wakeReason: "issue_monitor_due" })).toBe(
+      "wake reason is issue_monitor_due (routine re-check starts fresh)",
+    );
+    expect(describeSessionResetReason({ wakeReason: "issue_assignment_recovery" })).toBe(
+      "wake reason is issue_assignment_recovery (recovery re-check starts fresh)",
+    );
+    expect(describeSessionResetReason({ wakeReason: "issue_continuation_needed" })).toBe(
+      "wake reason is issue_continuation_needed (continuation re-check starts fresh)",
+    );
+  });
+
   it("agrees with shouldResetTaskSessionForWake on every input — non-null reason iff should reset", () => {
     const cases: Array<Record<string, unknown> | null | undefined> = [
       { wakeReason: "heartbeat_timer" },
@@ -104,6 +128,9 @@ describe("PF-4 describeSessionResetReason", () => {
       { forceFreshSession: true },
       { wakeReason: "issue_commented" },
       { wakeReason: "transient_failure_retry" },
+      { wakeReason: "issue_monitor_due" },
+      { wakeReason: "issue_assignment_recovery" },
+      { wakeReason: "issue_continuation_needed" },
       { wakeReason: "unknown_reason" },
       null,
       undefined,
