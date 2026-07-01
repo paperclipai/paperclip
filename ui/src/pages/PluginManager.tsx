@@ -297,6 +297,8 @@ export function PluginManager() {
 
   const installedPlugins = plugins ?? [];
   const bundledPlugins = bundledQuery.data ?? [];
+  const upgradingPluginId =
+    upgradeMutation.isPending ? (upgradeMutation.variables?.pluginId ?? null) : null;
   const installedByPackageName = new Map(installedPlugins.map((plugin) => [plugin.packageName, plugin]));
   const bundledByPackageName = new Map(bundledPlugins.map((plugin) => [plugin.packageName, plugin]));
   // Scope the in-section banner to bundled (local-path) installs so an npm-dialog
@@ -581,10 +583,15 @@ export function PluginManager() {
                             size="icon-sm"
                             className="h-8 w-8"
                             title="Upgrade plugin (pull latest from npm)"
-                            disabled={upgradeMutation.isPending}
+                            disabled={upgradingPluginId === plugin.id}
                             onClick={() => setUpgradeTarget(plugin)}
                           >
-                            <RefreshCw className={cn("h-4 w-4", upgradeMutation.isPending && "animate-spin")} />
+                            <RefreshCw
+                              className={cn(
+                                "h-4 w-4",
+                                upgradingPluginId === plugin.id && "animate-spin",
+                              )}
+                            />
                           </Button>
                         )}
                         <Button
@@ -641,7 +648,7 @@ export function PluginManager() {
       <UpgradePluginDialog
         plugin={upgradeTarget}
         open={upgradeTarget !== null}
-        isUpgrading={upgradeMutation.isPending}
+        isUpgrading={upgradingPluginId !== null && upgradeTarget?.id === upgradingPluginId}
         onConfirm={(targetVersion) => {
           if (upgradeTarget) {
             upgradeMutation.mutate({ pluginId: upgradeTarget.id, version: targetVersion });

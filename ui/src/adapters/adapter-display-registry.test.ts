@@ -10,4 +10,8 @@ describe("getAdapterLabel", () => {
     expect(getAdapterLabel("cursor_phantom_agent")).toBe("Cursor (Phantom Agent)");
     expect(getAdapterLabel("hermes_phantom_agent")).toBe("Hermes (Phantom Agent)");
   });
+
+  it("uses flat spacing before suffix for multi-segment local adapters", () => {
+    expect(getAdapterLabel("phantom_agent_local")).toBe("Phantom Agent (local)");
+  });
 });

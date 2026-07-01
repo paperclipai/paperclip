@@ -146,9 +146,11 @@ function titleCaseSegment(segment: string): string {
 function humanizeType(type: string): string {
   // Strip known type suffixes so "droid_local" → "Droid", not "Droid Local"
   let base = type;
+  let hadKnownSuffix = false;
   for (const suffix of Object.keys(TYPE_SUFFIXES)) {
     if (base.endsWith(suffix)) {
       base = base.slice(0, -suffix.length);
+      hadKnownSuffix = true;
       break;
     }
   }
@@ -156,6 +158,11 @@ function humanizeType(type: string): string {
   const parts = base.split("_").filter(Boolean);
   if (parts.length === 0) return type;
   if (parts.length === 1) return titleCaseSegment(parts[0]!);
+
+  // Suffix types keep flat spacing; withSuffix adds "(local)" / "(gateway)" once.
+  if (hadKnownSuffix) {
+    return parts.map(titleCaseSegment).join(" ");
+  }
 
   // External adapters: cursor_phantom_agent → "Cursor (Phantom Agent)"
   const head = titleCaseSegment(parts[0]!);
