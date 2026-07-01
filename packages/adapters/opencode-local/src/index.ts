@@ -44,7 +44,7 @@ export const SANDBOX_INSTALL_COMMAND =
   'fi; ' +
   'fi';
 
-export const DEFAULT_OPENCODE_LOCAL_MODEL = "openai/gpt-5.2-codex";
+export const DEFAULT_OPENCODE_LOCAL_MODEL = "github-copilot/claude-sonnet-4.6";
 
 export function isValidOpenCodeModelId(value: unknown): value is string {
   if (typeof value !== "string") return false;
@@ -54,14 +54,13 @@ export function isValidOpenCodeModelId(value: unknown): value is string {
 }
 
 export const models: Array<{ id: string; label: string }> = [
-  { id: DEFAULT_OPENCODE_LOCAL_MODEL, label: DEFAULT_OPENCODE_LOCAL_MODEL },
-  { id: "openai/gpt-5.4", label: "openai/gpt-5.4" },
-  { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
-  { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
-  { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+  { id: "github-copilot/claude-sonnet-4.6", label: "github-copilot/claude-sonnet-4.6" },
+  { id: "github-copilot/claude-opus-4.7", label: "github-copilot/claude-opus-4.7" },
+  { id: "github-copilot/gpt-5.3-codex", label: "github-copilot/gpt-5.3-codex" },
+  { id: "opencode/big-pickle", label: "opencode/big-pickle" },
 ];
 
-export const DEFAULT_OPENCODE_CHEAP_MODEL = "openai/gpt-5.1-codex-mini";
+export const DEFAULT_OPENCODE_CHEAP_MODEL = "github-copilot/gpt-5.3-codex";
 
 // The "cheap" budget profile (used for recovery retries and other low-cost lanes).
 // Defaults to OpenCode's known Codex mini model, but is overridable so a deployment
