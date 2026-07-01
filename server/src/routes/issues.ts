@@ -40,6 +40,7 @@ import {
   createIssueSchema,
   resolveCreateIssueStatusDefault,
   resolveIssueRecoveryActionSchema,
+  recordIssueDispositionSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
   feedbackVoteValueSchema,
@@ -139,6 +140,7 @@ import {
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
+import { recordSuccessfulRunDisposition } from "../services/recovery/successful-run-handoff.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   buildPromotedSourceTrust,
@@ -3849,6 +3851,42 @@ export function issueRoutes(
         activeRecoveryAction: null,
       },
       recoveryAction: result.recoveryAction,
+    });
+  });
+
+  router.post("/issues/:id/disposition", validate(recordIssueDispositionSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+
+    const { runId, disposition, note } = req.body;
+    const actor = getActorInfo(req);
+
+    const result = await recordSuccessfulRunDisposition(db, {
+      companyId: existing.companyId,
+      issueId: existing.id,
+      issueIdentifier: existing.identifier,
+      runId,
+      disposition,
+      note: note ?? null,
+      actor: {
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+      },
+    });
+
+    res.json({
+      issueId: existing.id,
+      runId: result.resolvedRunId,
+      disposition,
+      alreadyDispositioned: result.alreadyDispositioned,
     });
   });
 
