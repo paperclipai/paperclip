@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ISSUE_CREATE_DEDUPLICATED } from "../services/issue-create-dedup.js";
 
 const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
 
@@ -332,6 +333,42 @@ describe("assigned backlog creation contract", () => {
           assignmentWakeSkipReason: "assigned_backlog",
         }),
       }),
+    );
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("returns 200 (not 201) and skips create-only side effects when create is deduplicated (#7980/#8031)", async () => {
+    // Simulate the idempotent-create dedup path: issueService.create returns the
+    // already-created issue flagged via the non-enumerable ISSUE_CREATE_DEDUPLICATED
+    // marker. The route must detect that explicitly — not by comparing ids — and
+    // return 200 without a second issue.created activity or a duplicate wake.
+    mockIssueService.create.mockImplementationOnce(async (_companyId: string, data: Record<string, unknown>) => {
+      const existing = makeIssue({
+        id: "issue-1",
+        title: String(data.title),
+        status: String(data.status),
+        assigneeAgentId: data.assigneeAgentId as string | null | undefined,
+      });
+      Object.defineProperty(existing, ISSUE_CREATE_DEDUPLICATED, {
+        value: true,
+        enumerable: false,
+      });
+      return existing;
+    });
+
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Assigned executable work",
+        assigneeAgentId,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({ id: "issue-1", assigneeAgentId }));
+    expect(res.body).not.toHaveProperty("issueCreateDeduplicated");
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.created" }),
     );
     expect(mockWakeup).not.toHaveBeenCalled();
   });

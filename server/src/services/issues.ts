@@ -71,6 +71,7 @@ import {
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import { markDeduplicatedIssueCreate } from "./issue-create-dedup.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -101,6 +102,10 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
+// Window for collapsing a retried/repeated agent create into the already-created
+// issue (#7980). Long enough to absorb transport retries and an agent re-issuing
+// the same create, short enough that a deliberate later re-creation is not lost.
+const ISSUE_CREATE_DEDUPE_WINDOW_MS = 5 * 60 * 1000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
@@ -5034,6 +5039,41 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        // Idempotent create (#7980): a retried or repeated create request from the
+        // same agent with identical (parent, title, assignee) within a short
+        // window must not persist a second copy — return the already-created
+        // issue instead. Scoped to createdByAgentId AND a recency window so that
+        // legitimately-distinct issues (a different creator, or the same title
+        // revisited much later) are never collapsed.
+        const dedupeAgentId =
+          typeof issueData.createdByAgentId === "string" && issueData.createdByAgentId.length > 0
+            ? issueData.createdByAgentId
+            : null;
+        if (dedupeAgentId) {
+          const dedupeWindowStart = new Date(Date.now() - ISSUE_CREATE_DEDUPE_WINDOW_MS);
+          const [duplicate] = await tx
+            .select()
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, companyId),
+                eq(issues.createdByAgentId, dedupeAgentId),
+                eq(issues.title, issueData.title),
+                issueData.parentId
+                  ? eq(issues.parentId, issueData.parentId)
+                  : isNull(issues.parentId),
+                issueData.assigneeAgentId
+                  ? eq(issues.assigneeAgentId, issueData.assigneeAgentId)
+                  : isNull(issues.assigneeAgentId),
+                gt(issues.createdAt, dedupeWindowStart),
+              ),
+            )
+            .limit(1);
+          if (duplicate) {
+            const [enrichedDuplicate] = await withIssueLabels(tx, [duplicate]);
+            return markDeduplicatedIssueCreate(enrichedDuplicate);
+          }
+        }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
