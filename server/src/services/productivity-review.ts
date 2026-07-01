@@ -37,6 +37,10 @@ const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
 export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review evidence refreshed.";
+// Evidence is only refreshed while the review is still awaiting a decision. Once the owner
+// engages or parks it (in_review/blocked) or resolves it (done/cancelled, already excluded by
+// findOpenProductivityReview), refreshing stops so we don't keep appending evidence comments.
+export const REFRESHABLE_REVIEW_STATUSES = ["todo", "in_progress"] as const;
 
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
@@ -327,6 +331,24 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           latestCreatedAt: coerceDate(row?.latestCreatedAt),
         };
       });
+  }
+
+  // A review owner records a decision by commenting (status changes are covered separately by
+  // REFRESHABLE_REVIEW_STATUSES). Refresh comments are system-authored with no agent/user, so any
+  // comment with a real author that is not a refresh comment means a manager has weighed in.
+  async function hasRecordedManagerDecision(companyId: string, reviewIssueId: string) {
+    return db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, reviewIssueId),
+          sql`(${issueComments.authorUserId} is not null or ${issueComments.authorAgentId} is not null)`,
+          sql`${issueComments.body} not like ${`${PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX}%`}`,
+        ),
+      )
+      .then((rows) => Number(rows[0]?.count ?? 0) > 0);
   }
 
   async function addRefreshComment(
@@ -639,6 +661,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   ) {
     const existing = await findOpenProductivityReview(evidence.sourceIssue.companyId, evidence.sourceIssue.id);
     if (existing) {
+      const reviewAwaitingDecision = REFRESHABLE_REVIEW_STATUSES.includes(
+        existing.status as (typeof REFRESHABLE_REVIEW_STATUSES)[number],
+      );
+      if (
+        !reviewAwaitingDecision ||
+        (await hasRecordedManagerDecision(evidence.sourceIssue.companyId, existing.id))
+      ) {
+        return { kind: "existing" as const, reviewIssueId: existing.id };
+      }
       const refreshState = await getRefreshCommentState(evidence.sourceIssue.companyId, existing.id);
       const lastRefreshOrCreationAt = refreshState.latestCreatedAt ?? existing.createdAt;
       if (
