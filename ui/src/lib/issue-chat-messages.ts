@@ -1034,8 +1034,8 @@ export function buildIssueChatMessages(args: {
     .sort((a, b) => {
       const direction = threadOrder === "newest_first" ? -1 : 1;
       if (a.createdAtMs !== b.createdAtMs) return direction * (a.createdAtMs - b.createdAtMs);
-      if (a.order !== b.order) return direction * (a.order - b.order);
-      return direction * a.message.id.localeCompare(b.message.id);
+      if (a.order !== b.order) return a.order - b.order;
+      return a.message.id.localeCompare(b.message.id);
     })
     .map((entry) => entry.message);
 }
