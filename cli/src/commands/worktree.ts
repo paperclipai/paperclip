@@ -212,6 +212,10 @@ function isCurrentSourceConfigPath(sourceConfigPath: string): boolean {
   return path.resolve(currentConfigPath) === path.resolve(sourceConfigPath);
 }
 
+function resolveEmbeddedPostgresDataDir(dataDir: string, configPath: string): string {
+  return resolveRuntimeLikePath(dataDir, configPath);
+}
+
 function formatSeededWorktreeExecutionQuarantineSummary(
   summary: SeededWorktreeExecutionQuarantineSummary,
 ): string {
@@ -985,15 +989,28 @@ async function ensureRepairTargetWorktree(input: {
   };
 }
 
-function resolveSourceConnectionString(config: PaperclipConfig, envEntries: Record<string, string>, portOverride?: number): string {
-  if (config.database.mode === "postgres") {
-    const connectionString = nonEmpty(envEntries.DATABASE_URL) ?? nonEmpty(config.database.connectionString);
-    if (!connectionString) {
-      throw new Error(
-        "Source instance uses postgres mode but has no connection string in config or adjacent .env.",
-      );
-    }
+function resolveSourceConnectionString(
+  sourceConfigPath: string,
+  config: PaperclipConfig,
+  envEntries: Record<string, string>,
+  portOverride?: number,
+): string {
+  const runtimeEnvConnectionString = isCurrentSourceConfigPath(sourceConfigPath)
+    ? nonEmpty(process.env.DATABASE_URL)
+    : null;
+  const fileEnvConnectionString = nonEmpty(envEntries.DATABASE_URL);
+  const configConnectionString =
+    config.database.mode === "postgres" ? nonEmpty(config.database.connectionString) : null;
+  const connectionString = runtimeEnvConnectionString ?? fileEnvConnectionString ?? configConnectionString;
+
+  if (connectionString) {
     return connectionString;
+  }
+
+  if (config.database.mode === "postgres") {
+    throw new Error(
+      "Source instance uses postgres mode but has no connection string in runtime env, config, or adjacent .env.",
+    );
   }
 
   const port = portOverride ?? config.database.embeddedPostgresPort;
@@ -1297,13 +1314,17 @@ async function seedWorktreeDatabase(input: {
   try {
     if (input.sourceConfig.database.mode === "embedded-postgres") {
       sourceHandle = await ensureEmbeddedPostgres(
-        input.sourceConfig.database.embeddedPostgresDataDir,
+        resolveEmbeddedPostgresDataDir(
+          input.sourceConfig.database.embeddedPostgresDataDir,
+          input.sourceConfigPath,
+        ),
         input.sourceConfig.database.embeddedPostgresPort,
       );
       const sourceAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${sourceHandle.port}/postgres`;
       await ensurePostgresDatabase(sourceAdminConnectionString, "paperclip");
     }
     const sourceConnectionString = resolveSourceConnectionString(
+      input.sourceConfigPath,
       input.sourceConfig,
       sourceEnvEntries,
       sourceHandle?.port,
@@ -1320,7 +1341,10 @@ async function seedWorktreeDatabase(input: {
     });
 
     targetHandle = await ensureEmbeddedPostgres(
-      input.targetConfig.database.embeddedPostgresDataDir,
+      resolveEmbeddedPostgresDataDir(
+        input.targetConfig.database.embeddedPostgresDataDir,
+        input.targetPaths.configPath,
+      ),
       input.targetConfig.database.embeddedPostgresPort,
     );
 
@@ -1954,11 +1978,11 @@ async function openConfiguredDb(configPath: string): Promise<OpenDbHandle> {
   try {
     if (config.database.mode === "embedded-postgres") {
       embeddedHandle = await ensureEmbeddedPostgres(
-        config.database.embeddedPostgresDataDir,
+        resolveEmbeddedPostgresDataDir(config.database.embeddedPostgresDataDir, configPath),
         config.database.embeddedPostgresPort,
       );
     }
-    const connectionString = resolveSourceConnectionString(config, envEntries, embeddedHandle?.port);
+    const connectionString = resolveSourceConnectionString(configPath, config, envEntries, embeddedHandle?.port);
     const migrationState = await inspectMigrations(connectionString);
     if (migrationState.status !== "upToDate") {
       const pending =
@@ -2137,11 +2161,16 @@ function renderMergePlan(plan: Awaited<ReturnType<typeof collectMergePlan>>["pla
   return lines.join("\n");
 }
 
-function resolveRunningEmbeddedPostgresPid(config: PaperclipConfig): number | null {
+function resolveRunningEmbeddedPostgresPid(config: PaperclipConfig, configPath: string): number | null {
   if (config.database.mode !== "embedded-postgres") {
     return null;
   }
-  return readRunningPostmasterPid(path.resolve(config.database.embeddedPostgresDataDir, "postmaster.pid"));
+  return readRunningPostmasterPid(
+    path.resolve(
+      resolveEmbeddedPostgresDataDir(config.database.embeddedPostgresDataDir, configPath),
+      "postmaster.pid",
+    ),
+  );
 }
 
 async function collectMergePlan(input: {
@@ -3116,7 +3145,7 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
     configPath: targetEndpoint.configPath,
     rootPath: targetEndpoint.rootPath,
   });
-  const runningTargetPid = resolveRunningEmbeddedPostgresPid(targetConfig);
+  const runningTargetPid = resolveRunningEmbeddedPostgresPid(targetConfig, target.configPath);
   if (runningTargetPid && !opts.allowLiveTarget) {
     throw new Error(
       `Target worktree database appears to be running (pid ${runningTargetPid}). Stop Paperclip in ${targetEndpoint.rootPath} before reseeding, or re-run with --allow-live-target if you want to override this guard.`,
