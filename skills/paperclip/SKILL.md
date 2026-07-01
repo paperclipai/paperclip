@@ -313,7 +313,7 @@ For commands, response fields, and MCP tools, read:
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
 - **Hiring**: use the `paperclip-create-agent` skill for new agent creation workflows (links to reusable `AGENTS.md` templates like `Coder` and `QA`).
-- **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.
+- **Commit Co-author (conditional)**: before each commit, run `git remote -v`. If any remote URL contains a public host (case-insensitive substring match: `github.com`, `gitlab.com`, `bitbucket.org`, `codeberg.org`, `sr.ht` — covers `https://...`, `git@...:...`, and mixed-case forms), DO NOT add the `Co-Authored-By: Paperclip` trailer, and DO NOT include any internal issue key (`{PREFIX}-N`), agent role name, run id, or other orchestration term in the commit subject or body. If there is no remote, or all remotes are local/private (`localhost`, `127.0.0.1`, internal hostnames), append exactly `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. When in doubt, treat the remote as public and omit the trailer.
 
 This is rule #1:
 
