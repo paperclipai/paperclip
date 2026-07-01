@@ -504,9 +504,9 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(event?.message).toContain("Source-resolved watchdog fold");
   });
 
-  it("still escalates terminal source issues without same-run terminal evidence", async () => {
+  it("terminates orphaned runs on terminal source issues without same-run terminal evidence (ING-563)", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
-    const { companyId, runId } = await seedRunningRun({
+    const { companyId, coderId, issueId, runId } = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
       sourceStatus: "done",
@@ -515,15 +515,101 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
 
-    expect(result).toMatchObject({ created: 1, folded: 0 });
+    expect(result).toMatchObject({ created: 0, folded: 0, terminated: 1 });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(run?.status).toBe("running");
-    const [evaluation] = await db
+    expect(run?.status).toBe("succeeded");
+    expect(run?.finishedAt?.toISOString()).toBe(now.toISOString());
+    expect(run?.resultJson).toMatchObject({
+      orphanedRunTerminated: {
+        sourceIssueId: issueId,
+        sourceIssueStatus: "done",
+      },
+    });
+
+    const evaluations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
-    expect(evaluation?.originId).toBe(runId);
-    expect(evaluation?.parentId).toBeNull();
+    expect(evaluations).toHaveLength(0);
+
+    const [source] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(source?.executionRunId).toBeNull();
+    const [agent] = await db.select().from(agents).where(eq(agents.id, coderId));
+    expect(agent?.status).toBe("idle");
+    const [decision] = await db
+      .select()
+      .from(heartbeatRunWatchdogDecisions)
+      .where(eq(heartbeatRunWatchdogDecisions.runId, runId));
+    expect(decision?.decision).toBe("dismissed_false_positive");
+    expect(decision?.reason).toContain("orphan run terminated");
+    const [event] = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    expect(event?.message).toContain("Orphaned active run terminated");
+  });
+
+  it("does not loop with hourly duplicate alerts when source issue is terminal (ING-563 regression)", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+      sourceStatus: "done",
+    });
+    const heartbeat = heartbeatService(db);
+
+    // Simulate the hourly scan recurring across many heartbeats — the ING-526
+    // incident produced 34 duplicate review issues this way.
+    for (let i = 0; i < 5; i += 1) {
+      const tickNow = new Date(now.getTime() + i * 60 * 60 * 1000);
+      const tickResult = await heartbeat.scanSilentActiveRuns({ now: tickNow, companyId });
+      if (i === 0) {
+        expect(tickResult).toMatchObject({ created: 0, terminated: 1 });
+      } else {
+        expect(tickResult).toMatchObject({ scanned: 0, created: 0, terminated: 0 });
+      }
+    }
+
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run?.status).toBe("succeeded");
+  });
+
+  it("closes any existing silence-review issue when the orphan is terminated (ING-563)", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, issueId, runId, issuePrefix } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+      sourceStatus: "done",
+    });
+    const evaluationIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: evaluationIssueId,
+      companyId,
+      title: "Existing stale evaluation",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: managerId,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+      originKind: "stale_active_run_evaluation",
+      originId: runId,
+      originRunId: runId,
+      originFingerprint: `stale_active_run:${companyId}:${runId}`,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ created: 0, terminated: 1 });
+    const [evaluation] = await db.select().from(issues).where(eq(issues.id, evaluationIssueId));
+    expect(evaluation?.status).toBe("done");
+    const [source] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(source?.executionRunId).toBeNull();
   });
 
   it("still escalates when a same-run comment is followed by another actor marking the source done", async () => {
@@ -559,15 +645,18 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
 
-    expect(result).toMatchObject({ created: 1, folded: 0 });
+    // Source is terminal but resolution came from another actor — under ING-563
+    // we still terminate the orphan rather than escalate, because there is no
+    // safe way for the silence detector to know the run had useful state worth
+    // surfacing (a same-run comment alone is not durable terminal evidence).
+    expect(result).toMatchObject({ created: 0, terminated: 1 });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(run?.status).toBe("running");
-    const [evaluation] = await db
+    expect(run?.status).toBe("succeeded");
+    const evaluations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
-    expect(evaluation?.originId).toBe(runId);
-    expect(evaluation?.parentId).toBeNull();
+    expect(evaluations).toHaveLength(0);
   });
 
   it("folds existing evaluation and active watchdog recovery action idempotently", async () => {
