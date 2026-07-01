@@ -336,6 +336,21 @@ export class ConfigurationIncompleteFailure extends Error {
   }
 }
 
+// Fail-closed guard raised after a run is marked `succeeded` if the issue
+// it worked still has no recorded terminal disposition. Forces the run
+// finalizer to surface the gap as a `failed` run with a `missing_disposition`
+// error code so the issue is never left dangling in `in_progress` with a
+// false "clean success" footprint.
+export class MissingIssueDispositionError extends Error {
+  issueId: string | null;
+
+  constructor(message: string, issueId: string | null) {
+    super(message);
+    this.name = "MissingIssueDispositionError";
+    this.issueId = issueId;
+  }
+}
+
 function resolveCodexTransientFallbackMode(attempt: number): CodexTransientFallbackMode {
   if (attempt <= 1) return "same_session";
   if (attempt === 2) return "safer_invocation";
@@ -6437,6 +6452,86 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
   }
 
+  // Fail-closed guard for the success path. After `handleSuccessfulRunHandoff`
+  // has had a chance to enqueue a corrective wake, verify the issue this run
+  // worked recorded a terminal disposition (`done` / `cancelled` / `blocked` /
+  // `in_review` with owner, delegated follow-up, etc.) or an explicit
+  // continuation path. If the issue is still `in_progress` with no execution
+  // state, no resume intent, and no handoff wake was enqueued, flip it to
+  // `blocked` and throw `MissingIssueDispositionError` so the run finalizer
+  // records a `missing_disposition` failure instead of leaving a false clean
+  // success.
+  async function ensureIssueDispositionRecordedOnSuccess(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    context: Record<string, unknown>;
+  }) {
+    if (input.run.status !== "succeeded") return;
+    const issueId =
+      readNonEmptyString(input.context.issueId) ?? readNonEmptyString(input.context.taskId);
+    if (!issueId) return;
+    const issue = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        executionState: issues.executionState,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, input.run.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return;
+    if (issue.assigneeAgentId !== input.agent.id) return;
+    if (issue.assigneeUserId) return;
+    if (issue.status !== "in_progress") return;
+    if (parseIssueExecutionState(issue.executionState)) return;
+    const context = input.context;
+    if (
+      context.handoffRequired === true ||
+      context.resumeIntent === true ||
+      typeof context.resumeFromRunId === "string"
+    ) {
+      return;
+    }
+    // If `handleSuccessfulRunHandoff` already enqueued a corrective handoff
+    // wake for this source run, the disposition is being handled by the
+    // bounded handoff path — don't double-fire the guard.
+    const handoffWake = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, input.run.companyId),
+          eq(agentWakeupRequests.reason, FINISH_SUCCESSFUL_RUN_HANDOFF_REASON),
+          eq(agentWakeupRequests.idempotencyKey,
+            `finish_successful_run_handoff:${issue.id}:${input.run.id}:1`),
+          inArray(agentWakeupRequests.status, [
+            "queued",
+            "deferred_issue_execution",
+            "claimed",
+            "completed",
+          ]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (handoffWake) return;
+
+    await db
+      .update(issues)
+      .set({
+        status: "blocked",
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, issue.id));
+
+    throw new MissingIssueDispositionError(
+      `Run ${input.run.id} ended without choosing a valid disposition for issue ${issue.id}`,
+      issue.id,
+    );
+  }
+
   async function appendRunEvent(
     run: typeof heartbeatRuns.$inferSelect,
     seq: number,
@@ -11006,6 +11101,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agent,
         );
 
+        await ensureIssueDispositionRecordedOnSuccess({ run: livenessRun, agent, context });
+
         // Workspace-finalize wake re-fire: if this run's issue was marked done
         // mid-run (so the original `issue_blockers_resolved` wake was gated by
         // the readiness check waiting for workspace_finalize), the finalize
@@ -11089,14 +11186,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outcome === "succeeded" ? null : (adapterResult.errorMessage ?? null),
       );
     } catch (err) {
+      const isMissingDispositionError = err instanceof MissingIssueDispositionError;
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
         await getCurrentUserRedactionOptions(),
       );
       const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
       const configurationIncompleteFailure = isConfigurationIncompleteFailure(err) ? err : null;
-      const failureErrorCode =
-        workspaceValidationFailure?.code ?? configurationIncompleteFailure?.code ?? "adapter_failed";
+      const failureErrorCode = isMissingDispositionError
+        ? "missing_disposition"
+        : workspaceValidationFailure?.code ?? configurationIncompleteFailure?.code ?? "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -11115,34 +11214,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         logger.warn({ err: flushErr, runId }, "failed to flush run output progress after error");
       });
 
-      const failedRunWrite = await setRunStatusIfRunning(run.id, "failed", {
+      const failureResultJson = mergeRunStopMetadataForAgent(agent, "failed", {
+        errorCode: failureErrorCode,
+        errorMessage: message,
+        resultJson: isMissingDispositionError
+          ? { missingDisposition: "clear_next_step" }
+          : workspaceValidationFailure?.resultJson ?? configurationIncompleteFailure?.resultJson ?? null,
+      });
+
+      const failurePatch = {
         error: message,
         errorCode: failureErrorCode,
         finishedAt: new Date(),
-        resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
-          errorCode: failureErrorCode,
-          errorMessage: message,
-          resultJson: workspaceValidationFailure?.resultJson ?? configurationIncompleteFailure?.resultJson ?? null,
-        }),
+        resultJson: failureResultJson,
         stdoutExcerpt,
         stderrExcerpt,
         logBytes: logSummary?.bytes,
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
-      });
-      if (!failedRunWrite.updated) {
-        logger.info(
-          {
-            runId: run.id,
-            attemptedStatus: "failed",
-            currentStatus: failedRunWrite.run?.status ?? null,
-          },
-          "skipping late adapter failure finalization because the run already left running state",
-        );
-        return;
-      }
+      };
 
-      const failedRun = failedRunWrite.run;
+      // The missing-disposition guard fires AFTER the run has been marked
+      // `succeeded`, so the conditional `setRunStatusIfRunning` no longer
+      // matches. Use the unconditional `setRunStatus` so the failure lands
+      // even though the run briefly entered the terminal success state.
+      let failedRun: typeof heartbeatRuns.$inferSelect | null = null;
+      if (isMissingDispositionError) {
+        failedRun = await setRunStatus(run.id, "failed", failurePatch);
+        if (!failedRun) {
+          logger.info(
+            {
+              runId: run.id,
+              attemptedStatus: "failed",
+              currentStatus: null,
+            },
+            "skipping late missing-disposition finalization because the run row could not be updated",
+          );
+          return;
+        }
+      } else {
+        const failedRunWrite = await setRunStatusIfRunning(run.id, "failed", failurePatch);
+        if (!failedRunWrite.updated) {
+          logger.info(
+            {
+              runId: run.id,
+              attemptedStatus: "failed",
+              currentStatus: failedRunWrite.run?.status ?? null,
+            },
+            "skipping late adapter failure finalization because the run already left running state",
+          );
+          return;
+        }
+        failedRun = failedRunWrite.run;
+      }
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
         error: message,
