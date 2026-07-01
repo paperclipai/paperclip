@@ -79,6 +79,24 @@ export function applyCompanyPrefix(path: string, companyPrefix: string | null | 
   const activePrefix = extractCompanyPrefixFromPath(pathname);
   if (activePrefix) return path;
 
+  // `extractCompanyPrefixFromPath` cannot see a prefix that collides with a
+  // reserved route root (e.g. a company whose issue prefix is "ORG", which
+  // shadows the `org` board route). In that case the path may already be
+  // prefixed — `/ORG/dashboard` — and re-prepending would yield
+  // `/ORG/ORG/dashboard`. Detect this when the first segment matches the prefix
+  // we are about to apply and is followed by a known route root.
+  const segments = pathname.split("/").filter(Boolean);
+  const firstSegment = segments[0];
+  const secondSegment = segments[1]?.toLowerCase();
+  if (
+    firstSegment &&
+    normalizeCompanyPrefix(firstSegment) === prefix &&
+    secondSegment &&
+    (BOARD_ROUTE_ROOTS.has(secondSegment) || GLOBAL_ROUTE_ROOTS.has(secondSegment))
+  ) {
+    return path;
+  }
+
   return `/${prefix}${pathname}${search}${hash}`;
 }
 
