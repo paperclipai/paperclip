@@ -88,3 +88,24 @@ describe("sanitizeRememberedPathForCompany", () => {
     ).toBe("/skills/skill-123/files/SKILL.md");
   });
 });
+
+describe("sanitizeRememberedPathForCompany — known-prefix self-heal", () => {
+  it("fully self-heals mixed-prefix corruption in one pass when given all known prefixes", () => {
+    expect(
+      sanitizeRememberedPathForCompany({
+        path: "/BETA/ACME/my-plugin",
+        companyPrefix: "ACME",
+        knownCompanyPrefixes: ["ACME", "BETA"],
+      }),
+    ).toBe("/my-plugin");
+  });
+
+  it("falls back to the target prefix alone when known prefixes are not provided", () => {
+    expect(
+      sanitizeRememberedPathForCompany({
+        path: "/ACME/my-plugin",
+        companyPrefix: "ACME",
+      }),
+    ).toBe("/my-plugin");
+  });
+});

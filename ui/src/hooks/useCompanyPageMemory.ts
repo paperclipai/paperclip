@@ -49,13 +49,20 @@ export function useCompanyPageMemory() {
   // Uses prevCompanyId ref so we save under the correct company even
   // during the render where selectedCompanyId has already changed.
   const fullPath = location.pathname + location.search;
+  const knownPrefixes = useMemo(
+    () => companies.map((company) => company.issuePrefix),
+    [companies],
+  );
   useEffect(() => {
     const companyId = rememberedPathOwnerCompanyId;
-    const relativePath = toCompanyRelativePath(fullPath);
+    // Pass the known prefixes so plugin-contributed routes (not in the
+    // board-root allowlist) still get their company prefix stripped before
+    // being remembered — otherwise the prefix accumulates on every switch.
+    const relativePath = toCompanyRelativePath(fullPath, knownPrefixes);
     if (companyId && isRememberableCompanyPath(relativePath)) {
       saveCompanyPath(companyId, relativePath);
     }
-  }, [fullPath, rememberedPathOwnerCompanyId]);
+  }, [fullPath, rememberedPathOwnerCompanyId, knownPrefixes]);
 
   // Navigate to saved path when company changes
   useEffect(() => {
@@ -70,10 +77,11 @@ export function useCompanyPageMemory() {
         const targetPath = sanitizeRememberedPathForCompany({
           path: paths[selectedCompanyId],
           companyPrefix: selectedCompany.issuePrefix,
+          knownCompanyPrefixes: knownPrefixes,
         });
         navigate(`/${selectedCompany.issuePrefix}${targetPath}`, { replace: true });
       }
     }
     prevCompanyId.current = selectedCompanyId;
-  }, [selectedCompany, selectedCompanyId, selectionSource, navigate]);
+  }, [selectedCompany, selectedCompanyId, selectionSource, navigate, knownPrefixes]);
 }
