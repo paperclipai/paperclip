@@ -152,8 +152,9 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
   });
 
   async function createApp(actor: Record<string, unknown>) {
-    const [{ routineRoutes }, { errorHandler }] = await Promise.all([
+    const [{ routineRoutes }, { issueRoutes }, { errorHandler }] = await Promise.all([
       import("../routes/routines.js"),
+      import("../routes/issues.js"),
       import("../middleware/index.js"),
     ]);
     const app = express();
@@ -163,6 +164,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
       next();
     });
     app.use("/api", routineRoutes(db));
+    app.use("/api", issueRoutes(db, {} as any));
     app.use(errorHandler);
     return app;
   }
@@ -337,6 +339,132 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
         "routine.run_triggered",
       ]),
     );
+  }, 15_000);
+
+  it("repairs execution policy on a completed routine execution issue without 500s", async () => {
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const managerAgentId = randomUUID();
+    const managerRunId = randomUUID();
+    await db.insert(agents).values({
+      id: managerAgentId,
+      companyId,
+      name: "Engineering Manager",
+      role: "engineering-manager",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: managerRunId,
+      companyId,
+      agentId: managerAgentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: managerAgentId,
+      companyId,
+      runId: managerRunId,
+      source: "agent_jwt",
+    });
+    const boardApp = await createApp({
+      type: "board",
+      userId,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const access = accessService(db);
+    const managerMembership = await access.ensureMembership(companyId, "agent", managerAgentId, "member", "active");
+    await access.setMemberPermissions(
+      companyId,
+      managerMembership.id,
+      ["tasks:manage_active_checkouts", "issue:read", "issue:mutate"].map((permissionKey) => ({ permissionKey })),
+      userId,
+    );
+
+    const createRes = await request(boardApp)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Policy repair routine",
+        description: "Creates a routine execution issue missing execution policy",
+        assigneeAgentId: agentId,
+        priority: "medium",
+      });
+    expect([200, 201], JSON.stringify(createRes.body)).toContain(createRes.status);
+
+    const runRes = await postRoutineRun(boardApp, createRes.body.id as string, {
+      source: "manual",
+      payload: { origin: "policy-repair-test" },
+    });
+    expect(runRes.status).toBe(202);
+    expect(runRes.body.linkedIssueId, "linkedIssueId must be present in run response").toBeTruthy();
+
+    await db
+      .update(issues)
+      .set({
+        projectId: null,
+        status: "done",
+        completedAt: new Date(),
+        executionRunId: null,
+        executionLockedAt: null,
+      })
+      .where(eq(issues.id, runRes.body.linkedIssueId));
+
+    const policyPatch = {
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [
+          {
+            type: "review",
+            approvalsNeeded: 1,
+            participants: [{ type: "agent", agentId }],
+          },
+        ],
+      },
+    };
+
+    const agentPatchRes = await request(app)
+      .patch(`/api/issues/${runRes.body.linkedIssueId}`)
+      .send(policyPatch);
+
+    expect(agentPatchRes.status, JSON.stringify(agentPatchRes.body)).toBe(403);
+    expect(agentPatchRes.body.error).toBe("Issue is outside this actor's authorization boundary");
+
+    const patchRes = await request(boardApp)
+      .patch(`/api/issues/${runRes.body.linkedIssueId}`)
+      .send(policyPatch);
+    expect(patchRes.status, JSON.stringify(patchRes.body)).toBe(200);
+    expect(patchRes.body).toMatchObject({
+      id: runRes.body.linkedIssueId,
+      originKind: "routine_execution",
+      projectId: null,
+      status: "done",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [
+          expect.objectContaining({
+            type: "review",
+            participants: [
+              expect.objectContaining({
+                type: "agent",
+                agentId,
+              }),
+            ],
+          }),
+        ],
+      },
+    });
+    expect(patchRes.body.executionState).toBeNull();
   }, 15_000);
 
   it("runs routines with variable inputs and interpolates the execution issue description", async () => {
