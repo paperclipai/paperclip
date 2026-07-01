@@ -380,6 +380,53 @@ function isRepeatedProductiveContinuationRecovery(latestRun: SuccessfulLatestIss
     isProductiveContinuationRun(latestRun);
 }
 
+function readDate(value: unknown): Date | null {
+  if (!(typeof value === "string" || value instanceof Date)) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function readPositiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function readNonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function hasFutureScheduledMonitor(issue: Pick<
+  typeof issues.$inferSelect,
+  "executionPolicy" | "executionState" | "monitorAttemptCount" | "monitorNextCheckAt"
+>) {
+  const now = Date.now();
+  const monitorNextCheckAt = readDate(issue.monitorNextCheckAt);
+  if (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now) return false;
+
+  const executionState = parseObject(issue.executionState);
+  const stateStatus = readNonEmptyString(executionState.status);
+  const stateMonitor = parseObject(executionState.monitor);
+  const monitorStatus = readNonEmptyString(stateMonitor.status);
+  if (monitorStatus !== "scheduled") return false;
+  if (stateStatus !== "idle") return false;
+
+  const policyMonitor = parseObject(parseObject(issue.executionPolicy).monitor);
+  const policyNextCheckAt = readDate(policyMonitor.nextCheckAt);
+  if (policyNextCheckAt && Math.abs(policyNextCheckAt.getTime() - monitorNextCheckAt.getTime()) > 1_000) {
+    return false;
+  }
+
+  const timeoutAt = readDate(policyMonitor.timeoutAt ?? stateMonitor.timeoutAt);
+  if (timeoutAt && timeoutAt.getTime() <= now) return false;
+
+  const maxAttempts = readPositiveInteger(policyMonitor.maxAttempts ?? stateMonitor.maxAttempts);
+  const columnAttemptCount = readNonNegativeInteger(issue.monitorAttemptCount) ?? 0;
+  const stateAttemptCount = readNonNegativeInteger(stateMonitor.attemptCount) ?? 0;
+  const attemptCount = Math.max(columnAttemptCount, stateAttemptCount);
+  if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
+
+  return true;
+}
+
 function parseLivenessIncidentKey(incidentKey: string | null | undefined) {
   if (!incidentKey) return null;
   return parseIssueGraphLivenessIncidentKey(incidentKey);
@@ -2851,6 +2898,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (!latestRun && !issue.checkoutRunId && !issue.executionRunId) {
+        result.skipped += 1;
+        continue;
+      }
+      if (hasFutureScheduledMonitor(issue)) {
         result.skipped += 1;
         continue;
       }
