@@ -163,6 +163,13 @@ export interface UpstreamThrottleStreak {
   lastThrottleAt: Date | null;
 }
 
+// Statuses that count as evidence for streak purposes. Cancelled runs are
+// deliberately absent on both sides of the streak: a cancellation is neither
+// a throttle exit nor evidence the upstream recovered, so it neither extends
+// nor breaks a streak (callers' SQL also filters them out; this guard keeps
+// the pure function honest about whatever it is handed).
+const STREAK_TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "timed_out"]);
+
 // Counts consecutive throttle exits walking back from the most recent
 // terminal run, stopping at the first non-throttle run or the first run
 // outside the rolling window. Consecutive-within-window is what closes the
@@ -176,6 +183,7 @@ export function summarizeUpstreamThrottleStreak(input: {
   const now = input.now ?? new Date();
   const windowStart = new Date(now.getTime() - Math.max(0, input.windowMs));
   const ordered = input.runs
+    .filter((run) => run.status == null || STREAK_TERMINAL_RUN_STATUSES.has(run.status))
     .map((run) => ({ run, at: readRunTimestamp(run) }))
     .filter((entry): entry is { run: ThrottleExitRunLike; at: Date } => entry.at != null)
     .sort((a, b) => b.at.getTime() - a.at.getTime());

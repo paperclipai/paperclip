@@ -7,7 +7,7 @@ import {
   isUpstreamThrottleExitRun,
   resolveLivenessContinuationThrottleConfig,
   summarizeUpstreamThrottleStreak,
-} from "./liveness-continuation-throttle.ts";
+} from "./liveness-continuation-throttle.js";
 
 const NOW = new Date("2026-07-01T12:00:00.000Z");
 const HOUR_MS = 60 * 60 * 1000;
@@ -202,6 +202,15 @@ describe("summarizeUpstreamThrottleStreak", () => {
     const runs = [throttleRun(30), productiveRun(10), throttleRun(5), throttleRun(0)];
     const streak = summarizeUpstreamThrottleStreak({ runs, now: NOW, windowMs: HOUR_MS });
     expect(streak.streak).toBe(2);
+  });
+
+  it("lets cancelled runs neither extend nor break a streak", () => {
+    // A cancellation is not a throttle exit, but it is also not evidence the
+    // upstream recovered — the streak walks straight past it.
+    const runs = [throttleRun(0), throttleRun(5, { status: "cancelled" }), throttleRun(10)];
+    const streak = summarizeUpstreamThrottleStreak({ runs, now: NOW, windowMs: HOUR_MS });
+    expect(streak.streak).toBe(2);
+    expect(streak.firstThrottleAt?.getTime()).toBe(NOW.getTime() - 10 * 60_000);
   });
 
   it("handles empty input and missing timestamps", () => {

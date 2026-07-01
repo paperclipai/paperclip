@@ -6234,39 +6234,48 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               updatedAt: new Date(),
             })
             .where(eq(heartbeatRuns.id, run.id));
-        } else {
-          await appendRunEvent(run, await nextRunEventSeq(run.id), {
-            eventType: "lifecycle",
-            stream: "system",
-            level: "warn",
-            message: "Deferred liveness continuation was not scheduled; no immediate continuation was enqueued",
-            payload: {
-              throttleMode: LIVENESS_CONTINUATION_THROTTLE_CONFIG.mode,
-              attempt: decision.nextAttempt,
-              delayMs: decision.backoff.delayMs,
-              outcome: scheduled.outcome,
-              ...("reason" in scheduled ? { reason: scheduled.reason } : {}),
-            },
-          });
+          return;
         }
-        return;
+        // Deferral failed (retry exhausted on a mixed retry chain, agent
+        // invokability gate, issue lock churn): fall through to the immediate
+        // enqueue below so enforce mode never drops a continuation the
+        // decision layer approved.
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: "Deferred liveness continuation was not scheduled; falling back to an immediate continuation",
+          payload: {
+            throttleMode: LIVENESS_CONTINUATION_THROTTLE_CONFIG.mode,
+            attempt: decision.nextAttempt,
+            delayMs: decision.backoff.delayMs,
+            outcome: scheduled.outcome,
+            ...("reason" in scheduled ? { reason: scheduled.reason } : {}),
+          },
+        });
       }
     }
 
     if (decision.backoff && LIVENESS_CONTINUATION_THROTTLE_CONFIG.mode === "shadow") {
-      await appendRunEvent(run, await nextRunEventSeq(run.id), {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "info",
-        message:
-          `Liveness continuation throttle (shadow): would defer continuation attempt ${decision.nextAttempt} by ${decision.backoff.delayMs}ms`,
-        payload: {
-          throttleMode: "shadow",
-          attempt: decision.nextAttempt,
-          delayMs: decision.backoff.delayMs,
-          dueAt: decision.backoff.dueAt.toISOString(),
-        },
-      });
+      // Instrumentation only — a failure to record the shadow event must not
+      // suppress the continuation the pre-change code would have fired.
+      try {
+        await appendRunEvent(run, await nextRunEventSeq(run.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message:
+            `Liveness continuation throttle (shadow): would defer continuation attempt ${decision.nextAttempt} by ${decision.backoff.delayMs}ms`,
+          payload: {
+            throttleMode: "shadow",
+            attempt: decision.nextAttempt,
+            delayMs: decision.backoff.delayMs,
+            dueAt: decision.backoff.dueAt.toISOString(),
+          },
+        });
+      } catch (err) {
+        logger.warn({ err, runId: run.id }, "failed to record shadow liveness-continuation backoff event");
+      }
     }
 
     const continuationRun = await enqueueWakeup(run.agentId, {
@@ -11360,7 +11369,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
-        await handleUpstreamThrottleCeiling(livenessRun, agent);
+        try {
+          await handleUpstreamThrottleCeiling(livenessRun, agent);
+        } catch (err) {
+          // Best-effort hardening: a failure while evaluating (or enforcing)
+          // the throttle ceiling must never break run finalization or block
+          // the continuation handler below.
+          logger.warn({ err, runId: livenessRun.id }, "upstream throttle ceiling evaluation failed");
+        }
         await handleRunLivenessContinuation(livenessRun);
         await handleSuccessfulRunHandoff(
           issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
