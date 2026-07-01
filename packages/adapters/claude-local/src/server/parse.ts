@@ -420,6 +420,15 @@ export function isClaudeTransientUpstreamError(input: {
   if (parsed && (isClaudeMaxTurnsResult(parsed) || isClaudeUnknownSessionError(parsed) || isClaudePoisonedPreviousMessageIdError(parsed) || isClaudeImageProcessingError(parsed))) {
     return false;
   }
+  // subtype=success with is_error=false is an authoritative SDK success signal.
+  // Guard here so that legitimate work output containing transient-matching phrases
+  // (e.g. "429", "rate limit", "try again later" in code or prose the agent wrote)
+  // is never misclassified as a transient upstream failure (OUT-50012).
+  // Note: is_error=true alongside subtype=success is the usage-limit pattern (OUT-49658)
+  // and must still be classified below.
+  if (parsed && asString(parsed.subtype, "").trim().toLowerCase() === "success" && parsed.is_error !== true) {
+    return false;
+  }
   const loginMeta = detectClaudeLoginRequired({
     parsed,
     stdout: input.stdout ?? "",

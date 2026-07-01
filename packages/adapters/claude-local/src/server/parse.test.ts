@@ -133,6 +133,41 @@ describe("isClaudeTransientUpstreamError", () => {
       }),
     ).toBe(false);
   });
+
+  it("does not classify subtype=success (is_error=false) runs as transient even when result text contains transient-matching phrases (OUT-50012)", () => {
+    // Agent wrote code discussing 429/rate-limit handling — output must not be misclassified.
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          is_error: false,
+          subtype: "success",
+          result:
+            "I've added retry logic for 429 rate limit errors and 503 service unavailable responses.",
+        },
+      }),
+    ).toBe(false);
+    // Agent output mentions "try again later" in legitimate prose.
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          is_error: false,
+          subtype: "success",
+          result: "Try again later if you encounter throttling from the upstream API.",
+        },
+      }),
+    ).toBe(false);
+    // Ensure the guard does not suppress the usage-limit pattern (OUT-49658):
+    // is_error=true alongside subtype=success must still be classified as transient.
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          is_error: true,
+          subtype: "success",
+          result: "You've hit your limit · resets 9:40pm (America/Chicago)",
+        },
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("isClaudePoisonedPreviousMessageIdError", () => {
