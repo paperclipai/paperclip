@@ -727,6 +727,16 @@ export function createPluginWorkerHandle(
       TZ: process.env.TZ ?? "UTC",
     };
 
+    // Forward the host's company scope so workers that receive no per-invocation
+    // scope (e.g. the messaging plugin handling inbound Postmark webhooks) can
+    // still resolve which company to invoke agents under. Sourced from the host
+    // process env like PATH/NODE_PATH above; omitted when unset so single-value
+    // deployments stay explicit and multi-tenant hosts don't pin a stale scope.
+    const companyId = process.env.PAPERCLIP_COMPANY_ID;
+    if (companyId && companyId.trim().length > 0) {
+      workerEnv.PAPERCLIP_COMPANY_ID = companyId;
+    }
+
     const child = fork(options.entrypointPath, [], {
       stdio: ["pipe", "pipe", "pipe", "ipc"],
       execArgv: options.execArgv ?? [],
