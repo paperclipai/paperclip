@@ -362,6 +362,15 @@ export type {
   IssueWatchdogSummary,
 } from "./issue.js";
 export type {
+  MemoryEntry,
+  MemoryEntrySource,
+  MemoryIngestInput,
+  MemorySearchInput,
+  MemoryBrowseFilters,
+  MemoryUsage,
+  MemoryProvider,
+} from "./memory.js";
+export type {
   IssueTreeControlPreview,
   IssueTreeHold,
   IssueTreeHoldMember,

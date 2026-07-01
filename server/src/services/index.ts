@@ -35,6 +35,7 @@ export {
 } from "./task-watchdog-scope.js";
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
+export { memoryService, type MemoryActor, type MemoryBrowseFilters } from "./memory.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";

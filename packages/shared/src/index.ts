@@ -802,6 +802,15 @@ export type {
   ProviderQuotaResult,
 } from "./types/index.js";
 export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
+export type {
+  MemoryEntry,
+  MemoryEntrySource,
+  MemoryIngestInput,
+  MemorySearchInput,
+  MemoryBrowseFilters,
+  MemoryUsage,
+  MemoryProvider,
+} from "./types/index.js";
 export {
   ISSUE_REFERENCE_IDENTIFIER_RE,
   buildIssueReferenceHref,
@@ -915,6 +924,14 @@ export {
   type TrustPresetInput,
   type LowTrustBoundaryInput,
   type TrustAuthorizationPolicyInput,
+} from "./validators/index.js";
+
+export {
+  memoryEntrySourceSchema,
+  ingestMemorySchema,
+  searchMemorySchema,
+  type IngestMemory,
+  type SearchMemory,
 } from "./validators/index.js";
 
 export {

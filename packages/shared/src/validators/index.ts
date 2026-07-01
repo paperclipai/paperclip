@@ -323,6 +323,14 @@ export {
 } from "./issue.js";
 
 export {
+  memoryEntrySourceSchema,
+  ingestMemorySchema,
+  searchMemorySchema,
+  type IngestMemory,
+  type SearchMemory,
+} from "./memory.js";
+
+export {
   COMPANY_SEARCH_DEFAULT_LIMIT,
   COMPANY_SEARCH_MAX_LIMIT,
   COMPANY_SEARCH_MAX_OFFSET,
