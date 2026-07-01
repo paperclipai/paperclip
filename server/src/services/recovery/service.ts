@@ -2749,6 +2749,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : [],
     );
 
+    // Skip children whose parent is `in_review` — that is a deliberate waiting
+    // state, not a blocker. Flipping such children to `blocked` just creates
+    // churn (the sentinel agent immediately restores `in_progress`).
+    const issueIdsWithInReviewParent = new Set<string>(
+      candidateIds.length > 0
+        ? (
+            await db
+              .select({ id: issues.id })
+              .from(issues)
+              .where(
+                and(
+                  inArray(issues.id, candidateIds),
+                  sql`${issues.parentId} is not null`,
+                  sql`exists (
+                    select 1 from issues parent_issue
+                    where parent_issue.id = ${issues.parentId}
+                      and parent_issue.company_id = ${issues.companyId}
+                      and parent_issue.status = 'in_review'
+                  )`,
+                ),
+              )
+          )
+            .map((row) => row.id)
+        : [],
+    );
+
     const result = {
       assignmentDispatched: 0,
       dispatchRequeued: 0,
@@ -2788,6 +2814,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (issueIdsWithInReviewParent.has(issue.id)) {
         result.skipped += 1;
         continue;
       }

@@ -2159,6 +2159,65 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
   });
 
+  it("skips escalation for an in_progress child whose parent is in_review (sentinel/anchor pattern)", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    const parentIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    // Insert an in_review parent and reparent the stranded child under it.
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent task under review",
+      status: "in_review",
+      priority: "medium",
+      issueNumber: 99,
+      identifier: `${issuePrefix}-99`,
+    });
+    await db.update(issues).set({ parentId: parentIssueId }).where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // The child must be skipped — in_review parent is a valid waiting state.
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).not.toContain(issueId);
+
+    const child = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(child?.status).toBe("in_progress");
+  });
+
+  it("does not skip an in_progress child whose parent is done (not in_review)", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    const parentIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent task done",
+      status: "done",
+      priority: "medium",
+      issueNumber: 99,
+      identifier: `${issuePrefix}-99`,
+    });
+    await db.update(issues).set({ parentId: parentIssueId }).where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // A done parent does not exempt the child from recovery — it should have
+    // been processed (continuation requeued or escalated), not skipped.
+    expect(result.issueIds).toContain(issueId);
+  });
+
   it("skips escalation for an in_progress issue backed by a routine with a future scheduled fire", async () => {
     const { companyId, runId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
