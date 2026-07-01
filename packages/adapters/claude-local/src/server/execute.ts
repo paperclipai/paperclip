@@ -55,6 +55,7 @@ import {
   isClaudeUnknownSessionError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeImageProcessingError,
+  isClaudeModifiedThinkingError,
 } from "./parse.js";
 import {
   materializeRemoteClaudeConfig,
@@ -1021,6 +1022,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? "poisoned"
           : isClaudeImageProcessingError(initial.parsed)
           ? "image"
+          : isClaudeModifiedThinkingError(initial.parsed)
+          ? "modified_thinking"
           : null
         : null;
 
@@ -1030,6 +1033,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? "returned a poisoned message-id"
           : sessionErrorKind === "image"
           ? "contains an unprocessable image"
+          : sessionErrorKind === "modified_thinking"
+          ? "has a modified thinking block"
           : "is unavailable";
       await onLog(
         "stdout",
