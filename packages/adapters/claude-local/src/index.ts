@@ -24,7 +24,6 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
     description: "Use Claude Sonnet as the lower-cost Claude Code lane while preserving the agent's primary model.",
     adapterConfig: {
       model: "claude-sonnet-4-6",
-      effort: "low",
     },
     source: "adapter_default",
   },
