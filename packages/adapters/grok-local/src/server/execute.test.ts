@@ -184,4 +184,92 @@ describe("grok_local execute", () => {
     expect(await pathExists(path.join(root, "Agents.md"))).toBe(false);
     expect(await pathExists(path.join(root, ".claude", "skills", "paperclip"))).toBe(false);
   });
+
+  it("passes outputIdleTimeoutSec from config to runAdapterExecutionTargetProcess", async () => {
+    const root = await makeTempRoot();
+    runProcessMock.mockImplementation(async (_runId, _target, _command, _args, _options) => {
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-1" }),
+        stderr: "",
+      };
+    });
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-idle",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root, outputIdleTimeoutSec: 60 },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    };
+
+    await execute(ctx);
+    expect(runProcessMock).toHaveBeenCalledTimes(1);
+    const opts = runProcessMock.mock.calls[0][4];
+    expect(opts).toMatchObject({ outputIdleTimeoutSec: 60, graceSec: 20 });
+  });
+
+  it("defaults outputIdleTimeoutSec to 600 when config field is absent", async () => {
+    const root = await makeTempRoot();
+    runProcessMock.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-1" }),
+      stderr: "",
+    }));
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-idle-default",
+      agent: { id: "agent-1", companyId: "company-1", name: "Grok Agent", adapterType: "grok_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    };
+
+    await execute(ctx);
+    const opts = runProcessMock.mock.calls[0][4];
+    expect(opts).toMatchObject({ outputIdleTimeoutSec: 600 });
+  });
+
+  it("reports a Grok-specific errorMessage and no summary when the child times out on output_idle", async () => {
+    const root = await makeTempRoot();
+    runProcessMock.mockImplementation(async () => ({
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: true,
+      timeoutReason: "output_idle",
+      stdout: "",
+      stderr: "",
+    }));
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-idle-timeout",
+      agent: { id: "agent-1", companyId: "company-1", name: "Grok Agent", adapterType: "grok_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root, outputIdleTimeoutSec: 60 },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    };
+
+    const result = await execute(ctx);
+    expect(result).toMatchObject({
+      timedOut: true,
+      errorMessage: "No Grok output for 60s",
+    });
+    expect(result).not.toHaveProperty("summary");
+  });
 });
