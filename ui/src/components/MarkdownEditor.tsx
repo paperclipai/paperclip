@@ -616,6 +616,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
    */
   const echoIgnoreMarkdownRef = useRef<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [richEditorError, setRichEditorError] = useState<string | null>(null);
   const dragDepthRef = useRef(0);
@@ -770,6 +771,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       ? async (file: File) => {
           const handler = imageUploadHandlerRef.current;
           if (!handler) throw new Error("No image upload handler");
+          setIsUploading(true);
           try {
             const src = await handler(file);
             setUploadError(null);
@@ -797,6 +799,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             const message = err instanceof Error ? err.message : "Image upload failed";
             setUploadError(message);
             throw err;
+          } finally {
+            setIsUploading(false);
           }
         }
       : undefined;
@@ -1416,6 +1420,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         >
           Drop {onDropFile ? "file" : "image"} to upload
         </div>
+      )}
+      {isUploading && (
+        <p className="px-3 pb-2 text-xs text-muted-foreground animate-pulse">Uploading image...</p>
       )}
       {uploadError && (
         <p className="px-3 pb-2 text-xs text-destructive">{uploadError}</p>
