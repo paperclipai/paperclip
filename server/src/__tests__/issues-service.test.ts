@@ -94,14 +94,81 @@ describe("deriveIssueCommentRunLogAttribution", () => {
     });
   });
 
-  it("does not rewrite comments without exact run-log proof", () => {
+  it("resolves directly from the comment's own run id without reading logs", () => {
+    const commentId = randomUUID();
+    const runId = randomUUID();
+    const agentId = randomUUID();
+
+    const derived = deriveIssueCommentRunLogAttribution(
+      [
+        {
+          id: commentId,
+          authorAgentId: null,
+          authorUserId: "local-board",
+          createdByRunId: runId,
+          createdAt: new Date("2026-05-11T18:55:40.090Z"),
+        },
+      ],
+      [
+        {
+          runId,
+          agentId,
+          createdAt: new Date("2026-05-11T18:51:56.246Z"),
+          startedAt: new Date("2026-05-11T18:51:56.257Z"),
+          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
+          logContent: "",
+        },
+      ],
+    );
+
+    expect(derived.get(commentId)).toEqual({
+      derivedAuthorAgentId: agentId,
+      derivedCreatedByRunId: runId,
+      derivedAuthorSource: "run_id",
+    });
+  });
+
+  it("does NOT attribute on run-window overlap alone — timing is not a lossless signal (option A)", () => {
+    // A human board comment can land inside an agent's run window; since both are
+    // stored as `local-board`, a timing-only guess would mis-attribute it. So a
+    // single overlapping run with no run-id and no log marker stays unresolved.
+    const commentId = randomUUID();
+    const runId = randomUUID();
+    const agentId = randomUUID();
+
+    const derived = deriveIssueCommentRunLogAttribution(
+      [
+        {
+          id: commentId,
+          authorAgentId: null,
+          authorUserId: "local-board",
+          createdByRunId: null,
+          createdAt: new Date("2026-05-11T18:55:40.090Z"),
+        },
+      ],
+      [
+        {
+          runId,
+          agentId,
+          createdAt: new Date("2026-05-11T18:51:56.246Z"),
+          startedAt: new Date("2026-05-11T18:51:56.257Z"),
+          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
+          logContent: "posted results without echoing the comment id",
+        },
+      ],
+    );
+
+    expect(derived.has(commentId)).toBe(false);
+  });
+
+  it("does not guess when multiple agent runs overlap and no log proves the author", () => {
     const commentId = randomUUID();
     const derived = deriveIssueCommentRunLogAttribution(
       [
         {
           id: commentId,
           authorAgentId: null,
-          authorUserId: "user-1",
+          authorUserId: "local-board",
           createdByRunId: null,
           createdAt: new Date("2026-05-11T18:55:40.090Z"),
         },
@@ -113,7 +180,81 @@ describe("deriveIssueCommentRunLogAttribution", () => {
           createdAt: new Date("2026-05-11T18:51:56.246Z"),
           startedAt: new Date("2026-05-11T18:51:56.257Z"),
           finishedAt: new Date("2026-05-11T18:55:45.600Z"),
-          logContent: "posted results without echoing the comment id",
+          logContent: "no comment id here",
+        },
+        {
+          runId: randomUUID(),
+          agentId: randomUUID(),
+          createdAt: new Date("2026-05-11T18:54:00.000Z"),
+          startedAt: new Date("2026-05-11T18:54:00.000Z"),
+          finishedAt: new Date("2026-05-11T18:56:00.000Z"),
+          logContent: "also nothing",
+        },
+      ],
+    );
+
+    expect(derived.has(commentId)).toBe(false);
+  });
+
+  it("does NOT attribute on same-agent run-window overlap alone (option A)", () => {
+    // Even when every overlapping run is the same agent, timing alone cannot
+    // prove the comment was the agent's vs a human board comment during the run.
+    const commentId = randomUUID();
+    const agentId = randomUUID();
+
+    const derived = deriveIssueCommentRunLogAttribution(
+      [
+        {
+          id: commentId,
+          authorAgentId: null,
+          authorUserId: "local-board",
+          createdByRunId: null,
+          createdAt: new Date("2026-06-29T17:41:59.916Z"),
+        },
+      ],
+      [
+        {
+          runId: randomUUID(),
+          agentId,
+          createdAt: new Date("2026-06-29T17:41:26.116Z"),
+          startedAt: new Date("2026-06-29T17:41:26.116Z"),
+          finishedAt: new Date("2026-06-29T17:46:33.794Z"),
+          logContent: "no comment id here",
+        },
+        {
+          runId: randomUUID(),
+          agentId,
+          createdAt: new Date("2026-06-29T17:40:09.531Z"),
+          startedAt: new Date("2026-06-29T17:40:09.531Z"),
+          finishedAt: new Date("2026-06-29T17:46:33.794Z"),
+          logContent: "also nothing",
+        },
+      ],
+    );
+
+    expect(derived.has(commentId)).toBe(false);
+  });
+
+  it("never reattributes a comment that already has a stored agent author", () => {
+    const commentId = randomUUID();
+    const derived = deriveIssueCommentRunLogAttribution(
+      [
+        {
+          id: commentId,
+          authorAgentId: randomUUID(),
+          authorUserId: null,
+          createdByRunId: null,
+          createdAt: new Date("2026-05-11T18:55:40.090Z"),
+        },
+      ],
+      [
+        {
+          runId: randomUUID(),
+          agentId: randomUUID(),
+          createdAt: new Date("2026-05-11T18:51:56.246Z"),
+          startedAt: new Date("2026-05-11T18:51:56.257Z"),
+          finishedAt: new Date("2026-05-11T18:55:45.600Z"),
+          logContent: "",
         },
       ],
     );

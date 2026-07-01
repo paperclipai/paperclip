@@ -462,6 +462,40 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
+  it("does not reattribute a genuine board/user comment that has no derived agent", () => {
+    const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "Claude")]]);
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorUserId: "local-board",
+          authorType: "user",
+          // No agent ever resolved for this comment — a real board action.
+          derivedAuthorAgentId: null,
+          derivedCreatedByRunId: null,
+          runId: null,
+          runAgentId: null,
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap,
+      currentUserId: "user-1",
+      userLabelMap: new Map([["local-board", "Board"]]),
+    });
+
+    expect(messages[0]).toMatchObject({
+      role: "user",
+      metadata: {
+        custom: {
+          authorType: "user",
+          authorAgentId: null,
+          authorUserId: "local-board",
+        },
+      },
+    });
+  });
+
   it("renders a comment as agent-authored when runAgentId is set from activity log", () => {
     const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "Claude")]]);
     const messages = buildIssueChatMessages({
