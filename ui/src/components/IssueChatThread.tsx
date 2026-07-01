@@ -850,7 +850,7 @@ function IssueChatChainOfThought({
   cotParts: readonly IssueChatCoTPart[];
 }) {
   const { agentMap } = useContext(IssueChatCtx);
-  const custom = message.metadata.custom as Record<string, unknown>;
+  const custom = (message.metadata?.custom ?? {}) as Record<string, unknown>;
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
   const authorAgentId = typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
   const agentId = authorAgentId ?? runAgentId;
@@ -1339,7 +1339,7 @@ function IssueChatUserMessage({
     currentUserId,
     userProfileMap,
   } = useContext(IssueChatCtx);
-  const custom = message.metadata.custom as Record<string, unknown>;
+  const custom = (message.metadata?.custom ?? {}) as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const commentId = typeof custom.commentId === "string" ? custom.commentId : message.id;
   const authorName = typeof custom.authorName === "string" ? custom.authorName : null;
@@ -1573,7 +1573,7 @@ function IssueChatAssistantMessage({
     stopRunVariant = "stop",
     runFinalizationActions = [],
   } = useContext(IssueChatCtx);
-  const custom = message.metadata.custom as Record<string, unknown>;
+  const custom = (message.metadata?.custom ?? {}) as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const authorName = typeof custom.authorName === "string"
     ? custom.authorName
@@ -2662,7 +2662,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     onUploadImage,
     externalReferences,
   } = useContext(IssueChatCtx);
-  const custom = message.metadata.custom as Record<string, unknown>;
+  const custom = (message.metadata?.custom ?? {}) as Record<string, unknown>;
   const anchorId = typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
@@ -4386,7 +4386,7 @@ export function IssueChatThread({
       && lastUserId !== lastUserMessageIdRef.current
     ) {
       pendingSubmitScrollRef.current = false;
-      const custom = lastUserMessage?.metadata.custom as { anchorId?: unknown } | undefined;
+      const custom = (lastUserMessage?.metadata?.custom ?? undefined) as { anchorId?: unknown } | undefined;
       const anchorId = typeof custom?.anchorId === "string" ? custom.anchorId : null;
       if (anchorId) {
         const reserve = Math.round(window.innerHeight * SUBMIT_SCROLL_RESERVE_VH);
