@@ -322,6 +322,21 @@ export interface PluginWorkerManager {
   startWorker(pluginId: string, options: WorkerStartOptions): Promise<PluginWorkerHandle>;
 
   /**
+   * Register (or replace) the manager-level stream-notification handler. The
+   * manager forwards every worker's `streams.open/emit/close` notifications to
+   * it, unless that worker supplied its own per-start `onStreamNotification`.
+   * The server wires this to the PluginStreamBus. It is safe to call after the
+   * manager is constructed (and after it has been injected into the app),
+   * because workers are started later; the forwarder reads the current handler
+   * at notification time. Pass `null` to detach.
+   */
+  setStreamNotificationHandler(
+    handler:
+      | ((pluginId: string, method: string, params: Record<string, unknown>) => void)
+      | null,
+  ): void;
+
+  /**
    * Stop and unregister a specific plugin worker.
    */
   stopWorker(pluginId: string): Promise<void>;
@@ -1325,6 +1340,20 @@ export interface PluginWorkerManagerOptions {
     signal?: string | null;
     willRestart?: boolean;
   }) => void;
+
+  /**
+   * Optional callback invoked when any worker emits a stream notification
+   * (`streams.open` / `streams.emit` / `streams.close`). The server wires this
+   * to the `PluginStreamBus` so `ctx.streams.emit()` events fan out to SSE
+   * clients. Without it, plugin streaming is inert and plugins fall back to
+   * polling. The manager injects it into per-worker options for every worker
+   * that does not already supply its own `onStreamNotification`.
+   */
+  onStreamNotification?: (
+    pluginId: string,
+    method: string,
+    params: Record<string, unknown>,
+  ) => void;
 }
 
 /**
@@ -1360,8 +1389,20 @@ export function createPluginWorkerManager(
   const workers = new Map<string, PluginWorkerHandle>();
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
+  /**
+   * Manager-level stream-notification handler. Initialized from options and
+   * replaceable via setStreamNotificationHandler(); the per-worker forwarder
+   * reads it live so it can be wired after construction.
+   */
+  let streamHandler:
+    | ((pluginId: string, method: string, params: Record<string, unknown>) => void)
+    | null = managerOptions?.onStreamNotification ?? null;
 
   return {
+    setStreamNotificationHandler(handler) {
+      streamHandler = handler;
+    },
+
     async startWorker(
       pluginId: string,
       options: WorkerStartOptions,
@@ -1380,7 +1421,21 @@ export function createPluginWorkerManager(
         );
       }
 
-      const handle = createPluginWorkerHandle(pluginId, options);
+      // Forward this worker's stream notifications to the manager-level handler
+      // (e.g. the PluginStreamBus) unless the worker supplied its own. This is
+      // what connects `ctx.streams.emit()` to SSE clients; the per-worker hook
+      // already existed, but nothing populated it from the manager level. The
+      // forwarder reads `streamHandler` at notification time, so wiring the
+      // handler after construction (the server does this once it has the bus)
+      // still applies to workers started later.
+      const effectiveOptions: WorkerStartOptions = options.onStreamNotification
+        ? options
+        : {
+            ...options,
+            onStreamNotification: (method, params) => streamHandler?.(pluginId, method, params),
+          };
+
+      const handle = createPluginWorkerHandle(pluginId, effectiveOptions);
       workers.set(pluginId, handle);
 
       // Subscribe to crash/ready events for live event forwarding

@@ -46,6 +46,26 @@ export interface PluginStreamBus {
 }
 
 /**
+ * Map a worker stream notification (`streams.open` / `streams.emit` /
+ * `streams.close`, as forwarded by the worker manager) onto a bus publish.
+ * Drops notifications missing a channel or companyId. Shared so every caller
+ * that wires the manager's stream handler maps event types identically.
+ */
+export function publishWorkerStreamNotification(
+  bus: PluginStreamBus,
+  pluginId: string,
+  method: string,
+  params: Record<string, unknown>,
+): void {
+  const channel = typeof params.channel === "string" ? params.channel : "";
+  const companyId = typeof params.companyId === "string" ? params.companyId : "";
+  if (!channel || !companyId) return;
+  const eventType: StreamEventType =
+    method === "streams.open" ? "open" : method === "streams.close" ? "close" : "message";
+  bus.publish(pluginId, channel, companyId, (params as { event?: unknown }).event ?? null, eventType);
+}
+
+/**
  * Create a new PluginStreamBus instance.
  */
 export function createPluginStreamBus(): PluginStreamBus {
