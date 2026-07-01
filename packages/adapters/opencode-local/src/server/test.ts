@@ -25,7 +25,7 @@ import {
   prepareAdapterExecutionTargetRuntime,
   overrideAdapterExecutionTargetRemoteCwd,
 } from "@paperclipai/adapter-utils/execution-target";
-import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
+import { discoverOpenCodeModelsResilient, ensureOpenCodeModelConfiguredAndAvailable, DISK_CACHE_TTL_MS } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
@@ -230,13 +230,35 @@ export async function testEnvironment(
       modelValidationPassed = true;
     } else if (canRunProbe && configuredModel) {
       try {
-        const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv });
-        if (discovered.length > 0) {
-          checks.push({
-            code: "opencode_models_discovered",
-            level: "info",
-            message: `Discovered ${discovered.length} model(s) from OpenCode providers.`,
-          });
+        const discovery = await discoverOpenCodeModelsResilient({
+          command,
+          cwd,
+          env: runtimeEnv,
+          model: configuredModel,
+        });
+        if (discovery.models.length > 0) {
+          if (discovery.source === "live") {
+            checks.push({
+              code: "opencode_models_discovered",
+              level: "info",
+              message: `Discovered ${discovery.models.length} model(s) from OpenCode providers.`,
+            });
+          } else if (discovery.source === "disk_cache") {
+            const stale = (discovery.cacheAge ?? 0) > DISK_CACHE_TTL_MS;
+            checks.push({
+              code: "opencode_models_discovery_degraded",
+              level: "warn",
+              message: `Using ${stale ? "stale " : ""}cached model list (live probe unavailable); ${discovery.models.length} model(s) available.`,
+              hint: "Run `opencode models` manually to refresh the model list.",
+            });
+          } else {
+            checks.push({
+              code: "opencode_models_discovery_degraded",
+              level: "warn",
+              message: `Live model probe unavailable; trusting configured model ${configuredModel}.`,
+              hint: "Run `opencode models` manually to verify provider auth and config.",
+            });
+          }
         } else {
           checks.push({
             code: "opencode_models_empty",
@@ -266,13 +288,23 @@ export async function testEnvironment(
       }
     } else if (!targetIsRemote && canRunProbe && !configuredModel) {
       try {
-        const discovered = await discoverOpenCodeModels({ command, cwd, env: runtimeEnv });
-        if (discovered.length > 0) {
-          checks.push({
-            code: "opencode_models_discovered",
-            level: "info",
-            message: `Discovered ${discovered.length} model(s) from OpenCode providers.`,
-          });
+        const discovery = await discoverOpenCodeModelsResilient({ command, cwd, env: runtimeEnv });
+        if (discovery.models.length > 0) {
+          if (discovery.source === "live") {
+            checks.push({
+              code: "opencode_models_discovered",
+              level: "info",
+              message: `Discovered ${discovery.models.length} model(s) from OpenCode providers.`,
+            });
+          } else {
+            const stale = (discovery.cacheAge ?? 0) > DISK_CACHE_TTL_MS;
+            checks.push({
+              code: "opencode_models_discovery_degraded",
+              level: "warn",
+              message: `Using ${stale ? "stale " : ""}cached model list (live probe unavailable); ${discovery.models.length} model(s) available.`,
+              hint: "Run `opencode models` manually to refresh the model list.",
+            });
+          }
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
