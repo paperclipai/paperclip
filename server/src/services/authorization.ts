@@ -9,6 +9,7 @@ import {
   issues,
   principalPermissionGrants,
   projects,
+  projectWorkspaces,
 } from "@paperclipai/db";
 import type { AgentApiKeyScope, PermissionKey, PrincipalType, TaskBridgeAgentKeyScope } from "@paperclipai/shared";
 import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
@@ -210,6 +211,7 @@ type IssueAuthorizationRow = {
   id: string;
   companyId: string;
   projectId: string | null;
+  projectWorkspaceId: string | null;
   parentId: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -551,6 +553,7 @@ export function authorizationService(db: Db) {
         id: issues.id,
         companyId: issues.companyId,
         projectId: issues.projectId,
+        projectWorkspaceId: issues.projectWorkspaceId,
         parentId: issues.parentId,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
@@ -562,6 +565,42 @@ export function authorizationService(db: Db) {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function loadProjectWorkspaceProjectId(workspaceId: string): Promise<string | null> {
+    return db
+      .select({ projectId: projectWorkspaces.projectId })
+      .from(projectWorkspaces)
+      .where(eq(projectWorkspaces.id, workspaceId))
+      .then((rows) => rows[0]?.projectId ?? null);
+  }
+
+  // Resolve the project an issue effectively belongs to, even when issues.project_id
+  // is null. An issue created with only a project_workspace_id (or only a parent)
+  // otherwise resolves to no project and fails the low-trust boundary check closed,
+  // which bricks the issue: issue:read / issue:mutate are denied and the in-app
+  // repair (PATCH project_id) is blocked by the same check. project_workspaces.project_id
+  // is NOT NULL, so the workspace is an authoritative fallback; the parent chain is the
+  // next fallback. Resolution short-circuits on the first projectId found, so the common
+  // case (project_id already set) costs no extra queries.
+  async function resolveEffectiveIssueProjectId(
+    issue: IssueAuthorizationRow | null,
+  ): Promise<string | null> {
+    let current = issue;
+    let depth = 0;
+    const seen = new Set<string>();
+    while (current && depth < LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH) {
+      if (current.projectId) return current.projectId;
+      if (current.projectWorkspaceId) {
+        const fromWorkspace = await loadProjectWorkspaceProjectId(current.projectWorkspaceId);
+        if (fromWorkspace) return fromWorkspace;
+      }
+      if (!current.parentId || seen.has(current.id)) break;
+      seen.add(current.id);
+      current = await loadIssue(current.parentId);
+      depth += 1;
+    }
+    return null;
   }
 
   async function loadRunPolicy(runId: string | null | undefined, companyId: string, agentId: string) {
@@ -605,7 +644,7 @@ export function authorizationService(db: Db) {
     const issue = resource.type === "issue" && resource.issueId ? await loadIssue(resource.issueId) : null;
     const projectId =
       resource.type === "issue"
-        ? issue?.projectId ?? resource.projectId ?? null
+        ? (await resolveEffectiveIssueProjectId(issue)) ?? resource.projectId ?? null
         : resource.type === "project"
           ? resource.projectId ?? null
           : null;
@@ -662,7 +701,7 @@ export function authorizationService(db: Db) {
     const candidate = {
       companyId: resource.companyId,
       id: issue?.id ?? resource.issueId ?? null,
-      projectId: issue?.projectId ?? resource.projectId ?? null,
+      projectId: (await resolveEffectiveIssueProjectId(issue)) ?? resource.projectId ?? null,
     };
     if (isIssueWithinLowTrustBoundary(boundary, candidate)) return true;
     if (candidate.id && boundary.rootIssueId) {
@@ -675,7 +714,7 @@ export function authorizationService(db: Db) {
       isIssueWithinLowTrustBoundary(boundary, {
         companyId: parent.companyId,
         id: parent.id,
-        projectId: parent.projectId,
+        projectId: (await resolveEffectiveIssueProjectId(parent)) ?? parent.projectId,
       })
     ) {
       return true;

@@ -10,6 +10,7 @@ import {
   issues,
   principalPermissionGrants,
   projects,
+  projectWorkspaces,
 } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import {
@@ -71,6 +72,7 @@ async function createIssue(
     id?: string;
     title?: string;
     projectId?: string | null;
+    projectWorkspaceId?: string | null;
     parentId?: string | null;
     assigneeAgentId?: string | null;
     originKind?: string | null;
@@ -86,10 +88,28 @@ async function createIssue(
       status: "todo",
       priority: "medium",
       projectId: input.projectId ?? null,
+      projectWorkspaceId: input.projectWorkspaceId ?? null,
       parentId: input.parentId ?? null,
       assigneeAgentId: input.assigneeAgentId ?? null,
       originKind: input.originKind ?? "manual",
       originId: input.originId ?? null,
+    })
+    .returning()
+    .then((rows) => rows[0]!);
+}
+
+async function createProjectWorkspace(
+  db: ReturnType<typeof createDb>,
+  companyId: string,
+  projectId: string,
+  label: string,
+) {
+  return db
+    .insert(projectWorkspaces)
+    .values({
+      companyId,
+      projectId,
+      name: `Workspace ${label} ${randomUUID()}`,
     })
     .returning()
     .then((rows) => rows[0]!);
@@ -134,6 +154,7 @@ describeEmbeddedPostgres("authorization service", () => {
     await db.delete(companyMemberships);
     await db.delete(instanceUserRoles);
     await db.delete(issues);
+    await db.delete(projectWorkspaces);
     await db.delete(agents);
     await db.delete(projects);
     await db.delete(companies);
@@ -327,6 +348,78 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(rootDecision).toMatchObject({ allowed: true, reason: "allow_low_trust_boundary" });
     expect(childDecision).toMatchObject({ allowed: true, reason: "allow_low_trust_boundary" });
     expect(unrelatedDecision).toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+  });
+
+  it("keeps a project_id-less issue mutable via its project_workspace fallback (TON-2321 / GH #7736)", async () => {
+    // Repro for the boundary-resolver brick: a child issue whose project_id is null
+    // but whose project_workspace_id points at an in-boundary project would resolve
+    // to no project and fail closed, denying both issue:read and the issue:mutate
+    // that would repair it. project_workspaces.project_id is NOT NULL, so the resolver
+    // now uses it (and the parent chain) as an authoritative fallback.
+    const company = await createCompany(db, "LowTrustWorkspaceFallback");
+    const project = await createProject(db, company.id, "Allowed");
+    const otherProject = await createProject(db, company.id, "Denied");
+    const workspace = await createProjectWorkspace(db, company.id, project.id, "Allowed");
+    const otherWorkspace = await createProjectWorkspace(db, company.id, otherProject.id, "Denied");
+    const actorAgent = await createAgent(db, company.id, {
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            projectIds: [project.id],
+          },
+        },
+      },
+    });
+
+    // Bricked issue: no project_id, only an in-boundary workspace.
+    const brickedIssue = await createIssue(db, company.id, {
+      projectId: null,
+      projectWorkspaceId: workspace.id,
+    });
+    // Control: no project_id and an out-of-boundary workspace stays denied.
+    const outsideIssue = await createIssue(db, company.id, {
+      projectId: null,
+      projectWorkspaceId: otherWorkspace.id,
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "agent" as const, agentId: actorAgent.id, companyId: company.id, source: "agent_key" as const };
+    const resourceFor = (issue: { id: string; status: string }) => ({
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: issue.id,
+      // The route layer passes the issue's stored project_id, which is null for a bricked issue.
+      projectId: null,
+      status: issue.status,
+    });
+
+    const readDecision = await authorization.decide({
+      actor,
+      action: "issue:read",
+      resource: resourceFor(brickedIssue),
+    });
+    const mutateDecision = await authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource: resourceFor(brickedIssue),
+    });
+    const outsideDecision = await authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource: resourceFor(outsideIssue),
+    });
+
+    // issue:read short-circuits on the low-trust allow; issue:mutate is not in that
+    // early-return set, so once the low-trust boundary stops denying it (the fix), it
+    // falls through to the standard same-company allow. Pre-fix both calls hit the
+    // low-trust deny short-circuit and returned allowed:false — so allowed:true here
+    // is what proves the brick is gone.
+    expect(readDecision).toMatchObject({ allowed: true, reason: "allow_low_trust_boundary" });
+    expect(mutateDecision).toMatchObject({ allowed: true, reason: "allow_company_agent" });
+    // Out-of-boundary workspace must still fail closed — no over-broadening.
+    expect(outsideDecision).toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 
   it("blocks low-trust project, agent, company-wide, and outside-boundary assignment access", async () => {
