@@ -160,9 +160,9 @@ const manifest: PaperclipPluginManifestV1 = {
       adapterType: "claude_local",
       adapterPreference: ["claude_local", "codex_local", "gemini_local", "opencode_local", "cursor", "pi_local"],
       adapterConfig: {
-        dangerouslySkipPermissions: false,
+        dangerouslySkipPermissions: true,
         dangerouslyBypassApprovalsAndSandbox: false,
-        sandbox: true,
+        sandbox: false,
         paperclipSkillSync: {
           desiredSkills: WIKI_MANAGED_SKILL_CANONICAL_KEYS
         }
