@@ -53,7 +53,7 @@ export interface HeartbeatRun {
   lastUsefulActionAt: Date | null;
   nextAction: string | null;
   contextSnapshot: Record<string, unknown> | null;
-  createdAt: Date;
+  createdAt: string | Date;
   updatedAt: Date;
   outputSilence?: HeartbeatRunOutputSilence;
   /**
@@ -125,7 +125,7 @@ export interface HeartbeatRunEvent {
   color: string | null;
   message: string | null;
   payload: Record<string, unknown> | null;
-  createdAt: Date;
+  createdAt: string | Date;
 }
 
 export interface AgentRuntimeState {
@@ -143,7 +143,7 @@ export interface AgentRuntimeState {
   totalCachedInputTokens: number;
   totalCostCents: number;
   lastError: string | null;
-  createdAt: Date;
+  createdAt: string | Date;
   updatedAt: Date;
 }
 
@@ -157,7 +157,7 @@ export interface AgentTaskSession {
   sessionDisplayId: string | null;
   lastRunId: string | null;
   lastError: string | null;
-  createdAt: Date;
+  createdAt: string | Date;
   updatedAt: Date;
 }
 
@@ -179,7 +179,7 @@ export interface AgentWakeupRequest {
   claimedAt: Date | null;
   finishedAt: Date | null;
   error: string | null;
-  createdAt: Date;
+  createdAt: string | Date;
   updatedAt: Date;
 }
 
