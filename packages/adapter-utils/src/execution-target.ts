@@ -86,6 +86,7 @@ export interface AdapterExecutionTargetProcessOptions {
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   terminalResultCleanup?: TerminalResultCleanupOptions;
+  killSignalPromise?: Promise<void>;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -440,6 +441,7 @@ export async function runAdapterExecutionTargetProcess(
     onLog: options.onLog,
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
+    killSignalPromise: options.killSignalPromise,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
 }
