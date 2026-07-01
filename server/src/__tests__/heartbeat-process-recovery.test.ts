@@ -1042,6 +1042,51 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("clears stale agent errorReason when a recovered run starts", async () => {
+    let finishAdapter: (() => void) | null = null;
+    mockAdapterExecute.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishAdapter = () =>
+            resolve({
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              errorMessage: null,
+              summary: "Recovered after stale process loss.",
+              provider: "test",
+              model: "test-model",
+            });
+        }),
+    );
+
+    const { agentId, runId } = await seedQueuedIssueRunFixture();
+    await db
+      .update(agents)
+      .set({
+        errorReason: "Process lost -- child pid 81145 is no longer running",
+      })
+      .where(eq(agents.id, agentId));
+
+    const heartbeat = heartbeatService(db);
+    const resumePromise = heartbeat.resumeQueuedRuns();
+
+    const runningAgent = await waitForValue(async () => {
+      const row = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0] ?? null);
+      return row?.status === "running" ? row : null;
+    });
+
+    expect(runningAgent?.errorReason).toBeNull();
+
+    finishAdapter?.();
+    await resumePromise;
+    await waitForRunToSettle(heartbeat, runId);
+  });
+
   it("queues exactly one retry when the recorded local pid is dead", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",

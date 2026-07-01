@@ -243,6 +243,7 @@ export function agentService(db: Db) {
   function normalizeAgentBaseRow(row: typeof agents.$inferSelect) {
     return withUrlKey({
       ...row,
+      errorReason: row.status === "error" ? row.errorReason : null,
       permissions: normalizeAgentPermissions(row.permissions, row.role),
     });
   }
