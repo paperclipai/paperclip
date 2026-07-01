@@ -11154,13 +11154,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const rightReady = rightIssueId ? (rightReadiness?.isDependencyReady ?? true) : true;
         const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
         const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
-        const leftRank = leftIssueId ? (leftReady ? (leftIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
-        const rightRank = rightIssueId ? (rightReady ? (rightIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
-        if (leftPriorityRank !== rightPriorityRank) return leftPriorityRank - rightPriorityRank;
-        return left.createdAt.getTime() - right.createdAt.getTime();
+        // BLO-12990: fold priority into the primary dispatch rank so a
+        // high-priority `todo` can preempt a low-priority `in_progress`.
+        // Old scheme made status the primary key (in_progress always beat
+        // todo regardless of priority gap). New formula:
+        //   ready run  → priorityRank * 2 + (in_progress ? 0 : 1)
+        //   no issueId → 10
+        //   not-ready  → 12 + priorityRank
+        // This lets high-priority todo (rank 3) beat low-priority in_progress
+        // (rank 6) while preserving the in_progress bonus within a tier.
+        const dispatchRank = (
+          issue: { status: string; priority: string | null } | null | undefined,
+          ready: boolean,
+          hasId: boolean,
+        ): number => {
+          if (!hasId) return 10;
+          if (!ready) return 12 + issueRunPriorityRank(issue?.priority);
+          return issueRunPriorityRank(issue?.priority) * 2 + (issue?.status === "in_progress" ? 0 : 1);
+        };
+        const leftRank = dispatchRank(leftIssue, leftReady, !!leftIssueId);
+        const rightRank = dispatchRank(rightIssue, rightReady, !!rightIssueId);
+        return leftRank !== rightRank
+          ? leftRank - rightRank
+          : left.createdAt.getTime() - right.createdAt.getTime();
       });
 
       // Per-issue dedupe: if a queued run targets an issue that already has a
