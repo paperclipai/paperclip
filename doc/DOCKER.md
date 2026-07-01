@@ -136,12 +136,21 @@ Set `PAPERCLIP_ALLOWED_HOSTNAMES` explicitly only when you need additional hostn
 The production Paperclip image includes the Hermes CLI (`hermes`, `hermes-agent`, `hermes-acp`) from the pinned `nousresearch/hermes-agent:v2026.6.19` image via a multi-stage build.
 
 - **Binary**: `/usr/local/bin/hermes` (symlink to `/opt/hermes/.venv/bin/hermes`)
-- **Home**: `HERMES_HOME=/paperclip/hermes`
-- **Web dist**: `HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist`
-- **Playwright**: `PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright`
+- **Home**: `HERMES_HOME=/paperclip/.hermes` (canonical — matches upstream Hermes `HOME + .hermes` discovery and the `HERMES_HOME > HOME > os.homedir()` resolver in `@paperclipai/hermes-paperclip-adapter`)
 - **PATH**: includes `/opt/hermes/.venv/bin` so `hermes` resolves at runtime.
 
 No separate Hermes service or port is published — the Hermes CLI is invoked by Paperclip's built-in `hermes_local` adapter inside the same container.
+
+### Migration note (from previous `/paperclip/hermes` builds)
+
+If you are upgrading from a previous version that used `/paperclip/hermes/` as `HERMES_HOME`, the old path is no longer canonical and is not mounted, created, or symlinked in the new image. Manually copy any data you want to preserve into the new home before upgrading:
+
+```sh
+# from inside the running old container, or from a bind-mounted volume snapshot:
+cp -a /paperclip/hermes/. /paperclip/.hermes/
+```
+
+If you do nothing, the new container starts with an empty `/paperclip/.hermes/` and the next hermes_local spawn re-creates the canonical layout from scratch. There is no automatic migration.
 
 ### Hermes in the untrusted-review image
 
@@ -168,6 +177,38 @@ To bump Hermes:
 1. Update the `HERMES_AGENT_IMAGE` ARG default in both Dockerfiles.
 2. Update the recorded tag in this doc section.
 3. Rebuild and run `hermes --version` to confirm.
+
+## End-to-end smoke
+
+`scripts/docker-hermes-smoke.sh` proves a real `hermes_local` run inside the production container — not just `hermes --version` — and verifies the canonical `/paperclip/.hermes` home is being honored.
+
+The smoke flow:
+
+1. Generates a `BETTER_AUTH_SECRET` via `openssl rand -hex 32`.
+2. Builds the server image with `docker compose -f docker/docker-compose.yml build server` (fail-fast on build errors via `set -e`).
+3. Brings the stack up with `docker compose -f docker/docker-compose.yml up -d`.
+4. Polls `GET http://localhost:3100/api/health` until 200 or a 60-second timeout.
+5. Bootstraps a board session (sign-up + `paperclipai auth bootstrap-ceo` + invite accept).
+6. Asserts `GET /api/adapters` lists `hermes_local` and `hermes_gateway` with `source: "builtin"`.
+7. Creates a `hermes_local` agent via `POST /api/companies/:companyId/agents`.
+8. Triggers a spawn via `POST /api/agents/:agentId/wakeup` and captures the run id.
+9. Polls `GET /api/heartbeat-runs/:runId` until terminal status (succeeded / failed / cancelled / timed_out) or a 120-second timeout.
+10. Asserts `$HERMES_HOME == /paperclip/.hermes` inside the server container and that at least one file exists under `/paperclip/.hermes/sessions` — this is the filesystem evidence that Hermes actually executed.
+
+On any failure, the smoke prints the last 200 lines of `docker compose logs` and the heartbeat run log before exiting non-zero. On success, it tears the stack down with `docker compose -f docker/docker-compose.yml down -v`.
+
+Requires a running Docker daemon. Exits non-zero on any step failure.
+
+```sh
+# Strict BHR-S5 (real successful run) — supply at least one inference provider key:
+./scripts/docker-hermes-smoke.sh "$OPENAI_API_KEY" "$ANTHROPIC_API_KEY"
+
+# Degraded (path/session proof only) — no key, Hermes still spawns and writes session files,
+# but the heartbeat run will end in `failed` because no model is configured.
+./scripts/docker-hermes-smoke.sh
+```
+
+Use the degraded mode to verify the Docker wiring (image build, compose healthcheck, `/paperclip/.hermes` canonical home, hermes_local binary execution). Use the strict mode to verify end-to-end inference inside the container.
 
 ## Claude + Codex Local Adapters in Docker
 
