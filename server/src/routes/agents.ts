@@ -1485,9 +1485,17 @@ export function agentRoutes(
 
   function redactForRestrictedAgentView(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
+    const adapterConfig =
+      agent.adapterConfig && typeof agent.adapterConfig === "object" && !Array.isArray(agent.adapterConfig)
+        ? (agent.adapterConfig as Record<string, unknown>)
+        : {};
+    const restrictedAdapterConfig =
+      typeof adapterConfig.model === "string" && adapterConfig.model.trim().length > 0
+        ? { model: adapterConfig.model }
+        : {};
     return {
       ...agent,
-      adapterConfig: {},
+      adapterConfig: restrictedAdapterConfig,
       runtimeConfig: {},
     };
   }

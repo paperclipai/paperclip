@@ -405,8 +405,33 @@ describe.sequential("agent permission routes", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
-  it("redacts agent detail for authenticated company members without agent admin permission", async () => {
-    mockAccessService.canUser.mockResolvedValue(false);
+  it("redacts peer agent detail while preserving model for agent-authenticated members without agent admin permission", async () => {
+    const peerAgentId = "33333333-3333-4333-8333-333333333333";
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === peerAgentId) {
+        return {
+          ...baseAgent,
+          id: peerAgentId,
+          name: "PM",
+          adapterType: "codex_local",
+          adapterConfig: {
+            model: "gpt-5.4",
+            instructionsFilePath: "/tmp/agent/AGENTS.md",
+            env: { PAPERCLIP_API_KEY: "secret-test-key" },
+          },
+          runtimeConfig: {
+            heartbeat: { enabled: true },
+          },
+        };
+      }
+      return {
+        ...baseAgent,
+        id: "reader-agent",
+        name: "QA",
+        permissions: { canCreateAgents: false },
+      };
+    });
+    mockAccessService.hasPermission.mockResolvedValue(false);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
       allowed: input.action === "agent:read",
       reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
@@ -414,17 +439,17 @@ describe.sequential("agent permission routes", () => {
     }));
 
     const app = await createApp({
-      type: "board",
-      userId: "member-user",
-      source: "session",
-      isInstanceAdmin: false,
-      companyIds: [companyId],
+      type: "agent",
+      agentId: "reader-agent",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
     });
 
-    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${peerAgentId}`));
 
     expect(res.status).toBe(200);
-    expect(res.body.adapterConfig).toEqual({});
+    expect(res.body.adapterConfig).toEqual({ model: "gpt-5.4" });
     expect(res.body.runtimeConfig).toEqual({});
   }, 20_000);
 
