@@ -6,6 +6,7 @@ import {
   activityLog,
   agentWakeupRequests,
   agents,
+  authUsers,
   approvals,
   assets,
   companies,
@@ -37,6 +38,7 @@ import type {
   AcceptedPlanDecomposition,
   IssueComment,
   IssueCommentAuthorType,
+  IssueCommentDerivedAuthorSource,
   IssueCommentMetadata,
   IssueCommentPresentation,
   IssueBlockerAttention,
@@ -101,6 +103,11 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
+// Non-human author sentinels that agents post under. These ARE eligible for
+// agent-attribution derivation even though `local-board` is also materialized
+// as a row in the `user` table (it is the implicit board admin). Genuine human
+// users — real signups with their own ids — are never reattributed.
+const NON_HUMAN_SENTINEL_AUTHOR_USER_IDS = new Set<string>(["local-board"]);
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
@@ -169,32 +176,65 @@ type IssueCommentRunLogAttributionRun = {
   createdAt: Date | string;
   startedAt?: Date | string | null;
   finishedAt?: Date | string | null;
+  // Best-effort run log text. May be empty when logs were not read for a tier
+  // that does not need them (run-id / run-window-unique); only the
+  // `run_log_comment_post` tier consults this.
   logContent: string;
 };
 
+type DerivedIssueCommentAttribution = {
+  derivedAuthorAgentId: string;
+  derivedCreatedByRunId: string;
+  derivedAuthorSource: IssueCommentDerivedAuthorSource;
+};
+
+/**
+ * Best-effort agent attribution for comments whose stored author is a non-human
+ * sentinel (e.g. `local-board`). Callers MUST pre-filter `comments` to drop any
+ * comment whose `authorUserId` maps to a genuine user profile so a real board /
+ * user comment is never reattributed.
+ *
+ * Only LOSSLESS signals are used — a comment is reattributed solely when a run
+ * provably authored it. Pure run-window timing overlap is intentionally NOT a
+ * signal: because agents post through the `local-board` subprocess, an agent
+ * comment and a genuine human board comment are indistinguishable rows, so any
+ * timing-based guess mis-attributes human board comments that merely coincided
+ * with an agent run (Option A).
+ *
+ * Tiers, in descending confidence (first match wins per comment):
+ *  1. `run_id` — the comment's own `createdByRunId` resolves to an agent run
+ *     (lossless: that run authored the comment).
+ *  2. `run_log_comment_post` — an overlapping run log contains the explicit
+ *     `comment id: {id}` post marker (lossless: the run recorded posting it).
+ */
 export function deriveIssueCommentRunLogAttribution(
   comments: readonly IssueCommentRunLogAttributionCandidate[],
   runs: readonly IssueCommentRunLogAttributionRun[],
 ) {
-  const derivedByCommentId = new Map<string, {
-    derivedAuthorAgentId: string;
-    derivedCreatedByRunId: string;
-    derivedAuthorSource: "run_log_comment_post";
-  }>();
+  const derivedByCommentId = new Map<string, DerivedIssueCommentAttribution>();
+  const runById = new Map(runs.map((run) => [run.runId, run] as const));
 
   for (const comment of comments) {
-    if (comment.authorAgentId || !comment.authorUserId || comment.createdByRunId) continue;
+    if (comment.authorAgentId || !comment.authorUserId) continue;
+
+    // Tier 1: the comment carries the run that authored it. Lossless even when
+    // the author was recorded as the `local-board` sentinel.
+    if (comment.createdByRunId) {
+      const ownRun = runById.get(comment.createdByRunId);
+      if (ownRun?.agentId) {
+        derivedByCommentId.set(comment.id, {
+          derivedAuthorAgentId: ownRun.agentId,
+          derivedCreatedByRunId: ownRun.runId,
+          derivedAuthorSource: "run_id",
+        });
+        continue;
+      }
+    }
+
     const commentCreatedAtMs = toTimestampMs(comment.createdAt);
     if (commentCreatedAtMs === null) continue;
 
-    let bestMatch:
-      | {
-        runId: string;
-        agentId: string;
-        distanceMs: number;
-      }
-      | null = null;
-
+    const overlappingRuns: Array<{ run: IssueCommentRunLogAttributionRun; runEndMs: number }> = [];
     for (const run of runs) {
       const runStartMs = toTimestampMs(run.startedAt ?? run.createdAt);
       const runEndMs = toTimestampMs(run.finishedAt ?? run.createdAt);
@@ -205,24 +245,30 @@ export function deriveIssueCommentRunLogAttribution(
       ) {
         continue;
       }
-      if (!run.logContent.includes(`comment id: ${comment.id}`)) continue;
-
-      const distanceMs = Math.abs(runEndMs - commentCreatedAtMs);
-      if (!bestMatch || distanceMs < bestMatch.distanceMs) {
-        bestMatch = {
-          runId: run.runId,
-          agentId: run.agentId,
-          distanceMs,
-        };
-      }
+      overlappingRuns.push({ run, runEndMs });
     }
 
-    if (!bestMatch) continue;
-    derivedByCommentId.set(comment.id, {
-      derivedAuthorAgentId: bestMatch.agentId,
-      derivedCreatedByRunId: bestMatch.runId,
-      derivedAuthorSource: "run_log_comment_post",
-    });
+    // Tier 2: an overlapping run log explicitly recorded posting this comment.
+    let bestLogMatch: { runId: string; agentId: string; distanceMs: number } | null = null;
+    for (const { run, runEndMs } of overlappingRuns) {
+      if (!run.logContent.includes(`comment id: ${comment.id}`)) continue;
+      const distanceMs = Math.abs(runEndMs - commentCreatedAtMs);
+      if (!bestLogMatch || distanceMs < bestLogMatch.distanceMs) {
+        bestLogMatch = { runId: run.runId, agentId: run.agentId, distanceMs };
+      }
+    }
+    if (bestLogMatch) {
+      derivedByCommentId.set(comment.id, {
+        derivedAuthorAgentId: bestLogMatch.agentId,
+        derivedCreatedByRunId: bestLogMatch.runId,
+        derivedAuthorSource: "run_log_comment_post",
+      });
+      continue;
+    }
+
+    // No lossless signal — leave unresolved. A pure run-window timing overlap is
+    // deliberately NOT enough to reattribute (it cannot tell an agent comment
+    // from a human board comment that happened during the run).
   }
 
   return derivedByCommentId;
@@ -3442,6 +3488,39 @@ export function issueService(db: Db) {
     return content;
   }
 
+  // Persist a resolved attribution so subsequent reads stop re-scanning run
+  // logs (and old "Board" threads stay fixed durably). Best-effort: a write
+  // failure must never break the read path. The `IS NULL` guard keeps this
+  // idempotent and avoids clobbering a value another reader just stored.
+  async function persistDerivedIssueCommentAttribution(
+    derivedByCommentId: ReadonlyMap<string, DerivedIssueCommentAttribution>,
+  ) {
+    if (derivedByCommentId.size === 0) return;
+    // One bulk `UPDATE ... FROM (VALUES ...)` so the read path is never blocked
+    // on N sequential round-trips for a large legacy thread. The `IS NULL` guard
+    // keeps this idempotent and avoids clobbering a value another reader just
+    // stored. Best-effort: a write failure must never break the read path.
+    const rows = [...derivedByCommentId].map(
+      ([commentId, derived]) =>
+        sql`(${commentId}::uuid, ${derived.derivedAuthorAgentId}::uuid, ${derived.derivedCreatedByRunId}::uuid, ${derived.derivedAuthorSource}::text)`,
+    );
+    try {
+      await db.execute(sql`
+        UPDATE ${issueComments} AS c
+        SET derived_author_agent_id = v.agent_id,
+            derived_created_by_run_id = v.run_id,
+            derived_author_source = v.source
+        FROM (VALUES ${sql.join(rows, sql`, `)}) AS v(comment_id, agent_id, run_id, source)
+        WHERE c.id = v.comment_id AND c.derived_author_agent_id IS NULL
+      `);
+    } catch (err) {
+      logger.warn(
+        { err, commentIds: [...derivedByCommentId.keys()] },
+        "failed to persist derived issue-comment attribution",
+      );
+    }
+  }
+
   async function enrichCommentsWithDerivedAgentAttribution<
     T extends {
       id: string;
@@ -3450,19 +3529,54 @@ export function issueService(db: Db) {
       authorAgentId?: string | null;
       authorUserId?: string | null;
       createdByRunId?: string | null;
+      derivedAuthorAgentId?: string | null;
       createdAt: Date | string;
     },
   >(comments: readonly T[]) {
-    const candidates = comments.filter((comment) =>
+    // Candidates: a non-human author, no stored agent, and not already resolved
+    // by a previous read / the backfill migration.
+    const preliminary = comments.filter((comment) =>
       !comment.authorAgentId
       && !!comment.authorUserId
-      && !comment.createdByRunId,
+      && !comment.derivedAuthorAgentId,
     );
-    if (candidates.length === 0) return comments;
+    if (preliminary.length === 0) return comments;
 
     const companyId = comments[0]?.companyId ?? null;
     const issueId = comments[0]?.issueId ?? null;
     if (!companyId || !issueId) return comments;
+
+    // Guard: never reattribute a comment whose author maps to a genuine user
+    // profile. Only the non-human sentinels agents post under (e.g.
+    // `local-board`) are eligible — even though `local-board` is itself a row in
+    // the `user` table, so a plain "exists in user table" check would wrongly
+    // exclude every mis-attributed agent comment.
+    const nonSentinelAuthorUserIds = [
+      ...new Set(
+        preliminary
+          .map((comment) => comment.authorUserId)
+          .filter((id): id is string => !!id && !NON_HUMAN_SENTINEL_AUTHOR_USER_IDS.has(id)),
+      ),
+    ];
+    const genuineUserIds = nonSentinelAuthorUserIds.length
+      ? new Set(
+          (
+            await db
+              .select({ id: authUsers.id })
+              .from(authUsers)
+              .where(inArray(authUsers.id, nonSentinelAuthorUserIds))
+          ).map((row) => row.id),
+        )
+      : new Set<string>();
+    // `preliminary` already guarantees a truthy `authorUserId`, so only the two
+    // "not a genuine user" arms are live: the explicit non-human sentinel, or an
+    // author id absent from the `user` table.
+    const candidates = preliminary.filter(
+      (comment) =>
+        NON_HUMAN_SENTINEL_AUTHOR_USER_IDS.has(comment.authorUserId!)
+        || !genuineUserIds.has(comment.authorUserId!),
+    );
+    if (candidates.length === 0) return comments;
 
     const minCommentCreatedAtMs = candidates.reduce<number | null>((min, comment) => {
       const timestamp = toTimestampMs(comment.createdAt);
@@ -3481,6 +3595,13 @@ export function issueService(db: Db) {
       maxCommentCreatedAtMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS,
     ).toISOString();
 
+    // The runs the comments' own `createdByRunId` point at — fetched
+    // unconditionally so the lossless run-id tier resolves even when a run is
+    // not otherwise associated with the issue.
+    const ownRunIds = [
+      ...new Set(candidates.map((comment) => comment.createdByRunId).filter((id): id is string => !!id)),
+    ];
+
     const runs = await db
       .select({
         runId: heartbeatRuns.id,
@@ -3497,35 +3618,81 @@ export function issueService(db: Db) {
         and(
           eq(heartbeatRuns.companyId, companyId),
           or(
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-            sql`exists (
-              select 1
-              from ${activityLog}
-              where ${activityLog.companyId} = ${companyId}
-                and ${activityLog.entityType} = 'issue'
-                and ${activityLog.entityId} = ${issueId}
-                and ${activityLog.runId} = ${heartbeatRuns.id}
-            )`,
+            and(
+              or(
+                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+                sql`exists (
+                  select 1
+                  from ${activityLog}
+                  where ${activityLog.companyId} = ${companyId}
+                    and ${activityLog.entityType} = 'issue'
+                    and ${activityLog.entityId} = ${issueId}
+                    and ${activityLog.runId} = ${heartbeatRuns.id}
+                )`,
+              ),
+              sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${minCommentCreatedAt}::timestamptz`,
+              sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${maxCommentCreatedAt}::timestamptz`,
+            ),
+            ownRunIds.length > 0 ? inArray(heartbeatRuns.id, ownRunIds) : sql`false`,
           ),
-          sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${minCommentCreatedAt}::timestamptz`,
-          sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${maxCommentCreatedAt}::timestamptz`,
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt));
 
     if (runs.length === 0) return comments;
 
-    const runsWithLogs: Array<(typeof runs)[number] & { logContent: string }> = [];
-    for (let index = 0; index < runs.length; index += ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS) {
-      const batch = runs.slice(index, index + ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS);
-      const batchWithLogs = await Promise.all(batch.map(async (run) => ({
-        ...run,
-        logContent: await readRunLogText(run),
-      })));
-      runsWithLogs.push(...batchWithLogs);
+    // Pass 1: resolve the run-id tier, which never reads log bodies. Most
+    // comments resolve here, so we avoid object-storage reads entirely.
+    const runsWithoutLogs = runs.map((run) => ({ ...run, logContent: "" }));
+    const derivedByCommentId = new Map<string, DerivedIssueCommentAttribution>(
+      deriveIssueCommentRunLogAttribution(candidates, runsWithoutLogs),
+    );
+
+    // Pass 2: for comments still unresolved after the run-id tier, read the logs
+    // of any run whose window overlaps such a comment, to look for the explicit
+    // `comment id:` post marker. The marker is a lossless signal regardless of
+    // how many runs overlap, so we do not short-circuit on the single-run case.
+    const unresolved = candidates.filter((comment) => !derivedByCommentId.has(comment.id));
+    if (unresolved.length > 0) {
+      const runIdsToRead = new Set<string>();
+      for (const run of runs) {
+        const runStartMs = toTimestampMs(run.startedAt ?? run.createdAt);
+        const runEndMs = toTimestampMs(run.finishedAt ?? run.createdAt);
+        if (runStartMs === null || runEndMs === null) continue;
+        for (const comment of unresolved) {
+          const commentCreatedAtMs = toTimestampMs(comment.createdAt);
+          if (commentCreatedAtMs === null) continue;
+          if (
+            commentCreatedAtMs >= runStartMs
+            && commentCreatedAtMs <= runEndMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS
+          ) {
+            runIdsToRead.add(run.runId);
+            break;
+          }
+        }
+      }
+
+      if (runIdsToRead.size > 0) {
+        const runsToRead = runs.filter((run) => runIdsToRead.has(run.runId));
+        const logByRunId = new Map<string, string>();
+        for (let index = 0; index < runsToRead.length; index += ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS) {
+          const batch = runsToRead.slice(index, index + ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS);
+          await Promise.all(
+            batch.map(async (run) => {
+              logByRunId.set(run.runId, await readRunLogText(run));
+            }),
+          );
+        }
+        const runsWithLogs = runs.map((run) => ({ ...run, logContent: logByRunId.get(run.runId) ?? "" }));
+        for (const [commentId, derived] of deriveIssueCommentRunLogAttribution(unresolved, runsWithLogs)) {
+          derivedByCommentId.set(commentId, derived);
+        }
+      }
     }
-    const derivedByCommentId = deriveIssueCommentRunLogAttribution(candidates, runsWithLogs);
+
     if (derivedByCommentId.size === 0) return comments;
+
+    await persistDerivedIssueCommentAttribution(derivedByCommentId);
 
     return comments.map((comment) => {
       const derived = derivedByCommentId.get(comment.id);
