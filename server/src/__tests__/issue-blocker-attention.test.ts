@@ -172,6 +172,40 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("separates explicit blockers from open child work in blocker attention counts", async () => {
+    const { companyId, agentId } = await createCompany("PBE");
+    const parentId = await insertIssue({ companyId, identifier: "PBE-1", title: "Parent", status: "blocked" });
+    const childId = await insertIssue({
+      companyId,
+      identifier: "PBE-2",
+      title: "Running child",
+      status: "todo",
+      parentId,
+      assigneeAgentId: agentId,
+    });
+    const dependencyId = await insertIssue({
+      companyId,
+      identifier: "PBE-3",
+      title: "External dependency",
+      status: "in_progress",
+      assigneeUserId: "board-user-1",
+    });
+    await block({ companyId, blockerIssueId: dependencyId, blockedIssueId: parentId });
+    await activeRun({ companyId, agentId, issueId: childId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 2,
+      explicitBlockerCount: 1,
+      childBlockerCount: 1,
+      coveredBlockerCount: 2,
+      attentionBlockerCount: 0,
+    });
+  });
+
   it("classifies an assigned backlog blocker leaf without a waiting path as attention-needed", async () => {
     const { companyId, agentId } = await createCompany("PBB");
     const parentId = await insertIssue({ companyId, identifier: "PBB-1", title: "Parent", status: "blocked" });

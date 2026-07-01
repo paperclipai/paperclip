@@ -225,6 +225,8 @@ export interface IssueBlockerAttention {
   state: IssueBlockerAttentionState;
   reason: IssueBlockerAttentionReason;
   unresolvedBlockerCount: number;
+  explicitBlockerCount?: number;
+  childBlockerCount?: number;
   coveredBlockerCount: number;
   stalledBlockerCount: number;
   attentionBlockerCount: number;

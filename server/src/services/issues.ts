@@ -1384,6 +1384,7 @@ type IssueBlockerAttentionInputNode =
 type IssueBlockerAttentionEdge = {
   issueId: string;
   blockerIssueId: string;
+  source: "explicit" | "child";
 };
 type IssueBlockerAttentionQueryRow = IssueBlockerAttentionNode & {
   issueId: string | null;
@@ -1440,6 +1441,8 @@ function createIssueBlockerAttention(input: Partial<IssueBlockerAttention> = {})
     state: input.state ?? "none",
     reason: input.reason ?? null,
     unresolvedBlockerCount: input.unresolvedBlockerCount ?? 0,
+    explicitBlockerCount: input.explicitBlockerCount ?? 0,
+    childBlockerCount: input.childBlockerCount ?? 0,
     coveredBlockerCount: input.coveredBlockerCount ?? 0,
     stalledBlockerCount: input.stalledBlockerCount ?? 0,
     attentionBlockerCount: input.attentionBlockerCount ?? 0,
@@ -1757,10 +1760,10 @@ async function listIssueBlockerAttentionMap(
       appendBlockerAttentionEdges(edgesByIssueId, [
         ...explicitBlockerRows
           .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
-          .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
+          .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId, source: "explicit" as const })),
         ...childRows
           .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
-          .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
+          .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId, source: "child" as const })),
       ]);
 
       for (const row of [...explicitBlockerRows, ...childRows]) {
@@ -2048,6 +2051,8 @@ async function listIssueBlockerAttentionMap(
       state,
       reason,
       unresolvedBlockerCount: topLevelEdges.length,
+      explicitBlockerCount: topLevelEdges.filter((edge) => edge.source === "explicit").length,
+      childBlockerCount: topLevelEdges.filter((edge) => edge.source === "child").length,
       coveredBlockerCount,
       stalledBlockerCount,
       attentionBlockerCount,
@@ -5282,7 +5287,7 @@ export function issueService(db: Db) {
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      if (patch.status === "in_progress") {
+      if (patch.status === "in_progress" || patch.status === "done") {
         const unresolvedBlockerIssueIds = blockedByIssueIds !== undefined
           ? await listUnresolvedBlockerIssueIds(dbOrTx, existing.companyId, blockedByIssueIds)
           : (
