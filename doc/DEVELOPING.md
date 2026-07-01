@@ -154,6 +154,12 @@ pnpm paperclipai run
 2. `paperclipai doctor` with repair enabled
 3. starts the server when checks pass
 
+## Run as a systemd service (Linux)
+
+To keep Paperclip alive across reboots and shell logouts, install the sample
+unit file at `deploy/systemd/paperclip.service`. See
+[`doc/SYSTEMD.md`](SYSTEMD.md) for the install + verify walkthrough.
+
 ## Docker Quickstart (No local Node install)
 
 Build and run Paperclip in Docker:
