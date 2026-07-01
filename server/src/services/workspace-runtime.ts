@@ -1877,7 +1877,17 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
       expectedBranchName: realized.branchName,
     });
     if (!validation.valid) {
-      throw new Error(`Persisted git worktree "${reuseWorktreePath}" is not reusable (${validation.reason}).`);
+      throw new WorkspaceRuntimeValidationFailure(
+        `Persisted git worktree "${reuseWorktreePath}" is not reusable (${validation.reason}).`,
+        {
+          workspaceValidation: {
+            reason: "git_worktree_not_reusable",
+            reasonCode: validation.reasonCode,
+            worktreePath: reuseWorktreePath,
+            executionWorkspaceId: input.workspace.id ?? null,
+          },
+        },
+      );
     }
     const baseRefreshWarnings = reuseBaseRef
       ? await refreshRemoteTrackingBaseRef(repoRoot, reuseBaseRef)

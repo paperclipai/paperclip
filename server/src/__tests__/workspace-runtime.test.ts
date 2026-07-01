@@ -2213,6 +2213,58 @@ describe("realizeExecutionWorkspace", () => {
     });
   }, 15_000);
 
+  it("routes non-reusable persisted git worktrees through workspace validation recovery", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "PAP-455-not-registered-worktree";
+    const detachedWorktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+    await fs.mkdir(path.dirname(detachedWorktreePath), { recursive: true });
+    await execFileAsync("git", ["clone", repoRoot, detachedWorktreePath]);
+    await runGit(detachedWorktreePath, ["checkout", "-B", expectedBranch]);
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        id: "execution-workspace-not-registered",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: detachedWorktreePath,
+        providerRef: detachedWorktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: expectedBranch,
+      },
+      issue: {
+        id: "issue-not-registered",
+        identifier: "PAP-455",
+        title: "Reject unregistered persisted worktree",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: {
+          reason: "git_worktree_not_reusable",
+          reasonCode: "not_registered",
+          worktreePath: detachedWorktreePath,
+          executionWorkspaceId: "execution-workspace-not-registered",
+        },
+      },
+    });
+  }, 15_000);
+
   it("rejects an existing persisted git worktree when the checked-out branch changed to a different commit", async () => {
     const repoRoot = await createTempRepo();
 

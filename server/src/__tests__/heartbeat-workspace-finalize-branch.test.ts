@@ -325,6 +325,19 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
       errorCode: "workspace_validation_failed",
       error: expect.stringContaining("Record a sanctioned execution-workspace branch transition"),
     });
+    const workspaceValidation = (finishedRun?.resultJson as Record<string, unknown> | null)?.workspaceValidation;
+    expect(workspaceValidation).toMatchObject({
+      reason: "git_worktree_branch_mismatch_after_run",
+      fingerprint: expect.stringMatching(/^workspace_finalize_branch_mismatch:v1:sha256:/),
+      issueId,
+      persistedExecutionWorkspaceId: executionWorkspaceId,
+      managedGitWorktreeBranch: expect.objectContaining({
+        executionWorkspaceId,
+        reasonCode: "branch_mismatch",
+        expectedBranchName: recordedBranch,
+        actualBranchName: publishBranch,
+      }),
+    });
     await waitForRuntimeStateLastRun(db, agentId, run!.id);
     expect(adapterExecute).toHaveBeenCalledTimes(1);
 

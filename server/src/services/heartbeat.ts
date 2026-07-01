@@ -1178,6 +1178,38 @@ function isWorkspaceValidationFailedRun(
   return run?.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
 }
 
+function stableStringifyForFingerprint(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringifyForFingerprint(entry)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    return `{${Object.keys(rec).sort().map((key) => `${JSON.stringify(key)}:${stableStringifyForFingerprint(rec[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function fingerprintFinalizeWorkspaceBranchValidation(input: {
+  issueId: string | null;
+  executionWorkspaceId: string;
+  inspection: ReturnType<typeof formatManagedGitWorktreeBranchInspection>;
+}) {
+  const digest = createHash("sha256")
+    .update(stableStringifyForFingerprint({
+      version: 1,
+      reason: "git_worktree_branch_mismatch_after_run",
+      issueId: input.issueId,
+      executionWorkspaceId: input.executionWorkspaceId,
+      worktreePath: input.inspection.worktreePath ? path.resolve(input.inspection.worktreePath) : null,
+      repoRoot: input.inspection.repoRoot ? path.resolve(input.inspection.repoRoot) : null,
+      expectedBranchName: input.inspection.expectedBranchName,
+      actualBranchName: input.inspection.actualBranchName,
+      reasonCode: input.inspection.reasonCode,
+    }))
+    .digest("hex");
+  return `workspace_finalize_branch_mismatch:v1:sha256:${digest}`;
+}
+
 function isConfigurationIncompleteFailure(error: unknown): error is ConfigurationIncompleteFailure {
   return error instanceof ConfigurationIncompleteFailure;
 }
@@ -10733,11 +10765,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (status === "succeeded") {
           const branchInspection = await inspectFinalizeWorkspaceBranch();
           if (branchInspection) {
+            const managedGitWorktreeBranch = formatManagedGitWorktreeBranchInspection(branchInspection.inspection);
             finalizeBranchMetadata = {
               executionWorkspaceId: branchInspection.workspaceRecord.id,
-              ...formatManagedGitWorktreeBranchInspection(branchInspection.inspection),
+              ...managedGitWorktreeBranch,
             };
             if (!branchInspection.inspection.valid) {
+              const workspaceValidationFingerprint = fingerprintFinalizeWorkspaceBranchValidation({
+                issueId: issueRef?.id ?? null,
+                executionWorkspaceId: branchInspection.workspaceRecord.id,
+                inspection: managedGitWorktreeBranch,
+              });
               await workspaceOperationRecorder.recordOperation({
                 phase: "workspace_finalize",
                 cwd: executionWorkspace.cwd,
@@ -10758,6 +10796,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 {
                   workspaceValidation: {
                     reason: "git_worktree_branch_mismatch_after_run",
+                    fingerprint: workspaceValidationFingerprint,
                     adapterType: agent.adapterType,
                     issueId: issueRef?.id ?? null,
                     issueIdentifier: issueRef?.identifier ?? null,
