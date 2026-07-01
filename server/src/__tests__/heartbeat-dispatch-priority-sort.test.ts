@@ -246,6 +246,9 @@ describeEmbeddedPostgres("heartbeat dispatch priority sort (BLO-12990)", () => {
     // The high-priority `todo` run should be dispatched; wait for it to settle.
     await waitForRunToSettle(heartbeat, todoRunId);
 
+    // Only 1 slot → only 1 adapter execute should have fired.
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+
     const inProgressRun = await db
       .select({ status: heartbeatRuns.status })
       .from(heartbeatRuns)
