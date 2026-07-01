@@ -216,7 +216,14 @@ async function cleanupPreparedProviderWrite(input: {
 
 type CanonicalEnvBinding =
   | { type: "plain"; value: string }
-  | { type: "secret_ref"; secretId: string; version: number | "latest" };
+  | { type: "secret_ref"; secretId: string; version: number | "latest" }
+  | {
+      type: "user_secret_ref";
+      key: string;
+      version: number | "latest";
+      required: boolean;
+      allowMissingOverride: boolean;
+    };
 
 type SecretConsumerContext = {
   consumerType: SecretBindingTargetType;
@@ -303,11 +310,24 @@ function canonicalizeBinding(binding: EnvBinding): CanonicalEnvBinding {
   if (binding.type === "plain") {
     return { type: "plain", value: String(binding.value) };
   }
+  if (binding.type === "user_secret_ref") {
+    return {
+      type: "user_secret_ref",
+      key: binding.key,
+      version: binding.version ?? "latest",
+      required: binding.required ?? true,
+      allowMissingOverride: binding.allowMissingOverride ?? false,
+    };
+  }
   return {
     type: "secret_ref",
     secretId: binding.secretId,
     version: binding.version ?? "latest",
   };
+}
+
+function userSecretResolverUnavailable(key: string): never {
+  throw unprocessable(`User secret ref is declared but runtime resolution is not enabled yet: ${key}`);
 }
 
 function defaultProviderConfigStatus(provider: SecretProvider): SecretProviderConfigStatus {
@@ -807,6 +827,10 @@ export function secretService(db: Db) {
         normalized[key] = binding;
         continue;
       }
+      if (binding.type === "user_secret_ref") {
+        normalized[key] = binding;
+        continue;
+      }
 
       await assertSecretInCompany(companyId, binding.secretId);
       normalized[key] = {
@@ -886,6 +910,9 @@ export function secretService(db: Db) {
         secretId: binding.secretId,
         version: binding.version,
       };
+    }
+    if (binding.type === "user_secret_ref") {
+      throw unprocessable(`${input.key} must be a string, plain binding, or company secret reference`);
     }
     const value = binding.value.trim();
     if (!value) return undefined;
@@ -2620,7 +2647,7 @@ export function secretService(db: Db) {
         const binding = canonicalizeBinding(parsed.data as EnvBinding);
         if (binding.type === "plain") {
           resolved[key] = binding.value;
-        } else {
+        } else if (binding.type === "secret_ref") {
           const secretResolution = await resolveSecretValueInternal(
             companyId,
             binding.secretId,
@@ -2635,6 +2662,8 @@ export function secretService(db: Db) {
           resolved[key] = secretResolution.value;
           manifest.push(secretResolution.manifestEntry);
           secretKeys.add(key);
+        } else {
+          userSecretResolverUnavailable(binding.key);
         }
       }
       return { env: resolved, secretKeys, manifest };
@@ -2768,7 +2797,7 @@ export function secretService(db: Db) {
             const binding = canonicalizeBinding(parsed.data as EnvBinding);
             if (binding.type === "plain") {
               env[key] = binding.value;
-            } else {
+            } else if (binding.type === "secret_ref") {
               const secretResolution = await resolveSecretValueInternal(
                 companyId,
                 binding.secretId,
@@ -2783,6 +2812,8 @@ export function secretService(db: Db) {
               env[key] = secretResolution.value;
               manifest.push(secretResolution.manifestEntry);
               secretKeys.add(key);
+            } else {
+              userSecretResolverUnavailable(binding.key);
             }
           }
           resolved.env = env;
@@ -2794,6 +2825,7 @@ export function secretService(db: Db) {
         if (!parsed.success) continue;
         const binding = canonicalizeBinding(parsed.data as EnvBinding);
         if (binding.type === "plain") continue;
+        if (binding.type === "user_secret_ref") userSecretResolverUnavailable(binding.key);
         const secretResolution = await resolveSecretValueInternal(
           companyId,
           binding.secretId,

@@ -15,6 +15,7 @@ export interface HeartbeatRun {
   invocationSource: HeartbeatInvocationSource;
   triggerDetail: WakeupTriggerDetail | null;
   status: HeartbeatRunStatus;
+  responsibleUserId: string | null;
   startedAt: Date | null;
   finishedAt: Date | null;
   error: string | null;

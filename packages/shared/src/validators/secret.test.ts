@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  createUserSecretDeclarationSchema,
+  createUserSecretValueSchema,
   createSecretProviderConfigSchema,
   createSecretSchema,
+  envBindingUserSecretRefSchema,
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
   secretProviderConfigDiscoveryPreviewSchema,
@@ -10,6 +13,42 @@ import {
 } from "./secret.js";
 
 describe("secret validators", () => {
+  it("defaults user secret refs to required and no missing override", () => {
+    expect(
+      envBindingUserSecretRefSchema.parse({
+        type: "user_secret_ref",
+        key: "github_api_token",
+      }),
+    ).toEqual({
+      type: "user_secret_ref",
+      key: "github_api_token",
+      required: true,
+      allowMissingOverride: false,
+    });
+  });
+
+  it("validates user secret declarations and current-user value payloads", () => {
+    expect(
+      createUserSecretDeclarationSchema.parse({
+        targetType: "agent",
+        targetId: "agent-1",
+        configPath: "env.GITHUB_TOKEN",
+        envKey: "GITHUB_TOKEN",
+        definitionKey: "github_api_token",
+      }),
+    ).toMatchObject({
+      versionSelector: "latest",
+      required: true,
+      allowMissingOverride: false,
+    });
+
+    expect(() =>
+      createUserSecretValueSchema.parse({
+        value: "secret-value",
+      }),
+    ).toThrow(/definitionId or definitionKey/);
+  });
+
   it("rejects externalRef on managed secrets", () => {
     expect(() =>
       createSecretSchema.parse({

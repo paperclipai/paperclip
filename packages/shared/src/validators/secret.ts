@@ -7,6 +7,9 @@ import {
   SECRET_STATUSES,
 } from "../constants.js";
 
+const secretKeySchema = z.string().trim().min(1).max(120).regex(/^[a-zA-Z0-9_.-]+$/);
+const secretVersionSelectorSchema = z.union([z.literal("latest"), z.number().int().positive()]);
+
 export const envBindingPlainSchema = z.object({
   type: z.literal("plain"),
   value: z.string(),
@@ -15,7 +18,15 @@ export const envBindingPlainSchema = z.object({
 export const envBindingSecretRefSchema = z.object({
   type: z.literal("secret_ref"),
   secretId: z.string().uuid(),
-  version: z.union([z.literal("latest"), z.number().int().positive()]).optional(),
+  version: secretVersionSelectorSchema.optional(),
+});
+
+export const envBindingUserSecretRefSchema = z.object({
+  type: z.literal("user_secret_ref"),
+  key: secretKeySchema,
+  version: secretVersionSelectorSchema.optional(),
+  required: z.boolean().optional().default(true),
+  allowMissingOverride: z.boolean().optional().default(false),
 });
 
 // Backward-compatible union that accepts legacy inline values.
@@ -23,13 +34,14 @@ export const envBindingSchema = z.union([
   z.string(),
   envBindingPlainSchema,
   envBindingSecretRefSchema,
+  envBindingUserSecretRefSchema,
 ]);
 
 export const envConfigSchema = z.record(z.string(), envBindingSchema);
 
 export const createSecretSchema = z.object({
   name: z.string().min(1),
-  key: z.string().min(1).regex(/^[a-zA-Z0-9_.-]+$/).optional(),
+  key: secretKeySchema.optional(),
   provider: z.enum(SECRET_PROVIDERS).optional(),
   providerConfigId: z.string().uuid().optional().nullable(),
   managedMode: z.enum(SECRET_MANAGED_MODES).optional(),
@@ -78,7 +90,7 @@ export type RotateSecret = z.infer<typeof rotateSecretSchema>;
 
 export const updateSecretSchema = z.object({
   name: z.string().min(1).optional(),
-  key: z.string().min(1).regex(/^[a-zA-Z0-9_.-]+$/).optional(),
+  key: secretKeySchema.optional(),
   status: z.enum(SECRET_STATUSES).optional(),
   providerConfigId: z.string().uuid().optional().nullable(),
   description: z.string().optional().nullable(),
@@ -96,12 +108,85 @@ export const secretBindingTargetSchema = z.object({
 
 export const createSecretBindingSchema = secretBindingTargetSchema.extend({
   secretId: z.string().uuid(),
-  versionSelector: z.union([z.literal("latest"), z.number().int().positive()]).default("latest"),
+  versionSelector: secretVersionSelectorSchema.default("latest"),
   required: z.boolean().default(true),
   label: z.string().optional().nullable(),
 });
 
 export type CreateSecretBinding = z.infer<typeof createSecretBindingSchema>;
+
+export const createUserSecretDefinitionSchema = z.object({
+  key: secretKeySchema,
+  name: z.string().trim().min(1).max(160),
+  description: z.string().trim().max(500).optional().nullable(),
+  status: z.enum(SECRET_STATUSES).optional(),
+  provider: z.enum(SECRET_PROVIDERS).optional(),
+  providerConfigId: z.string().uuid().optional().nullable(),
+  managedMode: z.enum(SECRET_MANAGED_MODES).optional(),
+  providerMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
+  usageGuidance: z.string().trim().max(1000).optional().nullable(),
+});
+
+export type CreateUserSecretDefinition = z.infer<typeof createUserSecretDefinitionSchema>;
+
+export const updateUserSecretDefinitionSchema = z.object({
+  key: secretKeySchema.optional(),
+  name: z.string().trim().min(1).max(160).optional(),
+  description: z.string().trim().max(500).optional().nullable(),
+  status: z.enum(SECRET_STATUSES).optional(),
+  providerConfigId: z.string().uuid().optional().nullable(),
+  providerMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
+  usageGuidance: z.string().trim().max(1000).optional().nullable(),
+});
+
+export type UpdateUserSecretDefinition = z.infer<typeof updateUserSecretDefinitionSchema>;
+
+export const createUserSecretValueSchema = z.object({
+  definitionKey: secretKeySchema.optional(),
+  definitionId: z.string().uuid().optional(),
+  value: z.string().min(1).optional().nullable(),
+  externalRef: z.string().optional().nullable(),
+  providerVersionRef: z.string().optional().nullable(),
+  providerConfigId: z.string().uuid().optional().nullable(),
+}).superRefine((value, ctx) => {
+  if (!value.definitionKey && !value.definitionId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["definitionId"],
+      message: "User secret value requires definitionId or definitionKey",
+    });
+  }
+  if (!value.value?.trim() && !value.externalRef?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["value"],
+      message: "User secret value requires value or externalRef",
+    });
+  }
+});
+
+export type CreateUserSecretValue = z.infer<typeof createUserSecretValueSchema>;
+
+export const updateUserSecretValueSchema = z.object({
+  status: z.enum(SECRET_STATUSES).optional(),
+  value: z.string().min(1).optional().nullable(),
+  externalRef: z.string().optional().nullable(),
+  providerVersionRef: z.string().optional().nullable(),
+  providerConfigId: z.string().uuid().optional().nullable(),
+});
+
+export type UpdateUserSecretValue = z.infer<typeof updateUserSecretValueSchema>;
+
+export const createUserSecretDeclarationSchema = secretBindingTargetSchema.extend({
+  definitionKey: secretKeySchema,
+  envKey: z.string().trim().min(1),
+  versionSelector: secretVersionSelectorSchema.default("latest"),
+  required: z.boolean().default(true),
+  allowMissingOverride: z.boolean().default(false),
+  label: z.string().optional().nullable(),
+});
+
+export type CreateUserSecretDeclaration = z.infer<typeof createUserSecretDeclarationSchema>;
 
 const safeShortText = z.string().trim().min(1).max(160);
 const optionalSafeShortText = safeShortText.optional().nullable();
