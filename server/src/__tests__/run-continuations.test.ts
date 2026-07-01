@@ -4,6 +4,7 @@ import {
   RUN_LIVENESS_CONTINUATION_REASON,
   buildRunLivenessContinuationIdempotencyKey,
   decideRunLivenessContinuation,
+  isActionableLivenessStateForContinuation,
 } from "../services/run-continuations.ts";
 
 const companyId = "company-1";
@@ -169,5 +170,67 @@ describe("run liveness continuations", () => {
 
       expect(decision.kind).toBe("skip");
     }
+  });
+
+  it("treats upstream_throttled as non-actionable for immediate continuation", () => {
+    // Layer B introduces the upstream_throttled liveness state for retryable
+    // upstream 429 exits; the bounded transient retry ladder and the per-issue
+    // throttle ceiling own those, so they must never immediately continue.
+    expect(isActionableLivenessStateForContinuation("upstream_throttled")).toBe(false);
+    expect(isActionableLivenessStateForContinuation("plan_only")).toBe(true);
+    expect(isActionableLivenessStateForContinuation("empty_response")).toBe(true);
+    expect(isActionableLivenessStateForContinuation(null)).toBe(false);
+
+    const decision = decideRunLivenessContinuation({
+      run: run(),
+      issue: issue(),
+      agent: agent(),
+      livenessState: "upstream_throttled" as never,
+      livenessReason: "Upstream provider throttled the run",
+      nextAction: null,
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+    });
+
+    expect(decision).toEqual({
+      kind: "skip",
+      reason: "liveness state is not actionable for continuation",
+    });
+  });
+
+  it("carries the caller-computed backoff schedule on enqueue decisions", () => {
+    const dueAt = new Date("2026-07-01T12:01:00.000Z");
+    const decision = decideRunLivenessContinuation({
+      run: run(),
+      issue: issue(),
+      agent: agent(),
+      livenessState: "plan_only",
+      livenessReason: "Planned without acting",
+      nextAction: null,
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+      backoff: { delayMs: 60_000, dueAt },
+    });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.backoff).toEqual({ delayMs: 60_000, dueAt });
+  });
+
+  it("defaults to no backoff when the caller does not provide one", () => {
+    const decision = decideRunLivenessContinuation({
+      run: run(),
+      issue: issue(),
+      agent: agent(),
+      livenessState: "empty_response",
+      livenessReason: "No useful output",
+      nextAction: null,
+      budgetBlocked: false,
+      idempotentWakeExists: false,
+    });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.backoff).toBeNull();
   });
 });

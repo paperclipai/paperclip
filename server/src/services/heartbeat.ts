@@ -144,6 +144,7 @@ import {
 } from "./execution-allowlist.js";
 import {
   RECOVERY_ORIGIN_KINDS,
+  DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   RUN_LIVENESS_CONTINUATION_REASON,
@@ -158,6 +159,15 @@ import {
   readContinuationAttempt,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
+import {
+  LIVENESS_CONTINUATION_RETRY_REASON,
+  UPSTREAM_THROTTLE_CEILING_PAUSE_REASON,
+  computeLivenessContinuationBackoff,
+  decideUpstreamThrottleCeiling,
+  isUpstreamThrottleExitRun,
+  resolveLivenessContinuationThrottleConfig,
+  summarizeUpstreamThrottleStreak,
+} from "./recovery/liveness-continuation-throttle.js";
 import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
@@ -275,6 +285,12 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+// Layer C throttle hardening (GOL-4038): backoff for liveness continuations +
+// per-issue rolling-window ceiling for upstream-throttle exits. Defaults to
+// shadow (log-only); "enforce" defers continuations and pauses agents at the
+// ceiling. Snapshotted at process start like the other retry policy consts.
+const LIVENESS_CONTINUATION_THROTTLE_CONFIG = resolveLivenessContinuationThrottleConfig(process.env);
+const UPSTREAM_THROTTLE_CEILING_RUN_SCAN_LIMIT = 25;
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
@@ -6161,6 +6177,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
       : null;
 
+    const continuationBackoff =
+      LIVENESS_CONTINUATION_THROTTLE_CONFIG.mode === "off"
+        ? null
+        : computeLivenessContinuationBackoff({
+          attempt: nextAttempt,
+          config: LIVENESS_CONTINUATION_THROTTLE_CONFIG,
+        });
+
     const decision = decideRunLivenessContinuation({
       run,
       issue,
@@ -6170,6 +6194,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       nextAction: run.nextAction,
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
+      backoff: continuationBackoff,
     });
 
     if (decision.kind === "exhausted") {
@@ -6185,6 +6210,64 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (decision.kind !== "enqueue") return;
+
+    if (decision.backoff && LIVENESS_CONTINUATION_THROTTLE_CONFIG.mode === "enforce") {
+      const fullAgent = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, run.agentId))
+        .then((rows) => rows[0] ?? null);
+      if (fullAgent) {
+        const scheduled = await scheduleBoundedRetryForRun(run, fullAgent, {
+          retryReason: LIVENESS_CONTINUATION_RETRY_REASON,
+          wakeReason: RUN_LIVENESS_CONTINUATION_REASON,
+          maxAttempts: DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
+          delayMs: decision.backoff.delayMs,
+          idempotencyKey: decision.idempotencyKey,
+          contextSnapshotExtra: decision.contextSnapshot,
+        });
+        if (scheduled.outcome === "scheduled") {
+          await db
+            .update(heartbeatRuns)
+            .set({
+              continuationAttempt: decision.nextAttempt,
+              updatedAt: new Date(),
+            })
+            .where(eq(heartbeatRuns.id, run.id));
+        } else {
+          await appendRunEvent(run, await nextRunEventSeq(run.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: "Deferred liveness continuation was not scheduled; no immediate continuation was enqueued",
+            payload: {
+              throttleMode: LIVENESS_CONTINUATION_THROTTLE_CONFIG.mode,
+              attempt: decision.nextAttempt,
+              delayMs: decision.backoff.delayMs,
+              outcome: scheduled.outcome,
+              ...("reason" in scheduled ? { reason: scheduled.reason } : {}),
+            },
+          });
+        }
+        return;
+      }
+    }
+
+    if (decision.backoff && LIVENESS_CONTINUATION_THROTTLE_CONFIG.mode === "shadow") {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message:
+          `Liveness continuation throttle (shadow): would defer continuation attempt ${decision.nextAttempt} by ${decision.backoff.delayMs}ms`,
+        payload: {
+          throttleMode: "shadow",
+          attempt: decision.nextAttempt,
+          delayMs: decision.backoff.delayMs,
+          dueAt: decision.backoff.dueAt.toISOString(),
+        },
+      });
+    }
 
     const continuationRun = await enqueueWakeup(run.agentId, {
       source: "automation",
@@ -6206,6 +6289,142 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .where(eq(heartbeatRuns.id, run.id));
     }
+  }
+
+  // Layer C ceiling (GOL-4038): per-issue rolling-window cap for
+  // upstream-throttle exits. Per-source-run continuation caps reset whenever a
+  // fresh wake starts a new source run, so a throttled provider can burst
+  // retries indefinitely; this counts consecutive throttle exits across source
+  // runs for the same issue and, at the ceiling, pauses the agent and files one
+  // consolidated notice naming the real blocker (provider quota/rate limit).
+  async function handleUpstreamThrottleCeiling(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+  ) {
+    const config = LIVENESS_CONTINUATION_THROTTLE_CONFIG;
+    if (config.mode === "off") return;
+    if (!isUpstreamThrottleExitRun(run)) return;
+
+    const context = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(context.issueId);
+    if (!issueId) return;
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return;
+    if (issue.assigneeAgentId !== run.agentId) return;
+    if (issue.status !== "todo" && issue.status !== "in_progress") return;
+
+    const now = new Date();
+    const windowStart = new Date(now.getTime() - config.ceilingWindowMs);
+    const recentRuns = await db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        livenessState: heartbeatRuns.livenessState,
+        resultJson: heartbeatRuns.resultJson,
+        finishedAt: heartbeatRuns.finishedAt,
+        createdAt: heartbeatRuns.createdAt,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.agentId, run.agentId),
+          inArray(heartbeatRuns.status, ["succeeded", "failed", "timed_out"]),
+          gte(heartbeatRuns.createdAt, windowStart),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(UPSTREAM_THROTTLE_CEILING_RUN_SCAN_LIMIT);
+
+    const streak = summarizeUpstreamThrottleStreak({
+      runs: recentRuns,
+      now,
+      windowMs: config.ceilingWindowMs,
+    });
+    const decision = decideUpstreamThrottleCeiling({
+      streak,
+      config,
+      issue: { id: issue.id, identifier: issue.identifier },
+      agentId: run.agentId,
+    });
+    if (decision.action !== "ceiling_reached") return;
+
+    if (!decision.pauseAgent) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message:
+          `Upstream throttle ceiling (shadow): ${decision.streak} consecutive throttle exits for ${issue.identifier ?? issue.id} — would pause agent and file a consolidated notice`,
+        payload: {
+          throttleMode: decision.mode,
+          issueId: issue.id,
+          streak: decision.streak,
+          ceilingConsecutiveRuns: decision.ceilingConsecutiveRuns,
+          ceilingWindowMs: decision.ceilingWindowMs,
+        },
+      });
+      return;
+    }
+
+    await db
+      .update(agents)
+      .set({
+        status: "paused",
+        pauseReason: UPSTREAM_THROTTLE_CEILING_PAUSE_REASON,
+        pausedAt: now,
+        updatedAt: now,
+      })
+      .where(and(eq(agents.id, agent.id), inArray(agents.status, ["active", "idle", "running", "error"])));
+
+    const existingNotice = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, run.companyId),
+          eq(issueComments.issueId, issue.id),
+          gte(issueComments.createdAt, windowStart),
+          sql`${issueComments.body} like ${`%<!-- ${decision.noticeMarker} -->%`}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!existingNotice) {
+      await issuesSvc.addComment(issue.id, decision.noticeBody, {
+        agentId: run.agentId,
+        runId: run.id,
+      });
+    }
+
+    await appendRunEvent(run, await nextRunEventSeq(run.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message:
+        `Upstream throttle ceiling reached: ${decision.streak} consecutive throttle exits for ${issue.identifier ?? issue.id} — agent paused, consolidated notice ${existingNotice ? "already present" : "filed"}`,
+      payload: {
+        throttleMode: decision.mode,
+        issueId: issue.id,
+        streak: decision.streak,
+        ceilingConsecutiveRuns: decision.ceilingConsecutiveRuns,
+        ceilingWindowMs: decision.ceilingWindowMs,
+        pausedAgentId: agent.id,
+        consolidatedNoticeFiled: !existingNotice,
+      },
+    });
   }
 
   function issueUiLink(issue: Pick<typeof issues.$inferSelect, "id" | "identifier">) {
@@ -7420,6 +7639,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       wakeReason?: string;
       maxAttempts?: number;
       delayMs?: number;
+      // Extra context merged over the source run's context snapshot; used by
+      // deferred liveness continuations to carry the continuation instruction.
+      contextSnapshotExtra?: Record<string, unknown>;
+      idempotencyKey?: string;
     },
   ) {
     const now = opts?.now ?? new Date();
@@ -7543,10 +7766,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       scheduledRetryAt: schedule.dueAt.toISOString(),
       ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
       ...(codexTransientFallbackMode ? { codexTransientFallbackMode } : {}),
+      ...(opts?.contextSnapshotExtra ?? {}),
     }, "normal_model");
-    const maxTurnContinuationIdempotencyKey = retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
-      ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
-      : null;
+    const maxTurnContinuationIdempotencyKey = opts?.idempotencyKey ??
+      (retryReason === MAX_TURN_CONTINUATION_RETRY_REASON
+        ? `max-turn-continuation:${run.companyId}:${issueId ?? "no-issue"}:${run.id}:${schedule.attempt}`
+        : null);
 
     type ScheduledRetryTransactionResult =
       | {
@@ -11135,6 +11360,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
+        await handleUpstreamThrottleCeiling(livenessRun, agent);
         await handleRunLivenessContinuation(livenessRun);
         await handleSuccessfulRunHandoff(
           issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
