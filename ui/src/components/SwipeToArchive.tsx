@@ -123,6 +123,7 @@ export function SwipeToArchive({
     <div
       ref={containerRef}
       className={cn("relative overflow-hidden touch-pan-y", className)}
+      aria-label="Swipe left to archive"
       style={{
         height: lockedHeight === null ? undefined : isCollapsing ? 0 : lockedHeight,
         opacity: isCollapsing ? 0 : 1,
