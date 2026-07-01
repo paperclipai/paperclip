@@ -487,6 +487,15 @@ if (_logFlushInterval.unref) _logFlushInterval.unref();
 /** Maximum time (ms) to keep a session event subscription alive before forcing cleanup. */
 const SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS = 30 * 60 * 1_000; // 30 minutes
 
+/** Sliding window for de-duplicating onEvent deliveries to a plugin worker. */
+const EVENT_DEDUP_WINDOW_MS = 10_000; // 10 seconds
+/**
+ * Hard ceiling on the dedup map size. A burst of many unique events within the
+ * window would otherwise let the map grow without bound (it is only pruned by
+ * age when a new id arrives). When exceeded we evict oldest-first.
+ */
+const EVENT_DEDUP_MAX_ENTRIES = 1_000;
+
 export function buildHostServices(
   db: Db,
   pluginId: string,
@@ -544,6 +553,26 @@ export function buildHostServices(
   const budgets = budgetService(db);
   const issueApprovals = issueApprovalService(db);
   const scopedBus = eventBus.forPlugin(pluginKey);
+
+  // Deduplicate onEvent deliveries to the worker. A plugin may register multiple
+  // ctx.events.on() handlers for the same event pattern (e.g. one for
+  // notifications and one for watch-storage). Each ctx.events.on() creates an
+  // independent server-side subscription whose handler calls
+  // notifyWorker("onEvent"). Without deduplication the worker receives N copies
+  // of the same event (one per matching subscription) and re-dispatches all M of
+  // its locally registered callbacks each time — N×M invocations instead of M.
+  // Symptom: a Slack plugin with two issue.created subscriptions posted two
+  // notifications per issue.
+  //
+  // We remember recently-delivered eventIds and skip duplicate notifyWorker
+  // calls within EVENT_DEDUP_WINDOW_MS. The map is pruned by age and hard-capped
+  // at EVENT_DEDUP_MAX_ENTRIES (evicting oldest-first — Map preserves insertion
+  // order) so a burst of unique events cannot grow it without bound.
+  const recentEventIds = new Map<string, number>(); // eventId -> deliveredAt (ms)
+  // Events without an eventId cannot be deduplicated and will still fan out
+  // N×M across overlapping subscriptions. Warn once per plugin host rather than
+  // on every delivery so the gap is visible without flooding the logs.
+  let warnedMissingEventId = false;
 
   // Track active session event subscriptions for cleanup
   const activeSubscriptions = new Set<{ unsubscribe: () => void; timer: ReturnType<typeof setTimeout> }>();
@@ -1207,9 +1236,34 @@ export function buildHostServices(
       },
       async subscribe(params: { eventPattern: string; filter?: Record<string, unknown> | null }) {
         const handler = async (event: import("@paperclipai/plugin-sdk").PluginEvent) => {
-          if (notifyWorker) {
-            notifyWorker("onEvent", { event });
+          if (!notifyWorker) return;
+          if (event.eventId) {
+            const now = Date.now();
+            if (recentEventIds.has(event.eventId)) {
+              return; // Already delivered to the worker via another subscription.
+            }
+            recentEventIds.set(event.eventId, now);
+            // Prune entries that have aged out of the dedup window.
+            for (const [id, ts] of recentEventIds) {
+              if (now - ts > EVENT_DEDUP_WINDOW_MS) recentEventIds.delete(id);
+              else break; // Insertion order ⇒ remaining entries are newer.
+            }
+            // Hard cap: evict oldest-first if a burst of unique ids outpaced
+            // age-based pruning, so the map can never grow without bound.
+            while (recentEventIds.size > EVENT_DEDUP_MAX_ENTRIES) {
+              const oldest = recentEventIds.keys().next().value;
+              if (oldest === undefined) break;
+              recentEventIds.delete(oldest);
+            }
+          } else if (!warnedMissingEventId) {
+            warnedMissingEventId = true;
+            logger.warn(
+              { pluginId, pluginKey, eventPattern: params.eventPattern },
+              "Plugin event has no eventId; deliveries cannot be de-duplicated and " +
+                "may fan out across overlapping subscriptions. Ensure event sources set eventId.",
+            );
           }
+          notifyWorker("onEvent", { event });
         };
         if (params.filter) {
           scopedBus.subscribe(params.eventPattern as any, params.filter as any, handler);
