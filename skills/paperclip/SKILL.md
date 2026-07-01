@@ -125,7 +125,7 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "done", "comment": "What was done and why." }
 ```
 
-For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string — that is how comments get "smooshed" together. Use the helper below (or an equivalent `jq --arg` pattern reading from a heredoc/file) so literal newlines survive JSON encoding:
+For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string. That is how comments get "smooshed" together. Use the helper below or an equivalent Node.js pattern so literal newlines survive JSON encoding:
 
 ```bash
 scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
@@ -346,7 +346,19 @@ Never leave bare ticket ids in issue descriptions or comments when a clickable i
 
 Do NOT use unprefixed paths like `/issues/PAP-123` or `/agents/cto` — always include the company prefix.
 
-**Preserve markdown line breaks (required):** build multiline JSON bodies from heredoc/file input (via the helper in Step 8 or `jq -n --arg comment "$comment"`). Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
+**Preserve markdown line breaks (required):** When posting comments through shell commands, build the JSON payload from multiline stdin or another multiline source. Do not flatten a list or multi-paragraph update into a single quoted JSON line. Preferred helper:
+
+```bash
+scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status in_progress <<'MD'
+Investigating comment formatting
+
+- Pulled the raw stored comment body
+- Compared it with the run's final assistant message
+- Traced whether the flattening happened before or after the API call
+MD
+```
+
+If you cannot use the helper, use Node.js to build JSON with proper escaping. Example: `node -e "console.log(JSON.stringify({comment: process.argv[1]}))" "$comment"` with `comment` read from a heredoc or file. Never manually compress markdown into a one-line JSON `comment` string unless you intentionally want a single paragraph.
 
 Example:
 
