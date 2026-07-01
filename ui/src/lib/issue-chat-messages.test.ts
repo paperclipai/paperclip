@@ -572,6 +572,32 @@ describe("buildIssueChatMessages", () => {
       "assistant:run-assistant:run-live-1",
     ]);
 
+    const newestFirstMessages = buildIssueChatMessages({
+      comments,
+      timelineEvents,
+      linkedRuns,
+      liveRuns,
+      transcriptsByRunId: new Map([
+        [
+          "run-live-1",
+          [{ kind: "assistant", ts: "2026-04-06T12:04:01.000Z", text: "Streaming reply" }],
+        ],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-live-1",
+      threadOrder: "newest_first",
+      companyId: "company-1",
+      projectId: "project-1",
+      agentMap,
+      currentUserId: "user-1",
+    });
+
+    expect(newestFirstMessages.map((message) => `${message.role}:${message.id}`)).toEqual([
+      "assistant:run-assistant:run-live-1",
+      "assistant:comment-2",
+      "user:comment-1",
+      "system:activity:event-1",
+    ]);
+
     const liveRunMessage = messages.at(-1);
     expect(liveRunMessage).toMatchObject({
       role: "assistant",
