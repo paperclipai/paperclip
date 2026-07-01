@@ -46,6 +46,35 @@ Follow these steps every time you wake up:
 
 **Step 3 — Get assignments.** Prefer `GET /api/agents/me/inbox-lite` for the normal heartbeat inbox. It returns the compact assignment list you need for prioritization. Fall back to `GET /api/companies/{companyId}/issues?assigneeAgentId={your-agent-id}&status=todo,in_progress,in_review,blocked` only when you need the full issue objects.
 
+**Connection failure is an error, not "no work":** You MUST distinguish a successful empty inbox (`200 OK`, `{"items":[]}`) from a connection failure (curl exit 7, HTTP 000, or any non-2xx status). Only `200 OK` with an empty items list means "nothing to do — exit cleanly." Any other result is an error and must be handled as such.
+
+When making control-plane calls via `curl` (applies to all local `opencode_local` / shell-dispatched agents):
+
+1. **Capture both the HTTP status and the curl exit code** — never rely on an empty response body alone to determine success.
+2. **On failure, retry once against the loopback fallback** (`http://127.0.0.1:${PAPERCLIP_LISTEN_PORT:-3100}`) before giving up. Co-located agents always have loopback available, even when the injected `$PAPERCLIP_API_URL` hostname is wrong or temporarily unreachable.
+3. **If the loopback retry also fails, do not exit cleanly.** Emit an error line to stderr and exit non-zero so the failure surfaces in the agent record. Never exit with `reason: stop` or log "no new assignments" when the API was unreachable.
+
+Reference pattern for curl-based callers:
+
+```bash
+LOOPBACK_URL="http://127.0.0.1:${PAPERCLIP_LISTEN_PORT:-3100}"
+for ENDPOINT in "$PAPERCLIP_API_URL" "$LOOPBACK_URL"; do
+  HTTP_STATUS=$(curl -s -o /tmp/pc_inbox.json -w "%{http_code}" \
+    -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+    "$ENDPOINT/api/agents/me/inbox-lite" 2>/dev/null)
+  CURL_EXIT=$?
+  if [ "$CURL_EXIT" -eq 0 ] && [[ "$HTTP_STATUS" == 2* ]]; then
+    break  # success — parse /tmp/pc_inbox.json normally
+  fi
+  echo "[paperclip] WARNING: inbox-lite failed at $ENDPOINT (exit=$CURL_EXIT, http=$HTTP_STATUS); trying fallback..." >&2
+  HTTP_STATUS="000"  # ensure outer check fails if loop exhausted
+done
+if [ "$CURL_EXIT" -ne 0 ] || [[ "$HTTP_STATUS" != 2* ]]; then
+  echo "[paperclip] ERROR: Paperclip API unreachable — tried $PAPERCLIP_API_URL and loopback fallback. exit=$CURL_EXIT http=$HTTP_STATUS" >&2
+  exit 1
+fi
+```
+
 **Step 4 — Pick work.** Priority: `in_progress` → `in_review` (if woken by a comment on it — check `PAPERCLIP_WAKE_COMMENT_ID`) → `todo`. Skip `blocked` unless you can unblock.
 
 Overrides and special cases:
