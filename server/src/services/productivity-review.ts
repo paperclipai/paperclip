@@ -216,7 +216,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       return Math.floor(explicit as number);
     }
     try {
-      const fromSetting = (await instanceSettings.getExperimental()).productivityReviewNoCommentStreakRuns;
+      const fromSetting = (await instanceSettings.getExperimental()).productivityReviewNoCommentStreakRuns ?? DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS;
       if (Number.isFinite(fromSetting) && fromSetting > 0) return Math.floor(fromSetting);
     } catch (err) {
       logger.warn(
