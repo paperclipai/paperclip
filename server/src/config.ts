@@ -85,6 +85,7 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  hungRunReapThresholdMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
 }
@@ -106,6 +107,22 @@ function detectTailnetBindHost(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+// Default no-progress window after which a non-terminal ("running") heartbeat run with no
+// observable output is treated as hung and reaped so its issue can be adopted. Kept large so
+// that healthy long runs (which stream output regularly) are never affected; operators can
+// lower it for faster recovery or set it to 0 to disable the watchdog entirely.
+const DEFAULT_HUNG_RUN_REAP_THRESHOLD_MS = 6 * 60 * 60 * 1000; // 6h
+const MIN_HUNG_RUN_REAP_THRESHOLD_MS = 60 * 1000; // floor positive overrides to 1m
+
+function resolveHungRunReapThresholdMs(): number {
+  const raw = process.env.PAPERCLIP_HUNG_RUN_REAP_THRESHOLD_MS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_HUNG_RUN_REAP_THRESHOLD_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_HUNG_RUN_REAP_THRESHOLD_MS;
+  if (parsed <= 0) return 0; // explicit opt-out disables the hung-run watchdog
+  return Math.max(MIN_HUNG_RUN_REAP_THRESHOLD_MS, parsed);
 }
 
 export function loadConfig(): Config {
@@ -331,6 +348,7 @@ export function loadConfig(): Config {
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    hungRunReapThresholdMs: resolveHungRunReapThresholdMs(),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };
