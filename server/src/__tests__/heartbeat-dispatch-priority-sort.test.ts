@@ -240,20 +240,37 @@ describeEmbeddedPostgres("heartbeat dispatch priority sort (BLO-12990)", () => {
       },
     ]);
 
+    // Track which runIds are dispatched and in what order.
+    // The "issue_assigned" wakeReason triggers a missing-comment-retry cascade
+    // after todoRun completes, so there will be more than 1 execute call total.
+    // The regression guard is ORDER: high-priority todo must be first.
+    const dispatchedRunIds: string[] = [];
+    mockAdapterExecute.mockImplementation(async (args: { runId: string }) => {
+      dispatchedRunIds.push(args.runId);
+      return {
+        exitCode: 0,
+        signal: null as string | null,
+        timedOut: false,
+        errorMessage: null as string | null,
+        resultJson: { exitCode: 0 },
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
     // Dispatch: only 1 slot available (maxConcurrentRuns: 1, 0 running).
     await heartbeat.resumeQueuedRuns();
 
-    // The high-priority `todo` run should be dispatched; wait for it to settle.
+    // Wait for the todo run to settle and drain all cascaded follow-up dispatches.
     await waitForRunToSettle(heartbeat, todoRunId);
 
-    // Only 1 slot → only 1 adapter execute should have fired.
-    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    // REGRESSION GUARD: the high-priority todo run must be the FIRST dispatch.
+    // The old sort always picked in_progress ahead regardless of priority gap.
+    expect(dispatchedRunIds[0]).toBe(todoRunId);
 
-    const inProgressRun = await db
-      .select({ status: heartbeatRuns.status })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, inProgressRunId))
-      .then((rows) => rows[0] ?? null);
+    // The low-priority in_progress run must have been dispatched AFTER the todo run.
+    const inProgressDispatchIdx = dispatchedRunIds.indexOf(inProgressRunId);
+    expect(inProgressDispatchIdx).toBeGreaterThan(0);
 
     const todoRun = await db
       .select({ status: heartbeatRuns.status })
@@ -263,8 +280,5 @@ describeEmbeddedPostgres("heartbeat dispatch priority sort (BLO-12990)", () => {
 
     // todo/high should have been dispatched (left the queued state).
     expect(todoRun?.status).not.toBe("queued");
-
-    // in_progress/low should still be queued (only 1 slot was available).
-    expect(inProgressRun?.status).toBe("queued");
   });
 });
