@@ -3043,16 +3043,32 @@ function canonicalizeDesiredPaperclipSkillReference(
   return normalizedReference;
 }
 
+/**
+ * Runtime slug of the upstream skill that documents how an agent hires (creates)
+ * other agents. Agents whose permissions include `canCreateAgents` need this
+ * skill mounted into their sandbox even when they have no explicit desiredSkills
+ * configured, otherwise a lead/CEO agent has no instructions for the hire flow.
+ */
+export const PAPERCLIP_CREATE_AGENT_SKILL_KEY = "paperclip-create-agent";
+
 export function resolvePaperclipDesiredSkillNames(
   config: Record<string, unknown>,
   availableEntries: Array<{ key: string; runtimeName?: string | null }>,
+  opts?: { alwaysIncludeSkillKeys?: string[] },
 ): string[] {
   const preference = readPaperclipSkillSyncPreference(config);
-  if (!preference.explicit) return [];
+  // Skills that must be present regardless of explicit configuration (e.g. the
+  // create-agent skill for agents that can hire). Canonicalize the same way as
+  // explicit desiredSkills, and only keep references that resolve to an actually
+  // available skill so we never reference a phantom entry.
+  const alwaysInclude = (opts?.alwaysIncludeSkillKeys ?? [])
+    .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
+    .filter((key) => key.length > 0 && availableEntries.some((entry) => entry.key === key));
+  if (!preference.explicit && alwaysInclude.length === 0) return [];
   const desiredSkills = preference.desiredSkills
     .map((reference) => canonicalizeDesiredPaperclipSkillReference(reference, availableEntries))
     .filter(Boolean);
-  return Array.from(new Set(desiredSkills));
+  return Array.from(new Set([...desiredSkills, ...alwaysInclude]));
 }
 
 /**
@@ -3106,8 +3122,9 @@ export function normalizePaperclipRunnerAdapterConfig(
 export function resolveLegacyPaperclipDesiredSkillNames(
   config: Record<string, unknown>,
   availableEntries: Array<{ key: string; runtimeName?: string | null }>,
+  opts?: { alwaysIncludeSkillKeys?: string[] },
 ): string[] {
-  const desiredSkills = resolvePaperclipDesiredSkillNames(config, availableEntries);
+  const desiredSkills = resolvePaperclipDesiredSkillNames(config, availableEntries, opts);
   const operationalEntry = availableEntries.find(
     (entry) => entry.key.trim().toLowerCase() === PAPERCLIP_OPERATIONAL_SKILL_KEY,
   );

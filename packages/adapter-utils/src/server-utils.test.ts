@@ -15,6 +15,7 @@ import {
   buildRuntimeToolsEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   materializePaperclipSkillCopy,
+  PAPERCLIP_CREATE_AGENT_SKILL_KEY,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -543,6 +544,67 @@ describe("adapter skill snapshots", () => {
         managed: true,
       }),
     );
+  });
+});
+
+describe("resolvePaperclipDesiredSkillNames", () => {
+  const createAgentEntry = {
+    key: "paperclipai/paperclip/paperclip-create-agent",
+    runtimeName: "paperclip-create-agent",
+    source: "/runtime/paperclip-create-agent",
+  };
+  const otherEntry = {
+    key: "paperclipai/paperclip/paperclip",
+    runtimeName: "paperclip",
+    source: "/runtime/paperclip",
+  };
+
+  it("returns [] when no explicit desiredSkills and no alwaysInclude option (unchanged)", () => {
+    expect(resolvePaperclipDesiredSkillNames({}, [createAgentEntry, otherEntry])).toEqual([]);
+  });
+
+  it("includes an always-include skill even without any explicit desiredSkills", () => {
+    const result = resolvePaperclipDesiredSkillNames({}, [createAgentEntry, otherEntry], {
+      alwaysIncludeSkillKeys: [PAPERCLIP_CREATE_AGENT_SKILL_KEY],
+    });
+    expect(result).toEqual([createAgentEntry.key]);
+  });
+
+  it("does not include an always-include skill that is not available (no phantom)", () => {
+    const result = resolvePaperclipDesiredSkillNames({}, [otherEntry], {
+      alwaysIncludeSkillKeys: [PAPERCLIP_CREATE_AGENT_SKILL_KEY],
+    });
+    expect(result).toEqual([]);
+  });
+
+  it("unions the always-include skill with explicit desiredSkills, deduped", () => {
+    const config = {
+      paperclipSkillSync: { desiredSkills: [otherEntry.key, PAPERCLIP_CREATE_AGENT_SKILL_KEY] },
+    };
+    const result = resolvePaperclipDesiredSkillNames(config, [createAgentEntry, otherEntry], {
+      alwaysIncludeSkillKeys: [PAPERCLIP_CREATE_AGENT_SKILL_KEY],
+    });
+    expect(result).toContain(createAgentEntry.key);
+    expect(result).toContain(otherEntry.key);
+    expect(result.filter((key) => key === createAgentEntry.key)).toHaveLength(1);
+  });
+
+  it("preserves existing explicit desiredSkills behavior when the option is absent", () => {
+    const config = { paperclipSkillSync: { desiredSkills: [otherEntry.key] } };
+    expect(resolvePaperclipDesiredSkillNames(config, [createAgentEntry, otherEntry])).toEqual([
+      otherEntry.key,
+    ]);
+  });
+
+  // The legacy resolver forwards the option, so a hire-capable agent on a
+  // legacy adapter gets the create-agent skill alongside the operational skill
+  // that resolver already guarantees.
+  it("forwards always-include through the legacy resolver, keeping the operational skill", () => {
+    const result = resolveLegacyPaperclipDesiredSkillNames({}, [createAgentEntry, otherEntry], {
+      alwaysIncludeSkillKeys: [PAPERCLIP_CREATE_AGENT_SKILL_KEY],
+    });
+    expect(result).toContain(createAgentEntry.key);
+    expect(result).toContain(PAPERCLIP_OPERATIONAL_SKILL_KEY);
   });
 });
 
