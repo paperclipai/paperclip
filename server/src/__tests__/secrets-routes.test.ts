@@ -156,6 +156,16 @@ describe("secret routes", () => {
     expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("secret-value");
   });
 
+  it("rejects empty current-user secret rotation payloads", async () => {
+    const res = await request(createApp())
+      .post("/api/companies/company-1/me/user-secrets/secret-1/rotate")
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/requires value or externalRef/);
+    expect(mockSecretService.rotateCurrentUserSecretValue).not.toHaveBeenCalled();
+  });
+
   it("hides user-scoped secrets from legacy company secret mutation routes", async () => {
     mockSecretService.getById.mockResolvedValue({
       id: "secret-1",

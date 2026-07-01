@@ -7,6 +7,8 @@ import {
   envBindingUserSecretRefSchema,
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
+  rotateSecretSchema,
+  rotateUserSecretValueSchema,
   secretProviderConfigDiscoveryPreviewSchema,
   secretProviderConfigPayloadSchema,
   updateUserSecretDefinitionSchema,
@@ -58,6 +60,14 @@ describe("secret validators", () => {
       }),
     ).toEqual({
       name: "Renamed",
+    });
+  });
+
+  it("requires secret rotation payloads to include new material", () => {
+    expect(() => rotateSecretSchema.parse({})).toThrow(/requires value or externalRef/);
+    expect(() => rotateUserSecretValueSchema.parse({})).toThrow(/requires value or externalRef/);
+    expect(rotateUserSecretValueSchema.parse({ value: "new-secret" })).toEqual({
+      value: "new-secret",
     });
   });
 

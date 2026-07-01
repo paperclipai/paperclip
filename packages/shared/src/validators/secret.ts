@@ -79,12 +79,25 @@ export const createSecretSchema = z.object({
 
 export type CreateSecret = z.infer<typeof createSecretSchema>;
 
+function requireSecretRotationMaterial(
+  value: { value?: string | null; externalRef?: string | null },
+  ctx: z.RefinementCtx,
+) {
+  if (!value.value?.trim() && !value.externalRef?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["value"],
+      message: "Secret rotation requires value or externalRef",
+    });
+  }
+}
+
 export const rotateSecretSchema = z.object({
   value: z.string().min(1).optional().nullable(),
   externalRef: z.string().optional().nullable(),
   providerVersionRef: z.string().optional().nullable(),
   providerConfigId: z.string().uuid().optional().nullable(),
-});
+}).superRefine(requireSecretRotationMaterial);
 
 export type RotateSecret = z.infer<typeof rotateSecretSchema>;
 
@@ -175,6 +188,15 @@ export const updateUserSecretValueSchema = z.object({
 });
 
 export type UpdateUserSecretValue = z.infer<typeof updateUserSecretValueSchema>;
+
+export const rotateUserSecretValueSchema = z.object({
+  value: z.string().min(1).optional().nullable(),
+  externalRef: z.string().optional().nullable(),
+  providerVersionRef: z.string().optional().nullable(),
+  providerConfigId: z.string().uuid().optional().nullable(),
+}).superRefine(requireSecretRotationMaterial);
+
+export type RotateUserSecretValue = z.infer<typeof rotateUserSecretValueSchema>;
 
 export const createUserSecretDeclarationSchema = secretBindingTargetSchema.extend({
   definitionKey: secretKeySchema,

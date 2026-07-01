@@ -52,6 +52,7 @@ import {
   createSecretSchema,
   updateSecretSchema,
   rotateSecretSchema,
+  rotateUserSecretValueSchema,
   createUserSecretDefinitionSchema,
   updateUserSecretDefinitionSchema,
   createUserSecretValueSchema,
@@ -2363,7 +2364,7 @@ registry.registerPath({
   summary: "Rotate my user secret value",
   request: {
     params: z.object({ companyId: z.string(), secretId: z.string() }),
-    body: jsonBody(updateUserSecretValueSchema),
+    body: jsonBody(rotateUserSecretValueSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });

@@ -517,6 +517,27 @@ describeEmbeddedPostgres("secretService", () => {
       manifest: [],
     });
 
+    await db
+      .update(userSecretDefinitions)
+      .set({ status: "disabled" })
+      .where(eq(userSecretDefinitions.id, definition.id));
+    await expect(
+      svc.resolveEnvBindings(companyId, optionalEnv, {
+        consumerType: "agent",
+        consumerId: "agent-optional",
+        actorType: "agent",
+        actorId: "agent-optional",
+        responsibleUserId: "user-2",
+      }),
+    ).resolves.toMatchObject({
+      env: {},
+      manifest: [],
+    });
+    await db
+      .update(userSecretDefinitions)
+      .set({ status: "active" })
+      .where(eq(userSecretDefinitions.id, definition.id));
+
     const resolved = await svc.resolveEnvBindings(companyId, env, {
       consumerType: "agent",
       consumerId: "agent-1",

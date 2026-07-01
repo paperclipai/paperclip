@@ -2253,11 +2253,13 @@ export function secretService(db: Db) {
     ): Promise<RuntimeSecretResolution | null> => {
       const responsibleUserId = input.responsibleUserId ?? context?.responsibleUserId ?? null;
       const definition = await resolveUserSecretDefinition(companyId, input);
+      const optionalBinding = input.allowMissingOverride || input.required === false;
       if (definition.status !== "active") {
+        if (optionalBinding) return null;
         throw unprocessable("User secret definition is not active");
       }
       if (!responsibleUserId?.trim()) {
-        if (input.allowMissingOverride || input.required === false) return null;
+        if (optionalBinding) return null;
         throw unprocessable("Responsible user is required for user secret resolution", {
           code: "responsible_user_missing",
         });
@@ -2297,7 +2299,7 @@ export function secretService(db: Db) {
         definitionId: definition.id,
       });
       if (!secret) {
-        if (input.allowMissingOverride || input.required === false) return null;
+        if (optionalBinding) return null;
         throw unprocessable("User secret value is not configured", {
           code: "user_secret_missing",
           definitionId: definition.id,

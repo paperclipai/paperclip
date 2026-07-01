@@ -8,6 +8,7 @@ import {
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
   rotateSecretSchema,
+  rotateUserSecretValueSchema,
   secretProviderConfigDiscoveryPreviewSchema,
   updateSecretProviderConfigSchema,
   updateSecretSchema,
@@ -507,7 +508,7 @@ export function secretRoutes(db: Db) {
 
   router.post(
     "/companies/:companyId/me/user-secrets/:secretId/rotate",
-    validate(updateUserSecretValueSchema),
+    validate(rotateUserSecretValueSchema),
     async (req, res) => {
       assertBoard(req);
       const companyId = req.params.companyId as string;
