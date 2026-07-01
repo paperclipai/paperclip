@@ -30,6 +30,17 @@ async function makeConfigHome(initialConfig?: Record<string, unknown>) {
   return root;
 }
 
+// Writes opencode.json verbatim so tests can exercise *raw* JSONC bytes (comments,
+// trailing commas) that `JSON.stringify` would never produce.
+async function makeConfigHomeRaw(rawConfig: string) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-"));
+  cleanupPaths.add(root);
+  const configDir = path.join(root, "opencode");
+  await fs.mkdir(configDir, { recursive: true });
+  await fs.writeFile(path.join(configDir, "opencode.json"), rawConfig, "utf8");
+  return root;
+}
+
 describe("prepareOpenCodeRuntimeConfig", () => {
   it("injects an external_directory allow rule by default", async () => {
     const configHome = await makeConfigHome({
@@ -63,6 +74,80 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
     cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
     await expect(fs.access(prepared.env.XDG_CONFIG_HOME)).rejects.toThrow();
+  });
+
+  it("preserves custom providers from a JSONC opencode.json (comments + trailing commas) without corrupting http:// URLs", async () => {
+    // A *raw* JSONC config: line + inline comments and trailing commas -- exactly
+    // the kind of valid OpenCode config that strict JSON.parse rejects. The
+    // provider baseURL is an http:// URL to prove the tolerant parser does not
+    // treat the `//` inside the string as a comment.
+    const rawJsonc = [
+      "{",
+      "  // local gateway provider",
+      '  "provider": {',
+      '    "ollama": {',
+      '      "npm": "@ai-sdk/openai-compatible",',
+      '      "options": {',
+      '        "baseURL": "http://localhost:11434/v1", // talk to the local server',
+      "      },",
+      '      "models": {',
+      '        "qwen2.5-coder": { "name": "Qwen 2.5 Coder" },',
+      "      },",
+      "    },",
+      "  },",
+      '  "theme": "system",',
+      "}",
+      "",
+    ].join("\n");
+    const configHome = await makeConfigHomeRaw(rawJsonc);
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as {
+      provider?: {
+        ollama?: { options?: { baseURL?: string }; models?: Record<string, unknown> };
+      };
+      permission?: Record<string, unknown>;
+      theme?: string;
+    };
+
+    // The custom provider survived the permission merge, with the http:// URL intact.
+    expect(runtimeConfig.provider?.ollama?.options?.baseURL).toBe("http://localhost:11434/v1");
+    expect(runtimeConfig.provider?.ollama?.models).toMatchObject({
+      "qwen2.5-coder": { name: "Qwen 2.5 Coder" },
+    });
+    expect(runtimeConfig.theme).toBe("system");
+    // ...and the permission injection still happened.
+    expect(runtimeConfig.permission).toMatchObject({ external_directory: "allow" });
+
+    await prepared.cleanup();
+  });
+
+  it("does not destroy a copied opencode.json that cannot be parsed even as JSONC", async () => {
+    const garbage = "{ this is : definitely <<< not valid json or jsonc at all";
+    const configHome = await makeConfigHomeRaw(garbage);
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimePath = path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json");
+    // Fail-open: preserve the file verbatim rather than overwrite it with a stub.
+    expect(await fs.readFile(runtimePath, "utf8")).toBe(garbage);
+    expect(prepared.notes.some((n) => n.includes("left it intact"))).toBe(true);
+
+    await prepared.cleanup();
   });
 
   it("merges custom providers from PAPERCLIP_OPENCODE_PROVIDERS into the config", async () => {
