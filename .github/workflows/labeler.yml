@@ -1,0 +1,28 @@
+name: Label PRs
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ensure labels exist
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = ['server','ui','cli','database','adapters','shared','docs','ci','dependencies'];
+            for (const name of labels) {
+              try { await github.rest.issues.getLabel({ owner: context.repo.owner, repo: context.repo.repo, name }); }
+              catch { await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, color: 'ededed' }); }
+            }
+
+      - uses: actions/labeler@v5
+        with:
+          configuration-path: .github/labeler.yml
