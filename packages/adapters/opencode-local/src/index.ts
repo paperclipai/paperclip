@@ -59,6 +59,29 @@ export const models: Array<{ id: string; label: string }> = [
   { id: "openai/gpt-5.2", label: "openai/gpt-5.2" },
   { id: "openai/gpt-5.1-codex-max", label: "openai/gpt-5.1-codex-max" },
   { id: "openai/gpt-5.1-codex-mini", label: "openai/gpt-5.1-codex-mini" },
+  // Eden AI gateway. Fallback set shown only when `opencode models`
+  // discovery returns zero entries (i.e. opencode CLI not installed). Once
+  // opencode is configured with an `edenai` provider in
+  // ~/.config/opencode/opencode.json, paperclip's `listOpenCodeModels()`
+  // helper auto-discovers every model the user registered there and the
+  // entries below are hidden by `listAdapterModels()` (server/src/adapters/
+  // registry.ts:595). See docs/adapters/edenai.md for setup and for the
+  // three ways to use ids that aren't here.
+  // Anthropic
+  { id: "edenai/anthropic/claude-opus-4-7", label: "edenai/anthropic/claude-opus-4-7" },
+  { id: "edenai/anthropic/claude-opus-4-6", label: "edenai/anthropic/claude-opus-4-6" },
+  { id: "edenai/anthropic/claude-sonnet-4-6", label: "edenai/anthropic/claude-sonnet-4-6" },
+  { id: "edenai/anthropic/claude-sonnet-4-5", label: "edenai/anthropic/claude-sonnet-4-5" },
+  { id: "edenai/anthropic/claude-haiku-4-5", label: "edenai/anthropic/claude-haiku-4-5" },
+  // OpenAI
+  { id: "edenai/openai/gpt-5", label: "edenai/openai/gpt-5" },
+  { id: "edenai/openai/gpt-5-mini", label: "edenai/openai/gpt-5-mini" },
+  { id: "edenai/openai/gpt-4o", label: "edenai/openai/gpt-4o" },
+  { id: "edenai/openai/gpt-4o-mini", label: "edenai/openai/gpt-4o-mini" },
+  // Google
+  { id: "edenai/google/gemini-2.5-pro", label: "edenai/google/gemini-2.5-pro" },
+  { id: "edenai/google/gemini-2.5-flash", label: "edenai/google/gemini-2.5-flash" },
+  { id: "edenai/google/gemini-2.0-flash-001", label: "edenai/google/gemini-2.0-flash-001" },
 ];
 
 export const DEFAULT_OPENCODE_CHEAP_MODEL = "openai/gpt-5.1-codex-mini";
