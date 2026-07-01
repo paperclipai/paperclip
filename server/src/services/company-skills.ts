@@ -836,11 +836,12 @@ function deriveImportedSkillSource(
   };
 }
 
-function readInlineSkillImports(companyId: string, files: Record<string, string>): ImportedSkill[] {
+export function readInlineSkillImports(companyId: string, files: Record<string, string>): ImportedSkill[] {
   const normalizedFiles = normalizePackageFileMap(files);
   const skillPaths = Object.keys(normalizedFiles).filter(
     (entry) => path.posix.basename(entry).toLowerCase() === "skill.md",
   );
+  const siblingSkillDirs = skillPaths.map((p) => path.posix.dirname(p)).filter((d) => d !== ".");
   const imports: ImportedSkill[] = [];
 
   for (const skillPath of skillPaths) {
@@ -852,9 +853,9 @@ function readInlineSkillImports(companyId: string, files: Record<string, string>
     const slug = deriveImportedSkillSlug(parsed.frontmatter, slugFallback);
     const source = deriveImportedSkillSource(parsed.frontmatter, slug);
     const inventory = Object.keys(normalizedFiles)
-      .filter((entry) => entry === skillPath || (skillDir ? entry.startsWith(`${skillDir}/`) : false))
+      .filter((entry) => entry === skillPath || (!skillDir ? !siblingSkillDirs.some((d) => entry.startsWith(`${d}/`) || entry === `${d}/SKILL.md`) : entry.startsWith(`${skillDir}/`)))
       .map((entry) => {
-        const relative = entry === skillPath ? "SKILL.md" : entry.slice(skillDir.length + 1);
+        const relative = entry === skillPath ? "SKILL.md" : (skillDir ? entry.slice(skillDir.length + 1) : entry);
         return {
           path: normalizePortablePath(relative),
           kind: classifyInventoryKind(relative),
@@ -1045,7 +1046,7 @@ export async function discoverProjectWorkspaceSkillDirectories(target: ProjectSk
     .sort((left, right) => left.skillDir.localeCompare(right.skillDir));
 }
 
-async function readLocalSkillImports(companyId: string, sourcePath: string): Promise<ImportedSkill[]> {
+export async function readLocalSkillImports(companyId: string, sourcePath: string): Promise<ImportedSkill[]> {
   const resolvedPath = path.resolve(sourcePath);
   const stat = await fs.stat(resolvedPath).catch(() => null);
   if (!stat) {
@@ -1095,13 +1096,15 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
     throw unprocessable("No SKILL.md files were found in the provided path.");
   }
 
+  const siblingSkillDirs = skillPaths.map((p) => path.posix.dirname(p)).filter((d) => d !== ".");
   const imports: ImportedSkill[] = [];
   for (const skillPath of skillPaths) {
     const skillDir = path.posix.dirname(skillPath);
+    const isRootSkill = skillDir === ".";
     const inventory = allFiles
-      .filter((entry) => entry === skillPath || entry.startsWith(`${skillDir}/`))
+      .filter((entry) => entry === skillPath || (isRootSkill ? !siblingSkillDirs.some((d) => entry.startsWith(`${d}/`) || entry === `${d}/SKILL.md`) : entry.startsWith(`${skillDir}/`)))
       .map((entry) => {
-        const relative = entry === skillPath ? "SKILL.md" : entry.slice(skillDir.length + 1);
+        const relative = entry === skillPath ? "SKILL.md" : (isRootSkill ? entry : entry.slice(skillDir.length + 1));
         return {
           path: normalizePortablePath(relative),
           kind: classifyInventoryKind(relative),
@@ -1162,6 +1165,7 @@ async function readUrlSkillImports(
         "No SKILL.md files were found in the provided GitHub source.",
       );
     }
+    const siblingSkillDirs = skillPaths.map((p) => path.posix.dirname(p)).filter((d) => d !== ".");
     const skills: ImportedSkill[] = [];
     for (const relativeSkillPath of skillPaths) {
       const repoSkillPath = basePrefix ? `${basePrefix}${relativeSkillPath}` : relativeSkillPath;
@@ -1189,12 +1193,16 @@ async function readUrlSkillImports(
           slug,
         ),
       };
+      const isRootSkill = skillDir === ".";
       const inventory = filteredPaths
-        .filter((entry) => entry === relativeSkillPath || entry.startsWith(`${skillDir}/`))
-        .map((entry) => ({
-          path: entry === relativeSkillPath ? "SKILL.md" : entry.slice(skillDir.length + 1),
-          kind: classifyInventoryKind(entry === relativeSkillPath ? "SKILL.md" : entry.slice(skillDir.length + 1)),
-        }))
+        .filter((entry) => entry === relativeSkillPath || (isRootSkill ? !siblingSkillDirs.some((d) => entry.startsWith(`${d}/`) || entry === `${d}/SKILL.md`) : entry.startsWith(`${skillDir}/`)))
+        .map((entry) => {
+          const relative = entry === relativeSkillPath ? "SKILL.md" : (isRootSkill ? entry : entry.slice(skillDir.length + 1));
+          return {
+            path: relative,
+            kind: classifyInventoryKind(relative),
+          };
+        })
         .sort((left, right) => left.path.localeCompare(right.path));
       skills.push({
         key: deriveCanonicalSkillKey(companyId, {
