@@ -30,6 +30,7 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
+export const TRACKER_OPEN_CHILDREN_THRESHOLD = 3;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -222,6 +223,33 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
   function isAgentInvokable(agent: AgentRow | null | undefined) {
     return Boolean(agent && !["paused", "terminated", "pending_approval"].includes(agent.status));
+  }
+
+  async function countOpenChildrenForTracker(
+    companyId: string,
+    issueId: string,
+  ): Promise<number> {
+    const rows = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.parentId, issueId),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["todo", "in_progress"]),
+        ),
+      );
+    return Number(rows[0]?.count ?? 0);
+  }
+
+  async function hasOpenChildrenTracker(
+    companyId: string,
+    issueId: string,
+    threshold: number = TRACKER_OPEN_CHILDREN_THRESHOLD,
+  ): Promise<{ isTracker: boolean; openChildren: number }> {
+    const openChildren = await countOpenChildrenForTracker(companyId, issueId);
+    return { isTracker: openChildren >= threshold, openChildren };
   }
 
   async function isProductivityReviewDescendant(issue: Pick<IssueRow, "companyId" | "parentId">) {
@@ -476,7 +504,28 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       : null;
 
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    let longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    if (longActive) {
+      const trackerCheck = await hasOpenChildrenTracker(
+        sourceIssue.companyId,
+        sourceIssue.id,
+      );
+      if (trackerCheck.isTracker) {
+        longActive = false;
+        logger.info(
+          {
+            event: "productivity_review.skip.tracker",
+            companyId: sourceIssue.companyId,
+            issueId: sourceIssue.id,
+            identifier: sourceIssue.identifier,
+            openChildren: trackerCheck.openChildren,
+            threshold: TRACKER_OPEN_CHILDREN_THRESHOLD,
+            elapsedMs,
+          },
+          "productivity review skipped long_active_duration for tracker parent",
+        );
+      }
+    }
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
