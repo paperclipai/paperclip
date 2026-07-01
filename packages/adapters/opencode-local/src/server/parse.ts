@@ -1,5 +1,41 @@
 import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
 
+// Matches any OpenAI-harmony channel control token in canonical (<|channel|>) or
+// mangled single-pipe (<channel|>) forms.
+const HARMONY_ANY_RE = /<\|?(?:channel|message|start|end|constrain|return)\|?>/;
+const CHANNEL_SPLIT_RE = /<\|?channel\|?>/;
+const MSG_SEARCH_RE = /<\|?message\|?>/;
+const STRIP_HARMONY_RE = /<\|?(?:channel|message|start|end|constrain|return)\|?>/g;
+
+// Gemma 4 emits reasoning as type:"text" parts carrying OpenAI-harmony channel control
+// tokens instead of type:"reasoning" events. Strip those tokens and keep only the
+// content of the "final" channel. Any text part with no "final" channel is pure
+// reasoning/degenerate control output and is discarded entirely.
+function sanitizeHarmonyText(text: string): string {
+  if (!HARMONY_ANY_RE.test(text)) return text;
+
+  const channelSections = text.split(CHANNEL_SPLIT_RE);
+  // channelSections[0] = text before first channel marker (potential preamble)
+  // channelSections[1..n] = "{channel_name}<|message|>{content}"
+
+  let finalContent: string | null = null;
+  for (let i = 1; i < channelSections.length; i++) {
+    const section = channelSections[i];
+    const msgMatch = MSG_SEARCH_RE.exec(section);
+    if (!msgMatch) continue;
+    const channelName = section.slice(0, msgMatch.index).trim().toLowerCase();
+    if (channelName === "final") {
+      finalContent = section.slice(msgMatch.index + msgMatch[0].length).replace(STRIP_HARMONY_RE, "").trim();
+    }
+  }
+
+  if (finalContent === null) return "";
+
+  const preamble = channelSections[0].replace(STRIP_HARMONY_RE, "").trim();
+  if (!preamble) return finalContent;
+  return `${preamble}\n${finalContent}`.trim();
+}
+
 function errorText(value: unknown): string {
   if (typeof value === "string") return value;
   const rec = parseObject(value);
@@ -45,7 +81,7 @@ export function parseOpenCodeJsonl(stdout: string) {
 
     if (type === "text") {
       const part = parseObject(event.part);
-      const text = asString(part.text, "").trim();
+      const text = sanitizeHarmonyText(asString(part.text, "").trim());
       if (text) messages.push(text);
       continue;
     }
