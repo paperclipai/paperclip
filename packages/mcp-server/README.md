@@ -5,6 +5,11 @@ Model Context Protocol server for Paperclip.
 This package is a thin MCP wrapper over the existing Paperclip REST API. It does
 not talk to the database directly and it does not reimplement business logic.
 
+Paperclip now exposes the same MCP tool surface in two ways:
+
+- Standalone stdio server via `@paperclipai/mcp-server`
+- Embedded streamable HTTP endpoint on the main Paperclip app at `/mcp`
+
 ## Authentication
 
 The server reads its configuration from environment variables:
@@ -17,6 +22,8 @@ The server reads its configuration from environment variables:
 
 ## Usage
 
+### Standalone stdio server
+
 ```sh
 npx -y @paperclipai/mcp-server
 ```
@@ -27,6 +34,19 @@ Or locally in this repo:
 pnpm --filter @paperclipai/mcp-server build
 node packages/mcp-server/dist/stdio.js
 ```
+
+### Embedded Paperclip app endpoint
+
+When you run the main Paperclip server, it now mounts the same MCP tool surface
+at:
+
+```text
+/mcp
+```
+
+This endpoint runs inside the existing Paperclip service; it is not a separate
+service or sidecar. It reuses the current authenticated Paperclip actor and
+forwards auth back into the existing REST-backed tool implementation.
 
 ## Tool Surface
 

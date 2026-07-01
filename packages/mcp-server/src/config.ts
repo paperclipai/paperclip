@@ -4,6 +4,8 @@ export interface PaperclipMcpConfig {
   companyId: string | null;
   agentId: string | null;
   runId: string | null;
+  authHeader?: string;
+  requestHeaders?: Record<string, string>;
 }
 
 function nonEmpty(value: string | undefined): string | null {
