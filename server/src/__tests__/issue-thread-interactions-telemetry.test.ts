@@ -124,6 +124,63 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
     return calls.at(-1)?.[1] as Record<string, unknown>;
   }
 
+  it("emits accepted suggested-task telemetry with created and skipped task counts", async () => {
+    const { companyId, goalId, issueId } = await seedIssue("Accept suggested tasks telemetry");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        tasks: [
+          {
+            clientKey: "root",
+            title: "Create the root follow-up",
+          },
+          {
+            clientKey: "child",
+            parentClientKey: "root",
+            title: "Create the nested follow-up",
+          },
+          {
+            clientKey: "sibling",
+            title: "Create the sibling follow-up",
+          },
+        ],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {
+      selectedClientKeys: ["root"],
+    }, {
+      userId: "local-board",
+    });
+
+    const dimensions = lastInteractionResolvedDimensions();
+    expect(dimensions).toMatchObject({
+      interaction_kind: "suggest_tasks",
+      status: "accepted",
+      resolved_by_kind: "user",
+      resolution_reason: "accepted",
+      created_by_kind: "user",
+      continuation_policy: "wake_assignee",
+      target_type: "none",
+      created_task_count: 1,
+      skipped_task_count: 2,
+    });
+    expectNoRawInteractionIds(dimensions);
+  });
+
   it("emits accepted checkbox telemetry with allowlisted role, target, and counts", async () => {
     const { companyId, goalId, issueId } = await seedIssue("Accept checkbox telemetry");
     const creatorAgentId = await seedAgent(companyId, "Backend Engineer");
@@ -218,7 +275,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
     expectNoRawInteractionIds(dimensions);
   });
 
-  it("emits answered question telemetry with system resolver and other fallback role", async () => {
+  it("emits answered question telemetry with system resolver and other fallback dimensions", async () => {
     const { companyId, issueId } = await seedIssue("Answer question telemetry");
     const creatorAgentId = await seedAgent(companyId, "Wizard");
 
@@ -251,7 +308,7 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
     });
     await db
       .update(issueThreadInteractions)
-      .set({ continuationPolicy: "not_a_real_policy" })
+      .set({ continuationPolicy: "" })
       .where(eq(issueThreadInteractions.id, created.id));
 
     await interactionsSvc.answerQuestions({
@@ -276,6 +333,59 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
     });
     expect(dimensions).not.toHaveProperty("summaryMarkdown");
     expect(dimensions).not.toHaveProperty("answers");
+    expectNoRawInteractionIds(dimensions);
+  });
+
+  it("emits expired question telemetry with zero answered question count", async () => {
+    const { companyId, issueId } = await seedIssue("Expired question telemetry");
+    const commentId = randomUUID();
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: "scope",
+            prompt: "Choose the scope",
+            selectionMode: "single",
+            required: true,
+            options: [{ id: "phase-1", label: "Phase 1" }],
+          },
+        ],
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: commentId,
+      createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
+      authorUserId: "local-board",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(expired).toHaveLength(1);
+    const dimensions = lastInteractionResolvedDimensions();
+    expect(dimensions).toMatchObject({
+      interaction_kind: "ask_user_questions",
+      status: "expired",
+      resolved_by_kind: "user",
+      resolution_reason: "superseded_by_comment",
+      created_by_kind: "user",
+      continuation_policy: "wake_assignee",
+      target_type: "none",
+      question_count: 1,
+      answered_question_count: 0,
+    });
     expectNoRawInteractionIds(dimensions);
   });
 

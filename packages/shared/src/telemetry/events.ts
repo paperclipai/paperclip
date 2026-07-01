@@ -145,6 +145,7 @@ export function trackInteractionResolved(
     questionCount?: number;
     answeredQuestionCount?: number;
     createdTaskCount?: number;
+    skippedTaskCount?: number;
   },
 ): void {
   client.track("interaction.resolved", {
@@ -161,5 +162,6 @@ export function trackInteractionResolved(
     ...(dims.questionCount === undefined ? {} : { question_count: dims.questionCount }),
     ...(dims.answeredQuestionCount === undefined ? {} : { answered_question_count: dims.answeredQuestionCount }),
     ...(dims.createdTaskCount === undefined ? {} : { created_task_count: dims.createdTaskCount }),
+    ...(dims.skippedTaskCount === undefined ? {} : { skipped_task_count: dims.skippedTaskCount }),
   });
 }

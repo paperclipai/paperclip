@@ -110,6 +110,7 @@ describe("shared telemetry agent events", () => {
       targetType: "issue_document",
       optionCount: 2,
       selectedOptionCount: 1,
+      skippedTaskCount: 3,
     });
 
     expect(client.track).toHaveBeenCalledWith("interaction.resolved", {
@@ -123,6 +124,7 @@ describe("shared telemetry agent events", () => {
       target_type: "issue_document",
       option_count: 2,
       selected_option_count: 1,
+      skipped_task_count: 3,
     });
   });
 });

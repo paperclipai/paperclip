@@ -255,7 +255,7 @@ function allowlistedDimension<T extends string>(
   value: string | null | undefined,
   allowedValues: ReadonlySet<T>,
 ): T | "other" | undefined {
-  if (!value) return undefined;
+  if (value == null) return undefined;
   return allowedValues.has(value as T) ? (value as T) : "other";
 }
 
@@ -403,6 +403,7 @@ function buildInteractionResolvedCounts(interaction: IssueThreadInteraction, arg
     case "suggest_tasks":
       return {
         createdTaskCount: nonNegativeInteger(args?.createdTaskCount ?? 0),
+        skippedTaskCount: nonNegativeInteger(interaction.result?.skippedClientKeys?.length ?? 0),
       };
     case "request_checkbox_confirmation":
       return {
@@ -412,7 +413,7 @@ function buildInteractionResolvedCounts(interaction: IssueThreadInteraction, arg
     case "ask_user_questions":
       return {
         questionCount: nonNegativeInteger(interaction.payload.questions.length),
-        answeredQuestionCount: nonNegativeInteger(interaction.result?.answers.length ?? 0),
+        answeredQuestionCount: nonNegativeInteger(interaction.result?.answers?.length ?? 0),
       };
     default:
       return {};
