@@ -389,6 +389,58 @@ export async function terminateLocalService(
   }
 }
 
+/**
+ * Check if any descendant process of a parent PID is consuming non-trivial CPU.
+ * Recursively walks the process tree. Used by stale-run detection to avoid
+ * false positives when MCP/plugin child processes are doing real work while
+ * the adapter parent is blocked waiting for them.
+ */
+export async function hasActiveChildProcesses(
+  parentPid: number,
+  opts?: { minCpuPercent?: number; maxDepth?: number; depth?: number },
+): Promise<boolean> {
+  const threshold = opts?.minCpuPercent ?? 5;
+  const maxDepth = opts?.maxDepth ?? 5;
+  const depth = opts?.depth ?? 0;
+  if (depth >= maxDepth) return false;
+  if (process.platform === "win32") return false;
+  if (!Number.isInteger(parentPid) || parentPid <= 0) return false;
+
+  try {
+    const { stdout: pgrepOut } = await execFileAsync("pgrep", [
+      "-P", String(parentPid),
+    ], { timeout: 3000 });
+    const childPids = pgrepOut
+      .trim()
+      .split("\n")
+      .map((line) => Number.parseInt(line.trim(), 10))
+      .filter((pid) => Number.isInteger(pid) && pid > 0);
+
+    if (childPids.length === 0) return false;
+
+    // Check CPU% of direct children
+    const { stdout: psOut } = await execFileAsync("ps", [
+      "-o", "pid=,pcpu=", "-p", childPids.map(String).join(","),
+    ], { timeout: 3000 });
+
+    for (const line of psOut.trim().split("\n")) {
+      if (!line.trim()) continue;
+      const parts = line.trim().split(/\s+/);
+      const cpu = Number.parseFloat(parts[1]);
+      if (!Number.isNaN(cpu) && cpu >= threshold) return true;
+    }
+
+    // Recurse into grandchildren
+    for (const childPid of childPids) {
+      if (await hasActiveChildProcesses(childPid, { ...opts, depth: depth + 1 })) return true;
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export async function readLocalServicePortOwner(port: number) {
   if (!Number.isInteger(port) || port <= 0 || process.platform === "win32") return null;
   try {
