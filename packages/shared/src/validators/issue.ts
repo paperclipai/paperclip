@@ -456,6 +456,16 @@ export const updateIssueSchema = createIssueBaseSchema.omit({ watchdog: true }).
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  // Guard against a common footgun: callers reach for a bare `monitorNextCheckAt`
+  // to set a future wake-point, but the schema strips unknown keys, so it was
+  // silently dropped and the recovery sweep never saw the scheduled monitor.
+  // Reject it loudly and point at the supported path instead of no-op'ing.
+  monitorNextCheckAt: z
+    .never({
+      invalid_type_error:
+        "monitorNextCheckAt is not settable directly on PATCH /api/issues/:id. Set the monitor wake-point via executionPolicy.monitor.nextCheckAt instead.",
+    })
+    .optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;
