@@ -106,6 +106,7 @@ import {
   JSONRPC_VERSION,
   JSONRPC_ERROR_CODES,
   PLUGIN_RPC_ERROR_CODES,
+  WORKER_PROTOCOL_CAPABILITY_INVOCATION_SCOPE_ECHO,
   createRequest,
   createSuccessResponse,
   createErrorResponse,
@@ -1455,7 +1456,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentCancelInteractiveSetup) supportedMethods.push("environmentCancelInteractiveSetup");
     if (plugin.definition.onEnvironmentDeleteTemplate) supportedMethods.push("environmentDeleteTemplate");
 
-    return { ok: true, supportedMethods };
+    return {
+      ok: true,
+      supportedMethods,
+      // This SDK echoes host-issued invocation ids (`paperclipInvocationId`)
+      // on nested worker→host calls, so declare the capability. Hosts only
+      // enforce invocation-scope echo for workers that advertise it here.
+      protocolCapabilities: [WORKER_PROTOCOL_CAPABILITY_INVOCATION_SCOPE_ECHO],
+    };
   }
 
   async function handleHealth(): Promise<PluginHealthDiagnostics> {
