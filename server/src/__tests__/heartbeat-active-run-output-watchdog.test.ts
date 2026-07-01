@@ -640,6 +640,81 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(decisions).toHaveLength(1);
   });
 
+  it("emits CTO escalation and skips evaluation creation when source issue already has a prior stale evaluation", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, issueId, runId, issuePrefix } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const priorEvaluationId = randomUUID();
+    await db.insert(issues).values({
+      id: priorEvaluationId,
+      companyId,
+      title: "Prior silent-run evaluation (closed)",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+      parentId: issueId,
+      originKind: "stale_active_run_evaluation",
+      originId: randomUUID(),
+      originRunId: randomUUID(),
+      originFingerprint: `stale_active_run:${companyId}:prior-run-id`,
+      completedAt: new Date(now.getTime() - 60 * 60 * 1000),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ created: 0, skipped: 1 });
+    const newEvaluations = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "stale_active_run_evaluation"),
+          sql`${issues.id} != ${priorEvaluationId}`,
+        ),
+      );
+    expect(newEvaluations).toHaveLength(0);
+
+    const [capLog] = await db
+      .select()
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.action, "heartbeat.output_stale_cap_exceeded"),
+        ),
+      );
+    expect(capLog).toBeTruthy();
+    expect(capLog?.details).toMatchObject({
+      sourceIssueId: issueId,
+      priorEvalCount: 1,
+      reason: "source_issue_evaluation_cap_exceeded",
+    });
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.parentId, issueId),
+          sql`${issues.id} != ${priorEvaluationId}`,
+        ),
+      );
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toMatchObject({
+      priority: "high",
+      assigneeAgentId: managerId,
+      originId: runId,
+    });
+    expect(escalations[0]?.description).toContain("Rule-2 Escalation Packet");
+  });
+
   it("refuses recovery-on-recovery stale-run recursion", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const { companyId } = await seedRunningRun({
