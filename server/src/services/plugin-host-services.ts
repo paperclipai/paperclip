@@ -2147,16 +2147,36 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const agent = await agents.getById(params.agentId);
         requireInCompany("Agent", agent, companyId);
+
+        // Materialize a backing issue so the prompt reaches the agent via the
+        // existing issue-driven wake path. Adapters read prompts from issue
+        // description via contextSnapshot.issueId; there is no path that
+        // routes free-form prompt text through the wakeup payload alone
+        // (enrichWakeContextSnapshot in heartbeat.ts reads issueId, not prompt).
+        const promptText = typeof params.prompt === "string" ? params.prompt : "";
+        const backingIssue = (await issues.create(companyId, {
+          title: (promptText.trim().split("\n", 1)[0] || "Plugin invocation").slice(0, 80),
+          description: promptText || null,
+          status: "todo",
+          assigneeAgentId: params.agentId,
+          originKind: `${defaultPluginOriginKind}:invocation`,
+        } as any)) as Issue;
+
         const run = await heartbeat.wakeup(params.agentId, {
           source: "automation",
           triggerDetail: "system",
           reason: params.reason ?? null,
-          payload: { prompt: params.prompt },
+          payload: { issueId: backingIssue.id, prompt: params.prompt },
+          contextSnapshot: {
+            issueId: backingIssue.id,
+            wakeSource: "automation",
+            wakeTriggerDetail: "system",
+          },
           requestedByActorType: "system",
           requestedByActorId: pluginId,
         });
         if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
-        return { runId: run.id };
+        return { runId: run.id, issueId: backingIssue.id };
       },
       async managedGet(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -2623,13 +2643,29 @@ export function buildHostServices(
           .then((rows) => rows[0] ?? null);
         if (!session) throw new Error(`Session not found: ${params.sessionId}`);
 
+        // Materialize a backing issue so the prompt reaches the agent via the
+        // existing issue-driven wake path. Adapters read prompts from issue
+        // description via contextSnapshot.issueId; there is no path that
+        // routes free-form prompt text through the wakeup payload alone
+        // (enrichWakeContextSnapshot in heartbeat.ts reads issueId, not prompt).
+        const promptText = typeof params.prompt === "string" ? params.prompt : "";
+        const backingIssue = (await issues.create(companyId, {
+          title: (promptText.trim().split("\n", 1)[0] || "Plugin session message").slice(0, 80),
+          description: promptText || null,
+          status: "todo",
+          assigneeAgentId: session.agentId,
+          originKind: `${defaultPluginOriginKind}:session`,
+          originId: session.id,
+        } as any)) as Issue;
+
         const run = await heartbeat.wakeup(session.agentId, {
           source: "automation",
           triggerDetail: "system",
           reason: params.reason ?? null,
-          payload: { prompt: params.prompt },
+          payload: { issueId: backingIssue.id, prompt: params.prompt },
           contextSnapshot: {
             taskKey: session.taskKey,
+            issueId: backingIssue.id,
             wakeSource: "automation",
             wakeTriggerDetail: "system",
           },
@@ -2705,7 +2741,7 @@ export function buildHostServices(
           activeSubscriptions.add(entry);
         }
 
-        return { runId: run.id };
+        return { runId: run.id, issueId: backingIssue.id };
       },
 
       async close(params) {

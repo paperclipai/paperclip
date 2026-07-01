@@ -1436,7 +1436,7 @@ export interface WorkerToHostMethods {
   ];
   "agents.invoke": [
     params: { agentId: string; companyId: string; prompt: string; reason?: string },
-    result: { runId: string },
+    result: { runId: string; issueId: string },
   ];
   "agents.managed.get": [
     params: { agentKey: string; companyId: string },
@@ -1462,7 +1462,7 @@ export interface WorkerToHostMethods {
   ];
   "agents.sessions.sendMessage": [
     params: { sessionId: string; companyId: string; prompt: string; reason?: string },
-    result: { runId: string },
+    result: { runId: string; issueId: string },
   ];
   "agents.sessions.close": [
     params: { sessionId: string; companyId: string },

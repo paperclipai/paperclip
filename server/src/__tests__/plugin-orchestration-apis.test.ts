@@ -6,12 +6,17 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   agents,
   companies,
+  companySkills,
   costEvents,
   createDb,
+  environmentLeases,
   executionWorkspaces,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueRelations,
   issues,
@@ -62,9 +67,18 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
   afterEach(async () => {
     await Promise.all(tempRoots.map((root) => fs.rm(root, { recursive: true, force: true })));
     tempRoots.length = 0;
+    // Sequential DELETEs (RowExclusiveLock per statement) match the existing
+    // pattern in this file and avoid the AccessExclusiveLock-on-many-tables
+    // deadlock that a single TRUNCATE ... CASCADE triggers when other test
+    // files hold concurrent RowShareLocks on overlapping tables. Order is
+    // children-before-parents to satisfy FKs without CASCADE.
     await db.delete(activityLog);
     await db.delete(costEvents);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentRuntimeState);
+    await db.delete(environmentLeases);
+    await db.delete(agentTaskSessions);
     await db.delete(agentWakeupRequests);
     await db.delete(issueRelations);
     await db.delete(issues);
@@ -73,6 +87,12 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(projects);
     await db.delete(plugins);
     await db.delete(agents);
+    // company_skills is auto-seeded from bundled-skill imports when companies
+    // are created. Must be cleared before deleting companies (FK constraint
+    // company_skills.company_id → companies.id). Pre-existing tests in this
+    // file didn't exercise the seed path; the new sessions.sendMessage tests
+    // do, by going through the full agent/issue/wake flow.
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 
@@ -626,6 +646,78 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         reason: "mission_advance",
       }),
     ).rejects.toThrow("Issue is blocked by unresolved blockers");
+  });
+
+  it("agents.invoke materializes a backing issue carrying the prompt and routes issueId via the wakeup contextSnapshot", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+
+    const result = await services.agents.invoke({
+      agentId,
+      companyId,
+      prompt: "What is 9 plus 1?",
+      reason: "plugin invocation test",
+    });
+
+    expect(result.runId).toEqual(expect.any(String));
+    expect(result.issueId).toEqual(expect.any(String));
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, result.issueId));
+    expect(issue).toBeDefined();
+    expect(issue!.title).toBe("What is 9 plus 1?");
+    expect(issue!.description).toBe("What is 9 plus 1?");
+    expect(issue!.status).toBe("todo");
+    expect(issue!.assigneeAgentId).toBe(agentId);
+    expect(issue!.originKind).toBe("plugin:paperclip.missions:invocation");
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, result.runId));
+    expect(run).toBeDefined();
+    expect((run!.contextSnapshot as Record<string, unknown>)?.issueId).toBe(result.issueId);
+  });
+
+  it("agentSessions.sendMessage materializes a backing issue per message and routes issueId via the wakeup contextSnapshot", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+
+    const session = await services.agentSessions.create({
+      agentId,
+      companyId,
+      reason: "plugin session test",
+    });
+    const firstResult = await services.agentSessions.sendMessage({
+      sessionId: session.sessionId,
+      companyId,
+      prompt: "Run diagnostic on subsystem A",
+      reason: "first message",
+    });
+
+    expect(firstResult.runId).toEqual(expect.any(String));
+    expect(firstResult.issueId).toEqual(expect.any(String));
+
+    const [firstIssue] = await db.select().from(issues).where(eq(issues.id, firstResult.issueId));
+    expect(firstIssue).toBeDefined();
+    expect(firstIssue!.description).toBe("Run diagnostic on subsystem A");
+    expect(firstIssue!.assigneeAgentId).toBe(agentId);
+    expect(firstIssue!.originKind).toBe("plugin:paperclip.missions:session");
+    expect(firstIssue!.originId).toBe(session.sessionId);
+
+    const [firstRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, firstResult.runId));
+    expect(firstRun).toBeDefined();
+    const firstSnapshot = firstRun!.contextSnapshot as Record<string, unknown>;
+    expect(firstSnapshot?.issueId).toBe(firstResult.issueId);
+    expect(firstSnapshot?.taskKey).toEqual(expect.any(String));
+
+    // Each message produces a fresh backing issue so the agent's runtime sees
+    // distinct task input for every call.
+    const secondResult = await services.agentSessions.sendMessage({
+      sessionId: session.sessionId,
+      companyId,
+      prompt: "Now run diagnostic on subsystem B",
+      reason: "second message",
+    });
+    expect(secondResult.issueId).not.toBe(firstResult.issueId);
+    const [secondIssue] = await db.select().from(issues).where(eq(issues.id, secondResult.issueId));
+    expect(secondIssue!.description).toBe("Now run diagnostic on subsystem B");
   });
 
   it("narrows orchestration cost summaries by subtree and billing code", async () => {
