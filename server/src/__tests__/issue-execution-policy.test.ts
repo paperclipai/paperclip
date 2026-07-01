@@ -598,6 +598,49 @@ describe("issue execution policy transitions", () => {
       // No error — just no patch modifications
       expect(result.patch).toEqual({});
     });
+
+    it("board operator can reconcile a stuck active review stage back to the return assignee", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: { assigneeAgentId: coderAgentId },
+        actor: { userId: boardUserId },
+        commentBody: "Operator reconciliation: reviewer already requested changes but the runtime failed to patch state.",
+      });
+
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+      expect(result.patch.executionState).toMatchObject({
+        status: "changes_requested",
+        currentStageId: reviewStageId,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qaAgentId },
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+        lastDecisionOutcome: "changes_requested",
+      });
+      expect(result.decision).toMatchObject({
+        stageId: reviewStageId,
+        stageType: "review",
+        outcome: "changes_requested",
+      });
+    });
   });
 
   describe("comment requirements", () => {
