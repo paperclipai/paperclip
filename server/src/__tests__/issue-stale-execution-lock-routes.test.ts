@@ -171,6 +171,59 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     });
   });
 
+  it.each([
+    { status: "done" as const, title: "Done release preserves status", completedAt: new Date() },
+    { status: "cancelled" as const, title: "Cancelled release preserves status", cancelledAt: new Date() },
+    { status: "in_review" as const, title: "In review release preserves status" },
+    { status: "blocked" as const, title: "Blocked release preserves status" },
+  ])(
+    "preserves $status when releasing a non-in_progress issue",
+    async ({ status, title, completedAt, cancelledAt }) => {
+      const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title,
+        status,
+        priority: "medium",
+        assigneeAgentId: agentId,
+        checkoutRunId: currentRunId,
+        executionRunId: currentRunId,
+        executionAgentNameKey: "codexcoder",
+        executionLockedAt: new Date(),
+        ...(completedAt ? { completedAt } : {}),
+        ...(cancelledAt ? { cancelledAt } : {}),
+      });
+
+      const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+        .post(`/api/issues/${issueId}/release`)
+        .send();
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.status).toBe(status);
+
+      const row = await db
+        .select({
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+          executionLockedAt: issues.executionLockedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]);
+      expect(row).toEqual({
+        status,
+        assigneeAgentId: null,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionLockedAt: null,
+      });
+    },
+  );
+
   it("allows the rightful assignee to release after the owning run failed", async () => {
     const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
     const issueId = randomUUID();

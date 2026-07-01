@@ -1,5 +1,11 @@
 # @paperclipai/server
 
+## 0.3.2
+
+### Patch Changes
+
+- `issues.release()` now preserves terminal and waiting statuses (`done`, `cancelled`, `blocked`, `in_review`, etc.); only `in_progress` issues re-queue to `todo` when releasing checkout locks.
+
 ## 0.3.1
 
 ### Patch Changes
