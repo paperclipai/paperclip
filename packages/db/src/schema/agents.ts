@@ -33,6 +33,11 @@ export const agents = pgTable(
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     errorReason: text("error_reason"),
     permissions: jsonb("permissions").$type<Record<string, unknown>>().notNull().default({}),
+    // Durable copy of a managed instructions bundle so a run can re-materialize
+    // it after the (possibly ephemeral) instance-root disk is wiped. Null for
+    // agents without a managed bundle.
+    managedInstructionsSnapshot: jsonb("managed_instructions_snapshot")
+      .$type<{ entryFile: string; files: Record<string, string> }>(),
     lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
