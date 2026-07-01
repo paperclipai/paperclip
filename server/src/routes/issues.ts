@@ -78,6 +78,7 @@ import {
   logActivity,
   projectService,
   routineService,
+  resolveAllCredentialEnv,
   webPushService,
   workProductService,
   type VisibilityPrincipal,
@@ -104,6 +105,12 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { environmentService } from "../services/environments.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
+  generateOpenAiIssueImage,
+  PAPERCLIP_IMAGE_MODEL,
+  streamToBuffer,
+  type ImageReferenceInput,
+} from "../services/openai-image-generation.js";
+import {
   createCompanySearchRateLimiter,
   type CompanySearchRateLimiter,
 } from "../services/company-search-rate-limit.js";
@@ -121,6 +128,22 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+const generateIssueImageSchema = z.object({
+  prompt: z.string().trim().min(1).max(12000),
+  referenceImageAttachmentIds: z.array(z.string().uuid()).max(6).optional().default([]),
+  size: z.string().trim().min(1).max(64).default("1024x1024"),
+  quality: z.enum(["auto", "low", "medium", "high"]).default("high"),
+  model: z.literal(PAPERCLIP_IMAGE_MODEL).optional().default(PAPERCLIP_IMAGE_MODEL),
+  outputFilename: z.string().trim().min(1).max(160).optional(),
+});
+
+const SUPPORTED_REFERENCE_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/webp",
+]);
+const MAX_REFERENCE_IMAGE_BYTES = 25 * 1024 * 1024;
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
@@ -912,6 +935,91 @@ export function issueRoutes(
       ...attachment,
       contentPath: `/api/attachments/${attachment.id}/content`,
     };
+  }
+
+  function isSupportedReferenceImageContentType(contentType: string) {
+    return SUPPORTED_REFERENCE_IMAGE_TYPES.has(normalizeContentType(contentType));
+  }
+
+  function uniqueIds(ids: string[]) {
+    return Array.from(new Set(ids));
+  }
+
+  function generatedImageFilename(input: string | undefined) {
+    return input?.trim() || `paperclip-generated-${Date.now()}.png`;
+  }
+
+  async function createIssueGeneratedAttachment(input: {
+    issueId: string;
+    companyId: string;
+    actor: ReturnType<typeof getActorInfo>;
+    namespace: string;
+    originalFilename: string;
+    contentType: string;
+    body: Buffer;
+  }) {
+    const stored = await storage.putFile({
+      companyId: input.companyId,
+      namespace: input.namespace,
+      originalFilename: input.originalFilename,
+      contentType: input.contentType,
+      body: input.body,
+    });
+
+    return svc.createAttachment({
+      issueId: input.issueId,
+      issueCommentId: null,
+      provider: stored.provider,
+      objectKey: stored.objectKey,
+      contentType: stored.contentType,
+      byteSize: stored.byteSize,
+      sha256: stored.sha256,
+      originalFilename: stored.originalFilename,
+      createdByAgentId: input.actor.agentId,
+      createdByUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+    });
+  }
+
+  async function loadImageReferences(input: {
+    issueId: string;
+    companyId: string;
+    attachmentIds: string[];
+  }): Promise<ImageReferenceInput[]> {
+    const references: ImageReferenceInput[] = [];
+    for (const attachmentId of input.attachmentIds) {
+      const attachment = await svc.getAttachmentById(attachmentId);
+      if (!attachment) {
+        throw notFound(`Reference image attachment not found: ${attachmentId}`);
+      }
+      if (attachment.companyId !== input.companyId || attachment.issueId !== input.issueId) {
+        throw unprocessable(`Reference image attachment does not belong to this issue: ${attachmentId}`);
+      }
+      if (attachment.byteSize && attachment.byteSize > MAX_REFERENCE_IMAGE_BYTES) {
+        throw unprocessable(`Reference image attachment exceeds ${MAX_REFERENCE_IMAGE_BYTES} bytes: ${attachmentId}`);
+      }
+
+      const object = await storage.getObject(attachment.companyId, attachment.objectKey);
+      const contentType = normalizeContentType(attachment.contentType || object.contentType);
+      if (!isSupportedReferenceImageContentType(contentType)) {
+        throw unprocessable(`Reference attachment must be PNG, JPEG, or WEBP: ${attachmentId}`);
+      }
+
+      const bytes = await streamToBuffer(object.stream);
+      if (bytes.length <= 0) {
+        throw unprocessable(`Reference image attachment is empty: ${attachmentId}`);
+      }
+      if (bytes.length > MAX_REFERENCE_IMAGE_BYTES) {
+        throw unprocessable(`Reference image attachment exceeds ${MAX_REFERENCE_IMAGE_BYTES} bytes: ${attachmentId}`);
+      }
+
+      references.push({
+        attachmentId,
+        filename: attachment.originalFilename,
+        contentType,
+        bytes,
+      });
+    }
+    return references;
   }
 
   function parseBooleanQuery(value: unknown) {
@@ -5210,6 +5318,111 @@ export function issueRoutes(
     }
 
     res.status(201).json(result.vote);
+  });
+
+  router.post("/issues/:id/image-generations", validate(generateIssueImageSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const body = req.body as z.infer<typeof generateIssueImageSchema>;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+
+    const actor = getActorInfo(req);
+    const requestedReferenceImageAttachmentIds = uniqueIds(body.referenceImageAttachmentIds);
+    const references = await loadImageReferences({
+      issueId: issue.id,
+      companyId: issue.companyId,
+      attachmentIds: requestedReferenceImageAttachmentIds,
+    });
+
+    if (requestedReferenceImageAttachmentIds.length > 0 && references.length === 0) {
+      throw unprocessable("No reference image attachment could be bound");
+    }
+
+    const credentialResolution = actor.agentId
+      ? await resolveAllCredentialEnv(db, actor.agentId)
+      : { env: {} as Record<string, string> };
+
+    const generated = await generateOpenAiIssueImage({
+      prompt: body.prompt,
+      size: body.size,
+      quality: body.quality,
+      references,
+      apiKey: credentialResolution.env.OPENAI_API_KEY,
+    });
+
+    const outputAttachment = await createIssueGeneratedAttachment({
+      issueId: issue.id,
+      companyId: issue.companyId,
+      actor,
+      namespace: `issues/${issue.id}/generated-images`,
+      originalFilename: generatedImageFilename(body.outputFilename),
+      contentType: generated.outputContentType,
+      body: generated.outputBytes,
+    });
+
+    const audit = {
+      generatedAt: new Date().toISOString(),
+      provider: "openai",
+      endpoint: generated.endpoint,
+      model: generated.model,
+      prompt: body.prompt,
+      size: body.size,
+      quality: body.quality,
+      requestedReferenceImageAttachmentIds,
+      actualImageInputsBound: generated.actualImageInputsBound,
+      generationMode: generated.generationMode,
+      promptOnly: generated.generationMode === "prompt_only",
+      outputAttachmentId: outputAttachment.id,
+      outputContentType: generated.outputContentType,
+      outputByteSize: generated.outputBytes.length,
+      providerRequestId: generated.providerRequestId,
+      referenceImageInputs: references.map((reference) => ({
+        attachmentId: reference.attachmentId,
+        filename: reference.filename,
+        contentType: reference.contentType,
+        byteSize: reference.bytes.length,
+      })),
+    };
+
+    const auditAttachment = await createIssueGeneratedAttachment({
+      issueId: issue.id,
+      companyId: issue.companyId,
+      actor,
+      namespace: `issues/${issue.id}/generated-images/audits`,
+      originalFilename: `paperclip-image-audit-${Date.now()}.json`,
+      contentType: "application/json",
+      body: Buffer.from(JSON.stringify(audit, null, 2), "utf8"),
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.image_generation_created",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        model: generated.model,
+        generationMode: generated.generationMode,
+        requestedReferenceImageAttachmentIds,
+        actualImageInputsBound: generated.actualImageInputsBound,
+        outputAttachmentId: outputAttachment.id,
+        auditAttachmentId: auditAttachment.id,
+      },
+    });
+
+    res.status(201).json({
+      ...audit,
+      outputAttachment: withContentPath(outputAttachment),
+      auditAttachment: withContentPath(auditAttachment),
+    });
   });
 
   router.get("/issues/:id/attachments", async (req, res) => {

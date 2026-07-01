@@ -107,6 +107,7 @@ describe("paperclip MCP tools", () => {
     expect(JSON.parse(String(init.body))).toEqual({
       title: "Assigned follow-up",
       workMode: "standard",
+      workItemType: "ai_task",
       priority: "medium",
       assigneeAgentId: "22222222-2222-2222-2222-222222222222",
       requestDepth: 0,
@@ -130,6 +131,37 @@ describe("paperclip MCP tools", () => {
     expect(JSON.parse(String(init.body))).toEqual({
       format: "markdown",
       body: "# Updated",
+    });
+  });
+
+  it("generates issue images through the gpt-image-2 Paperclip endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({
+        model: "gpt-image-2",
+        generationMode: "reference_backed",
+        actualImageInputsBound: ["2d8a654e-2ece-43cf-9000-ab0fe254e1a6"],
+      }, 201),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipGenerateIssueImage");
+    await tool.execute({
+      issueId: "SIX-3560",
+      prompt: "Generate a cafe founder carousel image.",
+      referenceImageAttachmentIds: ["2d8a654e-2ece-43cf-9000-ab0fe254e1a6"],
+      size: "1080x1350",
+      quality: "high",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/issues/SIX-3560/image-generations");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({
+      prompt: "Generate a cafe founder carousel image.",
+      referenceImageAttachmentIds: ["2d8a654e-2ece-43cf-9000-ab0fe254e1a6"],
+      size: "1080x1350",
+      quality: "high",
+      model: "gpt-image-2",
     });
   });
 
@@ -271,7 +303,7 @@ describe("paperclip MCP tools", () => {
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({
       kind: "request_confirmation",
-      continuationPolicy: "none",
+      continuationPolicy: "wake_assignee",
       idempotencyKey: "confirmation:PAP-1135:plan:33333333-3333-4333-8333-333333333333",
       title: "Plan approval",
       payload: {

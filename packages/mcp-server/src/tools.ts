@@ -111,6 +111,16 @@ const addCommentToolSchema = z.object({
   issueId: issueIdSchema,
 }).merge(addIssueCommentSchema);
 
+const generateIssueImageToolSchema = z.object({
+  issueId: issueIdSchema,
+  prompt: z.string().trim().min(1).max(12000),
+  referenceImageAttachmentIds: z.array(z.string().uuid()).max(6).optional().default([]),
+  size: z.string().trim().min(1).max(64).optional().default("1024x1024"),
+  quality: z.enum(["auto", "low", "medium", "high"]).optional().default("high"),
+  model: z.literal("gpt-image-2").optional().default("gpt-image-2"),
+  outputFilename: z.string().trim().min(1).max(160).optional(),
+});
+
 const createSuggestTasksToolSchema = z.object({
   issueId: issueIdSchema,
   idempotencyKey: z.string().trim().max(255).nullable().optional(),
@@ -481,6 +491,13 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       addCommentToolSchema,
       async ({ issueId, ...body }) =>
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/comments`, { body }),
+    ),
+    makeTool(
+      "paperclipGenerateIssueImage",
+      "Generate one PNG issue attachment with OpenAI gpt-image-2. Use referenceImageAttachmentIds when an existing issue image must be passed as real image[] input; otherwise the audit will mark generationMode as prompt_only. Common sizes include square/portrait/landscape values such as 1024x1024, 1024x1536, 1536x1024, or a requested production size like 1080x1350 when supported by the provider. quality must be auto, low, medium, or high.",
+      generateIssueImageToolSchema,
+      async ({ issueId, ...body }) =>
+        client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/image-generations`, { body }),
     ),
     makeTool(
       "paperclipSuggestTasks",

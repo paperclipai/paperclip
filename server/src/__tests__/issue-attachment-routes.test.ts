@@ -42,6 +42,9 @@ function registerRouteMocks() {
     agentService: () => ({
       getById: vi.fn(),
     }),
+    budgetService: () => ({
+      upsertPolicy: vi.fn(async () => null),
+    }),
     companyService: () => mockCompanyService,
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
@@ -91,6 +94,7 @@ function registerRouteMocks() {
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
+    resolveAllCredentialEnv: vi.fn(async () => ({ env: {}, credentialIds: [], chosen: [] })),
     workProductService: () => ({}),
     issueVisibilityService: () => ({
       canSeeIssue: vi.fn(async () => true),
@@ -117,16 +121,24 @@ type TestStorageService = StorageService & {
       contentType: string;
       body: Buffer;
     };
+    putFiles: Array<{
+      companyId: string;
+      namespace: string;
+      originalFilename?: string;
+      contentType: string;
+      body: Buffer;
+    }>;
   };
 };
 
 function createStorageService(): TestStorageService {
-  const calls: TestStorageService["__calls"] = {};
+  const calls: TestStorageService["__calls"] = { putFiles: [] };
   return {
     provider: "local_disk",
     __calls: calls,
     putFile: async (input) => {
       calls.putFile = input;
+      calls.putFiles.push(input);
       return {
       provider: "local_disk",
       objectKey: `${input.namespace}/${input.originalFilename ?? "upload"}`,
@@ -151,6 +163,7 @@ async function createApp(storage: StorageService) {
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
   ]);
   const app = express();
+  app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = {
       type: "board",
@@ -332,5 +345,113 @@ describe("issue attachment routes", () => {
       undefined,
       'inline; filename="preview.png"',
     ]).toContain(res.headers["content-disposition"]);
+  });
+
+  it("binds reference image attachment bytes to the OpenAI image edit request", async () => {
+    const previousImageKey = process.env.PAPERCLIP_IMAGE_OPENAI_API_KEY;
+    process.env.PAPERCLIP_IMAGE_OPENAI_API_KEY = "sk-test-image-key";
+    const referenceAttachmentId = "2d8a654e-2ece-43cf-9000-ab0fe254e1a6";
+    const storage = createStorageService();
+    storage.getObject = vi.fn(async () => ({
+      stream: Readable.from(Buffer.from("PNGDATA")),
+      contentType: "image/png",
+      contentLength: 7,
+    }));
+    const issue = {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    };
+    const referenceAttachment = {
+      ...makeAttachment("image/png", "foto_event.png"),
+      id: referenceAttachmentId,
+      issueId: issue.id,
+    };
+    const outputAttachment = {
+      ...makeAttachment("image/png", "carousel.png"),
+      id: "33333333-3333-4333-8333-333333333333",
+      issueId: issue.id,
+    };
+    const auditAttachment = {
+      ...makeAttachment("application/json", "paperclip-image-audit.json"),
+      id: "44444444-4444-4444-8444-444444444444",
+      issueId: issue.id,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getAttachmentById.mockResolvedValue(referenceAttachment);
+    mockIssueService.createAttachment
+      .mockResolvedValueOnce(outputAttachment)
+      .mockResolvedValueOnce(auditAttachment);
+
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          data: [{ b64_json: Buffer.from("generated-png").toString("base64") }],
+        }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "x-request-id": "req_image_123",
+          },
+        },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const app = await createApp(storage);
+      const res = await request(app)
+        .post(`/api/issues/${issue.id}/image-generations`)
+        .send({
+          prompt: "Generate a cafe founder carousel image.",
+          referenceImageAttachmentIds: [referenceAttachmentId],
+          size: "1080x1350",
+          quality: "high",
+          model: "gpt-image-2",
+          outputFilename: "carousel.png",
+        });
+
+      expect(res.status).toBe(201);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(String(url)).toBe("https://api.openai.com/v1/images/edits");
+      expect(init.method).toBe("POST");
+      const form = init.body as FormData;
+      expect(form.get("model")).toBe("gpt-image-2");
+      expect(form.get("prompt")).toBe("Generate a cafe founder carousel image.");
+      expect(form.get("size")).toBe("1080x1350");
+      expect(form.get("quality")).toBe("high");
+      const imageParts = form.getAll("image[]");
+      expect(imageParts).toHaveLength(1);
+      expect(await (imageParts[0] as Blob).text()).toBe("PNGDATA");
+
+      expect(storage.__calls.putFiles).toHaveLength(2);
+      expect(storage.__calls.putFiles[0]).toMatchObject({
+        contentType: "image/png",
+        originalFilename: "carousel.png",
+      });
+      expect(storage.__calls.putFiles[0]?.body.toString()).toBe("generated-png");
+
+      const audit = JSON.parse(storage.__calls.putFiles[1]?.body.toString() ?? "{}") as {
+        model?: string;
+        generationMode?: string;
+        actualImageInputsBound?: string[];
+        outputAttachmentId?: string;
+      };
+      expect(audit.model).toBe("gpt-image-2");
+      expect(audit.generationMode).toBe("reference_backed");
+      expect(audit.actualImageInputsBound).toEqual([referenceAttachmentId]);
+      expect(audit.outputAttachmentId).toBe(outputAttachment.id);
+      expect(res.body.actualImageInputsBound).toEqual([referenceAttachmentId]);
+      expect(res.body.outputAttachment.contentPath).toBe(`/api/attachments/${outputAttachment.id}/content`);
+      expect(res.body.auditAttachment.contentPath).toBe(`/api/attachments/${auditAttachment.id}/content`);
+    } finally {
+      if (previousImageKey === undefined) {
+        delete process.env.PAPERCLIP_IMAGE_OPENAI_API_KEY;
+      } else {
+        process.env.PAPERCLIP_IMAGE_OPENAI_API_KEY = previousImageKey;
+      }
+    }
   });
 });
