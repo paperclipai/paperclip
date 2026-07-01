@@ -1,6 +1,6 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { goals } from "@paperclipai/db";
+import { costEvents, financeEvents, goals, issues, projects } from "@paperclipai/db";
 
 type GoalReader = Pick<Db, "select">;
 
@@ -76,5 +76,22 @@ export function goalService(db: Db) {
         .where(eq(goals.id, id))
         .returning()
         .then((rows) => rows[0] ?? null),
+
+    deleteWithCascade: async (id: string): Promise<boolean> =>
+      db.transaction(async (tx) => {
+        const goal = await tx.select({ id: goals.id }).from(goals).where(eq(goals.id, id)).then(r => r[0] ?? null);
+        if (!goal) return false;
+
+        // Null out FK references that don't have onDelete configured
+        await tx.update(issues).set({ goalId: null, updatedAt: new Date() }).where(eq(issues.goalId, id));
+        await tx.update(projects).set({ goalId: null, updatedAt: new Date() }).where(eq(projects.goalId, id));
+        await tx.update(goals).set({ parentId: null, updatedAt: new Date() }).where(eq(goals.parentId, id));
+        await tx.update(costEvents).set({ goalId: null }).where(eq(costEvents.goalId, id));
+        await tx.update(financeEvents).set({ goalId: null }).where(eq(financeEvents.goalId, id));
+
+        // project_goals and routines.goalId cascade automatically via FK
+        await tx.delete(goals).where(eq(goals.id, id));
+        return true;
+      }),
   };
 }
