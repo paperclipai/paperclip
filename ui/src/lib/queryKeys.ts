@@ -59,6 +59,8 @@ export const queryKeys = {
     labels: (companyId: string) => ["issues", companyId, "labels"] as const,
     listByProject: (companyId: string, projectId: string) =>
       ["issues", companyId, "project", projectId] as const,
+    listByGoal: (companyId: string, goalId: string) =>
+      ["issues", companyId, "goal", goalId] as const,
     listPluginOperationsByProject: (companyId: string, projectId: string, originKindPrefix: string) =>
       ["issues", companyId, "project", projectId, "plugin-operations", originKindPrefix] as const,
     listByParent: (companyId: string, parentId: string) =>

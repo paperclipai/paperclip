@@ -1427,6 +1427,69 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(advancedIssueIds).toContain(legacyContentMachineOperationIssueId);
   });
 
+  it("filters visible issues by goal id", async () => {
+    const companyId = randomUUID();
+    const targetGoalId = randomUUID();
+    const otherGoalId = randomUUID();
+    const targetIssueId = randomUUID();
+    const hiddenIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(goals).values([
+      {
+        id: targetGoalId,
+        companyId,
+        title: "Goal with issues",
+        level: "company",
+        status: "active",
+      },
+      {
+        id: otherGoalId,
+        companyId,
+        title: "Other goal",
+        level: "company",
+        status: "active",
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: targetIssueId,
+        companyId,
+        goalId: targetGoalId,
+        title: "Linked issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: hiddenIssueId,
+        companyId,
+        goalId: targetGoalId,
+        title: "Hidden linked issue",
+        status: "todo",
+        priority: "medium",
+        hiddenAt: new Date("2026-05-01T00:00:00Z"),
+      },
+      {
+        id: otherIssueId,
+        companyId,
+        goalId: otherGoalId,
+        title: "Other linked issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    await expect(svc.list(companyId, { goalId: targetGoalId }))
+      .resolves.toEqual([expect.objectContaining({ id: targetIssueId })]);
+    await expect(svc.count(companyId, { goalId: targetGoalId })).resolves.toBe(1);
+  });
+
   it("excludes plugin operation issues from unread inbox counts", async () => {
     const companyId = randomUUID();
     const userId = "board-user";

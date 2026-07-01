@@ -1,4 +1,5 @@
 import type { GoalLevel, GoalStatus } from "../constants.js";
+import type { Issue } from "./issue.js";
 
 export interface Goal {
   id: string;
@@ -9,6 +10,9 @@ export interface Goal {
   status: GoalStatus;
   parentId: string | null;
   ownerAgentId: string | null;
+  linkedIssues?: Issue[];
+  linkedIssueIdentifiers?: string[];
+  linkedIssueCount?: number;
   createdAt: Date;
   updatedAt: Date;
 }
