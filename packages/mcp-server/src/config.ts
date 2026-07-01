@@ -37,3 +37,18 @@ export function readConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Papercl
     runId: nonEmpty(env.PAPERCLIP_RUN_ID),
   };
 }
+
+/**
+ * The server-fixed control-plane API URL, used in --http (multi-tenant) mode.
+ *
+ * In HTTP mode the per-request bearer token carries only {companyId, agentId,
+ * apiKey}; the control-plane URL is pinned by the server environment and is
+ * NEVER read from the client, so a token cannot redirect calls to another host.
+ */
+export function readServerApiUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const apiUrl = nonEmpty(env.PAPERCLIP_API_URL);
+  if (!apiUrl) {
+    throw new Error("Missing PAPERCLIP_API_URL");
+  }
+  return normalizeApiUrl(apiUrl);
+}
