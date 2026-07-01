@@ -308,4 +308,69 @@ describe("budgetService", () => {
       }),
     );
   });
+
+  it("uses calendar_day_utc windows when creating hard-stop incidents", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-11T13:45:00.000Z"));
+    try {
+      const policy = {
+        id: "policy-day-1",
+        companyId: "company-1",
+        scopeType: "agent",
+        scopeId: "agent-1",
+        metric: "billed_cents",
+        windowKind: "calendar_day_utc",
+        amount: 100,
+        warnPercent: 80,
+        hardStopEnabled: true,
+        notifyEnabled: false,
+        isActive: true,
+      };
+
+      const dbStub = createDbStub([
+        [policy],
+        [{ total: 150 }],
+        [],
+        [{
+          companyId: "company-1",
+          name: "Budget Agent",
+          status: "running",
+          pauseReason: null,
+        }],
+      ]);
+
+      dbStub.queueInsert([{
+        id: "approval-1",
+        companyId: "company-1",
+        status: "pending",
+      }]);
+      dbStub.queueInsert([{
+        id: "incident-1",
+        companyId: "company-1",
+        policyId: "policy-day-1",
+        approvalId: "approval-1",
+      }]);
+      dbStub.queueUpdate([]);
+
+      const cancelWorkForScope = vi.fn().mockResolvedValue(undefined);
+      const service = budgetService(dbStub.db as any, { cancelWorkForScope });
+      await service.evaluateCostEvent({
+        companyId: "company-1",
+        agentId: "agent-1",
+        projectId: null,
+      } as any);
+
+      expect(dbStub.insertValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            windowKind: "calendar_day_utc",
+            windowStart: "2026-04-11T00:00:00.000Z",
+            windowEnd: "2026-04-12T00:00:00.000Z",
+          }),
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
