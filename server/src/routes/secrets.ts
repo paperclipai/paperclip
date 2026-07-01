@@ -278,7 +278,7 @@ export function secretRoutes(db: Db) {
       companyId,
       {
         name: req.body.name,
-        key: req.body.key,
+        key: req.body.key ?? req.body.name,
         provider: req.body.provider ?? defaultProvider,
         providerConfigId: req.body.providerConfigId,
         managedMode: req.body.managedMode,

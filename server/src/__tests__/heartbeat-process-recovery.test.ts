@@ -392,6 +392,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.delete(budgetPolicies);
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await db.delete(agentRuntimeState);
+      await db.delete(agentWakeupRequests);
       try {
         await db.delete(agents);
         break;
