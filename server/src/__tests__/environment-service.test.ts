@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -285,8 +285,9 @@ describeEmbeddedPostgres("environmentService leases", () => {
       updatedAt: new Date(),
     });
 
-    // No partial unique index covers sandbox drivers yet, so dedup is
-    // post-insert convergence (prefer the oldest row, delete the loser).
+    // The managed sandbox row is serialized by an advisory lock and guarded by
+    // a partial unique index; concurrent callers should still converge on one
+    // surviving row and one shared result id.
     const results = await Promise.all(
       Array.from({ length: 8 }, () =>
         svc.ensureKubernetesEnvironment(companyId, { inCluster: true, backend: "job" }),
@@ -363,7 +364,7 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(original?.name).toBe("Lease Fixture");
   });
 
-  it("rejects a second managed-sandbox row for the same company at the DB level", async () => {
+  it("rejects a second managed-sandbox row for the instance at the DB level", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
@@ -384,9 +385,9 @@ describeEmbeddedPostgres("environmentService leases", () => {
       updatedAt: now,
     });
 
-    // Partial unique index environments_company_managed_sandbox_idx rejects a
+    // Partial unique index environments_managed_sandbox_idx rejects a
     // second row matching driver='sandbox' AND managedByPaperclip=true for the
-    // same company. This is the DB-level invariant that replaced the previous
+    // instance. This is the DB-level invariant that replaced the previous
     // application-side post-insert convergence loop.
     const secondInsert = db.insert(environments).values({
       name: "Second",
@@ -426,6 +427,85 @@ describeEmbeddedPostgres("environmentService leases", () => {
       .from(environments)
       .where(eq(environments.driver, "sandbox"));
     expect(rows).toHaveLength(2);
+  });
+
+  it("reconciles pre-existing duplicate managed Kubernetes environments deterministically", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const olderCreatedAt = new Date("2026-01-01T00:00:00.000Z");
+    const newerCreatedAt = new Date("2026-01-02T00:00:00.000Z");
+    const [older, newer] = await db
+      .insert(environments)
+      .values([
+        {
+          name: "Kubernetes Sandbox",
+          description: "Oldest managed row",
+          driver: "sandbox",
+          status: "active",
+          config: { provider: "kubernetes", backend: "job", inCluster: false },
+          metadata: { managedByPaperclip: true, managedKubernetesSandbox: true },
+          createdAt: olderCreatedAt,
+          updatedAt: olderCreatedAt,
+        },
+        {
+          name: "Kubernetes Sandbox Duplicate",
+          description: "Legacy duplicate row missing managedByPaperclip",
+          driver: "sandbox",
+          status: "active",
+          config: { provider: "kubernetes", backend: "job", inCluster: false },
+          metadata: { managedKubernetesSandbox: true },
+          createdAt: newerCreatedAt,
+          updatedAt: newerCreatedAt,
+        },
+      ])
+      .returning();
+
+    const [lease] = await db
+      .insert(environmentLeases)
+      .values({
+        companyId,
+        environmentId: newer!.id,
+        status: "active",
+        leasePolicy: "ephemeral",
+        acquiredAt: newerCreatedAt,
+        lastUsedAt: newerCreatedAt,
+        createdAt: newerCreatedAt,
+        updatedAt: newerCreatedAt,
+      })
+      .returning();
+
+    const ensured = await svc.ensureKubernetesEnvironment(companyId, {
+      backend: "job",
+      inCluster: true,
+      runtimeClassName: "gvisor",
+    });
+
+    expect(ensured.id).toBe(older?.id);
+    expect(ensured.config.inCluster).toBe(true);
+    expect(ensured.config.runtimeClassName).toBe("gvisor");
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(eq(environments.driver, "sandbox"))
+      .orderBy(asc(environments.createdAt), asc(environments.id));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(older?.id);
+    expect(rows[0]?.id).not.toBe(newer?.id);
+    expect((rows[0]?.config as Record<string, unknown>)?.inCluster).toBe(true);
+    expect((rows[0]?.metadata as Record<string, unknown>)?.managedKubernetesSandbox).toBe(true);
+
+    const leaseRows = await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, companyId));
+    expect(leaseRows).toHaveLength(1);
+    expect(leaseRows[0]?.id).toBe(lease?.id);
+    expect(leaseRows[0]?.environmentId).toBe(older?.id);
   });
 
   it("does not treat a non-kubernetes sandbox environment as the managed k8s env", async () => {
