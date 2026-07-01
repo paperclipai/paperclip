@@ -95,6 +95,22 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends python3-pip python3-venv python3-dev \
   && rm -rf /var/lib/apt/lists/*
 
+# Knowledge-graph CLI (graphify) — BLO-11982
+# Committed graphify-out/ knowledge graphs now ship inside each Blockcast repo
+# (graph.json/manifest/GRAPH_REPORT.md). Technical agents read + refresh them
+# with `graphify query` / `graphify update` — AST-only, offline, zero-token, no
+# API key. Baking the CLI here means every rolled -k8s-vendored base carries it
+# and the docker-agent.yml auto-bump delivers it fleet-wide (agents previously
+# had no graphify on PATH). An isolated venv keeps graphify's deps out of the
+# system site-packages; the console script is symlinked onto PATH. The
+# `graphify --version` self-check fails the build on a bad version/URL (same
+# discipline as the tinygo/java/protoc checks).
+ARG GRAPHIFY_VERSION=0.8.46
+RUN python3 -m venv /opt/graphify \
+  && /opt/graphify/bin/pip install --no-cache-dir "graphifyy[mcp]==${GRAPHIFY_VERSION}" \
+  && ln -sf /opt/graphify/bin/graphify /usr/local/bin/graphify \
+  && graphify --version
+
 # Java runtime (BLO-4469 / BLO-1446) — shaka-player's `build/all.py` compiles
 # the Shaka MSF bundle with the Closure Compiler, a Java JAR, and probes
 # `java -version` (build/compiler.py:_get_java_major_version) at bootstrap;
