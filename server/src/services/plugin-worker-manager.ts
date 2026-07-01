@@ -513,6 +513,11 @@ export function createPluginWorkerHandle(
     const directCompanyId = readNonEmptyString(params.companyId);
     if (directCompanyId) return { companyId: directCompanyId };
 
+    if (method === "getData" && isRecord(params.params)) {
+      const companyId = readNonEmptyString(params.params.companyId);
+      return companyId ? { companyId } : null;
+    }
+
     if (method === "performAction" && isRecord(params.actorContext)) {
       const companyId = readNonEmptyString(params.actorContext.companyId);
       return companyId ? { companyId } : null;
@@ -554,11 +559,47 @@ export function createPluginWorkerHandle(
     activeInvocations.delete(invocation.id);
   }
 
+  function requestedCompanyIdFromWorkerMessage(
+    message: JsonRpcRequest | JsonRpcNotification,
+  ): string | null {
+    if (!isRecord(message.params)) return null;
+
+    const companyId = readNonEmptyString(message.params.companyId);
+    if (companyId) return companyId;
+
+    if (message.params.scopeKind === "company") {
+      const scopeId = readNonEmptyString(message.params.scopeId);
+      if (scopeId) return scopeId;
+    }
+
+    if (message.method === "events.subscribe" && isRecord(message.params.filter)) {
+      const filterCompanyId = readNonEmptyString(message.params.filter.companyId);
+      if (filterCompanyId) return filterCompanyId;
+    }
+
+    return null;
+  }
+
+  function legacyContextForMissingInvocation(
+    message: JsonRpcRequest | JsonRpcNotification,
+  ): WorkerHostCallContext | null {
+    const companyId = requestedCompanyIdFromWorkerMessage(message);
+    if (!companyId) return null;
+
+    const matchingEntry = Array.from(activeInvocations.values()).find(
+      (entry) => entry.scope.companyId === companyId,
+    );
+    return matchingEntry ? { invocationScope: matchingEntry.scope } : null;
+  }
+
   function contextForWorkerMessage(message: JsonRpcRequest | JsonRpcNotification): WorkerHostCallContext {
     const invocationId = readNonEmptyString(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
     if (!invocationId) {
+      const legacyContext = legacyContextForMissingInvocation(message);
+      if (legacyContext) return legacyContext;
+
       const hasActiveInvocation = activeInvocations.size > 0 ||
         Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
       return hasActiveInvocation ? { invalidInvocationScope: true } : {};
