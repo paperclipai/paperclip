@@ -405,6 +405,8 @@ export interface Issue {
   cancelledAt: Date | null;
   visibility: "private" | "company";
   hiddenAt: Date | null;
+  storyPoints?: number | null;
+  estimateHours?: number | null;
   labelIds?: string[];
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];

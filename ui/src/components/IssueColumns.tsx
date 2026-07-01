@@ -27,6 +27,8 @@ export const issueTrailingColumns: InboxIssueColumn[] = [
   "project",
   "workspace",
   "parent",
+  "storyPoints",
+  "estimateHours",
   "labels",
   "dueDate",
   "updated",
@@ -40,6 +42,8 @@ const issueColumnLabels: Record<InboxIssueColumn, string> = {
   project: "Project",
   workspace: "Workspace",
   parent: "Parent issue",
+  storyPoints: "Story points",
+  estimateHours: "Estimate",
   labels: "Tags",
   dueDate: "Due",
   updated: "Last updated",
@@ -53,6 +57,8 @@ const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
   project: "Linked project pill with its color.",
   workspace: "Execution or project workspace used for the issue.",
   parent: "Parent issue identifier and title.",
+  storyPoints: "Human planning points used for workload rollups.",
+  estimateHours: "Rough hour estimate for human coordination.",
   labels: "Issue labels and tags.",
   dueDate: "Due date when one is set.",
   updated: "Latest visible activity time.",
@@ -70,6 +76,8 @@ function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
       if (column === "project") return "minmax(4.5rem, 7rem)";
       if (column === "workspace") return "minmax(6rem, 9rem)";
       if (column === "parent") return "minmax(3.5rem, 5.5rem)";
+      if (column === "storyPoints") return "minmax(3.25rem, 4rem)";
+      if (column === "estimateHours") return "minmax(3.5rem, 4.25rem)";
       if (column === "labels") return "minmax(3rem, 6rem)";
       if (column === "dueDate") return "minmax(4rem, 5rem)";
       return "minmax(3.5rem, 4.5rem)";
@@ -426,6 +434,22 @@ export function InboxIssueTrailingColumns({
               ) : (
                 <span className="italic">Sub-issue</span>
               )}
+            </span>
+          );
+        }
+
+        if (column === "storyPoints") {
+          return (
+            <span key={column} className="min-w-0 truncate text-right text-[11px] font-semibold tabular-nums text-muted-foreground">
+              {issue.storyPoints != null ? `${issue.storyPoints} pts` : ""}
+            </span>
+          );
+        }
+
+        if (column === "estimateHours") {
+          return (
+            <span key={column} className="min-w-0 truncate text-right text-[11px] font-semibold tabular-nums text-muted-foreground">
+              {issue.estimateHours != null ? `${issue.estimateHours}h` : ""}
             </span>
           );
         }

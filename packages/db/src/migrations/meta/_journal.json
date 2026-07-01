@@ -722,6 +722,13 @@
       "when": 1780000000000,
       "tag": "0102_work_item_type",
       "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1780000060000,
+      "tag": "0103_issue_planning_properties",
+      "breakpoints": true
     }
   ]
 }

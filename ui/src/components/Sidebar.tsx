@@ -13,6 +13,8 @@ import {
   Repeat,
   GitBranch,
   Settings,
+  PanelLeftClose,
+  RefreshCw,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -24,6 +26,7 @@ import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
 import { SidebarOrgMenu } from "./SidebarOrgMenu";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
+import { useSidebar } from "../context/SidebarContext";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
@@ -34,6 +37,7 @@ import { PluginSlotOutlet } from "@/plugins/slots";
 export function Sidebar() {
   const { openNewIssue } = useDialogActions();
   const { selectedCompanyId, selectedCompany } = useCompany();
+  const { isMobile, setSidebarOpen } = useSidebar();
   const inboxBadge = useInboxBadge(selectedCompanyId);
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -59,6 +63,19 @@ export function Sidebar() {
       <div className="flex items-center gap-1 px-3 h-12 shrink-0">
         <SidebarOrgMenu />
         <SidebarCompanyMenu />
+        {!isMobile ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground shrink-0"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <PanelLeftClose className="h-4 w-4" />
+          </Button>
+        ) : null}
         <Button
           asChild
           variant="ghost"
@@ -105,6 +122,7 @@ export function Sidebar() {
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
           <SidebarNavItem to="/work" label="Work Hub" icon={BriefcaseBusiness} />
+          <SidebarNavItem to="/cycles" label="Cycles" icon={RefreshCw} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />
           {showWorkspacesLink ? (

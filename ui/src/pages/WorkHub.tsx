@@ -32,6 +32,8 @@ import {
   CheckCircle2,
   CircleDot,
   Gauge,
+  LayoutDashboard,
+  List,
   ListChecks,
   Plus,
   Target,
@@ -42,7 +44,6 @@ import type { Agent, Issue, IssuePriority, IssueStatus, IssueWorkItemType, Proje
 
 const WORK_HUB_PAGE_SIZE = 500;
 const WORK_HUB_HUMAN_WORK_ITEM_TYPES = ["initiative", "human_task"] as const satisfies readonly IssueWorkItemType[];
-const WORK_HUB_DASHBOARD_ITEM_TYPES = ["initiative", "human_task", "ai_task"] as const satisfies readonly IssueWorkItemType[];
 const WORK_HUB_OPEN_STATUSES = new Set<IssueStatus>(["backlog", "todo", "in_progress", "in_review", "blocked"]);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -52,6 +53,8 @@ const WORK_HUB_DEFAULT_COLUMNS: InboxIssueColumn[] = [
   "assignee",
   "project",
   "priority",
+  "storyPoints",
+  "estimateHours",
   "dueDate",
   "labels",
   "updated",
@@ -65,6 +68,7 @@ const PRIORITY_POINTS: Record<IssuePriority, number> = {
 };
 
 type WorkItemFilter = "all" | "initiative" | "human_task" | "execution";
+type WorkHubView = "issues" | "dashboard";
 
 type WorkHubFilterConfig = {
   label: string;
@@ -107,6 +111,7 @@ type WorkloadRow = {
   label: string;
   count: number;
   points: number;
+  estimateHours: number;
   blocked: number;
   dueSoon: number;
   projectCount: number;
@@ -123,6 +128,7 @@ type ProjectPulseRow = {
   total: number;
   blocked: number;
   points: number;
+  estimateHours: number;
   targetDate: string | null;
   progress: number;
 };
@@ -149,6 +155,7 @@ type WorkHubDashboardSummary = {
   dueSoonCount: number;
   completionPct: number;
   planningPoints: number;
+  estimateHours: number;
   laneCounts: Record<WorkItemFilter, number>;
   workload: WorkloadRow[];
   projectPulse: ProjectPulseRow[];
@@ -181,7 +188,19 @@ function isDoneWork(issue: Issue): boolean {
 }
 
 function planningPointsForIssue(issue: Issue): number {
+  if (typeof issue.storyPoints === "number" && Number.isFinite(issue.storyPoints) && issue.storyPoints > 0) {
+    return issue.storyPoints;
+  }
   return PRIORITY_POINTS[issue.priority] ?? 1;
+}
+
+function estimateHoursForIssue(issue: Issue): number {
+  if (typeof issue.estimateHours !== "number" || !Number.isFinite(issue.estimateHours)) return 0;
+  return Math.max(0, issue.estimateHours);
+}
+
+function formatCappedCount(count: number, capped: boolean): string {
+  return capped ? `${count}+` : String(count);
 }
 
 function startOfLocalDay(input: Date | string): number {
@@ -238,6 +257,7 @@ function createEmptyDashboard(): WorkHubDashboardSummary {
     dueSoonCount: 0,
     completionPct: 0,
     planningPoints: 0,
+    estimateHours: 0,
     laneCounts: {
       all: 0,
       human_task: 0,
@@ -276,6 +296,7 @@ function buildWorkHubDashboard(args: {
   summary.overdueCount = humanPlanningItems.filter(isOverdue).length;
   summary.dueSoonCount = humanPlanningItems.filter((issue) => isDueWithin(issue, 7)).length;
   summary.planningPoints = openHumanTasks.reduce((total, issue) => total + planningPointsForIssue(issue), 0);
+  summary.estimateHours = openHumanTasks.reduce((total, issue) => total + estimateHoursForIssue(issue), 0);
   summary.completionPct = humanTasks.length > 0
     ? Math.round((humanTasks.filter(isDoneWork).length / humanTasks.length) * 100)
     : 0;
@@ -294,6 +315,7 @@ function buildWorkHubDashboard(args: {
       label: humanAssigneeLabel(issue.assigneeUserId, args.currentUserId, args.userLabelMap),
       count: 0,
       points: 0,
+      estimateHours: 0,
       blocked: 0,
       dueSoon: 0,
       projectCount: 0,
@@ -301,6 +323,7 @@ function buildWorkHubDashboard(args: {
     };
     row.count += 1;
     row.points += planningPointsForIssue(issue);
+    row.estimateHours += estimateHoursForIssue(issue);
     if (issue.status === "blocked") row.blocked += 1;
     if (isDueWithin(issue, 7) || isOverdue(issue)) row.dueSoon += 1;
     row.projectIds.add(issue.projectId ?? "__no_project");
@@ -328,6 +351,7 @@ function buildWorkHubDashboard(args: {
       total: 0,
       blocked: 0,
       points: 0,
+      estimateHours: 0,
       targetDate: project?.targetDate ?? issue.project?.targetDate ?? null,
       progress: 0,
     };
@@ -335,7 +359,10 @@ function buildWorkHubDashboard(args: {
     if (isOpenWork(issue)) row.active += 1;
     if (isDoneWork(issue)) row.done += 1;
     if (issue.status === "blocked") row.blocked += 1;
-    if (issue.workItemType === "human_task" && isOpenWork(issue)) row.points += planningPointsForIssue(issue);
+    if (issue.workItemType === "human_task" && isOpenWork(issue)) {
+      row.points += planningPointsForIssue(issue);
+      row.estimateHours += estimateHoursForIssue(issue);
+    }
     row.progress = row.total > 0 ? Math.round((row.done / row.total) * 100) : 0;
     pulseByProject.set(id, row);
   }
@@ -423,7 +450,7 @@ function LaneButton({
   onClick,
 }: {
   config: WorkHubFilterConfig;
-  count: number;
+  count: string | number;
   isActive: boolean;
   onClick: () => void;
 }) {
@@ -491,6 +518,7 @@ function WorkloadPanel({ rows }: { rows: WorkloadRow[] }) {
             </div>
             <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
               <span>{row.projectCount} projects</span>
+              <span>{row.estimateHours}h estimate</span>
               <span>{row.dueSoon} due soon</span>
               <span>{row.blocked} blocked</span>
             </div>
@@ -535,6 +563,7 @@ function ProjectPulsePanel({ rows }: { rows: ProjectPulseRow[] }) {
                   <span>{row.active} open</span>
                   <span>{row.blocked} blocked</span>
                   <span>{row.points} pts</span>
+                  <span>{row.estimateHours}h</span>
                   {row.targetDate ? <span>{dueDistanceLabel(row.targetDate)}</span> : null}
                 </div>
               </div>
@@ -612,12 +641,14 @@ export function WorkHub() {
   const fetchNextPageInFlightRef = useRef(false);
 
   const filterParam = searchParams.get("filter");
+  const viewParam = searchParams.get("view");
   const activeFilter: WorkItemFilter = filterParam === "all"
     || filterParam === "initiative"
     || filterParam === "human_task"
     || filterParam === "execution"
     ? filterParam
     : "all";
+  const activeView: WorkHubView = viewParam === "dashboard" ? "dashboard" : "issues";
   const filterConfig = FILTER_CONFIG[activeFilter];
   const workItemTypeParam = filterConfig.workItemTypes.join(",");
   const createWorkItemType: IssueWorkItemType = activeFilter === "initiative"
@@ -679,21 +710,65 @@ export function WorkHub() {
     [],
   );
 
-  const { data: dashboardIssues = [] } = useQuery({
+  const { data: dashboardHumanTasks = [] } = useQuery({
     queryKey: [
       ...queryKeys.issues.list(selectedCompanyId!),
       "work-hub-dashboard",
-      WORK_HUB_DASHBOARD_ITEM_TYPES.join(","),
+      "human_task",
       WORK_HUB_PAGE_SIZE,
     ],
     queryFn: () => issuesApi.list(selectedCompanyId!, {
       excludeRoutineExecutions: true,
-      workItemType: WORK_HUB_DASHBOARD_ITEM_TYPES.join(","),
+      workItemType: "human_task",
       limit: WORK_HUB_PAGE_SIZE,
     }),
     enabled: !!selectedCompanyId,
     placeholderData: (previousData) => previousData,
   });
+  const { data: dashboardInitiatives = [] } = useQuery({
+    queryKey: [
+      ...queryKeys.issues.list(selectedCompanyId!),
+      "work-hub-dashboard",
+      "initiative",
+      WORK_HUB_PAGE_SIZE,
+    ],
+    queryFn: () => issuesApi.list(selectedCompanyId!, {
+      excludeRoutineExecutions: true,
+      workItemType: "initiative",
+      limit: WORK_HUB_PAGE_SIZE,
+    }),
+    enabled: !!selectedCompanyId,
+    placeholderData: (previousData) => previousData,
+  });
+  const { data: dashboardExecutionIssues = [] } = useQuery({
+    queryKey: [
+      ...queryKeys.issues.list(selectedCompanyId!),
+      "work-hub-dashboard",
+      "ai_task",
+      WORK_HUB_PAGE_SIZE,
+    ],
+    queryFn: () => issuesApi.list(selectedCompanyId!, {
+      excludeRoutineExecutions: true,
+      workItemType: "ai_task",
+      limit: WORK_HUB_PAGE_SIZE,
+    }),
+    enabled: !!selectedCompanyId,
+    placeholderData: (previousData) => previousData,
+  });
+
+  const dashboardIssues = useMemo(
+    () => [...dashboardHumanTasks, ...dashboardInitiatives, ...dashboardExecutionIssues],
+    [dashboardExecutionIssues, dashboardHumanTasks, dashboardInitiatives],
+  );
+  const dashboardCaps = useMemo(
+    () => ({
+      all: dashboardHumanTasks.length >= WORK_HUB_PAGE_SIZE || dashboardInitiatives.length >= WORK_HUB_PAGE_SIZE,
+      human_task: dashboardHumanTasks.length >= WORK_HUB_PAGE_SIZE,
+      initiative: dashboardInitiatives.length >= WORK_HUB_PAGE_SIZE,
+      execution: dashboardExecutionIssues.length >= WORK_HUB_PAGE_SIZE,
+    } satisfies Record<WorkItemFilter, boolean>),
+    [dashboardExecutionIssues.length, dashboardHumanTasks.length, dashboardInitiatives.length],
+  );
 
   const dashboard = useMemo(
     () => buildWorkHubDashboard({
@@ -800,41 +875,81 @@ export function WorkHub() {
           </div>
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center gap-1.5">
-          {(Object.entries(FILTER_CONFIG) as [WorkItemFilter, WorkHubFilterConfig][]).map(([key, config]) => (
-            <LaneButton
-              key={key}
-              config={config}
-              count={dashboard.laneCounts[key]}
-              isActive={activeFilter === key}
+        <div className="mt-3 flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(Object.entries(FILTER_CONFIG) as [WorkItemFilter, WorkHubFilterConfig][]).map(([key, config]) => (
+              <LaneButton
+                key={key}
+                config={config}
+                count={formatCappedCount(dashboard.laneCounts[key], dashboardCaps[key])}
+                isActive={activeFilter === key}
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams);
+                  if (key === "all") {
+                    next.delete("filter");
+                  } else {
+                    next.set("filter", key);
+                  }
+                  setSearchParams(next);
+                }}
+              />
+            ))}
+          </div>
+          <div className="inline-flex h-9 w-fit items-center rounded-md border border-border bg-background p-0.5">
+            <button
+              type="button"
               onClick={() => {
                 const next = new URLSearchParams(searchParams);
-                if (key === "all") {
-                  next.delete("filter");
-                } else {
-                  next.set("filter", key);
-                }
+                next.delete("view");
                 setSearchParams(next);
               }}
-            />
-          ))}
+              className={cn(
+                "inline-flex h-8 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition-colors",
+                activeView === "issues"
+                  ? "bg-foreground text-background shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <List className="h-3.5 w-3.5" />
+              Issues
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const next = new URLSearchParams(searchParams);
+                next.set("view", "dashboard");
+                setSearchParams(next);
+              }}
+              className={cn(
+                "inline-flex h-8 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition-colors",
+                activeView === "dashboard"
+                  ? "bg-foreground text-background shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <LayoutDashboard className="h-3.5 w-3.5" />
+              Dashboard
+            </button>
+          </div>
         </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="space-y-4 px-4 py-4 lg:px-6">
+          {activeView === "dashboard" ? (
+            <>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <MetricTile
               icon={ListChecks}
               label="Open Tasks"
               value={dashboard.openHumanTaskCount}
-              detail={`${dashboard.planningPoints} planning pts across owners`}
+              detail={`${dashboard.planningPoints} story pts / ${dashboard.estimateHours}h estimate`}
               tone="blue"
             />
             <MetricTile
               icon={Target}
               label="Initiatives"
-              value={dashboard.initiativeCount}
+              value={formatCappedCount(dashboard.initiativeCount, dashboardCaps.initiative)}
               detail={`${dashboard.completionPct}% task completion`}
               tone="violet"
             />
@@ -869,9 +984,11 @@ export function WorkHub() {
                 </div>
                 <Users className="h-4 w-4 text-blue-600 dark:text-blue-300" />
               </div>
-              <div className="mt-3 text-2xl font-semibold text-foreground">{dashboard.humanTaskCount}</div>
+              <div className="mt-3 text-2xl font-semibold text-foreground">
+                {formatCappedCount(dashboard.humanTaskCount, dashboardCaps.human_task)}
+              </div>
               <div className="mt-1 text-xs text-muted-foreground">
-                {dashboard.openHumanTaskCount} open / {dashboard.planningPoints} planning pts
+                {dashboard.openHumanTaskCount} open / {dashboard.planningPoints} story pts / {dashboard.estimateHours}h
               </div>
             </div>
             <div className="rounded-md border border-border bg-background p-4 shadow-sm">
@@ -882,7 +999,9 @@ export function WorkHub() {
                 </div>
                 <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
               </div>
-              <div className="mt-3 text-2xl font-semibold text-foreground">{dashboard.initiativeCount}</div>
+              <div className="mt-3 text-2xl font-semibold text-foreground">
+                {formatCappedCount(dashboard.initiativeCount, dashboardCaps.initiative)}
+              </div>
               <div className="mt-1 text-xs text-muted-foreground">{dashboard.completionPct}% human-task completion</div>
             </div>
             <div className="rounded-md border border-border bg-background p-4 shadow-sm">
@@ -893,11 +1012,16 @@ export function WorkHub() {
                 </div>
                 <Bot className="h-4 w-4 text-violet-600 dark:text-violet-300" />
               </div>
-              <div className="mt-3 text-2xl font-semibold text-foreground">{dashboard.executionIssueCount}</div>
+              <div className="mt-3 text-2xl font-semibold text-foreground">
+                {formatCappedCount(dashboard.executionIssueCount, dashboardCaps.execution)}
+              </div>
               <div className="mt-1 text-xs text-muted-foreground">Tracked outside human capacity</div>
             </div>
           </div>
+            </>
+          ) : null}
 
+          {activeView === "issues" ? (
           <section className="rounded-md border border-border bg-background p-4 shadow-sm">
             <div className="mb-4 flex flex-col gap-2 border-b border-border pb-3 md:flex-row md:items-end md:justify-between">
               <div>
@@ -931,6 +1055,7 @@ export function WorkHub() {
               onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
             />
           </section>
+          ) : null}
         </div>
       </div>
     </div>

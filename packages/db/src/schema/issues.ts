@@ -67,6 +67,8 @@ export const issues = pgTable(
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     dueDate: timestamp("due_date", { withTimezone: true }),
     workLeadDays: integer("work_lead_days"),
+    storyPoints: integer("story_points"),
+    estimateHours: integer("estimate_hours"),
     visibility: text("visibility").notNull().default("company"),
     hiddenAt: timestamp("hidden_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -172,6 +172,14 @@ function dueDateInputValue(date: Date | string): string {
   return new Date(date).toISOString().split("T")[0]!;
 }
 
+function parseOptionalIntegerInput(value: string, max: number): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.min(max, Math.max(0, parsed));
+}
+
 const LEAD_DAYS_PRESETS = [0, 1, 3, 7, 14] as const;
 
 function computeStartDate(dueDate: Date | string, leadDays: number): Date {
@@ -1969,6 +1977,37 @@ export function IssueProperties({
             onChange={(priority) => onUpdate({ priority })}
             showLabel
           />
+        </PropertyRow>
+
+        <PropertyRow label="Points">
+          <input
+            type="number"
+            min={0}
+            max={1000}
+            step={1}
+            value={issue.storyPoints ?? ""}
+            onChange={(event) => onUpdate({ storyPoints: parseOptionalIntegerInput(event.target.value, 1000) })}
+            className="h-7 w-20 rounded border border-border bg-background px-2 text-sm tabular-nums text-foreground outline-none transition-colors focus:border-ring focus:ring-1 focus:ring-ring"
+            placeholder="0"
+            aria-label="Story points"
+          />
+          <span className="text-xs text-muted-foreground">story pts</span>
+        </PropertyRow>
+
+        <PropertyRow label="Estimate">
+          <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <input
+            type="number"
+            min={0}
+            max={10000}
+            step={1}
+            value={issue.estimateHours ?? ""}
+            onChange={(event) => onUpdate({ estimateHours: parseOptionalIntegerInput(event.target.value, 10000) })}
+            className="h-7 w-20 rounded border border-border bg-background px-2 text-sm tabular-nums text-foreground outline-none transition-colors focus:border-ring focus:ring-1 focus:ring-ring"
+            placeholder="0"
+            aria-label="Estimate hours"
+          />
+          <span className="text-xs text-muted-foreground">hours</span>
         </PropertyRow>
 
         <PropertyPicker

@@ -43,6 +43,8 @@ export const inboxIssueColumns = [
   "project",
   "workspace",
   "parent",
+  "storyPoints",
+  "estimateHours",
   "labels",
   "dueDate",
   "updated",

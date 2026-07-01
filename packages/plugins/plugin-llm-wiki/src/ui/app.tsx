@@ -1602,6 +1602,211 @@ function isEditableWikiPagePath(path: string): boolean {
     || path.startsWith("wiki/");
 }
 
+type WikiGraphNode = {
+  id: string;
+  label: string;
+  kind: "root" | "group" | "page" | "source";
+  path?: string;
+  x: number;
+  y: number;
+  size: number;
+  color: string;
+};
+
+type WikiGraphEdge = {
+  from: string;
+  to: string;
+};
+
+function wikiGraphGroupForPath(path: string) {
+  const parts = path.split("/").filter(Boolean);
+  if (path.startsWith("raw/")) return "raw";
+  if (parts[0] === "wiki" && parts[1]) return parts[1];
+  return parts[0] ?? "root";
+}
+
+function wikiGraphNodeColor(group: string, kind: WikiGraphNode["kind"]) {
+  if (kind === "source") return "oklch(0.72 0.12 180)";
+  if (group === "projects") return "oklch(0.68 0.16 250)";
+  if (group === "concepts") return "oklch(0.72 0.16 330)";
+  if (group === "entities") return "oklch(0.72 0.14 145)";
+  if (group === "synthesis") return "oklch(0.74 0.14 70)";
+  if (group === "sources" || group === "raw") return "oklch(0.72 0.13 190)";
+  return "oklch(0.78 0.05 0)";
+}
+
+function buildWikiGraph(data: PagesData | null | undefined): { nodes: WikiGraphNode[]; edges: WikiGraphEdge[] } {
+  const pages = (data?.pages ?? []).slice(0, 180);
+  const sources = (data?.sources ?? []).slice(0, 80);
+  const groups = [...new Set([
+    ...pages.map((page) => wikiGraphGroupForPath(page.path)),
+    ...sources.map((source) => wikiGraphGroupForPath(source.rawPath)),
+  ])].sort();
+  const groupIndex = new Map(groups.map((group, index) => [group, index]));
+  const groupCounts = new Map<string, number>();
+  const nodes: WikiGraphNode[] = [{
+    id: "root",
+    label: "Wiki",
+    kind: "root",
+    x: 50,
+    y: 50,
+    size: 11,
+    color: tokens.primary,
+  }];
+  const edges: WikiGraphEdge[] = [];
+  const groupRadius = 27;
+  const itemBaseRadius = 39;
+
+  groups.forEach((group, index) => {
+    const angle = (Math.PI * 2 * index) / Math.max(1, groups.length) - Math.PI / 2;
+    const x = 50 + Math.cos(angle) * groupRadius;
+    const y = 50 + Math.sin(angle) * groupRadius;
+    nodes.push({
+      id: `group:${group}`,
+      label: group,
+      kind: "group",
+      x,
+      y,
+      size: 7,
+      color: wikiGraphNodeColor(group, "group"),
+    });
+    edges.push({ from: "root", to: `group:${group}` });
+  });
+
+  const addItemNode = (path: string, label: string, kind: "page" | "source", weight: number) => {
+    const group = wikiGraphGroupForPath(path);
+    const index = groupCounts.get(group) ?? 0;
+    groupCounts.set(group, index + 1);
+    const groupAngle = (Math.PI * 2 * (groupIndex.get(group) ?? 0)) / Math.max(1, groups.length) - Math.PI / 2;
+    const spread = ((index % 17) - 8) * 0.035;
+    const ring = itemBaseRadius + Math.floor(index / 17) * 5;
+    const angle = groupAngle + spread;
+    const nodeId = `${kind}:${path}`;
+    nodes.push({
+      id: nodeId,
+      label,
+      kind,
+      path,
+      x: 50 + Math.cos(angle) * ring,
+      y: 50 + Math.sin(angle) * ring,
+      size: Math.min(9, Math.max(3.4, 3.4 + weight * 0.75)),
+      color: wikiGraphNodeColor(group, kind),
+    });
+    edges.push({ from: `group:${group}`, to: nodeId });
+  };
+
+  for (const page of pages) {
+    addItemNode(page.path, page.title ?? basename(page.path), "page", page.backlinkCount + page.sourceCount);
+  }
+  for (const source of sources) {
+    addItemNode(source.rawPath, source.title ?? basename(source.rawPath), "source", 1);
+  }
+
+  return { nodes, edges };
+}
+
+function WikiGraphView({
+  data,
+  loading,
+  error,
+  onOpenPage,
+}: {
+  data: PagesData | null | undefined;
+  loading: boolean;
+  error: { message: string } | null;
+  onOpenPage: (path: string) => void;
+}) {
+  const graph = useMemo(() => buildWikiGraph(data), [data]);
+  const nodeById = useMemo(() => new Map(graph.nodes.map((node) => [node.id, node])), [graph.nodes]);
+
+  if (loading && graph.nodes.length <= 1) {
+    return <div style={{ padding: 28, color: tokens.muted, fontSize: 13 }}>Loading graph...</div>;
+  }
+  if (error) {
+    return <div style={{ padding: 28 }}><Callout tone="danger">Failed to load graph: {error.message}</Callout></div>;
+  }
+
+  return (
+    <div style={{ padding: 24, display: "grid", gap: 14, minWidth: 0 }}>
+      <Card style={{ background: "oklch(0.16 0.01 260)" }}>
+        <CardHeader
+          title="Graph View"
+          badges={<Badge>{graph.nodes.length - 1} nodes</Badge>}
+          right={<Tiny>Pages and sources are grouped by wiki folder.</Tiny>}
+        />
+        <CardBody padding={0}>
+          <svg
+            viewBox="0 0 100 100"
+            role="img"
+            aria-label="Wiki graph view"
+            style={{ width: "100%", minHeight: 520, display: "block", background: "radial-gradient(circle at 50% 50%, oklch(0.2 0.03 260), oklch(0.13 0.01 260))" }}
+          >
+            <circle cx="50" cy="50" r="45" fill="none" stroke="oklch(0.55 0 0 / 0.25)" strokeDasharray="0.2 1.1" />
+            {graph.edges.map((edge) => {
+              const from = nodeById.get(edge.from);
+              const to = nodeById.get(edge.to);
+              if (!from || !to) return null;
+              return (
+                <line
+                  key={`${edge.from}->${edge.to}`}
+                  x1={from.x}
+                  y1={from.y}
+                  x2={to.x}
+                  y2={to.y}
+                  stroke={to.kind === "source" ? "oklch(0.66 0.11 185 / 0.45)" : "oklch(0.75 0.08 260 / 0.28)"}
+                  strokeWidth={to.kind === "group" ? 0.28 : 0.16}
+                />
+              );
+            })}
+            {graph.nodes.map((node) => {
+              const clickable = node.kind === "page" && node.path;
+              return (
+                <g
+                  key={node.id}
+                  role={clickable ? "button" : undefined}
+                  tabIndex={clickable ? 0 : undefined}
+                  onClick={clickable ? () => onOpenPage(node.path!) : undefined}
+                  onKeyDown={clickable ? (event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onOpenPage(node.path!);
+                    }
+                  } : undefined}
+                  style={{ cursor: clickable ? "pointer" : "default" }}
+                >
+                  <title>{node.path ?? node.label}</title>
+                  <circle
+                    cx={node.x}
+                    cy={node.y}
+                    r={node.size}
+                    fill={node.kind === "root" ? "transparent" : node.color}
+                    stroke={node.color}
+                    strokeWidth={node.kind === "root" ? 1.2 : node.kind === "group" ? 0.6 : 0.28}
+                    opacity={node.kind === "source" ? 0.75 : 0.94}
+                  />
+                  {node.kind === "root" || node.kind === "group" ? (
+                    <text
+                      x={node.x}
+                      y={node.y + node.size + 3.2}
+                      textAnchor="middle"
+                      fill="oklch(0.92 0 0)"
+                      fontSize={node.kind === "root" ? 3.2 : 2.35}
+                      fontFamily={fontStack}
+                    >
+                      {node.label.length > 12 ? `${node.label.slice(0, 11)}...` : node.label}
+                    </text>
+                  ) : null}
+                </g>
+              );
+            })}
+          </svg>
+        </CardBody>
+      </Card>
+      <Tiny>Click a page node to open it. Source nodes are shown for context.</Tiny>
+    </div>
+  );
+}
+
 export function WikiPage({ context }: PluginPageProps) {
   const { pathname, search } = useHostLocation();
   const isMobile = useIsMobileLayout();
@@ -3229,16 +3434,41 @@ function expandedAncestors(path: string | null): string[] {
 }
 
 function BrowseTab({ context }: { context: { companyId: string | null } }) {
+  const hostNavigation = useHostNavigation();
   const { pathname, search } = useHostLocation();
   const activeSpaceSlug = useMemo(() => readActiveSpaceSlugFromLocation(pathname), [pathname]);
   const pages = usePages(context.companyId, { includeRaw: true, spaceSlug: activeSpaceSlug });
   const isMobile = useIsMobileLayout();
+  const [viewMode, setViewMode] = useState<"page" | "graph">("page");
   const selectedTreePath = readSelectedTreePathFromLocation(pathname, search) ?? firstSelectableTreePath(pages.data);
   const selected = contentPathFromTreePath(selectedTreePath);
 
   return (
     <div style={{ flex: 1, minWidth: 0, overflow: isMobile ? "visible" : "auto" }}>
-      {pages.loading && !selected ? (
+      <div style={{
+        position: "sticky",
+        top: 0,
+        zIndex: 2,
+        display: "flex",
+        justifyContent: "flex-end",
+        gap: 6,
+        padding: isMobile ? "12px 16px 0" : "14px 28px 0",
+        background: tokens.bg,
+      }}>
+        <Button size="sm" variant={viewMode === "page" ? "primary" : "default"} onClick={() => setViewMode("page")}>Page</Button>
+        <Button size="sm" variant={viewMode === "graph" ? "primary" : "default"} onClick={() => setViewMode("graph")}>Graph</Button>
+      </div>
+      {viewMode === "graph" ? (
+        <WikiGraphView
+          data={pages.data}
+          loading={pages.loading}
+          error={pages.error ?? null}
+          onOpenPage={(path) => {
+            setViewMode("page");
+            hostNavigation.navigate(buildPageHref(path, activeSpaceSlug), { state: wikiSidebarNavigationState(path) });
+          }}
+        />
+      ) : pages.loading && !selected ? (
         <div style={{ padding: isMobile ? 16 : 28, color: tokens.muted, fontSize: 13 }}>Loading pages…</div>
       ) : pages.error && !selected ? (
         <div style={{ padding: isMobile ? 16 : 28 }}><Callout tone="danger">Failed to load pages: {pages.error.message}</Callout></div>
