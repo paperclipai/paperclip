@@ -15,6 +15,7 @@ import {
   type RequestCheckboxConfirmationInteraction,
   type RequestConfirmationInteraction,
   type RequestConfirmationTarget,
+  type SolicitBidInteraction,
   type SuggestTasksInteraction,
   type SuggestTasksResultCreatedTask,
   type SuggestedTaskDraft,
@@ -107,6 +108,8 @@ function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
       return "Ask user questions";
     case "request_confirmation":
       return "Confirmation";
+    case "solicit_bid":
+      return "Bid solicitation";
     case "request_checkbox_confirmation":
       return "Checkbox confirmation";
     default:
@@ -1474,6 +1477,109 @@ function RequestConfirmationCard({
   );
 }
 
+function SolicitBidCard({
+  interaction,
+}: {
+  interaction: SolicitBidInteraction;
+}) {
+  const { payload, result } = interaction;
+  const submittedBids = result?.submittedBids ?? [];
+  const ranked = [...submittedBids].sort((a, b) => b.score - a.score);
+  const outcome = result?.outcome ?? "collecting";
+  const fitGatePct = Math.round(payload.fitGate * 100);
+
+  return (
+    <div className="space-y-4">
+      {payload.promptMarkdown ? (
+        <div className="text-sm leading-6 text-foreground">
+          <MarkdownBody>{payload.promptMarkdown}</MarkdownBody>
+        </div>
+      ) : null}
+
+      <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
+        <span>
+          Bid window closes <span className="font-medium text-foreground">{formatDateTime(payload.bidWindowClosesAt)}</span>
+        </span>
+        <span>
+          Weights <span className="font-medium text-foreground">{payload.weightsPreset === "fit_first" ? "fit-first" : "balanced"}</span>
+        </span>
+        <span>
+          Fit gate <span className="font-medium text-foreground">{fitGatePct}%</span>
+        </span>
+      </div>
+
+      {ranked.length > 0 ? (
+        <div className="space-y-2">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            {outcome === "awarded" ? "Awarded bid" : "Submitted bids"}
+          </div>
+          <div className="space-y-1.5">
+            {ranked.map((bid) => {
+              const isWinner = outcome === "awarded" && bid.agentId === result?.winnerAgentId;
+              return (
+                <div
+                  key={bid.agentId}
+                  className={cn(
+                    "flex flex-wrap items-center justify-between gap-2 rounded-sm border px-3 py-2 text-sm",
+                    isWinner
+                      ? "border-emerald-500/60 bg-emerald-500/10 text-emerald-900 dark:text-emerald-100"
+                      : "border-border/70 bg-transparent text-foreground",
+                  )}
+                >
+                  <div className="flex items-center gap-2">
+                    {isWinner ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : null}
+                    <span className="font-medium">{bid.agentName}</span>
+                    <span className="text-xs text-muted-foreground">{bid.role}</span>
+                    {bid.simulated ? (
+                      <span className="rounded-sm border border-amber-500/50 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-200">
+                        simulated
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                    <span>score <span className="font-medium text-foreground">{bid.score.toFixed(2)}</span></span>
+                    <span>conf <span className="font-medium text-foreground">{Math.round(bid.confidence * 100)}%</span></span>
+                    <span>~{bid.estEffortHours}h</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            Eligible candidates ({payload.candidates.length})
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {payload.candidates.map((candidate) => (
+              <span
+                key={candidate.agentId}
+                className="rounded-sm border border-border/70 px-2.5 py-1 text-xs text-foreground"
+              >
+                {candidate.agentName}
+                <span className="ml-1 text-muted-foreground">· fit {Math.round(candidate.specialtyFit * 100)}%</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {outcome === "awarded" && result?.awardRationale ? (
+        <p className="text-sm leading-6 text-muted-foreground">{result.awardRationale}</p>
+      ) : null}
+      {outcome === "no_candidate" ? (
+        <p className="text-sm leading-6 text-muted-foreground">No candidate cleared the fit gate; nothing was awarded.</p>
+      ) : null}
+      {outcome === "cancelled" && result?.cancellationReason ? (
+        <blockquote className="rounded-sm border-l-2 border-rose-500/70 bg-rose-500/10 px-3 py-2 text-sm leading-6 text-rose-900 dark:text-rose-100">
+          {result.cancellationReason}
+        </blockquote>
+      ) : null}
+    </div>
+  );
+}
+
 const CHECKBOX_SUMMARY_LABEL_LIMIT = 8;
 
 function RequestCheckboxConfirmationResolution({
@@ -1958,11 +2064,13 @@ export function IssueThreadInteractionCard({
                 ? "Suggested task tree"
                 : interaction.kind === "ask_user_questions"
                   ? interaction.payload.title ?? "Questions for the operator"
-                : interaction.kind === "request_checkbox_confirmation"
-                  ? "Checkbox confirmation requested"
-                  : isPlan
-                    ? "Plan review"
-                    : "Confirmation requested")}
+                  : interaction.kind === "solicit_bid"
+                    ? "Bid solicitation"
+                    : interaction.kind === "request_checkbox_confirmation"
+                      ? "Checkbox confirmation requested"
+                      : isPlan
+                        ? "Plan review"
+                        : "Confirmation requested")}
           </div>
           {interaction.summary ? (
             <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
@@ -2008,6 +2116,8 @@ export function IssueThreadInteractionCard({
             onRejectInteraction={onRejectInteraction}
             externalReferences={externalReferences}
           />
+        ) : interaction.kind === "solicit_bid" ? (
+          <SolicitBidCard interaction={interaction} />
         ) : (
           <RequestConfirmationCard
             interaction={interaction}

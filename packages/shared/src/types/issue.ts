@@ -850,6 +850,49 @@ export interface RequestConfirmationResult {
   staleTarget?: RequestConfirmationTarget | null;
 }
 
+export interface SolicitBidCandidateEntry {
+  agentId: string;
+  agentName: string;
+  role: string;
+  specialtyFit: number;
+  load: number;
+}
+
+export interface SolicitBidPayload {
+  version: 1;
+  promptMarkdown?: string | null;
+  priority: IssuePriority;
+  bidWindowClosesAt: string;
+  weightsPreset: "fit_first" | "balanced";
+  fitGate: number;
+  candidates: SolicitBidCandidateEntry[];
+}
+
+export interface SolicitBidResolvedBidEntry {
+  agentId: string;
+  agentName: string;
+  role: string;
+  specialtyFit: number;
+  load: number;
+  confidence: number;
+  estEffortHours: number;
+  priorityFit: number;
+  score: number;
+  rationale: string;
+  simulated: boolean;
+  submittedAt?: string | null;
+}
+
+export interface SolicitBidResult {
+  version: 1;
+  outcome: "collecting" | "awarded" | "no_candidate" | "cancelled";
+  submittedBids: SolicitBidResolvedBidEntry[];
+  winnerAgentId?: string | null;
+  awardRationale?: string | null;
+  closedAt?: string | null;
+  cancellationReason?: string | null;
+}
+
 export interface RequestCheckboxConfirmationResult extends RequestConfirmationResult {
   selectedOptionIds?: string[];
 }
@@ -889,6 +932,12 @@ export interface RequestConfirmationInteraction extends IssueThreadInteractionBa
   result?: RequestConfirmationResult | null;
 }
 
+export interface SolicitBidInteraction extends IssueThreadInteractionBase {
+  kind: "solicit_bid";
+  payload: SolicitBidPayload;
+  result?: SolicitBidResult | null;
+}
+
 export interface RequestCheckboxConfirmationInteraction extends IssueThreadInteractionBase {
   kind: "request_checkbox_confirmation";
   payload: RequestCheckboxConfirmationPayload;
@@ -899,18 +948,21 @@ export type IssueThreadInteraction =
   | SuggestTasksInteraction
   | AskUserQuestionsInteraction
   | RequestConfirmationInteraction
+  | SolicitBidInteraction
   | RequestCheckboxConfirmationInteraction;
 
 export type IssueThreadInteractionPayload =
   | SuggestTasksPayload
   | AskUserQuestionsPayload
   | RequestConfirmationPayload
+  | SolicitBidPayload
   | RequestCheckboxConfirmationPayload;
 
 export type IssueThreadInteractionResult =
   | SuggestTasksResult
   | AskUserQuestionsResult
   | RequestConfirmationResult
+  | SolicitBidResult
   | RequestCheckboxConfirmationResult;
 
 export interface IssueAttachment {

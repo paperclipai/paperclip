@@ -231,6 +231,7 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
   "suggest_tasks",
   "ask_user_questions",
   "request_confirmation",
+  "solicit_bid",
   "request_checkbox_confirmation",
 ] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
@@ -252,6 +253,9 @@ export const ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES = [
   "none",
   "wake_assignee",
   "wake_assignee_on_accept",
+  // `solicit_bid` opens a call-for-proposals to a candidate pool: each eligible
+  // candidate is woken to submit a bid rather than the (absent) assignee.
+  "wake_candidates",
 ] as const;
 export type IssueThreadInteractionContinuationPolicy =
   (typeof ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES)[number];
