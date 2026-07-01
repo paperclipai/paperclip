@@ -15,6 +15,25 @@ async function makeTempDir(prefix: string) {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
 
+async function collectAgentInstructionEntries(rootPath: string): Promise<string[]> {
+  const output: string[] = [];
+
+  async function walk(currentPath: string) {
+    const entries = await fs.readdir(currentPath, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const entryPath = path.join(currentPath, entry.name);
+      if (entry.isDirectory()) {
+        await walk(entryPath);
+      } else if (entry.isFile() && entry.name === "AGENTS.md" && entryPath.includes(`${path.sep}agents${path.sep}`)) {
+        output.push(entryPath);
+      }
+    }
+  }
+
+  await walk(rootPath);
+  return output.sort((left, right) => left.localeCompare(right));
+}
+
 function makeAgent(adapterConfig: Record<string, unknown>): TestAgent {
   return {
     id: "agent-1",
@@ -275,6 +294,36 @@ describe("agent instructions service", () => {
     });
     await expect(fs.readFile(path.join(managedRoot, "docs", "TOOLS.md"), "utf8")).resolves.toBe("## Tools\n");
   });
+
+  it("rejects block-level HTML comments in markdown bundle writes", async () => {
+    const paperclipHome = await makeTempDir("paperclip-agent-instructions-block-comments-");
+    cleanupDirs.add(paperclipHome);
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
+
+    const svc = agentInstructionsService();
+    const agent = makeAgent({});
+
+    await expect(svc.writeFile(agent, "AGENTS.md", "# Agent\n\n<!-- INHERITS: company-wide rules -->\n"))
+      .rejects
+      .toMatchObject({
+        status: 422,
+        message: "Instructions markdown files cannot contain block-level HTML comments",
+      });
+  });
+
+  it("keeps managed per-agent AGENTS.md files free of block-level HTML comments", async () => {
+    const companiesRoot = path.join(os.homedir(), ".paperclip", "instances", "default", "companies");
+    const files = await collectAgentInstructionEntries(companiesRoot);
+    const dirtyFiles: string[] = [];
+
+    for (const filePath of files) {
+      const content = await fs.readFile(filePath, "utf8");
+      if (/<!--[\s\S]*?-->/m.test(content)) dirtyFiles.push(filePath);
+    }
+
+    expect(dirtyFiles).toEqual([]);
+  }, 15_000);
 
   it("heals stale managed metadata when deleting bundle files", async () => {
     const paperclipHome = await makeTempDir("paperclip-agent-instructions-heal-delete-");

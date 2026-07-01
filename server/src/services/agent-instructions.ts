@@ -9,6 +9,7 @@ const ROOT_KEY = "instructionsRootPath";
 const ENTRY_KEY = "instructionsEntryFile";
 const FILE_KEY = "instructionsFilePath";
 const PROMPT_KEY = "promptTemplate";
+const BLOCK_COMMENT_PATTERN = /<!--[\s\S]*?-->/m;
 /** @deprecated Use the managed instructions bundle system instead. */
 const BOOTSTRAP_PROMPT_KEY = "bootstrapPromptTemplate";
 const LEGACY_PROMPT_TEMPLATE_PATH = "promptTemplate.legacy.md";
@@ -620,8 +621,13 @@ export function agentInstructionsService() {
       return { bundle, file, adapterConfig };
     }
 
+    const normalizedPath = normalizeRelativeFilePath(relativePath);
+    if (isMarkdown(normalizedPath) && BLOCK_COMMENT_PATTERN.test(content)) {
+      throw unprocessable("Instructions markdown files cannot contain block-level HTML comments");
+    }
+
     const prepared = await ensureWritableBundle(agent, options);
-    const absolutePath = resolvePathWithinRoot(prepared.state.rootPath!, relativePath);
+    const absolutePath = resolvePathWithinRoot(prepared.state.rootPath!, normalizedPath);
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
     await fs.writeFile(absolutePath, content, "utf8");
     const nextAgent = { ...agent, adapterConfig: prepared.adapterConfig };
