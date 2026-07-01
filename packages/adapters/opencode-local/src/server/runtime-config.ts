@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import { asBoolean, asString } from "@paperclipai/adapter-utils/server-utils";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
@@ -192,6 +192,39 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   if (smallModel) {
     nextConfig.small_model = smallModel;
     notes.push(`Pinned OpenCode small_model to ${smallModel}.`);
+  }
+
+  // Wire response_format: { type: "json_object" } for agents that emit structured
+  // JSON. OpenCode spreads per-model `options` verbatim into the outbound
+  // /v1/chat/completions body, so the key must match the OpenAI-compatible API field
+  // name exactly (snake_case). Applied after gateway-provider merge so it never
+  // clobbers a custom provider entry; reversible by omitting adapterConfig.jsonMode.
+  const jsonMode = asBoolean(input.config.jsonMode, false);
+  const model = asString(input.config.model, "").trim();
+  const slashIdx = model.indexOf("/");
+  if (jsonMode && slashIdx > 0 && slashIdx < model.length - 1) {
+    const providerId = model.slice(0, slashIdx);
+    const modelId = model.slice(slashIdx + 1);
+    const currentProvider = isPlainObject(nextConfig.provider) ? nextConfig.provider : {};
+    const currentProviderEntry = isPlainObject(currentProvider[providerId]) ? currentProvider[providerId] : {};
+    const currentModels = isPlainObject(currentProviderEntry.models) ? currentProviderEntry.models : {};
+    const currentModelEntry = isPlainObject(currentModels[modelId]) ? currentModels[modelId] : {};
+    nextConfig.provider = {
+      ...currentProvider,
+      [providerId]: {
+        ...currentProviderEntry,
+        models: {
+          ...currentModels,
+          [modelId]: {
+            ...currentModelEntry,
+            options: {
+              ...(isPlainObject(currentModelEntry.options) ? currentModelEntry.options : {}),
+              response_format: { type: "json_object" },
+            },
+          },
+        },
+      },
+    };
   }
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
 
