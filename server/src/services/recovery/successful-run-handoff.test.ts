@@ -55,6 +55,8 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasActiveRoutineContinuation: false,
     budgetBlocked: false,
     idempotentWakeExists: false,
+    runEngagedIssue: false,
+    runEmittedIssuePatch: false,
     ...overrides,
   });
 }
@@ -152,6 +154,23 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "active routine continuation owns the next action",
     });
+  });
+
+  it("treats an engaged run with no PATCH or blocker as an implicit in_progress re-confirmation", () => {
+    expect(decide({ runEngagedIssue: true, runEmittedIssuePatch: false })).toEqual({
+      kind: "skip",
+      reason: "succeeded run engaged the issue with no PATCH or blocker — implicit in_progress re-confirmation",
+    });
+  });
+
+  it("still queues a handoff when an engaged run emitted a PATCH but left the issue in_progress", () => {
+    const decision = decide({ runEngagedIssue: true, runEmittedIssuePatch: true });
+    expect(decision.kind).toBe("enqueue");
+  });
+
+  it("does not suppress recovery for a productive run that never engaged the issue", () => {
+    const decision = decide({ runEngagedIssue: false, runEmittedIssuePatch: false });
+    expect(decision.kind).toBe("enqueue");
   });
 
   it("does not queue when a successful run has no progress signal", () => {

@@ -353,6 +353,20 @@ export function decideSuccessfulRunHandoff(input: {
   hasActiveRoutineContinuation: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
+  // True when this run actually engaged the issue (checked it out / adopted its
+  // checkout lock). Used to scope the implicit in_progress re-confirmation so we
+  // never suppress recovery for issues a run never picked up.
+  runEngagedIssue: boolean;
+  // True when this run emitted ANY issue PATCH that logged an `issue.updated`
+  // activity row attributed to the run. This is deliberately broad: it includes
+  // disposition-bearing writes (status / blocker changes) but ALSO non-disposition
+  // edits (title, description, labels). We intentionally do not try to distinguish
+  // them — any issue write by an engaged run counts as "the agent acted on the
+  // issue", so the implicit in_progress re-confirmation below is suppressed only
+  // for runs that engaged the issue and wrote nothing at all. This errs toward
+  // letting recovery proceed rather than silently skipping it after a partial
+  // (non-disposition) write.
+  runEmittedIssuePatch: boolean;
 }): SuccessfulRunHandoffDecision {
   const { run, issue, agent } = input;
 
@@ -382,6 +396,18 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (!isProductiveSuccessfulRun(input)) {
     return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };
+  }
+  // A succeeded run that engaged the issue (checked it out) and exited without a
+  // disposition-bearing PATCH or blocker is an implicit `in_progress`
+  // re-confirmation — the agent is saying "still in progress, nothing to change".
+  // Treat that as a valid disposition instead of a missing one. Scoped to engaged
+  // runs so issues that were never picked up still flow to recovery, and to
+  // no-PATCH runs so an explicit status/blocker PATCH keeps existing handling.
+  if (input.runEngagedIssue && !input.runEmittedIssuePatch) {
+    return {
+      kind: "skip",
+      reason: "succeeded run engaged the issue with no PATCH or blocker — implicit in_progress re-confirmation",
+    };
   }
   if (input.hasActiveExecutionPath) return { kind: "skip", reason: "issue already has an active execution path" };
   if (input.hasQueuedWake) return { kind: "skip", reason: "issue already has a queued or deferred wake" };
