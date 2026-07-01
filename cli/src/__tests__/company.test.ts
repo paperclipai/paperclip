@@ -1,4 +1,7 @@
 import { Command } from "commander";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyPortabilityPreviewResult } from "@paperclipai/shared";
 import {
@@ -70,7 +73,10 @@ describe("company CLI commands", () => {
   let errorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    process.env = { ...ORIGINAL_ENV };
+    process.env = {
+      ...ORIGINAL_ENV,
+      PAPERCLIP_CONTEXT: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-company-cli-")), "context.json"),
+    };
     delete process.env.PAPERCLIP_API_URL;
     delete process.env.PAPERCLIP_API_KEY;
     delete process.env.PAPERCLIP_COMPANY_ID;
