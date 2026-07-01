@@ -287,6 +287,34 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluations[0]?.description).not.toContain("sk-test-secret-value");
   });
 
+  it("suppresses the stale-run evaluation when the run reaches a terminal state after the scan snapshot", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    // TOCTOU race: scanSilentActiveRuns() selects this run while it is still
+    // status='running', but the run finishes during the sequential scan loop.
+    // Model "running -> terminal between snapshot and evaluation" by stamping
+    // finishedAt while the status column still reads 'running' (the candidate
+    // query selected on status='running'; the create path must re-read the live
+    // row and not file review work for a run that has already completed).
+    await db
+      .update(heartbeatRuns)
+      .set({ finishedAt: new Date(now.getTime() - 30_000) })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ scanned: 1, created: 0, skipped: 1 });
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
+
   it("redacts sensitive values from actual run-log evidence", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
     const leakedJwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
