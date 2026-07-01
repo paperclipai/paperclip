@@ -409,6 +409,59 @@ export function parseIssueExecutionState(input: unknown): IssueExecutionState | 
   return parsed.data;
 }
 
+function readMonitorDate(value: unknown): Date | null {
+  if (!(typeof value === "string" || value instanceof Date)) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function readPositiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function readNonNegativeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function readObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export function issueHasFutureScheduledMonitor(issue: Pick<
+  IssueLike,
+  "status" | "executionPolicy" | "executionState" | "monitorAttemptCount" | "monitorNextCheckAt"
+>): boolean {
+  const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+  const state = parseIssueExecutionState(issue.executionState ?? null);
+  const rawState = readObject(issue.executionState);
+  const rawStateMonitor = readObject(rawState.monitor);
+  const monitor = derivePersistedMonitorState({ issue, state, policy });
+  if (monitor?.status !== "scheduled") return false;
+  if ((state?.status ?? readNonEmptyString(rawState.status)) !== "idle") return false;
+
+  const now = Date.now();
+  const nextCheckAt = readMonitorDate(monitor.nextCheckAt);
+  if (!nextCheckAt || nextCheckAt.getTime() <= now) return false;
+
+  const timeoutAt = readMonitorDate(monitor.timeoutAt);
+  if (timeoutAt && timeoutAt.getTime() <= now) return false;
+
+  const maxAttempts = readPositiveInteger(monitor.maxAttempts);
+  const columnAttemptCount = readNonNegativeInteger(issue.monitorAttemptCount) ?? 0;
+  const stateAttemptCount =
+    readNonNegativeInteger(state?.monitor?.attemptCount) ??
+    readNonNegativeInteger(rawStateMonitor.attemptCount) ??
+    0;
+  const attemptCount = Math.max(columnAttemptCount, stateAttemptCount);
+  if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
+
+  return true;
+}
+
 export function assigneePrincipal(input: AssigneeLike): IssueExecutionStagePrincipal | null {
   if (input.assigneeAgentId) {
     return { type: "agent", agentId: input.assigneeAgentId, userId: null };

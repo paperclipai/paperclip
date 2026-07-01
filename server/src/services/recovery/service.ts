@@ -37,6 +37,7 @@ import { instanceSettingsService } from "../instance-settings.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
+import { issueHasFutureScheduledMonitor } from "../issue-execution-policy.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
@@ -378,53 +379,6 @@ function isRepeatedProductiveContinuationRecovery(latestRun: SuccessfulLatestIss
   return readNonEmptyString(latestContext.retryReason) === "issue_continuation_needed" &&
     readNonEmptyString(latestContext.source) === "issue.productive_terminal_continuation_recovery" &&
     isProductiveContinuationRun(latestRun);
-}
-
-function readDate(value: unknown): Date | null {
-  if (!(typeof value === "string" || value instanceof Date)) return null;
-  const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function readPositiveInteger(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
-}
-
-function readNonNegativeInteger(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
-}
-
-function hasFutureScheduledMonitor(issue: Pick<
-  typeof issues.$inferSelect,
-  "executionPolicy" | "executionState" | "monitorAttemptCount" | "monitorNextCheckAt"
->) {
-  const now = Date.now();
-  const monitorNextCheckAt = readDate(issue.monitorNextCheckAt);
-  if (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now) return false;
-
-  const executionState = parseObject(issue.executionState);
-  const stateStatus = readNonEmptyString(executionState.status);
-  const stateMonitor = parseObject(executionState.monitor);
-  const monitorStatus = readNonEmptyString(stateMonitor.status);
-  if (monitorStatus !== "scheduled") return false;
-  if (stateStatus !== "idle") return false;
-
-  const policyMonitor = parseObject(parseObject(issue.executionPolicy).monitor);
-  const policyNextCheckAt = readDate(policyMonitor.nextCheckAt);
-  if (policyNextCheckAt && Math.abs(policyNextCheckAt.getTime() - monitorNextCheckAt.getTime()) > 1_000) {
-    return false;
-  }
-
-  const timeoutAt = readDate(policyMonitor.timeoutAt ?? stateMonitor.timeoutAt);
-  if (timeoutAt && timeoutAt.getTime() <= now) return false;
-
-  const maxAttempts = readPositiveInteger(policyMonitor.maxAttempts ?? stateMonitor.maxAttempts);
-  const columnAttemptCount = readNonNegativeInteger(issue.monitorAttemptCount) ?? 0;
-  const stateAttemptCount = readNonNegativeInteger(stateMonitor.attemptCount) ?? 0;
-  const attemptCount = Math.max(columnAttemptCount, stateAttemptCount);
-  if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
-
-  return true;
 }
 
 function parseLivenessIncidentKey(incidentKey: string | null | undefined) {
@@ -2901,7 +2855,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.skipped += 1;
         continue;
       }
-      if (hasFutureScheduledMonitor(issue)) {
+      if (issueHasFutureScheduledMonitor(issue)) {
         result.skipped += 1;
         continue;
       }

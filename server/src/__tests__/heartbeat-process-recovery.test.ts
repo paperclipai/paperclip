@@ -454,6 +454,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runErrorCode?: string | null;
     runError?: string | null;
     contextSnapshot?: Record<string, unknown>;
+    monitorAttemptCount?: number;
+    monitorNextCheckAt?: Date | null;
+    executionPolicy?: Record<string, unknown> | null;
+    executionState?: Record<string, unknown> | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -525,6 +529,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         assigneeAgentId: agentId,
         checkoutRunId: runId,
         executionRunId: runId,
+        executionPolicy: input?.executionPolicy ?? null,
+        executionState: input?.executionState ?? null,
+        monitorAttemptCount: input?.monitorAttemptCount ?? 0,
+        monitorNextCheckAt: input?.monitorNextCheckAt ?? null,
         issueNumber: 1,
         identifier: `${issuePrefix}-1`,
       });
@@ -1184,6 +1192,52 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("retried continuation");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+  });
+
+  it("does not immediately re-enqueue continuation when terminal cleanup finds a future scheduled monitor", async () => {
+    const monitorNextCheckAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+      executionPolicy: {
+        mode: "normal",
+        monitor: {
+          nextCheckAt: monitorNextCheckAt.toISOString(),
+          wakeReason: "scheduled_publish",
+        },
+      },
+      executionState: {
+        status: "idle",
+        monitor: {
+          status: "scheduled",
+          nextCheckAt: monitorNextCheckAt.toISOString(),
+        },
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("failed");
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.some((row) => row.reason === "issue_continuation_needed")).toBe(false);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
   });
 
   it("blocks failed recovery work in place during immediate terminal-run cleanup", async () => {
@@ -2869,7 +2923,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "in_progress",
       runStatus: "succeeded",
       livenessState: "advanced",
-      monitorNextCheckAt,
       executionPolicy: {
         mode: "normal",
         monitor: {
@@ -2908,7 +2961,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue?.status).toBe("in_progress");
-    expect(issue?.monitorNextCheckAt?.toISOString()).toBe(monitorNextCheckAt.toISOString());
+    expect(issue?.monitorNextCheckAt).toBeNull();
   });
 
   it.each([
