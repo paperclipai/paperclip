@@ -205,6 +205,9 @@ describe("BoardChat Conference Room transport", () => {
     expect(lastProps?.companyId).toBe("company-1");
     expect(lastProps?.currentUserId).toBe("user-1");
     expect(lastProps?.conferenceRoomMode).toBe(true);
+    expect(lastProps?.showAgentSwitcher).toBe(false);
+    expect(lastProps?.companyName).toBe("Acme Robotics");
+    expect(lastProps?.emptyMessage).toBeUndefined();
   });
 
   it("mints the first conversation when the company has no history", async () => {

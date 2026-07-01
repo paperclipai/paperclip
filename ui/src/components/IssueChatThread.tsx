@@ -331,6 +331,7 @@ export function shouldRenderComposerHandoffPreview(body: string, preview: Compos
 export interface IssueChatComposerHandle {
   focus: () => void;
   restoreDraft: (submittedBody: string) => void;
+  setDraft: (body: string) => void;
 }
 
 interface IssueChatComposerProps {
@@ -416,6 +417,7 @@ interface IssueChatThreadProps {
   showJumpToLatest?: boolean;
   autoScrollToLatestOnInitialLoad?: boolean;
   emptyMessage?: string;
+  emptyState?: ReactNode;
   footer?: ReactNode;
   variant?: "full" | "embedded";
   enableLiveTranscriptPolling?: boolean;
@@ -3557,6 +3559,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       );
       focusComposer();
     },
+    setDraft: (nextBody: string) => {
+      setBody(nextBody);
+      focusComposer();
+    },
   }), []);
 
   async function handleSubmit() {
@@ -4162,6 +4168,7 @@ export function IssueChatThread({
   showJumpToLatest,
   autoScrollToLatestOnInitialLoad = true,
   emptyMessage,
+  emptyState,
   footer,
   variant = "full",
   enableLiveTranscriptPolling = true,
@@ -4794,14 +4801,16 @@ export function IssueChatThread({
               className={variant === "embedded" ? "space-y-3" : "space-y-4"}
             >
               {messages.length === 0 ? (
-                <div className={cn(
-                  "text-center text-sm text-muted-foreground",
-                  variant === "embedded"
-                    ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
-                    : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
-                )}>
-                  {resolvedEmptyMessage}
-                </div>
+                emptyState ?? (
+                  <div className={cn(
+                    "text-center text-sm text-muted-foreground",
+                    variant === "embedded"
+                      ? "rounded-xl border border-dashed border-border/70 bg-background/60 px-4 py-6"
+                      : "rounded-2xl border border-dashed border-border bg-card px-6 py-10",
+                  )}>
+                    {resolvedEmptyMessage}
+                  </div>
+                )
               ) : messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD ? (
                 <VirtualizedIssueChatThreadList
                   ref={virtualizedThreadRef}

@@ -16,18 +16,26 @@ import type { IssueChatComment } from "../lib/issue-chat-messages";
 vi.mock("./IssueChatThread", () => ({
   IssueChatThread: (props: {
     emptyMessage?: string;
+    emptyState?: ReactNode;
+    showJumpToLatest?: boolean;
     onAdd: (b: string) => Promise<void>;
     backgroundWorkChildren?: unknown[];
     suppressIssueStatusNotices?: boolean;
     composerHint?: string | null;
+    imageUploadHandler?: (file: File) => Promise<string>;
+    onAttachImage?: (file: File) => Promise<unknown>;
   }) => (
     <div data-testid="issue-chat-thread">
-      <span data-testid="empty-message">{props.emptyMessage}</span>
+      <span data-testid="empty-message">{props.emptyState ? "" : props.emptyMessage}</span>
+      <div data-testid="empty-state">{props.emptyState}</div>
+      <span data-testid="jump-to-latest">{String(props.showJumpToLatest)}</span>
       <span data-testid="background-work-count">{props.backgroundWorkChildren?.length ?? 0}</span>
       <span data-testid="status-notices">
         {props.suppressIssueStatusNotices ? "suppressed" : "visible"}
       </span>
       <span data-testid="composer-hint">{props.composerHint}</span>
+      <span data-testid="image-upload-enabled">{String(Boolean(props.imageUploadHandler))}</span>
+      <span data-testid="attach-enabled">{String(Boolean(props.onAttachImage))}</span>
       <button type="button" data-testid="send" onClick={() => void props.onAdd("hello")}>
         send
       </button>
@@ -233,6 +241,44 @@ describe("SelectedAgentChatView", () => {
     expect(container.querySelector('[data-testid="composer-hint"]')?.textContent).toBe(
       "Ask me anything while I work on this.",
     );
+  });
+
+  it("renders Conference Room starter prompts without the large start-message placeholder", () => {
+    render(
+      <SelectedAgentChatView
+        agents={[ceo]}
+        targetAgentId={ceo.id}
+        comments={[]}
+        conferenceRoomMode
+        companyName="Acme Robotics"
+        onSend={async () => {}}
+      />,
+    );
+
+    expect(container.textContent).toContain("Draft a Company Brief");
+    expect(container.textContent).toContain("Create a hiring plan");
+    expect(container.textContent).toContain("Outline our first 30 days");
+    expect(container.textContent).toContain("Write an intro pitch");
+    expect(container.querySelector('[data-testid="empty-message"]')?.textContent).not.toContain(
+      "Send Sarah a message to start the conversation.",
+    );
+    expect(container.querySelector('[data-testid="jump-to-latest"]')?.textContent).toBe("false");
+  });
+
+  it("forwards attachment handlers to the shared issue chat composer", () => {
+    render(
+      <SelectedAgentChatView
+        agents={[ceo]}
+        targetAgentId={ceo.id}
+        comments={[]}
+        imageUploadHandler={async () => "/api/attachments/image/content"}
+        onAttachImage={async () => undefined}
+        onSend={async () => {}}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="image-upload-enabled"]')?.textContent).toBe("true");
+    expect(container.querySelector('[data-testid="attach-enabled"]')?.textContent).toBe("true");
   });
 
   it("offers the switcher only when more than one agent is invokable", () => {

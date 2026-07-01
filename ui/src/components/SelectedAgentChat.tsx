@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AGENT_ROLE_LABELS,
@@ -7,6 +7,7 @@ import {
   type AskUserQuestionsInteraction,
   type FeedbackVote,
   type FeedbackVoteValue,
+  type IssueAttachment,
   type IssueRelationIssueSummary,
   type IssueThreadInteraction,
   type RequestCheckboxConfirmationInteraction,
@@ -14,7 +15,7 @@ import {
   type SuggestTasksInteraction,
 } from "@paperclipai/shared";
 import { AlertCircle, Loader2 } from "lucide-react";
-import { IssueChatThread } from "./IssueChatThread";
+import { IssueChatThread, type IssueChatComposerHandle } from "./IssueChatThread";
 import { AgentIcon } from "./AgentIconPicker";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -37,6 +38,27 @@ const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
 /** Poll cadence for the issue-backed conversation while the surface is open. */
 const SELECTED_AGENT_CHAT_POLL_MS = 3000;
+
+function buildStarterPrompts(companyName: string) {
+  return [
+    {
+      label: "Draft a Company Brief",
+      prompt: `Draft a one-page Company Brief for ${companyName} - include our mission, team roster, and first priorities.`,
+    },
+    {
+      label: "Create a hiring plan",
+      prompt: `Create a hiring plan for ${companyName}. List the next roles to hire, in priority order, with a short rationale for each.`,
+    },
+    {
+      label: "Outline our first 30 days",
+      prompt: "Outline our first 30 days. Break it into weekly priorities with who owns what.",
+    },
+    {
+      label: "Write an intro pitch",
+      prompt: `Write a short intro pitch for ${companyName} that I could reuse for investors, customers, or recruits.`,
+    },
+  ];
+}
 
 function agentInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
@@ -98,7 +120,11 @@ export interface SelectedAgentChatViewProps {
   currentUserId?: string | null;
   backgroundWorkChildren?: IssueRelationIssueSummary[];
   suppressIssueStatusNotices?: boolean;
+  conferenceRoomMode?: boolean;
+  companyName?: string | null;
   composerHint?: string | null;
+  imageUploadHandler?: (file: File) => Promise<string>;
+  onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
   /** True while the first comments fetch is in flight (no data yet). */
   loading?: boolean;
   /** Surface a delivery/transport failure inline (CR8). */
@@ -149,7 +175,11 @@ export function SelectedAgentChatView({
   currentUserId,
   backgroundWorkChildren = [],
   suppressIssueStatusNotices = false,
+  conferenceRoomMode = false,
+  companyName = null,
   composerHint = null,
+  imageUploadHandler,
+  onAttachImage,
   loading = false,
   errorText,
   onRetry,
@@ -164,6 +194,7 @@ export function SelectedAgentChatView({
   className,
 }: SelectedAgentChatViewProps) {
   const agentMap = useMemo(() => new Map(agents.map((a) => [a.id, a] as const)), [agents]);
+  const composerRef = useRef<IssueChatComposerHandle>(null);
   const targetAgent = targetAgentId ? agentMap.get(targetAgentId) ?? null : null;
   const invokableAgents = useMemo(() => orderInvokableAgents(agents), [agents]);
 
@@ -187,6 +218,26 @@ export function SelectedAgentChatView({
   const targetName = targetAgent?.name ?? "Assistant";
   const targetRole = targetAgent ? roleLabels[targetAgent.role] ?? targetAgent.role : null;
   const canSwitch = showAgentSwitcher && invokableAgents.length > 1 && !!onTargetAgentChange;
+  const starterPrompts = useMemo(
+    () => buildStarterPrompts(companyName?.trim() || "this company"),
+    [companyName],
+  );
+  const emptyState = conferenceRoomMode ? (
+    <div data-testid="selected-agent-chat-starter-prompts" className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        {starterPrompts.map((prompt) => (
+          <button
+            key={prompt.label}
+            type="button"
+            className="rounded-full border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            onClick={() => composerRef.current?.setDraft(prompt.prompt)}
+          >
+            {prompt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  ) : undefined;
 
   return (
     <div className={cn("flex min-h-0 min-w-0 flex-1 flex-col", className)}>
@@ -283,6 +334,7 @@ export function SelectedAgentChatView({
         >
           <IssueChatThread
             variant="full"
+            composerRef={composerRef}
             comments={comments}
             interactions={interactions}
             liveRuns={liveRuns}
@@ -299,7 +351,10 @@ export function SelectedAgentChatView({
             emptyMessage={
               emptyMessage ?? `Send ${targetName} a message to start the conversation.`
             }
+            emptyState={emptyState}
             composerHint={composerHint}
+            imageUploadHandler={imageUploadHandler}
+            onAttachImage={onAttachImage}
             onAdd={handleAdd}
             onStopRun={onStopRun}
             onVote={onVote}
@@ -307,6 +362,7 @@ export function SelectedAgentChatView({
             onRejectInteraction={onRejectInteraction}
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
             onCancelInteraction={onCancelInteraction}
+            showJumpToLatest={!conferenceRoomMode}
           />
         </div>
       )}
@@ -324,6 +380,7 @@ export interface SelectedAgentChatProps {
   defaultTargetAgentId?: string | null;
   showAgentSwitcher?: boolean;
   conferenceRoomMode?: boolean;
+  companyName?: string | null;
   currentUserId?: string | null;
   emptyMessage?: string;
   onMessageSent?: () => void | Promise<void>;
@@ -344,6 +401,7 @@ export function SelectedAgentChat({
   defaultTargetAgentId,
   showAgentSwitcher = true,
   conferenceRoomMode = false,
+  companyName = null,
   currentUserId,
   emptyMessage,
   onMessageSent,
@@ -526,6 +584,20 @@ export function SelectedAgentChat({
     [issueId, invalidateRuns],
   );
 
+  const handleImageUpload = useCallback(async (file: File) => {
+    const attachment = await issuesApi.uploadAttachment(companyId, issueId, file);
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
+    return attachment.contentPath;
+  }, [companyId, issueId, queryClient]);
+
+  const handleAttachFile = useCallback(async (file: File) => {
+    const attachment = await issuesApi.uploadAttachment(companyId, issueId, file);
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) });
+    return attachment;
+  }, [companyId, issueId, queryClient]);
+
   return (
     <SelectedAgentChatView
       agents={agents}
@@ -543,7 +615,11 @@ export function SelectedAgentChat({
       currentUserId={currentUserId}
       backgroundWorkChildren={backgroundWorkChildren}
       suppressIssueStatusNotices={conferenceRoomMode}
+      conferenceRoomMode={conferenceRoomMode}
+      companyName={companyName}
       composerHint={hasOpenBackgroundWork ? "Ask me anything while I work on this." : null}
+      imageUploadHandler={handleImageUpload}
+      onAttachImage={handleAttachFile}
       loading={commentsQuery.isLoading}
       errorText={errorText}
       onRetry={errorText ? () => setErrorText(null) : undefined}

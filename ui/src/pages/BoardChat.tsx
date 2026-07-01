@@ -464,9 +464,10 @@ export function BoardChat() {
               companyId={selectedCompanyId}
               agents={agents}
               defaultTargetAgentId={ceoAgent?.id ?? null}
+              showAgentSwitcher={false}
               conferenceRoomMode
+              companyName={selectedCompany?.name ?? null}
               currentUserId={currentUserId}
-              emptyMessage={`Send ${ceoAgent?.name ?? "your CEO"} a message to start the conversation.`}
               onMessageSent={refreshBoardChatHistory}
               className="min-h-0 flex-1"
             />
