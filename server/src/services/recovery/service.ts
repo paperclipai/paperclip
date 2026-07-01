@@ -193,6 +193,7 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "adapter_failed",
   "codex_transient_upstream",
   "claude_transient_upstream",
+  "opencode_transient_upstream",
   "timeout",
 ]);
 
