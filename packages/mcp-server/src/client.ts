@@ -1,4 +1,4 @@
-import type { PaperclipMcpConfig } from "./config.js";
+import { resolveApiKey, type PaperclipMcpConfig } from "./config.js";
 
 export class PaperclipApiError extends Error {
   readonly status: number;
@@ -82,7 +82,7 @@ export class PaperclipApiClient {
 
     const url = new URL(path.slice(1), `${this.config.apiUrl}/`);
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${this.config.apiKey}`,
+      Authorization: `Bearer ${resolveApiKey(this.config)}`,
       Accept: "application/json",
     };
     if (options.body !== undefined) {
