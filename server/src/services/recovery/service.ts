@@ -380,6 +380,39 @@ function isRepeatedProductiveContinuationRecovery(latestRun: SuccessfulLatestIss
     isProductiveContinuationRun(latestRun);
 }
 
+function readDateMs(value: unknown): number | null {
+  if (!(typeof value === "string" || value instanceof Date)) return null;
+  const time = (value instanceof Date ? value : new Date(value)).getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+function readPositiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function hasScheduledIssueMonitor(issue: Pick<
+  typeof issues.$inferSelect,
+  "executionPolicy" | "executionState" | "monitorAttemptCount" | "monitorNextCheckAt"
+>) {
+  const nowMs = Date.now();
+  const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
+  if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
+
+  const policyMonitor = parseObject(parseObject(issue.executionPolicy)?.monitor);
+  const stateMonitor = parseObject(parseObject(issue.executionState)?.monitor);
+  if (stateMonitor?.status !== "scheduled") return false;
+
+  const timeoutAtMs = readDateMs(policyMonitor?.timeoutAt ?? stateMonitor?.timeoutAt);
+  if (timeoutAtMs !== null && timeoutAtMs <= nowMs) return false;
+
+  const maxAttempts = readPositiveInteger(policyMonitor?.maxAttempts ?? stateMonitor?.maxAttempts);
+  const stateAttemptCount = readPositiveInteger(stateMonitor?.attemptCount) ?? 0;
+  const attemptCount = issue.monitorAttemptCount ?? stateAttemptCount;
+  if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
+
+  return true;
+}
+
 function parseLivenessIncidentKey(incidentKey: string | null | undefined) {
   if (!incidentKey) return null;
   return parseIssueGraphLivenessIncidentKey(incidentKey);
@@ -2756,6 +2789,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await hasPendingWakeInteraction(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (issue.status === "in_progress" && hasScheduledIssueMonitor(issue)) {
         result.skipped += 1;
         continue;
       }

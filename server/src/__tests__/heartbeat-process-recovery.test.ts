@@ -651,6 +651,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     livenessState?: "completed" | "advanced" | "plan_only" | "empty_response" | "blocked" | "failed" | "needs_followup" | null;
     runErrorCode?: string | null;
     runError?: string | null;
+    monitorNextCheckAt?: Date | null;
+    executionPolicy?: Record<string, unknown> | null;
+    executionState?: Record<string, unknown> | null;
+    monitorAttemptCount?: number | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -749,6 +753,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         assigneeUserId: input.assignToUser ? "user-1" : null,
         checkoutRunId: input.status === "in_progress" ? runId : null,
         executionRunId: null,
+        executionPolicy: input.executionPolicy ?? null,
+        executionState: input.executionState ?? null,
+        monitorNextCheckAt: input.monitorNextCheckAt ?? null,
+        monitorAttemptCount: input.monitorAttemptCount ?? 0,
         issueNumber: input.activePauseHold ? 2 : 1,
         identifier: `${issuePrefix}-${input.activePauseHold ? 2 : 1}`,
         startedAt: input.status === "in_progress" ? now : null,
@@ -3676,6 +3684,51 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
     expect(wakeups).toHaveLength(2);
+  });
+
+  it("does not re-enqueue continuation for in-progress work parked on a future issue monitor", async () => {
+    const nextCheckAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000).toISOString();
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "needs_followup",
+      monitorNextCheckAt: new Date(nextCheckAt),
+      executionPolicy: {
+        monitor: {
+          nextCheckAt,
+          service: "linkedin-publish-runner",
+        },
+      },
+      executionState: {
+        monitor: {
+          status: "scheduled",
+          nextCheckAt,
+          service: "linkedin-publish-runner",
+          attemptCount: 0,
+        },
+      },
+      monitorAttemptCount: 0,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.assigneeAgentId).toBe(agentId);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.map((row) => row.id)).toEqual([runId]);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
   });
 
   it("blocks stranded in-progress work after a productive continuation retry was already used", async () => {
