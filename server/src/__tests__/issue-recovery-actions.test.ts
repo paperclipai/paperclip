@@ -958,6 +958,111 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("allows the recovery owner to retire its own action as a false positive without board access", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "done", assigneeAgentId: null, assigneeUserId: "board-user" })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded:owner-false-positive",
+      evidence: { latestIssueStatus: "done" },
+      nextAction: "Restore a live execution path or record an intentional manual resolution.",
+      wakePolicy: { type: "manual" },
+    });
+    const runId = randomUUID();
+    const app = createApp({
+      type: "agent",
+      agentId: managerId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+    await seedHeartbeatRun({
+      companyId,
+      agentId: managerId,
+      runId,
+      issueId: sourceIssueId,
+    });
+
+    const resolved = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "false_positive",
+        sourceIssueStatus: "done",
+        resolutionNote: "Owner confirmed harmless false-positive on an already-done issue.",
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "done",
+      activeRecoveryAction: null,
+    });
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: action.id,
+      status: "resolved",
+      outcome: "false_positive",
+    });
+    expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+  });
+
+  it("rejects an assignee peer retiring another owner's action as a false positive", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded:peer-false-positive",
+      evidence: { latestIssueStatus: "done" },
+      nextAction: "Restore a live execution path or record an intentional manual resolution.",
+      wakePolicy: { type: "manual" },
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: coderId,
+      companyId,
+      runId: randomUUID(),
+      source: "agent_jwt",
+    });
+
+    const rejected = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "false_positive",
+        sourceIssueStatus: "done",
+        resolutionNote: "Peer agent should not be able to retire another owner's action.",
+      })
+      .expect(403);
+    expect(rejected.body).toMatchObject({
+      error: "Board access required",
+    });
+
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow).toMatchObject({
+      status: "active",
+      outcome: null,
+      resolvedAt: null,
+    });
+  });
+
   it("rejects blocked recovery resolution when the source issue has no first-class blockers", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const recoveryActionSvc = issueRecoveryActionService(db);
