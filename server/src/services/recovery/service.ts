@@ -921,6 +921,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return row ?? null;
   }
 
+  // Lists open stale-run evaluation issues bound to a specific run. Used to auto-close
+  // alerts when the underlying run reaches a terminal status before a reviewer responds —
+  // the alert is moot once the run is no longer running, so leaving it open generates
+  // assignment wakes against a non-event.
+  async function listOpenStaleRunEvaluations(companyId: string, runId: string) {
+    return db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          eq(issues.originId, runId),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      );
+  }
+
   // Returns a `done` stale-run evaluation issue for this run if one exists.
   // Used to detect when a reviewer closed an alert directly on the board without going through
   // the watchdog decision API — which would not leave a dismissed_false_positive decision record.
@@ -1811,6 +1835,72 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
     return { kind: "created" as const, evaluationIssueId: evaluation.id };
+  }
+
+  // Auto-cancels any open `stale_active_run_evaluation` issues bound to a run that has
+  // reached a terminal status (completed/failed/cancelled/timeout). The alert was raised
+  // because the run was silent while still alive — once the run is gone, the alert is
+  // moot and would otherwise keep firing assignment wakes against the manager.
+  //
+  // We use `cancelled` (not `done`) because the closure is system-driven cleanup, not
+  // a reviewer's "false positive" verdict. `done` is reserved for explicit board acks
+  // and is what triggers the auto-`dismissed_false_positive` path in
+  // `createOrUpdateStaleRunEvaluation`.
+  async function closeOpenStaleEvaluationIssuesForRun(input: {
+    companyId: string;
+    runId: string;
+    runStatus: string;
+  }) {
+    const open = await listOpenStaleRunEvaluations(input.companyId, input.runId);
+    if (open.length === 0) return { closed: 0, issueIds: [] as string[] };
+
+    const closedIds: string[] = [];
+    for (const evaluation of open) {
+      try {
+        await issuesSvc.update(evaluation.id, { status: "cancelled" });
+        await issuesSvc.addComment(
+          evaluation.id,
+          [
+            "System-cancelled: underlying heartbeat run reached terminal status.",
+            "",
+            `- Run: \`${input.runId}\``,
+            `- Run terminal status: \`${input.runStatus}\``,
+            "- Outcome: alert is moot; the run can no longer be silent.",
+          ].join("\n"),
+          { runId: input.runId },
+        );
+        closedIds.push(evaluation.id);
+      } catch (err) {
+        logger.warn(
+          {
+            err,
+            evaluationIssueId: evaluation.id,
+            runId: input.runId,
+          },
+          "failed to auto-cancel stale-run evaluation issue on terminal run",
+        );
+      }
+    }
+
+    if (closedIds.length > 0) {
+      await logActivity(db, {
+        companyId: input.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: input.runId,
+        action: "heartbeat.stale_run_evaluation_auto_cancelled_on_terminal",
+        entityType: "heartbeat_run",
+        entityId: input.runId,
+        details: {
+          source: "recovery.close_open_stale_evaluation_issues_for_run",
+          runStatus: input.runStatus,
+          closedEvaluationIssueIds: closedIds,
+        },
+      });
+    }
+
+    return { closed: closedIds.length, issueIds: closedIds };
   }
 
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
@@ -4004,6 +4094,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     escalateStrandedAssignedIssue,
     recordWatchdogDecision,
     scanSilentActiveRuns,
+    closeOpenStaleEvaluationIssuesForRun,
     reconcileStrandedAssignedIssues,
     sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,
