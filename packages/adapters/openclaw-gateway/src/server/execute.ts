@@ -396,6 +396,11 @@ function buildWakeText(
 
   const lines = [
     "Paperclip wake event for a cloud adapter.",
+    `Wake reason: ${payload.wakeReason ?? "none"}`,
+    "",
+    "Note: your text output may be posted as a visible comment on the Paperclip issue.",
+    "If your workspace instructions define trigger-specific behavior for this wake_reason, follow those instructions instead of the generic workflow below.",
+    "",
     "",
     "Run this procedure now. Do not guess undocumented endpoints and do not ask for additional heartbeat docs.",
     "",
