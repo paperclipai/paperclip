@@ -38,16 +38,20 @@ describe("createPenstockAvailabilityGate", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("denies a configured Penstock model when the probe returns capacity 429", async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          error:
-            "All subscriptions for provider 'anthropic' are rate-limited; capacity resets at 2026-06-30T08:05:00.000Z; retry in 5s",
-        }),
-        { status: 429, headers: { "retry-after": "5" } },
-      ),
-    );
+  it("denies a configured Penstock model when capacity readback reports a transient limit", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            state: "rate_limited",
+            reason: "penstock.capacity_rate_limited",
+            resume_at: "2026-06-30T08:05:00.000Z",
+            retry_after_seconds: 5,
+          }),
+          { status: 200 },
+        ),
+      );
     const gate = gateWith(fetchMock as unknown as typeof fetch);
 
     const result = await gate.checkAdapter({
@@ -73,15 +77,13 @@ describe("createPenstockAvailabilityGate", () => {
     expect(result.allow === false ? result.resumeAt?.toISOString() : null).toBe("2026-06-30T08:05:00.000Z");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(String(url)).toBe("https://api.penstock.run/anthropic/v1/messages");
-    expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({
-      model: "claude-sonnet-4-6[1m]",
-      max_tokens: 1,
-    });
+    expect(String(url)).toBe("https://api.penstock.run/v1/pools/default/capacity?provider=anthropic");
+    expect((init as RequestInit).method).toBe("GET");
+    expect((init as RequestInit).body).toBeUndefined();
   });
 
   it("caches the probe result per endpoint and model", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ type: "message" }), { status: 200 }));
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ state: "available" }), { status: 200 }));
     const gate = gateWith(fetchMock as unknown as typeof fetch);
     const input = {
       adapterType: "claude_k8s",
@@ -100,17 +102,67 @@ describe("createPenstockAvailabilityGate", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("defers for provider-shaped Anthropic 429 without a capacity retry signal", async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          type: "error",
-          error: { type: "rate_limit_error", message: "Error" },
-          request_id: "req_011CcZYx",
-        }),
-        { status: 429 },
-      ),
+  it("falls back to the legacy message probe when capacity readback is unavailable", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("not found", { status: 404 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error:
+              "All subscriptions for provider 'anthropic' are rate-limited; capacity resets at 2026-06-30T08:05:00.000Z; retry in 5s",
+          }),
+          { status: 429, headers: { "retry-after": "5" } },
+        ),
+      );
+    const gate = gateWith(fetchMock as unknown as typeof fetch);
+
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "agent-1",
+      adapterConfig: {
+        model: "claude-sonnet-4-6[1m]",
+        env: {
+          ANTHROPIC_BASE_URL: { value: "https://api.penstock.run/anthropic" },
+        },
+      },
+      now: new Date("2026-06-30T08:00:00.000Z"),
+      env: { ANTHROPIC_API_KEY: "psk_test" },
+    });
+
+    expect(result).toMatchObject({
+      allow: false,
+      provider: "anthropic",
+      reason: "penstock.model_capacity_unavailable",
+      model: "claude-sonnet-4-6[1m]",
+      retryAfterSeconds: 5,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "https://api.penstock.run/v1/pools/default/capacity?provider=anthropic",
     );
+    const [url, init] = fetchMock.mock.calls[1]!;
+    expect(String(url)).toBe("https://api.penstock.run/anthropic/v1/messages");
+    expect(JSON.parse(String((init as RequestInit).body))).toMatchObject({
+      model: "claude-sonnet-4-6[1m]",
+      max_tokens: 1,
+    });
+  });
+
+  it("falls back and defers for provider-shaped Anthropic 429 without a capacity retry signal", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("not found", { status: 404 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            type: "error",
+            error: { type: "rate_limit_error", message: "Error" },
+            request_id: "req_011CcZYx",
+          }),
+          { status: 429 },
+        ),
+      );
     const gate = gateWith(fetchMock as unknown as typeof fetch);
 
     const result = await gate.checkAdapter({

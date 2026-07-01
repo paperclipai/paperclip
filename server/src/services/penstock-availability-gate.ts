@@ -49,6 +49,15 @@ interface CacheEntry {
   result: PenstockAvailabilityGateResult;
 }
 
+interface ResolvedPenstockAnthropicCheck {
+  capacityUrl: URL;
+  messagesUrl: URL;
+  token: string;
+  model: string;
+}
+
+type PenstockCapacityState = "available" | "rate_limited" | "exhausted" | "unknown";
+
 const DEFAULT_CACHE_TTL_MS = 30_000;
 const DEFAULT_TIMEOUT_MS = 3_000;
 const DEFAULT_RETRY_DELAY_MS = 5 * 60_000;
@@ -68,19 +77,19 @@ export function createPenstockAvailabilityGate(
     async checkAdapter(input: PenstockAvailabilityGateCheckInput): Promise<PenstockAvailabilityGateResult> {
       if (input.adapterType !== "claude_k8s") return { allow: true };
 
-      const resolved = resolvePenstockAnthropicProbe(input);
+      const resolved = resolvePenstockAnthropicCheck(input);
       if (!resolved) return { allow: true };
 
       const nowMs = input.now.getTime();
-      const key = `${resolved.url.origin}${resolved.url.pathname}::${resolved.model}`;
+      const key = `${resolved.capacityUrl.origin}${resolved.capacityUrl.pathname}::anthropic`;
       const cached = cache.get(key);
       if (cached && nowMs - cached.fetchedAt < cacheTtlMs) {
         return cached.result;
       }
 
-      const result = await probePenstockAnthropicModel({
+      const readback = await readPenstockAnthropicCapacity({
         fetchImpl,
-        url: resolved.url,
+        url: resolved.capacityUrl,
         token: resolved.token,
         model: resolved.model,
         agentId: input.agentId,
@@ -89,6 +98,19 @@ export function createPenstockAvailabilityGate(
         now: nowFn,
         log: opts.log,
       });
+      const result =
+        readback ??
+        (await probePenstockAnthropicModel({
+          fetchImpl,
+          url: resolved.messagesUrl,
+          token: resolved.token,
+          model: resolved.model,
+          agentId: input.agentId,
+          timeoutMs,
+          defaultRetryDelayMs,
+          now: nowFn,
+          log: opts.log,
+        }));
       cache.set(key, { fetchedAt: nowMs, result });
       return result;
     },
@@ -98,9 +120,9 @@ export function createPenstockAvailabilityGate(
   };
 }
 
-function resolvePenstockAnthropicProbe(
+function resolvePenstockAnthropicCheck(
   input: PenstockAvailabilityGateCheckInput,
-): { url: URL; token: string; model: string } | null {
+): ResolvedPenstockAnthropicCheck | null {
   const adapterConfig = asRecord(input.adapterConfig);
   const envConfig = asRecord(adapterConfig?.env);
   const env = input.env ?? process.env;
@@ -121,7 +143,8 @@ function resolvePenstockAnthropicProbe(
 
   try {
     return {
-      url: buildMessagesUrl(baseUrl),
+      capacityUrl: buildCapacityUrl(baseUrl),
+      messagesUrl: buildMessagesUrl(baseUrl),
       token,
       model,
     };
@@ -143,6 +166,133 @@ function buildMessagesUrl(baseUrl: string): URL {
   const trimmed = baseUrl.replace(/\/+$/, "");
   if (trimmed.endsWith("/v1")) return new URL(`${trimmed}/messages`);
   return new URL(`${trimmed}/v1/messages`);
+}
+
+function buildCapacityUrl(baseUrl: string): URL {
+  const url = new URL(baseUrl);
+  url.pathname = "/v1/pools/default/capacity";
+  url.search = "provider=anthropic";
+  url.hash = "";
+  return url;
+}
+
+async function readPenstockAnthropicCapacity(input: {
+  fetchImpl: typeof fetch;
+  url: URL;
+  token: string;
+  model: string;
+  agentId: string;
+  timeoutMs: number;
+  defaultRetryDelayMs: number;
+  now: () => Date;
+  log: PenstockAvailabilityGateLogger;
+}): Promise<PenstockAvailabilityGateResult | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), input.timeoutMs);
+  try {
+    const response = await input.fetchImpl(input.url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${input.token}`,
+        "x-api-key": input.token,
+        "x-request-id": `paperclip-penstock-capacity-${input.agentId}-${randomUUID()}`,
+      },
+      signal: controller.signal,
+    });
+
+    if (response.status === 404) return null;
+
+    if (response.status === 401 || response.status === 403 || response.status === 429 || response.status === 503) {
+      return capacityEndpointUnavailable(input, response.status);
+    }
+
+    if (!response.ok) {
+      input.log.warn(
+        {
+          status: response.status,
+          model: input.model,
+        },
+        "penstock capacity readback failed open",
+      );
+      return null;
+    }
+
+    const body = await response.json().catch(() => null);
+    const state = readCapacityState(body);
+    if (!state || state === "unknown") return null;
+    if (state === "available") return { allow: true };
+
+    const now = input.now();
+    const retry = capacityRetryFromBody(body, input.defaultRetryDelayMs, now);
+    const result: PenstockAvailabilityGateDenyResult = {
+      allow: false,
+      provider: "anthropic",
+      reason: "penstock.model_capacity_unavailable",
+      model: input.model,
+      resumeAt: retry.resumeAt,
+      retryAfterSeconds: retry.retryAfterSeconds,
+    };
+    input.log.info(
+      {
+        status: response.status,
+        provider: result.provider,
+        model: result.model,
+        reason: result.reason,
+        capacityState: state,
+        resumeAt: result.resumeAt?.toISOString() ?? null,
+        retryAfterSeconds: result.retryAfterSeconds,
+      },
+      "heartbeat dispatch deferred: penstock model unavailable",
+    );
+    return result;
+  } catch (err) {
+    input.log.warn(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        model: input.model,
+      },
+      "penstock capacity readback failed open",
+    );
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function capacityEndpointUnavailable(
+  input: {
+    model: string;
+    defaultRetryDelayMs: number;
+    now: () => Date;
+    log: PenstockAvailabilityGateLogger;
+  },
+  status: number,
+): PenstockAvailabilityGateDenyResult {
+  const retry = defaultCapacityRetry(input.defaultRetryDelayMs, input.now());
+  const result: PenstockAvailabilityGateDenyResult = {
+    allow: false,
+    provider: "anthropic",
+    reason:
+      status === 429
+        ? "penstock.model_capacity_unavailable"
+        : "penstock.model_temporarily_unavailable",
+    model: input.model,
+    resumeAt: retry.resumeAt,
+    retryAfterSeconds: retry.retryAfterSeconds,
+  };
+  input.log.info(
+    {
+      status,
+      provider: result.provider,
+      model: result.model,
+      reason: result.reason,
+      resumeAt: result.resumeAt?.toISOString() ?? null,
+      retryAfterSeconds: result.retryAfterSeconds,
+    },
+    "heartbeat dispatch deferred: penstock model unavailable",
+  );
+  return result;
 }
 
 async function probePenstockAnthropicModel(input: {
@@ -253,6 +403,72 @@ function parseCapacityRetry(
   return null;
 }
 
+function capacityRetryFromBody(
+  body: unknown,
+  defaultRetryDelayMs: number,
+  now: Date,
+): { resumeAt: Date | null; retryAfterSeconds: number | null } {
+  const record = asRecord(body);
+  const resumeAt = parseOptionalDate(
+    readNonEmptyString(record?.resume_at) ?? readNonEmptyString(record?.resumeAt),
+  );
+  const retryAfterSeconds = readRetryAfterSeconds(record, now);
+  if (resumeAt && resumeAt.getTime() > now.getTime()) {
+    return {
+      resumeAt,
+      retryAfterSeconds: retryAfterSeconds ?? Math.ceil((resumeAt.getTime() - now.getTime()) / 1000),
+    };
+  }
+  if (retryAfterSeconds !== null) {
+    return {
+      resumeAt: new Date(now.getTime() + retryAfterSeconds * 1000),
+      retryAfterSeconds,
+    };
+  }
+  return defaultCapacityRetry(defaultRetryDelayMs, now);
+}
+
+function readCapacityState(body: unknown): PenstockCapacityState | null {
+  const record = asRecord(body);
+  const state = readNonEmptyString(record?.state);
+  if (
+    state === "available" ||
+    state === "rate_limited" ||
+    state === "exhausted" ||
+    state === "unknown"
+  ) {
+    return state;
+  }
+  return null;
+}
+
+function readRetryAfterSeconds(record: Record<string, unknown> | null, now: Date): number | null {
+  if (!record) return null;
+  const direct =
+    readNumber(record.retry_after_seconds) ??
+    readNumber(record.retryAfterSeconds) ??
+    readNumber(record.retry_after) ??
+    readNumber(record.retryAfter);
+  if (direct !== null) return direct > 0 ? Math.ceil(direct) : null;
+  return parseRetryAfterSeconds(
+    readNonEmptyString(record.retry_after) ?? readNonEmptyString(record.retryAfter),
+    now,
+  );
+}
+
+function parseOptionalDate(value: string | null): Date | null {
+  if (!value) return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? new Date(time) : null;
+}
+
+function readNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function defaultCapacityRetry(
   defaultRetryDelayMs: number,
   now: Date,
@@ -293,7 +509,7 @@ function parseCapacityResetIso(message: string): Date | null {
   return new Date(time);
 }
 
-function parseRetryAfterSeconds(value: string | null): number | null {
+function parseRetryAfterSeconds(value: string | null, now = new Date()): number | null {
   if (!value) return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -301,7 +517,7 @@ function parseRetryAfterSeconds(value: string | null): number | null {
   if (Number.isFinite(numeric) && numeric > 0) return Math.ceil(numeric);
   const parsedDate = Date.parse(trimmed);
   if (!Number.isFinite(parsedDate)) return null;
-  const delta = Math.ceil((parsedDate - Date.now()) / 1000);
+  const delta = Math.ceil((parsedDate - now.getTime()) / 1000);
   return delta > 0 ? delta : null;
 }
 
