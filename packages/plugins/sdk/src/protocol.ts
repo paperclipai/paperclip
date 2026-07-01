@@ -644,6 +644,21 @@ export interface PluginEnvironmentExecuteParams extends PluginEnvironmentDriverB
   // delivered on in-process execute paths; over RPC it is absent and the
   // provider falls back to buffered-at-end behavior (streamed stays unset).
   onOutput?: (stream: "stdout" | "stderr", text: string) => void | Promise<void>;
+  // Run correlation id for this execution. Serializable, so unlike `onOutput`
+  // it DOES cross the plugin worker RPC boundary. A provider that runs in a
+  // worker uses it (together with `streamOutput`) to name a `ctx.streams`
+  // output channel the host subscribes to, so stdout/stderr can be tailed live
+  // even though the `onOutput` callback itself cannot be serialized. Null when
+  // the caller has no run context (then live streaming is skipped).
+  runId?: string | null;
+  // Set by the host over RPC to request live output streaming: the provider
+  // should open a `ctx.streams` channel named `env-exec-output:${runId}` and
+  // emit each `{ stream, text }` chunk on it as the command produces output,
+  // then set `streamed: true` on the result. When absent/false (or `runId` is
+  // null), the provider falls back to buffered-at-end output. This is the
+  // serializable signal that replaces the non-serializable `onOutput` callback
+  // on the worker RPC path.
+  streamOutput?: boolean;
 }
 
 export interface PluginEnvironmentExecuteResult {

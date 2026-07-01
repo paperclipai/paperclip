@@ -92,6 +92,10 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 // sets `result.streamed` and we skip the buffered dump below to
                 // avoid logging the same output twice.
                 onOutput: commandInput.onOutput,
+                // Forward the run id so the plugin-backed sandbox driver can
+                // bridge worker output chunks back to onOutput over the worker
+                // RPC boundary (channel env-exec-output:${runId}).
+                runId: commandInput.runId,
               });
               // Only emit the buffered stdout/stderr when the driver did NOT
               // already stream it live via onOutput. Legacy (non-streaming)

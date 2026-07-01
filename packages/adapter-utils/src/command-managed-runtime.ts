@@ -34,6 +34,10 @@ export interface CommandManagedRuntimeRunner {
     // logging. Runners that cannot stream may ignore this and leave `streamed`
     // unset — the caller then falls back to the buffered result unchanged.
     onOutput?: (stream: "stdout" | "stderr", text: string) => void | Promise<void>;
+    // Run correlation id. A streaming runner forwards this to the sandbox
+    // provider so worker-emitted output chunks can be routed back to `onOutput`
+    // over the plugin worker RPC boundary (the callback itself can't cross it).
+    runId?: string;
     onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
   }): Promise<RunProcessResult>;
 }

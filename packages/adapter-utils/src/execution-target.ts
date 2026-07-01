@@ -420,6 +420,9 @@ export async function runAdapterExecutionTargetProcess(
       stdin: options.stdin,
       timeoutMs: options.timeoutSec > 0 ? options.timeoutSec * 1000 : target.timeoutMs ?? undefined,
       onLog: options.onLog,
+      // Forward the run id so a streaming sandbox runner can bridge worker
+      // output chunks back to onLog live (across the plugin worker boundary).
+      runId,
       // Live-output sink: route each streamed chunk to the same log tail. A
       // runner that streams sets `streamed` on its result so the buffered dump
       // is suppressed upstream (no double logging). Sync fire-and-forget — do
@@ -529,6 +532,9 @@ export async function runAdapterExecutionTargetShellCommand(
       env,
       timeoutMs: (options.timeoutSec ?? 15) * 1000,
       onLog,
+      // Forward the run id so a streaming sandbox runner can bridge worker
+      // output chunks back to onLog live (across the plugin worker boundary).
+      runId,
       // Route streamed chunks to the same log tail; a streaming runner sets
       // `streamed` so the buffered dump is suppressed upstream (no double log).
       onOutput: (stream, text) => {
