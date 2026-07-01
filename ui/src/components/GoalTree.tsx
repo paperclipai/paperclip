@@ -35,7 +35,7 @@ function GoalNode({ goal, children, allGoals, depth, goalLink, onSelect }: GoalN
             e.stopPropagation();
             setExpanded(!expanded);
           }}
-          aria-label={expanded ? "Collapse" : "Expand"}
+          aria-label={`${goal.title} subtree`}
           aria-expanded={expanded}
         >
           <ChevronRight
