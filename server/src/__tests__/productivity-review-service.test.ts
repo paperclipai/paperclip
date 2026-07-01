@@ -55,6 +55,8 @@ describeEmbeddedPostgres("productivity review service", () => {
     startedAt?: Date;
     parentId?: string | null;
     originKind?: string;
+    title?: string;
+    description?: string | null;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
@@ -97,7 +99,8 @@ describeEmbeddedPostgres("productivity review service", () => {
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: "Implement data import",
+      title: opts?.title ?? "Implement data import",
+      description: opts?.description,
       status: opts?.status ?? "in_progress",
       priority: "medium",
       assigneeAgentId: coderId,
@@ -358,6 +361,51 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(review?.description).toContain("Primary trigger: `long_active_duration`");
     expect(review?.priority).toBe("medium");
     expect(hold.held).toBe(false);
+  });
+
+  it("suppresses long-active reviews for explicitly long-lived chat mirror issues", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+      title: "CEO - Ross - chat mirror",
+      description: "Deliberately long-lived conversation ticket. DO NOT CLOSE.",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("still creates no-comment reviews for explicitly long-lived chat mirror issues", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+      title: "CEO - Jason - chat mirror",
+      description: "Long-lived chat mirror. DO NOT CLOSE.",
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `no_comment_streak`");
   });
 
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
