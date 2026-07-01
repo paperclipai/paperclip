@@ -106,3 +106,35 @@ export function buildHeartbeatRunIssueComment(
     ?? null
   );
 }
+
+export type HeartbeatRunIssueCommentSkipReason =
+  | "cross_owner"
+  | "unowned_or_user_assigned";
+
+export interface HeartbeatRunIssueCommentGuardInput {
+  issueAssigneeAgentId: string | null;
+  runningAgentId: string;
+}
+
+export interface HeartbeatRunIssueCommentGuardResult {
+  emit: boolean;
+  skipReason: HeartbeatRunIssueCommentSkipReason | null;
+}
+
+// The local-adapter heartbeat-end auto-mirror posts the run summary as a
+// comment under the running agent's authorship on PAPERCLIP_TASK_ID. When the
+// wake source is owned by a different agent (cross-owner wake) the result is a
+// comment authored by the running agent on a peer-owned issue. Skip in that
+// case, and also when the task is user-assigned (assigneeAgentId is null),
+// which is cross-owner from the running agent's perspective.
+export function evaluateHeartbeatRunIssueCommentGuard(
+  input: HeartbeatRunIssueCommentGuardInput,
+): HeartbeatRunIssueCommentGuardResult {
+  if (input.issueAssigneeAgentId === input.runningAgentId) {
+    return { emit: true, skipReason: null };
+  }
+  if (input.issueAssigneeAgentId === null) {
+    return { emit: false, skipReason: "unowned_or_user_assigned" };
+  }
+  return { emit: false, skipReason: "cross_owner" };
+}
