@@ -33,12 +33,12 @@ describe("shared telemetry agent events", () => {
     const client = createClient();
 
     trackAgentFirstHeartbeat(client, {
-      agentRole: "coder",
+      agentRole: "engineer",
       agentId: "22222222-2222-4222-8222-222222222222",
     });
 
     expect(client.track).toHaveBeenCalledWith("agent.first_heartbeat", {
-      agent_role: "coder",
+      agent_role: "engineer",
       agent_id: "22222222-2222-4222-8222-222222222222",
     });
   });
@@ -49,11 +49,13 @@ describe("shared telemetry agent events", () => {
     trackAgentTaskCompleted(client, {
       agentRole: "qa",
       agentId: "33333333-3333-4333-8333-333333333333",
+      adapterType: "codex_local",
     });
 
     expect(client.track).toHaveBeenCalledWith("agent.task_completed", {
       agent_role: "qa",
       agent_id: "33333333-3333-4333-8333-333333333333",
+      adapter_type: "codex_local",
     });
   });
 

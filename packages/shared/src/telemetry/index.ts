@@ -20,5 +20,14 @@ export type {
   TelemetryState,
   TelemetryEvent,
   TelemetryEventEnvelope,
+  TelemetryDimensions,
+  TelemetryDimensionValue,
+  TelemetryEventDimensions,
   TelemetryEventName,
+  RegisteredPluginEventName,
 } from "./types.js";
+export type {
+  AnyPaperclipTelemetryEvent,
+  EventDimensionsMap,
+  PaperclipEventName,
+} from "./generated/paperclip-telemetry.js";
