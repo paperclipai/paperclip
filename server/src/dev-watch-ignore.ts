@@ -28,6 +28,10 @@ export function resolveServerDevWatchIgnorePaths(serverRoot: string): string[] {
     "../ui/node_modules/.vite-temp",
     "../ui/.vite",
     "../ui/dist",
+    // Drizzle schema edits must not hot-reload the server until a migration is
+    // generated. The subsequent migration/meta write is what should trigger the
+    // restart so startup can reconcile/apply the new schema safely.
+    "../packages/db/src/schema",
     // npm install during reinstall would trigger a restart mid-request
     // if tsx watch sees the new files. Exclude the managed plugins dir.
     process.env.HOME + "/.paperclip/adapter-plugins",
