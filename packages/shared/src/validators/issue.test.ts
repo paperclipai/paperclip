@@ -131,6 +131,37 @@ describe("issue validators", () => {
     ).toBe(false);
   });
 
+  it("accepts executionState on create without silently stripping it", () => {
+    expect(
+      createIssueSchema.parse({ title: "Stamp per-SHA review", executionState: null })
+        .executionState,
+    ).toBeNull();
+    expect(
+      createIssueSchema.parse({ title: "Stamp per-SHA review" }).executionState,
+    ).toBeUndefined();
+
+    const validState = {
+      status: "idle" as const,
+      currentStageId: null,
+      currentStageIndex: null,
+      currentStageType: null,
+      currentParticipant: null,
+      returnAssignee: null,
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    };
+    const parsed = createIssueSchema.parse({
+      title: "Stamp per-SHA review",
+      executionState: validState,
+    });
+    expect(parsed.executionState).toMatchObject({
+      status: "idle",
+      currentStageId: null,
+      reviewRequest: null,
+      completedStageIds: [],
+    });
+  });
+
   it("normalizes escaped line breaks in issue comment bodies", () => {
     const parsed = addIssueCommentSchema.parse({
       body: "Progress update\\r\\n\\r\\nNext action.",
