@@ -115,6 +115,7 @@ export const queryKeys = {
       query: { path: string; workspace?: string; projectId?: string | null; workspaceId?: string | null },
     ) =>
       ["issues", "file-resources", issueId, "content", query] as const,
+    awaitingHumanInteractions: (companyId: string) => ["issues", companyId, "awaiting-human-interactions"] as const,
   },
   routines: {
     list: (companyId: string, filters?: { projectId?: string | null }) =>

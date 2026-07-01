@@ -235,6 +235,17 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
 ] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
 
+// Thread-interaction kinds that pause an issue waiting on a human (founder) decision.
+// Surfaced in the founder Inbox as "Waiting on you" so they are not silently stranded
+// in the In Review column. All current kinds are agent->human asks.
+export const AWAITING_HUMAN_INTERACTION_KINDS = [
+  "suggest_tasks",
+  "ask_user_questions",
+  "request_confirmation",
+  "request_checkbox_confirmation",
+] as const;
+export type AwaitingHumanInteractionKind = (typeof AWAITING_HUMAN_INTERACTION_KINDS)[number];
+
 export const REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT = 200;
 
 export const ISSUE_THREAD_INTERACTION_STATUSES = [

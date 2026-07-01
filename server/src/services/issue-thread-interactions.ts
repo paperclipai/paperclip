@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documents,
@@ -25,6 +25,7 @@ import type {
   SuggestTasksResultCreatedTask,
 } from "@paperclipai/shared";
 import {
+  AWAITING_HUMAN_INTERACTION_KINDS,
   acceptIssueThreadInteractionSchema,
   askUserQuestionsPayloadSchema,
   askUserQuestionsResultSchema,
@@ -786,6 +787,40 @@ export function issueThreadInteractionService(db: Db) {
         .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id));
 
       return rows.map((row) => hydrateInteraction(row));
+    },
+
+    // Company-wide list of pending agent->human asks, joined with issue context, for the
+    // founder Inbox "Waiting on you" section. Excludes interactions on hidden/terminal issues.
+    listAwaitingHumanForCompany: async (companyId: string) => {
+      const rows = await db
+        .select({
+          interaction: issueThreadInteractions,
+          issue: {
+            id: issues.id,
+            identifier: issues.identifier,
+            title: issues.title,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            assigneeUserId: issues.assigneeUserId,
+          },
+        })
+        .from(issueThreadInteractions)
+        .innerJoin(issues, eq(issueThreadInteractions.issueId, issues.id))
+        .where(
+          and(
+            eq(issueThreadInteractions.companyId, companyId),
+            eq(issueThreadInteractions.status, "pending"),
+            inArray(issueThreadInteractions.kind, [...AWAITING_HUMAN_INTERACTION_KINDS]),
+            isNull(issues.hiddenAt),
+            notInArray(issues.status, ["done", "cancelled"]),
+          ),
+        )
+        .orderBy(desc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id));
+
+      return rows.map((row) => ({
+        interaction: hydrateInteraction(row.interaction),
+        issue: row.issue,
+      }));
     },
 
     getById: async (interactionId: string) => {

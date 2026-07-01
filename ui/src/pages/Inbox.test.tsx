@@ -23,6 +23,7 @@ const apiMocks = vi.hoisted(() => ({
   issuesList: vi.fn(),
   issuesCount: vi.fn(),
   issueLabels: vi.fn(),
+  listAwaitingHumanInteractions: vi.fn(),
   agentsList: vi.fn(),
   heartbeatRunsList: vi.fn(),
   liveRunsForCompany: vi.fn(),
@@ -62,6 +63,7 @@ vi.mock("../api/issues", () => ({
     list: apiMocks.issuesList,
     count: apiMocks.issuesCount,
     listLabels: apiMocks.issueLabels,
+    listAwaitingHumanInteractions: apiMocks.listAwaitingHumanInteractions,
     markRead: vi.fn(),
     markUnread: vi.fn(),
     archiveFromInbox: vi.fn(),
@@ -246,6 +248,7 @@ function resetInboxApiMocks() {
   apiMocks.issuesList.mockResolvedValue([]);
   apiMocks.issuesCount.mockResolvedValue({ count: 0 });
   apiMocks.issueLabels.mockResolvedValue([]);
+  apiMocks.listAwaitingHumanInteractions.mockResolvedValue([]);
   apiMocks.agentsList.mockResolvedValue([]);
   apiMocks.heartbeatRunsList.mockResolvedValue([]);
   apiMocks.liveRunsForCompany.mockResolvedValue([]);
@@ -373,6 +376,66 @@ describe("Inbox toolbar", () => {
     // Hovering a different row moves the selection to follow the mouse.
     expect(linkOf(rows[0]!)?.className).toContain("hover:bg-transparent");
     expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders the 'Waiting on you' tab with awaiting human interactions", async () => {
+    resetInboxApiMocks();
+    routerMock.location.pathname = "/inbox/waiting";
+    const issue = createIssue({ id: "issue-1", identifier: "PAP-100", title: "Test issue" });
+    apiMocks.issuesList.mockResolvedValue([issue]);
+    apiMocks.listAwaitingHumanInteractions.mockResolvedValue([
+      {
+        interaction: {
+          id: "interaction-1",
+          companyId: "company-1",
+          issueId: "issue-1",
+          kind: "ask_user_questions",
+          status: "pending",
+          continuationPolicy: "continue_on_user_response",
+          title: "Need clarification",
+          summary: "Please answer these questions",
+          createdAt: new Date("2026-06-01T00:00:00Z"),
+          updatedAt: new Date("2026-06-01T00:00:00Z"),
+          payload: {},
+        } as any,
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-100",
+          title: "Test issue",
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+      },
+    ]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+
+    await vi.waitFor(() => {
+      const text = container.textContent || "";
+      expect(text).toContain("Questions for you");
+    });
+
+    const text = container.textContent || "";
+    expect(text).toContain("PAP-100");
+    expect(text).toContain("Test issue");
+    expect(text).toContain("Questions for you");
+    expect(text).toContain("Please answer these questions");
 
     act(() => {
       root.unmount();
