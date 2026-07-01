@@ -17,7 +17,6 @@ import {
   issueComments,
 } from "@paperclipai/db";
 import {
-  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   getAgentWorkEligibility,
   isUuidLike,
   normalizeAgentApiKeyScope,
@@ -30,6 +29,7 @@ import { syncAgentAdapterEnvBindings } from "./agent-secret-bindings.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import { secretService } from "./secrets.js";
+import { resolveAgentDefaultMaxConcurrentRuns } from "./agent-concurrency-defaults.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -139,7 +139,7 @@ function normalizeRuntimeConfigForNewAgent(runtimeConfig: unknown): Record<strin
     ? { ...normalizedRuntimeConfig.heartbeat }
     : {};
   if (parseFiniteNumberLike(heartbeat.maxConcurrentRuns) == null) {
-    heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+    heartbeat.maxConcurrentRuns = resolveAgentDefaultMaxConcurrentRuns();
   }
   normalizedRuntimeConfig.heartbeat = heartbeat;
   return normalizedRuntimeConfig;
