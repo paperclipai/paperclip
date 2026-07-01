@@ -251,7 +251,7 @@ export function issueVisibilityService(db: Db) {
         agents,
         and(
           eq(issueCollaborators.principalType, "agent"),
-          eq(sql`${issueCollaborators.principalId}::uuid`, agents.id),
+          eq(issueCollaborators.principalId, sql`${agents.id}::text`),
         ),
       )
       .where(eq(issueCollaborators.issueId, issueId))
