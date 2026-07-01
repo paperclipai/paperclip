@@ -33,7 +33,7 @@ const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
   enabled: true,
   maxSessionRuns: 0,
   maxRawInputTokens: 0,
-  maxSessionAgeHours: 0,
+  maxSessionAgeHours: 24,
 };
 
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
