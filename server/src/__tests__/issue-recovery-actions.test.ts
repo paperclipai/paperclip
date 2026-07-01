@@ -1177,4 +1177,40 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
   });
+
+  for (const terminal of ["done", "cancelled"] as const) {
+    it(`refuses to regress a ${terminal} issue to blocked when escalation races completion (#7840)`, async () => {
+      const { coderId, sourceIssue } = await seedCompany();
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+
+      // The issue completes after the stranded scan captured its snapshot
+      // (e.g. a run cancellation racing with completion).
+      await db.update(issues).set({ status: terminal }).where(eq(issues.id, sourceIssue.id));
+
+      const result = await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue, // stale snapshot still says in_progress
+        previousStatus: "in_progress",
+        latestRun: {
+          id: randomUUID(),
+          agentId: coderId,
+          status: "cancelled",
+          error: "Cancelled by control plane",
+          errorCode: "cancelled",
+          contextSnapshot: { retryReason: "issue_continuation_needed" },
+          livenessState: "needs_followup",
+        } as const,
+        comment: "Automatic continuation recovery failed.",
+      });
+
+      expect(result).toBeNull();
+      const [issueRow] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+      expect(issueRow?.status).toBe(terminal);
+      const actionRows = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+      expect(actionRows).toHaveLength(0);
+    });
+  }
 });
