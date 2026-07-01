@@ -2913,6 +2913,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      // SPC-17118: long-lived deliberate in_progress anchors (e.g. multi-day gate
+      // monitors) can opt out of stranded-recovery entirely via
+      // executionPolicy.recoverySuppressed. Without this, the recovery system
+      // enqueues continuations between daily heartbeats and eventually escalates to
+      // blocked when the same issue keeps re-exiting in_progress with no completion
+      // criterion.
+      if (parseObject(issue.executionPolicy).recoverySuppressed === true) {
+        result.skipped += 1;
+        continue;
+      }
+
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
