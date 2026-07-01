@@ -15,4 +15,5 @@ export { llmCheck } from "./llm-check.js";
 export { logCheck } from "./log-check.js";
 export { portCheck } from "./port-check.js";
 export { secretsCheck } from "./secrets-check.js";
+export { localeCheck } from "./locale-check.js";
 export { storageCheck } from "./storage-check.js";
