@@ -32,6 +32,12 @@ export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "application/json",
   "text/csv",
   "text/html",
+  "application/msword",
+  "application/vnd.ms-excel",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   "video/mp4",
   "video/webm",
   "video/quicktime",
@@ -40,6 +46,11 @@ export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
 
 export const DEFAULT_ATTACHMENT_CONTENT_TYPE = "application/octet-stream";
 export const SVG_CONTENT_TYPE = "image/svg+xml";
+export const GENERIC_ATTACHMENT_CONTENT_TYPES: readonly string[] = [
+  "application/octet-stream",
+  "binary/octet-stream",
+  "application/x-binary",
+];
 export const INLINE_ATTACHMENT_TYPES: readonly string[] = [
   "image/*",
   "application/pdf",
@@ -86,6 +97,38 @@ export function matchesContentType(contentType: string, allowedPatterns: string[
 export function normalizeContentType(contentType: string | null | undefined): string {
   const normalized = (contentType ?? "").trim().toLowerCase();
   return normalized || DEFAULT_ATTACHMENT_CONTENT_TYPE;
+}
+
+export function inferOfficeAttachmentContentTypeFromFilename(
+  filename: string | null | undefined,
+): string | null {
+  const lower = (filename ?? "").trim().toLowerCase();
+  if (lower.endsWith(".docx")) {
+    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  }
+  if (lower.endsWith(".xlsx")) {
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  }
+  if (lower.endsWith(".pptx")) {
+    return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  }
+  if (lower.endsWith(".doc")) return "application/msword";
+  if (lower.endsWith(".xls")) return "application/vnd.ms-excel";
+  if (lower.endsWith(".ppt")) return "application/vnd.ms-powerpoint";
+  return null;
+}
+
+export function normalizeUploadAttachmentContentType(input: {
+  contentType: string | null | undefined;
+  originalFilename?: string | null;
+  isAllowedContentType?: (contentType: string) => boolean;
+}): string {
+  const normalized = normalizeContentType(input.contentType);
+  if (!GENERIC_ATTACHMENT_CONTENT_TYPES.includes(normalized)) return normalized;
+  const inferred = inferOfficeAttachmentContentTypeFromFilename(input.originalFilename);
+  if (!inferred) return normalized;
+  if (input.isAllowedContentType && !input.isAllowedContentType(inferred)) return normalized;
+  return inferred;
 }
 
 export function isInlineAttachmentContentType(contentType: string): boolean {
