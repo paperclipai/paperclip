@@ -384,7 +384,7 @@ export function InviteLandingPage() {
         return;
       }
 
-      if (!invite || invite.inviteType !== "bootstrap_ceo") {
+      if (!invite || showsAgentForm) {
         return;
       }
 

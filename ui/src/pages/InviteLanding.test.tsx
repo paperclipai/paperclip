@@ -900,6 +900,77 @@ describe("InviteLandingPage", () => {
     });
   });
 
+  it("posts the human company_join accept in authMutation.onSuccess without waiting for a session effect", async () => {
+    getSessionMock.mockResolvedValue(null);
+    acceptInviteMock.mockResolvedValue({
+      id: "join-1",
+      companyId: "company-1",
+      requestType: "human",
+      status: "pending_approval",
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const inputValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    expect(inputValueSetter).toBeTypeOf("function");
+
+    const nameInput = container.querySelector('input[name="name"]') as HTMLInputElement | null;
+    const emailInput = container.querySelector('input[name="email"]') as HTMLInputElement | null;
+    const passwordInput = container.querySelector('input[name="password"]') as HTMLInputElement | null;
+    expect(nameInput).not.toBeNull();
+    expect(emailInput).not.toBeNull();
+    expect(passwordInput).not.toBeNull();
+
+    await act(async () => {
+      inputValueSetter!.call(nameInput, "Jane Example");
+      nameInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      inputValueSetter!.call(emailInput, "jane@example.com");
+      emailInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      inputValueSetter!.call(passwordInput, "supersecret");
+      passwordInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const authForm = container.querySelector('[data-testid="invite-inline-auth"]') as HTMLFormElement | null;
+    expect(authForm).not.toBeNull();
+
+    await act(async () => {
+      authForm?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await flushReact();
+    await flushReact();
+    await flushReact();
+
+    expect(signUpEmailMock).toHaveBeenCalledWith({
+      name: "Jane Example",
+      email: "jane@example.com",
+      password: "supersecret",
+    });
+    expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+    expect(container.querySelector('[data-testid="invite-pending-approval"]')).not.toBeNull();
+    expect(container.textContent).toContain("Request to join Acme Robotics");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("waits for the membership check before showing invite acceptance to signed-in users", async () => {
     let resolveCompanies: ((value: Array<{ id: string; name: string }>) => void) | null = null;
     acceptInviteMock.mockResolvedValue({
