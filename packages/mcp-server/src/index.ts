@@ -23,7 +23,13 @@ export function createPaperclipMcpServer(
   const telemetry = options.telemetry ?? { sink: createStderrTelemetrySink() };
   const tools = createToolDefinitions(client, telemetry);
   for (const tool of tools) {
-    server.tool(tool.name, tool.description, tool.schema.shape, tool.execute);
+    // The MCP SDK invokes the handler as (args, extra); we intentionally drop
+    // `extra` so each tool falls back to its request-scoped default context
+    // (the actor bound to this per-request client) rather than the SDK's
+    // transport extra object.
+    server.tool(tool.name, tool.description, tool.schema.shape, (args: Record<string, unknown>) =>
+      tool.execute(args),
+    );
   }
 
   return {

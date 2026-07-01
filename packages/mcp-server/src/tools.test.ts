@@ -397,4 +397,31 @@ describe("paperclip MCP tools", () => {
 
     expect(response.content[0]?.text).toContain("must not contain '..'");
   });
+
+  it("rejects a cross-company list request at the MCP layer without touching REST", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipListIssues");
+    const response = await tool.execute({
+      companyId: "99999999-9999-9999-9999-999999999999",
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.content[0]?.text).toContain("cannot access company");
+  });
+
+  it("blocks the generic escape hatch from reaching another company's scope", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipApiRequest");
+    const response = await tool.execute({
+      method: "GET",
+      path: "/companies/99999999-9999-9999-9999-999999999999/issues",
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.content[0]?.text).toContain("cannot access company");
+  });
 });

@@ -1,4 +1,5 @@
 import type { PaperclipMcpConfig } from "./config.js";
+import { RequestContext } from "./context.js";
 
 export class PaperclipApiError extends Error {
   readonly status: number;
@@ -49,7 +50,18 @@ async function parseResponseBody(response: Response): Promise<unknown> {
 }
 
 export class PaperclipApiClient {
-  constructor(private readonly config: PaperclipMcpConfig) {}
+  /**
+   * The request-scoped actor identity behind this client. In --http mode a
+   * fresh client (and thus a fresh context) is built per request from the
+   * bearer-token binding; in --stdio mode it is derived once from the process
+   * environment. Company/agent resolution and per-tool company-access
+   * authorization funnel through it — see {@link RequestContext}.
+   */
+  readonly context: RequestContext;
+
+  constructor(private readonly config: PaperclipMcpConfig) {
+    this.context = RequestContext.fromConfig(config);
+  }
 
   get defaults() {
     return {
@@ -57,22 +69,6 @@ export class PaperclipApiClient {
       agentId: this.config.agentId,
       runId: this.config.runId,
     };
-  }
-
-  resolveCompanyId(companyId?: string | null): string {
-    const resolved = companyId?.trim() || this.config.companyId;
-    if (!resolved) {
-      throw new Error("companyId is required because PAPERCLIP_COMPANY_ID is not set");
-    }
-    return resolved;
-  }
-
-  resolveAgentId(agentId?: string | null): string {
-    const resolved = agentId?.trim() || this.config.agentId;
-    if (!resolved) {
-      throw new Error("agentId is required because PAPERCLIP_AGENT_ID is not set");
-    }
-    return resolved;
   }
 
   async requestJson<T>(method: string, path: string, options: JsonRequestOptions = {}): Promise<T> {
