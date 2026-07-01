@@ -1,8 +1,21 @@
 # syntax=docker/dockerfile:1.20
 
 # ---------- Hermes runtime from pinned stable release ----------
+# The verifier stage gates the COPY --from= chain below: if the pinned Hermes
+# image restructures and any of the binaries the production stage expects goes
+# missing, the build aborts here with a clear diagnostic instead of producing
+# a broken runtime. Probe paths come from
+# openspec/changes/fix-docker-deploy-and-verify-hermes/image-inspection.md
+# (PR #1); if inspection turns up a different layout, update the probes and
+# the COPY --from lines in one shot.
 ARG HERMES_AGENT_IMAGE=nousresearch/hermes-agent:v2026.6.19
-FROM ${HERMES_AGENT_IMAGE} AS hermes_runtime
+FROM ${HERMES_AGENT_IMAGE} AS hermes_runtime_verify
+RUN set -eux; \
+  test -f /opt/hermes/.venv/bin/hermes      || { echo "Hermes verify FAILED: /opt/hermes/.venv/bin/hermes missing (see openspec/changes/fix-docker-deploy-and-verify-hermes/image-inspection.md probe 4)"; exit 1; }; \
+  test -f /opt/hermes/.venv/bin/hermes-agent || { echo "Hermes verify FAILED: /opt/hermes/.venv/bin/hermes-agent missing (probe 5)"; exit 1; }; \
+  test -f /opt/hermes/.venv/bin/hermes-acp   || { echo "Hermes verify FAILED: /opt/hermes/.venv/bin/hermes-acp missing (probe 6)"; exit 1; }; \
+  test -f /usr/local/bin/uv                 || { echo "Hermes verify FAILED: /usr/local/bin/uv missing (probe 7)"; exit 1; }; \
+  test -f /usr/local/bin/uvx                || { echo "Hermes verify FAILED: /usr/local/bin/uvx missing (probe 8)"; exit 1; }
 
 FROM node:lts-trixie-slim AS base
 ARG USER_UID=1000
@@ -72,16 +85,17 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
-# Hermes runtime from pinned image
-COPY --from=hermes_runtime /opt/hermes /opt/hermes
-COPY --from=hermes_runtime /usr/local/bin/uv /usr/local/bin/uv
-COPY --from=hermes_runtime /usr/local/bin/uvx /usr/local/bin/uvx
+# Hermes runtime from pinned image (production COPYs chain through
+# hermes_runtime_verify, so the test-f probes above must succeed first).
+COPY --from=hermes_runtime_verify /opt/hermes /opt/hermes
+COPY --from=hermes_runtime_verify /usr/local/bin/uv /usr/local/bin/uv
+COPY --from=hermes_runtime_verify /usr/local/bin/uvx /usr/local/bin/uvx
 RUN ln -s /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes \
   && ln -s /opt/hermes/.venv/bin/hermes-agent /usr/local/bin/hermes-agent \
   && ln -s /opt/hermes/.venv/bin/hermes-acp /usr/local/bin/hermes-acp \
   && chown -R node:node /opt/hermes \
-  && mkdir -p /paperclip/hermes \
-  && chown node:node /paperclip/hermes \
+  && mkdir -p /paperclip/.hermes \
+  && chown node:node /paperclip/.hermes \
   && hermes --version
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
@@ -99,9 +113,7 @@ ENV NODE_ENV=production \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
   PAPERCLIP_DEPLOYMENT_MODE=authenticated \
   PAPERCLIP_DEPLOYMENT_EXPOSURE=private \
-  HERMES_HOME=/paperclip/hermes \
-  HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist \
-  PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright \
+  HERMES_HOME=/paperclip/.hermes \
   PYTHONUNBUFFERED=1 \
   PATH=/opt/hermes/.venv/bin:${PATH} \
   OPENCODE_ALLOW_ALL_MODELS=true \
