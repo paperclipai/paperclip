@@ -21,6 +21,9 @@ on:
         type: boolean
         default: false
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 concurrency:
   group: release-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
