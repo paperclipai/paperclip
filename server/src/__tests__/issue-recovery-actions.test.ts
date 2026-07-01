@@ -24,7 +24,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
-import { recoveryService } from "../services/recovery/service.js";
+import { recoveryService, STRANDED_RECOVERY_ACTION_MAX_ATTEMPTS } from "../services/recovery/service.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -442,6 +442,131 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("Recovery action:");
+  });
+
+  it("caps recovery-owner wakeups at the stranded attempt limit and posts a single park notice", async () => {
+    const { coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    for (let cycle = 0; cycle < STRANDED_RECOVERY_ACTION_MAX_ATTEMPTS + 2; cycle += 1) {
+      await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, sourceIssue.id));
+      const [current] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+      await recovery.escalateStrandedAssignedIssue({
+        issue: current!,
+        previousStatus: "in_progress",
+        latestRun: {
+          id: randomUUID(),
+          agentId: coderId,
+          status: "failed",
+          error: "adapter failed",
+          errorCode: "adapter_failed",
+          contextSnapshot: { retryReason: "issue_continuation_needed" },
+          livenessState: "needs_followup",
+        },
+        comment: "Automatic continuation recovery failed.",
+      });
+    }
+
+    expect(enqueueWakeup).toHaveBeenCalledTimes(STRANDED_RECOVERY_ACTION_MAX_ATTEMPTS);
+
+    const actionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actionRows).toHaveLength(1);
+    expect(actionRows[0]).toMatchObject({
+      status: "active",
+      attemptCount: STRANDED_RECOVERY_ACTION_MAX_ATTEMPTS + 2,
+      maxAttempts: STRANDED_RECOVERY_ACTION_MAX_ATTEMPTS,
+    });
+
+    const [parkedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(parkedIssue?.status).toBe("blocked");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
+    expect(comments).toHaveLength(2);
+    const parkNotices = comments.filter((comment) => comment.body?.includes("recovery attempt cap"));
+    expect(parkNotices).toHaveLength(1);
+  });
+
+  it("parks exhausted permanent failures instead of restarting continuation retries", async () => {
+    const { companyId, managerId, coderId, sourceIssueId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    // A failed run without a continuation retryReason resets the consecutive-retry
+    // counter; before the durable cap this restarted the transient retry cycle forever.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "Process adapter missing command",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-05-13T18:00:00.000Z"),
+      finishedAt: new Date("2026-05-13T18:00:05.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    await db.insert(issueRecoveryActions).values({
+      id: randomUUID(),
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "stranded_assigned_issue",
+      fingerprint: `source_scoped_recovery:${companyId}:${sourceIssueId}:stranded_assigned_issue`,
+      evidence: { latestRunErrorCode: "adapter_failed" },
+      nextAction: "Restore a live execution path.",
+      attemptCount: STRANDED_RECOVERY_ACTION_MAX_ATTEMPTS + 1,
+      maxAttempts: STRANDED_RECOVERY_ACTION_MAX_ATTEMPTS,
+      lastAttemptAt: new Date("2026-05-13T18:00:05.000Z"),
+    });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+
+    const [parkedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(parkedIssue?.status).toBe("blocked");
+    const actionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(actionRows).toHaveLength(1);
+    expect(actionRows[0]?.status).toBe("active");
+  });
+
+  it("still retries continuation while the stranded recovery action is under the attempt cap", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() }) as never);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "transient adapter failure",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-05-13T18:00:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueWakeup.mock.calls[0]?.[1]?.reason).toBe("issue_continuation_needed");
   });
 
   it("does not create nested recovery artifacts when issue-backed fallback work itself fails", async () => {
