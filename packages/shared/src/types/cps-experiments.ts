@@ -33,6 +33,43 @@ export interface CpsExperimentEntry {
   summary: Record<string, unknown>;
 }
 
+export type CpsRunRequestAction =
+  | "rerun_with_variant"
+  | "investigate_near_miss"
+  | "refresh_index"
+  | "custom_bounded_research";
+
+export interface CreateCpsRunRequestInput {
+  action: CpsRunRequestAction;
+  experimentId?: string | null;
+  prompt: string;
+  maxRuntimeMinutes?: number;
+  allowPaidData?: boolean;
+  allowPaidCompute?: boolean;
+}
+
+export interface CpsRunRequest {
+  schema: "cps.paperclip_run_request.v1";
+  id: string;
+  companyId: string;
+  action: CpsRunRequestAction;
+  experimentId: string | null;
+  prompt: string;
+  requestedAt: string;
+  requestedBy: "board";
+  status: "queued";
+  maxRuntimeMinutes: number;
+  safety: {
+    brokerActions: false;
+    signalPublishing: false;
+    allowPaidData: boolean;
+    allowPaidCompute: boolean;
+    note: string;
+  };
+  path: string;
+  queuePath: string;
+}
+
 export interface CpsExperimentOverview {
   companyId: string;
   generatedAt: string;

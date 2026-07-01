@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { AlertTriangle, BarChart3, Clock, FileJson, FlaskConical, ListChecks, ShieldCheck } from "lucide-react";
 import type { CpsExperimentEntry } from "@paperclipai/shared";
 import { cpsExperimentsApi } from "../api/cps-experiments";
@@ -89,7 +89,7 @@ function EntryCard({ entry, selected, onSelect }: { entry: CpsExperimentEntry; s
   );
 }
 
-function EntryDetail({ entry }: { entry: CpsExperimentEntry }) {
+function EntryDetail({ entry, onQueueFollowUp, isQueueing, queuedId }: { entry: CpsExperimentEntry; onQueueFollowUp: (entry: CpsExperimentEntry) => void; isQueueing: boolean; queuedId: string | null }) {
   const failing = Array.isArray(entry.summary.failing_gates) ? entry.summary.failing_gates.filter((x): x is string => typeof x === "string") : [];
   const safety = entry.summary.safety && typeof entry.summary.safety === "object" ? entry.summary.safety as Record<string, unknown> : null;
   return (
@@ -104,6 +104,17 @@ function EntryDetail({ entry }: { entry: CpsExperimentEntry }) {
         <div className="mt-3 flex flex-wrap gap-2">
           <span className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${decisionClass(entry.decision)}`}>{entry.decision ?? "UNLABELED"}</span>
           {entry.primaryJson ? <span className="rounded-full border border-border bg-muted px-2.5 py-0.5 font-mono text-xs">{entry.primaryJson}</span> : null}
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onQueueFollowUp(entry)}
+            disabled={isQueueing}
+            className="rounded-full border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isQueueing ? "Queueing…" : "Queue bounded CPS follow-up"}
+          </button>
+          {queuedId ? <span className="rounded-full bg-emerald-500/10 px-3 py-1.5 font-mono text-xs text-emerald-700 dark:text-emerald-300">queued {queuedId}</span> : null}
         </div>
       </section>
 
@@ -145,6 +156,7 @@ export function CpsExperiments() {
   const [decisionFilter, setDecisionFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [queuedId, setQueuedId] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard", href: "/dashboard" }, { label: "CPS Experiments" }]);
@@ -155,6 +167,18 @@ export function CpsExperiments() {
     queryFn: () => cpsExperimentsApi.overview(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
     refetchInterval: 60_000,
+  });
+
+  const queueMutation = useMutation({
+    mutationFn: (entry: CpsExperimentEntry) => cpsExperimentsApi.createRunRequest(selectedCompanyId!, {
+      action: entry.decision === "KILL_ARCHIVE" || entry.decision === "KILL" ? "investigate_near_miss" : "rerun_with_variant",
+      experimentId: entry.id,
+      prompt: `Paperclip operator requested a bounded CPS follow-up for ${entry.id}. Review the artifact, preserve the current verdict unless evidence changes, and only run safe local research/backtest steps. No broker actions, no signal publishing. If data/paid API is needed, stop and report the exact need unless already explicitly allowed by the request.`,
+      maxRuntimeMinutes: 90,
+      allowPaidData: false,
+      allowPaidCompute: false,
+    }),
+    onSuccess: (request) => setQueuedId(request.id),
   });
 
   const filtered = useMemo(() => {
@@ -242,7 +266,16 @@ export function CpsExperiments() {
           ))}
         </div>
         <div className="lg:col-span-7">
-          {selected ? <div className="lg:sticky lg:top-6"><EntryDetail entry={selected} /></div> : <EmptyState icon={FlaskConical} message="Select an experiment to see details." />}
+          {selected ? (
+            <div className="lg:sticky lg:top-6">
+              <EntryDetail
+                entry={selected}
+                onQueueFollowUp={(entry) => queueMutation.mutate(entry)}
+                isQueueing={queueMutation.isPending}
+                queuedId={queuedId}
+              />
+            </div>
+          ) : <EmptyState icon={FlaskConical} message="Select an experiment to see details." />}
         </div>
       </div>
     </div>

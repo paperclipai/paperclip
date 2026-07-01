@@ -6,13 +6,20 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { CpsExperimentEntry, CpsExperimentOverview } from "@paperclipai/shared";
+import type {
+  CreateCpsRunRequestInput,
+  CpsExperimentEntry,
+  CpsExperimentOverview,
+  CpsRunRequest,
+  CpsRunRequestAction,
+} from "@paperclipai/shared";
 
 export interface CpsExperimentsServiceOptions {
   indexFile?: string;
   selfPracticeDir?: string;
   staleAfterMs?: number;
   recentLimit?: number;
+  runRequestsDir?: string;
 }
 
 const DEFAULT_SELF_PRACTICE_DIR = "/root/cps/var/self_practice";
@@ -47,6 +54,37 @@ function parseDateMs(value: string | null): number | null {
   if (!value) return null;
   const ms = Date.parse(value);
   return Number.isFinite(ms) ? ms : null;
+}
+
+const RUN_REQUEST_ACTIONS: ReadonlySet<CpsRunRequestAction> = new Set([
+  "rerun_with_variant",
+  "investigate_near_miss",
+  "refresh_index",
+  "custom_bounded_research",
+]);
+
+function assertRunRequestInput(input: CreateCpsRunRequestInput) {
+  if (!RUN_REQUEST_ACTIONS.has(input.action)) {
+    throw new Error(`Unsupported CPS run request action: ${String(input.action)}`);
+  }
+  const prompt = input.prompt?.trim();
+  if (!prompt || prompt.length < 8) throw new Error("CPS run request prompt is required");
+  if (prompt.length > 4000) throw new Error("CPS run request prompt is too long");
+  const maxRuntime = input.maxRuntimeMinutes ?? 60;
+  if (!Number.isFinite(maxRuntime) || maxRuntime < 1 || maxRuntime > 360) {
+    throw new Error("maxRuntimeMinutes must be between 1 and 360");
+  }
+}
+
+function safeSlug(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "request";
+}
+
+function resolveRunRequestsDir(options: CpsExperimentsServiceOptions) {
+  return options.runRequestsDir ?? process.env.PAPERCLIP_CPS_RUN_REQUESTS_DIR ?? path.join(
+    options.selfPracticeDir ?? process.env.PAPERCLIP_CPS_SELF_PRACTICE_DIR ?? DEFAULT_SELF_PRACTICE_DIR,
+    "paperclip-run-requests",
+  );
 }
 
 function mapEntry(raw: unknown): CpsExperimentEntry | null {
@@ -115,6 +153,42 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
   const recentLimit = options.recentLimit ?? DEFAULT_RECENT_LIMIT;
 
   return {
+    async createRunRequest(companyId: string, input: CreateCpsRunRequestInput): Promise<CpsRunRequest> {
+      assertRunRequestInput(input);
+      const requestedAt = new Date().toISOString();
+      const runRequestsDir = resolveRunRequestsDir(options);
+      await fs.mkdir(runRequestsDir, { recursive: true });
+      const experimentId = input.experimentId?.trim() || null;
+      const id = `${requestedAt.replace(/[-:.]/g, "").slice(0, 15)}-${safeSlug(input.action)}${experimentId ? `-${safeSlug(experimentId)}` : ""}`;
+      const requestPath = path.join(runRequestsDir, `${id}.json`);
+      const queuePath = path.join(runRequestsDir, "QUEUE.jsonl");
+      const request: CpsRunRequest = {
+        schema: "cps.paperclip_run_request.v1",
+        id,
+        companyId,
+        action: input.action,
+        experimentId,
+        prompt: input.prompt.trim(),
+        requestedAt,
+        requestedBy: "board",
+        status: "queued",
+        maxRuntimeMinutes: Math.trunc(input.maxRuntimeMinutes ?? 60),
+        safety: {
+          brokerActions: false,
+          signalPublishing: false,
+          allowPaidData: input.allowPaidData === true,
+          allowPaidCompute: input.allowPaidCompute === true,
+          note: "Paperclip is authorized to queue bounded CPS research runs here; executors must still enforce no broker actions and no public signal publishing.",
+        },
+        path: path.normalize(requestPath),
+        queuePath: path.normalize(queuePath),
+      };
+      const line = `${JSON.stringify(request)}\n`;
+      await fs.writeFile(requestPath, `${JSON.stringify(request, null, 2)}\n`, { flag: "wx" });
+      await fs.appendFile(queuePath, line);
+      return request;
+    },
+
     async overview(companyId: string): Promise<CpsExperimentOverview> {
       const indexFile = await resolveIndexFile(options);
       const raw = await readIndex(indexFile);

@@ -6,11 +6,17 @@ const companyId = "22222222-2222-4222-8222-222222222222";
 
 const mockService = vi.hoisted(() => ({
   overview: vi.fn(),
+  createRunRequest: vi.fn(),
 }));
+
+const mockLogActivity = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
   vi.doMock("../services/cps-experiments.js", () => ({
     cpsExperimentsService: () => mockService,
+  }));
+  vi.doMock("../services/index.js", () => ({
+    logActivity: mockLogActivity,
   }));
 }
 
@@ -35,6 +41,7 @@ describe("CPS experiment routes", () => {
     vi.resetModules();
     vi.doUnmock("../routes/cps-experiments.js");
     vi.doUnmock("../services/cps-experiments.js");
+    vi.doUnmock("../services/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
     mockService.overview.mockResolvedValue({
@@ -46,6 +53,22 @@ describe("CPS experiment routes", () => {
       entries: [],
       safety: { readOnly: true, brokerActions: false, paidComputeActions: false, paidDataActions: false, signalPublishing: false, note: "read-only" },
     });
+    mockService.createRunRequest.mockResolvedValue({
+      schema: "cps.paperclip_run_request.v1",
+      id: "req-1",
+      companyId,
+      action: "investigate_near_miss",
+      experimentId: "exp-1",
+      prompt: "Investigate safely",
+      requestedAt: "2026-07-01T00:00:00.000Z",
+      requestedBy: "board",
+      status: "queued",
+      maxRuntimeMinutes: 30,
+      safety: { brokerActions: false, signalPublishing: false, allowPaidData: false, allowPaidCompute: false, note: "safe" },
+      path: "/tmp/req-1.json",
+      queuePath: "/tmp/QUEUE.jsonl",
+    });
+    mockLogActivity.mockResolvedValue(undefined);
   });
 
   it("returns the company-scoped experiment overview for a board actor", async () => {
@@ -74,5 +97,18 @@ describe("CPS experiment routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockService.overview).not.toHaveBeenCalled();
+  });
+
+  it("lets board users queue bounded CPS run requests and logs the mutation", async () => {
+    const app = await createApp({ type: "board", userId: "board-user", source: "session", isInstanceAdmin: true, companyIds: [companyId] });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/cps-experiments/run-requests`)
+      .send({ action: "investigate_near_miss", experimentId: "exp-1", prompt: "Investigate safely with local data only." });
+
+    expect(res.status).toBe(202);
+    expect(mockService.createRunRequest).toHaveBeenCalledWith(companyId, expect.objectContaining({ action: "investigate_near_miss", experimentId: "exp-1" }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "cps.run_request.queued", entityId: "req-1" }));
+    expect(res.body).toMatchObject({ id: "req-1", safety: { brokerActions: false, signalPublishing: false } });
   });
 });

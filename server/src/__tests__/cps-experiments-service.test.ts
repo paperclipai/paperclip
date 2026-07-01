@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -96,5 +96,23 @@ describe("cpsExperimentsService.overview", () => {
     expect(out.source.stale).toBe(true);
     expect(out.entries).toEqual([]);
     expect(out.safety.readOnly).toBe(true);
+  });
+
+  it("queues bounded Paperclip run requests without executing them", async () => {
+    const runRequestsDir = path.join(root, "run-requests");
+    const svc = cpsExperimentsService({ runRequestsDir });
+    const request = await svc.createRunRequest("company-1", {
+      action: "investigate_near_miss",
+      experimentId: "sp-20260701T000000Z-fixture",
+      prompt: "Investigate this near miss with local data only.",
+      maxRuntimeMinutes: 30,
+    });
+
+    expect(request.status).toBe("queued");
+    expect(request.safety).toMatchObject({ brokerActions: false, signalPublishing: false, allowPaidData: false });
+    const stored = JSON.parse(await readFile(request.path, "utf8"));
+    expect(stored.id).toBe(request.id);
+    const queue = await readFile(request.queuePath, "utf8");
+    expect(queue).toContain(request.id);
   });
 });
