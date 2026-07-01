@@ -28,9 +28,31 @@ const sharedOpts = {
   singleLine: true,
 };
 
+/**
+ * Pino redact paths applied to every log record produced by the server logger
+ * (and inherited by the {@link httpLogger} below).
+ *
+ * Goal: keep session-bearing headers out of `server.log`. Better-Auth issues
+ * its session token as the `Cookie: paperclip-...session_token=...` header on
+ * the request and as `Set-Cookie` on the response; both must never land in
+ * persisted logs in plaintext. Authorization bearer tokens are also redacted
+ * for the same reason.
+ *
+ * The path strings follow pino's redact path syntax — bracket notation is
+ * required for keys with non-identifier characters such as `set-cookie`.
+ * Pino preserves the field name and replaces only the value with `[Redacted]`
+ * (default), so debug context "did this request carry a cookie?" is still
+ * answerable from the log.
+ */
+export const HTTP_LOG_REDACT_PATHS = [
+  "req.headers.authorization",
+  "req.headers.cookie",
+  'res.headers["set-cookie"]',
+];
+
 export const logger = pino({
   level: "debug",
-  redact: ["req.headers.authorization"],
+  redact: HTTP_LOG_REDACT_PATHS,
 }, pino.transport({
   targets: [
     {
