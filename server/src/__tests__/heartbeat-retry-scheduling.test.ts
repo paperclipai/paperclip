@@ -1091,6 +1091,84 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(issue?.executionRunId).toBeNull();
   });
 
+  it.each(["done", "cancelled"] as const)(
+    "suppresses transient retry scheduling when the issue is already %s (CAR-4167)",
+    async (terminalStatus) => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      const sourceRunId = randomUUID();
+      const now = new Date("2026-05-01T12:00:00.000Z");
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "ClaudeCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: 1,
+          },
+        },
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Already closed issue",
+        status: terminalStatus,
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-1`,
+      });
+
+      await db.insert(heartbeatRuns).values({
+        id: sourceRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "failed",
+        error: "You've hit your session limit",
+        errorCode: "adapter_failed",
+        finishedAt: now,
+        contextSnapshot: {
+          issueId,
+          wakeReason: "transient_failure_retry",
+        },
+        updatedAt: now,
+        createdAt: now,
+      });
+
+      const result = await heartbeat.scheduleBoundedRetry(sourceRunId, { now, random: () => 0.5 });
+
+      expect(result).toMatchObject({
+        outcome: "not_scheduled",
+        errorCode: terminalStatus === "cancelled" ? "issue_cancelled" : "issue_terminal_status",
+        issueId,
+      });
+
+      const retryRuns = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, sourceRunId))
+        .then((rows) => rows[0]?.count ?? 0);
+      expect(retryRuns).toBe(0);
+    },
+  );
+
   it("exhausts bounded retries after the hard cap", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

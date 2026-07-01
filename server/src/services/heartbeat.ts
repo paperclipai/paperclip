@@ -5612,6 +5612,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
       }
 
+      // For transient retries (not max-turn continuations), suppress scheduling
+      // when the issue is already in a terminal state. The run failure was an
+      // upstream transient error unrelated to whether the issue's work is done.
+      if (retryReason !== MAX_TURN_CONTINUATION_RETRY_REASON && issueId) {
+        const terminalCheck = await tx
+          .select({ status: issues.status })
+          .from(issues)
+          .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+          .then((rows) => rows[0] ?? null);
+        if (terminalCheck && (terminalCheck.status === "done" || terminalCheck.status === "cancelled")) {
+          return {
+            outcome: "not_scheduled",
+            reason: `Transient retry suppressed because issue reached terminal status (${terminalCheck.status})`,
+            errorCode: terminalCheck.status === "cancelled" ? "issue_cancelled" : "issue_terminal_status",
+            issueId,
+            details: { issueId, currentStatus: terminalCheck.status },
+          };
+        }
+      }
+
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -6703,9 +6723,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
+    // Select only columns needed by the reaper — omits context_snapshot, usage_json, result_json, log_* etc.
+    // to avoid expensive TOAST reads when 100+ agents are running concurrently (CAR-4026).
     const activeRuns = await db
       .select({
-        run: heartbeatRuns,
+        run: {
+          id: heartbeatRuns.id,
+          companyId: heartbeatRuns.companyId,
+          agentId: heartbeatRuns.agentId,
+          status: heartbeatRuns.status,
+          updatedAt: heartbeatRuns.updatedAt,
+          processPid: heartbeatRuns.processPid,
+          processGroupId: heartbeatRuns.processGroupId,
+          errorCode: heartbeatRuns.errorCode,
+          processLossRetryCount: heartbeatRuns.processLossRetryCount,
+          wakeupRequestId: heartbeatRuns.wakeupRequestId,
+          resultJson: heartbeatRuns.resultJson,
+        },
         adapterType: agents.adapterType,
         adapterConfig: agents.adapterConfig,
       })
