@@ -10,6 +10,8 @@ import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
 import { MicroBoardReview } from "./pages/MicroBoardReview";
 import { McpVisualizer } from "./pages/McpVisualizer";
+import { ResearchPapers } from "./pages/ResearchPapers";
+import { CpsExperiments } from "./pages/CpsExperiments";
 import { Companies } from "./pages/Companies";
 import { Agents } from "./pages/Agents";
 import { AgentDetail } from "./pages/AgentDetail";
@@ -83,6 +85,8 @@ function boardRoutes() {
       <Route path="dashboard/live" element={<DashboardLive />} />
       <Route path="micro-board-review" element={<MicroBoardReview />} />
       <Route path="mcp-visualizer" element={<McpVisualizer />} />
+      <Route path="research-papers" element={<ResearchPapers />} />
+      <Route path="cps-experiments" element={<CpsExperiments />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
@@ -421,6 +425,7 @@ export function App() {
           <Route path="pipelines/:pipelineId/cases/:caseId" element={<UnprefixedBoardRedirect />} />
           <Route path="micro-board-review" element={<UnprefixedBoardRedirect />} />
           <Route path="mcp-visualizer" element={<UnprefixedBoardRedirect />} />
+          <Route path="research-papers" element={<UnprefixedBoardRedirect />} />
           <Route path="artifacts" element={<UnprefixedBoardRedirect />} />
           <Route path="u/:userSlug" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/*" element={<UnprefixedBoardRedirect />} />

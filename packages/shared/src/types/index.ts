@@ -483,6 +483,27 @@ export type {
   MicroRegistryPod,
   MicroRegistryPromotionRequest,
 } from "./micro-registry.js";
+export type {
+  ResearchPaperArtifactFile,
+  ResearchPaperArtifactKind,
+  ResearchPaperBadge,
+  ResearchPaperBadgeAxis,
+  ResearchPaperClaims,
+  ResearchPaperEvidence,
+  ResearchPaperLogEntry,
+  ResearchPaperMetric,
+  ResearchPaperMetricsBlock,
+  ResearchPaperOverview,
+  ResearchPaperRoot,
+  ResearchPaperTone,
+  ResearchToolbeltStatus,
+} from "./research-papers.js";
+export type {
+  CpsExperimentEntry,
+  CpsExperimentKind,
+  CpsExperimentOverview,
+  CpsExperimentStatus,
+} from "./cps-experiments.js";
 export type { ActivityEvent } from "./activity.js";
 export type {
   UserProfileActivitySummary,
