@@ -134,8 +134,19 @@ export function detectClaudeLoginRequired(input: {
   stdout: string;
   stderr: string;
 }): { requiresLogin: boolean; loginUrl: string | null } {
-  const resultText = asString(input.parsed?.result, "").trim();
-  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
+  const parsed = input.parsed;
+  // On a successful CLI envelope, `parsed.result` is the agent's own output
+  // and may legitimately contain words like "Unauthorized", "login required",
+  // or "authentication required" (HTTP error tables, doc snippets, code
+  // samples). Including it in the auth-required haystack mislabels healthy
+  // runs as `claude_auth_required`. Real CLI auth failures still surface
+  // through stdout/stderr and through the structured `errors` array.
+  const isSuccessEnvelope =
+    parsed != null &&
+    asString(parsed.subtype, "") === "success" &&
+    parsed.is_error !== true;
+  const resultText = isSuccessEnvelope ? "" : asString(parsed?.result, "").trim();
+  const messages = [resultText, ...extractClaudeErrorMessages(parsed ?? {}), input.stdout, input.stderr]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
