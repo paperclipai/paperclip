@@ -78,6 +78,9 @@ import {
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import {
@@ -1069,7 +1072,7 @@ export function AgentDetail() {
       {/* Floating Save/Cancel (desktop) */}
       {!isMobile && showConfigActionBar && (
         <div className="fixed bottom-6 right-6 z-30">
-          <div className="flex items-center gap-2 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-1.5 shadow-lg">
+          <div className="flex items-center gap-2 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-1.5">
             <Button
               variant="ghost"
               size="sm"
@@ -1253,7 +1256,7 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
         to={`/agents/${agentId}/runs/${run.id}`}
         className={cn(
           "block border rounded-lg p-4 space-y-2 w-full no-underline transition-colors hover:bg-muted/50 cursor-pointer",
-          isLive ? "border-cyan-500/30 shadow-[0_0_12px_rgba(6,182,212,0.08)]" : "border-border"
+          isLive ? "border-cyan-500/30" : "border-border"
         )}
       >
         <div className="flex items-center gap-2">
@@ -2465,10 +2468,10 @@ function PromptsTab({
               }}
             />
           ) : (
-            <textarea
+            <Textarea
               value={displayValue}
               onChange={(event) => setDraft(event.target.value)}
-              className="min-h-[420px] w-full min-w-0 rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
+              className="min-h-[420px] min-w-0 font-mono text-sm"
               placeholder="File contents"
             />
           )}
@@ -2805,23 +2808,24 @@ export function AgentSkillsTab({
 
               const checked = skillDraft.includes(skill.key);
               const disabled = skillSnapshot?.mode === "unsupported";
+              const checkboxId = `skill-toggle-${skill.id}`;
               const checkbox = (
-                <input
-                  type="checkbox"
+                <Checkbox
+                  id={checkboxId}
                   checked={checked}
                   disabled={disabled}
-                  onChange={(event) => {
-                    const next = event.target.checked
+                  onCheckedChange={(value) => {
+                    const next = value === true
                       ? Array.from(new Set([...skillDraft, skill.key]))
-                      : skillDraft.filter((value) => value !== skill.key);
+                      : skillDraft.filter((entry) => entry !== skill.key);
                     setSkillDraft(next);
                   }}
-                  className="mt-0.5 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="mt-0.5"
                 />
               );
 
               return (
-                <label key={skill.id} className={rowClassName}>
+                <div key={skill.id} className={rowClassName}>
                   {skillSnapshot?.mode === "unsupported" ? (
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -2834,8 +2838,10 @@ export function AgentSkillsTab({
                   ) : (
                     checkbox
                   )}
-                  {body}
-                </label>
+                  <Label htmlFor={checkboxId} className="block min-w-0 flex-1 font-normal leading-normal">
+                    {body}
+                  </Label>
+                </div>
               );
             };
 
@@ -3990,7 +3996,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
                 className={cn(
                   "rounded-md px-2.5 py-1 text-[11px] font-medium capitalize transition-colors",
                   transcriptMode === mode
-                    ? "bg-accent text-foreground shadow-sm"
+                    ? "bg-accent text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
                 onClick={() => setTranscriptMode(mode)}

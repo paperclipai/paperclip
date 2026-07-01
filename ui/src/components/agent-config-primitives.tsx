@@ -14,6 +14,8 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
 import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
@@ -175,9 +177,9 @@ export function ToggleWithNumber({
       {showNumber && (
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           {numberPrefix && <span>{numberPrefix}</span>}
-          <input
+          <Input
             type="number"
-            className="w-16 rounded-md border border-border px-2 py-0.5 bg-transparent outline-none text-xs font-mono text-center"
+            className="h-7 w-16 px-2 py-0.5 text-xs font-mono text-center"
             value={number}
             onChange={(e) => onNumberChange(Number(e.target.value))}
           />
@@ -247,9 +249,9 @@ export function AutoExpandTextarea({
   useEffect(() => { adjustHeight(); }, [value, adjustHeight]);
 
   return (
-    <textarea
+    <Textarea
       ref={textareaRef}
-      className="w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40 resize-none overflow-hidden"
+      className="min-h-0 px-2.5 py-1.5 text-sm font-mono placeholder:text-muted-foreground/40 resize-none overflow-hidden"
       placeholder={placeholder}
       value={value}
       onChange={(e) => onChange(e.target.value)}
@@ -279,7 +281,7 @@ export function DraftInput({
   useEffect(() => setDraft(value), [value]);
 
   return (
-    <input
+    <Input
       className={className}
       value={draft}
       onChange={(e) => {
@@ -328,9 +330,9 @@ export function DraftTextarea({
   useEffect(() => { adjustHeight(); }, [draft, adjustHeight]);
 
   return (
-    <textarea
+    <Textarea
       ref={textareaRef}
-      className="w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40 resize-none overflow-hidden"
+      className="min-h-0 px-2.5 py-1.5 text-sm font-mono placeholder:text-muted-foreground/40 resize-none overflow-hidden"
       placeholder={placeholder}
       value={draft}
       onChange={(e) => {
@@ -364,7 +366,7 @@ export function DraftNumberInput({
   useEffect(() => setDraft(String(value)), [value]);
 
   return (
-    <input
+    <Input
       type="number"
       className={className}
       value={draft}

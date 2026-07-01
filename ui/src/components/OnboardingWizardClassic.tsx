@@ -18,6 +18,9 @@ import {
   PopoverTrigger
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { cn } from "../lib/utils";
 import {
   extractModelName,
@@ -682,7 +685,8 @@ export function OnboardingWizardClassic() {
                     </div>
                   </div>
                   <div className="mt-3 group">
-                    <label
+                    <Label
+                      htmlFor="onboarding-classic-company-name"
                       className={cn(
                         "text-xs mb-1 block transition-colors",
                         companyName.trim()
@@ -691,9 +695,9 @@ export function OnboardingWizardClassic() {
                       )}
                     >
                       Company name
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                    </Label>
+                    <Input
+                      id="onboarding-classic-company-name"
                       placeholder="Acme Corp"
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
@@ -701,7 +705,8 @@ export function OnboardingWizardClassic() {
                     />
                   </div>
                   <div className="group">
-                    <label
+                    <Label
+                      htmlFor="onboarding-classic-company-goal"
                       className={cn(
                         "text-xs mb-1 block transition-colors",
                         companyGoal.trim()
@@ -710,9 +715,10 @@ export function OnboardingWizardClassic() {
                       )}
                     >
                       Mission / goal (optional)
-                    </label>
-                    <textarea
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
+                    </Label>
+                    <Textarea
+                      id="onboarding-classic-company-goal"
+                      className="resize-none min-h-[60px]"
                       placeholder="What is this company trying to achieve?"
                       value={companyGoal}
                       onChange={(e) => setCompanyGoal(e.target.value)}
@@ -735,11 +741,14 @@ export function OnboardingWizardClassic() {
                     </div>
                   </div>
                   <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
+                    <Label
+                      htmlFor="onboarding-classic-agent-name"
+                      className="text-xs text-muted-foreground mb-1 block"
+                    >
                       Agent name
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                    </Label>
+                    <Input
+                      id="onboarding-classic-agent-name"
                       placeholder="CEO"
                       value={agentName}
                       onChange={(e) => setAgentName(e.target.value)}
@@ -1075,13 +1084,17 @@ export function OnboardingWizardClassic() {
                   {(adapterType === "http" ||
                     adapterType === "openclaw_gateway") && (
                     <div>
-                      <label className="text-xs text-muted-foreground mb-1 block">
+                      <Label
+                        htmlFor="onboarding-classic-adapter-url"
+                        className="text-xs text-muted-foreground mb-1 block"
+                      >
                         {adapterType === "openclaw_gateway"
                           ? "Gateway URL"
                           : "Webhook URL"}
-                      </label>
-                      <input
-                        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                      </Label>
+                      <Input
+                        id="onboarding-classic-adapter-url"
+                        className="font-mono"
                         placeholder={
                           adapterType === "openclaw_gateway"
                             ? "ws://127.0.0.1:18789"
@@ -1110,11 +1123,14 @@ export function OnboardingWizardClassic() {
                     </div>
                   </div>
                   <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
+                    <Label
+                      htmlFor="onboarding-classic-task-title"
+                      className="text-xs text-muted-foreground mb-1 block"
+                    >
                       Task title
-                    </label>
-                    <input
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                    </Label>
+                    <Input
+                      id="onboarding-classic-task-title"
                       placeholder="e.g. Research competitor pricing"
                       value={taskTitle}
                       onChange={(e) => setTaskTitle(e.target.value)}
@@ -1122,12 +1138,16 @@ export function OnboardingWizardClassic() {
                     />
                   </div>
                   <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">
+                    <Label
+                      htmlFor="onboarding-classic-task-description"
+                      className="text-xs text-muted-foreground mb-1 block"
+                    >
                       Description (optional)
-                    </label>
-                    <textarea
+                    </Label>
+                    <Textarea
+                      id="onboarding-classic-task-description"
                       ref={textareaRef}
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[120px] max-h-[300px] overflow-y-auto"
+                      className="resize-none min-h-[120px] max-h-[300px] overflow-y-auto"
                       placeholder="Add more detail about what the agent should do..."
                       value={taskDescription}
                       onChange={(e) => setTaskDescription(e.target.value)}

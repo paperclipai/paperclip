@@ -1,4 +1,5 @@
 import type { IssueRelatedWorkItem, IssueRelatedWorkSummary } from "@paperclipai/shared";
+import { Badge } from "./ui/badge";
 import { IssueReferencePill } from "./IssueReferencePill";
 
 type GroupedSource = {
@@ -62,16 +63,17 @@ function Section({
                 ) : null}
                 <div className="flex flex-wrap items-center gap-1.5">
                   {groupedSources.map((group) => (
-                    <span
+                    <Badge
                       key={`${item.issue.id}:${group.label}`}
-                      className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/40 px-2 py-0.5 text-xs text-muted-foreground"
+                      variant="outline"
+                      className="bg-muted/40 text-muted-foreground"
                       title={group.sampleMatchedText ?? undefined}
                     >
                       <span>{group.label}</span>
                       {group.count > 1 ? (
                         <span className="tabular-nums text-[10px] font-medium opacity-80">×{group.count}</span>
                       ) : null}
-                    </span>
+                    </Badge>
                   ))}
                 </div>
               </li>

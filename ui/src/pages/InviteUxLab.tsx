@@ -109,7 +109,7 @@ function LabSection({
   return (
     <section
       className={cn(
-        "rounded-[28px] border border-border/70 bg-background/80 p-4 shadow-[0_24px_60px_rgba(15,23,42,0.08)] sm:p-5",
+        "rounded-[28px] border border-border/70 bg-background/80 p-4 sm:p-5",
         accentClassName,
       )}
     >
@@ -146,7 +146,7 @@ function StatusCard({
   }[tone];
 
   return (
-    <Card className={cn("rounded-[24px] shadow-none", toneClassName)}>
+    <Card className={cn(toneClassName)}>
       <CardHeader className="space-y-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-full border border-current/10 bg-background/70 text-muted-foreground">
           {icon}
@@ -168,7 +168,7 @@ function InviteLandingShell({
   right: ReactNode;
 }) {
   return (
-    <div className="overflow-hidden rounded-[28px] border border-zinc-800 bg-zinc-950 shadow-[0_30px_80px_rgba(2,6,23,0.55)]">
+    <div className="overflow-hidden rounded-[28px] border border-zinc-800 bg-zinc-950">
       <div className="grid gap-px bg-zinc-800 lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
         <section className={cn(panelClassName, "space-y-6 bg-zinc-950")}>{left}</section>
         <section className={cn(panelClassName, "h-full bg-zinc-950")}>{right}</section>
@@ -451,7 +451,7 @@ function InviteResultPreview({
 
 function AuthScreenPreview({ mode, error }: { mode: "sign_in" | "sign_up"; error?: string }) {
   return (
-    <div className="overflow-hidden rounded-[28px] border border-border/70 bg-background shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
+    <div className="overflow-hidden rounded-[28px] border border-border/70 bg-background">
       <div className="grid gap-px bg-border/60 md:grid-cols-2">
         <div className="flex min-h-[420px] flex-col justify-center bg-background px-8 py-10">
           <div className="mx-auto w-full max-w-md">
@@ -526,7 +526,7 @@ function AuthScreenPreview({ mode, error }: { mode: "sign_in" | "sign_up"; error
 function CompanyInvitesPreview() {
   return (
     <div className="grid gap-5 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
-      <Card className="rounded-[28px] shadow-none">
+      <Card>
         <CardHeader className="space-y-3">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <MailPlus className="h-4 w-4" />
@@ -609,7 +609,7 @@ function CompanyInvitesPreview() {
         </CardContent>
       </Card>
 
-      <Card className="rounded-[28px] shadow-none">
+      <Card>
         <CardHeader className="space-y-3">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -697,7 +697,7 @@ function CompanyInvitesPreview() {
 export function InviteUxLab() {
   return (
     <div className="space-y-6">
-      <div className="overflow-hidden rounded-[32px] border border-border/70 bg-[linear-gradient(135deg,rgba(8,145,178,0.10),transparent_28%),linear-gradient(180deg,rgba(245,158,11,0.10),transparent_44%),var(--background)] shadow-[0_30px_80px_rgba(15,23,42,0.10)]">
+      <div className="overflow-hidden rounded-[32px] border border-border/70 bg-[linear-gradient(135deg,rgba(8,145,178,0.10),transparent_28%),linear-gradient(180deg,rgba(245,158,11,0.10),transparent_44%),var(--background)]">
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_320px]">
           <div className="p-6 sm:p-7">
             <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/[0.08] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] text-cyan-700 dark:text-cyan-300">

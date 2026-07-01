@@ -56,6 +56,7 @@ export { assets } from "./assets.js";
 export { issueAttachments } from "./issue_attachments.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
+export { memoryEntries, type MemoryEntrySource } from "./memory_entries.js";
 export { issueDocuments } from "./issue_documents.js";
 export { documentAnnotationThreads } from "./document_annotation_threads.js";
 export { documentAnnotationComments } from "./document_annotation_comments.js";

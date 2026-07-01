@@ -2,6 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import type { AgentPermissions, TrustPreset } from "@paperclipai/shared";
 import { Lock, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Field, CollapsibleSection } from "./agent-config-primitives";
 import {
   buildPermissionsForTrustPreset,
@@ -19,8 +26,8 @@ import {
 } from "../lib/trust-policy-ui";
 import { cn } from "../lib/utils";
 
-const inputClass =
-  "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
+/** Radix Select forbids empty-string item values; use a sentinel for "unset". */
+const BOUNDARY_UNSET = "__unset__";
 
 function formatCount(value: readonly unknown[] | undefined, singular: string, plural: string) {
   const count = value?.length ?? 0;
@@ -107,15 +114,19 @@ export function TrustPresetSection({
       <h3 className="mb-3 text-sm font-medium">Trust</h3>
       <div className="rounded-lg border border-border p-4 space-y-3">
         <Field label="Trust preset" hint="Choose how broadly this agent can read and act on Paperclip work objects.">
-          <select
-            className={inputClass}
+          <Select
             value={preset}
-            onChange={(event) => handlePresetChange(event.target.value)}
+            onValueChange={(value) => handlePresetChange(value)}
             disabled={disabled}
           >
-            <option value="standard">{TRUST_PRESET_LABELS.standard}</option>
-            <option value="low_trust_review">{TRUST_PRESET_LABELS.low_trust_review}</option>
-          </select>
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="standard">{TRUST_PRESET_LABELS.standard}</SelectItem>
+              <SelectItem value="low_trust_review">{TRUST_PRESET_LABELS.low_trust_review}</SelectItem>
+            </SelectContent>
+          </Select>
         </Field>
         <p className="text-xs text-muted-foreground">{TRUST_PRESET_DESCRIPTIONS[preset]}</p>
 
@@ -150,37 +161,55 @@ export function TrustPresetSection({
                 <div className="rounded-md border border-border/70 bg-background/70 p-3 text-foreground space-y-3">
                   <div className="grid gap-3 sm:grid-cols-[minmax(0,0.75fr)_minmax(0,1fr)]">
                     <Field label="Boundary type">
-                      <select
-                        className={inputClass}
+                      <Select
                         value={targetType}
-                        onChange={(event) => setTargetType(event.target.value as LowTrustBoundaryTargetType)}
+                        onValueChange={(value) => setTargetType(value as LowTrustBoundaryTargetType)}
                         disabled={disabled}
                       >
-                        <option value="project">Project</option>
-                        <option value="root_issue">Root issue</option>
-                        <option value="issue">Issue</option>
-                      </select>
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="project">Project</SelectItem>
+                          <SelectItem value="root_issue">Root issue</SelectItem>
+                          <SelectItem value="issue">Issue</SelectItem>
+                        </SelectContent>
+                      </Select>
                     </Field>
                     <Field label={BOUNDARY_TARGET_LABELS[targetType]}>
-                      <select
-                        className={inputClass}
-                        value={boundaryValue}
-                        onChange={(event) => handleBoundaryTargetChange(event.target.value)}
+                      <Select
+                        value={boundaryValue || BOUNDARY_UNSET}
+                        onValueChange={(value) =>
+                          handleBoundaryTargetChange(value === BOUNDARY_UNSET ? "" : value)
+                        }
                         disabled={disabled || !companyId || candidatesLoading || targetCandidates.length === 0}
                       >
-                        <option value="">
-                          {candidatesLoading
-                            ? "Loading…"
-                            : targetCandidates.length === 0
-                              ? `No ${targetType === "project" ? "projects" : "issues"} available`
-                              : "Select boundary"}
-                        </option>
-                        {targetCandidates.map((candidate) => (
-                          <option key={candidate.id} value={candidate.id}>
-                            {candidate.label}
-                          </option>
-                        ))}
-                      </select>
+                        <SelectTrigger className="w-full">
+                          <SelectValue
+                            placeholder={
+                              candidatesLoading
+                                ? "Loading…"
+                                : targetCandidates.length === 0
+                                  ? `No ${targetType === "project" ? "projects" : "issues"} available`
+                                  : "Select boundary"
+                            }
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={BOUNDARY_UNSET}>
+                            {candidatesLoading
+                              ? "Loading…"
+                              : targetCandidates.length === 0
+                                ? `No ${targetType === "project" ? "projects" : "issues"} available`
+                                : "Select boundary"}
+                          </SelectItem>
+                          {targetCandidates.map((candidate) => (
+                            <SelectItem key={candidate.id} value={candidate.id}>
+                              {candidate.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </Field>
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2">

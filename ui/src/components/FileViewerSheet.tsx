@@ -399,7 +399,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
         <div
           role="group"
           aria-label="Markdown preview mode"
-          className="inline-flex rounded-md border border-border bg-background/95 p-0.5 shadow-sm backdrop-blur"
+          className="inline-flex rounded-md border border-border bg-background/95 p-0.5 backdrop-blur"
         >
           <Button
             type="button"

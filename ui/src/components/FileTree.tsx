@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import { statusBadge, statusBadgeDefault } from "../lib/status-colors";
 import { Button } from "./ui/button";
+import { Checkbox } from "./ui/checkbox";
+import { Label } from "./ui/label";
 import { Skeleton } from "./ui/skeleton";
 
 // -- Tree types --------------------------------------------------------------
@@ -435,17 +437,13 @@ export function FileTree({
             data-file-tree-path={node.path}
           >
             {showCheckboxes && (
-              <label className="flex items-center pl-2" onClick={(event) => event.stopPropagation()}>
-                <input
-                  type="checkbox"
-                  checked={allChecked}
-                  ref={(element) => {
-                    if (element) element.indeterminate = someChecked;
-                  }}
-                  onChange={() => onToggleCheck?.(node.path, node.kind)}
-                  className="mr-2 accent-foreground"
+              <Label className="flex items-center pl-2" onClick={(event) => event.stopPropagation()}>
+                <Checkbox
+                  checked={someChecked ? "indeterminate" : allChecked}
+                  onCheckedChange={() => onToggleCheck?.(node.path, node.kind)}
+                  className="mr-2"
                 />
-              </label>
+              </Label>
             )}
             <span className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left">
               <span className="flex h-4 w-4 shrink-0 items-center justify-center">

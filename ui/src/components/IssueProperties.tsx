@@ -48,6 +48,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock, RotateCcw, Loader2, CheckCircle2, ScanEye } from "lucide-react";
@@ -1363,24 +1364,24 @@ export function IssueProperties({
   const monitorContent = (
     <div className="flex w-full flex-col gap-2">
       <div className="flex flex-col gap-2 md:flex-row">
-        <input
+        <Input
           type="datetime-local"
-          className="rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          className="text-xs"
           value={monitorAtInput}
           onChange={(e) => setMonitorAtInput(e.target.value)}
         />
-        <input
+        <Input
           type="text"
-          className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          className="min-w-0 flex-1 text-xs"
           placeholder="What should the agent re-check?"
           value={monitorNotesInput}
           onChange={(e) => setMonitorNotesInput(e.target.value)}
         />
       </div>
       <div className="flex flex-col gap-2 md:flex-row">
-        <input
+        <Input
           type="text"
-          className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          className="min-w-0 flex-1 text-xs"
           placeholder="External service"
           value={monitorServiceInput}
           onChange={(e) => setMonitorServiceInput(e.target.value)}

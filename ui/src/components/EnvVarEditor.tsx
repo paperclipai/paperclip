@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { CompanySecret, EnvBinding, SecretVersionSelector } from "@paperclipai/shared";
 import { AlertCircle, KeyRound, X } from "lucide-react";
 import { cn } from "../lib/utils";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -10,12 +12,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-const inputClass =
-  "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
+const inputClass = "font-mono";
 
 // shadcn Select trigger sized to line up with the mono inputs above.
 const selectTriggerClass =
-  "h-[34px] min-h-[34px] rounded-md border-border bg-transparent px-2.5 text-sm font-mono shadow-none";
+  "h-[34px] min-h-[34px] rounded-md border-border bg-transparent px-2.5 text-sm font-mono";
 
 /** Radix Select forbids empty-string item values; use a sentinel for "unset". */
 const SECRET_UNSET = "__unset__";
@@ -229,7 +230,7 @@ export function EnvVarEditor({
           !row.secretId;
         return (
           <div key={index} className="flex items-center gap-1.5">
-            <input
+            <Input
               className={cn(inputClass, "flex-[2]")}
               placeholder="KEY"
               value={row.key}
@@ -315,33 +316,37 @@ export function EnvVarEditor({
                     })()}
                   </SelectContent>
                 </Select>
-                <button
+                <Button
                   type="button"
-                  className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 shrink-0 px-2 text-xs text-muted-foreground"
                   onClick={() => sealRow(index)}
                   disabled={!row.key.trim() || !row.plainValue}
                   title="Create secret from current plain value"
                 >
                   New
-                </button>
+                </Button>
               </>
             ) : (
               <>
-                <input
+                <Input
                   className={cn(inputClass, "flex-[3]")}
                   placeholder="value"
                   value={row.plainValue}
                   onChange={(event) => updateRow(index, { plainValue: event.target.value })}
                 />
-                <button
+                <Button
                   type="button"
-                  className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 shrink-0 px-2 text-xs text-muted-foreground"
                   onClick={() => sealRow(index)}
                   disabled={!row.key.trim() || !row.plainValue}
                   title="Store value as secret and replace with reference"
                 >
                   Seal
-                </button>
+                </Button>
               </>
             )}
             {!isTrailing ? (

@@ -2,6 +2,7 @@ import { AlertTriangle, Clock, Pause, User, Wrench } from "lucide-react";
 import type { ComponentType } from "react";
 import type { IssueBlockedInboxSeverity } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
+import { Badge } from "./ui/badge";
 import {
   blockedReasonVariant,
   blockedVariantLabel,
@@ -58,13 +59,14 @@ export function BlockedReasonChip({
   const Icon = VARIANT_ICONS[variant];
   const dotClass = SEVERITY_DOT[severity];
   return (
-    <span
+    <Badge
+      variant="outline"
       data-testid="blocked-reason-chip"
       data-variant={variant}
       data-severity={severity}
       aria-label={`Reason: ${label}, severity ${severity}`}
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-medium leading-tight sm:text-[11px]",
+        "rounded-md px-2 text-[10px] leading-tight sm:text-[11px]",
         VARIANT_STYLES[variant],
         className,
       )}
@@ -77,6 +79,6 @@ export function BlockedReasonChip({
       ) : null}
       {compact ? null : <Icon className="h-3 w-3 shrink-0" aria-hidden="true" />}
       <span className="truncate">{label}</span>
-    </span>
+    </Badge>
   );
 }

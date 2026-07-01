@@ -208,7 +208,7 @@ export function CompanyPatternIcon({
         <div className="absolute inset-0 bg-muted" />
       )}
       {!logo && (
-        <span className="relative z-10 drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]">
+        <span className="relative z-10">
           {initial}
         </span>
       )}

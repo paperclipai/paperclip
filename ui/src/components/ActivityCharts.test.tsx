@@ -103,7 +103,9 @@ describe("ActivityCharts", () => {
       />,
     );
 
+    // With data present the recharts chart renders (not the empty state),
+    // mounting a ResponsiveContainer/chart surface in place of the message.
     expect(container.textContent).not.toContain("No runs yet");
-    expect(container.querySelector("[title='2026-04-20: 2 runs']")).not.toBeNull();
+    expect(container.querySelector("[data-slot='chart']")).not.toBeNull();
   });
 });

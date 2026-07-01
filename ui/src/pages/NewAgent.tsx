@@ -12,6 +12,7 @@ import { resolveSkillSummaryText } from "../lib/company-skill-summary";
 import { AGENT_ROLES, type AdapterEnvironmentTestResult, type AgentPermissions } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import {
   Popover,
   PopoverContent,
@@ -330,10 +331,10 @@ export function NewAgent() {
                         checked={checked}
                         onCheckedChange={(next) => toggleSkill(skill.key, next === true)}
                       />
-                      <label htmlFor={inputId} className="grid gap-1 leading-none">
+                      <Label htmlFor={inputId} className="grid gap-1 leading-none">
                         <span className="text-sm font-medium">{skill.name}</span>
                         {summaryText ? <span className="text-xs text-muted-foreground">{summaryText}</span> : null}
-                      </label>
+                      </Label>
                     </div>
                   );
                 })}

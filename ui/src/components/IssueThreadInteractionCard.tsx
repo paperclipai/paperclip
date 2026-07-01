@@ -24,6 +24,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { MarkdownBody } from "./MarkdownBody";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
+import { Label } from "./ui/label";
 import { PriorityIcon } from "./PriorityIcon";
 import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -855,7 +856,7 @@ function AskUserQuestionsCard({
           {questions.map((question, index) => (
             <div
               key={question.id}
-              className="rounded-2xl border border-border/70 bg-background/82 p-4 shadow-[0_18px_42px_rgba(15,23,42,0.06)]"
+              className="rounded-2xl border border-border/70 bg-background/82 p-4"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -1545,7 +1546,7 @@ function CheckboxOptionRow({
   onToggle: (checked: boolean) => void;
 }) {
   return (
-    <label
+    <Label
       htmlFor={id}
       className={cn(
         "flex cursor-pointer items-start gap-2.5 border-b border-border/60 px-3 py-2 last:border-b-0 transition-colors",
@@ -1567,7 +1568,7 @@ function CheckboxOptionRow({
           <p className="mt-0.5 text-sm leading-5 text-muted-foreground">{description}</p>
         ) : null}
       </div>
-    </label>
+    </Label>
   );
 }
 
@@ -1905,7 +1906,7 @@ export function IssueThreadInteractionCard({
       : null;
 
   return (
-    <div className={cn("rounded-sm border p-5 shadow-none", styles.shell)}>
+    <div className={cn("rounded-sm border p-5", styles.shell)}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 flex-1 basis-64">
           <div className="flex flex-wrap items-center gap-2">

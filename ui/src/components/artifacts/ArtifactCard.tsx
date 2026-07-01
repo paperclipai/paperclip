@@ -1,6 +1,7 @@
 import { type SyntheticEvent, useEffect, useRef, useState } from "react";
 import { Download, ExternalLink, Paperclip, Play } from "lucide-react";
 import type { CompanyArtifact } from "@/api/artifacts";
+import { Card } from "@/components/ui/card";
 import { Link } from "@/lib/router";
 import { cn, formatDate } from "@/lib/utils";
 
@@ -192,14 +193,14 @@ function SecondaryAction({
 
 export function ArtifactCard({ artifact }: ArtifactCardProps) {
   return (
-    <Link
-      to={artifact.href}
-      disableIssueQuicklook
-      data-testid="artifact-card"
-      data-media-kind={artifact.mediaKind}
-      className="group flex flex-col overflow-hidden rounded-[8px] border border-border bg-card transition-colors hover:border-foreground/20"
-    >
-      <ArtifactPreview artifact={artifact} />
+    <Card asChild className="group gap-0 overflow-hidden border-border py-0 transition-colors hover:border-foreground/20">
+      <Link
+        to={artifact.href}
+        disableIssueQuicklook
+        data-testid="artifact-card"
+        data-media-kind={artifact.mediaKind}
+      >
+        <ArtifactPreview artifact={artifact} />
 
       <div className="flex flex-1 flex-col gap-1 p-3">
         <div className="flex h-7 items-start justify-between gap-2">
@@ -233,6 +234,7 @@ export function ArtifactCard({ artifact }: ArtifactCardProps) {
           ) : null}
         </div>
       </div>
-    </Link>
+      </Link>
+    </Card>
   );
 }

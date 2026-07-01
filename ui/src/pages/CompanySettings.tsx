@@ -11,6 +11,7 @@ import { assetsApi } from "../api/assets";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Settings, CloudUpload, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
@@ -183,8 +184,7 @@ export function CompanySettings() {
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
           <Field label="Company name" hint="The display name for your company.">
-            <input
-              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+            <Input
               type="text"
               value={companyName}
               onChange={(e) => setCompanyName(e.target.value)}
@@ -194,8 +194,7 @@ export function CompanySettings() {
             label="Description"
             hint="Optional description shown in the company profile."
           >
-            <input
-              className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+            <Input
               type="text"
               value={description}
               placeholder="Optional company description"
@@ -273,7 +272,7 @@ export function CompanySettings() {
                     onChange={(e) => setBrandColor(e.target.value)}
                     className="h-8 w-8 cursor-pointer rounded border border-border bg-transparent p-0"
                   />
-                  <input
+                  <Input
                     type="text"
                     value={brandColor}
                     onChange={(e) => {
@@ -283,7 +282,7 @@ export function CompanySettings() {
                       }
                     }}
                     placeholder="Auto"
-                    className="w-28 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm font-mono outline-none"
+                    className="w-28 font-mono"
                   />
                   {brandColor && (
                     <Button
@@ -303,14 +302,14 @@ export function CompanySettings() {
               >
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center gap-2">
-                    <input
+                    <Input
                       type="number"
                       min={1}
                       max={MAX_COMPANY_ATTACHMENT_MAX_MIB}
                       step={1}
                       value={attachmentMaxMiB}
                       onChange={(e) => setAttachmentMaxMiB(e.target.value)}
-                      className="w-28 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                      className="w-28"
                     />
                     <span className="text-xs text-muted-foreground">MiB</span>
                   </div>

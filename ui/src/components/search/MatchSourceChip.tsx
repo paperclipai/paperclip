@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 
 export type MatchSourceChipKind = "title" | "identifier" | "comment" | "document";
 
@@ -31,9 +32,10 @@ export function MatchSourceChip({ kind, count, label, className }: MatchSourceCh
   const text = label ?? chipLabels[kind];
   const showCount = typeof count === "number" && count > 1;
   return (
-    <span
+    <Badge
+      variant="outline"
       className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-px text-[11px] font-medium leading-none whitespace-nowrap",
+        "px-2 py-px text-[11px] leading-none",
         chipStyles[kind],
         className,
       )}
@@ -41,6 +43,6 @@ export function MatchSourceChip({ kind, count, label, className }: MatchSourceCh
     >
       {text}
       {showCount ? <span className="opacity-80">×{count}</span> : null}
-    </span>
+    </Badge>
   );
 }

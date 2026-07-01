@@ -1,4 +1,14 @@
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import { Bar, BarChart, CartesianGrid, Cell, XAxis } from "recharts";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
+import {
+  type ChartConfig,
+  ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
+  ChartTooltip,
+  ChartTooltipContent,
+} from "./ui/chart";
 
 /* ---- Utilities ---- */
 
@@ -15,48 +25,40 @@ function formatDayLabel(dateStr: string): string {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
-/* ---- Sub-components ---- */
-
-function DateLabels({ days }: { days: string[] }) {
-  return (
-    <div className="flex gap-[3px] mt-1.5">
-      {days.map((day, i) => (
-        <div key={day} className="flex-1 text-center">
-          {(i === 0 || i === 6 || i === 13) ? (
-            <span className="text-[9px] text-muted-foreground tabular-nums">{formatDayLabel(day)}</span>
-          ) : null}
-        </div>
-      ))}
-    </div>
-  );
+/* Render the m/d label only at the first, middle, and last tick — mirrors the
+   sparse cadence the bespoke chart used so 14 bars don't crowd the axis. */
+function sparseDayTick(value: string, index: number, total: number): string {
+  return index === 0 || index === Math.floor(total / 2) || index === total - 1
+    ? formatDayLabel(value)
+    : "";
 }
 
-function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
-  return (
-    <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 mt-2">
-      {items.map(item => (
-        <span key={item.label} className="flex items-center gap-1 text-[9px] text-muted-foreground">
-          <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
-          {item.label}
-        </span>
-      ))}
-    </div>
-  );
-}
+const EMPTY_RUN_DAY = { succeeded: 0, failed: 0, other: 0, total: 0 } as const;
+
+/* The shadcn ChartContainer sizes its ResponsiveContainer to this div, so the
+   class must give the chart real height — `aspect-auto` clears the component's
+   default `aspect-video` so the explicit height wins. A recharts <Legend> is
+   drawn inside the SVG and steals from the total height, so charts that carry a
+   legend get extra room (≈180px plot + ≈40px legend) while plain charts size
+   the plot directly. */
+const chartContainerClass = "aspect-auto h-44 w-full";
+const chartContainerWithLegendClass = "aspect-auto h-52 w-full";
+
+/* ---- Shared card (consumed by Dashboard + AgentDetail) ---- */
 
 export function ChartCard({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
-    <div className="border border-border rounded-lg p-4 space-y-3">
-      <div>
-        <h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
-        {subtitle && <span className="text-[10px] text-muted-foreground/60">{subtitle}</span>}
-      </div>
-      {children}
-    </div>
+    <Card className="gap-4 py-4">
+      <CardHeader className="px-4">
+        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+        {subtitle && <CardDescription className="text-xs">{subtitle}</CardDescription>}
+      </CardHeader>
+      <CardContent className="px-4">{children}</CardContent>
+    </Card>
   );
 }
 
-/* ---- Chart Components ---- */
+/* ---- Run activity ---- */
 
 type RunChartProps =
   | { activity?: DashboardRunActivityDay[] | null; runs?: never }
@@ -84,49 +86,57 @@ function resolveRunActivity(props: RunChartProps): DashboardRunActivityDay[] {
   return [];
 }
 
+function fillRunDays(activity: DashboardRunActivityDay[]): DashboardRunActivityDay[] {
+  if (activity.length > 0) return activity;
+  return getLast14Days().map((date) => ({ date, ...EMPTY_RUN_DAY }));
+}
+
+const runActivityConfig = {
+  succeeded: { label: "Succeeded", color: "var(--data-run-succeeded)" },
+  failed: { label: "Failed", color: "var(--data-run-failed)" },
+  other: { label: "Other", color: "var(--data-run-other)" },
+} satisfies ChartConfig;
+
 export function RunActivityChart(props: RunChartProps) {
   const activity = resolveRunActivity(props);
-  const days = activity.length > 0 ? activity.map((day) => day.date) : getLast14Days();
-  const grouped = new Map(activity.map((day) => [day.date, day]));
-
-  const maxValue = Math.max(...activity.map(v => v.total), 1);
-  const hasData = activity.some(v => v.total > 0);
-
+  const hasData = activity.some((v) => v.total > 0);
   if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
 
+  const data = fillRunDays(activity);
+
   return (
-    <div>
-      <div className="flex items-end gap-[3px] h-20">
-        {days.map(day => {
-          const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
-          const total = entry.total;
-          const heightPct = (total / maxValue) * 100;
-          return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} runs`}>
-              {total > 0 ? (
-                <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
-                  {entry.succeeded > 0 && <div className="bg-emerald-500" style={{ flex: entry.succeeded }} />}
-                  {entry.failed > 0 && <div className="bg-red-500" style={{ flex: entry.failed }} />}
-                  {entry.other > 0 && <div className="bg-neutral-500" style={{ flex: entry.other }} />}
-                </div>
-              ) : (
-                <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
-              )}
-            </div>
-          );
-        })}
-      </div>
-      <DateLabels days={days} />
-    </div>
+    <ChartContainer config={runActivityConfig} className={chartContainerClass}>
+      <BarChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: 0 }} barCategoryGap={2}>
+        <CartesianGrid vertical={false} />
+        <XAxis
+          dataKey="date"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={6}
+          minTickGap={0}
+          interval={0}
+          tickFormatter={(value, index) => sparseDayTick(value, index, data.length)}
+        />
+        <ChartTooltip
+          cursor={false}
+          content={<ChartTooltipContent labelFormatter={(_, payload) => formatDayLabel(payload?.[0]?.payload?.date ?? "")} />}
+        />
+        <Bar dataKey="succeeded" stackId="runs" fill="var(--color-succeeded)" />
+        <Bar dataKey="failed" stackId="runs" fill="var(--color-failed)" />
+        <Bar dataKey="other" stackId="runs" fill="var(--color-other)" radius={[2, 2, 0, 0]} />
+      </BarChart>
+    </ChartContainer>
   );
 }
 
-const priorityColors: Record<string, string> = {
-  critical: "#ef4444",
-  high: "#f97316",
-  medium: "#eab308",
-  low: "#6b7280",
-};
+/* ---- Tasks by priority ---- */
+
+const priorityConfig = {
+  critical: { label: "Critical", color: "var(--data-priority-critical)" },
+  high: { label: "High", color: "var(--data-priority-high)" },
+  medium: { label: "Medium", color: "var(--data-priority-medium)" },
+  low: { label: "Low", color: "var(--data-priority-low)" },
+} satisfies ChartConfig;
 
 const priorityOrder = ["critical", "high", "medium", "low"] as const;
 
@@ -141,58 +151,58 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
     if (issue.priority in entry) entry[issue.priority]++;
   }
 
-  const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
-  const hasData = Array.from(grouped.values()).some(v => Object.values(v).reduce((a, b) => a + b, 0) > 0);
-
+  const data = days.map((date) => {
+    const entry = grouped.get(date) ?? { critical: 0, high: 0, medium: 0, low: 0 };
+    return { date, ...entry } as { date: string } & Record<(typeof priorityOrder)[number], number>;
+  });
+  const hasData = data.some((d) => priorityOrder.some((p) => d[p] > 0));
   if (!hasData) return <p className="text-xs text-muted-foreground">No tasks</p>;
 
   return (
-    <div>
-      <div className="flex items-end gap-[3px] h-20">
-        {days.map(day => {
-          const entry = grouped.get(day)!;
-          const total = Object.values(entry).reduce((a, b) => a + b, 0);
-          const heightPct = (total / maxValue) * 100;
-          return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
-              {total > 0 ? (
-                <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
-                  {priorityOrder.map(p => entry[p] > 0 ? (
-                    <div key={p} style={{ flex: entry[p], backgroundColor: priorityColors[p] }} />
-                  ) : null)}
-                </div>
-              ) : (
-                <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
-              )}
-            </div>
-          );
-        })}
-      </div>
-      <DateLabels days={days} />
-      <ChartLegend items={priorityOrder.map(p => ({ color: priorityColors[p], label: p.charAt(0).toUpperCase() + p.slice(1) }))} />
-    </div>
+    <ChartContainer config={priorityConfig} className={chartContainerWithLegendClass}>
+      <BarChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: 0 }} barCategoryGap={2}>
+        <CartesianGrid vertical={false} />
+        <XAxis
+          dataKey="date"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={6}
+          minTickGap={0}
+          interval={0}
+          tickFormatter={(value, index) => sparseDayTick(value, index, data.length)}
+        />
+        <ChartTooltip
+          cursor={false}
+          content={<ChartTooltipContent labelFormatter={(_, payload) => formatDayLabel(payload?.[0]?.payload?.date ?? "")} />}
+        />
+        {priorityOrder.map((p, i) => (
+          <Bar
+            key={p}
+            dataKey={p}
+            stackId="priority"
+            fill={`var(--color-${p})`}
+            radius={i === priorityOrder.length - 1 ? [2, 2, 0, 0] : undefined}
+          />
+        ))}
+        <ChartLegend content={<ChartLegendContent />} />
+      </BarChart>
+    </ChartContainer>
   );
 }
 
-const statusColors: Record<string, string> = {
-  todo: "#3b82f6",
-  in_progress: "#8b5cf6",
-  in_review: "#a855f7",
-  done: "#10b981",
-  blocked: "#ef4444",
-  cancelled: "#6b7280",
-  backlog: "#64748b",
-};
+/* ---- Tasks by status ---- */
 
-const statusLabels: Record<string, string> = {
-  todo: "To Do",
-  in_progress: "In Progress",
-  in_review: "In Review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
-  backlog: "Backlog",
-};
+const statusConfig = {
+  todo: { label: "To Do", color: "var(--data-status-todo)" },
+  in_progress: { label: "In Progress", color: "var(--data-status-in-progress)" },
+  in_review: { label: "In Review", color: "var(--data-status-in-review)" },
+  done: { label: "Done", color: "var(--data-status-done)" },
+  blocked: { label: "Blocked", color: "var(--data-status-blocked)" },
+  cancelled: { label: "Cancelled", color: "var(--data-status-cancelled)" },
+  backlog: { label: "Backlog", color: "var(--data-status-backlog)" },
+} satisfies ChartConfig;
+
+const statusOrderAll = ["todo", "in_progress", "in_review", "done", "blocked", "cancelled", "backlog"] as const;
 
 export function IssueStatusChart({ issues }: { issues: { status: string; createdAt: Date }[] }) {
   const days = getLast14Days();
@@ -207,67 +217,110 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
     allStatuses.add(issue.status);
   }
 
-  const statusOrder = ["todo", "in_progress", "in_review", "done", "blocked", "cancelled", "backlog"].filter(s => allStatuses.has(s));
-  const maxValue = Math.max(...Array.from(grouped.values()).map(v => Object.values(v).reduce((a, b) => a + b, 0)), 1);
+  const statusOrder = statusOrderAll.filter((s) => allStatuses.has(s));
   const hasData = allStatuses.size > 0;
-
   if (!hasData) return <p className="text-xs text-muted-foreground">No tasks</p>;
 
+  const data = days.map((date) => {
+    const entry = grouped.get(date) ?? {};
+    const row: Record<string, number | string> = { date };
+    for (const s of statusOrder) row[s] = entry[s] ?? 0;
+    return row;
+  });
+
   return (
-    <div>
-      <div className="flex items-end gap-[3px] h-20">
-        {days.map(day => {
-          const entry = grouped.get(day)!;
-          const total = Object.values(entry).reduce((a, b) => a + b, 0);
-          const heightPct = (total / maxValue) * 100;
-          return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} issues`}>
-              {total > 0 ? (
-                <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
-                  {statusOrder.map(s => (entry[s] ?? 0) > 0 ? (
-                    <div key={s} style={{ flex: entry[s], backgroundColor: statusColors[s] ?? "#6b7280" }} />
-                  ) : null)}
-                </div>
-              ) : (
-                <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
-              )}
-            </div>
-          );
-        })}
-      </div>
-      <DateLabels days={days} />
-      <ChartLegend items={statusOrder.map(s => ({ color: statusColors[s] ?? "#6b7280", label: statusLabels[s] ?? s }))} />
-    </div>
+    <ChartContainer config={statusConfig} className={chartContainerWithLegendClass}>
+      <BarChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: 0 }} barCategoryGap={2}>
+        <CartesianGrid vertical={false} />
+        <XAxis
+          dataKey="date"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={6}
+          minTickGap={0}
+          interval={0}
+          tickFormatter={(value, index) => sparseDayTick(String(value), index, data.length)}
+        />
+        <ChartTooltip
+          cursor={false}
+          content={<ChartTooltipContent labelFormatter={(_, payload) => formatDayLabel(String(payload?.[0]?.payload?.date ?? ""))} />}
+        />
+        {statusOrder.map((s, i) => (
+          <Bar
+            key={s}
+            dataKey={s}
+            stackId="status"
+            fill={`var(--color-${s})`}
+            radius={i === statusOrder.length - 1 ? [2, 2, 0, 0] : undefined}
+          />
+        ))}
+        <ChartLegend content={<ChartLegendContent />} />
+      </BarChart>
+    </ChartContainer>
   );
+}
+
+/* ---- Success rate ---- */
+
+const successRateConfig = {
+  rate: { label: "Success rate" },
+  high: { label: "≥ 80%", color: "var(--data-rate-high)" },
+  mid: { label: "50–79%", color: "var(--data-rate-mid)" },
+  low: { label: "< 50%", color: "var(--data-rate-low)" },
+} satisfies ChartConfig;
+
+function rateBand(rate: number): "high" | "mid" | "low" {
+  return rate >= 0.8 ? "high" : rate >= 0.5 ? "mid" : "low";
 }
 
 export function SuccessRateChart(props: RunChartProps) {
   const activity = resolveRunActivity(props);
-  const days = activity.length > 0 ? activity.map((day) => day.date) : getLast14Days();
-  const grouped = new Map(activity.map((day) => [day.date, day]));
-
-  const hasData = activity.some(v => v.total > 0);
+  const hasData = activity.some((v) => v.total > 0);
   if (!hasData) return <p className="text-xs text-muted-foreground">No runs yet</p>;
 
+  const data = fillRunDays(activity).map((day) => {
+    const rate = day.total > 0 ? day.succeeded / day.total : 0;
+    return {
+      date: day.date,
+      rate: Math.round(rate * 100),
+      band: rateBand(rate),
+      total: day.total,
+      succeeded: day.succeeded,
+      empty: day.total === 0,
+    };
+  });
+
   return (
-    <div>
-      <div className="flex items-end gap-[3px] h-20">
-        {days.map(day => {
-          const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
-          const rate = entry.total > 0 ? entry.succeeded / entry.total : 0;
-          const color = entry.total === 0 ? undefined : rate >= 0.8 ? "#10b981" : rate >= 0.5 ? "#eab308" : "#ef4444";
-          return (
-            <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${entry.succeeded}/${entry.total})`}>
-              {entry.total > 0 ? (
-                <div style={{ height: `${rate * 100}%`, minHeight: 2, backgroundColor: color }} />
-              ) : (
-                <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
-              )}
-            </div>
-          );
-        })}
-      </div>
-      <DateLabels days={days} />
-    </div>
+    <ChartContainer config={successRateConfig} className={chartContainerClass}>
+      <BarChart data={data} margin={{ top: 4, right: 0, bottom: 0, left: 0 }} barCategoryGap={2}>
+        <CartesianGrid vertical={false} />
+        <XAxis
+          dataKey="date"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={6}
+          minTickGap={0}
+          interval={0}
+          tickFormatter={(value, index) => sparseDayTick(value, index, data.length)}
+        />
+        <ChartTooltip
+          cursor={false}
+          content={
+            <ChartTooltipContent
+              labelFormatter={(_, payload) => formatDayLabel(payload?.[0]?.payload?.date ?? "")}
+              formatter={(_value, _name, item) => {
+                const p = item.payload as { rate: number; succeeded: number; total: number };
+                return `${p.rate}% (${p.succeeded}/${p.total})`;
+              }}
+            />
+          }
+        />
+        <Bar dataKey="rate" radius={[2, 2, 0, 0]}>
+          {data.map((d) => (
+            <Cell key={d.date} fill={d.empty ? "var(--muted)" : `var(--color-${d.band})`} />
+          ))}
+        </Bar>
+      </BarChart>
+    </ChartContainer>
   );
 }

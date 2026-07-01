@@ -1,4 +1,4 @@
-import { Link } from "@/lib/router";
+import { useNavigate } from "@/lib/router";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { deriveInitials } from "./Identity";
 import { IssueReferenceActivitySummary } from "./IssueReferenceActivitySummary";
@@ -29,6 +29,7 @@ interface ActivityRowProps {
 }
 
 export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, entityTitleMap, className }: ActivityRowProps) {
+  const navigate = useNavigate();
   const verb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap });
 
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
@@ -78,11 +79,31 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
     className,
   );
 
+  // The row is a non-anchor container so it can hold the mention-chip anchors
+  // (and their hover quicklooks) without producing nested <a> elements. Clicks
+  // navigate to the row's entity, except when they land on an inner anchor —
+  // those chips handle their own navigation.
   if (link) {
+    const navigateToEntity = (target: EventTarget | null) => {
+      if (target instanceof Element && target.closest("a")) return;
+      navigate(link);
+    };
     return (
-      <Link to={link} className={cn(classes, "no-underline text-inherit block")}>
+      <div
+        role="link"
+        tabIndex={0}
+        className={classes}
+        onClick={(e) => navigateToEntity(e.target)}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            navigate(link);
+          }
+        }}
+      >
         {inner}
-      </Link>
+      </div>
     );
   }
 

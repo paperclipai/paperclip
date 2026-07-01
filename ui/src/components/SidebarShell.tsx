@@ -204,7 +204,7 @@ export function SidebarShell({
           // Overlay styling only while the panel is wider than its reserved
           // spacer (i.e. peeking) so it floats above content without reflow.
           isOverlay
-            ? "z-30 border-r border-border bg-background shadow-lg"
+            ? "z-30 border-r border-border bg-background"
             : "z-0",
         )}
         style={panelStyle}

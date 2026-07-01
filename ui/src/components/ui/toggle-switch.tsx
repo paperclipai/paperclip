@@ -40,7 +40,7 @@ export const ToggleSwitch = React.forwardRef<
       >
         <span
           className={cn(
-            "pointer-events-none inline-block rounded-full bg-white shadow-sm transition-transform",
+            "pointer-events-none inline-block rounded-full bg-white transition-transform",
             // Thumb
             isLg ? "size-5.5 sm:size-5" : "size-4.5 sm:size-3.5",
             // Slide position

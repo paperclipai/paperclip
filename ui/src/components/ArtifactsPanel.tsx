@@ -300,10 +300,10 @@ function DocumentViewer({
         <div className="border-t border-border px-4 py-3 bg-background shrink-0">
           <p className="text-[11px] text-muted-foreground mb-2">This document needs your review.</p>
           <div className="flex items-center gap-3">
-            <Button size="lg" className="h-11 px-8 text-base font-semibold flex-1 rounded-lg bg-green-700 hover:bg-green-800 text-white border-0" onClick={onApprove}>
+            <Button size="lg" className="h-11 px-8 text-base font-semibold flex-1 bg-green-700 hover:bg-green-800 text-white border-0" onClick={onApprove}>
               Approve
             </Button>
-            <Button size="lg" className="h-11 px-8 text-base font-semibold flex-1 rounded-lg bg-red-900 hover:bg-red-950 text-white border-0" onClick={() => {
+            <Button size="lg" className="h-11 px-8 text-base font-semibold flex-1 bg-red-900 hover:bg-red-950 text-white border-0" onClick={() => {
               onReject?.();
               onBack();
             }}>

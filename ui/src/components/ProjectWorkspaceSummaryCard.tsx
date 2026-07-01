@@ -1,6 +1,8 @@
 import { Link } from "@/lib/router";
 import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { CopyText } from "./CopyText";
 import { IssuesQuicklook } from "./IssuesQuicklook";
 import type { ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
@@ -54,21 +56,21 @@ export function ProjectWorkspaceSummaryCard({
   const actionKey = `${summary.key}:${hasRunningServices ? "stop" : "start"}`;
 
   return (
-    <div className="rounded-lg border border-border bg-background p-4 shadow-sm sm:p-5">
-      <div className="flex flex-col gap-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+    <Card className="gap-4 bg-background py-4 sm:py-5">
+      <CardHeader className="flex flex-col gap-3 px-4 sm:px-5 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              <Badge variant="outline" className="bg-background px-2.5 py-1 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
                 {workspaceKindLabel(summary.kind)}
-              </span>
-              <span className="inline-flex items-center rounded-full border border-border/70 bg-background px-2.5 py-1 text-xs text-muted-foreground">
+              </Badge>
+              <Badge variant="outline" className="border-border/70 bg-background px-2.5 py-1 text-xs text-muted-foreground">
                 Updated {timeAgo(summary.lastUpdatedAt)}
-              </span>
+              </Badge>
               {summary.serviceCount > 0 ? (
-                <span
+                <Badge
+                  variant="outline"
                   className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs",
+                    "gap-1.5 px-2.5 py-1 text-xs",
                     hasRunningServices
                       ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
                       : "border-border/70 bg-background text-muted-foreground",
@@ -81,12 +83,12 @@ export function ProjectWorkspaceSummaryCard({
                     )}
                   />
                   {summary.runningServiceCount}/{summary.serviceCount} services
-                </span>
+                </Badge>
               ) : null}
               {summary.executionWorkspaceStatus ? (
-                <span className="inline-flex items-center rounded-full border border-border/70 bg-background px-2.5 py-1 text-xs text-muted-foreground">
+                <Badge variant="outline" className="border-border/70 bg-background px-2.5 py-1 text-xs text-muted-foreground">
                   {summary.executionWorkspaceStatus.replace(/_/g, " ")}
-                </span>
+                </Badge>
               ) : null}
             </div>
             <Link
@@ -141,8 +143,9 @@ export function ProjectWorkspaceSummaryCard({
               </Button>
             ) : null}
           </div>
-        </div>
+      </CardHeader>
 
+      <CardContent className="flex flex-col gap-4 px-4 sm:px-5">
         <div className="rounded-lg border border-border/70 bg-background px-3 py-3">
           <div className="space-y-2 text-sm">
             {summary.branchName ? (
@@ -234,30 +237,28 @@ export function ProjectWorkspaceSummaryCard({
                 <IssuePill key={issue.id} issue={issue} />
               ))}
               {hiddenIssueCount > 0 ? (
-                <Link
-                  to={workspaceHref}
-                  className="inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
-                >
-                  +{hiddenIssueCount} more
-                </Link>
+                <Badge asChild variant="outline" className="bg-background px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground hover:underline">
+                  <Link to={workspaceHref}>
+                    +{hiddenIssueCount} more
+                  </Link>
+                </Badge>
               ) : null}
             </div>
           </div>
         ) : null}
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
 function IssuePill({ issue }: { issue: Issue }) {
   return (
     <IssuesQuicklook issue={issue}>
-      <Link
-        to={`/issues/${issue.identifier ?? issue.id}`}
-        className="inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 font-mono text-xs text-foreground transition-colors hover:border-foreground/30 hover:text-foreground hover:underline"
-      >
-        {issue.identifier ?? issue.id.slice(0, 8)}
-      </Link>
+      <Badge asChild variant="outline" className="bg-background px-2.5 py-1 font-mono text-xs text-foreground transition-colors hover:border-foreground/30 hover:text-foreground hover:underline">
+        <Link to={`/issues/${issue.identifier ?? issue.id}`}>
+          {issue.identifier ?? issue.id.slice(0, 8)}
+        </Link>
+      </Badge>
     </IssuesQuicklook>
   );
 }

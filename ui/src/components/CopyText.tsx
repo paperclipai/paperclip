@@ -1,4 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 interface CopyTextProps {
@@ -59,29 +65,32 @@ export function CopyText({
 
   return (
     <span className={cn("relative inline-flex", containerClassName)}>
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-label={ariaLabel}
-        title={title}
-        className={cn(
-          "cursor-copy hover:text-foreground transition-colors",
-          className,
-        )}
-        onClick={handleClick}
-      >
-        {children ?? text}
-      </button>
-      <span
-        role="status"
-        aria-live="polite"
-        className={cn(
-          "pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-1.5 rounded-md bg-foreground text-background px-2 py-1 text-xs whitespace-nowrap transition-opacity duration-300",
-          visible ? "opacity-100" : "opacity-0",
-        )}
-      >
-        {label}
-      </span>
+      <TooltipProvider>
+        {/* Controlled (not hover-driven): the tooltip surfaces the copy result
+            for ~1.5s after a click — the affordance itself is inline copy-styled
+            text, which no system Button variant matches without breaking text
+            flow, so the trigger stays an inline <button>. */}
+        <Tooltip open={visible}>
+          <TooltipTrigger asChild>
+            <button
+              ref={triggerRef}
+              type="button"
+              aria-label={ariaLabel}
+              title={title}
+              className={cn(
+                "cursor-copy hover:text-foreground transition-colors",
+                className,
+              )}
+              onClick={handleClick}
+            >
+              {children ?? text}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent role="status" aria-live="polite">
+            {label}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
     </span>
   );
 }

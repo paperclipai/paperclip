@@ -220,9 +220,9 @@ function KanbanCard({
       style={style}
       {...attributes}
       {...listeners}
-      className={`rounded-md border bg-card cursor-grab active:cursor-grabbing transition-shadow ${
+      className={`rounded-md border bg-card cursor-grab active:cursor-grabbing ${
         isDragging && !isOverlay ? "opacity-30" : ""
-      } ${isOverlay ? "shadow-lg ring-1 ring-primary/20" : "hover:shadow-sm"} ${
+      } ${isOverlay ? "ring-1 ring-primary/20" : ""} ${
         compact ? "p-2" : "p-2.5"
       }`}
     >

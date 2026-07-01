@@ -38,13 +38,13 @@
   --color-sidebar-ring: var(--sidebar-ring);
   --radius-sm: 0.375rem;
   --radius-md: 0.5rem;
-  --radius-lg: 0px;
-  --radius-xl: 0px;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.875rem;
 }
 
 :root {
   color-scheme: light;
-  --radius: 0;
+  --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -60,15 +60,15 @@
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.577 0.245 27.325);
+  --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
@@ -89,6 +89,17 @@
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
+
+  /* Semantic badge tones (light). Drive the Badge `success`/`warning`/`info`
+     variants — a soft tinted fill + matching foreground, mirroring the
+     bg-*-100 / text-*-700 pairs the status palette already used inline. */
+  --badge-success-bg: oklch(0.94 0.06 150);
+  --badge-success-fg: oklch(0.45 0.13 150);
+  --badge-warning-bg: oklch(0.95 0.07 85);
+  --badge-warning-fg: oklch(0.48 0.12 75);
+  --badge-info-bg: oklch(0.94 0.05 240);
+  --badge-info-fg: oklch(0.48 0.16 255);
+
   --paperclip-doc-annotation-highlight-open: #fef08a;
   --paperclip-doc-annotation-highlight-focused: #fde047;
   --paperclip-doc-annotation-highlight-stale: #fef08a;
@@ -118,6 +129,28 @@
   --agent-9b: #1f4ed4;
   --agent-10a: #f2d95f;
   --agent-10b: #4fbcba;
+
+  /* Semantic data-series tones for dashboard charts. Meaning-bearing —
+     they encode run outcome, task priority, and task status, so they are
+     theme-constant (identical in light/dark) like the agent capsule stops.
+     Consumed by ActivityCharts via each chart's chartConfig color. */
+  --data-run-succeeded: #10b981;
+  --data-run-failed: #ef4444;
+  --data-run-other: #6b7280;
+  --data-priority-critical: #ef4444;
+  --data-priority-high: #f97316;
+  --data-priority-medium: #eab308;
+  --data-priority-low: #6b7280;
+  --data-status-todo: #3b82f6;
+  --data-status-in-progress: #8b5cf6;
+  --data-status-in-review: #a855f7;
+  --data-status-done: #10b981;
+  --data-status-blocked: #ef4444;
+  --data-status-cancelled: #6b7280;
+  --data-status-backlog: #64748b;
+  --data-rate-high: #10b981;
+  --data-rate-mid: #eab308;
+  --data-rate-low: #ef4444;
 }
 
 .dark {
@@ -127,7 +160,7 @@
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
   --primary-foreground: oklch(0.205 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
@@ -135,24 +168,24 @@
   --muted-foreground: oklch(0.708 0 0);
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.637 0.237 25.331);
+  --destructive: oklch(0.704 0.191 22.216);
   --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.269 0 0);
-  --input: oklch(0.269 0 0);
-  --ring: oklch(0.439 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.145 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.922 0 0);
+  --sidebar-primary-foreground: oklch(0.205 0 0);
   --sidebar-accent: oklch(0.269 0 0);
   --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(0.269 0 0);
-  --sidebar-ring: oklch(0.439 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
   --chip-match-title-bg: oklch(0.27 0.04 265 / 0.5);
   --chip-match-title-fg: oklch(0.78 0.10 265);
   --chip-match-title-border: oklch(0.4 0.06 265);
@@ -165,10 +198,40 @@
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
+
+  /* Semantic badge tones (dark). Deeper, lower-chroma fills with a lighter
+     foreground, matching the dark-mode bg-*-900/50 / text-*-300 pairs. */
+  --badge-success-bg: oklch(0.32 0.07 150 / 0.5);
+  --badge-success-fg: oklch(0.8 0.13 150);
+  --badge-warning-bg: oklch(0.34 0.07 80 / 0.5);
+  --badge-warning-fg: oklch(0.82 0.12 85);
+  --badge-info-bg: oklch(0.34 0.08 250 / 0.5);
+  --badge-info-fg: oklch(0.8 0.13 255);
+
   --paperclip-doc-annotation-highlight-open: #a16207;
   --paperclip-doc-annotation-highlight-focused: #ca8a04;
   --paperclip-doc-annotation-highlight-stale: #854d0e;
   --paperclip-doc-annotation-highlight-resolved: #713f12;
+
+  /* Data-series tones are theme-constant — repeated so the token resolves
+     under .dark too (the values intentionally match :root). */
+  --data-run-succeeded: #10b981;
+  --data-run-failed: #ef4444;
+  --data-run-other: #6b7280;
+  --data-priority-critical: #ef4444;
+  --data-priority-high: #f97316;
+  --data-priority-medium: #eab308;
+  --data-priority-low: #6b7280;
+  --data-status-todo: #3b82f6;
+  --data-status-in-progress: #8b5cf6;
+  --data-status-in-review: #a855f7;
+  --data-status-done: #10b981;
+  --data-status-blocked: #ef4444;
+  --data-status-cancelled: #6b7280;
+  --data-status-backlog: #64748b;
+  --data-rate-high: #10b981;
+  --data-rate-mid: #eab308;
+  --data-rate-low: #ef4444;
 }
 
 ::highlight(paperclip-doc-annotation-open) {
@@ -390,11 +453,11 @@
 
 @keyframes dashboard-activity-highlight {
   0% {
-    box-shadow: inset 2px 0 0 var(--primary);
+    border-left: 2px solid var(--primary);
     background-color: color-mix(in oklab, var(--accent) 55%, transparent);
   }
   100% {
-    box-shadow: inset 0 0 0 transparent;
+    border-left: 2px solid transparent;
     background-color: transparent;
   }
 }
@@ -1115,7 +1178,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 
 .paperclip-markdown img {
   border-radius: calc(var(--radius) + 2px);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent);
+  border: 1px solid color-mix(in oklab, var(--foreground) 10%, transparent);
 }
 
 .paperclip-markdown-table-scroll {

@@ -6,7 +6,7 @@ import { Field, help } from "../components/agent-config-primitives";
 const SHOW_EXPERIMENTAL_ISSUE_WORKTREE_UI = false;
 
 const inputClass =
-  "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
+  "font-mono placeholder:text-muted-foreground/40";
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
