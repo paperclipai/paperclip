@@ -27,13 +27,16 @@ const DEFAULT_SESSION_COMPACTION_POLICY: SessionCompactionPolicy = {
   maxSessionAgeHours: 72,
 };
 
-// Adapters with native context management still participate in session resume,
-// but Paperclip should not rotate them using threshold-based compaction.
+// Adapters with native context management (e.g. Claude Code, Codex) handle
+// within-session compaction themselves, so Paperclip skips token- and run-based
+// rotation. A 48-hour age backstop is still applied to prevent unbounded JSONL
+// accumulation across autonomous heartbeats that reuse the synthetic
+// "__heartbeat__" session key (timer wakes with no task ID).
 const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
   enabled: true,
   maxSessionRuns: 0,
   maxRawInputTokens: 0,
-  maxSessionAgeHours: 0,
+  maxSessionAgeHours: 48,
 };
 
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
