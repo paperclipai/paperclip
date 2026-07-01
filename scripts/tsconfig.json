@@ -1,0 +1,19 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "..",
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@paperclipai/db": ["../packages/db/src/index.ts"],
+      "@paperclipai/shared": ["../packages/shared/src/index.ts"]
+    }
+  },
+  "include": [
+    "hermes-local-common.ts",
+    "hermes-local-doctor.ts",
+    "hermes-local-demo.ts",
+    "hermes-local-verify.ts",
+    "__tests__/hermes-local-common.test.ts"
+  ]
+}
