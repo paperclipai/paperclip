@@ -4060,6 +4060,37 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       },
     });
   });
+
+  it("strips NUL bytes from a comment body instead of failing the insert (FUS-594)", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue closed with a NUL-bearing comment",
+      status: "in_progress",
+      priority: "medium",
+    });
+
+    // A stray NUL (U+0000) in agent-authored comment text previously made the
+    // issue_comments insert fail with Postgres "invalid byte sequence for
+    // encoding UTF8: 0x00", surfacing as an HTTP 500 on PATCH/POST.
+    const nul = String.fromCharCode(0);
+    const body = `Active routine: ${nul}57b3010 done`;
+
+    const comment = await svc.addComment(issueId, body, {});
+
+    expect(comment.body).toBe("Active routine: 57b3010 done");
+    expect(comment.body.includes(nul)).toBe(false);
+  });
 });
 
 describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
