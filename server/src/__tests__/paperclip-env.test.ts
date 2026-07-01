@@ -63,6 +63,17 @@ describe("buildPaperclipEnv", () => {
     expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3101");
   });
 
+  it("rewrites a non-loopback PAPERCLIP_API_URL to localhost for co-located agents", () => {
+    delete process.env.PAPERCLIP_RUNTIME_API_URL;
+    process.env.PAPERCLIP_API_URL = "http://gus-pinsoneault-framework.tail302fee.ts.net:3100";
+    delete process.env.PAPERCLIP_LISTEN_HOST;
+    delete process.env.PAPERCLIP_LISTEN_PORT;
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3100");
+  });
+
   it("formats IPv6 hosts safely in fallback URL generation", () => {
     delete process.env.PAPERCLIP_RUNTIME_API_URL;
     delete process.env.PAPERCLIP_API_URL;
