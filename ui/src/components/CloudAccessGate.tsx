@@ -6,6 +6,7 @@ import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { queryKeys } from "@/lib/queryKeys";
 import { BootstrapPendingPage } from "@/components/BootstrapPendingPage";
+import { Button } from "@/components/ui/button";
 
 function NoBoardAccessPage() {
   return (
@@ -88,6 +89,23 @@ export function CloudAccessGate() {
     );
   }
 
+  if (isAuthenticatedMode && sessionQuery.error) {
+    return (
+      <div className="mx-auto max-w-xl py-10 text-sm">
+        <p className="text-destructive">
+          {sessionQuery.error instanceof Error ? sessionQuery.error.message : "Failed to load session"}
+        </p>
+        <p className="mt-2 text-muted-foreground">
+          Couldn&apos;t reach the server to confirm your session — it may still be starting up. You have not been
+          signed out.
+        </p>
+        <Button variant="outline" size="sm" className="mt-4" onClick={() => void sessionQuery.refetch()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
   if (isBootstrapPending) {
     const health = healthQuery.data;
     if (!health) {
@@ -110,7 +128,10 @@ export function CloudAccessGate() {
     );
   }
 
-  if (isAuthenticatedMode && !sessionQuery.data) {
+  // Only bounce to /auth when the server actually confirmed signed-out (the
+  // 401 → null path in authApi.getSession). A failed fetch — cold-boot
+  // timeout, network error, 5xx — must not be treated as a sign-out.
+  if (isAuthenticatedMode && sessionQuery.isSuccess && !sessionQuery.data) {
     const next = encodeURIComponent(`${location.pathname}${location.search}`);
     return <Navigate to={`/auth?next=${next}`} replace />;
   }
