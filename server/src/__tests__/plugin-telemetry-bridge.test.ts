@@ -92,6 +92,9 @@ describe("plugin telemetry bridge", () => {
   });
 
   it("passes telemetry requests through when the plugin declares the capability", async () => {
+    const trackDynamic = vi.fn();
+    mockGetTelemetryClient.mockReturnValue({ trackDynamic });
+
     const services = buildHostServices(
       {} as never,
       "plugin-record-id",
@@ -110,5 +113,8 @@ describe("plugin telemetry bridge", () => {
     });
 
     expect(mockGetTelemetryClient).toHaveBeenCalledTimes(1);
+    expect(trackDynamic).toHaveBeenCalledWith("plugin.linear.sync_completed", {
+      source: "manual",
+    });
   });
 });

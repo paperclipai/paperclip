@@ -7,6 +7,13 @@ type SourceType = EventDimensionsMap["company.imported"]["source_type"];
 type GoalLevel = EventDimensionsMap["goal.created"]["goal_level"];
 type RoutineRunSource = EventDimensionsMap["routine.run"]["source"];
 type RoutineRunStatus = EventDimensionsMap["routine.run"]["status"];
+type InteractionKind = EventDimensionsMap["interaction.resolved"]["interaction_kind"];
+type InteractionStatus = EventDimensionsMap["interaction.resolved"]["status"];
+type InteractionResolutionReason = NonNullable<EventDimensionsMap["interaction.resolved"]["resolution_reason"]>;
+type InteractionResolvedByKind = EventDimensionsMap["interaction.resolved"]["resolved_by_kind"];
+type InteractionCreatedByKind = NonNullable<EventDimensionsMap["interaction.resolved"]["created_by_kind"]>;
+type InteractionContinuationPolicy = NonNullable<EventDimensionsMap["interaction.resolved"]["continuation_policy"]>;
+type InteractionTargetType = NonNullable<EventDimensionsMap["interaction.resolved"]["target_type"]>;
 
 const AGENT_ROLES = [
   "ceo",
@@ -74,6 +81,54 @@ const ROUTINE_RUN_STATUSES = [
   "failed",
   "other",
 ] as const satisfies readonly RoutineRunStatus[];
+const INTERACTION_KINDS = [
+  "suggest_tasks",
+  "ask_user_questions",
+  "request_confirmation",
+  "request_checkbox_confirmation",
+  "other",
+] as const satisfies readonly InteractionKind[];
+const INTERACTION_STATUSES = [
+  "accepted",
+  "rejected",
+  "answered",
+  "cancelled",
+  "expired",
+  "failed",
+  "other",
+] as const satisfies readonly InteractionStatus[];
+const INTERACTION_RESOLUTION_REASONS = [
+  "accepted",
+  "rejected",
+  "stale_target",
+  "superseded_by_comment",
+  "expired",
+  "cancelled",
+  "other",
+] as const satisfies readonly InteractionResolutionReason[];
+const INTERACTION_RESOLVED_BY_KINDS = [
+  "user",
+  "agent",
+  "system",
+  "other",
+] as const satisfies readonly InteractionResolvedByKind[];
+const INTERACTION_CREATED_BY_KINDS = [
+  "agent",
+  "user",
+  "other",
+] as const satisfies readonly InteractionCreatedByKind[];
+const INTERACTION_CONTINUATION_POLICIES = [
+  "none",
+  "wake_assignee",
+  "wake_assignee_on_accept",
+  "other",
+] as const satisfies readonly InteractionContinuationPolicy[];
+const INTERACTION_TARGET_TYPES = [
+  "issue_document",
+  "custom",
+  "none",
+  "other",
+] as const satisfies readonly InteractionTargetType[];
 
 function normalizeEnum<T extends string>(
   value: string | null | undefined,
@@ -190,4 +245,49 @@ export function trackErrorHandlerCrash(
   dims: { errorCode: string },
 ): void {
   client.track("error.handler_crash", { error_code: dims.errorCode });
+}
+
+export function trackInteractionResolved(
+  client: TelemetryClient,
+  dims: {
+    interactionKind: string;
+    status: string;
+    resolvedByKind: string;
+    resolutionReason?: string | null;
+    createdByKind?: string | null;
+    creatorAgentRole?: string | null;
+    continuationPolicy?: string | null;
+    targetType?: string | null;
+    optionCount?: number;
+    selectedOptionCount?: number;
+    questionCount?: number;
+    answeredQuestionCount?: number;
+    createdTaskCount?: number;
+  },
+): void {
+  client.track("interaction.resolved", {
+    interaction_kind: normalizeEnum(dims.interactionKind, INTERACTION_KINDS, "other"),
+    status: normalizeEnum(dims.status, INTERACTION_STATUSES, "other"),
+    resolved_by_kind: normalizeEnum(dims.resolvedByKind, INTERACTION_RESOLVED_BY_KINDS, "other"),
+    ...(dims.resolutionReason
+      ? { resolution_reason: normalizeEnum(dims.resolutionReason, INTERACTION_RESOLUTION_REASONS, "other") }
+      : {}),
+    ...(dims.createdByKind
+      ? { created_by_kind: normalizeEnum(dims.createdByKind, INTERACTION_CREATED_BY_KINDS, "other") }
+      : {}),
+    ...(dims.creatorAgentRole
+      ? { creator_agent_role: normalizeEnum(dims.creatorAgentRole, AGENT_ROLES, "other") }
+      : {}),
+    ...(dims.continuationPolicy
+      ? { continuation_policy: normalizeEnum(dims.continuationPolicy, INTERACTION_CONTINUATION_POLICIES, "other") }
+      : {}),
+    ...(dims.targetType
+      ? { target_type: normalizeEnum(dims.targetType, INTERACTION_TARGET_TYPES, "other") }
+      : {}),
+    ...(dims.optionCount === undefined ? {} : { option_count: dims.optionCount }),
+    ...(dims.selectedOptionCount === undefined ? {} : { selected_option_count: dims.selectedOptionCount }),
+    ...(dims.questionCount === undefined ? {} : { question_count: dims.questionCount }),
+    ...(dims.answeredQuestionCount === undefined ? {} : { answered_question_count: dims.answeredQuestionCount }),
+    ...(dims.createdTaskCount === undefined ? {} : { created_task_count: dims.createdTaskCount }),
+  });
 }

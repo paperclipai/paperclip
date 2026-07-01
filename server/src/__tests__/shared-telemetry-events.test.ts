@@ -3,6 +3,7 @@ import {
   trackAgentCreated,
   trackAgentFirstHeartbeat,
   trackAgentTaskCompleted,
+  trackInteractionResolved,
   trackInstallCompleted,
 } from "@paperclipai/shared/telemetry";
 import type { TelemetryClient } from "@paperclipai/shared/telemetry";
@@ -26,6 +27,20 @@ describe("shared telemetry agent events", () => {
     expect(client.track).toHaveBeenCalledWith("agent.created", {
       agent_role: "engineer",
       agent_id: "11111111-1111-4111-8111-111111111111",
+    });
+  });
+
+  it("normalizes an unrecognized agent role to other", () => {
+    const client = createClient();
+
+    trackAgentCreated(client, {
+      agentRole: "coder",
+      agentId: "44444444-4444-4444-8444-444444444444",
+    });
+
+    expect(client.track).toHaveBeenCalledWith("agent.created", {
+      agent_role: "other",
+      agent_id: "44444444-4444-4444-8444-444444444444",
     });
   });
 
@@ -71,5 +86,35 @@ describe("shared telemetry agent events", () => {
       "install.completed",
       expect.objectContaining({ agent_id: expect.any(String) }),
     );
+  });
+
+  it("normalizes interaction.resolved enum dimensions", () => {
+    const client = createClient();
+
+    trackInteractionResolved(client, {
+      interactionKind: "single_confirmation",
+      status: "accepted",
+      resolvedByKind: "operator",
+      resolutionReason: "accepted",
+      createdByKind: "agent",
+      creatorAgentRole: "coder",
+      continuationPolicy: "wake_everyone",
+      targetType: "issue_document",
+      optionCount: 2,
+      selectedOptionCount: 1,
+    });
+
+    expect(client.track).toHaveBeenCalledWith("interaction.resolved", {
+      interaction_kind: "other",
+      status: "accepted",
+      resolved_by_kind: "other",
+      resolution_reason: "accepted",
+      created_by_kind: "agent",
+      creator_agent_role: "other",
+      continuation_policy: "other",
+      target_type: "issue_document",
+      option_count: 2,
+      selected_option_count: 1,
+    });
   });
 });
