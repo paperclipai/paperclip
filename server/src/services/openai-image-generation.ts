@@ -60,7 +60,7 @@ function resolveOpenAiImageApiKey(apiKeyOverride?: string | null): string {
     process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
     throw unprocessable(
-      "OPENAI_API_KEY is required to generate images. Assign an openai_api_key credential to the agent or set PAPERCLIP_IMAGE_OPENAI_API_KEY on the server.",
+      "Image generation is not available in this Paperclip runtime. Codex subscription auth can run Codex text/code tasks and attach images as input, but the installed Codex CLI does not expose a callable tool that creates PNG/JPEG image outputs. Configure a supported image backend before using this tool.",
     );
   }
   return apiKey;
