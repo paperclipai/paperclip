@@ -22,4 +22,11 @@ describe("sandboxed parser worker bootstrap", () => {
   it("does not include the unused parse_batch protocol branch", () => {
     expect(getWorkerBootstrapSource()).not.toContain("parse_batch");
   });
+
+  it("implements robust, non-deletable prototype-walking shadow mechanism", () => {
+    const source = getWorkerBootstrapSource();
+    expect(source).toContain("Object.getPrototypeOf");
+    expect(source).toContain("configurable: false");
+    expect(source).toContain("writable: false");
+  });
 });

@@ -43,19 +43,19 @@ const WORKER_BOOTSTRAP = `
 
 const _undefined = void 0;
 
-// Helper to safely shadow globals on self without throwing getter-only TypeErrors
+// Helper to safely shadow globals on self and its prototype chain to prevent deletions and prototype escapes
 function shadow(prop) {
-  try {
-    Object.defineProperty(self, prop, {
-      value: _undefined,
-      configurable: true,
-      writable: true,
-      enumerable: true
-    });
-  } catch (e) {
+  let curr = self;
+  while (curr && curr !== Object.prototype) {
     try {
-      self[prop] = _undefined;
-    } catch (err) {}
+      Object.defineProperty(curr, prop, {
+        value: _undefined,
+        configurable: false,
+        writable: false,
+        enumerable: true
+      });
+    } catch (e) {}
+    curr = Object.getPrototypeOf(curr);
   }
 }
 
