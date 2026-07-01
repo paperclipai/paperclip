@@ -59,7 +59,9 @@ function resolveOpenAiImageApiKey(apiKeyOverride?: string | null): string {
     process.env.PAPERCLIP_IMAGE_OPENAI_API_KEY?.trim() ||
     process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
-    throw unprocessable("OPENAI_API_KEY is required to generate images");
+    throw unprocessable(
+      "OPENAI_API_KEY is required to generate images. Assign an openai_api_key credential to the agent or set PAPERCLIP_IMAGE_OPENAI_API_KEY on the server.",
+    );
   }
   return apiKey;
 }
