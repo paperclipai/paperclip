@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { Agent, IssueComment } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "@/api/heartbeats";
-import { SelectedAgentChatView } from "@/components/SelectedAgentChat";
+import { AssistantChatView } from "@/components/AssistantChat";
 import type { IssueChatComment } from "@/lib/issue-chat-messages";
 import { pendingSuggestedTasksInteraction } from "@/fixtures/issueThreadInteractionFixtures";
 import { storybookAgents } from "../fixtures/paperclipData";
@@ -104,12 +104,12 @@ function Frame({ children }: { children: React.ReactNode }) {
 
 /** Stateful wrapper so the agent switcher is interactive in the canvas. */
 function ChatHarness(
-  props: Omit<React.ComponentProps<typeof SelectedAgentChatView>, "targetAgentId" | "onTargetAgentChange">,
+  props: Omit<React.ComponentProps<typeof AssistantChatView>, "targetAgentId" | "onTargetAgentChange">,
 ) {
   const [targetAgentId, setTargetAgentId] = useState<string>(ceoAgent.id);
   return (
     <Frame>
-      <SelectedAgentChatView
+      <AssistantChatView
         {...props}
         targetAgentId={targetAgentId}
         onTargetAgentChange={setTargetAgentId}
@@ -125,15 +125,15 @@ const baseProps = {
   issueId,
   currentUserId,
   onSend: async () => {},
-} satisfies Partial<React.ComponentProps<typeof SelectedAgentChatView>>;
+} satisfies Partial<React.ComponentProps<typeof AssistantChatView>>;
 
-const meta: Meta<typeof SelectedAgentChatView> = {
-  title: "Chat & Comments/Selected-Agent Chat",
+const meta: Meta<typeof AssistantChatView> = {
+  title: "Chat & Comments/Assistant Chat",
   parameters: { layout: "fullscreen" },
 };
 export default meta;
 
-type Story = StoryObj<typeof SelectedAgentChatView>;
+type Story = StoryObj<typeof AssistantChatView>;
 
 /** Empty / idle — composer ready, default CEO target, switcher available. */
 export const EmptyIdle: Story = {
