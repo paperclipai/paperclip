@@ -2408,6 +2408,231 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("keeps a manually recovered cadence tracker idle instead of re-dispatching assignment recovery", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      runErrorCode: "adapter_failed",
+      runError: "stream disconnected before completion",
+    });
+    await db
+      .update(issues)
+      .set({
+        description: [
+          "Long-lived tracking issue for the Reporter daily programme digest cadence (14:00 BST every day). Do not close.",
+          "",
+          "Operational status convention: keep this issue assigned to Reporter and `todo` while idle between scheduled cadence comments; use `in_progress` only while a cadence trigger is actively being handled. After posting a digest or an explicit no-duplicate acknowledgement, return it to `todo` so productivity monitoring does not read the tracker as stalled long-running execution.",
+        ].join("\n"),
+        checkoutRunId: runId,
+        executionRunId: runId,
+      })
+      .where(eq(issues.id, issueId));
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      authorType: "agent",
+      body: "Recovered the missed daily digest and restored this rolling tracker to Reporter-owned `todo` while idle.",
+      createdAt: new Date("2026-03-19T00:06:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:06:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({
+      status: "todo",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+    expect(runs[0]?.status).toBe("failed");
+    expect(runs[0]?.errorCode).toBe("adapter_failed");
+    expect(runs[0]?.error).toBe("stream disconnected before completion");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+  });
+
+  it("does not let an older manual recovery comment suppress a later cadence trigger", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      runErrorCode: "adapter_failed",
+      runError: "stream disconnected before completion",
+    });
+    await db
+      .update(issues)
+      .set({
+        description: [
+          "Long-lived tracking issue for the Reporter daily programme digest cadence (14:00 BST every day). Do not close.",
+          "",
+          "Operational status convention: keep this issue assigned to Reporter and `todo` while idle between scheduled cadence comments; use `in_progress` only while a cadence trigger is actively being handled. After posting a digest or an explicit no-duplicate acknowledgement, return it to `todo` so productivity monitoring does not read the tracker as stalled long-running execution.",
+        ].join("\n"),
+      })
+      .where(eq(issues.id, issueId));
+    await db.insert(issueComments).values([
+      {
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        body: "Recovered the missed daily digest and restored this rolling tracker to Reporter-owned `todo` while idle.",
+        createdAt: new Date("2026-03-19T00:06:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:06:00.000Z"),
+      },
+      {
+        companyId,
+        issueId,
+        body:
+          "Cadence trigger fired at 2026-03-20T13:00:00Z (2026-03-20 14:00 BST). Produce the daily-digest report. (cadence=daily-digest)",
+        createdAt: new Date("2026-03-20T13:00:00.000Z"),
+        updatedAt: new Date("2026-03-20T13:00:00.000Z"),
+      },
+    ]);
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.dispatchRequeued).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      issueId,
+      retryReason: "assignment_recovery",
+      source: "issue.assignment_recovery",
+    });
+    if (retryRun?.id) {
+      await waitForRunToSettle(heartbeat, retryRun.id);
+    }
+  });
+
+  it("does not treat generic recovered progress comments as cadence recovery dispositions", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      runErrorCode: "adapter_failed",
+      runError: "stream disconnected before completion",
+    });
+    await db
+      .update(issues)
+      .set({
+        description: [
+          "Long-lived tracking issue for the Reporter daily programme digest cadence (14:00 BST every day). Do not close.",
+          "",
+          "Operational status convention: keep this issue assigned to Reporter and `todo` while idle between scheduled cadence comments; use `in_progress` only while a cadence trigger is actively being handled. After posting a digest or an explicit no-duplicate acknowledgement, return it to `todo` so productivity monitoring does not read the tracker as stalled long-running execution.",
+        ].join("\n"),
+      })
+      .where(eq(issues.id, issueId));
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      authorType: "agent",
+      body: "Successfully recovered from the network error and retried the fetch.",
+      createdAt: new Date("2026-03-19T00:06:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:06:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.dispatchRequeued).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      issueId,
+      retryReason: "assignment_recovery",
+      source: "issue.assignment_recovery",
+    });
+    if (retryRun?.id) {
+      await waitForRunToSettle(heartbeat, retryRun.id);
+    }
+  });
+
+  it("finds a manual cadence recovery comment beyond the newest twenty comments", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      runErrorCode: "adapter_failed",
+      runError: "stream disconnected before completion",
+    });
+    await db
+      .update(issues)
+      .set({
+        description: [
+          "Long-lived tracking issue for the Reporter daily programme digest cadence (14:00 BST every day). Do not close.",
+          "",
+          "Operational status convention: keep this issue assigned to Reporter and `todo` while idle between scheduled cadence comments; use `in_progress` only while a cadence trigger is actively being handled. After posting a digest or an explicit no-duplicate acknowledgement, return it to `todo` so productivity monitoring does not read the tracker as stalled long-running execution.",
+        ].join("\n"),
+        checkoutRunId: runId,
+        executionRunId: runId,
+      })
+      .where(eq(issues.id, issueId));
+    await db.insert(issueComments).values([
+      {
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        body: "Recovery note: posted the missing daily digest and returned this rolling tracker to `todo` while idle.",
+        createdAt: new Date("2026-03-19T00:06:00.000Z"),
+        updatedAt: new Date("2026-03-19T00:06:00.000Z"),
+      },
+      ...Array.from({ length: 25 }, (_, index) => ({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        authorType: "agent" as const,
+        body: `Operator follow-up note ${index + 1}: no new cadence trigger.`,
+        createdAt: new Date(Date.UTC(2026, 2, 19, 0, 7 + index, 0)),
+        updatedAt: new Date(Date.UTC(2026, 2, 19, 0, 7 + index, 0)),
+      })),
+    ]);
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.assignmentDispatched).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({
+      status: "todo",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+  });
+
   it("does not duplicate initial assigned todo dispatch when a queued wake already exists", async () => {
     const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
     await db.insert(agentWakeupRequests).values({
