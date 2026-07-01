@@ -198,7 +198,8 @@ Hermes is a built-in adapter via upstream `@paperclipai/hermes-paperclip-adapter
 - `hermes_local` runs the local Hermes CLI (`hermes` on `PATH`).
 - `hermes_gateway` calls an already-running Hermes API server.
 - Both types appear in `GET /api/adapters` with `source: builtin` — no Adapter manager installation needed.
-- The Hermes CLI runtime is installed in Paperclip agent-running Docker images (root and untrusted-review). See `doc/DOCKER.md` for details.
+- The Hermes CLI runtime is installed in Paperclip agent-running Docker images (root and untrusted-review). The production image sets canonical `HERMES_HOME=/paperclip/.hermes` (changed from `/paperclip/hermes` in PR #2 of the `fix-docker-deploy-and-verify-hermes` change); the untrusted-review image keeps `HERMES_HOME=/home/reviewer/.hermes` for the reviewer user. See `doc/DOCKER.md` for details.
+- Real `hermes_local` execution (not just `hermes --version`) is verified end-to-end by `./scripts/docker-hermes-smoke.sh` — Docker daemon required, exits non-zero on any failure.
 - No default Hermes agent is auto-created — hire one explicitly from the board.
 - External plugin manager remains available for non-Hermes adapters.
 - To bump the Hermes runtime: update `HERMES_AGENT_IMAGE` ARG defaults in both Dockerfiles, update `doc/DOCKER.md`, rebuild, and probe `hermes --version`.
