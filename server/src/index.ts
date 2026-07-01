@@ -87,6 +87,7 @@ type EmbeddedPostgresCtor = new (opts: {
   password: string;
   port: number;
   persistent: boolean;
+  createPostgresUser?: boolean;
   initdbFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
@@ -430,6 +431,7 @@ export async function startServer(): Promise<StartedServer> {
           password: "paperclip",
           port,
           persistent: true,
+          createPostgresUser: true,
           initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
           onLog: appendEmbeddedPostgresLog,
           onError: appendEmbeddedPostgresLog,
