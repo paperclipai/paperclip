@@ -138,6 +138,23 @@ function coerceDate(value: Date | string | null | undefined) {
   return value instanceof Date ? value : new Date(value);
 }
 
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readDateMs(value: unknown): number | null {
+  if (!(typeof value === "string" || value instanceof Date)) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  const time = date.getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+function readPositiveIntegerValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+}
+
 function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): ProductivityReviewThresholds {
   return {
     noCommentStreakRuns: readPositiveInteger(
@@ -198,6 +215,39 @@ function formatTrigger(trigger: ProductivityReviewTrigger) {
   if (trigger === "no_comment_streak") return "No-comment streak";
   if (trigger === "high_churn") return "High churn";
   return "Long active duration";
+}
+
+function hasFutureActiveIssueMonitor(sourceIssue: Pick<
+  IssueRow,
+  "status" | "assigneeAgentId" | "assigneeUserId" | "executionPolicy" | "executionState" | "monitorAttemptCount" | "monitorNextCheckAt"
+>, now: Date) {
+  if (sourceIssue.status !== "in_progress" || !sourceIssue.assigneeAgentId || sourceIssue.assigneeUserId) {
+    return false;
+  }
+
+  const nowMs = now.getTime();
+  const nextCheckAtMs = readDateMs(sourceIssue.monitorNextCheckAt);
+  if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
+
+  const policyMonitor = readRecord(readRecord(sourceIssue.executionPolicy)?.monitor);
+  const stateMonitor = readRecord(readRecord(sourceIssue.executionState)?.monitor);
+  if (!policyMonitor || stateMonitor?.status !== "scheduled") return false;
+
+  const policyNextCheckAtMs = readDateMs(policyMonitor.nextCheckAt);
+  if (policyNextCheckAtMs === null || policyNextCheckAtMs <= nowMs) return false;
+
+  const stateNextCheckAtMs = readDateMs(stateMonitor.nextCheckAt);
+  if (stateNextCheckAtMs === null || stateNextCheckAtMs <= nowMs) return false;
+
+  const timeoutAtMs = readDateMs(policyMonitor.timeoutAt ?? stateMonitor.timeoutAt);
+  if (timeoutAtMs !== null && timeoutAtMs <= nowMs) return false;
+
+  const maxAttempts = readPositiveIntegerValue(policyMonitor.maxAttempts ?? stateMonitor.maxAttempts);
+  const stateAttemptCount = readPositiveIntegerValue(stateMonitor.attemptCount) ?? 0;
+  const attemptCount = sourceIssue.monitorAttemptCount ?? stateAttemptCount;
+  if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
+
+  return true;
 }
 
 export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: EnqueueWakeup }) {
@@ -476,7 +526,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       : null;
 
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    const longActive =
+      elapsedMs !== null &&
+      elapsedMs >= thresholds.longActiveMs &&
+      !hasFutureActiveIssueMonitor(sourceIssue, now);
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
