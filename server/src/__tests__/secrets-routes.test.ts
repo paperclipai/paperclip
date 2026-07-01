@@ -162,7 +162,7 @@ describe("secret routes", () => {
       .send({});
 
     expect(res.status).toBe(400);
-    expect(JSON.stringify(res.body)).toMatch(/requires value or externalRef/);
+    expect(JSON.stringify(res.body)).toMatch(/requires value, externalRef/);
     expect(mockSecretService.rotateCurrentUserSecretValue).not.toHaveBeenCalled();
   });
 

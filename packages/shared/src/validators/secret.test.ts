@@ -63,11 +63,14 @@ describe("secret validators", () => {
     });
   });
 
-  it("requires secret rotation payloads to include new material", () => {
-    expect(() => rotateSecretSchema.parse({})).toThrow(/requires value or externalRef/);
-    expect(() => rotateUserSecretValueSchema.parse({})).toThrow(/requires value or externalRef/);
+  it("requires secret rotation payloads to include rotation input", () => {
+    expect(() => rotateSecretSchema.parse({})).toThrow(/requires value, externalRef/);
+    expect(() => rotateUserSecretValueSchema.parse({})).toThrow(/requires value, externalRef/);
     expect(rotateUserSecretValueSchema.parse({ value: "new-secret" })).toEqual({
       value: "new-secret",
+    });
+    expect(rotateUserSecretValueSchema.parse({ providerVersionRef: "version-2" })).toEqual({
+      providerVersionRef: "version-2",
     });
   });
 

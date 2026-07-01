@@ -79,15 +79,25 @@ export const createSecretSchema = z.object({
 
 export type CreateSecret = z.infer<typeof createSecretSchema>;
 
-function requireSecretRotationMaterial(
-  value: { value?: string | null; externalRef?: string | null },
+function requireSecretRotationInput(
+  value: {
+    value?: string | null;
+    externalRef?: string | null;
+    providerVersionRef?: string | null;
+    providerConfigId?: string | null;
+  },
   ctx: z.RefinementCtx,
 ) {
-  if (!value.value?.trim() && !value.externalRef?.trim()) {
+  if (
+    !value.value?.trim() &&
+    !value.externalRef?.trim() &&
+    value.providerVersionRef === undefined &&
+    value.providerConfigId === undefined
+  ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["value"],
-      message: "Secret rotation requires value or externalRef",
+      message: "Secret rotation requires value, externalRef, providerVersionRef, or providerConfigId",
     });
   }
 }
@@ -97,7 +107,7 @@ export const rotateSecretSchema = z.object({
   externalRef: z.string().optional().nullable(),
   providerVersionRef: z.string().optional().nullable(),
   providerConfigId: z.string().uuid().optional().nullable(),
-}).superRefine(requireSecretRotationMaterial);
+}).superRefine(requireSecretRotationInput);
 
 export type RotateSecret = z.infer<typeof rotateSecretSchema>;
 
@@ -194,7 +204,7 @@ export const rotateUserSecretValueSchema = z.object({
   externalRef: z.string().optional().nullable(),
   providerVersionRef: z.string().optional().nullable(),
   providerConfigId: z.string().uuid().optional().nullable(),
-}).superRefine(requireSecretRotationMaterial);
+}).superRefine(requireSecretRotationInput);
 
 export type RotateUserSecretValue = z.infer<typeof rotateUserSecretValueSchema>;
 
