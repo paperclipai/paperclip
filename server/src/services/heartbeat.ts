@@ -8127,7 +8127,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function hasActionableTimerWork(agent: typeof agents.$inferSelect) {
-    const row = await db
+    const candidateRows = await db
       .select({ id: issues.id })
       .from(issues)
       .where(
@@ -8139,9 +8139,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
         ),
       )
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    return Boolean(row);
+      .orderBy(asc(issues.updatedAt));
+    if (candidateRows.length === 0) return false;
+
+    const readinessByIssueId = await issuesSvc.listDependencyReadiness(
+      agent.companyId,
+      candidateRows.map((row) => row.id),
+    );
+    return candidateRows.some((row) => readinessByIssueId.get(row.id)?.isDependencyReady ?? true);
   }
 
   async function markTimerHeartbeatChecked(agentId: string, source: WakeupOptions["source"]) {
@@ -12059,7 +12064,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       !readNonEmptyString(enrichedContextSnapshot.taskKey);
     if (policy.skipTimerWhenNoActionableWork && genericTimerWake && !(await hasActionableTimerWork(agent))) {
       await writeSkippedHeartbeatRequest("heartbeat.timer.no_actionable_work", {
-        reason: "No assigned todo or in_progress issue requires this agent before timer adapter invocation.",
+        reason: "No assigned todo or in_progress issue is dependency-ready for this agent before timer adapter invocation.",
       });
       await markTimerHeartbeatChecked(agentId, source);
       return null;
