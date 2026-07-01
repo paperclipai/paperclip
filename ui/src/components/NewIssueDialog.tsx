@@ -7,6 +7,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
+import { MissingUserSecretsBanner } from "../pages/secrets/MissingUserSecretsBanner";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
@@ -1353,6 +1354,12 @@ export function NewIssueDialog() {
               onChange={handleTitleChange}
             />
           </div>
+
+          {effectiveCompanyId ? (
+            <div className="px-4 pb-2">
+              <MissingUserSecretsBanner companyId={effectiveCompanyId} />
+            </div>
+          ) : null}
 
           <div className="px-4 pb-2">
             <div className="overflow-x-auto overscroll-x-contain">

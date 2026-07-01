@@ -49,6 +49,7 @@ import {
   type UpdateSecretProviderConfigInput,
 } from "../api/secrets";
 import { ApiError } from "../api/client";
+import { accessApi, type CompanyUserDirectoryEntry } from "../api/access";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { Button } from "@/components/ui/button";
@@ -1176,7 +1177,11 @@ export function Secrets() {
                     <SecretUsageTab loading={usageQuery.isPending} bindings={usageQuery.data?.bindings ?? []} />
                   </TabsContent>
                   <TabsContent value="events">
-                    <SecretEventsTab loading={eventsQuery.isPending} events={eventsQuery.data ?? []} />
+                    <SecretEventsTab
+                      loading={eventsQuery.isPending}
+                      events={eventsQuery.data ?? []}
+                      companyId={selectedCompanyId}
+                    />
                   </TabsContent>
                 </div>
               </Tabs>
@@ -2585,7 +2590,34 @@ function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: Com
   );
 }
 
-function SecretEventsTab({ loading, events }: { loading: boolean; events: SecretAccessEvent[] }) {
+function SecretEventsTab({
+  loading,
+  events,
+  companyId,
+}: {
+  loading: boolean;
+  events: SecretAccessEvent[];
+  companyId: string;
+}) {
+  // Resolve responsible/owner user ids to human names for user-scoped events.
+  const anyUserScoped = events.some(
+    (event) =>
+      event.secretScope === "user" || event.responsibleUserId || event.credentialOwnerUserId,
+  );
+  const { data: directory } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(companyId),
+    queryFn: () => accessApi.listUserDirectory(companyId),
+    enabled: anyUserScoped,
+    staleTime: 60_000,
+  });
+  const userLabel = (userId: string | null): string => {
+    if (!userId) return "—";
+    const entry: CompanyUserDirectoryEntry | undefined = directory?.users.find(
+      (u) => u.principalId === userId,
+    );
+    return entry?.user?.name?.trim() || entry?.user?.email?.trim() || `${userId.slice(0, 8)}…`;
+  };
+
   if (loading) {
     return <div className="py-6 text-center text-xs text-muted-foreground">Loading…</div>;
   }
@@ -2600,15 +2632,34 @@ function SecretEventsTab({ loading, events }: { loading: boolean; events: Secret
     <div className="space-y-1.5">
       {events.map((event) => (
         <div key={event.id} className="rounded border border-border px-2 py-1.5 text-xs">
-          <div className="flex items-center justify-between">
-            <span className="capitalize">
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5 capitalize">
               {event.consumerType} · {event.outcome}
+              {event.secretScope === "user" ? (
+                <Badge
+                  variant="outline"
+                  className="border-violet-500/30 bg-violet-500/10 text-[10px] text-violet-700 dark:text-violet-300"
+                >
+                  User secret
+                </Badge>
+              ) : null}
             </span>
             <span className="text-[11px] text-muted-foreground">{formatRelative(event.createdAt)}</span>
           </div>
           <div className="font-mono text-[11px] text-muted-foreground break-all">
             {event.consumerId}
           </div>
+          {event.responsibleUserId ? (
+            <div className="text-[11px] text-muted-foreground">
+              Responsible user: <span className="text-foreground">{userLabel(event.responsibleUserId)}</span>
+            </div>
+          ) : null}
+          {event.credentialOwnerUserId &&
+          event.credentialOwnerUserId !== event.responsibleUserId ? (
+            <div className="text-[11px] text-muted-foreground">
+              Credential owner: <span className="text-foreground">{userLabel(event.credentialOwnerUserId)}</span>
+            </div>
+          ) : null}
           {event.errorCode ? (
             <div className="text-[11px] text-destructive">{event.errorCode}</div>
           ) : null}
