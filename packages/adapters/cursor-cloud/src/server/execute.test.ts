@@ -40,6 +40,9 @@ function createMockRun(options: MockRunOptions = {}) {
     result: "Done\nWith detail",
     model: { id: "gpt-5.4" },
     durationMs: 1234,
+    git: {
+      branches: [{ repoUrl: "https://github.com/paperclipai/paperclip.git", branch: "main" }],
+    },
   };
   const streamMessages = options.streamMessages ?? [];
   const streamError = options.streamError ?? null;
@@ -265,6 +268,9 @@ describe("cursor_cloud execute", () => {
         status: "finished",
         result: "Follow-up result",
         model: { id: "gpt-5.4" },
+        git: {
+          branches: [{ repoUrl: "https://github.com/paperclipai/paperclip.git", branch: "main" }],
+        },
       },
     });
     const sdkAgent = createMockSdkAgent({ agentId: "agent-attached", sendRun: followUpRun });
@@ -342,6 +348,100 @@ describe("cursor_cloud execute", () => {
         status: "cancelled",
         cursorAgentId: "agent-cancelled",
         cursorRunId: "run-cancelled",
+      },
+    });
+  });
+
+  it("detects phantom success when status is finished but no git evidence", async () => {
+    const phantomRun = createMockRun({
+      id: "run-phantom",
+      agentId: "agent-phantom",
+      status: "finished",
+      waitResult: {
+        id: "run-phantom",
+        status: "finished",
+        result: "I analyzed the code and here are my thoughts...",
+        model: { id: "gpt-5.4" },
+        durationMs: 5000,
+      },
+    });
+    const sdkAgent = createMockSdkAgent({ agentId: "agent-phantom", sendRun: phantomRun });
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext();
+
+    const result = await execute(ctx);
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorMessage: expect.stringContaining("Phantom success detected"),
+      sessionId: "agent-phantom",
+      resultJson: {
+        status: "finished",
+        phantomSuccess: true,
+        hasGitEvidence: false,
+      },
+    });
+    expect(result.errorMessage).toContain("no git branches/PRs");
+    expect(result.exitCode).toBe(1);
+  });
+
+  it("accepts finished status when git evidence exists", async () => {
+    const realRun = createMockRun({
+      id: "run-real",
+      agentId: "agent-real",
+      status: "finished",
+      waitResult: {
+        id: "run-real",
+        status: "finished",
+        result: "Fixed the bug\nWith detail",
+        model: { id: "gpt-5.4" },
+        durationMs: 12000,
+        git: {
+          branches: [
+            { repoUrl: "https://github.com/example/repo.git", branch: "fix/bug-123" },
+          ],
+        },
+      },
+    });
+    const sdkAgent = createMockSdkAgent({ agentId: "agent-real", sendRun: realRun });
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext();
+
+    const result = await execute(ctx);
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      errorMessage: null,
+      sessionId: "agent-real",
+      summary: "Fixed the bug",
+    });
+    expect(result.resultJson).not.toHaveProperty("phantomSuccess");
+  });
+
+  it("detects phantom success with empty git branches array", async () => {
+    const emptyGitRun = createMockRun({
+      id: "run-empty-git",
+      agentId: "agent-empty-git",
+      status: "finished",
+      waitResult: {
+        id: "run-empty-git",
+        status: "finished",
+        result: "Done",
+        model: { id: "gpt-5.4" },
+        git: { branches: [] },
+      },
+    });
+    const sdkAgent = createMockSdkAgent({ agentId: "agent-empty-git", sendRun: emptyGitRun });
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext();
+
+    const result = await execute(ctx);
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      resultJson: {
+        phantomSuccess: true,
+        hasGitEvidence: false,
       },
     });
   });
