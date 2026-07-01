@@ -24,10 +24,13 @@ function createProgram(): Command {
 }
 
 describe("project and goal commands", () => {
+  let tempContextDir: string | undefined;
+
   beforeEach(() => {
+    tempContextDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-project-goal-cli-"));
     process.env = {
       ...ORIGINAL_ENV,
-      PAPERCLIP_CONTEXT: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-project-goal-cli-")), "context.json"),
+      PAPERCLIP_CONTEXT: path.join(tempContextDir, "context.json"),
     };
     vi.restoreAllMocks();
     delete process.env.PAPERCLIP_API_KEY;
@@ -37,6 +40,10 @@ describe("project and goal commands", () => {
 
   afterEach(() => {
     process.env = { ...ORIGINAL_ENV };
+    if (tempContextDir) {
+      fs.rmSync(tempContextDir, { recursive: true, force: true });
+      tempContextDir = undefined;
+    }
     vi.restoreAllMocks();
   });
 
