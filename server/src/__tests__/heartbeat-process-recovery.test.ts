@@ -1240,6 +1240,41 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.checkoutRunId).toBeNull();
   });
 
+  it("does not immediately re-enqueue continuation for a column-only future scheduled monitor", async () => {
+    const monitorNextCheckAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+      monitorNextCheckAt,
+      executionPolicy: { mode: "normal" },
+      executionState: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("failed");
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.some((row) => row.reason === "issue_continuation_needed")).toBe(false);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
+  });
+
   it("blocks failed recovery work in place during immediate terminal-run cleanup", async () => {
     const sourceIssueId = randomUUID();
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
@@ -2962,6 +2997,42 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(issue?.status).toBe("in_progress");
     expect(issue?.monitorNextCheckAt).toBeNull();
+  });
+
+  it("does not re-enqueue continuation for stranded in-progress work parked on a column-only future scheduled monitor", async () => {
+    const monitorNextCheckAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+      monitorNextCheckAt,
+      executionPolicy: { mode: "normal" },
+      executionState: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.filter((row) => row.payload?.issueId === issueId)).toHaveLength(1);
+    expect(wakeups.some((row) => row.reason === "issue_continuation_needed")).toBe(false);
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.monitorNextCheckAt).toEqual(monitorNextCheckAt);
   });
 
   it.each([

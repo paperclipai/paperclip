@@ -441,7 +441,8 @@ export function issueHasFutureScheduledMonitor(issue: Pick<
   const rawStateMonitor = readObject(rawState.monitor);
   const monitor = derivePersistedMonitorState({ issue, state, policy });
   if (monitor?.status !== "scheduled") return false;
-  if ((state?.status ?? readNonEmptyString(rawState.status)) !== "idle") return false;
+  const stateStatus = state?.status ?? readNonEmptyString(rawState.status);
+  if (stateStatus && stateStatus !== "idle") return false;
 
   const now = Date.now();
   const nextCheckAt = readMonitorDate(monitor.nextCheckAt);
