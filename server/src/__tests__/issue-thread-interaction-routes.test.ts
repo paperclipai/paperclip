@@ -826,27 +826,30 @@ describe.sequential("issue thread interaction routes", () => {
 
   it("does not emit a continuation wake when request confirmations are rejected", async () => {
     mockInteractionService.rejectInteraction.mockResolvedValueOnce({
-      id: "interaction-3",
-      companyId: "company-1",
-      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      kind: "request_confirmation",
-      status: "rejected",
-      continuationPolicy: "wake_assignee_on_accept",
-      idempotencyKey: null,
-      sourceCommentId: null,
-      sourceRunId: "run-3",
-      payload: {
-        version: 1,
-        prompt: "Apply this plan?",
+      interaction: {
+        id: "interaction-3",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "rejected",
+        continuationPolicy: "wake_assignee_on_accept",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-3",
+        payload: {
+          version: 1,
+          prompt: "Apply this plan?",
+        },
+        result: {
+          version: 1,
+          outcome: "rejected",
+          reason: "Needs changes",
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
       },
-      result: {
-        version: 1,
-        outcome: "rejected",
-        reason: "Needs changes",
-      },
-      createdAt: "2026-04-20T12:00:00.000Z",
-      updatedAt: "2026-04-20T12:05:00.000Z",
-      resolvedAt: "2026-04-20T12:05:00.000Z",
+      continuationIssue: null,
     });
     const app = await createApp();
 
@@ -856,6 +859,140 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("wakes the returned agent when rejecting an agent-authored confirmation from a board review assignee", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+    }));
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-6",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "rejected",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-6",
+        payload: {
+          version: 1,
+          prompt: "Approve this plan?",
+        },
+        result: {
+          version: 1,
+          outcome: "rejected",
+          reason: "Needs more detail",
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      continuationIssue: {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        assigneeAgentId: CREATED_AGENT_ID,
+        assigneeUserId: null,
+        status: "todo",
+      },
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-6/reject")
+      .send({ reason: "Needs more detail" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      CREATED_AGENT_ID,
+      expect.objectContaining({
+        source: "automation",
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          interactionId: "interaction-6",
+          interactionKind: "request_confirmation",
+          interactionStatus: "rejected",
+        }),
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          source: "request_confirmation_reject",
+          assigneeAgentId: CREATED_AGENT_ID,
+          assigneeUserId: null,
+          _previous: expect.objectContaining({
+            assigneeUserId: "local-board",
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("wakes the returned agent when rejecting an agent-authored checkbox confirmation from a board review assignee", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+    }));
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-7",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_checkbox_confirmation",
+        status: "rejected",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-7",
+        payload: {
+          version: 1,
+          prompt: "Pick files to delete",
+          options: [{ id: "draft", label: "Old draft" }],
+        },
+        result: {
+          version: 1,
+          outcome: "rejected",
+          reason: "Hold off",
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      continuationIssue: {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        assigneeAgentId: CREATED_AGENT_ID,
+        assigneeUserId: null,
+        status: "todo",
+      },
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-7/reject")
+      .send({ reason: "Hold off" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      CREATED_AGENT_ID,
+      expect.objectContaining({
+        source: "automation",
+        reason: "issue_commented",
+        payload: expect.objectContaining({
+          interactionId: "interaction-7",
+          interactionKind: "request_checkbox_confirmation",
+          interactionStatus: "rejected",
+        }),
+      }),
+    );
   });
 
   it("does not emit an accept-only continuation wake for rejected suggested tasks", async () => {
