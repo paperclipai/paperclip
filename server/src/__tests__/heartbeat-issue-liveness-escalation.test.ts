@@ -11,9 +11,11 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   issueComments,
+  issueLabels,
   issueRelations,
   issueTreeHolds,
   issues,
+  labels,
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
@@ -485,6 +487,32 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       },
     });
     expect(events.filter((event) => event.action === "issue.blockers.updated")).toHaveLength(1);
+  });
+
+  it("does not escalate a blocker carrying the perpetual-tracker label (BLU-10337)", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockerIssueId } = await seedBlockedChain();
+
+    // The blocker is a perpetual tracker: it is its own standing waiting path, so the
+    // liveness classifier must not flip it to blocked nor fire source_scoped_recovery.
+    const labelId = randomUUID();
+    await db.insert(labels).values({
+      id: labelId,
+      companyId,
+      name: "perpetual-tracker",
+      color: "#000000",
+    });
+    await db.insert(issueLabels).values({ companyId, issueId: blockerIssueId, labelId });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(result.escalationsCreated).toBe(0);
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
   });
 
   it("skips budget-blocked direct owners and assigns recovery to the manager fallback", async () => {
