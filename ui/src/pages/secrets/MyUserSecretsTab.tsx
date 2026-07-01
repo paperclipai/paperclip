@@ -61,7 +61,8 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
           {missingCount > 0 ? (
             <span className="font-medium">
               {" "}
-              {missingCount} required secret{missingCount === 1 ? "" : "s"} still need your value.
+              {missingCount} required secret{missingCount === 1 ? " still needs" : "s still need"} your
+              value.
             </span>
           ) : null}
         </p>
