@@ -148,7 +148,7 @@ interface ValidatedFetchTarget {
   useTls: boolean;
 }
 
-async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
+async function validateAndResolveFetchUrl(urlString: string, allowPrivateNetwork = false): Promise<ValidatedFetchTarget> {
   let parsed: URL;
   try {
     parsed = new URL(urlString);
@@ -187,10 +187,12 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     // Filter to only non-private IPs instead of rejecting the entire request
     // when some IPs are private. This handles multi-homed hosts that resolve
     // to both private and public addresses.
-    const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
+    const safeResults = allowPrivateNetwork
+      ? results
+      : results.filter((entry) => !isPrivateIP(entry.address));
     if (safeResults.length === 0) {
       throw new Error(
-        `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
+        `All resolved IPs for ${originalHostname} are in private/reserved ranges; plugin requires http.private-network capability`,
       );
     }
 
@@ -1223,7 +1225,8 @@ export function buildHostServices(
       async fetch(params) {
         // SSRF protection: validate protocol whitelist + block private IPs.
         // Resolve once, then connect directly to that IP to prevent DNS rebinding.
-        const target = await validateAndResolveFetchUrl(params.url);
+        const allowPrivateNetwork = options.manifest?.capabilities.includes("http.private-network") ?? false;
+        const target = await validateAndResolveFetchUrl(params.url, allowPrivateNetwork);
 
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), PLUGIN_FETCH_TIMEOUT_MS);

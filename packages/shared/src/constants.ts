@@ -959,6 +959,7 @@ export const PLUGIN_CAPABILITIES = [
   "webhooks.receive",
   "api.routes.register",
   "http.outbound",
+  "http.private-network",
   "secrets.read-ref",
   "environment.drivers.register",
   "local.folders",
