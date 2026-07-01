@@ -37,3 +37,33 @@ export function sortWorkspaceRoutinesByName(routines: RoutineListItem[]): Routin
     return left.id.localeCompare(right.id);
   });
 }
+
+export interface WorkspaceRoutineGroups {
+  thisWorkspace: RoutineListItem[];
+  otherWorkspaces: RoutineListItem[];
+}
+
+export function groupWorkspaceSpecificRoutines(
+  routines: RoutineListItem[],
+  currentProjectId: string | null,
+): WorkspaceRoutineGroups {
+  const groups: WorkspaceRoutineGroups = {
+    thisWorkspace: [],
+    otherWorkspaces: [],
+  };
+
+  for (const routine of routines) {
+    if (!routineHasWorkspaceSpecificVariables(routine)) continue;
+
+    if (currentProjectId !== null && routine.projectId === currentProjectId) {
+      groups.thisWorkspace.push(routine);
+    } else {
+      groups.otherWorkspaces.push(routine);
+    }
+  }
+
+  return {
+    thisWorkspace: sortWorkspaceRoutinesByName(groups.thisWorkspace),
+    otherWorkspaces: sortWorkspaceRoutinesByName(groups.otherWorkspaces),
+  };
+}
