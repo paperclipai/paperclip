@@ -15,6 +15,11 @@
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/server/index.ts",
+    "./server/execute": "./src/server/execute.ts",
+    "./server/test": "./src/server/test.ts",
+    "./server/config-schema": "./src/server/config-schema.ts",
+    "./server/session-codec": "./src/server/session-codec.ts",
+    "./server/skills": "./src/server/skills.ts",
     "./ui": "./src/ui/index.ts",
     "./cli": "./src/cli/index.ts"
   },
@@ -28,6 +33,26 @@
       "./server": {
         "types": "./dist/server/index.d.ts",
         "import": "./dist/server/index.js"
+      },
+      "./server/execute": {
+        "types": "./dist/server/execute.d.ts",
+        "import": "./dist/server/execute.js"
+      },
+      "./server/test": {
+        "types": "./dist/server/test.d.ts",
+        "import": "./dist/server/test.js"
+      },
+      "./server/config-schema": {
+        "types": "./dist/server/config-schema.d.ts",
+        "import": "./dist/server/config-schema.js"
+      },
+      "./server/session-codec": {
+        "types": "./dist/server/session-codec.d.ts",
+        "import": "./dist/server/session-codec.js"
+      },
+      "./server/skills": {
+        "types": "./dist/server/skills.d.ts",
+        "import": "./dist/server/skills.js"
       },
       "./ui": {
         "types": "./dist/ui/index.d.ts",
