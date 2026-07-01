@@ -1,0 +1,17 @@
+{
+  "positions": [
+    {
+      "symbol": "ORDIUSDT",
+      "exchange_a": "MEXC", "exchange_b": "BLOFIN",
+      "side_a": "buy", "side_b": "sell",
+      "size_usd_a": 25.0, "size_usd_b": 25.0,
+      "entry_spread_pct": 0.012,
+      "status": "open", "opened_at_ms": 1700000000000,
+      "fills": [
+        {"exchange":"MEXC","leg":"a","intent":"entry","order_id":"m-ordi-1",
+         "side":"buy","size_usd":25.0,"fill_price":1.234,"fees_usd":0.012,
+         "filled_at_ms":1700000000500}
+      ]
+    }
+  ]
+}
