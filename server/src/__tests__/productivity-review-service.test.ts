@@ -120,6 +120,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     count: number;
     now: Date;
     withRunComments?: boolean;
+    nextActionText?: string | null;
   }) {
     const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
     for (let index = 0; index < input.count; index += 1) {
@@ -136,7 +137,7 @@ describeEmbeddedPostgres("productivity review service", () => {
         finishedAt: new Date(createdAt.getTime() + 30_000),
         contextSnapshot: { issueId: input.issueId, taskId: input.issueId },
         livenessState: "advanced",
-        nextAction: "Continue processing the next batch.",
+        nextAction: input.nextActionText === undefined ? "Continue processing the next batch." : input.nextActionText,
         createdAt,
         updatedAt: createdAt,
       });
@@ -188,6 +189,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       issueId: seeded.issueId,
       count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
       now,
+      nextActionText: null,
     });
 
     const service = productivityReviewService(db);
@@ -210,6 +212,94 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
   });
 
+  it("suppresses no-comment productivity reviews when active work has a fresh next action", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      nextActionText: "Continue the import validation pass and post the result.",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.suppressed).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("suppresses long-active productivity reviews when active work has fresh assignee progress", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 1,
+      now: new Date(now.getTime() - 30 * 60 * 1000),
+      nextActionText: "Wait for the delegated QA output and then reprioritize engineering.",
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.suppressed).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("walks the reporting chain before falling back to creator or executive roles", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const directorId = randomUUID();
+
+    await db.insert(agents).values({
+      id: directorId,
+      companyId: seeded.companyId,
+      name: "Director",
+      role: "manager",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db
+      .update(agents)
+      .set({ status: "paused", reportsTo: directorId })
+      .where(eq(agents.id, seeded.managerId));
+
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      nextActionText: null,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+    const [review] = await listProductivityReviews(seeded.companyId);
+
+    expect(result.created).toBe(1);
+    expect(review?.assigneeAgentId).toBe(directorId);
+  });
+
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
@@ -219,6 +309,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       issueId: seeded.issueId,
       count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
       now,
+      nextActionText: null,
     });
 
     const service = productivityReviewService(db);
@@ -255,6 +346,73 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listRefreshComments(review!.id)).toHaveLength(DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS);
   });
 
+  it("auto-resolves an open no-comment productivity review when fresh assignee progress appears", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      nextActionText: null,
+    });
+
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.status).toBe("todo");
+
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 1,
+      now: new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      nextActionText: "Finish the import cleanup and summarize the result.",
+    });
+
+    const resolved = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      companyId: seeded.companyId,
+    });
+    const [updatedReview] = await listProductivityReviews(seeded.companyId);
+
+    expect(resolved.resolved).toBe(1);
+    expect(updatedReview?.status).toBe("done");
+  });
+
+  it("auto-resolves an open long-active productivity review when fresh assignee progress appears", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.status).toBe("todo");
+
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 1,
+      now: new Date(now.getTime() + 30 * 60 * 1000),
+      nextActionText: "Wait for the delegated QA output and then reprioritize engineering.",
+    });
+
+    const resolved = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      companyId: seeded.companyId,
+    });
+    const [updatedReview] = await listProductivityReviews(seeded.companyId);
+
+    expect(resolved.resolved).toBe(1);
+    expect(updatedReview?.status).toBe("done");
+  });
+
   it("caps productivity review creation per source issue in the rolling creation window", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
@@ -264,6 +422,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       issueId: seeded.issueId,
       count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
       now,
+      nextActionText: null,
     });
     await db.insert(issues).values(
       [8, 9, 10].map((hoursAgo, index) => {
@@ -305,6 +464,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       issueId: seeded.issueId,
       count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
       now,
+      nextActionText: null,
     });
     await db.insert(issues).values(
       [8, 9, 10].map((hoursAgo, index) => {
@@ -383,6 +543,43 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(review?.description).toContain("Runs in rolling windows: 10/1h");
   });
 
+  it("does not auto-resolve an open high-churn productivity review when fresh assignee progress appears", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 10,
+      now,
+      withRunComments: true,
+    });
+
+    const service = productivityReviewService(db);
+    await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.status).toBe("todo");
+    expect(review?.description).toContain("Primary trigger: `high_churn`");
+
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 1,
+      now: new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      nextActionText: "Continue scaling the import worker for the next batch.",
+    });
+
+    const result = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      companyId: seeded.companyId,
+    });
+    const [unchangedReview] = await listProductivityReviews(seeded.companyId);
+
+    expect(result.resolved).toBe(0);
+    expect(unchangedReview?.status).toBe("todo");
+  });
+
   it("ignores non-assignee comments when evaluating high-churn productivity reviews", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
@@ -457,6 +654,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       issueId: childId,
       count: 10,
       now,
+      nextActionText: null,
     });
 
     const result = await productivityReviewService(db).reconcileProductivityReviews({
@@ -478,6 +676,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       issueId: seeded.issueId,
       count: 10,
       now,
+      nextActionText: null,
     });
     const service = productivityReviewService(db);
     await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
@@ -506,6 +705,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       issueId: seeded.issueId,
       count: 10,
       now,
+      nextActionText: null,
     });
     const service = productivityReviewService(db);
     await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
@@ -552,6 +752,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       issueId: seeded.issueId,
       count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
       now,
+      nextActionText: null,
     });
 
     const result = await productivityReviewService(db).reconcileProductivityReviews({
