@@ -474,10 +474,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     },
   });
   const testEnvironmentDisabled = testEnvironment.isPending || !selectedCompanyId;
+  // Keep the trigger handed to the parent referentially STABLE. `testEnvironment.mutate` and
+  // `testEnvironmentDisabled` change identity every render (useMutation returns a fresh object),
+  // which otherwise re-runs the onTestActionChange effect below every render, pushing a new
+  // function into parent state → infinite update loop → blank page on agent create. (upstream #8336)
+  const triggerRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    triggerRef.current = () => {
+      if (testEnvironmentDisabled) return;
+      testEnvironment.mutate();
+    };
+  }, [testEnvironment, testEnvironmentDisabled]);
   const triggerTestEnvironment = useCallback(() => {
-    if (testEnvironmentDisabled) return;
-    testEnvironment.mutate();
-  }, [testEnvironment.mutate, testEnvironmentDisabled]);
+    triggerRef.current();
+  }, []);
 
   useEffect(() => {
     if (!showAdapterTestEnvironmentButton || !props.onTestActionChange) return;
