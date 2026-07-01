@@ -117,6 +117,16 @@ Before ending any heartbeat, apply this final-disposition checklist:
 - Delegated follow-up: create the follow-up issue directly, link it with `parentId`/`goalId`, and use blockers when the current issue must wait for that work.
 - Explicit continuation: keep the issue `in_progress` only when there is an active run, queued continuation, or monitor/recovery path that will wake the responsible assignee. Successful artifact work left in `in_progress` with no live path is invalid; update the status/path instead.
 
+> **Auto-release on run exit (post-L1):** On clean run exit and on crash exit, the harness now auto-releases any issue checkout this run still owns. You do not need to call `/release` explicitly unless you want to forcibly hand the task back to the queue.
+
+### Admin-reset reference (stale-lock recovery)
+
+If `GET /api/issues/<id>` shows `activeRun: null` BUT `checkoutRunId` / `executionRunId` / `executionLockedAt` / `executionAgentNameKey` are populated, the lock is stale. Reset paths, in order of preference:
+
+1. **Board user:** `POST /api/issues/<id>/admin/force-release[?clearAssignee=true]` — atomic clear of all four fields. Board-only.
+2. **Lock-holder agent (or any agent who can assume the assignee role):** `POST /api/issues/<id>/release`.
+3. **Manager last-resort:** `PATCH /api/issues/<id>` with `{"status":"todo"}` (or any non-`in_progress` status). The `applyStatusSideEffects` handler in `services/issues.js` clears all four execution fields atomically in the same transaction. Same atomic clear fires on assignee change.
+
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.
 
 ```json

@@ -10,6 +10,8 @@ const mockBuildWorkspaceRealizationRequest = vi.hoisted(() => vi.fn());
 const mockUpdateLeaseMetadata = vi.hoisted(() => vi.fn());
 const mockUpdateExecutionWorkspace = vi.hoisted(() => vi.fn());
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockReleaseFromRunIfOwned = vi.hoisted(() => vi.fn());
+const mockLoggerWarn = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/environment-execution-target.js", () => ({
   resolveEnvironmentExecutionTarget: mockResolveEnvironmentExecutionTarget,
@@ -42,6 +44,16 @@ vi.mock("../services/execution-workspaces.js", () => ({
 
 vi.mock("../services/activity-log.js", () => ({
   logActivity: mockLogActivity,
+}));
+
+vi.mock("../services/issues.js", () => ({
+  issueService: vi.fn(() => ({
+    releaseFromRunIfOwned: mockReleaseFromRunIfOwned,
+  })),
+}));
+
+vi.mock("../middleware/logger.js", () => ({
+  logger: { warn: mockLoggerWarn },
 }));
 
 // ---------------------------------------------------------------------------
@@ -546,5 +558,178 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     );
 
     expect(mockResolveEnvironmentExecutionTarget).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// releaseForRun — auto-release issue checkout on run exit
+// ---------------------------------------------------------------------------
+
+describe("environmentRunOrchestrator — releaseForRun: auto-release issue checkout", () => {
+  const mockDb = {} as any;
+  const HEARTBEAT_RUN_ID = "run-auto-release-1";
+  const ISSUE_ID = "issue-auto-release-1";
+  const LEASE_ID = "lease-auto-release-1";
+
+  function makeLeaseRecord(issueId: string | null): import("../services/environment-runtime.ts").EnvironmentRuntimeLeaseRecord {
+    return {
+      lease: {
+        id: LEASE_ID,
+        companyId: "company-1",
+        environmentId: "env-1",
+        executionWorkspaceId: null,
+        issueId,
+        heartbeatRunId: HEARTBEAT_RUN_ID,
+        status: "released",
+        leasePolicy: "ephemeral",
+        provider: "local",
+        providerLeaseId: null,
+        acquiredAt: new Date(),
+        lastUsedAt: new Date(),
+        expiresAt: null,
+        releasedAt: new Date(),
+        failureReason: null,
+        cleanupStatus: null,
+        metadata: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      environment: {
+        id: "env-1",
+        companyId: "company-1",
+        name: "Test Environment",
+        description: null,
+        driver: "local",
+        status: "active",
+        config: {},
+        metadata: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      leaseContext: {
+        executionWorkspaceId: null,
+        providerKey: null,
+        leasePolicy: "ephemeral",
+      },
+    } as unknown as import("../services/environment-runtime.ts").EnvironmentRuntimeLeaseRecord;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLogActivity.mockResolvedValue(undefined);
+    mockReleaseFromRunIfOwned.mockResolvedValue(null);
+    mockLoggerWarn.mockReturnValue(undefined);
+  });
+
+  it("AC1: run exits without explicit /release — issue checkout fields are cleared", async () => {
+    // Simulate the heartbeat run owning the issue checkout
+    const releasedRow = { id: ISSUE_ID, checkoutRunId: null, executionRunId: null, executionAgentNameKey: null, executionLockedAt: null };
+    mockReleaseFromRunIfOwned.mockResolvedValue(releasedRow);
+
+    const runtime = {
+      releaseRunLeases: vi.fn().mockResolvedValue([makeLeaseRecord(ISSUE_ID)]),
+    } as unknown as EnvironmentRuntimeService;
+
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+    const result = await orchestrator.releaseForRun({
+      heartbeatRunId: HEARTBEAT_RUN_ID,
+      companyId: "company-1",
+      agentId: "agent-1",
+    });
+
+    // Lease was released
+    expect(result.released).toHaveLength(1);
+    expect(result.errors).toHaveLength(0);
+
+    // releaseFromRunIfOwned was called with the issue id and run id
+    expect(mockReleaseFromRunIfOwned).toHaveBeenCalledOnce();
+    expect(mockReleaseFromRunIfOwned).toHaveBeenCalledWith(ISSUE_ID, HEARTBEAT_RUN_ID);
+
+    // Auto-release activity was logged
+    const autoReleaseLogCall = mockLogActivity.mock.calls.find(
+      (call) => call[1]?.action === "issue.auto_released_on_run_exit",
+    );
+    expect(autoReleaseLogCall).toBeDefined();
+    expect(autoReleaseLogCall![1]).toMatchObject({
+      action: "issue.auto_released_on_run_exit",
+      entityType: "issue",
+      entityId: ISSUE_ID,
+      details: { heartbeatRunId: HEARTBEAT_RUN_ID, leaseId: LEASE_ID },
+    });
+
+    // The returned issue has all four lock fields null — AC1 success condition
+    expect(releasedRow.checkoutRunId).toBeNull();
+    expect(releasedRow.executionRunId).toBeNull();
+    expect(releasedRow.executionAgentNameKey).toBeNull();
+    expect(releasedRow.executionLockedAt).toBeNull();
+  });
+
+  it("lease without issueId — releaseFromRunIfOwned is NOT called", async () => {
+    const runtime = {
+      releaseRunLeases: vi.fn().mockResolvedValue([makeLeaseRecord(null)]),
+    } as unknown as EnvironmentRuntimeService;
+
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+    await orchestrator.releaseForRun({
+      heartbeatRunId: HEARTBEAT_RUN_ID,
+      companyId: "company-1",
+      agentId: "agent-1",
+    });
+
+    expect(mockReleaseFromRunIfOwned).not.toHaveBeenCalled();
+  });
+
+  it("run no longer owns the issue (another run took over) — releaseFromRunIfOwned returns null, no auto-release log", async () => {
+    // null return = run does not own the issue (safe no-op)
+    mockReleaseFromRunIfOwned.mockResolvedValue(null);
+
+    const runtime = {
+      releaseRunLeases: vi.fn().mockResolvedValue([makeLeaseRecord(ISSUE_ID)]),
+    } as unknown as EnvironmentRuntimeService;
+
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+    const result = await orchestrator.releaseForRun({
+      heartbeatRunId: HEARTBEAT_RUN_ID,
+      companyId: "company-1",
+      agentId: "agent-1",
+    });
+
+    expect(result.released).toHaveLength(1);
+    expect(mockReleaseFromRunIfOwned).toHaveBeenCalledOnce();
+    const autoReleaseLogCall = mockLogActivity.mock.calls.find(
+      (call) => call[1]?.action === "issue.auto_released_on_run_exit",
+    );
+    expect(autoReleaseLogCall).toBeUndefined();
+  });
+
+  it("releaseFromRunIfOwned throws — error is swallowed, lease still released, warning logged", async () => {
+    const dbError = new Error("DB connection lost");
+    mockReleaseFromRunIfOwned.mockRejectedValue(dbError);
+
+    const runtime = {
+      releaseRunLeases: vi.fn().mockResolvedValue([makeLeaseRecord(ISSUE_ID)]),
+    } as unknown as EnvironmentRuntimeService;
+
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+    const result = await orchestrator.releaseForRun({
+      heartbeatRunId: HEARTBEAT_RUN_ID,
+      companyId: "company-1",
+      agentId: "agent-1",
+    });
+
+    // Lease still released despite checkout-release failure
+    expect(result.released).toHaveLength(1);
+    expect(result.errors).toHaveLength(0);
+
+    // Warning was logged with the error details
+    expect(mockLoggerWarn).toHaveBeenCalledOnce();
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: dbError,
+        issueId: ISSUE_ID,
+        heartbeatRunId: HEARTBEAT_RUN_ID,
+      }),
+      expect.stringContaining("auto-release issue checkout"),
+    );
   });
 });
