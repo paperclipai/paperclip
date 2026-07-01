@@ -105,7 +105,7 @@ import {
   type RealizedExecutionWorkspace,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
-import { issueService } from "./issues.js";
+import { issueService, normalizeAgentMentionToken } from "./issues.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -191,7 +191,7 @@ import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+import { extractSkillMentionIds, isUuidLike, stripMarkdownCode } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
@@ -8431,6 +8431,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         details: Record<string, unknown>;
       };
 
+  async function findTriggeringCommentMentionedAgentIds(companyId: string, body: string) {
+    const mentionedAgentIds = new Set(await issuesSvc.findMentionedAgents(companyId, body));
+    const rawMentionTokens = new Set<string>();
+    const rawMentionRe = /\B@([^\s@,!?()[\]{}<>:;]+)/g;
+    const scrubbedBody = stripMarkdownCode(body);
+    let match: RegExpExecArray | null;
+    while ((match = rawMentionRe.exec(scrubbedBody)) !== null) {
+      const normalized = normalizeAgentMentionToken(match[1]);
+      if (normalized) rawMentionTokens.add(normalized.toLowerCase());
+    }
+    if (rawMentionTokens.size === 0) return [...mentionedAgentIds];
+
+    const rows = await db
+      .select({ id: agents.id, name: agents.name })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+    for (const agent of rows) {
+      if (rawMentionTokens.has(agent.name.toLowerCase())) {
+        mentionedAgentIds.add(agent.id);
+      }
+    }
+    return [...mentionedAgentIds];
+  }
+
   async function evaluateQueuedRunStaleness(
     run: typeof heartbeatRuns.$inferSelect,
     issueId: string,
@@ -8546,18 +8570,65 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (currentParticipant) {
         const participantMatches =
           currentParticipant.type === "agent" && currentParticipant.agentId === run.agentId;
-        if (!participantMatches && !wakeCommentId) {
-          return {
-            stale: true,
-            errorCode: "issue_review_participant_changed",
-            reason:
-              "Cancelled because the in-review participant changed before the queued run could start; the current participant will be woken instead",
-            details: {
-              issueId,
-              currentStageType: executionState?.currentStageType ?? null,
-              currentParticipant,
-            },
-          };
+        if (!participantMatches) {
+          if (!wakeCommentId) {
+            return {
+              stale: true,
+              errorCode: "issue_review_participant_changed",
+              reason:
+                "Cancelled because the in-review participant changed before the queued run could start; the current participant will be woken instead",
+              details: {
+                issueId,
+                currentStageType: executionState?.currentStageType ?? null,
+                currentParticipant,
+              },
+            };
+          }
+
+          const wakeComment = await db
+            .select({ body: issueComments.body })
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.id, wakeCommentId),
+                eq(issueComments.issueId, issueId),
+                eq(issueComments.companyId, run.companyId),
+                isNull(issueComments.deletedAt),
+              ),
+            )
+            .then((rows) => rows[0] ?? null);
+
+          if (!wakeComment) {
+            return {
+              stale: true,
+              errorCode: "issue_review_participant_changed",
+              reason:
+                "Cancelled because the in-review participant changed before the queued run could start and the triggering comment could not be resolved",
+              details: {
+                issueId,
+                wakeCommentId,
+                currentStageType: executionState?.currentStageType ?? null,
+                currentParticipant,
+              },
+            };
+          }
+
+          const mentionedAgentIds = await findTriggeringCommentMentionedAgentIds(run.companyId, wakeComment.body);
+          if (mentionedAgentIds.length > 0 && !mentionedAgentIds.includes(run.agentId)) {
+            return {
+              stale: true,
+              errorCode: "issue_review_participant_changed",
+              reason:
+                "Cancelled because the in-review participant changed before the queued run could start; the triggering comment mentioned a different participant",
+              details: {
+                issueId,
+                wakeCommentId,
+                mentionedAgentIds,
+                currentStageType: executionState?.currentStageType ?? null,
+                currentParticipant,
+              },
+            };
+          }
         }
       }
     }
