@@ -245,6 +245,10 @@ export const queryKeys = {
     providerConfigs: (companyId: string) => ["secret-provider-configs", companyId] as const,
     usage: (secretId: string) => ["secrets", "usage", secretId] as const,
     accessEvents: (secretId: string) => ["secrets", "access-events", secretId] as const,
+    userDefinitions: (companyId: string) => ["user-secret-definitions", companyId] as const,
+    userDefinitionCoverage: (companyId: string, definitionId: string) =>
+      ["user-secret-definitions", companyId, definitionId, "coverage"] as const,
+    myUserSecrets: (companyId: string) => ["my-user-secrets", companyId] as const,
   },
   companySearch: {
     search: (companyId: string, q: string, scope: string, limit: number, offset: number) =>

@@ -12,12 +12,52 @@ import type {
   SecretProviderConfigHealthResponse,
   SecretProviderDescriptor,
   SecretStatus,
+  UserSecretCoverageSummary,
+  UserSecretDefinition,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
 export interface SecretUsageResponse {
   secretId: string;
   bindings: CompanySecretUsageBinding[];
+}
+
+/** One "My secrets" row: a company definition paired with the current user's own value (if set). */
+export interface MyUserSecretEntry {
+  definition: UserSecretDefinition;
+  secret: CompanySecret | null;
+}
+
+export interface CreateUserSecretDefinitionInput {
+  key: string;
+  name: string;
+  description?: string | null;
+  status?: SecretStatus;
+  provider?: SecretProvider;
+  managedMode?: SecretManagedMode;
+  providerConfigId?: string | null;
+  providerMetadata?: Record<string, unknown> | null;
+  usageGuidance?: string | null;
+}
+
+export interface UpdateUserSecretDefinitionInput {
+  key?: string;
+  name?: string;
+  description?: string | null;
+  status?: SecretStatus;
+  providerConfigId?: string | null;
+  providerMetadata?: Record<string, unknown> | null;
+  usageGuidance?: string | null;
+}
+
+/** Owner-supplied value for a user secret. Either `value` (managed) or `externalRef`. */
+export interface UpsertMyUserSecretInput {
+  definitionId?: string;
+  definitionKey?: string;
+  value?: string | null;
+  externalRef?: string | null;
+  providerVersionRef?: string | null;
+  providerConfigId?: string | null;
 }
 
 export interface CreateSecretInput {
@@ -147,6 +187,43 @@ export const secretsApi = {
   remove: (id: string) => api.delete<{ ok: true }>(`/secrets/${id}`),
   usage: (id: string) => api.get<SecretUsageResponse>(`/secrets/${id}/usage`),
   accessEvents: (id: string) => api.get<SecretAccessEvent[]>(`/secrets/${id}/access-events`),
+
+  // --- User-specific secrets ---------------------------------------------
+  // Admin: shared definitions each member fills in with their own value.
+  listUserSecretDefinitions: (companyId: string) =>
+    api.get<UserSecretDefinition[]>(`/companies/${companyId}/user-secret-definitions`),
+  createUserSecretDefinition: (companyId: string, data: CreateUserSecretDefinitionInput) =>
+    api.post<UserSecretDefinition>(`/companies/${companyId}/user-secret-definitions`, data),
+  updateUserSecretDefinition: (
+    companyId: string,
+    definitionId: string,
+    data: UpdateUserSecretDefinitionInput,
+  ) =>
+    api.patch<UserSecretDefinition>(
+      `/companies/${companyId}/user-secret-definitions/${definitionId}`,
+      data,
+    ),
+  removeUserSecretDefinition: (companyId: string, definitionId: string) =>
+    api.delete<{ ok: true }>(`/companies/${companyId}/user-secret-definitions/${definitionId}`),
+  userSecretDefinitionCoverage: (companyId: string, definitionId: string) =>
+    api.get<UserSecretCoverageSummary>(
+      `/companies/${companyId}/user-secret-definitions/${definitionId}/coverage`,
+    ),
+
+  // Current user ("My secrets"): each definition paired with my own value.
+  listMyUserSecrets: (companyId: string) =>
+    api.get<MyUserSecretEntry[]>(`/companies/${companyId}/me/user-secrets`),
+  createMyUserSecret: (companyId: string, data: UpsertMyUserSecretInput) =>
+    api.post<CompanySecret>(`/companies/${companyId}/me/user-secrets`, data),
+  updateMyUserSecret: (
+    companyId: string,
+    secretId: string,
+    data: Partial<UpsertMyUserSecretInput> & { status?: SecretStatus },
+  ) => api.patch<CompanySecret>(`/companies/${companyId}/me/user-secrets/${secretId}`, data),
+  rotateMyUserSecret: (companyId: string, secretId: string, data: UpsertMyUserSecretInput) =>
+    api.post<CompanySecret>(`/companies/${companyId}/me/user-secrets/${secretId}/rotate`, data),
+  removeMyUserSecret: (companyId: string, secretId: string) =>
+    api.delete<{ ok: true }>(`/companies/${companyId}/me/user-secrets/${secretId}`),
   remoteImportPreview: (companyId: string, data: RemoteImportPreviewInput) =>
     api.post<RemoteSecretImportPreviewResult>(
       `/companies/${companyId}/secrets/remote-import/preview`,
