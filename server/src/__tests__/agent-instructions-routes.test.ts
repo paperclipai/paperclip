@@ -120,6 +120,28 @@ async function createApp() {
   return app;
 }
 
+async function createAgentApp(agentId: string) {
+  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+  ]);
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as any).actor = {
+      type: "agent",
+      agentId,
+      companyId: "company-1",
+      runId: null,
+      source: "agent_key",
+    };
+    next();
+  });
+  app.use("/api", agentRoutes({} as any));
+  app.use(errorHandler);
+  return app;
+}
+
 async function requestApp(
   app: express.Express,
   buildRequest: (baseUrl: string) => request.Test,
@@ -396,5 +418,83 @@ describe("agent instructions bundle routes", () => {
     expect(res.body.adapterConfig.instructionsRootPath).toBeUndefined();
     expect(res.body.adapterConfig.instructionsEntryFile).toBeUndefined();
     expect(res.body.adapterConfig.instructionsFilePath).toBeUndefined();
+  });
+});
+
+describe("agent self-patch instructions bundle", () => {
+  const AGENT_ID = "11111111-1111-4111-8111-111111111111";
+  const OTHER_AGENT_ID = "22222222-2222-4222-8222-222222222222";
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("../routes/agents.js");
+    vi.doUnmock("../routes/authz.js");
+    vi.doUnmock("../middleware/index.js");
+    registerModuleMocks();
+    vi.clearAllMocks();
+    mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent: unknown, config: unknown) => config);
+    mockFindServerAdapter.mockImplementation((_type: string) => ({ type: _type }));
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant",
+    });
+    mockAgentService.getById.mockResolvedValue(makeAgent());
+    mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeAgent(),
+      adapterConfig: patch.adapterConfig ?? {},
+    }));
+    mockAgentInstructionsService.writeFile.mockResolvedValue({
+      bundle: null,
+      file: {
+        path: "SOUL.md",
+        size: 42,
+        language: "markdown",
+        markdown: true,
+        isEntryFile: false,
+        editable: true,
+        deprecated: false,
+        virtual: false,
+        content: "# Soul\n",
+      },
+      adapterConfig: {
+        instructionsBundleMode: "managed",
+        instructionsRootPath: "/tmp/agent-1",
+        instructionsEntryFile: "AGENTS.md",
+        instructionsFilePath: "/tmp/agent-1/AGENTS.md",
+      },
+    });
+  });
+
+  it("allows an agent to write a file in its own instructions bundle", async () => {
+    const res = await requestApp(await createAgentApp(AGENT_ID), (baseUrl) => request(baseUrl)
+      .put(`/api/agents/${AGENT_ID}/instructions-bundle/file?companyId=company-1`)
+      .send({ path: "SOUL.md", content: "# Soul\n" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentInstructionsService.writeFile).toHaveBeenCalled();
+  });
+
+  it("allows an agent to patch its own instructions bundle metadata", async () => {
+    mockAgentInstructionsService.updateBundle.mockResolvedValue({
+      bundle: { mode: "managed", rootPath: "/tmp/agent-1", entryFile: "AGENTS.md" },
+      adapterConfig: { instructionsBundleMode: "managed" },
+    });
+
+    const res = await requestApp(await createAgentApp(AGENT_ID), (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${AGENT_ID}/instructions-bundle?companyId=company-1`)
+      .send({ mode: "managed" }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+
+  it("denies an agent from writing to a different agent's instructions bundle", async () => {
+    mockAgentService.getById.mockResolvedValue({ ...makeAgent(), id: OTHER_AGENT_ID });
+
+    const res = await requestApp(await createAgentApp(AGENT_ID), (baseUrl) => request(baseUrl)
+      .put(`/api/agents/${OTHER_AGENT_ID}/instructions-bundle/file?companyId=company-1`)
+      .send({ path: "SOUL.md", content: "# Hijacked\n" }));
+
+    expect(res.status).toBe(403);
   });
 });
