@@ -40,6 +40,7 @@ const REMOTE_MANAGED_ADAPTERS = new Set<AgentAdapterType>([
   "acpx_local",
   "claude_local",
   "codex_local",
+  "commandcode_local",
   "cursor",
   "gemini_local",
   "opencode_local",
