@@ -14,6 +14,47 @@ const CLAUDE_TRANSIENT_UPSTREAM_RE =
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,80}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
 
+// Claude Code emits hook lifecycle events (SessionStart, PreToolUse, …) on the
+// stream-json channel as `type:"system"` lines with `subtype:"hook_started"` /
+// `"hook_response"`. Those lines wrap arbitrary user-authored hook output — for
+// example a SessionStart plugin that injects the previous session's summary.
+// That output must never feed the auth/transient classifiers below: a summary
+// that merely mentions "Not logged in · Please run /login" or "usage limit
+// reached" would otherwise be misread as a real failure even though the run
+// itself succeeded. See https://github.com/paperclipai/paperclip/issues/4439.
+const CLAUDE_HOOK_EVENT_SUBTYPES = new Set([
+  "hook_started",
+  "hook_response",
+  "hook_completed",
+  "hook_failed",
+]);
+
+function isClaudeHookEventLine(line: string): boolean {
+  const event = parseJson(line);
+  if (!event) return false;
+  if (asString(event.type, "") !== "system") return false;
+  if (CLAUDE_HOOK_EVENT_SUBTYPES.has(asString(event.subtype, ""))) return true;
+  // Some CLI builds omit a hook-specific subtype but still tag the event with
+  // hook identifiers; treat any system event carrying hook metadata as hook
+  // output so its payload never reaches the error classifiers.
+  return "hook_event" in event || "hook_name" in event || "hook_id" in event;
+}
+
+/**
+ * Remove Claude Code hook lifecycle events from a stream-json stdout blob so the
+ * auth/transient classifiers only scan Claude's own output (assistant text,
+ * result/error events, stderr) and never user-authored hook payloads. Lines
+ * that are not recognizable hook events — including non-JSON lines — are kept
+ * unchanged. See https://github.com/paperclipai/paperclip/issues/4439.
+ */
+export function stripClaudeHookEventLines(stdout: string): string {
+  if (!stdout) return stdout;
+  return stdout
+    .split(/\r?\n/)
+    .filter((line) => !isClaudeHookEventLine(line.trim()))
+    .join("\n");
+}
+
 export function parseClaudeStreamJson(stdout: string) {
   let sessionId: string | null = null;
   let model = "";
@@ -135,7 +176,8 @@ export function detectClaudeLoginRequired(input: {
   stderr: string;
 }): { requiresLogin: boolean; loginUrl: string | null } {
   const resultText = asString(input.parsed?.result, "").trim();
-  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
+  const stdout = stripClaudeHookEventLines(input.stdout);
+  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), stdout, input.stderr]
     .join("\n")
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -144,7 +186,7 @@ export function detectClaudeLoginRequired(input: {
   const requiresLogin = messages.some((line) => CLAUDE_AUTH_REQUIRED_RE.test(line));
   return {
     requiresLogin,
-    loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
+    loginUrl: extractClaudeLoginUrl([stdout, input.stderr].join("\n")),
   };
 }
 
@@ -251,7 +293,7 @@ function buildClaudeTransientHaystack(input: {
     input.errorMessage ?? "",
     resultText,
     ...parsedErrors,
-    input.stdout ?? "",
+    stripClaudeHookEventLines(input.stdout ?? ""),
     input.stderr ?? "",
   ]
     .join("\n")
