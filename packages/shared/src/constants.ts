@@ -904,6 +904,7 @@ export const PLUGIN_CAPABILITIES = [
   "issue.comments.read",
   "issue.documents.read",
   "agents.read",
+  "routines.read",
   "goals.read",
   "goals.create",
   "goals.update",
