@@ -22,7 +22,8 @@
     }
   ],
   "crons": [
-    { "path": "/api/health", "schedule": "*/3 * * * *" }
+    { "path": "/api/health", "schedule": "*/3 * * * *" },
+    { "path": "/api/internal/linear-os-sync", "schedule": "7,17,27,37,47,57 * * * *" }
   ],
   "functions": {
     "api/index.mjs": {
