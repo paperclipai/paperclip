@@ -20,15 +20,48 @@ if TYPE_CHECKING:
     # `PWTimeout` exception class is used in an `except` block at runtime
     # below — that's lazy-imported inside `is_logged_in` so module-level
     # import still succeeds without playwright present.
-    from playwright.sync_api import BrowserContext, Page
+    from playwright.sync_api import BrowserContext, Locator, Page
+
+
+def _is_playwright_timeout(exc: Exception) -> bool:
+    """Return True for Playwright timeouts without requiring Playwright in tests."""
+    try:
+        from playwright.sync_api import TimeoutError as PWTimeout  # noqa: PLC0415
+    except Exception:
+        return exc.__class__.__name__ == "TimeoutError"
+    return isinstance(exc, PWTimeout)
+
+
+def _goto_login_page(page: Page) -> None:
+    state.log("login -> goto webflow.com/login")
+    try:
+        page.goto("https://webflow.com/login", wait_until="domcontentloaded", timeout=60_000)
+    except Exception as exc:
+        if not _is_playwright_timeout(exc):
+            raise
+        state.log("login -> domcontentloaded timed out; retrying with commit wait")
+        page.goto("https://webflow.com/login", wait_until="commit", timeout=30_000)
+    page.wait_for_timeout(3_000)
+
+
+def _click_locator_with_fallback(page: Page, locator: Locator, action_name: str) -> None:
+    try:
+        locator.click(timeout=5_000)
+        return
+    except Exception as click_exc:
+        state.log(f"login -> {action_name} click failed ({click_exc}); trying DOM click")
+    try:
+        locator.evaluate("el => el.click()", timeout=10_000)
+        return
+    except Exception as dom_exc:
+        state.log(f"login -> {action_name} DOM click failed ({dom_exc}); falling back to Enter")
+    page.keyboard.press("Enter")
 
 
 def do_login(context: BrowserContext) -> None:
     page = context.new_page()
     try:
-        state.log("login -> goto webflow.com/login")
-        page.goto("https://webflow.com/login", wait_until="domcontentloaded", timeout=60_000)
-        page.wait_for_timeout(3_000)
+        _goto_login_page(page)
         title_lc = (page.title() or "").lower()
         if "denied" in title_lc:
             raise RuntimeError("PX-blocked even on Camoufox login (title=" + title_lc + ")")
@@ -41,7 +74,7 @@ def do_login(context: BrowserContext) -> None:
             cont = page.get_by_role("button", name="Continue", exact=True).first
             if cont.count() == 0:
                 cont = page.locator('button:has-text("Continue"):not(:has-text("SSO"))').first
-            cont.click(timeout=5_000)
+            _click_locator_with_fallback(page, cont, "continue")
             page.wait_for_timeout(2_000)
             pw_input = page.locator('input[name="password"], input[type="password"]').first
             pw_input.wait_for(state="visible", timeout=15_000)
@@ -51,11 +84,7 @@ def do_login(context: BrowserContext) -> None:
         submit = page.get_by_role("button", name="Continue", exact=True).first
         if submit.count() == 0:
             submit = page.locator('button[type="submit"]').first
-        try:
-            submit.click(timeout=5_000)
-        except Exception as exc:
-            state.log(f"login -> click submit failed ({exc}); falling back to Enter")
-            page.keyboard.press("Enter")
+        _click_locator_with_fallback(page, submit, "submit")
         deadline = time.time() + 60
         while time.time() < deadline and "/login" in page.url:
             page.wait_for_timeout(500)
