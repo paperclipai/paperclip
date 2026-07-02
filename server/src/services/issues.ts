@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -70,7 +70,11 @@ import {
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import {
+  buildInitialIssueMonitorFields,
+  normalizeIssueExecutionPolicy,
+  normalizeIssueExecutionPolicyWithMandatoryCreateBoundary,
+} from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -5158,9 +5162,18 @@ export function issueService(db: Db) {
 
         const issueNumber = company.issueCounter;
         const identifier = `${company.issuePrefix}-${issueNumber}`;
+        const issueId = issueData.id ?? randomUUID();
 
+        const initialExecutionPolicy = normalizeIssueExecutionPolicyWithMandatoryCreateBoundary({
+          policy: issueData.executionPolicy ?? null,
+          companyId,
+          issueId,
+          projectId: issueData.projectId ?? null,
+        });
         const values = {
           ...issueData,
+          id: issueId,
+          executionPolicy: initialExecutionPolicy as unknown as Record<string, unknown>,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",
           goalId: resolveIssueGoalId({
@@ -5189,7 +5202,7 @@ export function issueService(db: Db) {
         Object.assign(
           values,
           buildInitialIssueMonitorFields({
-            policy: normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null),
+            policy: initialExecutionPolicy,
             status: values.status ?? "backlog",
             assigneeAgentId: values.assigneeAgentId ?? null,
             assigneeUserId: values.assigneeUserId ?? null,

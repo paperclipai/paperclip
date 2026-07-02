@@ -8,6 +8,7 @@ export default defineConfig({
     maxWorkers: 1,
     minWorkers: 1,
     pool: "forks",
+    hookTimeout: 30_000, // Embedded Postgres teardown under parallel load can exceed 10s
     sequence: {
       concurrent: false,
       hooks: "list",

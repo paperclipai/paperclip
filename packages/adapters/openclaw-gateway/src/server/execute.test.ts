@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentParams, resolveSessionKey } from "./execute.js";
+import { buildAgentParams, estimateBoundaryTokens, resolveSessionKey, resolveSyntheticPromptBoundary } from "./execute.js";
 
 describe("resolveSessionKey", () => {
   it("prefixes run-scoped session keys with the configured agent", () => {
@@ -96,5 +96,77 @@ describe("buildAgentParams", () => {
       sessionKey: "paperclip",
       idempotencyKey: "run-123",
     });
+  });
+});
+
+describe("synthetic prompt boundary", () => {
+  it("estimates prompt tokens deterministically", () => {
+    expect(estimateBoundaryTokens("")).toBe(0);
+    expect(estimateBoundaryTokens("abcd")).toBe(1);
+    expect(estimateBoundaryTokens("abcde")).toBe(2);
+  });
+
+  it("blocks prompts above the configured synthetic cap", () => {
+    expect(
+      resolveSyntheticPromptBoundary({
+        config: { maxEstimatedPromptTokens: 1 },
+        message: "this message is intentionally over one estimated token",
+        payload: { message: "small" },
+      }),
+    ).toMatchObject({ exceeded: true, limit: 1 });
+  });
+
+  it("allows prompts within the configured synthetic cap", () => {
+    expect(
+      resolveSyntheticPromptBoundary({
+        config: { maxEstimatedPromptTokens: 10_000 },
+        message: "short",
+        payload: { message: "short" },
+      }),
+    ).toMatchObject({ exceeded: false, limit: 10_000 });
+  });
+
+  it("honors prompt cap aliases in precedence order", () => {
+    expect(
+      resolveSyntheticPromptBoundary({
+        config: { maxPromptTokens: 2 },
+        message: "this message exceeds the maxPromptTokens alias",
+        payload: { message: "small" },
+      }),
+    ).toMatchObject({ exceeded: true, limit: 2 });
+
+    expect(
+      resolveSyntheticPromptBoundary({
+        config: { promptTokenLimit: 2 },
+        message: "this message exceeds the promptTokenLimit alias",
+        payload: { message: "small" },
+      }),
+    ).toMatchObject({ exceeded: true, limit: 2 });
+
+    expect(
+      resolveSyntheticPromptBoundary({
+        config: { maxEstimatedPromptTokens: 10_000, maxPromptTokens: 2, promptTokenLimit: 2 },
+        message: "short",
+        payload: { message: "short" },
+      }),
+    ).toMatchObject({ exceeded: false, limit: 10_000 });
+  });
+
+  it("enforces a default cap unless explicitly disabled", () => {
+    expect(
+      resolveSyntheticPromptBoundary({
+        config: {},
+        message: "short",
+        payload: { message: "short" },
+      }),
+    ).toMatchObject({ exceeded: false, limit: 100_000 });
+
+    expect(
+      resolveSyntheticPromptBoundary({
+        config: { maxEstimatedPromptTokens: 0 },
+        message: "short",
+        payload: { message: "short" },
+      }),
+    ).toMatchObject({ exceeded: false, limit: null });
   });
 });

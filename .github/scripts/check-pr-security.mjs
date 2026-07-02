@@ -5,7 +5,8 @@
  * Creates a draft security advisory in the repo if any check fires.
  *
  * Env: GH_TOKEN, GH_REPO, PR_NUMBER, PR_AUTHOR
- * Exit: always 0 — security flags are silent, never block the PR visibly.
+ * Exit: 1 when security flags are detected; 0 when clear. The watchdog still
+ * exits 0 on API hangs so infrastructure slowness does not wedge the workflow.
  */
 import { fileURLToPath } from 'node:url';
 import { ghFetch } from './get-bot-token.mjs';
@@ -280,16 +281,11 @@ export async function postSecurityCheckRun(fetchImpl, token, repo, headSha, hasF
     body: JSON.stringify(hasFlags ? {
       name: 'security-review',
       head_sha: headSha,
-      // `completed/neutral` instead of `in_progress` so the check doesn't put
-      // the PR in `mergeStateStatus: BLOCKED`. The draft advisory is the
-      // durable signal for maintainers; there is no completion path that
-      // could ever flip an `in_progress` check-run back to completed on the
-      // same head SHA, so it would hang forever.
       status: 'completed',
-      conclusion: 'neutral',
+      conclusion: 'failure',
       output: {
-        title: 'Security Review Recommended',
-        summary: 'Draft advisory filed for maintainer review. Not a merge block — review the advisory at your leisure.',
+        title: 'Security Review Failed',
+        summary: 'Security concerns detected. Draft advisory filed for maintainer review; this PR is blocked until the flags are resolved.',
       },
     } : {
       name: 'security-review',
@@ -383,8 +379,11 @@ async function main() {
     await postSecurityCheckRun(ghFetch, GH_TOKEN, GH_REPO, pr.head.sha, false);
   }
 
-  // Always exit 0 — security flags are silent, never block the PR publicly
   clearTimeout(watchdog);
+  if (allFlags.length > 0) {
+    console.error(`[security] blocking PR because ${allFlags.length} flag(s) were detected`);
+    process.exit(1);
+  }
   process.exit(0);
 }
 

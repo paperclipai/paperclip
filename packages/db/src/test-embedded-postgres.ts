@@ -2,7 +2,10 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { applyPendingMigrations, ensurePostgresDatabase } from "./client.js";
+import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
+import { applyPendingMigrations, ensurePostgresDatabase, type Db } from "./client.js";
+import * as schema from "./schema/index.js";
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
 
 type EmbeddedPostgresInstance = {
@@ -29,6 +32,7 @@ export type EmbeddedPostgresTestSupport = {
 
 export type EmbeddedPostgresTestDatabase = {
   connectionString: string;
+  db: Db;
   cleanup(): Promise<void>;
 };
 
@@ -148,6 +152,7 @@ export async function startEmbeddedPostgresTestDatabase(
 ): Promise<EmbeddedPostgresTestDatabase> {
   let dataDir: string | null = null;
   let instance: EmbeddedPostgresInstance | null = null;
+  let sql: ReturnType<typeof postgres> | null = null;
 
   try {
     const created = await createEmbeddedPostgresTestInstance(tempDirPrefix);
@@ -162,14 +167,24 @@ export async function startEmbeddedPostgresTestDatabase(
     const connectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
     await applyPendingMigrations(connectionString);
 
+    // Create the connection pool here so cleanup can close it before stopping
+    // the embedded server and removing the data directory.  Without this, the
+    // dangling sockets keep file handles open and fs.rmSync can exceed the
+    // default 10s vitest hookTimeout under full-suite parallel load.
+    sql = postgres(connectionString);
+    const db = drizzlePg(sql, { schema });
+
     return {
       connectionString,
+      db,
       cleanup: async () => {
+        await sql?.end().catch(() => {});
         await instance?.stop().catch(() => {});
         if (dataDir) cleanupEmbeddedPostgresTestDirs(dataDir);
       },
     };
   } catch (error) {
+    await sql?.end().catch(() => {});
     await instance?.stop().catch(() => {});
     if (dataDir) cleanupEmbeddedPostgresTestDirs(dataDir);
     throw new Error(

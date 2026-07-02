@@ -36,7 +36,14 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
 } from "../services/issues.ts";
-import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH, type IssueWorkMode } from "@paperclipai/shared";
+import {
+  buildAgentMentionHref,
+  buildProjectMentionHref,
+  LOW_TRUST_REVIEW_PRESET,
+  LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
+  MAX_ISSUE_REQUEST_DEPTH,
+  type IssueWorkMode,
+} from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -2159,6 +2166,80 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("applies the mandatory low-trust review preset when a new issue omits execution policy", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const created = await svc.create(companyId, {
+      title: "No policy bypass attempt",
+    });
+
+    expect(created.executionPolicy).toMatchObject({
+      commentRequired: true,
+      stages: [],
+      reviewPreset: {
+        id: LOW_TRUST_REVIEW_PRESET,
+        rawOutputDisposition: LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
+      },
+      authorizationPolicy: {
+        reviewPreset: {
+          id: LOW_TRUST_REVIEW_PRESET,
+          rawOutputDisposition: LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
+        },
+        trustBoundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId,
+          issueIds: [created.id],
+        },
+      },
+    });
+  });
+
+  it("adds the mandatory review preset to explicit policies that have no gate", async () => {
+    const companyId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const created = await svc.create(companyId, {
+      title: "Explicit but ungated policy",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        authorizationPolicy: { trustPreset: "standard" },
+      },
+    });
+
+    expect(created.executionPolicy).toMatchObject({
+      authorizationPolicy: {
+        trustPreset: "standard",
+        reviewPreset: {
+          id: LOW_TRUST_REVIEW_PRESET,
+          rawOutputDisposition: LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
+        },
+        trustBoundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId,
+          issueIds: [created.id],
+        },
+      },
+      reviewPreset: {
+        id: LOW_TRUST_REVIEW_PRESET,
+      },
+    });
   });
 
   it("inherits the parent issue workspace linkage when child workspace fields are omitted", async () => {

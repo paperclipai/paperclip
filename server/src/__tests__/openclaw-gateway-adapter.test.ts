@@ -526,6 +526,42 @@ describe("openclaw gateway adapter execute", () => {
     expect(result.errorCode).toBe("openclaw_gateway_url_missing");
   });
 
+  it("blocks over-cap prompts before opening a gateway connection", async () => {
+    const logs: Array<{ stream: string; chunk: string }> = [];
+    const result = await execute(
+      buildContext(
+        {
+          url: "ws://127.0.0.1:1",
+          payloadTemplate: {
+            message: "wake now",
+          },
+          maxEstimatedPromptTokens: 1,
+        },
+        {
+          onLog: async (stream, chunk) => {
+            logs.push({ stream, chunk });
+          },
+        },
+      ),
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.timedOut).toBe(false);
+    expect(result.errorCode).toBe("openclaw_gateway_prompt_token_limit_exceeded");
+    expect(result.errorMessage).toContain("exceeded configured maxEstimatedPromptTokens 1");
+    expect(result.resultJson).toMatchObject({
+      syntheticBoundary: {
+        type: "estimated_prompt_tokens",
+        limit: 1,
+        runId: "run-123",
+        issueId: "issue-123",
+        sessionKey: "paperclip:issue:issue-123",
+        enforcedBeforeGatewayRequest: true,
+      },
+    });
+    expect(logs.some((entry) => entry.stream === "stderr" && entry.chunk.includes("synthetic boundary blocked request"))).toBe(true);
+  });
+
   it("returns adapter-managed runtime services from gateway result meta", async () => {
     const gateway = await createMockGatewayServer({
       waitPayload: {

@@ -7,7 +7,6 @@ import {
   agents,
   assets,
   companies,
-  createDb,
   documents,
   heartbeatRuns,
   issueAttachments,
@@ -61,7 +60,7 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-artifacts-");
-    db = createDb(tempDb.connectionString);
+    db = tempDb.db;
   }, 20_000);
 
   afterEach(async () => {

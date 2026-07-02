@@ -185,7 +185,16 @@ async function ensureSymlink(target: string, source: string): Promise<void> {
   const existing = await fs.lstat(target).catch(() => null);
   if (!existing) {
     await ensureParentDir(target);
-    await fs.symlink(resolvedSource, target);
+    try {
+      await fs.symlink(resolvedSource, target);
+    } catch (err: any) {
+      if (err.code === 'EEXIST') {
+        // TOCTOU: another concurrent caller created the symlink between our
+        // lstat and symlink. Re-check and reconcile via recursive call.
+        return ensureSymlink(target, source);
+      }
+      throw err;
+    }
     return;
   }
 

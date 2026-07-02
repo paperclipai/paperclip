@@ -118,6 +118,17 @@ function parseOptionalPositiveInteger(value: unknown): number | null {
   return null;
 }
 
+function parseOptionalNonNegativeInteger(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isFinite(parsed) && parsed >= 0) return Math.floor(parsed);
+  }
+  return null;
+}
+
 function parseBoolean(value: unknown, fallback = false): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -126,6 +137,42 @@ function parseBoolean(value: unknown, fallback = false): boolean {
     if (normalized === "false" || normalized === "0") return false;
   }
   return fallback;
+}
+
+const DEFAULT_SYNTHETIC_PROMPT_TOKEN_LIMIT = 100_000;
+
+export function estimateBoundaryTokens(value: unknown): number {
+  const text = typeof value === "string" ? value : JSON.stringify(value ?? "");
+  const trimmed = text.trim();
+  if (!trimmed) return 0;
+  // Conservative local estimate: one token per 4 UTF-16 code units, rounded up.
+  // This is intentionally deterministic and provider-independent so Paperclip
+  // can reject obviously-runaway wakes before they ever reach OpenClaw.
+  return Math.max(1, Math.ceil(trimmed.length / 4));
+}
+
+function resolvePromptTokenLimit(config: Record<string, unknown>): number | null {
+  const configured =
+    parseOptionalNonNegativeInteger(config.maxEstimatedPromptTokens) ??
+    parseOptionalNonNegativeInteger(config.maxPromptTokens) ??
+    parseOptionalNonNegativeInteger(config.promptTokenLimit);
+  if (configured === 0) return null;
+  return configured ?? DEFAULT_SYNTHETIC_PROMPT_TOKEN_LIMIT;
+}
+
+export function resolveSyntheticPromptBoundary(input: {
+  config: Record<string, unknown>;
+  message: string;
+  payload: Record<string, unknown>;
+}): { exceeded: false; limit: number | null; estimatedTokens: number } | { exceeded: true; limit: number; estimatedTokens: number } {
+  const limit = resolvePromptTokenLimit(input.config);
+  const estimatedMessageTokens = estimateBoundaryTokens(input.message);
+  const estimatedPayloadTokens = estimateBoundaryTokens(input.payload);
+  const estimatedTokens = Math.max(estimatedMessageTokens, estimatedPayloadTokens);
+  if (limit !== null && estimatedTokens > limit) {
+    return { exceeded: true, limit, estimatedTokens };
+  }
+  return { exceeded: false, limit, estimatedTokens };
 }
 
 function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
@@ -1116,6 +1163,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     configuredAgentId,
     waitTimeoutMs,
   });
+
+  const promptBoundary = resolveSyntheticPromptBoundary({
+    config: parseObject(ctx.config),
+    message,
+    payload: agentParams,
+  });
+  if (promptBoundary.exceeded) {
+    const boundary = {
+      type: "estimated_prompt_tokens",
+      limit: promptBoundary.limit,
+      estimatedTokens: promptBoundary.estimatedTokens,
+      runId: ctx.runId,
+      issueId: wakePayload.issueId,
+      sessionKey,
+      enforcedBeforeGatewayRequest: true,
+    };
+    await ctx.onLog(
+      "stderr",
+      `[openclaw-gateway] synthetic boundary blocked request: ${stringifyForLog(boundary, 2_000)}\n`,
+    );
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: `OpenClaw gateway prompt estimate ${promptBoundary.estimatedTokens} exceeded configured maxEstimatedPromptTokens ${promptBoundary.limit}`,
+      errorCode: "openclaw_gateway_prompt_token_limit_exceeded",
+      resultJson: { syntheticBoundary: boundary },
+    };
+  }
 
   if (ctx.onMeta) {
     await ctx.onMeta({

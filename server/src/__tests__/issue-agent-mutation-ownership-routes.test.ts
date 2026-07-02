@@ -1223,6 +1223,32 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it("preserves mandatory low-trust gates when issue patch attempts to clear execution policy", async () => {
+    const app = await createApp(ownerActor());
+
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ executionPolicy: null });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        executionPolicy: expect.objectContaining({
+          reviewPreset: expect.objectContaining({ id: "low_trust_review" }),
+          authorizationPolicy: expect.objectContaining({
+            reviewPreset: expect.objectContaining({ id: "low_trust_review" }),
+            trustBoundary: expect.objectContaining({
+              mode: "low_trust_review",
+              companyId,
+              issueIds: [issueId],
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it("allows board users to set explicit cheap issue assignee profile overrides", async () => {
     const app = await createApp(boardActor());
 

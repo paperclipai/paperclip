@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
-import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
+import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, stripMonitorFromExecutionPolicy } from "../services/issue-execution-policy.ts";
+import {
+  LOW_TRUST_REVIEW_PRESET,
+  LOW_TRUST_REVIEW_PRESET_VERSION,
+  LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
+  type IssueExecutionPolicy,
+  type IssueExecutionState,
+} from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
 const qaAgentId = "22222222-2222-4222-8222-222222222222";
@@ -129,6 +135,42 @@ describe("normalizeIssueExecutionPolicy", () => {
         notes: "Check deployment",
         scheduledBy: "assignee",
         externalRef: "[redacted]",
+      },
+    });
+  });
+
+  it("strips monitor lifecycle settings without removing mandatory low-trust gates", () => {
+    const policy = normalizeIssueExecutionPolicy({
+      monitor: { nextCheckAt: "2026-04-11T12:30:00.000Z" },
+      stages: [],
+      reviewPreset: {
+        id: LOW_TRUST_REVIEW_PRESET,
+        version: LOW_TRUST_REVIEW_PRESET_VERSION,
+        rawOutputDisposition: LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
+      },
+      authorizationPolicy: {
+        reviewPreset: {
+          id: LOW_TRUST_REVIEW_PRESET,
+          version: LOW_TRUST_REVIEW_PRESET_VERSION,
+          rawOutputDisposition: LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
+        },
+        trustBoundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "44444444-4444-4444-8444-444444444444",
+          issueIds: ["55555555-5555-4555-8555-555555555555"],
+        },
+      },
+    });
+
+    expect(stripMonitorFromExecutionPolicy(policy)).toMatchObject({
+      stages: [],
+      reviewPreset: { id: LOW_TRUST_REVIEW_PRESET },
+      authorizationPolicy: {
+        reviewPreset: { id: LOW_TRUST_REVIEW_PRESET },
+        trustBoundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          issueIds: ["55555555-5555-4555-8555-555555555555"],
+        },
       },
     });
   });

@@ -10,7 +10,14 @@ import type {
   IssueExecutionState,
   IssueMonitorScheduledBy,
 } from "@paperclipai/shared";
-import { issueExecutionPolicySchema, issueExecutionStateSchema } from "@paperclipai/shared";
+import {
+  issueExecutionPolicySchema,
+  issueExecutionStateSchema,
+  isUuidLike,
+  LOW_TRUST_REVIEW_PRESET,
+  LOW_TRUST_REVIEW_PRESET_VERSION,
+  LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
+} from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 
 type AssigneeLike = {
@@ -314,12 +321,15 @@ function nextAssigneeIds(input: {
 export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | null): IssueExecutionPolicy | null {
   if (!policy) return null;
   if (!policy.monitor) return policy;
-  if (policy.stages.length === 0) return null;
-  return {
+  const stripped = {
     mode: policy.mode,
     commentRequired: policy.commentRequired,
     stages: policy.stages,
+    ...(policy.reviewPreset ? { reviewPreset: policy.reviewPreset } : {}),
+    ...(policy.authorizationPolicy ? { authorizationPolicy: policy.authorizationPolicy } : {}),
   };
+  if (stripped.stages.length === 0 && !stripped.reviewPreset && !stripped.authorizationPolicy) return null;
+  return stripped;
 }
 
 export function setIssueExecutionPolicyMonitorScheduledBy(
@@ -334,6 +344,109 @@ export function setIssueExecutionPolicyMonitorScheduledBy(
       scheduledBy,
     },
   };
+}
+
+const DEFAULT_MANDATORY_REVIEW_PRESET = {
+  id: LOW_TRUST_REVIEW_PRESET,
+  version: LOW_TRUST_REVIEW_PRESET_VERSION,
+  rawOutputDisposition: LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
+} as const;
+
+export function buildDefaultMandatoryIssueExecutionPolicy(): IssueExecutionPolicy {
+  const normalized = normalizeIssueExecutionPolicy({
+    mode: "normal",
+    commentRequired: true,
+    stages: [],
+    reviewPreset: DEFAULT_MANDATORY_REVIEW_PRESET,
+    authorizationPolicy: {
+      reviewPreset: DEFAULT_MANDATORY_REVIEW_PRESET,
+    },
+  });
+  if (!normalized) throw new Error("Default mandatory issue execution policy failed to normalize");
+  return normalized;
+}
+
+function issueExecutionPolicyHasMandatoryGate(policy: IssueExecutionPolicy): boolean {
+  const authorizationPolicy = policy.authorizationPolicy && typeof policy.authorizationPolicy === "object"
+    ? policy.authorizationPolicy as Record<string, unknown>
+    : null;
+  return Boolean(
+    policy.stages.length > 0 ||
+    policy.reviewPreset ||
+    authorizationPolicy?.reviewPreset ||
+    authorizationPolicy?.trustBoundary
+  );
+}
+
+export function normalizeIssueExecutionPolicyWithMandatoryDefault(input: unknown): IssueExecutionPolicy {
+  const normalized = normalizeIssueExecutionPolicy(input);
+  if (!normalized) return buildDefaultMandatoryIssueExecutionPolicy();
+  if (issueExecutionPolicyHasMandatoryGate(normalized)) return normalized;
+  return {
+    ...normalized,
+    reviewPreset: DEFAULT_MANDATORY_REVIEW_PRESET,
+    authorizationPolicy: {
+      ...((normalized.authorizationPolicy && typeof normalized.authorizationPolicy === "object")
+        ? normalized.authorizationPolicy as Record<string, unknown>
+        : {}),
+      reviewPreset: DEFAULT_MANDATORY_REVIEW_PRESET,
+    },
+  };
+}
+
+function hasTrustBoundaryScope(boundary: Record<string, unknown> | null): boolean {
+  return Boolean(
+    boundary?.rootIssueId ||
+    (Array.isArray(boundary?.issueIds) && boundary.issueIds.length > 0) ||
+    (Array.isArray(boundary?.projectIds) && boundary.projectIds.length > 0)
+  );
+}
+
+export function normalizeIssueExecutionPolicyWithMandatoryCreateBoundary(input: {
+  policy: unknown;
+  companyId: string;
+  issueId: string;
+  projectId?: string | null;
+}): IssueExecutionPolicy {
+  const normalized = normalizeIssueExecutionPolicyWithMandatoryDefault(input.policy);
+  const authorizationPolicy = normalized.authorizationPolicy && typeof normalized.authorizationPolicy === "object"
+    ? normalized.authorizationPolicy as Record<string, unknown>
+    : {};
+  const existingBoundary = authorizationPolicy.trustBoundary && typeof authorizationPolicy.trustBoundary === "object"
+    ? authorizationPolicy.trustBoundary as Record<string, unknown>
+    : null;
+  const usesLowTrustReview = Boolean(normalized.reviewPreset || authorizationPolicy.reviewPreset || existingBoundary);
+  if (!usesLowTrustReview || hasTrustBoundaryScope(existingBoundary)) return normalized;
+
+  const issueIds = Array.from(new Set([
+    ...(Array.isArray(existingBoundary?.issueIds)
+      ? existingBoundary.issueIds.filter((id): id is string => typeof id === "string" && isUuidLike(id))
+      : []),
+    ...(isUuidLike(input.issueId) ? [input.issueId] : []),
+  ]));
+  const projectIds = Array.from(new Set([
+    ...(Array.isArray(existingBoundary?.projectIds)
+      ? existingBoundary.projectIds.filter((id): id is string => typeof id === "string" && isUuidLike(id))
+      : []),
+    ...(input.projectId && isUuidLike(input.projectId) ? [input.projectId] : []),
+  ]));
+  const trustBoundary = {
+    ...(existingBoundary ?? {}),
+    mode: LOW_TRUST_REVIEW_PRESET,
+    ...(isUuidLike(input.companyId) ? { companyId: input.companyId } : {}),
+    ...(issueIds.length > 0 ? { issueIds } : {}),
+    ...(projectIds.length > 0 ? { projectIds } : {}),
+  };
+  const policyWithBoundary = normalizeIssueExecutionPolicy({
+    ...normalized,
+    authorizationPolicy: {
+      ...authorizationPolicy,
+      reviewPreset: authorizationPolicy.reviewPreset ?? DEFAULT_MANDATORY_REVIEW_PRESET,
+      trustBoundary,
+    },
+  });
+  if (!policyWithBoundary) throw new Error("Mandatory issue execution policy boundary failed to normalize");
+  return policyWithBoundary;
 }
 
 export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPolicy | null {

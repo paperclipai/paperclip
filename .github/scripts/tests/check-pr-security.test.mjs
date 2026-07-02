@@ -215,10 +215,10 @@ test('postSecurityCheckRun: uses the injected fetch implementation', async () =>
     name: 'security-review',
     head_sha: 'deadbeef',
     status: 'completed',
-    conclusion: 'neutral',
+    conclusion: 'failure',
     output: {
-      title: 'Security Review Recommended',
-      summary: 'Draft advisory filed for maintainer review. Not a merge block — review the advisory at your leisure.',
+      title: 'Security Review Failed',
+      summary: 'Security concerns detected. Draft advisory filed for maintainer review; this PR is blocked until the flags are resolved.',
     },
   });
 });

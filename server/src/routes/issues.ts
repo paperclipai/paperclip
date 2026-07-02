@@ -134,6 +134,7 @@ import {
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
+  normalizeIssueExecutionPolicyWithMandatoryCreateBoundary,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
@@ -5209,12 +5210,17 @@ export function issueRoutes(
     }
     await assertIssueEnvironmentSelection(companyId, createBody.executionWorkspaceSettings?.environmentId);
 
+    const issueId = randomUUID();
     const executionPolicy = applyActorMonitorScheduledBy(
-      normalizeIssueExecutionPolicy(createBody.executionPolicy),
+      normalizeIssueExecutionPolicyWithMandatoryCreateBoundary({
+        policy: createBody.executionPolicy,
+        companyId,
+        issueId,
+        projectId: createBody.projectId ?? null,
+      }),
       actor.actorType,
     );
     await assertCanManageIssueMonitor(access, req, companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
-    const issueId = randomUUID();
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,
       companyId,
@@ -5958,8 +5964,16 @@ export function issueRoutes(
       });
     }
     if (req.body.executionPolicy !== undefined) {
+      const policyProjectId = updateFields.projectId === undefined
+        ? existing.projectId
+        : updateFields.projectId as string | null | undefined;
       updateFields.executionPolicy = applyActorMonitorScheduledBy(
-        normalizeIssueExecutionPolicy(req.body.executionPolicy),
+        normalizeIssueExecutionPolicyWithMandatoryCreateBoundary({
+          policy: req.body.executionPolicy,
+          companyId: existing.companyId,
+          issueId: existing.id,
+          projectId: policyProjectId ?? null,
+        }),
         actor.actorType,
       );
     }
