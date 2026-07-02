@@ -117,6 +117,46 @@ describeEmbeddedPostgres("activity service", () => {
     expect(result.map((event) => event.action)).toEqual(["test.newest", "test.middle"]);
   });
 
+  it("stores activity when the run id is not present in heartbeat_runs", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const event = await activityService(db).create({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: randomUUID(),
+      agentId,
+      runId: randomUUID(),
+    });
+
+    expect(event).toMatchObject({
+      companyId,
+      actorId: agentId,
+      runId: null,
+    });
+  });
+
   it("returns compact usage and result summaries for issue runs", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

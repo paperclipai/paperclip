@@ -496,6 +496,67 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("stores comments when the actor run id is not present in heartbeat_runs", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: agentId,
+      name: "DetachedRunCoder",
+    }));
+    const issue = await svc.create(companyId, {
+      title: "Detached run comment",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const comment = await svc.addComment(issue.id, "Comment should not be lost.", {
+      agentId,
+      runId: randomUUID(),
+    });
+
+    expect(comment).toMatchObject({
+      issueId: issue.id,
+      authorAgentId: agentId,
+      createdByRunId: null,
+      body: "Comment should not be lost.",
+    });
+
+    const persisted = await db
+      .select({ createdByRunId: issueComments.createdByRunId })
+      .from(issueComments)
+      .where(eq(issueComments.id, comment.id))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted?.createdByRunId).toBeNull();
+  });
+
+  it("checks out issues without storing an absent heartbeat run id", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: agentId,
+      name: "DetachedCheckoutCoder",
+    }));
+    const issue = await svc.create(companyId, {
+      title: "Detached run checkout",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+    });
+
+    const checkedOut = await svc.checkout(issue.id, agentId, ["todo"], randomUUID());
+
+    expect(checkedOut).toMatchObject({
+      id: issue.id,
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      status: "in_progress",
+    });
+  });
+
   it("resolves only structured same-company agent mentions", async () => {
     const companyId = await seedAssignableAgentCompany();
     const otherCompanyId = await seedAssignableAgentCompany();
