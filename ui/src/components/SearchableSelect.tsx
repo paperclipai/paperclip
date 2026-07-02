@@ -279,7 +279,13 @@ export function SearchableSelect<
                         const q = query;
                         suppressNextTriggerFocusRef.current = true;
                         closePopover();
-                        createItem.onSelect(q);
+                        // Defer to the next macrotask so this popover fully
+                        // closes (and Radix returns focus to the trigger)
+                        // before the consumer opens its own popover. Firing
+                        // synchronously lets the close's focus-return land as a
+                        // `focusOutside` on the newly-opened popover, which
+                        // Radix would immediately dismiss (see PAP-12476).
+                        window.setTimeout(() => createItem.onSelect(q), 0);
                       }}
                     >
                       {createItem.render(query)}

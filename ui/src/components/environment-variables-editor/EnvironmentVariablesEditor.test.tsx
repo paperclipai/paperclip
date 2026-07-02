@@ -202,6 +202,36 @@ describe("EnvironmentVariablesEditor", () => {
     expect(secretValueField?.value).toBe("supersecretvalue");
   });
 
+  it("opens the create-secret popover from the picker's + Create item (§6.4, PAP-12476)", async () => {
+    // Regression: selecting the picker's `+ Create secret` item closes the
+    // combobox popover and (in the same tick) opens the anchored create-secret
+    // popover. The two Radix popovers must not race — the create popover has to
+    // survive the combobox's focus-return instead of being dismissed instantly.
+    render(
+      <EnvironmentVariablesEditor
+        value={{ GH: { type: "secret_ref", secretId: "s1", version: 2 } }}
+        secrets={secrets}
+        onChange={() => {}}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    const combobox = container.querySelector<HTMLElement>('[role="combobox"]')!;
+    combobox.focus();
+    await flush();
+    const createItem = [...document.querySelectorAll<HTMLElement>("[cmdk-item]")].find((el) =>
+      el.textContent?.includes("Create"),
+    );
+    expect(createItem, "create item should be present in the open picker").toBeTruthy();
+    createItem!.click();
+    await flush();
+    // The create-secret popover is open (heading rendered) and stays open.
+    expect(document.body.textContent, "create-secret popover should open").toContain("Create secret");
+    expect(
+      document.querySelector('input[aria-label="Secret name"]'),
+      "create-secret name field should render",
+    ).toBeTruthy();
+  });
+
   it("lets the user dismiss the sensitive-value hint, unmasking the value and keeping it plain (§6.6)", async () => {
     const onChange = vi.fn();
     render(
