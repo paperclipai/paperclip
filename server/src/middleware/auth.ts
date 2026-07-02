@@ -4,11 +4,12 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import { normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
+import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
+import { isSafeMethod, requestHasTrustedBoardOrigin } from "./board-origin.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -21,9 +22,27 @@ interface ActorMiddlewareOptions {
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
-  return async (req, _res, next) => {
-    req.actor =
-      opts.deploymentMode === "local_trusted"
+  return async (req, res, next) => {
+    const rawRunIdHeader = req.header("x-paperclip-run-id");
+    if (rawRunIdHeader !== undefined && rawRunIdHeader.trim() !== "" && !isUuidLike(rawRunIdHeader)) {
+      // The run id is used as a UUID-typed primary key in `heartbeat_runs`
+      // queries throughout the actor authorization path. Forwarding a
+      // non-UUID value to Postgres raises an invalid_text_representation
+      // error and surfaces as an opaque 500 (RES-1349). Reject early.
+      res.status(422).json({ error: "X-Paperclip-Run-Id must be a UUID" });
+      return;
+    }
+
+    if (opts.deploymentMode === "local_trusted") {
+      // The board UI runs in a real browser at a known host/port, so its
+      // mutating requests always carry a matching Origin or Referer.
+      // A local agent shelling out via raw curl with no Bearer token also
+      // has no Origin/Referer — without this gate it would be implicitly
+      // promoted to the board actor (the RES-1295 impersonation hole).
+      // Safe methods still resolve as the board so read-only browse keeps
+      // working from any local tool. See RES-1298 / RES-1297 for context.
+      const browserOriginated = isSafeMethod(req.method) || requestHasTrustedBoardOrigin(req);
+      req.actor = browserOriginated
         ? {
             type: "board",
             userId: "local-board",
@@ -33,8 +52,11 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             source: "local_implicit",
           }
         : { type: "none", source: "none" };
+    } else {
+      req.actor = { type: "none", source: "none" };
+    }
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const runIdHeader = rawRunIdHeader && rawRunIdHeader.trim() !== "" ? rawRunIdHeader : undefined;
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
@@ -159,12 +181,13 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
+      const jwtRunId = isUuidLike(claims.run_id) ? claims.run_id : undefined;
       req.actor = {
         type: "agent",
         agentId: claims.sub,
         companyId: claims.company_id,
         keyId: undefined,
-        runId: runIdHeader || claims.run_id || undefined,
+        runId: runIdHeader || jwtRunId || undefined,
         source: "agent_jwt",
       };
       next();

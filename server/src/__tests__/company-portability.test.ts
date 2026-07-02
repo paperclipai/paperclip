@@ -3718,4 +3718,85 @@ describe("company portability", () => {
     expect(preview.plan.projectPlans).toHaveLength(0);
     expect(preview.plan.issuePlans).toHaveLength(0);
   });
+
+  it("refuses export when a comment body contains a secret and allowSecrets is not set", async () => {
+    const portability = companyPortabilityService({} as any);
+    issueSvc.list.mockResolvedValueOnce([
+      {
+        id: "issue-with-secret",
+        identifier: "PAP-1",
+        title: "Wire fallback",
+        slug: "wire-fallback",
+        description: "all good in description",
+        status: "in_progress",
+        priority: "normal",
+        projectId: null,
+        projectWorkspaceId: null,
+        assigneeAgentId: "agent-1",
+        labelIds: [],
+        billingCode: null,
+        executionWorkspaceSettings: null,
+        assigneeAdapterOverrides: null,
+      },
+    ]);
+    issueSvc.listComments.mockResolvedValueOnce([
+      {
+        id: "comment-with-secret",
+        body: "we fixed this by setting OPENAI_API_KEY=sk-prod-AbCdEf1234567890XyZqWeRtYu in the env",
+        authorType: "agent",
+        authorAgentId: "agent-1",
+        authorUserId: null,
+        presentation: null,
+        metadata: null,
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+      },
+    ]);
+    await expect(
+      portability.exportBundle("company-1", {
+        include: { company: true, agents: true, projects: false, issues: true },
+      }),
+    ).rejects.toThrow(/secret-shaped value/);
+  });
+
+  it("redacts and surfaces warnings when allowSecrets is true", async () => {
+    const portability = companyPortabilityService({} as any);
+    issueSvc.list.mockResolvedValueOnce([
+      {
+        id: "issue-with-secret",
+        identifier: "PAP-2",
+        title: "Wire fallback",
+        slug: "wire-fallback-2",
+        description: "all good in description",
+        status: "in_progress",
+        priority: "normal",
+        projectId: null,
+        projectWorkspaceId: null,
+        assigneeAgentId: "agent-1",
+        labelIds: [],
+        billingCode: null,
+        executionWorkspaceSettings: null,
+        assigneeAdapterOverrides: null,
+      },
+    ]);
+    issueSvc.listComments.mockResolvedValueOnce([
+      {
+        id: "comment-with-secret",
+        body: "leaked sk-prod-AbCdEf1234567890XyZqWeRtYu by mistake",
+        authorType: "agent",
+        authorAgentId: "agent-1",
+        authorUserId: null,
+        presentation: null,
+        metadata: null,
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+      },
+    ]);
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: true, projects: false, issues: true },
+      allowSecrets: true,
+    });
+    const extension = JSON.stringify(exported.manifest) + JSON.stringify(exported.files);
+    expect(extension).not.toContain("sk-prod-AbCdEf1234567890XyZqWeRtYu");
+    expect(extension).toContain("<REDACTED:provider_api_key>");
+    expect(exported.warnings.some((w) => /Export scrubber/.test(w))).toBe(true);
+  });
 });

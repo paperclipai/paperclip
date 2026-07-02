@@ -334,4 +334,5 @@ export interface CompanyPortabilityExportRequest {
   selectedFiles?: string[];
   expandReferencedSkills?: boolean;
   sidebarOrder?: Partial<CompanyPortabilitySidebarOrder>;
+  allowSecrets?: boolean;
 }

@@ -58,6 +58,7 @@ interface CompanyExportOptions extends BaseClientOptions {
   issues?: string;
   projectIssues?: string;
   expandReferencedSkills?: boolean;
+  allowSecrets?: boolean;
 }
 
 interface CompanyFeedbackOptions extends BaseClientOptions {
@@ -1338,6 +1339,11 @@ export function registerCompanyCommands(program: Command): void {
       .option("--issues <values>", "Comma-separated issue identifiers/ids to export")
       .option("--project-issues <values>", "Comma-separated project shortnames/ids whose issues should be exported")
       .option("--expand-referenced-skills", "Vendor skill contents instead of exporting upstream references", false)
+      .option(
+        "--allow-secrets",
+        "Redact (do not refuse) bundles containing secret-shaped values. Without this flag, exports abort when API keys, JWTs, GitHub PATs, etc. are detected.",
+        false,
+      )
       .action(async (companyId: string, opts: CompanyExportOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
@@ -1351,6 +1357,7 @@ export function registerCompanyCommands(program: Command): void {
               issues: parseCsvValues(opts.issues),
               projectIssues: parseCsvValues(opts.projectIssues),
               expandReferencedSkills: Boolean(opts.expandReferencedSkills),
+              allowSecrets: Boolean(opts.allowSecrets),
             },
           );
           if (!exported) {
