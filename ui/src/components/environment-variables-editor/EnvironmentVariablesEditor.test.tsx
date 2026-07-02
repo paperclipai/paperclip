@@ -72,6 +72,21 @@ function pointerClick(el: Element) {
   (el as HTMLElement).click();
 }
 
+// Deterministic settle for the nested DropdownMenu/combobox → Popover deferred-
+// open regression tests. Those flows open the anchored popover from inside a
+// closing menu via `window.setTimeout(…, 0)` (PAP-12476/12477/12478). Under real
+// timers, jsdom orders the menu's focus-return (a `focusin` that Radix reads as
+// `focusOutside` → dismiss) against that deferred open non-deterministically, so
+// the popover *sometimes* opens-then-instantly-closes — flaky. `vi.useFakeTimers`
+// makes that ordering deterministic (matching the real-browser path where the
+// focus-return settles before the macrotask), while still running the deferred
+// `setTimeout` — so a *synchronous* (unfixed) open would still be dismissed here.
+function settleFakeTimers() {
+  flushSync(() => {});
+  vi.runAllTimers();
+  flushSync(() => {});
+}
+
 describe("EnvironmentVariablesEditor", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
@@ -86,10 +101,19 @@ describe("EnvironmentVariablesEditor", () => {
     document.body.appendChild(container);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    // Restore real timers first (the PAP-12478 test swaps in fake timers and may
+    // exit without restoring if it throws) so unmount cleanup runs on real timers
+    // and gets drained below.
+    vi.useRealTimers();
     flushSync(() => root?.unmount());
     root = null;
     container.remove();
+    // Drain any pending macrotasks (deferred popover-open timers, Radix's
+    // focus-restoration timers) so a timer scheduled by this test can't fire
+    // mid-way through the next one and dismiss its freshly-opened popover — that
+    // cross-test leak is what made the real-timer sibling regression tests flaky.
+    await flush();
     vi.restoreAllMocks();
   });
 
@@ -276,6 +300,44 @@ describe("EnvironmentVariablesEditor", () => {
       document.querySelector('input[aria-label="Secret value"]'),
       "store-as-secret value field should render",
     ).toBeTruthy();
+  });
+
+  it("opens the store popover from the source dropdown Text→Secret (with a value) and keeps it open (PAP-12478)", () => {
+    // Regression: switching a *non-empty* Text row to "Secret reference" via the
+    // in-field Value source dropdown must open the anchored store-as-secret
+    // popover (§6.3) — value preserved, not discarded. This is the same nested
+    // DropdownMenu→Popover open-while-closing race as the ⋯ and picker paths
+    // (PAP-12476/12477): opening the popover synchronously inside the menu-item's
+    // onSelect lets the menu's focus-return dismiss it in the same tick. With a
+    // *synchronous* open this assertion fails; with the deferred open it passes.
+    vi.useFakeTimers();
+    render(
+      <EnvironmentVariablesEditor
+        value={{ NODE_ENV: { type: "plain", value: "production" } }}
+        secrets={secrets}
+        onChange={() => {}}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    const sourceButton = container.querySelector<HTMLButtonElement>('button[aria-label="Value source"]');
+    expect(sourceButton, "Value source dropdown should render").toBeTruthy();
+    pointerClick(sourceButton!);
+    settleFakeTimers();
+    const secretItem = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((el) =>
+      el.textContent?.includes("Secret reference"),
+    );
+    expect(secretItem, "Secret reference menu item should be present").toBeTruthy();
+    pointerClick(secretItem!);
+    settleFakeTimers();
+    // The store popover is open (heading rendered) and stays open — it must not
+    // be dismissed by the menu's focus-return.
+    expect(document.body.textContent, "store-as-secret popover should open").toContain(
+      "Store value as secret",
+    );
+    // The current value is carried forward (masked), not discarded.
+    const secretValueField = document.querySelector<HTMLInputElement>('input[aria-label="Secret value"]');
+    expect(secretValueField, "store-as-secret value field should render").toBeTruthy();
+    expect(secretValueField!.value).toBe("production");
   });
 
   it("lets the user dismiss the sensitive-value hint, unmasking the value and keeping it plain (§6.6)", async () => {

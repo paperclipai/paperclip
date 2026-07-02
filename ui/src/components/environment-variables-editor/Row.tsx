@@ -114,9 +114,18 @@ export function EnvironmentVariableRow({
     switch (plan.kind) {
       case "noop":
         return;
-      case "open-store":
-        setSecretPopover({ mode: "store", name: plan.name, value: plan.value });
+      case "open-store": {
+        // Defer to the next macrotask so the source DropdownMenu fully closes
+        // (and Radix returns focus to its trigger) before we open the anchored
+        // store-as-secret popover. Opening synchronously inside the menu-item's
+        // onSelect lets the menu's focus-return land as a `focusOutside` /
+        // `interactOutside` on the just-opened popover, which Radix would
+        // immediately dismiss — the same nested open-while-closing race as the
+        // ⋯ path and the picker's + Create item (PAP-12476/12477/12478).
+        const { name, value } = plan;
+        window.setTimeout(() => setSecretPopover({ mode: "store", name, value }), 0);
         return;
+      }
       case "to-secret":
         onPatch({ source: "secret" });
         // Auto-open the picker.
