@@ -20,7 +20,7 @@ Use these files when reviewing or changing telemetry code:
 | First-party event names | `PaperclipEventName` in `generated/paperclip-telemetry.ts` |
 | Per-event dimensions and optionality | `EventDimensionsMap` in `generated/paperclip-telemetry.ts` |
 | Enum descriptions for telemetry dimensions | `PAPERCLIP_ENUM_DESCRIPTIONS` in `generated/paperclip-telemetry.ts` |
-| Schema version and event envelope helpers | `SCHEMA_VERSION`, `createPaperclipTelemetryEvent()`, and `createPaperclipTelemetryEnvelope()` in `generated/paperclip-telemetry.ts` |
+| Schema version and event envelope helpers | `SCHEMA_VERSION`, `makeEvent()`, and `makeBatch()` in `generated/paperclip-telemetry.ts` |
 | Runtime-safe event names and dimensions | `TelemetryEventName` and `TelemetryEventDimensions` in `types.ts` |
 | Allowed primitive dimension values | `TelemetryDimensionValue` in `types.ts` |
 | Shared reusable enum domains | Named exports in `constants.ts` |
