@@ -35,6 +35,7 @@ import type {
   PluginManagedRoutineResolution,
   PluginManagedSkillResolution,
   Routine,
+  RoutineListItem,
   RoutineRun,
   Agent,
   Goal,
@@ -1205,6 +1206,16 @@ export interface WorkerToHostMethods {
       projectId?: string | null;
     },
     result: RoutineRun,
+  ];
+
+  // Routines (read)
+  "routines.list": [
+    params: { companyId: string; projectId?: string | null; limit?: number; offset?: number },
+    result: RoutineListItem[],
+  ];
+  "routines.get": [
+    params: { routineId: string; companyId: string },
+    result: Routine | null,
   ];
   "skills.managed.get": [
     params: { skillKey: string; companyId: string },

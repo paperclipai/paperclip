@@ -53,6 +53,8 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "routines.managed.get": ["routines.managed"],
   "routines.managed.reconcile": ["routines.managed"],
   "routines.managed.reset": ["routines.managed"],
+  "routines.list": ["routines.read"],
+  "routines.get": ["routines.read"],
   "project.workspaces.list": ["project.workspaces.read"],
   "project.workspaces.get": ["project.workspaces.read"],
   "execution.workspaces.get": ["execution.workspaces.read"],
