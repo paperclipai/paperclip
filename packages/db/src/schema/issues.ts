@@ -123,6 +123,14 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    // Linear→OS bridge: at most one OS issue per Linear issue, ever (permanent —
+    // no status filter), so overlapping cron syncs cannot double-create.
+    linearOriginIdx: uniqueIndex("issues_linear_origin_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(
+        sql`${table.originKind} = 'linear'
+          and ${table.originId} is not null`,
+      ),
     activeProductivityReviewIdx: uniqueIndex("issues_active_productivity_review_uq")
       .on(table.companyId, table.originKind, table.originId)
       .where(

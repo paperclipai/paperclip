@@ -26,6 +26,19 @@ const PROVENANCE_ROUTE: Record<string, string> = {
 };
 const DEFAULT_AGENT = "Sol"; // escalate anything unrouted
 
+// DB-level idempotency backstop for concurrent syncs. Scoped to the Linear origin
+// index only — any OTHER unique violation (e.g. identifier collision) is a real
+// failure and must NOT be swallowed as "already created".
+const LINEAR_ORIGIN_UNIQUE_CONSTRAINT = "issues_linear_origin_uq";
+function isLinearOriginDuplicate(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const err = error as { code?: string; constraint?: string; constraint_name?: string };
+  return (
+    err.code === "23505" &&
+    (err.constraint ?? err.constraint_name) === LINEAR_ORIGIN_UNIQUE_CONSTRAINT
+  );
+}
+
 type LinearLabel = { id: string; name: string };
 type LinearIssue = {
   id: string;
@@ -124,38 +137,57 @@ export async function runLinearOsSync(
           ),
         )
         .limit(1);
-      const created = existing.length === 0;
+      let created = existing.length === 0;
       if (created) {
-        const osIssue = await issues.create(companyId, {
-          title: issue.title,
-          description: `From Linear ${issue.identifier}: ${issue.url}\n\n${issue.description ?? ""}`,
-          assigneeAgentId,
-          status: "todo",
-          priority: "medium",
-          originKind: "linear",
-          originId: issue.id,
-        });
-        // Mutating action → activity log entry (repo guideline for server endpoints).
-        await logActivity(db, {
-          companyId,
-          actorType: "system",
-          actorId: "linear-os-sync",
-          agentId: assigneeAgentId,
-          action: "issue.created",
-          entityType: "issue",
-          entityId: osIssue.id,
-          details: {
-            source: "linear-bridge",
-            linearId: issue.id,
-            linearIdentifier: issue.identifier,
-            routedAgent: agentName,
-          },
-        });
+        try {
+          const osIssue = await issues.create(companyId, {
+            title: issue.title,
+            description: `From Linear ${issue.identifier}: ${issue.url}\n\n${issue.description ?? ""}`,
+            assigneeAgentId,
+            status: "todo",
+            priority: "medium",
+            originKind: "linear",
+            originId: issue.id,
+          });
+          // Mutating action → activity log entry (repo guideline for server endpoints).
+          await logActivity(db, {
+            companyId,
+            actorType: "system",
+            actorId: "linear-os-sync",
+            agentId: assigneeAgentId,
+            action: "issue.created",
+            entityType: "issue",
+            entityId: osIssue.id,
+            details: {
+              source: "linear-bridge",
+              linearId: issue.id,
+              linearIdentifier: issue.identifier,
+              routedAgent: agentName,
+            },
+          });
+        } catch (err) {
+          // Idempotency guard #3 (race-safe): the partial unique index
+          // `issues_linear_origin_uq` on (companyId, originKind, originId) makes the
+          // DB the arbiter. If a concurrent sync won the insert, treat it as
+          // already-created and fall through to the label write-back.
+          if (!isLinearOriginDuplicate(err)) throw err;
+          created = false;
+        }
       }
 
-      // Idempotency guard #1: write `os:synced` back so we never re-dispatch. Linear has no
-      // atomic add-label, so set the full label-id set (existing + synced).
-      const labelIds = Array.from(new Set([...issue.labels.nodes.map((l) => l.id), SYNCED_LABEL_ID]));
+      // Idempotency guard #1: write `os:synced` back AND drop `os:dispatch` so a synced
+      // issue no longer matches the fetch query (otherwise the candidate set grows every
+      // run). Linear has no atomic add/remove-label, so set the full target label-id set.
+      // Drop ALL labels named os:dispatch (match the fetch predicate, which is
+      // by name) so a duplicate-named label can't keep the issue in the fetch set.
+      const labelIds = Array.from(
+        new Set(
+          issue.labels.nodes
+            .filter((l) => l.name !== DISPATCH_LABEL)
+            .map((l) => l.id)
+            .concat(SYNCED_LABEL_ID),
+        ),
+      );
       await linear(
         apiKey,
         `mutation MarkSynced($id: String!, $labelIds: [String!]) {

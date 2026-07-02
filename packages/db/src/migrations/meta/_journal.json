@@ -673,6 +673,13 @@
       "when": 1781572941963,
       "tag": "0095_parallel_blizzard",
       "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1782974254079,
+      "tag": "0096_early_hardball",
+      "breakpoints": true
     }
   ]
 }
