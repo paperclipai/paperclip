@@ -46,6 +46,7 @@ async function createMockGatewayServer(options?: {
   const wss = new WebSocketServer({ server });
 
   let agentPayload: Record<string, unknown> | null = null;
+  let connectParams: Record<string, unknown> | null = null;
 
   wss.on("connection", (socket) => {
     socket.send(
@@ -68,6 +69,7 @@ async function createMockGatewayServer(options?: {
       if (frame.type !== "req") return;
 
       if (frame.method === "connect") {
+        connectParams = frame.params ?? null;
         socket.send(
           JSON.stringify({
             type: "res",
@@ -75,7 +77,7 @@ async function createMockGatewayServer(options?: {
             ok: true,
             payload: {
               type: "hello-ok",
-              protocol: 3,
+              protocol: 4,
               server: { version: "test", connId: "conn-1" },
               features: { methods: ["connect", "agent", "agent.wait"], events: ["agent"] },
               snapshot: { version: 1, ts: Date.now() },
@@ -165,6 +167,7 @@ async function createMockGatewayServer(options?: {
   return {
     url: `ws://127.0.0.1:${address.port}`,
     getAgentPayload: () => agentPayload,
+    getConnectParams: () => connectParams,
     close: async () => {
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -485,6 +488,12 @@ describe("openclaw gateway adapter execute", () => {
       expect(result.timedOut).toBe(false);
       expect(result.summary).toContain("chachacha");
       expect(result.provider).toBe("openclaw");
+
+      // Protocol negotiation: client must request minProtocol=4, maxProtocol=4
+      const connectParams = gateway.getConnectParams();
+      expect(connectParams).toBeTruthy();
+      expect(connectParams?.minProtocol).toBe(4);
+      expect(connectParams?.maxProtocol).toBe(4);
 
       const payload = gateway.getAgentPayload();
       expect(payload).toBeTruthy();
