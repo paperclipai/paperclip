@@ -70,7 +70,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
-    "@storybook/addon-a11y": "10.4.2",
+    "@storybook/addon-a11y": "10.4.6",
     "@storybook/addon-docs": "10.4.6",
     "@storybook/react-vite": "10.4.6",
     "@types/node": "^22.19.21",
@@ -79,7 +79,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "tailwindcss": "^4.3.0",
     "typescript": "^5.7.3",
-    "storybook": "10.4.2",
+    "storybook": "10.4.6",
     "vite": "^6.1.0",
     "vitest": "^4.1.8"
   }
