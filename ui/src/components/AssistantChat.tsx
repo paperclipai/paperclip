@@ -291,7 +291,7 @@ export function AssistantChatView({
   header,
   starterPrompts: providedStarterPrompts,
   emptyState: providedEmptyState,
-  composerHint = null,
+  composerHint,
   imageUploadHandler,
   onAttachImage,
   loading = false,
@@ -790,7 +790,7 @@ export function AssistantChat({
       header={header}
       starterPrompts={starterPrompts}
       emptyState={emptyState}
-      composerHint={hasOpenBackgroundWork ? "Ask me anything while I work on this." : null}
+      composerHint={hasOpenBackgroundWork ? "Ask me anything while I work on this." : undefined}
       imageUploadHandler={handleImageUpload}
       onAttachImage={handleAttachFile}
       loading={commentsQuery.isLoading}

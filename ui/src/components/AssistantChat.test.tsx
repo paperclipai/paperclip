@@ -73,7 +73,11 @@ vi.mock("./IssueChatThread", async () => {
         <span data-testid="status-notices">
           {(props.suppressIssueStatusNotices ?? props.preset === "assistant") ? "suppressed" : "visible"}
         </span>
-        <span data-testid="composer-hint">{props.composerHint}</span>
+        <span data-testid="composer-hint">
+          {props.composerHint === undefined && props.preset === "assistant"
+            ? "Enter to send · Shift+Enter for a new line"
+            : props.composerHint}
+        </span>
         <span data-testid="image-upload-enabled">{String(Boolean(props.imageUploadHandler))}</span>
         <span data-testid="attach-enabled">{String(Boolean(props.onAttachImage))}</span>
         <span data-testid="composer-draft">{draft}</span>
@@ -468,6 +472,22 @@ describe("AssistantChatView", () => {
     expect(container.querySelector('[data-testid="status-notices"]')?.textContent).toBe("suppressed");
     expect(container.querySelector('[data-testid="composer-hint"]')?.textContent).toBe(
       "Ask me anything while I work on this.",
+    );
+  });
+
+  it("allows the assistant preset default composer hint when no custom hint is provided", () => {
+    render(
+      <AssistantChatView
+        agents={[ceo]}
+        targetAgentId={ceo.id}
+        comments={[]}
+        starterPrompts={[]}
+        onSend={async () => {}}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="composer-hint"]')?.textContent).toBe(
+      "Enter to send · Shift+Enter for a new line",
     );
   });
 
