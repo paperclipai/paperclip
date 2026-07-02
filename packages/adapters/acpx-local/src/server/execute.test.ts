@@ -62,6 +62,7 @@ async function runExecutor(
   options: {
     context?: Record<string, unknown>;
     executionTransport?: Record<string, unknown>;
+    authToken?: string;
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
@@ -84,6 +85,7 @@ async function runExecutor(
       config,
       context: options.context ?? {},
       executionTransport: options.executionTransport,
+      authToken: options.authToken,
       onLog: async (stream: "stdout" | "stderr", text: string) => {
         logs.push({ stream, text });
       },
@@ -97,6 +99,33 @@ async function runExecutor(
 }
 
 describe("acpx_local runtime skill isolation", () => {
+  it("includes Paperclip env and API access notes in the ACPX prompt without leaking the token", async () => {
+    const { meta } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js" },
+      {
+        authToken: "runtime-secret-token",
+        context: {
+          taskId: "issue-1",
+          wakeReason: "issue_assigned",
+          paperclipWake: {
+            reason: "issue_assigned",
+            issue: { id: "issue-1", identifier: "TEST-1" },
+          },
+        },
+      },
+    );
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    expect(prompt).toContain("Paperclip runtime note:");
+    expect(prompt).toContain("PAPERCLIP_AGENT_ID");
+    expect(prompt).toContain("PAPERCLIP_API_KEY");
+    expect(prompt).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
+    expect(prompt).toContain("Paperclip API access note:");
+    expect(prompt).toContain("$PAPERCLIP_API_URL/api/agents/me");
+    expect(prompt).toContain("X-Paperclip-Run-Id");
+    expect(prompt).not.toContain("runtime-secret-token");
+  });
+
   it.skipIf(process.platform === "win32")("materializes ACPX Claude skills without symlinked descendants", async () => {
     const root = await makeTempRoot();
     const skillRoot = path.join(root, "skills");
