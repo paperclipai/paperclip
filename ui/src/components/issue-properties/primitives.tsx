@@ -42,14 +42,14 @@ export function PropertyRow({
   wrap?: boolean;
 }) {
   return (
-    <div className="flex items-start gap-3 py-1.5">
+    <div className="flex w-full min-w-0 items-start gap-3 py-1.5">
       <span
         className="text-xs text-muted-foreground shrink-0 w-24 mt-0.5 truncate"
         title={typeof label === "string" ? label : undefined}
       >
         {label}
       </span>
-      <div className={cn("flex items-center gap-1.5 min-w-0 flex-1", wrap && "flex-wrap")}>{children}</div>
+      <div className={cn("flex min-w-0 flex-1 items-center gap-1.5", wrap && "flex-wrap")}>{children}</div>
     </div>
   );
 }
@@ -65,7 +65,7 @@ export function PropertyChip({
 }) {
   return (
     <span
-      className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs border", className)}
+      className={cn("inline-flex max-w-full min-w-0 items-center gap-1 truncate rounded-full border px-2 py-0.5 text-xs", className)}
       style={style}
     >
       {children}
