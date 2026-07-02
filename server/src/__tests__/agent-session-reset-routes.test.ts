@@ -183,10 +183,9 @@ async function createApp(actor: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      ...actor,
-      companyIds: Array.isArray(actor.companyIds) ? [...actor.companyIds] : actor.companyIds,
-    };
+    (req as any).actor = actor.type === "board"
+      ? { ...actor, companyIds: Array.isArray(actor.companyIds) ? [...(actor.companyIds as string[])] : actor.companyIds }
+      : { ...actor };
     next();
   });
   app.use("/api", agentRoutes(createDbStub() as any));
@@ -255,7 +254,7 @@ describe.sequential("POST /agents/:id/sessions/reset", () => {
     const app = await createApp({
       type: "agent",
       agentId: callerAgentId,
-      companyIds: [companyId],
+      companyId,
     });
 
     const res = await requestApp(app, (baseUrl) =>
@@ -272,7 +271,7 @@ describe.sequential("POST /agents/:id/sessions/reset", () => {
     const app = await createApp({
       type: "agent",
       agentId: targetAgentId,
-      companyIds: [companyId],
+      companyId,
     });
 
     const res = await requestApp(app, (baseUrl) =>
@@ -295,7 +294,7 @@ describe.sequential("POST /agents/:id/sessions/reset", () => {
     const app = await createApp({
       type: "agent",
       agentId: crossTeamAgentId,
-      companyIds: [companyId],
+      companyId,
     });
 
     const res = await requestApp(app, (baseUrl) =>
@@ -364,7 +363,7 @@ describe.sequential("POST /agents/:id/sessions/reset", () => {
     const app = await createApp({
       type: "agent",
       agentId: managerAgentId,
-      companyIds: [companyId],
+      companyId,
     });
 
     const res = await requestApp(app, (baseUrl) =>
