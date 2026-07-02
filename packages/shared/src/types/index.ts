@@ -32,6 +32,17 @@ export type {
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "./instance.js";
+export type {
+  DataRecoveryItem,
+  DataRecoveryDetailField,
+  DataRecoveryDetailResponse,
+  DataRecoveryDeleteResponse,
+  DataRecoveryItemState,
+  DataRecoveryItemType,
+  DataRecoveryListResponse,
+  DataRecoveryRenameResponse,
+  DataRecoveryRestoreResponse,
+} from "./data-recovery.js";
 export {
   DAILY_RETENTION_PRESETS,
   WEEKLY_RETENTION_PRESETS,

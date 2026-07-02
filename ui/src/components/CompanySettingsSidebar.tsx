@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+  ArchiveRestore,
   ChevronLeft,
   Clock3,
   CloudUpload,
@@ -16,6 +17,7 @@ import {
   Users,
 } from "lucide-react";
 import type { PluginRecord } from "@paperclipai/shared";
+import { accessApi } from "@/api/access";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { pluginsApi } from "@/api/plugins";
@@ -49,6 +51,11 @@ export function CompanySettingsSidebar() {
     companyId: selectedCompanyId,
     enabled: !!selectedCompanyId,
   });
+  const { data: boardAccess } = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: () => accessApi.getCurrentBoardAccess(),
+    retry: false,
+  });
   const { data: badges } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.sidebarBadges(selectedCompanyId)
@@ -76,6 +83,7 @@ export function CompanySettingsSidebar() {
     queryFn: () => pluginsApi.list(),
   });
   const showCloudUpstream = experimentalSettings?.enableCloudSync === true;
+  const canManageDataRecovery = boardAccess?.source === "local_implicit" || boardAccess?.isInstanceAdmin;
   const sidebarPlugins = (plugins ?? []).filter((plugin) => !isSandboxProviderOnly(plugin));
 
   return (
@@ -173,6 +181,13 @@ export function CompanySettingsSidebar() {
             label="Experimental"
             icon={FlaskConical}
           />
+          {canManageDataRecovery ? (
+            <SidebarNavItem
+              to={`${INSTANCE_SETTINGS_PATH_PREFIX}/data-recovery?companyId=${encodeURIComponent(selectedCompanyId ?? "")}`}
+              label="Data Recovery"
+              icon={ArchiveRestore}
+            />
+          ) : null}
           <SidebarNavItem
             to={`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`}
             label="Plugins"

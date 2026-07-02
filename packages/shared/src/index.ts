@@ -1,4 +1,15 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
+export type {
+  DataRecoveryItem,
+  DataRecoveryDetailField,
+  DataRecoveryDetailResponse,
+  DataRecoveryDeleteResponse,
+  DataRecoveryItemState,
+  DataRecoveryItemType,
+  DataRecoveryListResponse,
+  DataRecoveryRenameResponse,
+  DataRecoveryRestoreResponse,
+} from "./types/data-recovery.js";
 export {
   getAgentOrgChainHealth,
   getAgentWorkEligibility,
