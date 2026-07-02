@@ -1392,6 +1392,7 @@ function IssueDetailActivityTab({
           agentMap={agentMap}
           hasLiveRuns={hasLiveRuns}
           activityEvents={activity ?? []}
+          resolveUserLabel={(userId) => userProfileMap.get(userId)?.label ?? null}
           renderActivityEvent={(evt) => {
             const tone = successfulRunHandoffActivityTone(evt.action);
             const isHandoffWarning =

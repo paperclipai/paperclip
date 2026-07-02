@@ -14,6 +14,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { activityApi } from "../api/activity";
+import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { usePanel } from "../context/PanelContext";
@@ -92,7 +93,10 @@ import {
   type AgentRuntimeState,
   type LiveEvent,
   type WorkspaceOperation,
+  isResponsibleUserDenialCode,
+  responsibleUserLabel,
 } from "@paperclipai/shared";
+import { ResponsibleUserDenialNotice } from "../components/ResponsibleUserDenialNotice";
 import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-policy-ui";
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
@@ -3122,6 +3126,20 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   });
   const run = hydratedRun ?? initialRun;
   const metrics = runMetrics(run);
+  const { data: userDirectory } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(run.companyId),
+    queryFn: () => accessApi.listUserDirectory(run.companyId),
+    enabled: Boolean(run.companyId && run.responsibleUserId),
+    retry: false,
+  });
+  const responsibleUserName = useMemo(() => {
+    if (!run.responsibleUserId) return null;
+    const entry = userDirectory?.users.find(
+      (candidate) => candidate.principalId === run.responsibleUserId,
+    );
+    return entry?.user?.name ?? entry?.user?.email ?? null;
+  }, [run.responsibleUserId, userDirectory]);
+  const responsibleDenialCode = isResponsibleUserDenialCode(run.errorCode) ? run.errorCode : null;
   const [sessionOpen, setSessionOpen] = useState(false);
   const [claudeLoginResult, setClaudeLoginResult] = useState<ClaudeLoginResult | null>(null);
 
@@ -3328,6 +3346,17 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 </div>
               );
             })()}
+            {run.responsibleUserId && (
+              <div
+                data-testid="run-detail-on-behalf-of"
+                className="text-xs text-muted-foreground"
+              >
+                On behalf of{" "}
+                <span className="text-foreground">
+                  {responsibleUserName ?? responsibleUserLabel(null)}
+                </span>
+              </div>
+            )}
             {resumeRun.isError && (
               <div className="text-xs text-destructive">
                 {resumeRun.error instanceof Error ? resumeRun.error.message : "Failed to resume run"}
@@ -3408,6 +3437,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   </>
                 )}
               </div>
+            )}
+            {responsibleDenialCode && (
+              <ResponsibleUserDenialNotice
+                code={responsibleDenialCode}
+                userName={responsibleUserName}
+              />
             )}
             {hasNonZeroExit && (
               <div className="text-xs text-red-600 dark:text-red-400">

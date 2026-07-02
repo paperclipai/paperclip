@@ -38,6 +38,15 @@ export {
   type ResponsibleUserAttribution,
   type ResponsibleUserSource,
 } from "./issue-attribution.js";
+export {
+  RESPONSIBLE_USER_DENIAL_CODES,
+  describeResponsibleUserDenial,
+  isResponsibleUserDenialCode,
+  responsibleUserLabel,
+  type ResponsibleUserDenialCode,
+  type ResponsibleUserDenialCopy,
+  type ResponsibleUserDenialTone,
+} from "./responsible-user-denial.js";
 export type {
   PipelineAutomationRetryBlocker,
   PipelineAutomationRetryCleanupOptions,
