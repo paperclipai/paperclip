@@ -220,7 +220,15 @@ async function readPenstockAnthropicCapacity(input: {
 
     const body = await response.json().catch(() => null);
     const state = readCapacityState(body);
-    if (!state || state === "unknown") return null;
+    if (!state) return null;
+    const capacityReason = readCapacityReason(body);
+    if (state === "unknown") {
+      if (!isAuthoritativeCapacityReason(capacityReason)) return null;
+      return capacityEndpointUnavailable(input, response.status, {
+        capacityState: state,
+        capacityReason,
+      });
+    }
     if (state === "available") return { allow: true };
 
     const now = input.now();
@@ -240,6 +248,7 @@ async function readPenstockAnthropicCapacity(input: {
         model: result.model,
         reason: result.reason,
         capacityState: state,
+        capacityReason,
         resumeAt: result.resumeAt?.toISOString() ?? null,
         retryAfterSeconds: result.retryAfterSeconds,
       },
@@ -268,6 +277,10 @@ function capacityEndpointUnavailable(
     log: PenstockAvailabilityGateLogger;
   },
   status: number,
+  details?: {
+    capacityState?: PenstockCapacityState;
+    capacityReason?: string | null;
+  },
 ): PenstockAvailabilityGateDenyResult {
   const retry = defaultCapacityRetry(input.defaultRetryDelayMs, input.now());
   const result: PenstockAvailabilityGateDenyResult = {
@@ -287,6 +300,8 @@ function capacityEndpointUnavailable(
       provider: result.provider,
       model: result.model,
       reason: result.reason,
+      capacityState: details?.capacityState,
+      capacityReason: details?.capacityReason,
       resumeAt: result.resumeAt?.toISOString() ?? null,
       retryAfterSeconds: result.retryAfterSeconds,
     },
@@ -440,6 +455,15 @@ function readCapacityState(body: unknown): PenstockCapacityState | null {
     return state;
   }
   return null;
+}
+
+function readCapacityReason(body: unknown): string | null {
+  const record = asRecord(body);
+  return readNonEmptyString(record?.reason);
+}
+
+function isAuthoritativeCapacityReason(reason: string | null): boolean {
+  return reason?.startsWith("penstock.capacity_") ?? false;
 }
 
 function readRetryAfterSeconds(record: Record<string, unknown> | null, now: Date): number | null {

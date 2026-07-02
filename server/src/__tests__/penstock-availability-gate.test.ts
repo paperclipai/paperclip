@@ -82,6 +82,54 @@ describe("createPenstockAvailabilityGate", () => {
     expect((init as RequestInit).body).toBeUndefined();
   });
 
+  it("defers on an authoritative unknown capacity readback without probing messages", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          provider: "anthropic",
+          state: "unknown",
+          reason: "penstock.capacity_no_healthy_route",
+          routeCount: 0,
+          healthyRouteCount: 0,
+        }),
+        { status: 200 },
+      ),
+    );
+    const gate = gateWith(fetchMock as unknown as typeof fetch);
+
+    const result = await gate.checkAdapter({
+      adapterType: "claude_k8s",
+      agentId: "agent-1",
+      adapterConfig: {
+        model: "claude-opus-4-8[1m]",
+        env: { ANTHROPIC_BASE_URL: { value: "https://api.penstock.run/anthropic" } },
+      },
+      now: new Date("2026-06-30T08:00:00.000Z"),
+      env: { ANTHROPIC_API_KEY: "psk_test" },
+    });
+
+    expect(result).toMatchObject({
+      allow: false,
+      provider: "anthropic",
+      reason: "penstock.model_temporarily_unavailable",
+      model: "claude-opus-4-8[1m]",
+      retryAfterSeconds: 300,
+    });
+    expect(result.allow === false ? result.resumeAt?.toISOString() : null).toBe("2026-06-30T08:05:00.000Z");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "https://api.penstock.run/v1/pools/default/capacity?provider=anthropic",
+    );
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 200,
+        capacityState: "unknown",
+        capacityReason: "penstock.capacity_no_healthy_route",
+      }),
+      "heartbeat dispatch deferred: penstock model unavailable",
+    );
+  });
+
   it("caches the probe result per endpoint and model", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ state: "available" }), { status: 200 }));
     const gate = gateWith(fetchMock as unknown as typeof fetch);
