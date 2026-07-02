@@ -1093,6 +1093,25 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it("rejects agent-created work products without an authenticated run id", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_key",
+    });
+
+    const res = await request(app).post(`/api/issues/${issueId}/work-products`).send({
+      type: "artifact",
+      provider: "test",
+      title: "Artifact",
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(401);
+    expect(res.body.error).toBe("Agent run id required");
+    expect(mockWorkProductService.createForIssue).not.toHaveBeenCalled();
+  });
+
   it("rejects agent-created work products with a forged run id", async () => {
     const app = await createApp(ownerActor());
 

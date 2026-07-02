@@ -153,6 +153,7 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
+import { requireHeartbeatRunIdForAttributedWrite } from "../services/run-attribution.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -2703,7 +2704,10 @@ export function issueRoutes(
         res.status(403).json({ error: "createdByRunId must match the authenticated agent run" });
         return undefined;
       }
-      if (!actorRunId) return requestedRunId;
+      if (!actorRunId) {
+        res.status(401).json({ error: "Agent work product write requires a valid Paperclip run id" });
+        return undefined;
+      }
       const run = await loadWorkProductRunAttribution(actorRunId);
       if (!run || run.companyId !== companyId || run.agentCompanyId !== companyId || run.agentId !== req.actor.agentId) {
         res.status(403).json({ error: "createdByRunId is not valid for this work product actor" });
@@ -4775,6 +4779,12 @@ export function issueRoutes(
       promotedByActorId: actor.actorId,
       promotedAt,
     });
+    const createdByRunId = await requireHeartbeatRunIdForAttributedWrite(db, {
+      runId: actor.runId,
+      companyId: issue.companyId,
+      required: actor.actorType === "agent",
+      label: "Agent work product write",
+    });
     const product = await db.transaction(async (tx) => {
       const markPromoted = { sourceTrust: promotionTrust, updatedAt: promotedAt };
       const updatedSource = await (async () => {
@@ -4843,7 +4853,7 @@ export function issueRoutes(
             },
           },
           sourceTrust: promotionTrust,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId,
         })
         .returning()
         .then((rows) => rows[0] ?? null);

@@ -94,7 +94,7 @@ import {
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
-import { coerceExistingHeartbeatRunId } from "./run-attribution.js";
+import { requireHeartbeatRunIdForAttributedWrite } from "./run-attribution.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -5706,7 +5706,12 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
-      const effectiveCheckoutRunId = await coerceExistingHeartbeatRunId(db, checkoutRunId, issueCompany.companyId);
+      const effectiveCheckoutRunId = await requireHeartbeatRunIdForAttributedWrite(db, {
+        runId: checkoutRunId,
+        companyId: issueCompany.companyId,
+        required: true,
+        label: "Agent checkout",
+      });
 
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
@@ -6373,7 +6378,12 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
-      const createdByRunId = await coerceExistingHeartbeatRunId(dbOrTx, actor.runId, issue.companyId);
+      const createdByRunId = await requireHeartbeatRunIdForAttributedWrite(dbOrTx, {
+        runId: actor.runId,
+        companyId: issue.companyId,
+        required: Boolean(actor.agentId),
+        label: "Agent comment",
+      });
       const [comment] = await dbOrTx
         .insert(issueComments)
         .values({

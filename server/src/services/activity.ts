@@ -17,7 +17,7 @@ import {
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { classifyRunLiveness } from "./run-liveness.js";
-import { coerceExistingHeartbeatRunId } from "./run-attribution.js";
+import { requireHeartbeatRunIdForAttributedWrite } from "./run-attribution.js";
 
 export interface ActivityFilters {
   companyId: string;
@@ -580,7 +580,12 @@ export function activityService(db: Db) {
     },
 
     create: async (data: typeof activityLog.$inferInsert) => {
-      const runId = await coerceExistingHeartbeatRunId(db, data.runId, data.companyId);
+      const runId = await requireHeartbeatRunIdForAttributedWrite(db, {
+        runId: data.runId,
+        companyId: data.companyId,
+        required: data.actorType === "agent" || Boolean(data.agentId),
+        label: "Agent activity",
+      });
       return db
         .insert(activityLog)
         .values({ ...data, runId })
