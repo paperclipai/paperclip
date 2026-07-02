@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
+import { issueStatusText } from "@/lib/status-colors";
 import { Link } from "@/lib/router";
 import type { Issue, IssueLabel } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -42,7 +43,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock, RotateCcw, Loader2, CheckCircle2, ScanEye } from "lucide-react";
+import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, ExternalLink, Clock, RotateCcw, Loader2, CheckCircle2 } from "lucide-react";
 import { AgentIcon } from "../AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../InlineEntitySelector";
 import {
@@ -88,19 +89,19 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: Compone
   }, [value]);
 
   return (
-    <div className="flex items-start gap-1.5 min-w-0 flex-1">
-      <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
+    <div className="flex items-center gap-1.5 min-w-0 flex-1">
+      <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
       <button
         type="button"
-        className="text-sm font-mono min-w-0 break-all text-left cursor-pointer hover:text-foreground transition-colors"
+        className="text-sm font-mono min-w-0 truncate text-left cursor-pointer hover:text-foreground transition-colors"
         onClick={handleCopy}
-        title={copied ? "Copied" : "Copy to clipboard"}
+        title={value}
         aria-label={`Copy ${value} to clipboard`}
       >
         {value}
       </button>
       {copied && (
-        <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-300" role="status">
+        <span className={cn("inline-flex items-center gap-1 text-xs shrink-0", issueStatusText.done)} role="status">
           <Check className="h-3 w-3 shrink-0" />
           Copied
         </span>
@@ -501,7 +502,7 @@ export function IssueProperties({
         assigneeOverrideChrome ? "Chrome" : "",
       ].filter(Boolean);
       return (
-        <span className="min-w-0 text-sm break-words">
+        <span className="min-w-0 truncate text-sm" title={details.length > 0 ? `Custom · ${details.join(" · ")}` : "Custom adapter options"}>
           Custom{details.length > 0 ? ` · ${details.join(" · ")}` : " adapter options"}
         </span>
       );
@@ -683,11 +684,13 @@ export function IssueProperties({
     }
     return value;
   };
+  const reviewerLabel = reviewerValues.map((value) => executionParticipantLabel(value)).join(", ");
+  const approverLabel = approverValues.map((value) => executionParticipantLabel(value)).join(", ");
   const reviewerTrigger = reviewerValues.length > 0
-    ? <span className="text-sm break-words min-w-0">{reviewerValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
+    ? <span className="text-sm truncate min-w-0" title={reviewerLabel}>{reviewerLabel}</span>
     : <span className="text-sm text-muted-foreground">None</span>;
   const approverTrigger = approverValues.length > 0
-    ? <span className="text-sm break-words min-w-0">{approverValues.map((value) => executionParticipantLabel(value)).join(", ")}</span>
+    ? <span className="text-sm truncate min-w-0" title={approverLabel}>{approverLabel}</span>
     : <span className="text-sm text-muted-foreground">None</span>;
   const nextRunnableExecutionStage = (() => {
     if (issue.executionState?.status === "changes_requested" && issue.executionState.currentStageType) {
@@ -797,14 +800,14 @@ export function IssueProperties({
     (child) => child.id === issue.watchdog?.watchdogIssueId,
   );
   const watchdogTrigger = issue.watchdog ? (
-    <span className="inline-flex min-w-0 max-w-full flex-wrap items-start gap-x-1.5 gap-y-0.5 text-sm leading-5">
+    <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-sm" title={issue.watchdog.instructions?.trim() || undefined}>
       {(() => {
         const agent = (agents ?? []).find((candidate) => candidate.id === issue.watchdog?.watchdogAgentId);
         return agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null;
       })()}
-      <span className="min-w-0 max-w-40 truncate">{agentName(issue.watchdog.watchdogAgentId)}</span>
+      <span className="shrink-0 max-w-40 truncate">{agentName(issue.watchdog.watchdogAgentId)}</span>
       {issue.watchdog.instructions?.trim() ? (
-        <span className="min-w-0 flex-1 basis-32 whitespace-normal break-words text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate text-muted-foreground">
           · {issue.watchdog.instructions.trim()}
         </span>
       ) : null}
@@ -813,7 +816,7 @@ export function IssueProperties({
       ) : null}
     </span>
   ) : (
-    <span className="text-sm text-muted-foreground">Set watchdog</span>
+    <span className="text-sm text-muted-foreground">None</span>
   );
   const watchdogContent = (
     <div className="space-y-3 p-2">
@@ -947,17 +950,17 @@ export function IssueProperties({
     if (issue.monitorLastTriggeredAt) {
       return `Last triggered ${timeAgo(issue.monitorLastTriggeredAt)}`;
     }
-    return "Not scheduled";
+    return "None";
   })();
   const monitorNextCheckAt = issue.executionPolicy?.monitor?.nextCheckAt ?? null;
   const monitorTrigger = (
-    <span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+    <span className="inline-flex min-w-0 items-center gap-1.5">
       {monitorNextCheckAt ? (
-        <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
       ) : null}
       <span
         className={cn(
-          "min-w-0 text-sm break-words",
+          "min-w-0 truncate text-sm",
           monitorNextCheckAt ? "text-foreground" : "text-muted-foreground",
         )}
         title={monitorNextCheckAt ? currentMonitorLabel : undefined}
@@ -965,7 +968,7 @@ export function IssueProperties({
         {monitorNextCheckAt ? `Next check ${formatMonitorOffset(monitorNextCheckAt)}` : currentMonitorLabel}
       </span>
       {monitorNextCheckAt ? (
-        <span className="text-xs text-muted-foreground" title={currentMonitorLabel}>
+        <span className="shrink-0 text-xs text-muted-foreground" title={currentMonitorLabel}>
           {formatDate(new Date(monitorNextCheckAt))}
         </span>
       ) : null}
@@ -1013,16 +1016,16 @@ export function IssueProperties({
     <span className="text-xs text-muted-foreground">Attempt {scheduledRetryAttempt}</span>
   ) : null;
   const scheduledRetryTrigger = (
-    <span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
-      <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-600 dark:text-cyan-400" aria-hidden="true" />
+    <span className="inline-flex min-w-0 items-center gap-1.5">
+      <RotateCcw className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
       <span
-        className="min-w-0 text-sm break-words text-foreground"
+        className="min-w-0 truncate text-sm text-foreground"
         title={scheduledRetryAbsolute ?? undefined}
       >
         {scheduledRetryRelativeLabel}
       </span>
       {scheduledRetryShortDate ? (
-        <span className="text-xs text-muted-foreground" title={scheduledRetryAbsolute ?? undefined}>
+        <span className="shrink-0 text-xs text-muted-foreground" title={scheduledRetryAbsolute ?? undefined}>
           {scheduledRetryShortDate}
         </span>
       ) : null}
@@ -1215,24 +1218,22 @@ export function IssueProperties({
         </PropertyChip>
       ))}
       {selectedIssueLabels.length > 3 && (
-        <span className="text-xs text-muted-foreground">+{selectedIssueLabels.length - 3}</span>
+        <span className="text-xs text-muted-foreground">+{selectedIssueLabels.length - 3} more</span>
       )}
     </div>
   ) : (
-    <>
-      <Tag className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">No labels</span>
-    </>
+    <span className="text-sm text-muted-foreground">None</span>
   );
   const labelsExtra = (issue.labelIds ?? []).length > 0 ? (
     <button
       type="button"
-      className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+      className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
       onClick={() => setLabelsOpen(true)}
       aria-label="Add label"
       title="Add label"
     >
       <Plus className="h-3 w-3" />
+      Add label
     </button>
   ) : undefined;
 
@@ -1305,14 +1306,11 @@ export function IssueProperties({
     <Identity name={assignee.name} size="sm" />
   ) : assigneeUserLabel ? (
     <>
-      <User className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm">{assigneeUserLabel}</span>
+      <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 truncate text-sm">{assigneeUserLabel}</span>
     </>
   ) : (
-    <>
-      <User className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">Unassigned</span>
-    </>
+    <span className="text-sm text-muted-foreground">None</span>
   );
 
   // Grouped picker options (design surface 2): a board-users section and an
@@ -1559,13 +1557,10 @@ export function IssueProperties({
         className="shrink-0 h-3 w-3 rounded-sm"
         style={{ backgroundColor: orderedProjects.find((p) => p.id === issue.projectId)?.color ?? "#6366f1" }}
       />
-      <span className="text-sm break-words min-w-0">{projectName(issue.projectId)}</span>
+      <span className="text-sm truncate min-w-0" title={projectName(issue.projectId)}>{projectName(issue.projectId)}</span>
     </>
   ) : (
-    <>
-      <Hexagon className="h-3.5 w-3.5 text-muted-foreground" />
-      <span className="text-sm text-muted-foreground">No project</span>
-    </>
+    <span className="text-sm text-muted-foreground">None</span>
   );
   const projectPickerOptions = orderItemsBySelectedAndRecent(
     [
@@ -1680,12 +1675,15 @@ export function IssueProperties({
   const parentIdentifier = issue.ancestors?.[0]?.identifier ?? currentParentIssue?.identifier;
   const parentTitle = issue.ancestors?.[0]?.title ?? currentParentIssue?.title ?? issue.parentId?.slice(0, 8);
   const parentTrigger = issue.parentId ? (
-    <span className="text-sm break-words min-w-0 inline">
+    <span
+      className="text-sm truncate min-w-0"
+      title={`${parentIdentifier ? `${parentIdentifier} ` : ""}${parentTitle ?? ""}`.trim()}
+    >
       {parentIdentifier ? `${parentIdentifier} ` : ""}
       {parentTitle}
     </span>
   ) : (
-    <span className="text-sm text-muted-foreground">No parent</span>
+    <span className="text-sm text-muted-foreground">None</span>
   );
   const parentLink = issue.parentId ? (
     <Link
@@ -1746,7 +1744,7 @@ export function IssueProperties({
               setParentOpen(false);
             }}
           >
-            <StatusIcon status={candidate.status} />
+            <StatusIcon status={candidate.status} className="h-3 w-3" />
             <span className="truncate">
               {candidate.identifier ? `${candidate.identifier} ` : ""}
               {candidate.title}
@@ -1819,7 +1817,7 @@ export function IssueProperties({
               )}
               onClick={() => toggleBlockedBy(candidate.id)}
             >
-              <StatusIcon status={candidate.status} />
+              <StatusIcon status={candidate.status} className="h-3 w-3" />
               <span className="truncate">
                 {candidate.identifier ? `${candidate.identifier} ` : ""}
                 {candidate.title}
@@ -1848,8 +1846,8 @@ export function IssueProperties({
   );
 
   return (
-    <div className="space-y-4">
-      <PropertySection>
+    <div>
+      <PropertySection title="Triage" first>
         <PropertyRow label="Status">
           <StatusIcon
             status={issue.status}
@@ -1910,17 +1908,6 @@ export function IssueProperties({
             triggerContent={assigneeOptionsTrigger}
             triggerClassName="min-w-0 max-w-full"
             popoverClassName={cn("max-w-full", inline ? "w-full" : "w-72")}
-            extra={
-              <button
-                type="button"
-                className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
-                onClick={() => updateAssigneeAdapterOverrides(null)}
-                aria-label="Clear adapter options"
-                title="Clear adapter options"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            }
           >
             {assigneeOptionsContent}
           </PropertyPicker>
@@ -1946,14 +1933,9 @@ export function IssueProperties({
         >
           {projectContent}
         </PropertyPicker>
+      </PropertySection>
 
-        <ExternalObjectRows
-          externalObjects={externalObjects}
-          externalObjectsLoading={externalObjectsLoading}
-          externalObjectsError={externalObjectsError}
-          onRetryExternalObjects={onRetryExternalObjects}
-        />
-
+      <PropertySection title="Relationships">
         <PropertyPicker
           inline={inline}
           label="Parent"
@@ -1972,7 +1954,7 @@ export function IssueProperties({
 
         {inline ? (
           <div>
-            <PropertyRow label="Blocked by">
+            <PropertyRow label="Blocked by" wrap>
               {visibleBlockedByRelations.map((relation) => (
                 <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
               ))}
@@ -1990,7 +1972,7 @@ export function IssueProperties({
             )}
           </div>
         ) : (
-          <PropertyRow label="Blocked by">
+          <PropertyRow label="Blocked by" wrap>
             {visibleBlockedByRelations.map((relation) => (
               <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
             ))}
@@ -2023,7 +2005,9 @@ export function IssueProperties({
                 <IssueReferencePill key={relation.id} issue={relation} />
               ))}
             </div>
-          ) : null}
+          ) : (
+            <span className="text-sm text-muted-foreground">None</span>
+          )}
         </PropertyRow>
 
         <PropertyRow label="Sub-tasks">
@@ -2045,14 +2029,14 @@ export function IssueProperties({
                 onClick={onAddSubIssue}
               >
                 <Plus className="h-3 w-3" />
-              Add sub-task
+                Add sub-task
               </button>
             ) : null}
           </div>
         </PropertyRow>
 
         {relatedTasks.length > 0 ? (
-          <PropertyRow label="Related Tasks">
+          <PropertyRow label="Related tasks">
             <div className="flex flex-wrap gap-1">
               {relatedTasks.map((related) => (
                 <IssueReferencePill key={related.id} issue={related} />
@@ -2061,6 +2045,15 @@ export function IssueProperties({
           </PropertyRow>
         ) : null}
 
+        <ExternalObjectRows
+          externalObjects={externalObjects}
+          externalObjectsLoading={externalObjectsLoading}
+          externalObjectsError={externalObjectsError}
+          onRetryExternalObjects={onRetryExternalObjects}
+        />
+      </PropertySection>
+
+      <PropertySection title="Execution">
         <PropertyPicker
           inline={inline}
           label="Reviewers"
@@ -2101,7 +2094,7 @@ export function IssueProperties({
 
         {currentExecutionLabel && (
           <PropertyRow label="Execution">
-            <span className="text-sm">{currentExecutionLabel}</span>
+            <span className="text-sm truncate min-w-0" title={currentExecutionLabel}>{currentExecutionLabel}</span>
           </PropertyRow>
         )}
 
@@ -2146,11 +2139,12 @@ export function IssueProperties({
               watchdogIssueRef ? (
                 <Link
                   to={`/issues/${watchdogIssueRef.id}`}
-                  className="ml-1 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                  className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
                   title="Open watchdog task"
+                  aria-label="Open watchdog task"
+                  onClick={(e) => e.stopPropagation()}
                 >
-                  <ScanEye className="h-3 w-3" />
-                  {watchdogIssueRef.identifier ?? "Task"}
+                  <ArrowUpRight className="h-3 w-3" />
                 </Link>
               ) : undefined
             }
@@ -2158,74 +2152,63 @@ export function IssueProperties({
             {watchdogContent}
           </PropertyPicker>
         ) : null}
-
-        {issue.requestDepth > 0 && (
-          <PropertyRow label="Depth">
-            <span className="text-sm font-mono">{issue.requestDepth}</span>
-          </PropertyRow>
-        )}
       </PropertySection>
 
       {hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
-        <>
-          <Separator />
-          <PropertySection>
-            {showWorkspaceDetailLink && issue.executionWorkspaceId && (
-              <PropertyRow label="Workspace">
-                <Link
-                  to={`/execution-workspaces/${issue.executionWorkspaceId}`}
-                  className="text-sm text-primary hover:underline inline-flex min-w-0 items-center gap-1.5"
-                >
-                  <Hexagon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  View workspace
-                  <ExternalLink className="h-3 w-3 shrink-0" />
-                </Link>
-              </PropertyRow>
-            )}
-            {hasWorkspaceRuntimeControls && (
-              <PropertyRow label="Service">
-                <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-                  <WorkspaceRuntimeQuickControls
-                    sections={workspaceRuntimeSections}
-                    isPending={controlWorkspaceRuntime.isPending}
-                    pendingRequest={pendingWorkspaceRuntimeAction}
-                    onAction={(request) => controlWorkspaceRuntime.mutate(request)}
-                    square
-                    align="start"
-                    iconOnly
-                  />
-                  {runtimeActionMessage ? (
-                    <span className="text-xs text-muted-foreground" role="status">{runtimeActionMessage}</span>
-                  ) : null}
-                  {runtimeActionErrorMessage ? (
-                    <span className="text-xs text-destructive" role="alert">{runtimeActionErrorMessage}</span>
-                  ) : null}
-                </div>
-              </PropertyRow>
-            )}
-            {issue.currentExecutionWorkspace?.branchName && (
-              <PropertyRow label="Branch">
-                <TruncatedCopyable
-                  value={issue.currentExecutionWorkspace.branchName}
-                  icon={GitBranch}
+        <PropertySection title="Workspace">
+          {showWorkspaceDetailLink && issue.executionWorkspaceId && (
+            <PropertyRow label="Workspace">
+              <Link
+                to={`/execution-workspaces/${issue.executionWorkspaceId}`}
+                className="text-sm text-primary hover:underline inline-flex min-w-0 items-center gap-1.5"
+              >
+                <HardDrive className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                View workspace
+                <ExternalLink className="h-3 w-3 shrink-0" />
+              </Link>
+            </PropertyRow>
+          )}
+          {hasWorkspaceRuntimeControls && (
+            <PropertyRow label="Service">
+              <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                <WorkspaceRuntimeQuickControls
+                  sections={workspaceRuntimeSections}
+                  isPending={controlWorkspaceRuntime.isPending}
+                  pendingRequest={pendingWorkspaceRuntimeAction}
+                  onAction={(request) => controlWorkspaceRuntime.mutate(request)}
+                  square
+                  align="start"
+                  iconOnly
                 />
-              </PropertyRow>
-            )}
-            {issue.currentExecutionWorkspace?.cwd && (
-              <PropertyRow label="Folder">
-                <TruncatedCopyable
-                  value={issue.currentExecutionWorkspace.cwd}
-                  icon={FolderOpen}
-                />
-              </PropertyRow>
-            )}
-          </PropertySection>
-        </>
+                {runtimeActionMessage ? (
+                  <span className="text-xs text-muted-foreground" role="status">{runtimeActionMessage}</span>
+                ) : null}
+                {runtimeActionErrorMessage ? (
+                  <span className="text-xs text-destructive" role="alert">{runtimeActionErrorMessage}</span>
+                ) : null}
+              </div>
+            </PropertyRow>
+          )}
+          {issue.currentExecutionWorkspace?.branchName && (
+            <PropertyRow label="Branch">
+              <TruncatedCopyable
+                value={issue.currentExecutionWorkspace.branchName}
+                icon={GitBranch}
+              />
+            </PropertyRow>
+          )}
+          {issue.currentExecutionWorkspace?.cwd && (
+            <PropertyRow label="Folder">
+              <TruncatedCopyable
+                value={issue.currentExecutionWorkspace.cwd}
+                icon={FolderOpen}
+              />
+            </PropertyRow>
+          )}
+        </PropertySection>
       ) : null}
 
-      <Separator />
-
-      <PropertySection>
+      <PropertySection title="About">
         {(issue.createdByAgentId || issue.createdByUserId) && (
           <PropertyRow label="Created by">
             {issue.createdByAgentId ? (
@@ -2237,8 +2220,8 @@ export function IssueProperties({
               </Link>
             ) : (
               <>
-                <User className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-sm">{creatorUserLabel ?? "User"}</span>
+                <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="text-sm truncate min-w-0">{creatorUserLabel ?? "User"}</span>
               </>
             )}
           </PropertyRow>
@@ -2259,6 +2242,11 @@ export function IssueProperties({
         <PropertyRow label="Updated">
           <span className="text-sm">{timeAgo(issue.updatedAt)}</span>
         </PropertyRow>
+        {issue.requestDepth > 0 && (
+          <PropertyRow label="Depth">
+            <span className="text-sm font-mono">{issue.requestDepth}</span>
+          </PropertyRow>
+        )}
       </PropertySection>
     </div>
   );

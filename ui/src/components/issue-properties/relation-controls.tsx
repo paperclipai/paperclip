@@ -118,7 +118,7 @@ export function ExpandRelationListButton({
       className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
       onClick={onClick}
     >
-      {expanded ? "show less" : `and ${hiddenCount} more...`}
+      {expanded ? "Show less" : `+${hiddenCount} more`}
     </button>
   );
 }

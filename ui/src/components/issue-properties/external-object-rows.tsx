@@ -40,9 +40,9 @@ function externalObjectRowLabel(group: IssueExternalObjectGroup): ReactNode {
   const displayKey = externalObjectRowDisplayKey(group);
   const Icon = externalObjectIconForKey(pill.iconKey);
   return (
-    <span className="inline-flex min-w-0 items-start gap-1">
-      {Icon ? <Icon aria-hidden="true" className="h-3 w-3 shrink-0 mt-0.5" /> : null}
-      <span className="whitespace-normal break-words leading-tight">{displayKey}</span>
+    <span className="inline-flex min-w-0 items-start gap-1" title={displayKey}>
+      {Icon ? <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0 mt-0.5" /> : null}
+      <span className="truncate">{displayKey}</span>
     </span>
   );
 }
@@ -80,10 +80,9 @@ function isMergedExternalObject(group: IssueExternalObjectGroup): boolean {
 }
 
 function externalObjectPropertyTone(group: IssueExternalObjectGroup): string {
-  if (isMergedExternalObject(group)) {
-    return "text-violet-600 dark:text-violet-400";
-  }
-  const tone = externalObjectStatusIcon[group.pill.statusCategory] ?? externalObjectStatusIconDefault;
+  const tone = isMergedExternalObject(group)
+    ? externalObjectStatusIcon.merged
+    : externalObjectStatusIcon[group.pill.statusCategory] ?? externalObjectStatusIconDefault;
   return tone.split(" ").filter((c) => c.startsWith("text-")).join(" ");
 }
 
@@ -110,17 +109,17 @@ function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGrou
         category={pill.statusCategory}
         liveness={pill.liveness}
         statusIconKey={externalObjectPropertyStatusIconKey(group)}
-        sizeClassName="h-3 w-3"
+        sizeClassName="h-3.5 w-3.5"
         label={`${providerLabel}: ${statusLabel}`}
       />
       <span className="min-w-0 truncate">{value}</span>
       {mentionCount > 1 ? (
-        <span className="tabular-nums text-[10px] font-medium opacity-80">x{mentionCount}</span>
+        <span className="tabular-nums text-xs text-muted-foreground">×{mentionCount}</span>
       ) : null}
     </>
   );
   const className = cn(
-    "inline-flex min-w-0 max-w-full items-center gap-1 text-xs font-medium no-underline",
+    "inline-flex min-w-0 max-w-full items-center gap-1.5 text-sm no-underline",
     externalObjectPropertyTone(group),
     pill.url ? "hover:underline focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring" : "",
   );
@@ -209,7 +208,6 @@ export function ExternalObjectRows({
             <PropertyRow
               key={group.object?.id ?? `${pill.providerKey}:${pill.objectType}:${pill.url ?? "anon"}`}
               label={externalObjectRowLabel(externalObject)}
-              labelClassName="w-20 max-w-20 whitespace-normal leading-tight"
             >
               <ExternalObjectPropertyValue group={externalObject} />
             </PropertyRow>
