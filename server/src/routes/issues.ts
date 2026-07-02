@@ -106,6 +106,7 @@ import {
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
+import { validateSupervisorRunScope } from "../services/supervisor-runs.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -2159,6 +2160,11 @@ export function issueRoutes(
     }
     const runId = requireAgentRunId(req, res);
     if (!runId) return false;
+    const supervisorScopeError = await validateSupervisorRunScope(db, runId, issue.id, issue.companyId);
+    if (supervisorScopeError) {
+      res.status(403).json({ error: supervisorScopeError.error, code: supervisorScopeError.code });
+      return false;
+    }
     const ownership = await svc.assertCheckoutOwner(issue.id, actorAgentId, runId);
     if (ownership.adoptedFromRunId) {
       const actor = getActorInfo(req);
@@ -6861,6 +6867,13 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
+    if (checkoutRunId) {
+      const supervisorScopeError = await validateSupervisorRunScope(db, checkoutRunId, id, issue.companyId);
+      if (supervisorScopeError) {
+        res.status(403).json({ error: supervisorScopeError.error, code: supervisorScopeError.code });
+        return;
+      }
+    }
     const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
 

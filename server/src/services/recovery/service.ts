@@ -69,6 +69,7 @@ export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
+const VINCI_FOLLOWUP_AGENT_ID = "91103e58-d344-4c3c-b99e-495f91780b7c";
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -2673,6 +2674,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             authorType: "system",
           });
         }
+      }
+    }
+
+    if (input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON && input.successfulRunHandoffEvidence) {
+      const evidence = input.successfulRunHandoffEvidence;
+      const followupTitle = `[OPS] Missing disposition — ${input.issue.identifier} : ${input.issue.title}`;
+      const followupDescription = [
+        `**Cause:** Missing issue disposition after corrective handoff run was exhausted.`,
+        ``,
+        `**Source issue:** ${input.issue.identifier} (ID: \`${input.issue.id}\`)`,
+        `**Source run ID:** \`${evidence.sourceRunId ?? "unknown"}\``,
+        `**Missing disposition:** \`${evidence.missingDisposition}\``,
+        ``,
+        `**Suggested next action:** Open the source issue and apply a valid disposition (done, cancelled, in_review with owner, blocked with blockers, or delegated follow-up). Do not add transcript content.`,
+      ].join("\n");
+      try {
+        await issuesSvc.create(input.issue.companyId, {
+          title: followupTitle,
+          description: followupDescription,
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: VINCI_FOLLOWUP_AGENT_ID,
+        });
+      } catch (err) {
+        logger.error({ err, issueId: input.issue.id }, "Failed to create missing-disposition follow-up issue");
       }
     }
 

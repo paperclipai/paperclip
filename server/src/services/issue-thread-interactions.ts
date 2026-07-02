@@ -9,6 +9,7 @@ import {
   issueDocuments,
   issueThreadInteractions,
   issues,
+  projectWorkspaces,
 } from "@paperclipai/db";
 import { trackInteractionResolved } from "@paperclipai/shared/telemetry";
 import type {
@@ -43,6 +44,7 @@ import {
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
+import { findMismatchedConfirmationRepositories } from "./interaction-guards.js";
 
 type InteractionActor = {
   agentId?: string | null;
@@ -649,6 +651,36 @@ async function assertRequestConfirmationTargetIsCurrent(db: Db | any, args: {
   }
 }
 
+async function assertRequestConfirmationRepositoriesMatchIssueWorkspace(db: Db | any, args: {
+  issue: { id: string; companyId: string };
+  input: CreateIssueThreadInteraction;
+}) {
+  if (!isRequestConfirmationLikeKind(args.input.kind)) return;
+
+  const issueWorkspace = await db
+    .select({ repoUrl: projectWorkspaces.repoUrl })
+    .from(issues)
+    .leftJoin(projectWorkspaces, eq(issues.projectWorkspaceId, projectWorkspaces.id))
+    .where(and(
+      eq(issues.id, args.issue.id),
+      eq(issues.companyId, args.issue.companyId),
+    ))
+    .then((rows: Array<{ repoUrl: string | null }>) => rows[0] ?? null);
+
+  const mismatchedRepos = findMismatchedConfirmationRepositories({
+    title: args.input.title ?? null,
+    summary: args.input.summary ?? null,
+    payload: args.input.payload,
+    expectedRepoUrl: issueWorkspace?.repoUrl ?? null,
+  });
+  if (mismatchedRepos.length === 0) return;
+
+  throw unprocessable("request_confirmation merge target repository must match the issue workspace repository", {
+    expectedRepoUrl: issueWorkspace?.repoUrl ?? null,
+    mismatchedRepos,
+  });
+}
+
 async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
   row: IssueThreadInteractionRow;
   actor: InteractionActor;
@@ -1007,6 +1039,10 @@ export function issueThreadInteractionService(db: Db) {
           companyId: issue.companyId,
           issueId: issue.id,
           target: data.payload.target ?? null,
+        });
+        await assertRequestConfirmationRepositoriesMatchIssueWorkspace(db, {
+          issue,
+          input: data,
         });
       }
 

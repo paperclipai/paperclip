@@ -2,6 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
 import type { IssueCommentMetadata, IssueCommentPresentation, RunLivenessState } from "@paperclipai/shared";
+import { logger } from "../../middleware/logger.js";
 import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
 
 export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_handoff";
@@ -357,7 +358,21 @@ export function decideSuccessfulRunHandoff(input: {
   const { run, issue, agent } = input;
 
   if (run.status !== "succeeded") return { kind: "skip", reason: "source run did not succeed" };
-  if (isCorrectiveHandoffRun(run)) return { kind: "skip", reason: "source run is already a corrective handoff run" };
+  if (isCorrectiveHandoffRun(run)) {
+    const context = readRecord(run.contextSnapshot);
+    logger.error({
+      event: "successful_run_handoff_skipped",
+      reason: "source run is already a corrective handoff run",
+      runId: run.id,
+      issueId: readString(context.issueId) ?? readString(context.taskId) ?? null,
+      companyId: run.companyId,
+      agentId: run.agentId,
+      status: run.status,
+      wakeReason: readString(context.wakeReason),
+      source: readString(context.source),
+    }, "Successful run handoff skipped: source run is already corrective");
+    return { kind: "skip", reason: "source run is already a corrective handoff run" };
+  }
   if (isIssueMonitorMaintenanceRun(run)) return { kind: "skip", reason: "issue monitor run owns its own recovery path" };
   if (isCommentDrivenWake(run)) return { kind: "skip", reason: "comment-driven wake already owns the next action" };
   if (run.issueCommentStatus === "retry_queued" || run.issueCommentStatus === "retry_exhausted") {

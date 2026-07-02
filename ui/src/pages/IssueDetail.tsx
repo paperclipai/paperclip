@@ -72,6 +72,7 @@ import { workModeMetaFor } from "../lib/work-mode-meta";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
+import { MissionSubtasksLogsSection } from "../components/MissionSubtasksLogsSection";
 import { IssuePlanDecompositionsSection } from "../components/IssuePlanDecompositionsSection";
 import { IssueOutputSection } from "../components/issue-output/IssueOutputSection";
 import { isImageAttachment, isVideoAttachment } from "../lib/issue-attachments";
@@ -4137,6 +4138,8 @@ export function IssueDetail() {
           agentMap={agentMap}
         />
       ) : null}
+
+      <MissionSubtasksLogsSection issueId={issue.id} companyId={issue.companyId} />
 
       <IssueDocumentsSection
         issue={issue}
