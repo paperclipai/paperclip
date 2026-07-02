@@ -881,6 +881,13 @@ describe("sandbox callback bridge", () => {
       { method: "GET", path: "/api/companies/co-1/approvals" },
       { method: "GET", path: "/api/companies/co-1/routines" },
       { method: "GET", path: "/api/companies/co-1/skills" },
+      // Hire skill (paperclip-create-agent): discovery + submit + issue linking
+      { method: "GET", path: "/llms/agent-configuration.txt" },
+      { method: "GET", path: "/llms/agent-configuration/claude_local.txt" },
+      { method: "GET", path: "/llms/agent-icons.txt" },
+      { method: "GET", path: "/api/companies/co-1/agent-configurations" },
+      { method: "POST", path: "/api/companies/co-1/agent-hires" },
+      { method: "POST", path: "/api/issues/issue-1/approvals" },
       { method: "GET", path: "/api/projects/proj-1" },
       { method: "GET", path: "/api/goals/goal-1" },
       { method: "GET", path: "/api/issues/issue-1" },
@@ -932,6 +939,11 @@ describe("sandbox callback bridge", () => {
       // grows new actions later.
       { method: "POST", path: "/api/execution-workspaces/ws-1/runtime-services/delete" },
       { method: "POST", path: "/api/companies/co-1/agents" },
+      // The hire allowlist must not over-match: only the exact .txt discovery
+      // files, only agent-hires (not /agents), and no sub-resources beyond it.
+      { method: "GET", path: "/llms/agent-configuration" },
+      { method: "GET", path: "/llms/secrets.txt" },
+      { method: "POST", path: "/api/companies/co-1/agent-hires/ap-1" },
       { method: "POST", path: "/api/agents/agent-1/pause" },
       { method: "POST", path: "/api/agents/agent-1/terminate" },
       { method: "POST", path: "/api/agents/agent-1/keys" },
