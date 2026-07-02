@@ -32,13 +32,16 @@ export function IssueScheduledRetryCard({
   if (scheduledRetry.status !== "scheduled_retry") return null;
 
   const continuation = isContinuationReason(scheduledRetry.scheduledRetryReason);
-  const dueAtIso = scheduledRetry.scheduledRetryAt
-    ? new Date(scheduledRetry.scheduledRetryAt).toISOString()
+  // `toISOString()` throws a RangeError on an invalid/unparseable date, which would crash
+  // the whole Activity tab. Guard the parse and fall back to no relative-time hint.
+  const dueAtDate = scheduledRetry.scheduledRetryAt
+    ? new Date(scheduledRetry.scheduledRetryAt)
+    : null;
+  const dueAtIso = dueAtDate && Number.isFinite(dueAtDate.getTime())
+    ? dueAtDate.toISOString()
     : null;
   const relative = dueAtIso ? formatMonitorOffset(dueAtIso) : null;
-  const absolute = scheduledRetry.scheduledRetryAt
-    ? formatDateTime(scheduledRetry.scheduledRetryAt)
-    : null;
+  const absolute = dueAtIso ? formatDateTime(dueAtIso) : null;
   const reason = formatRetryReason(scheduledRetry.scheduledRetryReason);
   const attempt =
     typeof scheduledRetry.scheduledRetryAttempt === "number"

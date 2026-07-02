@@ -6371,6 +6371,29 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
+      // Tolerate stale/foreign run-ids. createdByRunId carries an FK to
+      // heartbeat_runs, so a malformed or non-existent run-id would otherwise
+      // surface as a raw 500 (FK violation / invalid-uuid syntax) instead of a
+      // clean result. Demote any run-id we cannot resolve to NULL so a status
+      // comment is never lost to a bad run-id — preserving the audit trail over
+      // hard rejection.
+      let createdByRunId = actor.runId ?? null;
+      if (createdByRunId) {
+        const runExists = isUuidLike(createdByRunId)
+          ? await dbOrTx
+              .select({ id: heartbeatRuns.id })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, createdByRunId))
+              .then((rows: Array<{ id: string }>) => rows[0] ?? null)
+          : null;
+        if (!runExists) {
+          logger.warn(
+            { issueId, runId: createdByRunId },
+            "addComment: unknown or malformed createdByRunId; demoting to NULL to avoid FK 500",
+          );
+          createdByRunId = null;
+        }
+      }
       const [comment] = await dbOrTx
         .insert(issueComments)
         .values({
@@ -6379,7 +6402,7 @@ export function issueService(db: Db) {
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
           authorType,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId,
           body: redactedBody,
           presentation,
           metadata,
