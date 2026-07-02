@@ -104,6 +104,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const projectId = randomUUID();
+    const defaultResponsibleUserId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const wakeups: Array<{
       agentId: string;
@@ -122,6 +123,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix,
+      defaultResponsibleUserId,
       requireBoardApprovalForNewAgents: false,
     });
 
@@ -154,6 +156,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
             (typeof wakeupOpts.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
             null;
           if (!issueId) return null;
+          const issue = await db
+            .select({ responsibleUserId: issues.responsibleUserId })
+            .from(issues)
+            .where(eq(issues.id, issueId))
+            .then((rows) => rows[0] ?? null);
           const queuedRunId = randomUUID();
           await db.insert(heartbeatRuns).values({
             id: queuedRunId,
@@ -162,6 +169,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
             invocationSource: wakeupOpts.source ?? "assignment",
             triggerDetail: wakeupOpts.triggerDetail ?? null,
             status: "queued",
+            responsibleUserId: issue?.responsibleUserId ?? defaultResponsibleUserId,
             contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
           });
           await db

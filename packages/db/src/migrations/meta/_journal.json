@@ -911,6 +911,13 @@
       "when": 1783025124120,
       "tag": "0127_agent_api_key_responsible_user",
       "breakpoints": true
+    },
+    {
+      "idx": 128,
+      "version": "7",
+      "when": 1783025224120,
+      "tag": "0128_run_responsible_user_invariant",
+      "breakpoints": true
     }
   ]
 }
