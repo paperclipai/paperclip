@@ -58,6 +58,7 @@ import {
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { logger } from "./logger.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -212,6 +213,14 @@ async function buildOpenCodeSkillsDir(config: Record<string, unknown>): Promise<
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const executeStartedAt = Date.now();
+  logger.debug("execute", "started", {
+    runId,
+    command: asString(config.command, "opencode"),
+    model: asString(config.model, "").trim() || null,
+    timeoutSec: asNumber(config.timeoutSec, 0),
+    hasInstructionsFile: typeof config.instructionsFilePath === "string" && config.instructionsFilePath.trim().length > 0,
+  });
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -598,6 +607,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       }
 
+      const procStartedAt = Date.now();
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         cwd,
         env: preparedRuntimeConfig.env,
@@ -607,6 +617,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onSpawn,
         onLog,
       });
+      if (proc.timedOut) {
+        logger.warn("execute", "subprocess timed out", {
+          runId,
+          timeoutSec,
+          durationMs: Date.now() - procStartedAt,
+        });
+      } else if ((proc.exitCode ?? 0) !== 0) {
+        logger.warn("execute", "subprocess exited non-zero", {
+          runId,
+          exitCode: proc.exitCode,
+          signal: proc.signal,
+          durationMs: Date.now() - procStartedAt,
+        });
+      } else {
+        logger.debug("execute", "subprocess exited cleanly", {
+          runId,
+          exitCode: proc.exitCode,
+          durationMs: Date.now() - procStartedAt,
+        });
+      }
       return {
         proc,
         rawStderr: proc.stderr,
@@ -676,6 +706,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         stdout: attempt.proc.stdout,
         stderr: attempt.proc.stderr,
       });
+      logger.debug("classify", "silent_failure classified", {
+        runId,
+        exitCode: synthesizedExitCode,
+        timedOut: false,
+        hasAssistant: typeof attempt.parsed.summary === "string" && attempt.parsed.summary.trim().length > 0,
+        toolCallCount: attempt.parsed.toolCallCount ?? 0,
+        hadFatalError: parsedError.length > 0,
+        silentFailure,
+        silentFailureReason,
+        clearedSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
+      });
 
       return {
         exitCode: synthesizedExitCode,
@@ -708,31 +749,57 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
+    let finalResult: AdapterExecutionResult | null = null;
+    let caught: unknown = null;
     try {
-      const initial = await runAttempt(sessionId);
-      const initialFailed =
-        !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
-      if (
-        sessionId &&
-        initialFailed &&
-        isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
-      ) {
-        await onLog(
-          "stdout",
-          `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-        );
-        const retry = await runAttempt(null);
-        return toResult(retry, true);
+      try {
+        const initial = await runAttempt(sessionId);
+        const initialFailed =
+          !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
+        if (
+          sessionId &&
+          initialFailed &&
+          isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
+        ) {
+          await onLog(
+            "stdout",
+            `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+          );
+          const retry = await runAttempt(null);
+          finalResult = toResult(retry, true);
+        } else {
+          finalResult = toResult(initial);
+        }
+      } finally {
+        await Promise.all([
+          paperclipBridge?.stop(),
+          restoreRemoteWorkspace?.(),
+          localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
+        ]);
       }
-
-      return toResult(initial);
-    } finally {
-      await Promise.all([
-        paperclipBridge?.stop(),
-        restoreRemoteWorkspace?.(),
-        localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
-      ]);
+    } catch (err) {
+      caught = err;
     }
+
+    if (caught) {
+      logger.warn("execute", "failed", {
+        runId,
+        err: caught instanceof Error ? caught.message : String(caught),
+        durationMs: Date.now() - executeStartedAt,
+      });
+      throw caught;
+    }
+
+    const result = finalResult as AdapterExecutionResult;
+    logger.debug("execute", "finished", {
+      runId,
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      durationMs: Date.now() - executeStartedAt,
+      silentFailure: result.silentFailure,
+      silentFailureReason: result.silentFailureReason,
+    });
+    return result;
   } finally {
     await preparedRuntimeConfig.cleanup();
   }

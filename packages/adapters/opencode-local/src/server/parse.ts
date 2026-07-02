@@ -1,4 +1,5 @@
 import { asNumber, asString, parseJson, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { logger } from "./logger.js";
 
 function errorText(value: unknown): string {
   if (typeof value === "string") return value;
@@ -14,7 +15,11 @@ function errorText(value: unknown): string {
   if (code) return code;
   try {
     return JSON.stringify(rec);
-  } catch {
+  } catch (err) {
+    logger.warn("parse", "envelope stringify failed", {
+      err: err instanceof Error ? err.message : String(err),
+      valueKind: value === null ? "null" : Array.isArray(value) ? "array" : typeof value,
+    });
     return "";
   }
 }
@@ -84,7 +89,10 @@ export function isOpenCodeQuotaRateLimitError(input: {
     .filter(Boolean)
     .join("\n");
 
-  if (haystack && OPENCODE_QUOTA_RATE_LIMIT_RE.test(haystack)) return true;
+  if (haystack && OPENCODE_QUOTA_RATE_LIMIT_RE.test(haystack)) {
+    logger.debug("parse", "quota rate limit matched by message regex");
+    return true;
+  }
 
   // Code-based check: walk the most recent `error` event payload from
   // stdout. We avoid a full second JSONL pass by scanning once and
@@ -102,7 +110,12 @@ export function isOpenCodeQuotaRateLimitError(input: {
   }
   if (lastErrorPayload == null) return false;
   for (const candidate of collectErrorCodesForQuotaCheck(lastErrorPayload)) {
-    if (isProviderQuotaCode(candidate)) return true;
+    if (isProviderQuotaCode(candidate)) {
+      logger.debug("parse", "quota rate limit matched by code", {
+        code: typeof candidate === "string" ? candidate : typeof candidate,
+      });
+      return true;
+    }
   }
   return false;
 }
@@ -119,13 +132,19 @@ export function parseOpenCodeJsonl(stdout: string) {
   };
   let costUsd = 0;
   let toolCallCount = 0;
+  let parsedLineCount = 0;
+  let malformedLineCount = 0;
 
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
 
     const event = parseJson(line);
-    if (!event) continue;
+    if (!event) {
+      malformedLineCount += 1;
+      continue;
+    }
+    parsedLineCount += 1;
 
     const currentSessionId = asString(event.sessionID, "").trim();
     if (currentSessionId) sessionId = currentSessionId;
@@ -168,6 +187,23 @@ export function parseOpenCodeJsonl(stdout: string) {
     }
   }
 
+  if (malformedLineCount > 0) {
+    logger.warn("parse", "jsonl parse had malformed lines", {
+      parsedLineCount,
+      malformedLineCount,
+      stdoutBytes: stdout.length,
+    });
+  }
+  logger.debug("parse", "jsonl parsed", {
+    parsedLineCount,
+    malformedLineCount,
+    sessionIdPresent: Boolean(sessionId),
+    messageCount: messages.length,
+    errorEventCount: errors.length,
+    toolCallCount,
+    costUsd,
+  });
+
   return {
     sessionId,
     summary: messages.join("\n\n").trim(),
@@ -205,28 +241,56 @@ export function classifyOpenCodeSilentFailure(input: {
   stdout: string;
   stderr: string;
 }): { silentFailure: boolean; silentFailureReason: OpenCodeSilentFailureReason | null } {
-  if (input.timedOut) {
-    return { silentFailure: true, silentFailureReason: "adapter_failed" };
-  }
   const parsedError = typeof input.errorMessage === "string" ? input.errorMessage.trim() : "";
   const rawExitCode = input.exitCode;
   const failed = (rawExitCode ?? 0) !== 0 || parsedError.length > 0;
-  const isQuota = isOpenCodeQuotaRateLimitError({
-    stdout: input.stdout,
-    stderr: input.stderr,
-    errorMessage: parsedError || null,
-  });
-  if (failed) {
-    return {
-      silentFailure: true,
-      silentFailureReason: isQuota ? "quota_rate_limit" : "adapter_failed",
-    };
-  }
   const outputIsEmpty =
     (input.summary ?? "").trim().length === 0 &&
     input.toolCallCount === 0;
+
+  if (input.timedOut) {
+    logger.debug("classify", "silent_failure classified", {
+      branch: "timed_out",
+      silentFailure: true,
+      silentFailureReason: "adapter_failed",
+    });
+    return { silentFailure: true, silentFailureReason: "adapter_failed" };
+  }
+
+  if (failed) {
+    const isQuota = isOpenCodeQuotaRateLimitError({
+      stdout: input.stdout,
+      stderr: input.stderr,
+      errorMessage: parsedError || null,
+    });
+    const reason: OpenCodeSilentFailureReason = isQuota ? "quota_rate_limit" : "adapter_failed";
+    logger.debug("classify", "silent_failure classified", {
+      branch: "non_zero_exit_or_error",
+      exitCode: rawExitCode,
+      hadFatalError: parsedError.length > 0,
+      isQuota,
+      silentFailure: true,
+      silentFailureReason: reason,
+    });
+    return { silentFailure: true, silentFailureReason: reason };
+  }
+
   if (!parsedError && outputIsEmpty) {
+    logger.debug("classify", "silent_failure classified", {
+      branch: "output_silence",
+      exitCode: rawExitCode,
+      silentFailure: true,
+      silentFailureReason: "output_silence",
+    });
     return { silentFailure: true, silentFailureReason: "output_silence" };
   }
+
+  logger.debug("classify", "silent_failure classified", {
+    branch: "normal",
+    exitCode: rawExitCode,
+    hasAssistant: !outputIsEmpty,
+    silentFailure: false,
+    silentFailureReason: null,
+  });
   return { silentFailure: false, silentFailureReason: null };
 }

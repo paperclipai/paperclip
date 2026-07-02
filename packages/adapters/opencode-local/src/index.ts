@@ -81,6 +81,12 @@ export function buildOpenCodeModelProfiles(
   env: NodeJS.ProcessEnv = typeof process === "undefined" ? {} : process.env,
 ): AdapterModelProfileDefinition[] {
   const override = (env.PAPERCLIP_OPENCODE_CHEAP_MODEL ?? env.PAPERCLIP_OPENCODE_SMALL_MODEL)?.trim();
+  if (override) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[paperclip] opencode_local:debug buildOpenCodeModelProfiles applying env override cheap model: ${override}`,
+    );
+  }
   return [
     {
       key: "cheap",
