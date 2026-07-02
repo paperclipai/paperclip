@@ -25,7 +25,6 @@ type IssuesViewConfig = {
   title: string;
   description: string;
   breadcrumb: string;
-  linkSource: string;
   storageKey: string;
   workItemType?: IssueWorkItemType;
   createIssueLabel?: string;
@@ -39,7 +38,6 @@ const ISSUE_VIEW_CONFIG: Record<IssuesView, IssuesViewConfig> = {
     title: "Issues",
     description: "All tracked work across human coordination and AI execution.",
     breadcrumb: "Issues",
-    linkSource: "issues",
     storageKey: "paperclip:issues-view",
     includeRoutineExecutions: true,
   },
@@ -47,7 +45,6 @@ const ISSUE_VIEW_CONFIG: Record<IssuesView, IssuesViewConfig> = {
     title: "Initiatives",
     description: "Bigger scopes of work that collect human tickets and AI execution issues.",
     breadcrumb: "Initiatives",
-    linkSource: "initiatives",
     storageKey: "paperclip:initiatives-view",
     workItemType: "initiative",
     createIssueLabel: "Initiative",
@@ -58,7 +55,6 @@ const ISSUE_VIEW_CONFIG: Record<IssuesView, IssuesViewConfig> = {
     title: "Tickets",
     description: "Human-owned tasks for coordination, follow-up, and delivery accountability.",
     breadcrumb: "Tickets",
-    linkSource: "tickets",
     storageKey: "paperclip:tickets-view",
     workItemType: "human_task",
     createIssueLabel: "Ticket",
@@ -69,7 +65,6 @@ const ISSUE_VIEW_CONFIG: Record<IssuesView, IssuesViewConfig> = {
     title: "AI Issues",
     description: "Execution work delegated to agents, kept separate from human workload.",
     breadcrumb: "AI Issues",
-    linkSource: "ai-issues",
     storageKey: "paperclip:ai-issues-view",
     workItemType: "ai_task",
     createIssueLabel: "AI Issue",
@@ -172,9 +167,9 @@ export function Issues({ view = "all" }: { view?: IssuesView }) {
       createIssueDetailLocationState(
         viewConfig.title,
         `${location.pathname}${location.search}${location.hash}`,
-        viewConfig.linkSource,
+        "issues",
       ),
-    [location.pathname, location.search, location.hash, viewConfig.linkSource, viewConfig.title],
+    [location.pathname, location.search, location.hash, viewConfig.title],
   );
 
   useEffect(() => {
