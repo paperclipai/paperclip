@@ -6,13 +6,24 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   agents,
+  companySkills,
   companies,
   costEvents,
   createDb,
+  documentRevisions,
+  documents,
+  environmentLeases,
+  environments,
+  heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
+  issueDocuments,
   issueRelations,
+  issueTreeHolds,
   issues,
   pluginManagedResources,
   plugins,
@@ -42,6 +53,15 @@ function issuePrefix(id: string) {
   return `T${id.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 }
 
+async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await fn()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return fn();
+}
+
 if (!embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping embedded Postgres plugin orchestration API tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
@@ -61,16 +81,39 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
   afterEach(async () => {
     await Promise.all(tempRoots.map((root) => fs.rm(root, { recursive: true, force: true })));
     tempRoots.length = 0;
+    let idlePolls = 0;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
+      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
+      if (!hasActiveRun) {
+        idlePolls += 1;
+        if (idlePolls >= 3) break;
+      } else {
+        idlePolls = 0;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await db.delete(environmentLeases);
     await db.delete(activityLog);
     await db.delete(costEvents);
+    await db.delete(agentTaskSessions);
+    await db.delete(issueComments);
+    await db.delete(issueDocuments);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueRelations);
+    await db.delete(issueTreeHolds);
     await db.delete(issues);
     await db.delete(pluginManagedResources);
     await db.delete(projects);
     await db.delete(plugins);
+    await db.delete(companySkills);
+    await db.delete(agentRuntimeState);
     await db.delete(agents);
+    await db.delete(environments);
     await db.delete(companies);
   });
 
@@ -205,6 +248,75 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
         patch: { originKind: "plugin:other.plugin:feature" },
       }),
     ).rejects.toThrow("Plugin may only use originKind values under plugin:paperclip.missions");
+  });
+
+  it("wakes the assigned agent when a plugin update changes issue ownership", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Plugin reassigned issue",
+      status: "todo",
+      priority: "medium",
+      identifier: `${issuePrefix(companyId)}-handoff`,
+    });
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const updated = await services.issues.update({
+      issueId,
+      companyId,
+      patch: {
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+        actorAgentId: agentId,
+      },
+    });
+    expect(updated.assigneeAgentId).toBe(agentId);
+
+    await waitForCondition(async () => {
+      const rows = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+      return rows.some((row) => {
+        const payload = (row.payload ?? {}) as Record<string, unknown>;
+        return payload.issueId === issueId && payload.assignmentHandoff === true;
+      });
+    });
+
+    const wakeupRows = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+    const wakeup = wakeupRows.find((row) => {
+      const payload = (row.payload ?? {}) as Record<string, unknown>;
+      return payload.issueId === issueId && payload.assignmentHandoff === true;
+    });
+
+    expect(wakeup).toMatchObject({
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      requestedByActorType: "agent",
+      requestedByActorId: agentId,
+    });
+    expect(wakeup?.payload).toMatchObject({
+      issueId,
+      mutation: "plugin_update",
+      assignmentHandoff: true,
+    });
+
+    const runRows = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+    expect(runRows.some((row) => {
+      const context = (row.contextSnapshot ?? {}) as Record<string, unknown>;
+      return context.issueId === issueId &&
+        context.source === "plugin.issue.update" &&
+        context.assignmentHandoff === true;
+    })).toBe(true);
   });
 
   it("creates plugin operation issues with the generic operation origin", async () => {

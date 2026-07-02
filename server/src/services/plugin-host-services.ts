@@ -33,6 +33,7 @@ import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
 import { budgetService } from "./budgets.js";
 import { issueApprovalService } from "./issue-approvals.js";
+import { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -1320,6 +1321,20 @@ export function buildHostServices(
           actorAgentId,
           actorUserId,
         })) as Issue;
+        const assigneeChanged =
+          updated.assigneeAgentId !== existing.assigneeAgentId ||
+          updated.assigneeUserId !== existing.assigneeUserId;
+        if (assigneeChanged && updated.assigneeAgentId) {
+          void queueIssueAssignmentWakeup({
+            heartbeat,
+            issue: updated,
+            reason: "issue_assigned",
+            mutation: "plugin_update",
+            contextSource: "plugin.issue.update",
+            requestedByActorType: actorAgentId ? "agent" : actorUserId ? "user" : "system",
+            requestedByActorId: actorAgentId ?? actorUserId ?? pluginId,
+          });
+        }
         await logPluginActivity({
           companyId,
           action: "issue.updated",
