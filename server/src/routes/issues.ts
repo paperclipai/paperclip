@@ -869,6 +869,13 @@ function isClosedIssueStatus(status: string | null | undefined): status is "done
   return status === "done" || status === "cancelled";
 }
 
+function isTerminalRoutineExecutionIssue(issue: {
+  status: string | null | undefined;
+  originKind?: string | null;
+}) {
+  return issue.originKind === "routine_execution" && isClosedIssueStatus(issue.status);
+}
+
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
@@ -891,10 +898,10 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   ) {
     return false;
   }
-  // Only human comments should implicitly reopen finished work.
-  // Agent-authored comments remain communicative unless reopen was explicit.
+  // Human comments can implicitly recover blocked work, but terminal issues
+  // require explicit resume/reopen intent.
   if (input.actorType !== "user") return false;
-  if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
+  if (input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
   return true;
 }
@@ -5855,7 +5862,10 @@ export function issueRoutes(
       actorType: actor.actorType,
       actorId: actor.actorId,
     });
+    const routineTerminalPlainComment =
+      isTerminalRoutineExecutionIssue(existing) && !explicitMoveToTodoRequested;
     const effectiveMoveToTodoRequested =
+      !routineTerminalPlainComment &&
       !assigneeSelfCommentOnTerminal &&
       (explicitMoveToTodoRequested ||
         (!!commentBody &&
@@ -7671,7 +7681,10 @@ export function issueRoutes(
       actorType: actor.actorType,
       actorId: actor.actorId,
     });
+    const routineTerminalPlainComment =
+      isTerminalRoutineExecutionIssue(issue) && !explicitMoveToTodoRequested;
     const effectiveMoveToTodoRequested =
+      !routineTerminalPlainComment &&
       !assigneeSelfCommentOnTerminal &&
       (explicitMoveToTodoRequested ||
         shouldImplicitlyMoveCommentedIssueToTodo({
