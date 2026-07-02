@@ -87,9 +87,23 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 env: commandInput.env,
                 stdin: commandInput.stdin,
                 timeoutMs: commandInput.timeoutMs,
+                // Forward the live-output sink so a driver that streams can
+                // deliver chunks as they arrive. When the driver honors it, it
+                // sets `result.streamed` and we skip the buffered dump below to
+                // avoid logging the same output twice.
+                onOutput: commandInput.onOutput,
+                // Forward the run id so the plugin-backed sandbox driver can
+                // bridge worker output chunks back to onOutput over the worker
+                // RPC boundary (channel env-exec-output:${runId}).
+                runId: commandInput.runId,
               });
-              if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
-              if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
+              // Only emit the buffered stdout/stderr when the driver did NOT
+              // already stream it live via onOutput. Legacy (non-streaming)
+              // drivers leave `streamed` unset, preserving the original dump.
+              if (!result.streamed) {
+                if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
+                if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
+              }
               return {
                 exitCode: result.exitCode,
                 signal: result.signal ?? null,
@@ -98,6 +112,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 stderr: result.stderr,
                 pid: null,
                 startedAt,
+                streamed: result.streamed,
               };
             },
           }

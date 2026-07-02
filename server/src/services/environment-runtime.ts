@@ -40,6 +40,7 @@ import {
 } from "./sandbox-provider-runtime.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import type { PluginStreamBus } from "./plugin-stream-bus.js";
 import {
   destroyPluginEnvironmentLease,
   executePluginEnvironmentCommand,
@@ -50,6 +51,55 @@ import {
 } from "./plugin-environment-driver.js";
 import { collectSecretRefPaths } from "./json-schema-secret-refs.js";
 import { buildWorkspaceRealizationRecordFromDriverInput } from "./workspace-realization.js";
+
+/** Channel name a plugin worker emits live exec output on for a given run. */
+export function envExecOutputChannel(runId: string): string {
+  return `env-exec-output:${runId}`;
+}
+
+/**
+ * Bridge live stdout/stderr from a plugin worker back to an in-process
+ * `onOutput` sink across the worker RPC boundary.
+ *
+ * The worker cannot be handed a callback (functions don't serialize over
+ * JSON-RPC), so when the caller provides `onOutput` AND a `runId` AND a stream
+ * bus is available we subscribe to the worker's output channel
+ * (`env-exec-output:${runId}`, scoped to `companyId`) BEFORE running the RPC,
+ * route each emitted `{ stream, text }` chunk to `onOutput`, and unsubscribe on
+ * EVERY exit path (resolve or throw) so no subscription leaks. The `run`
+ * callback is told whether streaming is active so it can set the serializable
+ * `streamOutput` RPC flag; when streaming can't be set up we run with
+ * `streaming=false` and the provider falls back to buffered-at-end output.
+ */
+export async function withPluginExecOutputStream<T>(opts: {
+  streamBus?: PluginStreamBus;
+  pluginId: string;
+  companyId: string;
+  runId?: string | null;
+  onOutput?: (stream: "stdout" | "stderr", text: string) => void | Promise<void>;
+  run: (streaming: boolean) => Promise<T>;
+}): Promise<T> {
+  const { streamBus, pluginId, companyId, runId, onOutput, run } = opts;
+  if (!streamBus || !onOutput || !runId) {
+    return await run(false);
+  }
+  const channel = envExecOutputChannel(runId);
+  const unsubscribe = streamBus.subscribe(pluginId, channel, companyId, (event) => {
+    const chunk = event as { stream?: unknown; text?: unknown } | null | undefined;
+    if (
+      chunk &&
+      typeof chunk.text === "string" &&
+      (chunk.stream === "stdout" || chunk.stream === "stderr")
+    ) {
+      void onOutput(chunk.stream, chunk.text);
+    }
+  });
+  try {
+    return await run(true);
+  } finally {
+    unsubscribe();
+  }
+}
 
 export function buildEnvironmentLeaseContext(input: {
   persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
@@ -183,6 +233,20 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
+  // Optional live-output sink. When a driver executes in-process it can forward
+  // stdout/stderr chunks here as they arrive and set `streamed: true` on its
+  // result. NOTE: for plugin-backed sandbox providers the actual execute runs
+  // in a worker behind a JSON-RPC boundary (see the `execute` impl below), and
+  // a function cannot cross that boundary — so this sink is not delivered to the
+  // worker today and those providers fall back to buffered-at-end output. The
+  // last-mile RPC forwarding of chunks (worker -> host) is a separate change.
+  onOutput?: (stream: "stdout" | "stderr", text: string) => void | Promise<void>;
+  // Run correlation id. For plugin-backed sandbox providers this is forwarded
+  // over the worker RPC boundary and used (with `onOutput`) to bridge live
+  // stdout/stderr from the worker back to `onOutput` via the plugin stream bus
+  // (see the `execute` impl below). Null/undefined -> no live streaming, the
+  // provider falls back to buffered-at-end output.
+  runId?: string | null;
 }
 
 export interface EnvironmentRuntimeDriver {
@@ -1209,27 +1273,43 @@ function createSandboxEnvironmentDriver(
             provider: providerKey,
           });
           const sanitizedConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
-          return await pluginWorkerManager.call(pluginId, "environmentExecute", {
-            driverKey: providerKey,
+          const runId = input.runId ?? null;
+          // Bridge live output across the worker RPC boundary: subscribe to the
+          // worker's stream channel and forward chunks to input.onOutput, then
+          // ask the worker to stream (streamOutput flag) since the onOutput
+          // callback itself can't cross the boundary. Falls back to buffered
+          // output when onOutput/runId/streamBus are unavailable.
+          return await withPluginExecOutputStream({
+            streamBus: pluginWorkerManager.streamBus,
+            pluginId,
             companyId: input.lease.companyId,
-            environmentId: input.environment.id,
-            issueId: input.lease.issueId,
-            config: sanitizedConfig,
-            lease: {
-              providerLeaseId: input.lease.providerLeaseId,
-              metadata: input.lease.metadata ?? undefined,
-              expiresAt: input.lease.expiresAt?.toISOString() ?? null,
-            },
-            command: input.command,
-            args: input.args,
-            cwd: input.cwd,
-            env: input.env,
-            stdin: input.stdin,
-            timeoutMs: input.timeoutMs,
-          }, resolvePluginExecuteRpcTimeoutMs({
-            requestedTimeoutMs: input.timeoutMs,
-            config: sanitizedConfig,
-          }));
+            runId,
+            onOutput: input.onOutput,
+            run: (streaming) =>
+              pluginWorkerManager.call(pluginId, "environmentExecute", {
+                driverKey: providerKey,
+                companyId: input.lease.companyId,
+                environmentId: input.environment.id,
+                issueId: input.lease.issueId,
+                config: sanitizedConfig,
+                lease: {
+                  providerLeaseId: input.lease.providerLeaseId,
+                  metadata: input.lease.metadata ?? undefined,
+                  expiresAt: input.lease.expiresAt?.toISOString() ?? null,
+                },
+                command: input.command,
+                args: input.args,
+                cwd: input.cwd,
+                env: input.env,
+                stdin: input.stdin,
+                timeoutMs: input.timeoutMs,
+                runId,
+                ...(streaming ? { streamOutput: true } : {}),
+              }, resolvePluginExecuteRpcTimeoutMs({
+                requestedTimeoutMs: input.timeoutMs,
+                config: sanitizedConfig,
+              })),
+          });
         }
       }
       throw new Error("Sandbox driver does not support direct command execution for built-in providers.");
