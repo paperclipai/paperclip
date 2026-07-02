@@ -1,4 +1,4 @@
-import { redactSensitiveText, sanitizeRecord } from "./redaction.js";
+import { isPlainObject, redactSensitiveText, sanitizeRecord } from "./redaction.js";
 
 /**
  * Pre-persistence sanitization boundary.
@@ -15,12 +15,6 @@ import { redactSensitiveText, sanitizeRecord } from "./redaction.js";
  * to redact. Sanitization is deterministic and idempotent: already-redacted
  * or non-sensitive values pass through unchanged.
  */
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const proto = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
-}
 
 /** Sanitize free text (comment bodies, log chunks, event messages) before it is persisted. */
 export function sanitizeTextForPersistence(input: string): string {
