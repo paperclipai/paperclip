@@ -454,6 +454,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     tokenUsage: async (companyId: string) => {
       const now = new Date();
       const { start: monthStart } = currentUtcMonthWindow(now);
+      const monthStartIso = monthStart.toISOString();
       const monthDate = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
 
       const result = await db.execute(sql`
@@ -463,7 +464,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
                    COALESCE(SUM(${costEvents.inputTokens} + ${costEvents.cachedInputTokens} + ${costEvents.outputTokens}), 0)::double precision AS raw_tokens
             FROM ${costEvents}
             WHERE ${costEvents.companyId} = ${companyId}
-              AND ${costEvents.occurredAt} >= ${monthStart}
+              AND ${costEvents.occurredAt} >= ${monthStartIso}::timestamptz
             GROUP BY ${costEvents.agentId}
           ),
           reset_agg AS (
