@@ -88,6 +88,7 @@ import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from ".
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
+import { sanitizeTextForPersistence } from "../persistence-sanitizer.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
@@ -7420,7 +7421,10 @@ export function issueService(db: Db) {
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
-      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      const redactedBody = redactCurrentUserText(
+        sanitizeTextForPersistence(body),
+        currentUserRedactionOptions,
+      );
       const authorType = issueCommentAuthorTypeSchema.parse(
         options?.authorType ?? (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
       );
