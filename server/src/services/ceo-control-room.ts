@@ -257,6 +257,44 @@ function agentConveyorSummary(agent: ConveyorAgentRow, latestRun: ConveyorRunRow
   return `${agent.name}: ${parts.join(" · ")}`;
 }
 
+export type ConveyorLaneType = "lane_attention" | "lane_cancelled" | "lane_idle" | "lane_ready";
+
+// Latest-run statuses that represent an *involuntary* failure of a conveyor lane and must
+// escalate agent_conveyor to a warning. `cancelled` is deliberately excluded — a cancelled run
+// is an intentional/superseded stop, not a failure. `timed_out` IS a failure (the run was killed
+// for exceeding its time budget) and was previously mis-classified as healthy, silently hiding a
+// genuine risk.
+export const CONVEYOR_RUN_FAILURE_STATUSES = new Set<string>(["failed", "timed_out"]);
+
+// Classifies a single conveyor lane (an agent plus its latest run) by the operator attention it
+// warrants, so the category severity reflects genuine failure/attention states — not cancelled,
+// idle, or ready lanes. Only `lane_attention` escalates agent_conveyor to a warning (see
+// severityForNonEmptyCategory); cancelled/idle/ready stay informational.
+export function classifyConveyorLane(input: {
+  agentStatus: string;
+  latestRunStatus: string | null;
+}): ConveyorLaneType {
+  // Agent-level trouble always needs attention (also surfaced in worker_offline).
+  if (input.agentStatus === "error" || input.agentStatus === "paused") return "lane_attention";
+  // Latest run is a genuine failure (failed / timed_out).
+  if (input.latestRunStatus !== null && CONVEYOR_RUN_FAILURE_STATUSES.has(input.latestRunStatus)) return "lane_attention";
+  // Latest run was cancelled — an intentional/superseded stop, not a failure.
+  if (input.latestRunStatus === "cancelled") return "lane_cancelled";
+  // No recent run at all — idle, distinguishable from a healthy ready lane.
+  if (input.latestRunStatus === null) return "lane_idle";
+  // Otherwise healthy: succeeded / running / queued / any other non-failure status.
+  return "lane_ready";
+}
+
+// Actionable lanes lead the category list (and its dashboard preview line). JS Array.sort is
+// stable, so agents keep their incoming name order within a bucket.
+export const CONVEYOR_LANE_ORDER: Record<ConveyorLaneType, number> = {
+  lane_attention: 0,
+  lane_cancelled: 1,
+  lane_idle: 2,
+  lane_ready: 3,
+};
+
 function proofSignals(input: { executionRunId: string | null; workProductCount: number; completedAt: Date | null; status: string }) {
   const signals = [] as string[];
   if (input.executionRunId) signals.push("run-linked");
@@ -790,15 +828,16 @@ export function ceoControlRoomService(db: Db) {
       for (const row of recentConveyorRunRows as ConveyorRunRow[]) {
         if (!latestRunByAgent.has(row.agentId)) latestRunByAgent.set(row.agentId, row);
       }
-      for (const row of conveyorAgentRows as ConveyorAgentRow[]) {
+      const conveyorItems = (conveyorAgentRows as ConveyorAgentRow[]).map((row) => {
         const latestRun = latestRunByAgent.get(row.id) ?? null;
-        const healthy = row.status !== "error" && row.status !== "paused" && (!latestRun || !["failed", "cancelled"].includes(latestRun.status));
-        categories.agent_conveyor.items.push({
-          type: healthy ? "lane_ready" : "lane_attention",
+        return {
+          type: classifyConveyorLane({ agentStatus: row.status, latestRunStatus: latestRun?.status ?? null }),
           summary: agentConveyorSummary(row, latestRun),
           metadata: { agent: row, latestRun },
-        });
-      }
+        };
+      });
+      conveyorItems.sort((a, b) => CONVEYOR_LANE_ORDER[a.type] - CONVEYOR_LANE_ORDER[b.type]);
+      for (const item of conveyorItems) categories.agent_conveyor.items.push(item);
 
       const workProductCounts = new Map<string, number>();
       for (const row of proofWorkProductRows as Array<{ issueId: string; count: number }>) {

@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyConveyorLane,
   classifyProofLedgerEntry,
   classifyUnboundSecret,
   classifyWorkerOfflineAgent,
+  CONVEYOR_LANE_ORDER,
+  CONVEYOR_RUN_FAILURE_STATUSES,
   SELF_DOCUMENTING_PROOF_ORIGIN_KINDS,
   severityForNonEmptyCategory,
 } from "../services/ceo-control-room.ts";
@@ -90,6 +93,45 @@ describe("CEO control-room worker-offline agent classification", () => {
   });
 });
 
+describe("CEO control-room conveyor lane classification", () => {
+  it("flags an errored or paused agent as attention regardless of its latest run", () => {
+    expect(classifyConveyorLane({ agentStatus: "error", latestRunStatus: "succeeded" })).toBe("lane_attention");
+    expect(classifyConveyorLane({ agentStatus: "paused", latestRunStatus: null })).toBe("lane_attention");
+    expect(classifyConveyorLane({ agentStatus: "error", latestRunStatus: "cancelled" })).toBe("lane_attention");
+  });
+
+  it("flags a failed latest run as attention", () => {
+    expect(classifyConveyorLane({ agentStatus: "idle", latestRunStatus: "failed" })).toBe("lane_attention");
+  });
+
+  it("flags a timed_out latest run as attention (regression: previously hidden as ready)", () => {
+    expect(CONVEYOR_RUN_FAILURE_STATUSES.has("timed_out")).toBe(true);
+    expect(classifyConveyorLane({ agentStatus: "idle", latestRunStatus: "timed_out" })).toBe("lane_attention");
+    // Severity must escalate so the timeout is not suppressed.
+    expect(severityForNonEmptyCategory("agent_conveyor", [{ type: classifyConveyorLane({ agentStatus: "idle", latestRunStatus: "timed_out" }) }])).toBe("warning");
+  });
+
+  it("treats a cancelled latest run as an intentional stop, not attention", () => {
+    expect(classifyConveyorLane({ agentStatus: "idle", latestRunStatus: "cancelled" })).toBe("lane_cancelled");
+  });
+
+  it("treats an agent with no recent run as idle, distinct from a ready lane", () => {
+    expect(classifyConveyorLane({ agentStatus: "idle", latestRunStatus: null })).toBe("lane_idle");
+  });
+
+  it("treats succeeded / running / queued lanes as ready", () => {
+    expect(classifyConveyorLane({ agentStatus: "idle", latestRunStatus: "succeeded" })).toBe("lane_ready");
+    expect(classifyConveyorLane({ agentStatus: "active", latestRunStatus: "running" })).toBe("lane_ready");
+    expect(classifyConveyorLane({ agentStatus: "idle", latestRunStatus: "queued" })).toBe("lane_ready");
+  });
+
+  it("orders lanes attention → cancelled → idle → ready so actionable lanes lead", () => {
+    const types = ["lane_ready", "lane_idle", "lane_cancelled", "lane_attention"] as const;
+    const sorted = [...types].sort((a, b) => CONVEYOR_LANE_ORDER[a] - CONVEYOR_LANE_ORDER[b]);
+    expect(sorted).toEqual(["lane_attention", "lane_cancelled", "lane_idle", "lane_ready"]);
+  });
+});
+
 describe("CEO control-room category severity", () => {
   it("does not escalate missing_secret when only external refs / unbound items are present", () => {
     expect(
@@ -120,6 +162,16 @@ describe("CEO control-room category severity", () => {
     ).toBe("info");
   });
 
+  it("does not escalate agent_conveyor for cancelled / idle / ready lanes", () => {
+    expect(
+      severityForNonEmptyCategory("agent_conveyor", [
+        { type: "lane_cancelled" },
+        { type: "lane_idle" },
+        { type: "lane_ready" },
+      ]),
+    ).toBe("info");
+  });
+
   it("escalates worker_offline for genuine offline / stalled / source-unavailable conditions", () => {
     // A genuinely offline/failing worker stays a warning.
     expect(severityForNonEmptyCategory("worker_offline", [{ type: "agent_offline" }])).toBe("warning");
@@ -132,6 +184,17 @@ describe("CEO control-room category severity", () => {
       severityForNonEmptyCategory("worker_offline", [
         { type: "agent_process_lost" },
         { type: "agent_offline" },
+      ]),
+    ).toBe("warning");
+  });
+
+  it("escalates agent_conveyor only when a genuine attention lane is present", () => {
+    expect(
+      severityForNonEmptyCategory("agent_conveyor", [
+        { type: "lane_cancelled" },
+        { type: "lane_idle" },
+        { type: "lane_attention" },
+        { type: "lane_ready" },
       ]),
     ).toBe("warning");
   });
@@ -221,5 +284,49 @@ describe("CEO control-room fincli.ai snapshot (documented false-warning regressi
       { type: classifyWorkerOfflineAgent(genuineFault) },
     ];
     expect(severityForNonEmptyCategory("worker_offline", mixed)).toBe("warning");
+  });
+});
+
+// Documented evidence: the live fincli.ai conveyor snapshot (2026-06-26). 40 conveyor agents.
+// Before this change a cancelled run counted as attention (false warning) and a timed_out run
+// would have been hidden as ready (suppressed failure). After honest classification the warning
+// is attributable to exactly the 2 genuinely-errored lanes; cancelled/idle/ready are info.
+describe("CEO control-room conveyor snapshot (false-warning regression guard)", () => {
+  const buildLanes = () => {
+    const lanes: Array<{ agentStatus: string; latestRunStatus: string | null }> = [];
+    // 2 hermes lanes whose agent is errored with a failed latest run — genuine attention.
+    for (let i = 0; i < 2; i++) lanes.push({ agentStatus: "error", latestRunStatus: "failed" });
+    // 2 lanes whose latest run was intentionally cancelled — not attention.
+    for (let i = 0; i < 2; i++) lanes.push({ agentStatus: "idle", latestRunStatus: "cancelled" });
+    // 30 idle lanes with no recent run.
+    for (let i = 0; i < 30; i++) lanes.push({ agentStatus: "idle", latestRunStatus: null });
+    // 6 healthy lanes whose latest run succeeded.
+    for (let i = 0; i < 6; i++) lanes.push({ agentStatus: "idle", latestRunStatus: "succeeded" });
+    return lanes;
+  };
+
+  it("attributes the warning to exactly the 2 real failures, demoting cancelled/idle/ready", () => {
+    const items = buildLanes().map((lane) => ({ type: classifyConveyorLane(lane) }));
+    expect(items).toHaveLength(40);
+    expect(items.filter((i) => i.type === "lane_attention")).toHaveLength(2);
+    expect(items.filter((i) => i.type === "lane_cancelled")).toHaveLength(2);
+    expect(items.filter((i) => i.type === "lane_idle")).toHaveLength(30);
+    expect(items.filter((i) => i.type === "lane_ready")).toHaveLength(6);
+    // Warning is preserved (the 2 errored lanes are not suppressed)…
+    expect(severityForNonEmptyCategory("agent_conveyor", items)).toBe("warning");
+    // …and is driven ONLY by the 2 attention lanes: without them the board is info, not warning.
+    const withoutFailures = items.filter((i) => i.type !== "lane_attention");
+    expect(withoutFailures).toHaveLength(38);
+    expect(severityForNonEmptyCategory("agent_conveyor", withoutFailures)).toBe("info");
+  });
+
+  it("would catch a timed_out latest run that the old failed/cancelled-only check hid", () => {
+    // Swap one ready lane for a timed_out run: the board must escalate, not stay info.
+    const items = [
+      ...buildLanes().filter((lane) => lane.latestRunStatus !== "failed").map((lane) => ({ type: classifyConveyorLane(lane) })),
+      { type: classifyConveyorLane({ agentStatus: "idle", latestRunStatus: "timed_out" }) },
+    ];
+    expect(items.filter((i) => i.type === "lane_attention")).toHaveLength(1);
+    expect(severityForNonEmptyCategory("agent_conveyor", items)).toBe("warning");
   });
 });
