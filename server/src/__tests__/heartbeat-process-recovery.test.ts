@@ -288,7 +288,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 120_000); // CI embedded-Postgres cold-start can exceed the default 5s hook timeout, and 20s is tight under load
 
   afterEach(async () => {
     vi.clearAllMocks();
