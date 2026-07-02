@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
@@ -146,6 +147,21 @@ function issueIdFromContext(ctx: AdapterExecutionContext): string | null {
   return nonEmpty(ctx.context.taskId) ?? nonEmpty(ctx.context.issueId);
 }
 
+// Hermes forwards the session key to its Codex/OpenAI transport as the
+// `prompt_cache_key`, which has a 64-character maximum. The "issue" (up to
+// ~140 chars with UUID ids) and "agent" (~97) strategies overflow that limit,
+// so the key is rejected downstream and prompt caching + per-issue session
+// continuity are silently lost. Compact over-length keys to a stable, namespaced
+// hash: same scope -> same key (continuity preserved), 192-bit digest (per-issue
+// isolation preserved). Keys already within the limit pass through unchanged.
+const MAX_SESSION_KEY_CHARS = 64;
+
+function compactSessionKey(key: string): string {
+  if (key.length <= MAX_SESSION_KEY_CHARS) return key;
+  const digest = createHash("sha256").update(key).digest("hex").slice(0, 48);
+  return `paperclip:h:${digest}`;
+}
+
 export function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   companyId: string;
@@ -155,13 +171,15 @@ export function resolveSessionKey(input: {
 }): string | null {
   if (input.strategy === "none") return null;
   if (input.strategy === "agent") {
-    return `paperclip:company:${input.companyId}:agent:${input.agentId}`;
+    return compactSessionKey(`paperclip:company:${input.companyId}:agent:${input.agentId}`);
   }
   if (input.strategy === "run") {
-    return `paperclip:run:${input.runId}`;
+    return compactSessionKey(`paperclip:run:${input.runId}`);
   }
   const issuePart = input.issueId ? `issue:${input.issueId}` : `run:${input.runId}`;
-  return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}`;
+  return compactSessionKey(
+    `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}`,
+  );
 }
 
 function stringifyForLog(value: unknown, maxChars = 4_000): string {
