@@ -2402,6 +2402,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause?: StrandedRecoveryCause;
     recoveryOwnerAgentId?: string | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    incrementAttemptCount?: boolean;
   }) {
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(
@@ -2460,6 +2461,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       monitorPolicy: null,
       maxAttempts: null,
       lastAttemptAt: now,
+      incrementAttemptCount: input.incrementAttemptCount,
     });
 
     return action;
@@ -2690,6 +2692,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       existingRecoveryAction.kind !== "active_run_watchdog" &&
       existingRecoveryAction.sourceIssueId === input.issue.id
     ) {
+      await ensureSourceScopedStrandedRecoveryAction({
+        issue: input.issue,
+        previousStatus: input.previousStatus,
+        latestRun: input.latestRun,
+        recoveryCause,
+        recoveryOwnerAgentId: input.recoveryOwnerAgentId,
+        successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+        incrementAttemptCount: false,
+      });
       return null;
     }
 
