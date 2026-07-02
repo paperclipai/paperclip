@@ -1387,8 +1387,14 @@ export function routineService(
       );
   }
 
-  async function enforceTokenCap(companyId: string, agentId: string): Promise<void> {
-    const agentRow = await db
+  async function enforceTokenCap(
+    executor: Db,
+    companyId: string,
+    agentId: string,
+    options: { emitWarning: boolean } = { emitWarning: true },
+  ): Promise<void> {
+    const tokenCapIssueSvc = options.emitWarning ? issueService(executor) : null;
+    const agentRow = await executor
       .select({ monthlyTokenCapTokens: agents.monthlyTokenCapTokens, name: agents.name })
       .from(agents)
       .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
@@ -1401,14 +1407,14 @@ export function routineService(
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
     const monthDate = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
 
-    const [rawRow] = await db
+    const [rawRow] = await executor
       .select({
         rawUsage: sql<number>`coalesce(sum(${costEvents.inputTokens} + ${costEvents.cachedInputTokens} + ${costEvents.outputTokens}), 0)`,
       })
       .from(costEvents)
       .where(and(eq(costEvents.agentId, agentId), gte(costEvents.occurredAt, monthStart)));
 
-    const [resetRow] = await db
+    const [resetRow] = await executor
       .select({
         resetOffset: sql<number>`coalesce(sum(${tokenCapResets.offsetTokens}), 0)`,
       })
@@ -1423,9 +1429,9 @@ export function routineService(
       throw conflict("Monthly token cap exceeded", { code: "token_cap_exceeded", agentId, cap, netUsage });
     }
 
-    if (netUsage >= 0.8 * cap) {
+    if (options.emitWarning && netUsage >= 0.8 * cap) {
       const sentAt = new Date();
-      const inserted = await db
+      const inserted = await executor
         .insert(tokenCapWarnings)
         .values({ companyId, agentId, month: monthDate, sentAt })
         .onConflictDoNothing()
@@ -1435,8 +1441,8 @@ export function routineService(
       if (inserted) {
         const agentName = agentRow?.name ?? agentId;
         const pct = Math.round((netUsage / cap) * 100);
-        const inboxIssue = await issueSvc.create(companyId, {
-          title: `Budget warning: ${agentName} at 80% token cap`,
+        const inboxIssue = await tokenCapIssueSvc!.create(companyId, {
+          title: `Budget warning: ${agentName} at ${pct}% token cap`,
           description: [
             `Agent **${agentName}** has used ${netUsage.toLocaleString()} tokens this month`,
             `(${pct}% of its ${cap.toLocaleString()}-token cap).`,
@@ -1448,7 +1454,7 @@ export function routineService(
           originId: agentId,
         });
 
-        const activeIssue = await db
+        const activeIssue = await executor
           .select({ id: issues.id, identifier: issues.identifier })
           .from(issues)
           .where(
@@ -1466,7 +1472,7 @@ export function routineService(
           const issueLink = inboxIssue.identifier
             ? `[${inboxIssue.identifier}](/${prefix}/issues/${inboxIssue.identifier})`
             : "the operator inbox issue";
-          await issueSvc.addComment(
+          await tokenCapIssueSvc!.addComment(
             activeIssue.id,
             [
               `## Budget Warning`,
@@ -1505,7 +1511,7 @@ export function routineService(
       throw unprocessable("Default agent required");
     }
     await assertAssignableAgent(db, input.routine.companyId, assigneeAgentId, { kind: "routine" });
-    await enforceTokenCap(input.routine.companyId, assigneeAgentId);
+    await enforceTokenCap(db, input.routine.companyId, assigneeAgentId);
     const automaticVariables: Record<string, string | number | boolean> = {};
     if (input.executionWorkspaceId && routineUsesWorkspaceBranch(input.routine)) {
       const workspace = await db
@@ -1581,6 +1587,8 @@ export function routineService(
           .then((rows) => rows[0] ?? null);
         if (existing) return existing;
       }
+
+      await enforceTokenCap(txDb, input.routine.companyId, assigneeAgentId, { emitWarning: false });
 
       const triggeredAt = new Date();
       const manualRunnerUserId = input.source === "manual" ? input.actor?.userId ?? null : null;
