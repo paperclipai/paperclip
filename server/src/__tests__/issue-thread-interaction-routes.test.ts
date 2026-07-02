@@ -112,6 +112,11 @@ function registerModuleMocks() {
     }),
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockInteractionService,
+    taskWatchdogService: () => ({
+      getActiveForIssue: vi.fn(async () => null),
+      upsertForIssue: vi.fn(),
+      disableForIssue: vi.fn(async () => null),
+    }),
     logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => ({
@@ -321,12 +326,14 @@ describe.sequential("issue thread interaction routes", () => {
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValueOnce([
       {
         id: "interaction-expired",
-        kind: "request_confirmation",
+        kind: "ask_user_questions",
         status: "expired",
         result: {
           version: 1,
-          outcome: "superseded_by_comment",
+          answers: [],
+          expirationReason: "superseded_by_comment",
           commentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          summaryMarkdown: null,
         },
       },
     ]);
@@ -349,10 +356,10 @@ describe.sequential("issue thread interaction routes", () => {
         action: "issue.thread_interaction_expired",
         details: expect.objectContaining({
           interactionId: "interaction-expired",
-          interactionKind: "request_confirmation",
+          interactionKind: "ask_user_questions",
           source: "issue.interactions.catchup_superseded_by_comment",
           result: expect.objectContaining({
-            outcome: "superseded_by_comment",
+            expirationReason: "superseded_by_comment",
             commentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
           }),
         }),
@@ -662,6 +669,21 @@ describe.sequential("issue thread interaction routes", () => {
           interactionId: "interaction-plan",
           interactionKind: "request_confirmation",
           interactionStatus: "accepted",
+          planReviewInteraction: expect.objectContaining({
+            id: "interaction-plan",
+            kind: "request_confirmation",
+            status: "accepted",
+            acceptedTargetRevision: expect.objectContaining({
+              issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              documentId: "document-plan",
+              key: "plan",
+              revisionId: "revision-plan",
+              revisionNumber: 1,
+            }),
+            result: expect.objectContaining({
+              outcome: "accepted",
+            }),
+          }),
           forceFreshSession: true,
           workspaceRefreshReason: "accepted_plan_confirmation",
         }),

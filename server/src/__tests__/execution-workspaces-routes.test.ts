@@ -6,6 +6,7 @@ import { executionWorkspaceRoutes } from "../routes/execution-workspaces.js";
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   list: vi.fn(),
+  listOverview: vi.fn(),
   listSummaries: vi.fn(),
   getById: vi.fn(),
   getCloseReadiness: vi.fn(),
@@ -57,6 +58,14 @@ describe.sequential("execution workspace routes", () => {
       explanation: "Allowed by test mock.",
     });
     mockExecutionWorkspaceService.list.mockResolvedValue([]);
+    mockExecutionWorkspaceService.listOverview.mockResolvedValue({
+      items: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+      hasMore: false,
+      nextOffset: null,
+    });
     mockExecutionWorkspaceService.listSummaries.mockResolvedValue([
       {
         id: "workspace-1",
@@ -91,4 +100,31 @@ describe.sequential("execution workspace routes", () => {
     expect(mockExecutionWorkspaceService.list).not.toHaveBeenCalled();
   });
 
+  it("delegates bounded workspace overview queries", async () => {
+    const res = await request(createApp())
+      .get("/api/companies/company-1/workspace-overview?status=active,idle&limit=25&offset=10");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      items: [],
+      total: 0,
+      limit: 50,
+      offset: 0,
+      hasMore: false,
+      nextOffset: null,
+    });
+    expect(mockExecutionWorkspaceService.listOverview).toHaveBeenCalledWith("company-1", {
+      status: ["active", "idle"],
+      limit: 25,
+      offset: 10,
+    });
+  });
+
+  it("rejects invalid workspace overview pagination", async () => {
+    const res = await request(createApp())
+      .get("/api/companies/company-1/workspace-overview?limit=1000");
+
+    expect(res.status).toBe(422);
+    expect(mockExecutionWorkspaceService.listOverview).not.toHaveBeenCalled();
+  });
 });

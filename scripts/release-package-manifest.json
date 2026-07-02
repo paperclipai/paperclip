@@ -40,6 +40,16 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/hermes",
+    "name": "@paperclipai/hermes-paperclip-adapter",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/hermes-gateway",
+    "name": "@paperclipai/adapter-hermes-gateway",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/adapters/opencode-local",
     "name": "@paperclipai/adapter-opencode-local",
     "publishFromCi": true
@@ -62,12 +72,12 @@
   {
     "dir": "packages/skills-catalog",
     "name": "@paperclipai/skills-catalog",
-    "publishFromCi": false
+    "publishFromCi": true
   },
   {
     "dir": "packages/teams-catalog",
     "name": "@paperclipai/teams-catalog",
-    "publishFromCi": false
+    "publishFromCi": true
   },
   {
     "dir": "packages/db",
@@ -82,7 +92,7 @@
   {
     "dir": "packages/plugins/plugin-workspace-diff",
     "name": "@paperclipai/plugin-workspace-diff",
-    "publishFromCi": false
+    "publishFromCi": true
   },
   {
     "dir": "server",
@@ -132,12 +142,12 @@
   {
     "dir": "packages/plugins/sandbox-providers/kubernetes",
     "name": "@paperclipai/plugin-kubernetes",
-    "publishFromCi": false
+    "publishFromCi": true
   },
   {
     "dir": "packages/plugins/sandbox-providers/novita",
     "name": "@paperclipai/plugin-novita-sandbox",
-    "publishFromCi": false
+    "publishFromCi": true
   },
   {
     "dir": "ui",

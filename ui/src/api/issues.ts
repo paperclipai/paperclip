@@ -18,9 +18,11 @@ import type {
   IssueThreadInteraction,
   IssueTreeControlPreview,
   IssueTreeHold,
+  IssueWatchdog,
   IssueWorkProduct,
   PreviewIssueTreeControl,
   ReleaseIssueTreeHold,
+  UpsertIssueWatchdog,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -60,6 +62,7 @@ export const issuesApi = {
       excludeRoutineExecutions?: boolean;
       includeBlockedBy?: boolean;
       includeBlockedInboxAttention?: boolean;
+      includeLiveDescendantSummary?: boolean;
       hasPlanDocument?: boolean;
       q?: string;
       limit?: number;
@@ -91,6 +94,7 @@ export const issuesApi = {
     if (filters?.excludeRoutineExecutions) params.set("excludeRoutineExecutions", "true");
     if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
     if (filters?.includeBlockedInboxAttention) params.set("includeBlockedInboxAttention", "true");
+    if (filters?.includeLiveDescendantSummary) params.set("includeLiveDescendantSummary", "true");
     if (filters?.hasPlanDocument !== undefined) {
       params.set("hasPlanDocument", filters.hasPlanDocument ? "true" : "false");
     }
@@ -129,6 +133,10 @@ export const issuesApi = {
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
   get: (id: string) => api.get<Issue>(`/issues/${id}`),
+  getWatchdog: (id: string) => api.get<IssueWatchdog | null>(`/issues/${id}/watchdog`),
+  upsertWatchdog: (id: string, data: UpsertIssueWatchdog) =>
+    api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),
+  deleteWatchdog: (id: string) => api.delete<{ ok: true }>(`/issues/${id}/watchdog`),
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
   markUnread: (id: string) => api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
   archiveFromInbox: (id: string) =>

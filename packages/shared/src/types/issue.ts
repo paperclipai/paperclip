@@ -501,6 +501,34 @@ export interface IssueExecutionDecision {
   updatedAt: Date;
 }
 
+export type IssueWatchdogStatus = "active" | "disabled";
+
+export interface IssueWatchdogSummary {
+  id: string;
+  companyId: string;
+  issueId: string;
+  watchdogAgentId: string;
+  instructions: string | null;
+  status: IssueWatchdogStatus;
+  watchdogIssueId: string | null;
+  lastObservedFingerprint: string | null;
+  lastReviewedFingerprint: string | null;
+  lastTriggeredAt: Date | null;
+  lastCompletedAt: Date | null;
+  triggerCount: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IssueWatchdog extends IssueWatchdogSummary {
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  createdByRunId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  updatedByRunId: string | null;
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -555,7 +583,9 @@ export interface Issue {
   productivityReview?: IssueProductivityReview | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
+  watchdog?: IssueWatchdogSummary | null;
   scheduledRetry?: IssueScheduledRetry | null;
+  liveDescendantCount?: number;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
@@ -574,6 +604,22 @@ export interface Issue {
   updatedAt: Date;
 }
 
+/**
+ * Where a comment's derived (non-stored-author) agent attribution came from,
+ * in descending confidence:
+ * - `run_id`: comment carries a `createdByRunId`/`derivedCreatedByRunId` whose
+ *   run resolves directly to an agent (lossless).
+ * - `run_log_comment_post`: a run log within the comment window contains the
+ *   `comment id: {id}` post marker (lossless: the run recorded posting it).
+ *
+ * Only lossless signals are used. Pure run-window timing overlap is NOT a
+ * source — it cannot distinguish an agent comment from a human board comment
+ * that coincided with a run (Option A).
+ */
+export type IssueCommentDerivedAuthorSource =
+  | "run_id"
+  | "run_log_comment_post";
+
 export interface IssueComment {
   id: string;
   companyId: string;
@@ -584,7 +630,7 @@ export interface IssueComment {
   createdByRunId?: string | null;
   derivedAuthorAgentId?: string | null;
   derivedCreatedByRunId?: string | null;
-  derivedAuthorSource?: "run_log_comment_post" | null;
+  derivedAuthorSource?: IssueCommentDerivedAuthorSource | null;
   body: string;
   presentation: IssueCommentPresentation | null;
   metadata: IssueCommentMetadata | null;
@@ -741,6 +787,7 @@ export interface AskUserQuestionsPayload {
   version: 1;
   title?: string | null;
   submitLabel?: string | null;
+  supersedeOnUserComment?: boolean;
   questions: AskUserQuestionsQuestion[];
 }
 
@@ -755,6 +802,8 @@ export interface AskUserQuestionsResult {
   answers: AskUserQuestionsAnswer[];
   cancelled?: true;
   cancellationReason?: string | null;
+  expirationReason?: "superseded_by_comment";
+  commentId?: string | null;
   summaryMarkdown?: string | null;
 }
 

@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +17,7 @@ import {
   type AdapterSandboxExecutionTarget,
 } from "./execution-target.js";
 import { runChildProcess } from "./server-utils.js";
+import { shellQuote } from "./ssh.js";
 
 describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
@@ -58,6 +59,20 @@ describe("sandbox adapter execution targets", () => {
         });
       },
     };
+  }
+
+  async function readRuntimeTextFiles(rootDir: string): Promise<string[]> {
+    const entries = await readdir(rootDir, { withFileTypes: true }).catch(() => []);
+    const contents: string[] = [];
+    for (const entry of entries) {
+      const entryPath = path.join(rootDir, entry.name);
+      if (entry.isDirectory()) {
+        contents.push(...await readRuntimeTextFiles(entryPath));
+      } else if (entry.isFile()) {
+        contents.push(await readFile(entryPath, "utf8").catch(() => ""));
+      }
+    }
+    return contents;
   }
 
   it("executes through the provider-neutral runner without a remote spec", async () => {
@@ -442,6 +457,120 @@ describe("sandbox adapter execution targets", () => {
         url: "/api/agents/me",
         auth: "Bearer real-run-jwt",
         runId: "run-bridge",
+      }]);
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
+    }
+  });
+
+  it("exposes the Paperclip bridge to the sandbox shell surface", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-shell-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "claude");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const requests: Array<{ method: string; url: string; auth: string | null; runId: string | null }> = [];
+    const apiServer = createServer((req, res) => {
+      requests.push({
+        method: req.method ?? "GET",
+        url: req.url ?? "/",
+        auth: req.headers.authorization ?? null,
+        runId: typeof req.headers["x-paperclip-run-id"] === "string" ? req.headers["x-paperclip-run-id"] : null,
+      });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      apiServer.once("error", reject);
+      apiServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = apiServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected the bridge shell test API server to listen on a TCP port.");
+    }
+
+    const delegateRunner = createLocalSandboxRunner();
+    const runner = {
+      execute: vi.fn(async (input: Parameters<typeof delegateRunner.execute>[0]) => delegateRunner.execute(input)),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner,
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-shell",
+      target,
+      runtimeRootDir,
+      adapterKey: "claude",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: `http://127.0.0.1:${address.port}`,
+    });
+    try {
+      expect(bridge).not.toBeNull();
+      const shellProbe = [
+        "const url = `${process.env.PAPERCLIP_API_URL}/api/agents/me`;",
+        "fetch(url, { headers: { authorization: `Bearer ${process.env.PAPERCLIP_API_KEY}`, accept: 'application/json' } })",
+        "  .then(async (response) => {",
+        "    const body = await response.json();",
+        "    process.stdout.write(JSON.stringify({",
+        "      status: response.status,",
+        "      body,",
+        "      bridgeMode: process.env.PAPERCLIP_API_BRIDGE_MODE,",
+        "    }));",
+        "  })",
+        "  .catch((error) => {",
+        "    console.error(error instanceof Error ? error.stack : String(error));",
+        "    process.exit(1);",
+        "  });",
+      ].join("\n");
+
+      const result = await runAdapterExecutionTargetShellCommand(
+        "run-bridge-shell",
+        target,
+        `${shellQuote(process.execPath)} -e ${shellQuote(shellProbe)}`,
+        {
+          cwd: remoteCwd,
+          env: bridge!.env,
+          timeoutSec: 15,
+          graceSec: 5,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout)).toEqual({
+        status: 200,
+        body: { ok: true },
+        bridgeMode: "queue_v1",
+      });
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain("real-run-jwt");
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain(bridge!.env.PAPERCLIP_API_KEY);
+      const runnerCommandText = JSON.stringify(
+        runner.execute.mock.calls.map(([call]) => ({
+          command: call.command,
+          args: call.args,
+        })),
+      );
+      expect(runnerCommandText).not.toContain("real-run-jwt");
+      expect(runnerCommandText).not.toContain(bridge!.env.PAPERCLIP_API_KEY);
+      const runtimeFiles = (await readRuntimeTextFiles(runtimeRootDir)).join("\n");
+      expect(runtimeFiles).not.toContain("real-run-jwt");
+      expect(runtimeFiles).not.toContain(bridge!.env.PAPERCLIP_API_KEY);
+      expect(requests).toEqual([{
+        method: "GET",
+        url: "/api/agents/me",
+        auth: "Bearer real-run-jwt",
+        runId: "run-bridge-shell",
       }]);
     } finally {
       await bridge?.stop();

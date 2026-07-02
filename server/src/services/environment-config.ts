@@ -28,6 +28,7 @@ import {
   readConfigValueAtPath,
   writeConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
+import { resolveActiveEnvironmentCustomImageTemplateForRuntime } from "./environment-custom-image-runtime.js";
 
 const secretRefSchema = z.object({
   type: z.literal("secret_ref"),
@@ -146,6 +147,13 @@ async function getSandboxProviderConfigSchema(
   return schema && typeof schema === "object" && !Array.isArray(schema)
     ? schema as Record<string, unknown>
     : null;
+}
+
+export async function resolveSandboxProviderSecretRefPaths(
+  db: Db,
+  provider: string,
+): Promise<Set<string>> {
+  return collectSecretRefPaths(await getSandboxProviderConfigSchema(db, provider));
 }
 
 function secretName(input: {
@@ -548,9 +556,17 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
 
 export async function resolveEnvironmentDriverConfigForRuntime(
   db: Db,
-  companyId: string,
+  companyId: string | null,
   environment: Pick<Environment, "driver" | "config"> & Partial<Pick<Environment, "id">>,
-  context?: { issueId?: string | null; heartbeatRunId?: string | null },
+  context?: {
+    issueId?: string | null;
+    heartbeatRunId?: string | null;
+    // Force applying the active custom-image template even without a run/issue
+    // context. Operator-initiated `Test` probes have no issueId/heartbeatRunId
+    // but must still resolve the active custom image as prepared runtime
+    // configuration and tooling so the test reflects what real agent runs use.
+    applyCustomImageTemplate?: boolean;
+  },
 ): Promise<ParsedEnvironmentConfig> {
   const parsed = parseEnvironmentDriverConfig(environment);
   const secrets = secretService(db);
@@ -560,6 +576,9 @@ export async function resolveEnvironmentDriverConfigForRuntime(
   }
 
   if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef) {
+    if (!companyId) {
+      throw unprocessable("Runtime secret resolution requires a companyId context");
+    }
     return {
       driver: "ssh",
       config: {
@@ -583,19 +602,37 @@ export async function resolveEnvironmentDriverConfigForRuntime(
   }
 
   if (parsed.driver === "sandbox" && parsed.config.provider !== "fake") {
-    return {
-      driver: "sandbox",
-      config: await resolveConfigSecretRefsForRuntime({
+    const schema = await getSandboxProviderConfigSchema(db, parsed.config.provider);
+    let runtimeConfig = parsed.config;
+    if (companyId) {
+      runtimeConfig = await resolveConfigSecretRefsForRuntime({
         db,
         companyId,
         config: parsed.config as Record<string, unknown>,
-        schema: await getSandboxProviderConfigSchema(db, parsed.config.provider),
+        schema,
         context: {
           consumerId: environmentId!,
           issueId: context?.issueId ?? null,
           heartbeatRunId: context?.heartbeatRunId ?? null,
         },
-      }) as SandboxEnvironmentConfig,
+      }) as SandboxEnvironmentConfig;
+    } else {
+      for (const path of collectSecretRefPaths(schema)) {
+        const current = readConfigValueAtPath(parsed.config as Record<string, unknown>, path);
+        if (typeof current === "string" && isUuidSecretRef(current.trim())) {
+          throw unprocessable("Runtime secret resolution requires a companyId context");
+        }
+      }
+    }
+    return {
+      driver: "sandbox",
+      config: environmentId && (context?.issueId || context?.heartbeatRunId || context?.applyCustomImageTemplate)
+        ? await resolveActiveEnvironmentCustomImageTemplateForRuntime(db, {
+            environmentId,
+            baseConfig: parsed.config,
+            runtimeConfig,
+          })
+        : runtimeConfig,
     };
   }
 

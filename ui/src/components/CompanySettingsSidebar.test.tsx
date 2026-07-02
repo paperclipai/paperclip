@@ -169,7 +169,7 @@ describe("CompanySettingsSidebar", () => {
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        to: "/company/settings/environments",
+        to: "/company/settings/instance/environments",
         label: "Environments",
         end: true,
       }),

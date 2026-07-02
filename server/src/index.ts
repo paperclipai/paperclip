@@ -38,9 +38,11 @@ import {
   feedbackService,
   backfillPrincipalAccessCompatibility,
   bootstrapExecutionPolicyFromEnv,
+  environmentCustomImageService,
   heartbeatService,
   instanceSettingsService,
   reconcileCloudUpstreamRunsOnStartup,
+  reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
@@ -727,7 +729,29 @@ export async function startServer(): Promise<StartedServer> {
     .catch((err) => {
       logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
     });
-  
+
+  // Backfill auth.json into any already-isolated codex_local managed home that
+  // was created by the #8272 isolation guard before the Phase 1 seeding fix.
+  // Idempotent; the Phase 1 execute-time seeding covers new strandings.
+  void reconcileCodexLocalManagedHomesOnStartup(db)
+    .then((result) => {
+      if (result.seeded > 0 || result.failed > 0) {
+        logger.warn(
+          { seeded: result.seeded, failed: result.failed, scanned: result.scanned },
+          "reconciled codex_local managed homes (backfilled missing auth)",
+        );
+      }
+      if (result.sourceAuthMissing > 0) {
+        logger.warn(
+          { sourceAuthMissing: result.sourceAuthMissing, scanned: result.scanned },
+          "could not backfill codex_local managed homes because shared Codex auth is missing",
+        );
+      }
+    })
+    .catch((err) => {
+      logger.error({ err }, "startup reconciliation of codex_local managed homes failed");
+    });
+
   // Force the instance onto the Kubernetes sandbox provider when configured via
   // env (PAPERCLIP_EXECUTION_MODE=kubernetes). Runs BEFORE the heartbeat resumes
   // queued runs so the policy + managed k8s environments are in place. A bad
@@ -751,6 +775,7 @@ export async function startServer(): Promise<StartedServer> {
 
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
@@ -801,6 +826,14 @@ export async function startServer(): Promise<StartedServer> {
         );
       }
 
+      const taskWatchdogsReconciled = await heartbeat.reconcileTaskWatchdogs();
+      if (taskWatchdogsReconciled.triggered > 0) {
+        logger.warn(
+          { ...taskWatchdogsReconciled },
+          "startup task-watchdog reconciliation triggered watchdog work",
+        );
+      }
+
       const scanned = await heartbeat.scanSilentActiveRuns();
       if (scanned.created > 0 || scanned.escalated > 0) {
         logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
@@ -815,11 +848,24 @@ export async function startServer(): Promise<StartedServer> {
       if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
         logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
       }
+
+      const setupCleanup = await environmentCustomImages.cleanupExpiredSetupSessions();
+      if (setupCleanup.timedOut > 0 || setupCleanup.failed > 0) {
+        logger.warn({ ...setupCleanup }, "startup environment customImage setup cleanup changed sessions");
+      }
     })().catch((err) => {
       logger.error({ err }, "startup heartbeat recovery failed");
     });
 
     setInterval(() => {
+      const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
+      if (sweptRuntimeStatuses > 0) {
+        logger.info(
+          { swept: sweptRuntimeStatuses },
+          "heartbeat runtime-status sweeper cleared expired entries",
+        );
+      }
+
       void heartbeat
         .tickTimers(new Date())
         .then((result) => {
@@ -840,6 +886,17 @@ export async function startServer(): Promise<StartedServer> {
         })
         .catch((err) => {
           logger.error({ err }, "routine scheduler tick failed");
+        });
+
+      void environmentCustomImages
+        .cleanupExpiredSetupSessions()
+        .then((result) => {
+          if (result.timedOut > 0 || result.failed > 0) {
+            logger.warn({ ...result }, "environment customImage setup cleanup changed sessions");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "environment customImage setup cleanup failed");
         });
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
@@ -868,6 +925,12 @@ export async function startServer(): Promise<StartedServer> {
           const reconciled = await heartbeat.reconcileIssueGraphLiveness();
           if (reconciled.escalationsCreated > 0) {
             logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
+          }
+        })
+        .then(async () => {
+          const reconciled = await heartbeat.reconcileTaskWatchdogs();
+          if (reconciled.triggered > 0) {
+            logger.warn({ ...reconciled }, "periodic task-watchdog reconciliation triggered watchdog work");
           }
         })
         .then(async () => {
