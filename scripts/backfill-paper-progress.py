@@ -126,7 +126,13 @@ def derive_stages(experiment_id: str, judgment: dict[str, Any]) -> list[dict[str
             "simple_ask": None,
         })
     elif verdict == "INCONCLUSIVE":
-        status["data_check"] = stage_row("data_check", "in_progress", note="auto-draft judgment awaiting operator correction")
+        if scalar(judgment.get("archived_utc")):
+            # Archived draft: routed out of autonomous work, learning captured,
+            # verdict still awaits an operator label.
+            status["data_check"] = stage_row("data_check", "in_progress", note="archived; draft judgment awaiting operator label")
+            status["dossier"] = stage_row("dossier", "done", note="failure learning archived (LEARNING.md)")
+        else:
+            status["data_check"] = stage_row("data_check", "in_progress", note="auto-draft judgment awaiting operator correction")
     else:
         # Supportive verdicts (proxy support, shadow-only, promote-review).
         status["data_check"] = stage_row("data_check", "done")
@@ -139,15 +145,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-practice-dir", type=Path, default=DEFAULT_SELF_PRACTICE_DIR)
     parser.add_argument("--force", action="store_true", help="overwrite existing PROGRESS.json")
+    parser.add_argument("--only", action="append", default=None, metavar="EXPERIMENT_ID",
+                        help="refresh only these experiment ids (implies overwrite for them); "
+                             "used by consumer handlers to advance stages after a mutation")
     args = parser.parse_args()
 
+    only = set(args.only) if args.only else None
     written: list[str] = []
     skipped: list[str] = []
     for judgment_path in sorted(args.self_practice_dir.glob("*/JUDGMENT.json")):
         experiment_dir = judgment_path.parent
         experiment_id = experiment_dir.name
+        if only is not None and experiment_id not in only:
+            continue
         progress_path = experiment_dir / "PROGRESS.json"
-        if progress_path.exists() and not args.force:
+        if progress_path.exists() and not args.force and only is None:
             skipped.append(experiment_id)
             continue
         try:
@@ -162,7 +174,7 @@ def main() -> None:
             "schema": SCHEMA,
             "paper_id": experiment_id,
             "updated_utc": utc_now(),
-            "generated_by": "backfill-paper-progress.v1",
+            "generated_by": "backfill-paper-progress.v2",
             "stages": derive_stages(experiment_id, judgment),
         }
         progress_path.write_text(json.dumps(progress, indent=2, sort_keys=False) + "\n")
