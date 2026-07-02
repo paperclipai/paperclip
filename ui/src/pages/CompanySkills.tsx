@@ -22,6 +22,7 @@ import type {
   CompanySkillVersion,
 } from "@paperclipai/shared";
 import { companySkillsApi } from "../api/companySkills";
+import { formatApiError } from "../api/client";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -3984,7 +3985,7 @@ export function CompanySkills() {
       });
     },
     onError: (error) => {
-      const message = error instanceof Error ? error.message : "Failed to create skill.";
+      const message = formatApiError(error, "Failed to create skill.");
       setCreateError(message);
       pushToast({
         tone: "error",
