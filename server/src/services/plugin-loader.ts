@@ -660,6 +660,59 @@ function readPackageDependencyNames(
   return Object.keys(deps as Record<string, unknown>);
 }
 
+/**
+ * Read the `dependencies` block of a package.json as a `name -> range` map,
+ * tolerating a missing/absent file (returns an empty map).
+ */
+function readPackageDependencyMap(
+  pkgJson: Record<string, unknown> | null,
+): Record<string, string> {
+  const deps = pkgJson?.["dependencies"];
+  if (deps === null || typeof deps !== "object" || Array.isArray(deps)) return {};
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(deps as Record<string, unknown>)) {
+    if (typeof value === "string") result[key] = value;
+  }
+  return result;
+}
+
+/**
+ * Resolve the real installed package name after `npm install <spec> --save`.
+ *
+ * npm records the installed dependency under its package.json `name`, not the
+ * install spec, so for `github:owner/repo#ref`, git URLs, npm aliases, and
+ * `name@version` the spec never matches the on-disk `node_modules/<spec>` dir.
+ * We recover the true name by diffing the target package.json `dependencies`
+ * before/after install (a single install adds or version-bumps exactly one
+ * top-level entry), falling back to matching the spec against recorded entries
+ * for idempotent re-installs where nothing changed.
+ *
+ * @returns The installed package name, or `null` if it cannot be determined.
+ */
+export function resolveInstalledPackageName(
+  beforeDeps: Record<string, string>,
+  afterDeps: Record<string, string>,
+  spec: string,
+): string | null {
+  const changed = Object.keys(afterDeps).filter(
+    (key) => beforeDeps[key] !== afterDeps[key],
+  );
+  if (changed.length === 1) return changed[0]!;
+
+  // Idempotent re-install (nothing changed) or an ambiguous diff: fall back to
+  // matching the spec against the recorded dependency entries. A github:/git:/
+  // aliased spec is stored verbatim as the range; `name@version` / `@scope/name`
+  // specs share the dependency key.
+  const candidates = changed.length > 0 ? changed : Object.keys(afterDeps);
+  for (const key of candidates) {
+    const range = afterDeps[key];
+    if (range === spec || spec === key || spec.startsWith(`${key}@`)) {
+      return key;
+    }
+  }
+  return null;
+}
+
 function resolvePackageInstallPath(packageRoot: string, packageName: string): string {
   return path.join(packageRoot, "node_modules", ...packageName.split("/"));
 }
@@ -1198,6 +1251,15 @@ export function pluginLoader(
         "plugin-loader: fetching plugin from npm",
       );
 
+      // Capture the target package.json dependencies before install so we can
+      // recover the *actual* installed package name afterwards. The install
+      // spec (e.g. `github:owner/repo#ref`, a git URL, or an npm alias) is not
+      // the on-disk `node_modules` directory name — npm installs under the
+      // package's own `package.json` `name`.
+      const depsBefore = readPackageDependencyMap(
+        await readPackageJson(targetInstallDir),
+      );
+
       try {
         // Use execFile (not exec) to avoid shell injection from package name/version.
         // --ignore-scripts prevents preinstall/install/postinstall hooks from
@@ -1211,21 +1273,24 @@ export function pluginLoader(
         throw new Error(`npm install failed for ${spec}: ${String(err)}`);
       }
 
-      // Resolve the package path after installation
-      const nodeModulesPath = path.join(targetInstallDir, "node_modules");
-      resolvedPackageName = packageName!;
-
-      // Handle scoped packages
-      if (resolvedPackageName.startsWith("@")) {
-        const [scope, name] = resolvedPackageName.split("/");
-        resolvedPackagePath = path.join(nodeModulesPath, scope!, name!);
-      } else {
-        resolvedPackagePath = path.join(nodeModulesPath, resolvedPackageName);
+      // Resolve the real installed package name from the saved dependency diff
+      // rather than trusting the spec, then map it to its node_modules path
+      // (resolvePackageInstallPath handles @scope/name segmentation).
+      const depsAfter = readPackageDependencyMap(
+        await readPackageJson(targetInstallDir),
+      );
+      const installedName = resolveInstalledPackageName(depsBefore, depsAfter, spec);
+      if (!installedName) {
+        throw new Error(
+          `Could not resolve installed package name for spec "${spec}" after npm install in ${targetInstallDir}`,
+        );
       }
+      resolvedPackageName = installedName;
+      resolvedPackagePath = resolvePackageInstallPath(targetInstallDir, resolvedPackageName);
 
       if (!existsSync(resolvedPackagePath)) {
         throw new Error(
-          `Package directory not found after installation: ${resolvedPackagePath}`,
+          `Package directory not found after installation: ${resolvedPackagePath} (spec: ${spec})`,
         );
       }
     }
