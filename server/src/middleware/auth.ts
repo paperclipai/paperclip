@@ -2,16 +2,78 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import {
+  activityLog,
+  agentApiKeys,
+  agents,
+  authUsers,
+  companies,
+  companyMemberships,
+  heartbeatRuns,
+  instanceUserRoles,
+} from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
-import { normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
+import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
+import { unprocessable } from "../errors.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function normalizeOptionalString(value: string | null | undefined) {
+  return value?.trim() || null;
+}
+
+async function resolveLegacyRunResponsibleUserId(
+  db: Db,
+  input: { companyId: string; agentId: string; runId: string },
+) {
+  if (!isUuidLike(input.runId)) return null;
+  const run = await db
+    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.id, input.runId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+      ),
+    )
+    .then((rows) => rows[0] ?? null);
+  return normalizeOptionalString(run?.responsibleUserId);
+}
+
+async function auditAgentJwtRunHeaderMismatch(
+  db: Db,
+  input: { companyId: string; agentId: string; claimRunId: string; headerRunId: string; method: string; url: string },
+) {
+  try {
+    await db.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: "agent",
+      actorId: input.agentId,
+      action: "auth.agent_jwt_run_header_mismatch",
+      entityType: "heartbeat_run",
+      entityId: input.claimRunId,
+      ...(isUuidLike(input.agentId) ? { agentId: input.agentId } : {}),
+      ...(isUuidLike(input.claimRunId) ? { runId: input.claimRunId } : {}),
+      details: {
+        claimRunId: input.claimRunId,
+        headerRunId: input.headerRunId,
+        method: input.method,
+        url: input.url,
+      },
+    });
+  } catch (err) {
+    logger.warn(
+      { err, companyId: input.companyId, agentId: input.agentId, claimRunId: input.claimRunId },
+      "Failed to audit rejected agent JWT run header mismatch",
+    );
+  }
 }
 
 interface ActorMiddlewareOptions {
@@ -159,12 +221,41 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         return;
       }
 
+      const normalizedRunIdHeader = normalizeOptionalString(runIdHeader);
+      if (normalizedRunIdHeader && normalizedRunIdHeader !== claims.run_id) {
+        await auditAgentJwtRunHeaderMismatch(db, {
+          companyId: claims.company_id,
+          agentId: claims.sub,
+          claimRunId: claims.run_id,
+          headerRunId: normalizedRunIdHeader,
+          method: req.method,
+          url: req.originalUrl,
+        });
+        next(
+          unprocessable("X-Paperclip-Run-Id does not match signed agent JWT run_id", {
+            code: "agent_jwt_run_id_mismatch",
+            claimRunId: claims.run_id,
+            headerRunId: normalizedRunIdHeader,
+          }),
+        );
+        return;
+      }
+
+      const onBehalfOfUserId = claims.responsible_user_id !== undefined
+        ? normalizeOptionalString(claims.responsible_user_id)
+        : await resolveLegacyRunResponsibleUserId(db, {
+            companyId: claims.company_id,
+            agentId: claims.sub,
+            runId: claims.run_id,
+          });
+
       req.actor = {
         type: "agent",
         agentId: claims.sub,
         companyId: claims.company_id,
         keyId: undefined,
-        runId: runIdHeader || claims.run_id || undefined,
+        runId: claims.run_id,
+        onBehalfOfUserId,
         source: "agent_jwt",
       };
       next();
@@ -193,6 +284,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       companyId: key.companyId,
       keyId: key.id,
       keyScope: normalizeAgentApiKeyScope(key.scopeConfig),
+      onBehalfOfUserId: normalizeOptionalString(key.responsibleUserId),
       runId: runIdHeader || undefined,
       source: "agent_key",
     };

@@ -10,6 +10,7 @@ export interface LocalAgentJwtClaims {
   company_id: string;
   adapter_type: string;
   run_id: string;
+  responsible_user_id?: string | null;
   iat: number;
   exp: number;
   iss?: string;
@@ -88,7 +89,13 @@ function safeCompare(a: string, b: string) {
   return timingSafeEqual(left, right);
 }
 
-export function createLocalAgentJwt(agentId: string, companyId: string, adapterType: string, runId: string) {
+export function createLocalAgentJwt(
+  agentId: string,
+  companyId: string,
+  adapterType: string,
+  runId: string,
+  responsibleUserId?: string | null,
+) {
   const config = jwtConfig();
   if (!config) return null;
 
@@ -98,6 +105,7 @@ export function createLocalAgentJwt(agentId: string, companyId: string, adapterT
     company_id: companyId,
     adapter_type: adapterType,
     run_id: runId,
+    responsible_user_id: responsibleUserId?.trim() || null,
     iat: now,
     exp: now + config.ttlSeconds,
     iss: config.issuer,
@@ -160,6 +168,11 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   const sub = typeof claims.sub === "string" ? claims.sub : null;
   const adapterType = typeof claims.adapter_type === "string" ? claims.adapter_type : null;
   const runId = typeof claims.run_id === "string" ? claims.run_id : null;
+  const responsibleUserClaim = Object.hasOwn(claims, "responsible_user_id")
+    ? typeof claims.responsible_user_id === "string" && claims.responsible_user_id.trim()
+      ? claims.responsible_user_id.trim()
+      : null
+    : undefined;
   const iat = typeof claims.iat === "number" ? claims.iat : null;
   const exp = typeof claims.exp === "number" ? claims.exp : null;
   if (!sub || !adapterType || !runId || !iat || !exp) return null;
@@ -178,6 +191,7 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
     company_id: companyId,
     adapter_type: adapterType,
     run_id: runId,
+    ...(responsibleUserClaim !== undefined ? { responsible_user_id: responsibleUserClaim } : {}),
     iat,
     exp,
     ...(issuer ? { iss: issuer } : {}),

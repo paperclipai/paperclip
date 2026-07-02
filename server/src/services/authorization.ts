@@ -32,6 +32,7 @@ export type AuthorizationActor =
     keyId?: string | null;
     keyScope?: AgentApiKeyScope | null;
     runId?: string | null;
+    onBehalfOfUserId?: string | null;
     source?:
       | "local_implicit"
       | "session"

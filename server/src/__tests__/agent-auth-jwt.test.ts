@@ -47,7 +47,7 @@ describe("agent local JWT", () => {
 
   it("creates and verifies a token", () => {
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1", "user-1");
     expect(typeof token).toBe("string");
 
     const claims = verifyLocalAgentJwt(token!);
@@ -56,6 +56,7 @@ describe("agent local JWT", () => {
       company_id: "company-1",
       adapter_type: "claude_local",
       run_id: "run-1",
+      responsible_user_id: "user-1",
       iss: "paperclip",
       aud: "paperclip-api",
     });

@@ -904,6 +904,13 @@
       "when": 1782923938661,
       "tag": "0128_user_specific_secrets",
       "breakpoints": true
+    },
+    {
+      "idx": 127,
+      "version": "7",
+      "when": 1783025124120,
+      "tag": "0127_agent_api_key_responsible_user",
+      "breakpoints": true
     }
   ]
 }
