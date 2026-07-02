@@ -9,11 +9,18 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { cn, projectUrl } from "../lib/utils";
-import { CalendarClock, Clock, ListChecks, Plus, RefreshCw, Target } from "lucide-react";
+import { CalendarClock, Clock, Plus, RefreshCw, Search, Target } from "lucide-react";
 import type { Issue, IssuePriority, IssueStatus, Project, WorkCycle } from "@paperclipai/shared";
 
 const CYCLE_PAGE_SIZE = 500;
 const OPEN_STATUSES = new Set<IssueStatus>(["backlog", "todo", "in_progress", "in_review", "blocked"]);
+const CYCLE_STATUS_FILTERS: Array<{ value: CycleStatusFilter; label: string }> = [
+  { value: "all", label: "All statuses" },
+  { value: "planned", label: "Planned" },
+  { value: "active", label: "Active" },
+  { value: "completed", label: "Completed" },
+  { value: "archived", label: "Archived" },
+];
 const PRIORITY_POINTS: Record<IssuePriority, number> = {
   critical: 8,
   high: 5,
@@ -22,6 +29,7 @@ const PRIORITY_POINTS: Record<IssuePriority, number> = {
 };
 
 type CycleSelection = "all" | "unassigned" | string;
+type CycleStatusFilter = "all" | WorkCycle["status"];
 
 type CycleSummary = {
   id: CycleSelection;
@@ -74,6 +82,25 @@ function formatActualAiTime(seconds: number) {
   return `${hours}h ${minutes}m`;
 }
 
+function statusLabel(status: WorkCycle["status"]) {
+  return status.replace(/_/g, " ");
+}
+
+function statusClassName(status: WorkCycle["status"]) {
+  switch (status) {
+    case "active":
+      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-500";
+    case "planned":
+      return "border-blue-500/30 bg-blue-500/10 text-blue-500";
+    case "completed":
+      return "border-muted-foreground/20 bg-muted text-muted-foreground";
+    case "archived":
+      return "border-destructive/30 bg-destructive/10 text-destructive";
+    default:
+      return "border-border bg-muted text-muted-foreground";
+  }
+}
+
 function projectName(projects: Project[] | undefined, projectId: string | null | undefined) {
   if (!projectId) return "Company-wide";
   return projects?.find((project) => project.id === projectId)?.name ?? "Project";
@@ -121,59 +148,14 @@ function buildCycleSummaries(
   });
 }
 
-function CycleCard({
-  summary,
-  selected,
-  onSelect,
-}: {
-  summary: CycleSummary;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={cn(
-        "rounded-md border bg-background p-4 text-left shadow-sm transition-colors hover:border-ring/60 hover:bg-accent/30",
-        selected ? "border-ring ring-1 ring-ring/40" : "border-border",
-      )}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold text-foreground">{summary.label}</h2>
-          <p className="mt-0.5 truncate text-xs text-muted-foreground">{summary.projectLabel} · {summary.dateLabel}</p>
-        </div>
-        <CalendarClock className="h-4 w-4 shrink-0 text-muted-foreground" />
-      </div>
-      <div className="mt-4 grid grid-cols-4 gap-2 text-sm">
-        <div>
-          <div className="text-2xl font-semibold tabular-nums text-foreground">{summary.issues.length}</div>
-          <div className="text-xs text-muted-foreground">issues</div>
-        </div>
-        <div>
-          <div className="text-2xl font-semibold tabular-nums text-foreground">{summary.storyPoints}</div>
-          <div className="text-xs text-muted-foreground">pts</div>
-        </div>
-        <div>
-          <div className="text-2xl font-semibold tabular-nums text-foreground">{summary.estimateHours}</div>
-          <div className="text-xs text-muted-foreground">est h</div>
-        </div>
-        <div>
-          <div className="text-2xl font-semibold tabular-nums text-foreground">{formatActualAiTime(summary.actualAiSeconds)}</div>
-          <div className="text-xs text-muted-foreground">AI time</div>
-        </div>
-      </div>
-    </button>
-  );
-}
-
 export function Cycles() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const [projectFilter, setProjectFilter] = useState<string>("all");
   const [selectedCycleId, setSelectedCycleId] = useState<CycleSelection>("all");
+  const [cycleSearch, setCycleSearch] = useState("");
+  const [cycleStatusFilter, setCycleStatusFilter] = useState<CycleStatusFilter>("all");
   const [newCycleName, setNewCycleName] = useState("");
 
   useEffect(() => {
@@ -225,12 +207,41 @@ export function Cycles() {
   });
 
   const summaries = useMemo(() => buildCycleSummaries(cycles, issues, projects), [cycles, issues, projects]);
+  const openIssues = useMemo(() => issues.filter(isOpenIssue), [issues]);
+  const filteredSummaries = useMemo(() => {
+    const normalizedQuery = cycleSearch.trim().toLowerCase();
+    return summaries.filter((summary) => {
+      if (summary.id === "unassigned" && cycleStatusFilter !== "all") return false;
+      if (summary.cycle && cycleStatusFilter !== "all" && summary.cycle.status !== cycleStatusFilter) return false;
+      if (!normalizedQuery) return true;
+      return [
+        summary.label,
+        summary.projectLabel,
+        summary.dateLabel,
+        summary.cycle?.status ?? "unassigned",
+      ].some((value) => value.toLowerCase().includes(normalizedQuery));
+    });
+  }, [cycleSearch, cycleStatusFilter, summaries]);
+  const totals = useMemo(() => ({
+    cycles: cycles.length,
+    activeCycles: cycles.filter((cycle) => cycle.status === "active").length,
+    issues: openIssues.length,
+    storyPoints: openIssues.reduce((total, issue) => total + pointsForIssue(issue), 0),
+    estimateHours: openIssues.reduce((total, issue) => total + estimateHoursForIssue(issue), 0),
+    actualAiSeconds: openIssues.reduce((total, issue) => total + actualAiSecondsForIssue(issue), 0),
+  }), [cycles, openIssues]);
   const selectedSummary = selectedCycleId === "all"
     ? null
     : summaries.find((summary) => summary.id === selectedCycleId) ?? null;
   const visibleIssues = selectedCycleId === "all"
-    ? issues.filter(isOpenIssue)
+    ? openIssues
     : selectedSummary?.issues ?? [];
+  const detailMetrics = selectedSummary ?? {
+    storyPoints: totals.storyPoints,
+    estimateHours: totals.estimateHours,
+    actualAiSeconds: totals.actualAiSeconds,
+    issues: openIssues,
+  };
 
   if (!selectedCompanyId) {
     return <EmptyState icon={RefreshCw} message="Select a company to view cycles." />;
@@ -265,6 +276,7 @@ export function Cycles() {
               onChange={(event) => {
                 setProjectFilter(event.target.value);
                 setSelectedCycleId("all");
+                setCycleSearch("");
               }}
             >
               <option value="all">All projects</option>
@@ -296,35 +308,122 @@ export function Cycles() {
         ) : loading ? (
           <div className="text-sm text-muted-foreground">Loading cycles...</div>
         ) : (
-          <div className="space-y-4">
-            <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
-              <button
-                type="button"
-                onClick={() => setSelectedCycleId("all")}
-                className={cn(
-                  "rounded-md border bg-background p-4 text-left shadow-sm transition-colors hover:border-ring/60 hover:bg-accent/30",
-                  selectedCycleId === "all" ? "border-ring ring-1 ring-ring/40" : "border-border",
-                )}
-              >
+          <div className="grid min-h-0 gap-4 xl:grid-cols-[minmax(440px,520px)_minmax(0,1fr)]">
+            <section className="flex min-h-[420px] flex-col rounded-md border border-border bg-background shadow-sm">
+              <div className="border-b border-border p-4">
                 <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h2 className="text-sm font-semibold text-foreground">All Open Issues</h2>
-                    <p className="mt-0.5 text-xs text-muted-foreground">Across visible cycles</p>
+                  <div className="min-w-0">
+                    <h2 className="text-base font-semibold text-foreground">Cycle Index</h2>
+                    <p className="mt-0.5 text-sm text-muted-foreground">
+                      {filteredSummaries.length} shown · {cycles.length} cycles total
+                    </p>
                   </div>
-                  <ListChecks className="h-4 w-4 text-muted-foreground" />
+                  <CalendarClock className="h-4 w-4 shrink-0 text-muted-foreground" />
                 </div>
-                <div className="mt-4 text-2xl font-semibold tabular-nums text-foreground">{issues.filter(isOpenIssue).length}</div>
-                <div className="text-xs text-muted-foreground">open issues</div>
-              </button>
-              {summaries.map((summary) => (
-                <CycleCard
-                  key={summary.id}
-                  summary={summary}
-                  selected={selectedCycleId === summary.id}
-                  onSelect={() => setSelectedCycleId(summary.id)}
-                />
-              ))}
-            </div>
+
+                <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_150px]">
+                  <label className="relative block">
+                    <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <input
+                      className="h-8 w-full rounded-md border border-border bg-background pl-8 pr-2 text-sm outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+                      value={cycleSearch}
+                      onChange={(event) => setCycleSearch(event.target.value)}
+                      placeholder="Search cycles..."
+                    />
+                  </label>
+                  <select
+                    className="h-8 rounded-md border border-border bg-background px-2 text-sm"
+                    value={cycleStatusFilter}
+                    onChange={(event) => setCycleStatusFilter(event.target.value as CycleStatusFilter)}
+                  >
+                    {CYCLE_STATUS_FILTERS.map((filter) => (
+                      <option key={filter.value} value={filter.value}>{filter.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-4 border-b border-border text-xs">
+                <div className="border-r border-border px-3 py-2">
+                  <div className="font-semibold tabular-nums text-foreground">{totals.activeCycles}</div>
+                  <div className="text-muted-foreground">active</div>
+                </div>
+                <div className="border-r border-border px-3 py-2">
+                  <div className="font-semibold tabular-nums text-foreground">{totals.issues}</div>
+                  <div className="text-muted-foreground">issues</div>
+                </div>
+                <div className="border-r border-border px-3 py-2">
+                  <div className="font-semibold tabular-nums text-foreground">{totals.storyPoints}</div>
+                  <div className="text-muted-foreground">points</div>
+                </div>
+                <div className="px-3 py-2">
+                  <div className="font-semibold tabular-nums text-foreground">{totals.estimateHours}h</div>
+                  <div className="text-muted-foreground">estimate</div>
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-auto">
+                <table className="w-full min-w-[480px] text-sm">
+                  <thead className="sticky top-0 z-10 border-b border-border bg-background text-xs uppercase text-muted-foreground">
+                    <tr className="text-left">
+                      <th className="py-2 pl-3 pr-2 font-medium">Cycle</th>
+                      <th className="px-2 py-2 font-medium">Work</th>
+                      <th className="px-2 py-2 font-medium">Estimate</th>
+                      <th className="py-2 pl-2 pr-3 font-medium">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    <tr className={cn("hover:bg-muted/40", selectedCycleId === "all" && "bg-accent/40")}>
+                      <td className="py-2 pl-3 pr-2">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedCycleId("all")}
+                          className="block w-full min-w-0 text-left"
+                          aria-pressed={selectedCycleId === "all"}
+                        >
+                          <span className="block truncate font-medium text-foreground">All Open Issues</span>
+                          <span className="block truncate text-xs text-muted-foreground">Across visible cycles</span>
+                        </button>
+                      </td>
+                      <td className="px-2 py-2 tabular-nums text-muted-foreground">{totals.issues} issues · {totals.storyPoints} pts</td>
+                      <td className="px-2 py-2 tabular-nums text-muted-foreground">{totals.estimateHours}h · {formatActualAiTime(totals.actualAiSeconds)}</td>
+                      <td className="py-2 pl-2 pr-3">
+                        <span className="inline-flex rounded-full border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">rollup</span>
+                      </td>
+                    </tr>
+                    {filteredSummaries.map((summary) => (
+                      <tr
+                        key={summary.id}
+                        className={cn("hover:bg-muted/40", selectedCycleId === summary.id && "bg-accent/40")}
+                      >
+                        <td className="py-2 pl-3 pr-2">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedCycleId(summary.id)}
+                            className="block w-full min-w-0 text-left"
+                            aria-pressed={selectedCycleId === summary.id}
+                          >
+                            <span className="block truncate font-medium text-foreground">{summary.label}</span>
+                            <span className="block truncate text-xs text-muted-foreground">{summary.projectLabel} · {summary.dateLabel}</span>
+                          </button>
+                        </td>
+                        <td className="px-2 py-2 tabular-nums text-muted-foreground">{summary.issues.length} issues · {summary.storyPoints} pts</td>
+                        <td className="px-2 py-2 tabular-nums text-muted-foreground">{summary.estimateHours}h · {formatActualAiTime(summary.actualAiSeconds)}</td>
+                        <td className="py-2 pl-2 pr-3">
+                          {summary.cycle ? (
+                            <span className={cn("inline-flex rounded-full border px-2 py-0.5 text-xs capitalize", statusClassName(summary.cycle.status))}>
+                              {statusLabel(summary.cycle.status)}
+                            </span>
+                          ) : (
+                            <span className="inline-flex rounded-full border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">unassigned</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
 
             <section className="rounded-md border border-border bg-background p-4 shadow-sm">
               <div className="mb-3 flex items-center justify-between gap-3 border-b border-border pb-3">
@@ -337,6 +436,25 @@ export function Cycles() {
                   </p>
                 </div>
                 <CalendarClock className="h-4 w-4 text-muted-foreground" />
+              </div>
+
+              <div className="mb-3 grid grid-cols-4 gap-2 rounded-md border border-border bg-muted/20 p-2 text-sm">
+                <div className="px-2 py-1">
+                  <div className="text-xs text-muted-foreground">Open issues</div>
+                  <div className="font-semibold tabular-nums text-foreground">{detailMetrics.issues.length}</div>
+                </div>
+                <div className="px-2 py-1">
+                  <div className="text-xs text-muted-foreground">Story points</div>
+                  <div className="font-semibold tabular-nums text-foreground">{detailMetrics.storyPoints}</div>
+                </div>
+                <div className="px-2 py-1">
+                  <div className="text-xs text-muted-foreground">Estimate</div>
+                  <div className="font-semibold tabular-nums text-foreground">{detailMetrics.estimateHours}h</div>
+                </div>
+                <div className="px-2 py-1">
+                  <div className="text-xs text-muted-foreground">AI time</div>
+                  <div className="font-semibold tabular-nums text-foreground">{formatActualAiTime(detailMetrics.actualAiSeconds)}</div>
+                </div>
               </div>
 
               {visibleIssues.length === 0 ? (
