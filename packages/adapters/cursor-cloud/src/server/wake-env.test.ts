@@ -51,5 +51,15 @@ describe("buildCursorCloudWakeEnv", () => {
     expect(env.PAPERCLIP_RUN_ID).toBe("run-abc");
     expect(env.PAPERCLIP_TASK_ID).toBe("issue-123");
     expect(env.PAPERCLIP_API_KEY).toBe("jwt-token");
+    expect(env).toHaveProperty("PAPERCLIP_API_URL");
+  });
+
+  it("omits Paperclip API callback vars when no run JWT is present", () => {
+    const env = buildCursorCloudWakeEnv(mockCtx({ runId: "run-abc", taskId: "issue-123" }), {});
+    expect(env.PAPERCLIP_RUN_ID).toBe("run-abc");
+    expect(env.PAPERCLIP_TASK_ID).toBe("issue-123");
+    expect(env).not.toHaveProperty("PAPERCLIP_API_KEY");
+    expect(env).not.toHaveProperty("PAPERCLIP_API_URL");
+    expect(env).not.toHaveProperty("PAPERCLIP_API_BRIDGE_MODE");
   });
 });

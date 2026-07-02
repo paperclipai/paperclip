@@ -15,13 +15,21 @@ The Cursor Cloud API enforces strict limits on `cloud.envVars`:
 - **4096 bytes** per value (UTF-8)
 - **50 keys** maximum per agent
 
-This adapter injects operator secrets from `adapterConfig.env` and essential `PAPERCLIP_*` runtime vars (`PAPERCLIP_RUN_ID`, `PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`, `PAPERCLIP_API_KEY`, `PAPERCLIP_API_URL`, `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, workspace keys when present, and related metadata).
+This adapter injects operator secrets from `adapterConfig.env` and essential `PAPERCLIP_*` runtime vars (`PAPERCLIP_RUN_ID`, `PAPERCLIP_TASK_ID`, `PAPERCLIP_WAKE_REASON`, `PAPERCLIP_WAKE_COMMENT_ID`, `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, workspace keys when present, and related metadata).
 
 **`PAPERCLIP_WAKE_PAYLOAD_JSON` is not sent via cloud envVars.** Local adapters receive the full wake payload as a process env var; the cloud path does not. Wake context (issue, comments, plan review) is already in the agent prompt. Agents that need structured wake data should read the prompt or call the Paperclip API (e.g. `GET /api/issues/{id}/heartbeat-context`).
 
-Operator secrets in `adapterConfig.env` must each stay under **4096 bytes**. Values that exceed the limit are truncated defensively by `clampEnvVarsForCloud()` with a `[truncated: cursor_cloud envVars limit]` suffix and a run-log warning.
+**Paperclip API callback (upstream [#8546](https://github.com/paperclipai/paperclip/pull/8546)):** `cursor_cloud` is registered with `supportsLocalAgentJwt=false`, so remote workers are not issued a run JWT. When `PAPERCLIP_API_KEY` is absent, `PAPERCLIP_API_URL` and `PAPERCLIP_API_BRIDGE_MODE` are omitted so the cloud agent does not attempt unreachable Paperclip API calls (401 noise). When an operator explicitly provides `PAPERCLIP_API_KEY`, the callback URL is retained.
+
+Operator secrets in `adapterConfig.env` must each stay under **4096 bytes**. Values that exceed the limit are truncated defensively by `clampEnvVarsForCloud()` with a `[truncated: cursor_cloud envVars limit]` suffix.
 
 `CURSOR_API_KEY` is never forwarded to cloud envVars — it is used only for Cursor SDK authentication on the Paperclip side.
+
+## Phantom success detection (upstream [#8100](https://github.com/paperclipai/paperclip/pull/8100))
+
+A run with `status === "finished"` but **no git evidence** (`result.git.branches` empty or missing) is treated as failure (`exitCode: 1`) with a diagnostic message. This catches text-only completions where Cursor did not execute code.
+
+Research-only tasks that legitimately produce no git changes will also fail — use `opencode_local` for those, or extend adapter config in a future fork if needed.
 
 ## Cost reporting
 
@@ -31,11 +39,11 @@ After a run finishes (`status === "finished"`), the adapter fetches token usage 
 GET /v1/agents/{agentId}/usage?runId={runId}
 ```
 
-Usage fields (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `totalTokens`) are mapped into the `AdapterExecutionResult.usage` shape and recorded in Paperclip **cost-events** when token counts are present.
+Usage fields are mapped into `AdapterExecutionResult.usage` and recorded in Paperclip **cost-events** when token counts are present.
 
-**`costUsd` may be `null`** until the Paperclip pricing catalog has a matching Cursor model entry. Token usage is still persisted; cost can be estimated later via the existing pricing fallback (same pattern as other metered adapters).
+**`costUsd` may be `null`** until the Paperclip pricing catalog has a matching Cursor model entry. Token usage is still persisted.
 
-Costs on the Cursor account are **separate** from Paperclip budget controls. Paperclip budget/hard-stop does not limit spend on the Cursor billing account.
+Costs on the Cursor account are **separate** from Paperclip budget controls.
 
 ## Session strategy
 

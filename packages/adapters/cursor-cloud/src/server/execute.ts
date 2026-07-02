@@ -466,6 +466,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         };
     await streamPromise;
 
+    const hasGitEvidence = !!(result.git?.branches?.length);
+    const isPhantomSuccess = result.status === "finished" && !hasGitEvidence;
+    const phantomDiagnostic = isPhantomSuccess
+      ? `Phantom success detected: Cursor run finished without evidence of code execution (no git branches/PRs). Result text: ${trimNullable(result.result)?.slice(0, 200) ?? "(empty)"}`
+      : null;
+
     const modelId = result.model?.id ?? model?.id ?? null;
     await onLog("stdout", eventLine({
       type: "cursor_cloud.result",
@@ -475,6 +481,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(typeof result.durationMs === "number" ? { durationMs: result.durationMs } : {}),
       ...(result.git ? { git: result.git } : {}),
       ...(streamError ? { error: streamError } : {}),
+      ...(isPhantomSuccess ? { phantomSuccess: true } : {}),
     }));
 
     const nextSession: CursorCloudSession = {
@@ -485,7 +492,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(envName ? { envName } : {}),
       repos,
     };
-    const isError = result.status !== "finished";
+    const isError = result.status !== "finished" || isPhantomSuccess;
     let mappedUsage: ReturnType<typeof mapUsageToAdapterResult> | undefined;
     let cursorUsage: Awaited<ReturnType<typeof fetchCursorRunUsage>> = null;
 
@@ -509,7 +516,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: isError ? 1 : 0,
       signal: null,
       timedOut: false,
-      errorMessage: isError ? (trimNullable(result.result) ?? streamError ?? `Cursor run ${result.status}`) : null,
+      errorMessage: phantomDiagnostic ?? (isError ? (trimNullable(result.result) ?? streamError ?? `Cursor run ${result.status}`) : null),
       sessionId: run.agentId,
       sessionDisplayId: run.agentId,
       sessionParams: nextSession,
@@ -533,6 +540,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(streamError ? { streamError } : {}),
         ...(cursorUsage ? { cursorUsage } : {}),
         ...(result.status === "finished" ? { costEstimated: false } : {}),
+        ...(isPhantomSuccess ? { phantomSuccess: true, hasGitEvidence: false } : {}),
       },
       clearSession: false,
     };

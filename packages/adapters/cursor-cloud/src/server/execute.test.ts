@@ -49,6 +49,9 @@ function createMockRun(options: MockRunOptions = {}) {
     result: "Done\nWith detail",
     model: { id: "gpt-5.4" },
     durationMs: 1234,
+    git: {
+      branches: [{ repoUrl: "https://github.com/paperclipai/paperclip.git", branch: "main" }],
+    },
   };
   const streamMessages = options.streamMessages ?? [];
   const streamError = options.streamError ?? null;
@@ -190,6 +193,7 @@ describe("cursor_cloud execute", () => {
       PAPERCLIP_WAKE_REASON: "issue_commented",
       PAPERCLIP_API_KEY: "paperclip-run-jwt",
     });
+    expect(createMock.mock.calls[0]?.[0]?.cloud?.envVars).toHaveProperty("PAPERCLIP_API_URL");
     expect(createMock.mock.calls[0]?.[0]?.cloud?.envVars).not.toHaveProperty("CURSOR_API_KEY");
 
     expect(result).toMatchObject({
@@ -213,6 +217,25 @@ describe("cursor_cloud execute", () => {
         expect.stringContaining('"type":"cursor_cloud.result"'),
       ]),
     );
+  });
+
+  it("omits the Paperclip API callback when no run JWT is issued (remote worker cannot call home)", async () => {
+    const run = createMockRun({ agentId: "agent-no-jwt" });
+    const sdkAgent = createMockSdkAgent({ agentId: "agent-no-jwt", sendRun: run });
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext({ authToken: undefined });
+
+    await execute(ctx);
+
+    const envVars = (createMock.mock.calls[0]?.[0]?.cloud?.envVars ?? {}) as Record<string, string>;
+    expect(envVars).not.toHaveProperty("PAPERCLIP_API_KEY");
+    expect(envVars).not.toHaveProperty("PAPERCLIP_API_URL");
+    expect(envVars).not.toHaveProperty("PAPERCLIP_API_BRIDGE_MODE");
+    expect(envVars).toMatchObject({
+      PAPERCLIP_RUN_ID: "run-heartbeat-1",
+      PAPERCLIP_AGENT_ID: "agent-1",
+      PAPERCLIP_COMPANY_ID: "company-1",
+    });
   });
 
   it("resumes a matching saved session when no active run can be reattached", async () => {
@@ -276,6 +299,9 @@ describe("cursor_cloud execute", () => {
         status: "finished",
         result: "Follow-up result",
         model: { id: "gpt-5.4" },
+        git: {
+          branches: [{ repoUrl: "https://github.com/paperclipai/paperclip.git", branch: "main" }],
+        },
       },
     });
     const sdkAgent = createMockSdkAgent({ agentId: "agent-attached", sendRun: followUpRun });
@@ -396,5 +422,68 @@ describe("cursor_cloud execute", () => {
         cursorRunId: "run-cancelled",
       },
     });
+  });
+
+  it("detects phantom success when status is finished but no git evidence", async () => {
+    const phantomRun = createMockRun({
+      id: "run-phantom",
+      agentId: "agent-phantom",
+      status: "finished",
+      waitResult: {
+        id: "run-phantom",
+        status: "finished",
+        result: "I analyzed the code and here are my thoughts...",
+        model: { id: "gpt-5.4" },
+        durationMs: 5000,
+      },
+    });
+    const sdkAgent = createMockSdkAgent({ agentId: "agent-phantom", sendRun: phantomRun });
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext();
+
+    const result = await execute(ctx);
+
+    expect(result).toMatchObject({
+      exitCode: 1,
+      errorMessage: expect.stringContaining("Phantom success detected"),
+      sessionId: "agent-phantom",
+      resultJson: {
+        status: "finished",
+        phantomSuccess: true,
+        hasGitEvidence: false,
+      },
+    });
+    expect(result.errorMessage).toContain("no git branches/PRs");
+  });
+
+  it("accepts finished status when git evidence exists", async () => {
+    const realRun = createMockRun({
+      id: "run-real",
+      agentId: "agent-real",
+      status: "finished",
+      waitResult: {
+        id: "run-real",
+        status: "finished",
+        result: "Fixed the bug\nWith detail",
+        model: { id: "gpt-5.4" },
+        durationMs: 12000,
+        git: {
+          branches: [{ repoUrl: "https://github.com/example/repo.git", branch: "fix/bug-123" }],
+        },
+      },
+    });
+    const sdkAgent = createMockSdkAgent({ agentId: "agent-real", sendRun: realRun });
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext();
+
+    const result = await execute(ctx);
+
+    expect(result).toMatchObject({
+      exitCode: 0,
+      errorMessage: null,
+      sessionId: "agent-real",
+      summary: "Fixed the bug",
+    });
+    expect(result.resultJson).not.toHaveProperty("phantomSuccess");
   });
 });

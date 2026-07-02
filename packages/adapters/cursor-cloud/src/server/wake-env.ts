@@ -42,6 +42,14 @@ export function buildCursorCloudWakeEnv(
     env.PAPERCLIP_API_KEY = authToken;
   }
 
+  // cursor_cloud runs remotely (supportsLocalAgentJwt=false). Without a run JWT,
+  // PAPERCLIP_API_URL points at an unreachable local runtime — drop callback vars
+  // so cloud workers do not attempt Paperclip API calls (401 noise). Upstream #8546.
+  if (!trimNullable(env.PAPERCLIP_API_KEY)) {
+    delete env.PAPERCLIP_API_URL;
+    delete env.PAPERCLIP_API_BRIDGE_MODE;
+  }
+
   const workspace = parseObject(context.paperclipWorkspace);
   const workspaceMappings: Array<[string, unknown]> = [
     ["PAPERCLIP_WORKSPACE_CWD", workspace.cwd],
