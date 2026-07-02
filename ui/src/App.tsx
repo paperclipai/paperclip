@@ -49,6 +49,8 @@ import { AppsConnect } from "./pages/apps/AppsConnect";
 import { AppsAttention } from "./pages/apps/AppsAttention";
 import { AppDetail } from "./pages/apps/AppDetail";
 import { AppNotConnected } from "./pages/apps/AppNotConnected";
+import { GatewaysList } from "./pages/apps/gateways/GatewaysList";
+import { GatewayDetail } from "./pages/apps/gateways/GatewayDetail";
 import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
 import { Secrets } from "./pages/Secrets";
@@ -105,6 +107,9 @@ function boardRoutes() {
       <Route path="apps" element={<Apps />} />
       <Route path="apps/connect" element={<AppsConnect />} />
       <Route path="apps/attention" element={<AppsAttention />} />
+      <Route path="apps/gateways" element={<GatewaysList />} />
+      <Route path="apps/gateways/:gatewayId" element={<Navigate to="overview" replace />} />
+      <Route path="apps/gateways/:gatewayId/:tab" element={<GatewayDetail />} />
       <Route path="apps/advanced" element={<AdvancedToolsRoute />} />
       <Route path="apps/advanced/profiles/new" element={<ProfileWizardRoute mode="new" />} />
       <Route path="apps/advanced/profiles/:profileId/edit" element={<ProfileWizardRoute mode="edit" />} />

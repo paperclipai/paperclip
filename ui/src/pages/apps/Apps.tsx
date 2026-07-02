@@ -21,6 +21,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import { AppLogo } from "./AppLogo";
+import { AppsSubNav } from "./gateways/AppsSubNav";
 
 const POPULAR_KEYS = ["zapier", "github", "slack", "notion", "linear"];
 
@@ -200,6 +201,8 @@ export function Apps() {
             </div>
             <Button onClick={() => navigate("/apps/connect")}>Connect an app</Button>
           </header>
+
+          <AppsSubNav active="connected" />
 
           <div className="text-sm">
             <span className="font-medium">

@@ -46,6 +46,7 @@ import type {
   ToolMcpGatewayToken,
   CreateToolMcpGateway,
   CreateToolMcpGatewayToken,
+  UpdateToolMcpGateway,
   CreateToolTrustRuleFromActionRequest,
 } from "@paperclipai/shared";
 import { api } from "./client";
@@ -72,6 +73,8 @@ export type ToolMcpGatewaysResponse = { gateways: ToolMcpGatewayWithTokens[] };
 export type CreateGatewayTokenInput = Omit<CreateToolMcpGatewayToken, "expiresAt"> & {
   expiresAt?: string | Date | null;
 };
+/** Gateway update payload — `companyId` is injected by the client method. */
+export type UpdateGatewayInput = Omit<UpdateToolMcpGateway, "companyId">;
 export type ReviewNewToolsInput = {
   decisions: Array<{ catalogEntryId: string; decision: ToolProfileNewToolReviewDecision }>;
 };
@@ -407,6 +410,8 @@ export const toolsApi = {
     api.get<ToolMcpGatewaysResponse>(`/companies/${companyId}/tools/gateways`),
   createGateway: (companyId: string, input: CreateToolMcpGateway) =>
     api.post<ToolMcpGatewayWithTokens>(`/companies/${companyId}/tools/gateways`, input),
+  updateGateway: (companyId: string, gatewayId: string, input: UpdateGatewayInput) =>
+    api.patch<ToolMcpGatewayWithTokens>(`/tool-gateway/gateways/${gatewayId}`, { ...input, companyId }),
   createGatewayToken: (companyId: string, gatewayId: string, input: CreateGatewayTokenInput) =>
     api.post<ToolMcpGatewayTokenCreated>(`/tool-gateway/gateways/${gatewayId}/tokens`, { ...input, companyId }),
   revokeGatewayToken: (companyId: string, tokenId: string) =>
