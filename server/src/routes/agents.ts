@@ -103,6 +103,13 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
+import {
+  allowsSharedSubscriptionHome,
+  findSubscriptionHomeConflicts,
+  formatSubscriptionHomeConflict,
+  listOtherActiveAgentsForSubscriptionHomeCheck,
+  listSubscriptionHomeBindings,
+} from "../services/subscription-home-guard.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -1187,6 +1194,30 @@ export function agentRoutes(
     };
   }
 
+  // Runtime hardening (PAU-281): two active agents of one company must not
+  // resolve the same subscription home (CODEX_HOME / CLAUDE_CONFIG_DIR / HOME)
+  // through their adapter env, because that silently shares one provider login
+  // across employees. Intentional sharing (same employee, several agents) is
+  // acknowledged via adapterConfig.allowSharedSubscriptionHome=true.
+  async function assertNoCrossAgentSubscriptionHomeConflict(
+    companyId: string,
+    agentId: string,
+    adapterConfig: Record<string, unknown>,
+  ): Promise<void> {
+    const candidateBindings = listSubscriptionHomeBindings(adapterConfig);
+    if (candidateBindings.length === 0) return;
+    if (allowsSharedSubscriptionHome(adapterConfig)) return;
+    const otherAgents = await listOtherActiveAgentsForSubscriptionHomeCheck(db, companyId, agentId);
+    const conflicts = findSubscriptionHomeConflicts({ candidateBindings, otherAgents });
+    if (conflicts.length === 0) return;
+    throw conflict(
+      `Subscription home conflict: ${conflicts.map(formatSubscriptionHomeConflict).join("; ")}. ` +
+        "Two active agents must not share the same subscription home unless the sharing is intentional " +
+        "(same employee). Use a distinct auth home per employee, or set " +
+        "adapterConfig.allowSharedSubscriptionHome=true to acknowledge intentional sharing.",
+    );
+  }
+
   function applyCreateDefaultsByAdapterType(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
@@ -2242,6 +2273,7 @@ export function agentRoutes(
       normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig),
       normalizedAdapterConfig,
     );
+    await assertNoCrossAgentSubscriptionHomeConflict(companyId, hiredAgentId, normalizedAdapterConfig);
     const normalizedHireInput = {
       ...hireInput,
       adapterConfig: normalizedAdapterConfig,
@@ -2435,6 +2467,7 @@ export function agentRoutes(
       normalizeNewAgentRuntimeConfig(createInput.runtimeConfig),
       normalizedAdapterConfig,
     );
+    await assertNoCrossAgentSubscriptionHomeConflict(companyId, agentId, normalizedAdapterConfig);
     await assertAgentEnvironmentSelection(companyId, createInput.adapterType, createInput.defaultEnvironmentId);
     await assertAgentDefaultEnvironmentSelection(companyId, createInput.defaultEnvironmentId, {
       allowedDrivers: allowedEnvironmentDriversForAgent(createInput.adapterType),
@@ -2898,6 +2931,11 @@ export function agentRoutes(
         adapterType: requestedAdapterType,
         adapterConfig: effectiveAdapterConfig,
       });
+      await assertNoCrossAgentSubscriptionHomeConflict(
+        existing.companyId,
+        existing.id,
+        normalizedEffectiveAdapterConfig,
+      );
       patchData.adapterConfig = syncInstructionsBundleConfigFromFilePath(existing, normalizedEffectiveAdapterConfig);
     }
     if (requestedRuntimeConfig) {
