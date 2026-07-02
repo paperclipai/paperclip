@@ -15,6 +15,7 @@ import {
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
   DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+  resolveSandboxCallbackBridgeMaxBodyBytes,
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
 } from "./sandbox-callback-bridge.js";
@@ -1098,10 +1099,16 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   const queueDir = path.posix.join(bridgeRuntimeDir, "queue");
   const assetRemoteDir = path.posix.join(bridgeRuntimeDir, "server");
   const bridgeToken = createSandboxCallbackBridgeToken();
-  const maxBodyBytes =
-    typeof input.maxBodyBytes === "number" && Number.isFinite(input.maxBodyBytes) && input.maxBodyBytes > 0
-      ? Math.trunc(input.maxBodyBytes)
-      : DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES;
+  // When the caller does not explicitly pass maxBodyBytes, fall back to the
+  // PAPERCLIP_BRIDGE_MAX_BODY_BYTES env var (if set to a positive integer)
+  // before using the compiled-in default. This allows operators to raise the
+  // bridge response body limit via launchd/env config without a code change
+  // to every adapter call-site. The resolved value flows to both the host
+  // worker and the sandbox env (via buildSandboxCallbackBridgeEnv).
+  const maxBodyBytes = resolveSandboxCallbackBridgeMaxBodyBytes(
+    input.maxBodyBytes,
+    process.env.PAPERCLIP_BRIDGE_MAX_BODY_BYTES,
+  );
   const hostApiUrl =
     input.hostApiUrl?.trim() ||
     process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ||

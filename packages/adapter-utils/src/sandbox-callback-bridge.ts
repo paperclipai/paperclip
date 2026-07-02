@@ -12,13 +12,46 @@ const DEFAULT_BRIDGE_POLL_INTERVAL_MS = 100;
 const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
-const DEFAULT_BRIDGE_MAX_BODY_BYTES = 256 * 1024;
+// 2 MiB. Raised from 256 KiB so out-of-box behavior stops dropping
+// legitimate Paperclip API responses (large comment threads, inbox-lite,
+// heartbeat-context payloads) inlined into bridge responses. Operators can
+// still override via PAPERCLIP_BRIDGE_MAX_BODY_BYTES on the host.
+const DEFAULT_BRIDGE_MAX_BODY_BYTES = 2 * 1024 * 1024;
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
 const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
 
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES = DEFAULT_BRIDGE_MAX_BODY_BYTES;
+
+/**
+ * Resolve the bridge response body size limit (bytes).
+ *
+ * Precedence (first wins):
+ *   1. An explicit positive finite number passed by the adapter caller.
+ *   2. PAPERCLIP_BRIDGE_MAX_BODY_BYTES from the host environment, when set to
+ *      a positive integer. This is the operator override path — the sandbox
+ *      does not inherit host env, so the host reads this and forwards the
+ *      resolved value to the sandbox via buildSandboxCallbackBridgeEnv.
+ *   3. The compiled-in DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES.
+ */
+export function resolveSandboxCallbackBridgeMaxBodyBytes(
+  explicitMaxBodyBytes: number | null | undefined,
+  envValue: string | undefined,
+): number {
+  if (
+    typeof explicitMaxBodyBytes === "number" &&
+    Number.isFinite(explicitMaxBodyBytes) &&
+    explicitMaxBodyBytes > 0
+  ) {
+    return Math.trunc(explicitMaxBodyBytes);
+  }
+  const envMaxBodyBytes = Number.parseInt(envValue ?? "", 10);
+  if (Number.isFinite(envMaxBodyBytes) && envMaxBodyBytes > 0) {
+    return envMaxBodyBytes;
+  }
+  return DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES;
+}
 
 export interface SandboxCallbackBridgeRouteRule {
   method: string;

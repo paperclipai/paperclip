@@ -12,6 +12,8 @@ import {
   createFileSystemSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
+  DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+  resolveSandboxCallbackBridgeMaxBodyBytes,
   sandboxCallbackBridgeDirectories,
   syncSandboxCallbackBridgeEntrypoint,
   startSandboxCallbackBridgeServer,
@@ -979,5 +981,50 @@ describe("sandbox callback bridge", () => {
         PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
       },
     }));
+  });
+});
+
+describe("resolveSandboxCallbackBridgeMaxBodyBytes", () => {
+  it("uses the explicit caller value when it is a positive finite number", () => {
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(1024, "999")).toBe(1024);
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(1, undefined)).toBe(1);
+  });
+
+  it("truncates a non-integer explicit value", () => {
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(1024.9, undefined)).toBe(1024);
+  });
+
+  it("falls back to the env value when no explicit value is given", () => {
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(null, "2097152")).toBe(2097152);
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(undefined, "1048576")).toBe(1048576);
+  });
+
+  it("falls back to the env value when the explicit value is invalid", () => {
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(0, "524288")).toBe(524288);
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(-1, "524288")).toBe(524288);
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(NaN, "524288")).toBe(524288);
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(Infinity, "524288")).toBe(524288);
+  });
+
+  it("uses the compiled-in default when neither explicit nor env is valid", () => {
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(null, undefined)).toBe(
+      DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+    );
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(undefined, "")).toBe(
+      DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+    );
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(0, "not-a-number")).toBe(
+      DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+    );
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(null, "0")).toBe(
+      DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+    );
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(null, "-100")).toBe(
+      DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+    );
+  });
+
+  it("defaults to 2 MiB (regression guard against the old 256 KiB limit)", () => {
+    expect(DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES).toBe(2 * 1024 * 1024);
   });
 });
