@@ -35,7 +35,7 @@ describe("heartbeat model profile application", () => {
       configSource: "adapter_default",
       fallbackReason: null,
       adapterConfig: {
-        model: "gpt-5.3-codex-spark",
+        model: "codex-mini-latest",
         modelReasoningEffort: "high",
       },
     });
