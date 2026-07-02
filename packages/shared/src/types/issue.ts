@@ -14,6 +14,7 @@ import type {
   IssueExecutionStageType,
   IssueExecutionStateStatus,
   IssueOriginKind,
+  IssueComplexity,
   IssuePriority,
   IssueRecoveryActionKind,
   IssueRecoveryActionOutcome,
@@ -554,6 +555,7 @@ export interface Issue {
   status: IssueStatus;
   workMode: IssueWorkMode;
   priority: IssuePriority;
+  complexity?: IssueComplexity | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   checkoutRunId: string | null;

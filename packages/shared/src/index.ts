@@ -1,6 +1,15 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export { isAbsolutePath } from "./absolute-path.js";
 export {
+  COMPLEXITY_MODEL_PROFILE_MAP,
+  complexityToModelProfileKey,
+  decideModelRouting,
+  isIssueComplexity,
+  type ModelRoutingDecision,
+  type ModelRoutingInput,
+  type ModelRoutingSkipReason,
+} from "./model-routing.js";
+export {
   getAgentOrgChainHealth,
   getAgentWorkEligibility,
   isAgentAssignableToWork,

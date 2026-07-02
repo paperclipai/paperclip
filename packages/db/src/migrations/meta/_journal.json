@@ -911,6 +911,13 @@
       "when": 1782254700000,
       "tag": "0129_claude_account_usage",
       "breakpoints": true
+    },
+    {
+      "idx": 131,
+      "version": "7",
+      "when": 1782982464062,
+      "tag": "0131_issue_complexity",
+      "breakpoints": true
     }
   ]
 }

@@ -265,6 +265,21 @@ describe("server adapter registry", () => {
         adapterConfig: expect.objectContaining({ model: "claude-sonnet-4-6" }),
         source: "adapter_default",
       }),
+      expect.objectContaining({
+        key: "standard",
+        adapterConfig: expect.objectContaining({ model: "claude-sonnet-5" }),
+        source: "adapter_default",
+      }),
+      expect.objectContaining({
+        key: "premium",
+        adapterConfig: expect.objectContaining({ model: "claude-opus-4-8" }),
+        source: "adapter_default",
+      }),
+      expect.objectContaining({
+        key: "flagship",
+        adapterConfig: expect.objectContaining({ model: "claude-fable-5" }),
+        source: "adapter_default",
+      }),
     ]);
     await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
       expect.objectContaining({
