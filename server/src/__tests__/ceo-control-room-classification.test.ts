@@ -133,9 +133,11 @@ describe("CEO control-room conveyor lane classification", () => {
 });
 
 describe("CEO control-room category severity", () => {
-  it("does not escalate missing_secret when only external refs / unbound items are present", () => {
+  it("keeps the secret_reference registry view informational", () => {
+    // External-reference pointers and registered-but-unbound rows now live under their own
+    // "Secret references" category so "Missing secret" only ever names genuine gaps.
     expect(
-      severityForNonEmptyCategory("missing_secret", [
+      severityForNonEmptyCategory("secret_reference", [
         { type: "secret_external_ref" },
         { type: "secret_unbound" },
       ]),
@@ -231,7 +233,8 @@ describe("CEO control-room fincli.ai snapshot (documented false-warning regressi
     expect(items.filter((i) => i.type === "secret_external_ref")).toHaveLength(7);
     expect(items.filter((i) => i.type === "secret_unbound")).toHaveLength(2);
     expect(items.some((i) => i.type === "secret_missing")).toBe(false);
-    expect(severityForNonEmptyCategory("missing_secret", items)).toBe("info");
+    // All 9 route to the secret_reference registry view — "Missing secret" stays empty/ok.
+    expect(severityForNonEmptyCategory("secret_reference", items)).toBe("info");
   });
 
   it("narrows the live proof-ledger gap to the 3 substantive issues that truly lack proof", () => {

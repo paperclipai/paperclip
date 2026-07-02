@@ -1,6 +1,7 @@
 export type CeoControlRoomCategoryKey =
   | "blocked_by_human"
   | "missing_secret"
+  | "secret_reference"
   | "worker_offline"
   | "operational_loop"
   | "agent_conveyor"

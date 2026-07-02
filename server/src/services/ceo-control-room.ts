@@ -390,6 +390,10 @@ export function severityForNonEmptyCategory(
       return items.some((item) => item.type === "proof_missing") ? "warning" : "info";
     case "missing_secret":
       return items.some((item) => item.type === "issue" || item.type === "secret_missing") ? "warning" : "info";
+    case "secret_reference":
+      // Holds only active external-reference pointers / registered-but-unbound rows by
+      // construction — a registry view, never an escalation.
+      return "info";
     case "worker_offline":
       // Stale process-lost orphans (server-restart artifacts, recoverable via re-run/clear-error)
       // alone are informational. Any genuinely offline/failing agent (agent_offline), stalled
@@ -759,6 +763,7 @@ export function ceoControlRoomService(db: Db) {
       const categories = {
         blocked_by_human: category("blocked_by_human", "Blocked by human", "ok"),
         missing_secret: category("missing_secret", "Missing secret", "ok"),
+        secret_reference: category("secret_reference", "Secret references", "ok"),
         worker_offline: category("worker_offline", "Worker offline", "ok"),
         operational_loop: category("operational_loop", "Operational loop", "ok"),
         agent_conveyor: category("agent_conveyor", "Agent conveyor", "ok"),
@@ -779,7 +784,10 @@ export function ceoControlRoomService(db: Db) {
       }
       for (const row of unboundSecretRows) {
         const classified = classifyUnboundSecret({ status: row.status, managedMode: row.managedMode });
-        categories.missing_secret.items.push({ type: classified.type, summary: `${row.name} (${row.key}) — ${classified.descriptor}`, metadata: row });
+        // Only a genuinely missing/inactive secret belongs under "Missing secret"; active
+        // external-reference pointers and registered-but-unbound rows are registry notes.
+        const target = classified.type === "secret_missing" ? categories.missing_secret : categories.secret_reference;
+        target.items.push({ type: classified.type, summary: `${row.name} (${row.key}) — ${classified.descriptor}`, metadata: row });
       }
 
       for (const row of errorAgentRows) {
@@ -877,6 +885,7 @@ export function ceoControlRoomService(db: Db) {
       const orderedCategories = [
         categories.blocked_by_human,
         categories.missing_secret,
+        categories.secret_reference,
         categories.worker_offline,
         categories.operational_loop,
         categories.agent_conveyor,
