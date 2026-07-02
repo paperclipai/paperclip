@@ -22,19 +22,17 @@ import {
 } from "../lib/issueDetailBreadcrumb";
 import { cn, formatShortDate, projectUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { CustomDashboardBuilder, DEFAULT_WORK_HUB_WIDGETS } from "../components/CustomDashboardBuilder";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import {
-  AlertCircle,
   Bot,
   BriefcaseBusiness,
   CalendarClock,
-  CheckCircle2,
   CircleDot,
   Gauge,
   LayoutDashboard,
   List,
-  ListChecks,
   Plus,
   Target,
   Users,
@@ -104,8 +102,6 @@ const FILTER_CONFIG: Record<WorkItemFilter, WorkHubFilterConfig> = {
     workItemTypes: ["ai_task"],
   },
 };
-
-type MetricTone = "neutral" | "blue" | "green" | "amber" | "red" | "violet";
 
 type WorkloadRow = {
   id: string;
@@ -416,44 +412,6 @@ function buildWorkHubDashboard(args: {
     .slice(0, 6);
 
   return summary;
-}
-
-function MetricTile({
-  icon: Icon,
-  label,
-  value,
-  detail,
-  tone = "neutral",
-}: {
-  icon: typeof BriefcaseBusiness;
-  label: string;
-  value: string | number;
-  detail: string;
-  tone?: MetricTone;
-}) {
-  const toneClasses: Record<MetricTone, string> = {
-    neutral: "bg-zinc-100 text-zinc-700 dark:bg-zinc-900 dark:text-zinc-200",
-    blue: "bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300",
-    green: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300",
-    amber: "bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300",
-    red: "bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300",
-    violet: "bg-violet-50 text-violet-700 dark:bg-violet-950/50 dark:text-violet-300",
-  };
-
-  return (
-    <div className="rounded-md border border-border bg-background px-4 py-3 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
-          <div className="mt-2 text-2xl font-semibold leading-none text-foreground">{value}</div>
-        </div>
-        <span className={cn("inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md", toneClasses[tone])}>
-          <Icon className="h-4 w-4" />
-        </span>
-      </div>
-      <div className="mt-2 text-xs text-muted-foreground">{detail}</div>
-    </div>
-  );
 }
 
 function LaneButton({
@@ -999,85 +957,24 @@ export function WorkHub() {
         <div className="space-y-4 px-4 py-4 lg:px-6">
           {activeView === "dashboard" ? (
             <>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <MetricTile
-              icon={ListChecks}
-              label="Open Tasks"
-              value={dashboard.openHumanTaskCount}
-              detail={`${dashboard.planningPoints} story pts / ${dashboard.estimateHours}h estimate`}
-              tone="blue"
-            />
-            <MetricTile
-              icon={Target}
-              label="Initiatives"
-              value={formatCappedCount(dashboard.initiativeCount, dashboardCaps.initiative)}
-              detail={`${dashboard.completionPct}% task completion`}
-              tone="violet"
-            />
-            <MetricTile
-              icon={AlertCircle}
-              label="Blocked"
-              value={dashboard.blockedCount}
-              detail={`${dashboard.unassignedCount} unassigned human tasks`}
-              tone={dashboard.blockedCount > 0 ? "red" : "neutral"}
-            />
-            <MetricTile
-              icon={CalendarClock}
-              label="Due Soon"
-              value={dashboard.dueSoonCount + dashboard.overdueCount}
-              detail={`${dashboard.overdueCount} overdue, ${dashboard.dueSoonCount} due this week`}
-              tone={dashboard.overdueCount > 0 ? "amber" : "green"}
-            />
-          </div>
+          <CustomDashboardBuilder
+            storageKey={`paperclip:work-hub-dashboard:${selectedCompanyId}`}
+            title="Dashboard widgets"
+            subtitle="Customize the metrics board sees first. Widgets are saved for this browser and computed from loaded Paperclip work."
+            issues={dashboardIssues}
+            projects={projects}
+            defaultWidgets={DEFAULT_WORK_HUB_WIDGETS}
+            isLoading={
+              dashboardHumanTasksQuery.isLoading
+              || dashboardInitiativesQuery.isLoading
+              || dashboardExecutionIssuesQuery.isLoading
+            }
+          />
 
           <div className="grid gap-4 xl:grid-cols-[1.1fr_1fr_1fr]">
             <WorkloadPanel rows={dashboard.workload} />
             <ProjectPulsePanel rows={dashboard.projectPulse} />
             <TimelinePanel rows={dashboard.timeline} />
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-3">
-            <div className="rounded-md border border-border bg-background p-4 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-foreground">Human Tasks</div>
-                  <div className="text-xs text-muted-foreground">Owned by people</div>
-                </div>
-                <Users className="h-4 w-4 text-blue-600 dark:text-blue-300" />
-              </div>
-              <div className="mt-3 text-2xl font-semibold text-foreground">
-                {formatCappedCount(dashboard.humanTaskCount, dashboardCaps.human_task)}
-              </div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                {dashboard.openHumanTaskCount} open / {dashboard.planningPoints} story pts / {dashboard.estimateHours}h
-              </div>
-            </div>
-            <div className="rounded-md border border-border bg-background p-4 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-foreground">Initiatives</div>
-                  <div className="text-xs text-muted-foreground">Project-level outcomes</div>
-                </div>
-                <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-300" />
-              </div>
-              <div className="mt-3 text-2xl font-semibold text-foreground">
-                {formatCappedCount(dashboard.initiativeCount, dashboardCaps.initiative)}
-              </div>
-              <div className="mt-1 text-xs text-muted-foreground">{dashboard.completionPct}% human-task completion</div>
-            </div>
-            <div className="rounded-md border border-border bg-background p-4 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-foreground">AI Issues</div>
-                  <div className="text-xs text-muted-foreground">Execution lane</div>
-                </div>
-                <Bot className="h-4 w-4 text-violet-600 dark:text-violet-300" />
-              </div>
-              <div className="mt-3 text-2xl font-semibold text-foreground">
-                {formatCappedCount(dashboard.executionIssueCount, dashboardCaps.execution)}
-              </div>
-              <div className="mt-1 text-xs text-muted-foreground">Tracked outside human capacity</div>
-            </div>
           </div>
             </>
           ) : null}

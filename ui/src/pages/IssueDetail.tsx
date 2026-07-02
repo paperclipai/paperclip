@@ -121,13 +121,17 @@ import {
   AlertTriangle,
   Archive,
   ArrowLeft,
+  Bot,
+  CalendarClock,
   Check,
   ChevronLeft,
   ChevronRight,
+  Clock3,
   Copy,
   Eye,
   EyeOff,
   Flag,
+  Hash,
   Hexagon,
   ListTree,
   Lock,
@@ -210,6 +214,76 @@ function issueTreeControlHelpText(mode: IssueTreeControlMode, scope: "leaf" | "s
   return scope === "leaf"
     ? LEAF_WORK_CONTROL_MODE_HELP_TEXT[mode] ?? TREE_CONTROL_MODE_HELP_TEXT[mode]
     : TREE_CONTROL_MODE_HELP_TEXT[mode];
+}
+
+function formatIssuePlanningHours(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return "No estimate";
+  return Number.isInteger(value) ? `${value}h` : `${value.toFixed(1)}h`;
+}
+
+function formatIssueAiHours(seconds: number | null | undefined): string {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) return "0h";
+  const hours = seconds / 3600;
+  return Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
+}
+
+function formatIssueDueDate(issue: Issue): string {
+  if (!issue.dueDate) return "No due date";
+  return new Date(issue.dueDate).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function IssuePlanningStat({
+  icon: Icon,
+  label,
+  value,
+  detail,
+}: {
+  icon: typeof Hash;
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <div className="min-w-0 rounded-md border border-border bg-muted/20 px-3 py-2">
+      <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+        <Icon className="h-3.5 w-3.5" />
+        <span>{label}</span>
+      </div>
+      <div className="mt-1 truncate text-sm font-semibold text-foreground">{value}</div>
+      <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{detail}</div>
+    </div>
+  );
+}
+
+function IssuePlanningStrip({ issue }: { issue: Issue }) {
+  return (
+    <div className="grid gap-2 border-t border-border pt-3 sm:grid-cols-2 xl:grid-cols-4">
+      <IssuePlanningStat
+        icon={Hash}
+        label="Story points"
+        value={issue.storyPoints != null ? `${issue.storyPoints} pts` : "No points"}
+        detail="Human planning weight"
+      />
+      <IssuePlanningStat
+        icon={Clock3}
+        label="Estimate"
+        value={formatIssuePlanningHours(issue.estimateHours)}
+        detail="Rough hours"
+      />
+      <IssuePlanningStat
+        icon={Bot}
+        label="AI time"
+        value={formatIssueAiHours(issue.actualAiSeconds)}
+        detail="Recorded execution"
+      />
+      <IssuePlanningStat
+        icon={CalendarClock}
+        label="Cycle"
+        value={issue.cycle?.name ?? "No cycle"}
+        detail={formatIssueDueDate(issue)}
+      />
+    </div>
+  );
 }
 
 function treeControlPreviewErrorCopy(error: unknown): string {
@@ -398,7 +472,7 @@ function IssueSectionSkeleton({
   rows?: number;
 }) {
   return (
-    <div className="space-y-3 rounded-2xl border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm px-5 py-4">
+    <div className="space-y-3 rounded-lg border border-border bg-background px-5 py-4 shadow-sm">
       <Skeleton className={cn("h-4", titleWidth)} />
       <div className="space-y-2">
         {Array.from({ length: rows }).map((_, index) => (
@@ -448,7 +522,7 @@ function IssueDetailLoadingState({
   const identifier = headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="mx-auto w-full max-w-[1120px] space-y-5 px-0 xl:px-2">
       <div className="space-y-3">
         <Skeleton className="h-3 w-40" />
 
@@ -3453,7 +3527,7 @@ export function IssueDetail() {
   );
 
   return (
-    <div className="max-w-3xl space-y-8 pb-10">
+    <div className="mx-auto w-full max-w-[1120px] space-y-5 px-0 pb-10 xl:px-2">
       {/* Parent chain breadcrumb */}
       {ancestors.length > 0 && (
         <nav className="flex items-center gap-1 text-xs text-muted-foreground/70 flex-wrap">
@@ -3563,8 +3637,8 @@ export function IssueDetail() {
         </div>
       )}
 
-      {/* Hero header glass card */}
-      <div className="rounded-2xl bg-background/70 backdrop-blur-md shadow-sm ring-1 ring-border/50 px-6 py-6 space-y-4">
+      {/* Issue header */}
+      <div className="space-y-4 rounded-lg border border-border bg-background px-5 py-5 shadow-sm">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <StatusIcon
             status={issue.status}
@@ -3896,6 +3970,8 @@ export function IssueDetail() {
             await uploadAttachment.mutateAsync(file);
           }}
         />
+
+        <IssuePlanningStrip issue={issue} />
       </div>
 
       <PluginSlotOutlet
@@ -3935,12 +4011,12 @@ export function IssueDetail() {
           entityType: "issue",
         }}
         className="space-y-3"
-        itemClassName="rounded-2xl border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm p-4"
+        itemClassName="rounded-lg border border-border bg-background shadow-sm p-4"
         missingBehavior="placeholder"
       />
 
       {showRichSubIssuesSection ? (
-        <div className="rounded-2xl border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm px-5 py-4 space-y-3">
+        <div className="space-y-3 rounded-lg border border-border bg-background px-5 py-4 shadow-sm">
           <div className="flex items-center justify-between gap-2">
             <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">Sub-issues</h3>
           </div>
@@ -4004,7 +4080,7 @@ export function IssueDetail() {
       ) : hasAttachments ? (
         <div
         className={cn(
-          "rounded-2xl border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm px-5 py-4 space-y-3 transition-colors",
+          "space-y-3 rounded-lg border border-border bg-background px-5 py-4 shadow-sm transition-colors",
           attachmentDragActive && "ring-2 ring-primary/40",
         )}
         onDragEnter={(evt) => {
@@ -4145,7 +4221,7 @@ export function IssueDetail() {
         onUpdate={(data) => updateIssue.mutate(data)}
       />
 
-      <div className="rounded-2xl border border-border/60 bg-background/70 backdrop-blur-sm shadow-sm overflow-hidden">
+      <div className="overflow-hidden rounded-lg border border-border bg-background shadow-sm">
       <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-0">
         <div className="border-b border-border/50 px-4 pt-3">
         <TabsList variant="line" className="w-full justify-start gap-1">

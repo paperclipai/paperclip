@@ -7,6 +7,7 @@ import {
   PROJECT_ROLE_PRESETS,
   isUuidLike,
   type Issue,
+  type Project,
   type BudgetPolicySummary,
   type ExecutionWorkspace,
 } from "@paperclipai/shared";
@@ -29,6 +30,7 @@ import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { IssuesList } from "../components/IssuesList";
+import { CustomDashboardBuilder, DEFAULT_PROJECT_DASHBOARD_WIDGETS } from "../components/CustomDashboardBuilder";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
@@ -792,6 +794,26 @@ function filterProjectIssuesByLane(issues: Issue[], lane: ProjectIssueLane) {
   return issues;
 }
 
+function ProjectMetricsDashboard({ project, companyId }: { project: Project; companyId: string }) {
+  const { data: issues = [], isLoading } = useQuery({
+    queryKey: [...queryKeys.issues.listByProject(companyId, project.id), "metrics-dashboard"],
+    queryFn: () => issuesApi.list(companyId, { projectId: project.id, limit: 1000 }),
+    enabled: !!companyId && !!project.id,
+  });
+
+  return (
+    <CustomDashboardBuilder
+      storageKey={`paperclip:project-dashboard:${project.id}`}
+      title={`${project.name} dashboard`}
+      subtitle="Customize project metrics from live issues, story points, estimates, blockers, due dates, and AI execution time."
+      issues={issues}
+      projects={[project]}
+      defaultWidgets={DEFAULT_PROJECT_DASHBOARD_WIDGETS}
+      isLoading={isLoading}
+    />
+  );
+}
+
 function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
   const queryClient = useQueryClient();
   const [activeLane, setActiveLane] = useState<ProjectIssueLane>("all");
@@ -1415,7 +1437,7 @@ export function ProjectDetail() {
         <PageTabBar
           items={[
             { value: "list", label: "Issues" },
-            { value: "overview", label: "Overview" },
+            { value: "overview", label: "Dashboard" },
             ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
             { value: "members", label: "Members" },
@@ -1434,6 +1456,9 @@ export function ProjectDetail() {
 
       {activeTab === "overview" && (
         <>
+          {resolvedCompanyId ? (
+            <ProjectMetricsDashboard project={project} companyId={resolvedCompanyId} />
+          ) : null}
           <OverviewContent
             project={project}
             onUpdate={(data) => updateProject.mutate(data)}
