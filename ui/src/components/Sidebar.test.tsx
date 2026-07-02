@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ReactNode } from "react";
+import { type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -207,6 +207,22 @@ describe("Sidebar", () => {
     });
   });
 
+  it("defaults to streamlined navigation while experimental settings are loading", async () => {
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+    const root = await renderSidebar();
+
+    const navLabels = [...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim());
+    expect(navLabels).toContain("Projects");
+    expect(container.querySelector('[data-testid="sidebar-projects"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="sidebar-agents"]')?.getAttribute("data-streamlined"),
+    ).toBe("true");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
   it("classic (flag OFF): New Task button, Tasks label, per-project collapsible, no top-level Projects link", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
@@ -267,7 +283,7 @@ describe("Sidebar", () => {
     });
   });
 
-  it("shows an Artifacts nav item directly below Goals", async () => {
+  it("shows Skills directly below Artifacts in Work", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
 
@@ -279,30 +295,97 @@ describe("Sidebar", () => {
     const navText = container.querySelector("nav")?.textContent ?? "";
     expect(navText).toContain("Goals");
     expect(navText).toContain("Artifacts");
+    expect(navText).toContain("Skills");
     expect(navText.indexOf("Goals")).toBeLessThan(navText.indexOf("Artifacts"));
+    expect(navText.indexOf("Artifacts")).toBeLessThan(navText.indexOf("Skills"));
+
+    const sections = [...container.querySelectorAll("nav > div")];
+    const workSection = sections.find((section) => section.textContent?.startsWith("Work"));
+    const companySection = sections.find((section) => section.textContent?.startsWith("Company"));
+    expect(workSection?.textContent).toContain("Skills");
+    expect(companySection?.textContent).not.toContain("Skills");
 
     flushSync(() => {
       root.unmount();
     });
   });
 
-  it("shows Apps in the Company section", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+  it("shows the Conference Room nav item when conference room chat is enabled (PAP-137)", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableConferenceRoomChat: true,
+    });
     const root = await renderSidebar();
 
-    const appsLink = [...container.querySelectorAll("a")].find(
-      (anchor) => anchor.textContent === "Apps",
+    const link = [...container.querySelectorAll("nav a")].find(
+      (anchor) => anchor.textContent?.trim() === "Conference Room",
     );
-    expect(appsLink?.getAttribute("href")).toBe("/apps");
+    expect(link?.getAttribute("href")).toBe("/board-chat");
 
-    const companySection = [...container.querySelectorAll("nav div")]
-      .find((node) => node.textContent?.includes("Company") && node.textContent.includes("Settings"));
-    const companyText = companySection?.textContent ?? "";
-    expect(companyText).toContain("Org");
-    expect(companyText).toContain("Skills");
-    expect(companyText).toContain("Apps");
-    expect(companyText.indexOf("Skills")).toBeLessThan(companyText.indexOf("Apps"));
-    expect(companyText.indexOf("Apps")).toBeLessThan(companyText.indexOf("Costs"));
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the Conference Room nav item when conference room chat is off (PAP-137)", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableConferenceRoomChat: false,
+    });
+    const root = await renderSidebar();
+
+    expect(container.textContent).not.toContain("Conference Room");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not flash the Conference Room item while experimental settings are loading (PAP-137)", async () => {
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+    const root = await renderSidebar();
+
+    expect(container.textContent).not.toContain("Conference Room");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the Pipelines nav item when pipelines are disabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enablePipelines: false,
+    });
+    const root = await renderSidebar();
+
+    expect(container.textContent).not.toContain("Pipelines");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows the Pipelines nav item when pipelines are enabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enablePipelines: true,
+    });
+    const root = await renderSidebar();
+
+    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Pipelines");
+    expect(link?.getAttribute("href")).toBe("/pipelines");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not flash the Pipelines nav item while experimental settings are loading", async () => {
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+    const root = await renderSidebar();
+
+    expect(container.textContent).not.toContain("Pipelines");
 
     flushSync(() => {
       root.unmount();
@@ -367,7 +450,7 @@ describe("Sidebar", () => {
 
     expect(container.querySelector('button[aria-label="Expand sidebar"]')).toBeNull();
     expect(container.querySelector('a[aria-label="Open search"]')).toBeNull();
-    // The company menu (workspace switcher / logo) is still present in the rail.
+    // The company menu (company switcher / logo) is still present in the rail.
     expect(container.textContent).toContain("Company menu");
 
     flushSync(() => {

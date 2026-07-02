@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { TranscriptEntry } from "../../adapters";
 import type { ToolRunDecision } from "@paperclipai/shared";
-import { MarkdownBody } from "../MarkdownBody";
+import { MarkdownBody, type MarkdownExternalReferenceMap } from "../MarkdownBody";
 import { cn, formatTokens } from "../../lib/utils";
 import {
   Check,
@@ -33,6 +33,7 @@ interface RunTranscriptViewProps {
   emptyMessage?: string;
   className?: string;
   thinkingClassName?: string;
+  externalReferences?: MarkdownExternalReferenceMap;
 }
 
 type TranscriptBlock =
@@ -76,10 +77,10 @@ type TranscriptBlock =
       items: Array<{
         ts: string;
         endTs?: string;
-        input: unknown;
         toolUseId?: string;
         invocationId?: string;
         actionRequestId?: string;
+        input: unknown;
         result?: string;
         isError?: boolean;
         status: "running" | "completed" | "error";
@@ -93,10 +94,10 @@ type TranscriptBlock =
         ts: string;
         endTs?: string;
         name: string;
-        input: unknown;
         toolUseId?: string;
         invocationId?: string;
         actionRequestId?: string;
+        input: unknown;
         result?: string;
         isError?: boolean;
         status: "running" | "completed" | "error";
@@ -203,38 +204,6 @@ function extractToolUseId(input: unknown): string | undefined {
     }
   }
   return undefined;
-}
-
-function readNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
-}
-
-function readRecordString(record: Record<string, unknown> | null, keys: string[]): string | undefined {
-  if (!record) return undefined;
-  for (const key of keys) {
-    const direct = readNonEmptyString(record[key]);
-    if (direct) return direct;
-  }
-  const metadata = asRecord(record.metadata);
-  if (metadata) {
-    for (const key of keys) {
-      const nested = readNonEmptyString(metadata[key]);
-      if (nested) return nested;
-    }
-  }
-  return undefined;
-}
-
-function extractInvocationId(entry: Extract<TranscriptEntry, { kind: "tool_call" }>): string | undefined {
-  const enriched = entry as Extract<TranscriptEntry, { kind: "tool_call" }> & { invocationId?: unknown };
-  return readNonEmptyString(enriched.invocationId)
-    ?? readRecordString(asRecord(entry.input), ["invocationId", "invocation_id", "paperclipInvocationId", "paperclip_invocation_id"]);
-}
-
-function extractActionRequestId(entry: Extract<TranscriptEntry, { kind: "tool_call" }>): string | undefined {
-  const enriched = entry as Extract<TranscriptEntry, { kind: "tool_call" }> & { actionRequestId?: unknown };
-  return readNonEmptyString(enriched.actionRequestId)
-    ?? readRecordString(asRecord(entry.input), ["actionRequestId", "action_request_id", "paperclipActionRequestId", "paperclip_action_request_id"]);
 }
 
 function summarizeRecord(record: Record<string, unknown>, keys: string[]): string | null {
@@ -584,20 +553,19 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
     }
 
     if (entry.kind === "tool_call") {
-      const toolUseId = entry.toolUseId ?? extractToolUseId(entry.input);
       const toolBlock: Extract<TranscriptBlock, { type: "tool" }> = {
         type: "tool",
         ts: entry.ts,
         name: displayToolName(entry.name, entry.input),
-        toolUseId,
-        invocationId: extractInvocationId(entry),
-        actionRequestId: extractActionRequestId(entry),
+        toolUseId: entry.toolUseId ?? extractToolUseId(entry.input),
+        invocationId: entry.invocationId,
+        actionRequestId: entry.actionRequestId,
         input: entry.input,
         status: "running",
       };
       blocks.push(toolBlock);
-      if (toolUseId) {
-        pendingToolBlocks.set(toolUseId, toolBlock);
+      if (toolBlock.toolUseId) {
+        pendingToolBlocks.set(toolBlock.toolUseId, toolBlock);
       }
       continue;
     }
@@ -770,9 +738,11 @@ export function normalizeTranscript(entries: TranscriptEntry[], streaming: boole
 function TranscriptMessageBlock({
   block,
   density,
+  externalReferences,
 }: {
   block: Extract<TranscriptBlock, { type: "message" }>;
   density: TranscriptDensity;
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   const isAssistant = block.role === "assistant";
   const compact = density === "compact";
@@ -790,6 +760,7 @@ function TranscriptMessageBlock({
           "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
           compact ? "text-xs leading-5 text-foreground/85" : "text-sm",
         )}
+        externalReferences={externalReferences}
       >
         {block.text}
       </MarkdownBody>
@@ -810,10 +781,12 @@ function TranscriptThinkingBlock({
   block,
   density,
   className,
+  externalReferences,
 }: {
   block: Extract<TranscriptBlock, { type: "thinking" }>;
   density: TranscriptDensity;
   className?: string;
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   return (
     <MarkdownBody
@@ -822,6 +795,7 @@ function TranscriptThinkingBlock({
         density === "compact" ? "text-[11px] leading-5" : "text-sm leading-6",
         className,
       )}
+      externalReferences={externalReferences}
     >
       {block.text}
     </MarkdownBody>
@@ -1253,6 +1227,7 @@ function TranscriptToolGroup({
                 )}>
                   {item.status === "running" ? "Running" : item.status === "error" ? "Errored" : "Completed"}
                 </span>
+                <ToolDecisionBadge decision={findToolDecision(toolDecisionMaps, item)} />
               </div>
               <div className={cn("grid gap-2 pl-7", compact ? "grid-cols-1" : "lg:grid-cols-2")}>
                 <div>
@@ -1314,9 +1289,11 @@ function TranscriptActivityRow({
 function TranscriptEventRow({
   block,
   density,
+  externalReferences,
 }: {
   block: Extract<TranscriptBlock, { type: "event" }>;
   density: TranscriptDensity;
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   const compact = density === "compact";
   const toneClasses =
@@ -1345,6 +1322,7 @@ function TranscriptEventRow({
                 "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 text-sky-700 dark:text-sky-300",
                 compact ? "text-[11px] leading-5" : "text-xs leading-5",
               )}
+              externalReferences={externalReferences}
             >
               {block.text}
             </MarkdownBody>
@@ -1698,6 +1676,7 @@ export function RunTranscriptView({
   emptyMessage = "No transcript yet.",
   className,
   thinkingClassName,
+  externalReferences,
 }: RunTranscriptViewProps) {
   const toolDecisionMaps = useMemo(() => buildToolDecisionMaps(toolDecisions), [toolDecisions]);
   const blocks = useMemo(
@@ -1730,9 +1709,20 @@ export function RunTranscriptView({
           key={`${block.type}-${block.ts}-${index}`}
           className={cn(index === visibleBlocks.length - 1 && streaming && "animate-in fade-in slide-in-from-bottom-1 duration-300")}
         >
-          {block.type === "message" && <TranscriptMessageBlock block={block} density={density} />}
+          {block.type === "message" && (
+            <TranscriptMessageBlock
+              block={block}
+              density={density}
+              externalReferences={externalReferences}
+            />
+          )}
           {block.type === "thinking" && (
-            <TranscriptThinkingBlock block={block} density={density} className={thinkingClassName} />
+            <TranscriptThinkingBlock
+              block={block}
+              density={density}
+              className={thinkingClassName}
+              externalReferences={externalReferences}
+            />
           )}
           {block.type === "tool" && (
             <TranscriptToolCard
@@ -1754,7 +1744,13 @@ export function RunTranscriptView({
             <TranscriptStdoutRow block={block} density={density} collapseByDefault={collapseStdout} />
           )}
           {block.type === "activity" && <TranscriptActivityRow block={block} density={density} />}
-          {block.type === "event" && <TranscriptEventRow block={block} density={density} />}
+          {block.type === "event" && (
+            <TranscriptEventRow
+              block={block}
+              density={density}
+              externalReferences={externalReferences}
+            />
+          )}
         </div>
       ))}
     </div>

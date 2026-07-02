@@ -40,6 +40,11 @@ import type {
   Goal,
   PluginLocalFolderDeclaration,
   PrincipalPermissionGrant,
+  ExternalObjectStatusCategory,
+  ExternalObjectStatusTone,
+  ExternalObjectLivenessState,
+  ExternalObjectMentionConfidence,
+  ExternalObjectMentionSourceKind,
 } from "@paperclipai/shared";
 export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
 
@@ -432,6 +437,113 @@ export interface ExecuteToolParams {
   runContext: ToolRunContext;
 }
 
+export interface PluginExternalObjectUrlCandidate {
+  sanitizedCanonicalUrl: string;
+  sanitizedDisplayUrl: string;
+  canonicalIdentityHash: string;
+  canonicalIdentity: Record<string, unknown>;
+  redactedMatchedText: string;
+}
+
+export interface PluginExternalObjectSourceContext {
+  companyId: string;
+  sourceIssueId: string;
+  sourceKind: ExternalObjectMentionSourceKind;
+  sourceRecordId: string | null;
+  documentKey: string | null;
+  propertyKey: string | null;
+}
+
+export interface DetectExternalObjectsParams {
+  companyId: string;
+  urls: PluginExternalObjectUrlCandidate[];
+  sourceContext: PluginExternalObjectSourceContext;
+}
+
+export interface PluginExternalObjectDetection {
+  urlIdentityHash: string;
+  providerKey: string;
+  objectType: string;
+  externalId: string;
+  displayKey?: string | null;
+  iconKey?: string | null;
+  displayTitle?: string | null;
+  confidence?: ExternalObjectMentionConfidence;
+}
+
+export interface DetectExternalObjectsResult {
+  detections: PluginExternalObjectDetection[];
+}
+
+export interface PluginExternalObjectRecordSnapshot {
+  id: string;
+  companyId: string;
+  providerKey: string;
+  objectType: string;
+  externalId: string;
+  sanitizedCanonicalUrl: string | null;
+  canonicalIdentityHash: string | null;
+  displayKey: string | null;
+  iconKey: string | null;
+  displayTitle: string | null;
+  statusKey: string | null;
+  statusLabel: string | null;
+  statusIconKey: string | null;
+  statusCategory: ExternalObjectStatusCategory;
+  statusTone: ExternalObjectStatusTone;
+  liveness: ExternalObjectLivenessState;
+  isTerminal: boolean;
+  data: Record<string, unknown>;
+  remoteVersion: string | null;
+  etag: string | null;
+}
+
+export interface ResolveExternalObjectParams {
+  companyId: string;
+  providerKey: string;
+  objectType: string;
+  externalId: string;
+  object: PluginExternalObjectRecordSnapshot;
+}
+
+export interface PluginExternalObjectResolvedSnapshot {
+  displayKey?: string | null;
+  iconKey?: string | null;
+  displayTitle?: string | null;
+  statusKey?: string | null;
+  statusLabel?: string | null;
+  statusIconKey?: string | null;
+  statusCategory: ExternalObjectStatusCategory;
+  statusTone: ExternalObjectStatusTone;
+  isTerminal?: boolean;
+  data?: Record<string, unknown>;
+  remoteVersion?: string | null;
+  etag?: string | null;
+  ttlSeconds?: number;
+}
+
+export type PluginExternalObjectResolveResult =
+  | { ok: true; snapshot: PluginExternalObjectResolvedSnapshot }
+  | {
+      ok: false;
+      liveness: Extract<ExternalObjectLivenessState, "auth_required" | "unreachable">;
+      errorCode: string;
+      errorMessage?: string | null;
+      retryAfterSeconds?: number;
+    };
+
+export interface RefreshExternalObjectsParams {
+  companyId: string;
+  objects: PluginExternalObjectRecordSnapshot[];
+}
+
+export interface RefreshExternalObjectsResult {
+  results: Array<{
+    objectId: string;
+    result: PluginExternalObjectResolveResult;
+  }>;
+}
+
 export interface PluginEnvironmentDiagnostic {
   severity: "info" | "warning" | "error";
   message: string;
@@ -478,6 +590,15 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
   runId: string;
   workspaceMode?: string;
   requestedCwd?: string;
+  agentId?: string;
+  executionWorkspaceId?: string | null;
+  /**
+   * The harness/adapter type for THIS run (the agent's adapter), so a single
+   * environment can serve mixed harnesses. When omitted, the driver falls back to
+   * the environment's configured default adapter. A provider that materializes a
+   * per-run sandbox should use this to select the runtime image and per-run env.
+   */
+  adapterType?: string;
 }
 
 export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {
@@ -523,6 +644,107 @@ export interface PluginEnvironmentExecuteResult {
   timedOut: boolean;
   stdout: string;
   stderr: string;
+  metadata?: Record<string, unknown>;
+}
+
+export type PluginEnvironmentInteractiveSetupStatus =
+  | "starting"
+  | "waiting_for_user"
+  | "capturing"
+  | "promoted"
+  | "cancelled"
+  | "timed_out"
+  | "failed"
+  | "missing";
+
+export type PluginEnvironmentInteractiveSetupConnectionType =
+  | "ssh"
+  | (string & {});
+
+export type PluginEnvironmentTemplateRefKind =
+  | "snapshot"
+  | "image"
+  | "provider_template"
+  | "unknown"
+  | (string & {});
+
+export interface PluginEnvironmentInteractiveSetupConnectionSummary {
+  type: PluginEnvironmentInteractiveSetupConnectionType;
+  username?: string | null;
+  hostRedacted: boolean;
+  portRedacted: boolean;
+  commandRedacted?: boolean;
+  expiresAt?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentInteractiveSetupConnectionPayload {
+  type: PluginEnvironmentInteractiveSetupConnectionType;
+  command?: string | null;
+  token?: string | null;
+  expiresAt?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentInteractiveSetupSession {
+  providerLeaseId: string | null;
+  status: PluginEnvironmentInteractiveSetupStatus;
+  connectionSummary: PluginEnvironmentInteractiveSetupConnectionSummary | null;
+  connectionPayload?: PluginEnvironmentInteractiveSetupConnectionPayload | null;
+  expiresAt?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentStartInteractiveSetupParams extends PluginEnvironmentDriverBaseParams {
+  sessionId: string;
+  sourceTemplateRef?: string | null;
+  sourceTemplateKind?: PluginEnvironmentTemplateRefKind | null;
+  connectionExpiresInMinutes?: number | null;
+  expiresAt?: string | null;
+}
+
+export interface PluginEnvironmentGetInteractiveSetupParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string | null;
+  setupMetadata?: Record<string, unknown>;
+  includeConnectionPayload?: boolean;
+  connectionExpiresInMinutes?: number | null;
+}
+
+export interface PluginEnvironmentCaptureTemplateParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string | null;
+  setupMetadata?: Record<string, unknown>;
+  sourceTemplateRef?: string | null;
+  previousTemplateRef?: string | null;
+  templateLabel?: string | null;
+  timeoutMs?: number | null;
+}
+
+export interface PluginEnvironmentCaptureTemplateResult {
+  templateRef: string;
+  templateKind: PluginEnvironmentTemplateRefKind;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentCancelInteractiveSetupParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string | null;
+  setupMetadata?: Record<string, unknown>;
+  reason?: string | null;
+}
+
+export interface PluginEnvironmentCancelInteractiveSetupResult {
+  status: Extract<PluginEnvironmentInteractiveSetupStatus, "cancelled" | "timed_out" | "failed" | "missing">;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentDeleteTemplateParams extends PluginEnvironmentDriverBaseParams {
+  templateRef: string;
+  templateKind?: PluginEnvironmentTemplateRefKind;
+  metadata?: Record<string, unknown>;
+  reason?: string | null;
+}
+
+export interface PluginEnvironmentDeleteTemplateResult {
+  deleted: boolean;
   metadata?: Record<string, unknown>;
 }
 
@@ -595,6 +817,18 @@ export interface HostToWorkerMethods {
   performAction: [params: PerformActionParams, result: unknown];
   /** @see PLUGIN_SPEC.md §13.10 */
   executeTool: [params: ExecuteToolParams, result: ToolResult];
+  detectExternalObjects: [
+    params: DetectExternalObjectsParams,
+    result: DetectExternalObjectsResult,
+  ];
+  resolveExternalObject: [
+    params: ResolveExternalObjectParams,
+    result: PluginExternalObjectResolveResult,
+  ];
+  refreshExternalObjects: [
+    params: RefreshExternalObjectsParams,
+    result: RefreshExternalObjectsResult,
+  ];
   environmentValidateConfig: [
     params: PluginEnvironmentValidateConfigParams,
     result: PluginEnvironmentValidationResult,
@@ -627,6 +861,26 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentExecuteParams,
     result: PluginEnvironmentExecuteResult,
   ];
+  environmentStartInteractiveSetup: [
+    params: PluginEnvironmentStartInteractiveSetupParams,
+    result: PluginEnvironmentInteractiveSetupSession,
+  ];
+  environmentGetInteractiveSetup: [
+    params: PluginEnvironmentGetInteractiveSetupParams,
+    result: PluginEnvironmentInteractiveSetupSession,
+  ];
+  environmentCaptureTemplate: [
+    params: PluginEnvironmentCaptureTemplateParams,
+    result: PluginEnvironmentCaptureTemplateResult,
+  ];
+  environmentCancelInteractiveSetup: [
+    params: PluginEnvironmentCancelInteractiveSetupParams,
+    result: PluginEnvironmentCancelInteractiveSetupResult,
+  ];
+  environmentDeleteTemplate: [
+    params: PluginEnvironmentDeleteTemplateParams,
+    result: PluginEnvironmentDeleteTemplateResult,
+  ];
 }
 
 /** Union of all host→worker method names. */
@@ -650,6 +904,9 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "getData",
   "performAction",
   "executeTool",
+  "detectExternalObjects",
+  "resolveExternalObject",
+  "refreshExternalObjects",
   "environmentValidateConfig",
   "environmentProbe",
   "environmentAcquireLease",
@@ -658,6 +915,11 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentDestroyLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
+  "environmentStartInteractiveSetup",
+  "environmentGetInteractiveSetup",
+  "environmentCaptureTemplate",
+  "environmentCancelInteractiveSetup",
+  "environmentDeleteTemplate",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -827,7 +1089,13 @@ export interface WorkerToHostMethods {
 
   // Metrics
   "metrics.write": [
-    params: { name: string; value: number; tags?: Record<string, string> },
+    params: {
+      name: string;
+      value: number;
+      tags?: Record<string, string>;
+      /** Owning tenant for `plugin_logs.company_id` (cascade-delete scope). `null`/omitted = instance-scope. */
+      companyId?: string | null;
+    },
     result: void,
   ];
 
@@ -839,7 +1107,13 @@ export interface WorkerToHostMethods {
 
   // Logger
   "log": [
-    params: { level: "info" | "warn" | "error" | "debug"; message: string; meta?: Record<string, unknown> },
+    params: {
+      level: "info" | "warn" | "error" | "debug";
+      message: string;
+      meta?: Record<string, unknown>;
+      /** Owning tenant for `plugin_logs.company_id` (cascade-delete scope). `null`/omitted = instance-scope. */
+      companyId?: string | null;
+    },
     result: void,
   ];
 

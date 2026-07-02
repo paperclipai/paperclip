@@ -16,6 +16,7 @@ import {
   normalizeIssueIdentifier,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
+  type AgentDesiredSkillEntry,
   type AgentSkillSnapshot,
   type InstanceSchedulerHeartbeatAgent,
   upsertAgentInstructionsFileSchema,
@@ -28,6 +29,7 @@ import {
   LOW_TRUST_REVIEW_PRESET,
 } from "@paperclipai/shared";
 import {
+  resolvePaperclipInstanceRootForAdapter,
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -64,6 +66,7 @@ import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
 import {
   detectAdapterModel,
@@ -85,10 +88,7 @@ import {
   DEFAULT_ACPX_LOCAL_NON_INTERACTIVE_PERMISSIONS,
   DEFAULT_ACPX_LOCAL_PERMISSION_MODE,
 } from "@paperclipai/adapter-acpx-local";
-import {
-  DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
-  DEFAULT_CODEX_LOCAL_MODEL,
-} from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
@@ -140,7 +140,6 @@ export function agentRoutes(
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
-    hermes_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
     pi_local: "instructionsFilePath",
@@ -270,7 +269,7 @@ export function agentRoutes(
     }
 
     const environment = await environmentsSvc.getById(input.environmentId);
-    if (!environment || environment.companyId !== input.companyId) {
+    if (!environment) {
       return {
         executionTarget: null,
         environmentName: null,
@@ -363,6 +362,11 @@ export function agentRoutes(
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
+        // Apply the active custom-image template so the Test boots with the
+        // operator's captured sandbox customizations and prepared image state,
+        // matching what real agent runs use. Without this the test would
+        // silently fall back to the base image.
+        applyCustomImageTemplate: true,
       });
     } catch (err) {
       return {
@@ -685,7 +689,36 @@ export function agentRoutes(
   }
 
   async function assertCanReadConfigurations(req: Request, companyId: string) {
-    return assertCanCreateAgentsForCompany(req, companyId);
+    // Reading agent configurations, skills, and config revisions is a
+    // read-only operation available to any board (human) member of the
+    // company. Responses go through `redactAgentConfiguration` so secrets
+    // are never exposed. Mutations and environment probes still gate on
+    // agents:create via assertCanCreateAgentsForCompany / assertCanUpdateAgent.
+    //
+    // For AGENT actors we keep the previous, stricter gate: an agent must
+    // either have an explicit `agents:create` grant or the legacy
+    // `canCreateAgents` permission on its own record. Agents are
+    // non-human principals — they should not be able to introspect peer
+    // agents' configurations just by virtue of being in the same company.
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) throw forbidden("Agent authentication required");
+      const actorAgent = await svc.getById(req.actor.agentId);
+      if (!actorAgent || actorAgent.companyId !== companyId) {
+        throw forbidden("Agent key cannot access another company");
+      }
+      const allowedByGrant = await access.hasPermission(
+        companyId,
+        "agent",
+        actorAgent.id,
+        "agents:create",
+      );
+      if (!allowedByGrant && !canCreateAgents(actorAgent)) {
+        throw forbidden("Missing permission: can create agents");
+      }
+      return actorAgent;
+    }
+    return null;
   }
 
   async function getAccessibleAgent(req: Request, res: Response, id: string) {
@@ -702,13 +735,27 @@ export function agentRoutes(
   }
 
   async function actorCanReadConfigurationsForCompany(req: Request, companyId: string) {
-    assertCompanyAccess(req, companyId);
-    const decision = await access.decide({
-      actor: req.actor,
-      action: "agent_config:read",
-      resource: { type: "company", companyId },
-    });
-    return decision.allowed;
+    // Mirrors assertCanReadConfigurations but returns a boolean instead of
+    // throwing. Board actors only need company access; agent actors must
+    // still pass the agents:create gate (explicit grant or canCreateAgents
+    // on their own record) so peer agents cannot snoop each others'
+    // configurations.
+    try {
+      assertCompanyAccess(req, companyId);
+    } catch {
+      return false;
+    }
+    if (req.actor.type === "board") return true;
+    if (!req.actor.agentId) return false;
+    const actorAgent = await svc.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== companyId) return false;
+    const allowedByGrant = await access.hasPermission(
+      companyId,
+      "agent",
+      actorAgent.id,
+      "agents:create",
+    );
+    return allowedByGrant || canCreateAgents(actorAgent);
   }
 
   async function buildSkippedWakeupResponse(
@@ -821,8 +868,8 @@ export function agentRoutes(
   ) {
     if (environmentId === undefined || environmentId === null) return;
     const environment = await environmentsSvc.getById(environmentId);
-    if (!environment || environment.companyId !== companyId) {
-      throw unprocessable("Selected environment must belong to the same company");
+    if (!environment) {
+      throw unprocessable("Selected environment was not found");
     }
     if (options?.allowedDrivers && !options.allowedDrivers.includes(environment.driver)) {
       throw unprocessable(`Environment driver "${environment.driver}" is not allowed here`);
@@ -913,6 +960,14 @@ export function agentRoutes(
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
+  }
+
+  function asEnvBindingString(value: unknown): string | null {
+    const direct = asNonEmptyString(value);
+    if (direct) return direct;
+    const record = asRecord(value);
+    if (record?.type !== "plain") return null;
+    return asNonEmptyString(record.value);
   }
 
   function preserveInstructionsBundleConfig(
@@ -1028,7 +1083,10 @@ export function agentRoutes(
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
       input.adapterConfig,
-      { strictMode: strictSecretsMode },
+      {
+        strictMode: strictSecretsMode,
+        adapterType: input.adapterType ?? null,
+      },
     );
     await assertAdapterConfigConstraints(
       input.adapterType,
@@ -1091,6 +1149,44 @@ export function agentRoutes(
     return { ...adapterConfig, devicePrivateKeyPem: generateEd25519PrivateKeyPem() };
   }
 
+  function codexLocalAgentHome(companyId: string, agentId: string): string {
+    const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+      homeDir: asNonEmptyString(process.env.PAPERCLIP_HOME) ?? undefined,
+      instanceId: asNonEmptyString(process.env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+      env: process.env,
+    });
+    return path.resolve(instanceRoot, "companies", companyId, "agents", agentId, "codex-home");
+  }
+
+  function codexLocalEnvKeyConfigured(value: unknown): boolean {
+    if (asEnvBindingString(value)) return true;
+    const record = asRecord(value);
+    return record?.type === "secret_ref" && typeof record.secretId === "string";
+  }
+
+  // codex_local agents inherit whatever Codex login is already on the device
+  // (the host's ~/.codex or $CODEX_HOME) by default, so a fresh agent needs no
+  // env overrides at all. We only carve out an isolated per-agent CODEX_HOME
+  // when the agent sets its own OPENAI_API_KEY, so that key's api-key auth.json
+  // does not collide with the shared company home other agents use for the host
+  // login. Agents without a key share the host credentials.
+  function applyCodexLocalKeyIsolation(
+    companyId: string,
+    agentId: string,
+    adapterType: string | null | undefined,
+    adapterConfig: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (adapterType !== "codex_local") return adapterConfig;
+    const existingEnv = asRecord(adapterConfig.env);
+    if (!existingEnv) return adapterConfig;
+    if (!codexLocalEnvKeyConfigured(existingEnv.OPENAI_API_KEY)) return adapterConfig;
+    if (codexLocalEnvKeyConfigured(existingEnv.CODEX_HOME)) return adapterConfig;
+    return {
+      ...adapterConfig,
+      env: { ...existingEnv, CODEX_HOME: codexLocalAgentHome(companyId, agentId) },
+    };
+  }
+
   function applyCreateDefaultsByAdapterType(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
@@ -1112,9 +1208,6 @@ export function agentRoutes(
       return ensureGatewayDeviceKey(adapterType, next);
     }
     if (adapterType === "codex_local") {
-      if (!asNonEmptyString(next.model)) {
-        next.model = DEFAULT_CODEX_LOCAL_MODEL;
-      }
       const hasBypassFlag =
         typeof next.dangerouslyBypassApprovalsAndSandbox === "boolean" ||
         typeof next.dangerouslyBypassSandbox === "boolean";
@@ -1288,16 +1381,33 @@ export function agentRoutes(
 
   function buildUnsupportedSkillSnapshot(
     adapterType: string,
-    desiredSkills: string[] = [],
+    desiredSkillEntries: AgentDesiredSkillEntry[] = [],
   ): AgentSkillSnapshot {
+    const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
     return {
       adapterType,
       supported: false,
       mode: "unsupported",
       desiredSkills,
+      desiredSkillEntries,
       entries: [],
       warnings: ["This adapter does not implement skill sync yet."],
     };
+  }
+
+  function normalizeDesiredSkillSelections(
+    requestedDesiredSkills: Array<string | AgentDesiredSkillEntry> | undefined,
+  ): AgentDesiredSkillEntry[] | undefined {
+    if (!requestedDesiredSkills) return undefined;
+    const out = new Map<string, AgentDesiredSkillEntry>();
+    for (const value of requestedDesiredSkills) {
+      const entry = typeof value === "string"
+        ? { key: value.trim(), versionId: null }
+        : { key: value.key.trim(), versionId: value.versionId ?? null };
+      if (!entry.key || out.has(entry.key)) continue;
+      out.set(entry.key, entry);
+    }
+    return Array.from(out.values());
   }
 
   // Legacy hardcoded set — used as fallback when adapter module does not
@@ -1325,9 +1435,11 @@ export function agentRoutes(
       materializeMissing?: boolean;
     } = {},
   ) {
+    const preference = readPaperclipSkillSyncPreference(config);
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: options.materializeMissing
         ?? shouldMaterializeRuntimeSkillsForAdapter(adapterType),
+      versionSelections: skillVersionSelectionMap(preference.desiredSkillEntries),
     });
     return {
       ...config,
@@ -1339,31 +1451,34 @@ export function agentRoutes(
     companyId: string,
     adapterType: string,
     adapterConfig: Record<string, unknown>,
-    requestedDesiredSkills: string[] | undefined,
+    requestedDesiredSkills: AgentDesiredSkillEntry[] | undefined,
   ) {
     if (!requestedDesiredSkills) {
       return {
         adapterConfig,
         desiredSkills: null as string[] | null,
+        desiredSkillEntries: null as AgentDesiredSkillEntry[] | null,
         runtimeSkillEntries: null as Awaited<ReturnType<typeof companySkills.listRuntimeSkillEntries>> | null,
       };
     }
 
-    const resolvedRequestedSkills = await companySkills.resolveRequestedSkillKeys(
+    const resolvedRequestedSkillEntries = await companySkills.resolveRequestedSkillEntries(
       companyId,
       requestedDesiredSkills,
     );
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
+      versionSelections: skillVersionSelectionMap(resolvedRequestedSkillEntries),
     });
-    const requiredSkills = runtimeSkillEntries
-      .filter((entry) => entry.required)
-      .map((entry) => entry.key);
-    const desiredSkills = Array.from(new Set([...requiredSkills, ...resolvedRequestedSkills]));
+    const desiredSkillEntries = resolvedRequestedSkillEntries.filter(
+      (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
+    );
+    const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
 
     return {
-      adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, desiredSkills),
+      adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, desiredSkillEntries),
       desiredSkills,
+      desiredSkillEntries,
       runtimeSkillEntries,
     };
   }
@@ -1458,7 +1573,7 @@ export function agentRoutes(
       : false;
     const environmentId = asNonEmptyString(req.query.environmentId);
     const environment = environmentId ? await environmentsSvc.getById(environmentId) : null;
-    if (environmentId && (!environment || environment.companyId !== companyId)) {
+    if (environmentId && !environment) {
       res.status(404).json({ error: "Environment not found" });
       return;
     }
@@ -1496,7 +1611,7 @@ export function agentRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const type = assertKnownAdapterType(req.params.type as string);
-      await assertCanReadConfigurations(req, companyId);
+      await assertCanCreateAgentsForCompany(req, companyId);
 
       const adapter = requireServerAdapter(type);
 
@@ -1509,11 +1624,13 @@ export function agentRoutes(
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
         inputAdapterConfig,
-        { strictMode: strictSecretsMode },
+        { strictMode: strictSecretsMode, adapterType: type },
       );
       const { config: runtimeAdapterConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
         companyId,
         normalizedAdapterConfig,
+        undefined,
+        { adapterType: type },
       );
 
       const { executionTarget, environmentName, fallbackChecks, release } =
@@ -1578,11 +1695,10 @@ export function agentRoutes(
       const preference = readPaperclipSkillSyncPreference(
         agent.adapterConfig as Record<string, unknown>,
       );
-      const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
-        materializeMissing: false,
-      });
-      const requiredSkills = runtimeSkillEntries.filter((entry) => entry.required).map((entry) => entry.key);
-      res.json(buildUnsupportedSkillSnapshot(agent.adapterType, Array.from(new Set([...requiredSkills, ...preference.desiredSkills]))));
+      const desiredSkillEntries = preference.desiredSkillEntries.filter(
+        (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
+      );
+      res.json(buildUnsupportedSkillSnapshot(agent.adapterType, desiredSkillEntries));
       return;
     }
 
@@ -1617,16 +1733,11 @@ export function agentRoutes(
       }
       await assertCanUpdateAgent(req, agent);
 
-      const requestedSkills = Array.from(
-        new Set(
-          (req.body.desiredSkills as string[])
-            .map((value) => value.trim())
-            .filter(Boolean),
-        ),
-      );
+      const requestedSkills = normalizeDesiredSkillSelections(req.body.desiredSkills);
       const {
         adapterConfig: nextAdapterConfig,
         desiredSkills,
+        desiredSkillEntries,
         runtimeSkillEntries,
       } = await resolveDesiredSkillAssignment(
         agent.companyId,
@@ -1634,7 +1745,7 @@ export function agentRoutes(
         agent.adapterConfig as Record<string, unknown>,
         requestedSkills,
       );
-      if (!desiredSkills || !runtimeSkillEntries) {
+      if (!desiredSkills || !desiredSkillEntries || !runtimeSkillEntries) {
         throw unprocessable("Skill sync requires desiredSkills.");
       }
       const actor = getActorInfo(req);
@@ -1675,7 +1786,7 @@ export function agentRoutes(
               adapterType: updated.adapterType,
               config: runtimeSkillConfig,
             })
-          : buildUnsupportedSkillSnapshot(updated.adapterType, desiredSkills);
+          : buildUnsupportedSkillSnapshot(updated.adapterType, desiredSkillEntries);
 
       await logActivity(db, {
         companyId: updated.companyId,
@@ -1689,6 +1800,7 @@ export function agentRoutes(
         details: {
           adapterType: updated.adapterType,
           desiredSkills,
+          desiredSkillEntries,
           mode: snapshot.mode,
           supported: snapshot.supported,
           entryCount: snapshot.entries.length,
@@ -1838,6 +1950,18 @@ export function agentRoutes(
     }
     if (trustPreset.kind === "low_trust_review") {
       res.json(buildLowTrustSelfView(agent));
+      return;
+    }
+    if (req.actor.keyScope?.kind === "task_bridge") {
+      res.json({
+        id: agent.id,
+        companyId: agent.companyId,
+        name: agent.name,
+        role: agent.role,
+        title: agent.title,
+        status: agent.status,
+        keyScope: req.actor.keyScope,
+      });
       return;
     }
     res.json(await buildAgentDetail(agent));
@@ -2091,15 +2215,21 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
-    const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
+    const hiredAgentId = randomUUID();
+    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
+      companyId,
+      hiredAgentId,
       hireInput.adapterType,
-      rawHireAdapterConfig,
+      applyCreateDefaultsByAdapterType(
+        hireInput.adapterType,
+        rawHireAdapterConfig,
+      ),
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
       hireInput.adapterType,
       requestedAdapterConfig,
-      Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined,
+      normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
       companyId,
@@ -2131,6 +2261,7 @@ export function agentRoutes(
     const requiresApproval = company.requireBoardApprovalForNewAgents;
     const status = requiresApproval ? "pending_approval" : "idle";
     const createdAgent = await svc.create(companyId, {
+      id: hiredAgentId,
       ...normalizedHireInput,
       status,
       spentMonthlyCents: 0,
@@ -2277,15 +2408,21 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
-    const requestedAdapterConfig = applyCreateDefaultsByAdapterType(
+    const agentId = randomUUID();
+    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
+      companyId,
+      agentId,
       createInput.adapterType,
-      rawCreateAdapterConfig,
+      applyCreateDefaultsByAdapterType(
+        createInput.adapterType,
+        rawCreateAdapterConfig,
+      ),
     );
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
       createInput.adapterType,
       requestedAdapterConfig,
-      Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined,
+      normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
       companyId,
@@ -2305,6 +2442,7 @@ export function agentRoutes(
     });
 
     const createdAgent = await svc.create(companyId, {
+      id: agentId,
       ...createInput,
       adapterConfig: normalizedAdapterConfig,
       runtimeConfig: normalizedRuntimeConfig,
@@ -2313,14 +2451,6 @@ export function agentRoutes(
       lastHeartbeatAt: null,
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
-    const agentEnv = asRecord(agent.adapterConfig)?.env;
-    if (agentEnv) {
-      await secretsSvc.syncEnvBindingsForTarget?.(
-        companyId,
-        { targetType: "agent", targetId: agent.id },
-        agentEnv,
-      );
-    }
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -2418,6 +2548,7 @@ export function agentRoutes(
       entityId: agent.id,
       details: {
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
+        canCreateSkills: agent.permissions?.canCreateSkills ?? true,
         canAssignTasks: effectiveCanAssignTasks,
         trustPreset: agent.permissions?.trustPreset ?? "standard",
       },
@@ -2462,7 +2593,7 @@ export function agentRoutes(
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       existing.companyId,
       syncedAdapterConfig,
-      { strictMode: strictSecretsMode },
+      { strictMode: strictSecretsMode, adapterType: existing.adapterType },
     );
     const actor = getActorInfo(req);
     const agent = await svc.update(
@@ -2533,7 +2664,7 @@ export function agentRoutes(
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       existing.companyId,
       adapterConfig,
-      { strictMode: strictSecretsMode },
+      { strictMode: strictSecretsMode, adapterType: existing.adapterType },
     );
     await svc.update(
       id,
@@ -2601,7 +2732,7 @@ export function agentRoutes(
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       existing.companyId,
       result.adapterConfig,
-      { strictMode: strictSecretsMode },
+      { strictMode: strictSecretsMode, adapterType: existing.adapterType },
     );
     await svc.update(
       id,
@@ -2753,9 +2884,14 @@ export function agentRoutes(
           rawEffectiveAdapterConfig,
         );
       }
-      const effectiveAdapterConfig = applyCreateDefaultsByAdapterType(
+      const effectiveAdapterConfig = applyCodexLocalKeyIsolation(
+        existing.companyId,
+        existing.id,
         requestedAdapterType,
-        rawEffectiveAdapterConfig,
+        applyCreateDefaultsByAdapterType(
+          requestedAdapterType,
+          rawEffectiveAdapterConfig,
+        ),
       );
       const normalizedEffectiveAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
         companyId: existing.companyId,
@@ -2797,14 +2933,6 @@ export function agentRoutes(
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
-    }
-    if (touchesAdapterConfiguration) {
-      const agentEnv = asRecord(agent.adapterConfig)?.env;
-      await secretsSvc.syncEnvBindingsForTarget?.(
-        agent.companyId,
-        { targetType: "agent", targetId: agent.id },
-        agentEnv,
-      );
     }
 
     await logActivity(db, {
@@ -2922,16 +3050,35 @@ export function agentRoutes(
       res.status(409).json({ error: "Only pending approval agents can be approved" });
       return;
     }
-    const approval = await svc.activatePendingApproval(id);
-    if (!approval) {
+
+    // Resolve the linked hire approval (clears it from the inbox) and run the
+    // shared approval side effects: agent activation, budget policy, and the
+    // hire-approved notification. Fall back to direct activation if no open
+    // approval record exists (e.g. agents created before approvals were tracked).
+    const decidedByUserId = req.actor.userId ?? "board";
+    const openApproval = await approvalsSvc.findOpenHireApprovalForAgent(existing.companyId, id);
+
+    let agent: Awaited<ReturnType<typeof svc.getById>> | null = null;
+    if (openApproval) {
+      await approvalsSvc.approve(openApproval.id, decidedByUserId);
+      agent = await svc.getById(id);
+    } else {
+      const approval = await svc.activatePendingApproval(id);
+      if (!approval) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      if (!approval.activated) {
+        res.status(409).json({ error: "Only pending approval agents can be approved" });
+        return;
+      }
+      agent = approval.agent;
+    }
+
+    if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    if (!approval.activated) {
-      res.status(409).json({ error: "Only pending approval agents can be approved" });
-      return;
-    }
-    const { agent } = approval;
 
     await logActivity(db, {
       companyId: agent.companyId,
@@ -2940,7 +3087,7 @@ export function agentRoutes(
       action: "agent.approved",
       entityType: "agent",
       entityId: agent.id,
-      details: { source: "agent_detail" },
+      details: { source: "agent_detail", approvalId: openApproval?.id ?? null },
     });
 
     res.json(agent);
@@ -2949,10 +3096,28 @@ export function agentRoutes(
   router.post("/agents/:id/terminate", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    if (!(await getAccessibleAgent(req, res, id))) {
+    const existing = await getAccessibleAgent(req, res, id);
+    if (!existing) {
       return;
     }
-    const agent = await svc.terminate(id);
+
+    // Terminating an agent that is still awaiting approval is the agent-detail
+    // equivalent of rejecting the hire. When a linked hire approval is still
+    // open, delegate to approvalsSvc.reject(), which both resolves the approval
+    // (clearing the inbox "Approve/Reject" card) and terminates the agent.
+    // Mirror the approve path's branch-or-fallback so we never terminate twice:
+    // reject() already calls agentsSvc.terminate() internally.
+    let agent: Awaited<ReturnType<typeof svc.terminate>> = null;
+    if (existing.status === "pending_approval") {
+      const openApproval = await approvalsSvc.findOpenHireApprovalForAgent(existing.companyId, id);
+      if (openApproval) {
+        await approvalsSvc.reject(openApproval.id, req.actor.userId ?? "board");
+        agent = await svc.getById(id);
+      }
+    }
+    if (!agent) {
+      agent = await svc.terminate(id);
+    }
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -3040,7 +3205,7 @@ export function agentRoutes(
     if (!agent) {
       return;
     }
-    const key = await svc.createApiKey(id, req.body.name);
+    const key = await svc.createApiKey(id, req.body.name, req.body.scope);
 
     await logActivity(db, {
       companyId: agent.companyId,
@@ -3049,7 +3214,7 @@ export function agentRoutes(
       action: "agent.key_created",
       entityType: "agent",
       entityId: agent.id,
-      details: { keyId: key.id, name: key.name },
+      details: { keyId: key.id, name: key.name, scope: key.scope },
     });
 
     res.status(201).json(key);
@@ -3296,7 +3461,8 @@ export function agentRoutes(
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
-    const runs = await heartbeat.list(companyId, agentId, limit);
+    const summary = req.query.summary === "true" || req.query.summary === "1";
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
     res.json(runs);
   });
 
@@ -3373,14 +3539,14 @@ export function agentRoutes(
 
       const rows = [...liveRuns, ...recentRuns];
       res.json(await Promise.all(rows.map(async (run) => ({
-        ...run,
+        ...heartbeat.decorateActiveRunStatus(run),
         outputSilence: await heartbeat.buildRunOutputSilence(run),
       }))));
       return;
     }
 
     res.json(await Promise.all(liveRuns.map(async (run) => ({
-      ...run,
+      ...heartbeat.decorateActiveRunStatus(run),
       outputSilence: await heartbeat.buildRunOutputSilence(run),
     }))));
   });
@@ -3394,9 +3560,10 @@ export function agentRoutes(
     }
     assertCompanyAccess(req, run.companyId);
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
+    const decoratedRun = heartbeat.decorateActiveRunStatus(run);
     res.json(
       redactCurrentUserValue(
-        { ...run, retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
+        { ...decoratedRun, retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
         await getCurrentUserRedactionOptions(),
       ),
     );
@@ -3588,7 +3755,7 @@ export function agentRoutes(
       .orderBy(desc(heartbeatRuns.createdAt));
 
     res.json(await Promise.all(liveRuns.map(async (run) => ({
-      ...run,
+      ...heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id }),
       outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
     }))));
   });
@@ -3633,8 +3800,9 @@ export function agentRoutes(
       return;
     }
 
+    const decoratedRun = heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id });
     res.json({
-      ...run,
+      ...decoratedRun,
       agentId: agent.id,
       agentName: agent.name,
       adapterType: agent.adapterType,

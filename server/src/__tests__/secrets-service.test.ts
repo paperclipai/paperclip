@@ -7,6 +7,7 @@ import { eq } from "drizzle-orm";
 import {
   agents,
   companies,
+  companyMemberships,
   companySecretBindings,
   companySecretProviderConfigs,
   companySecretVersions,
@@ -50,6 +51,7 @@ describeEmbeddedPostgres("secretService", () => {
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(companySecretProviderConfigs);
+    await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -75,6 +77,22 @@ describeEmbeddedPostgres("secretService", () => {
       updatedAt: new Date(),
     });
     return companyId;
+  }
+
+  async function seedCompanyMember(
+    companyId: string,
+    userId: string,
+    membershipRole: "owner" | "member" | "viewer" = "member",
+  ) {
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
   }
 
   it("rejects cross-company secret references during env normalization", async () => {
@@ -125,6 +143,45 @@ describeEmbeddedPostgres("secretService", () => {
         configPath: "env.API_KEY",
       }),
     ).rejects.toThrow(/already exists/i);
+  });
+
+  it("syncs top-level secret refs idempotently", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const firstSecret = await svc.create(companyId, {
+      name: `top-level-first-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "one",
+    });
+    const secondSecret = await svc.create(companyId, {
+      name: `top-level-second-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "two",
+    });
+    const target = { targetType: "environment" as const, targetId: "env-1" };
+
+    await svc.syncSecretRefsForTarget(companyId, target, [
+      { secretId: firstSecret.id, configPath: "apiKey" },
+    ]);
+    await svc.syncSecretRefsForTarget(companyId, target, [
+      { secretId: firstSecret.id, configPath: "apiKey" },
+    ]);
+    await svc.syncSecretRefsForTarget(companyId, target, [
+      { secretId: secondSecret.id, configPath: "apiKey" },
+    ]);
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, target.targetId));
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toMatchObject({
+      companyId,
+      targetType: "environment",
+      targetId: target.targetId,
+      configPath: "apiKey",
+      secretId: secondSecret.id,
+    });
   });
 
   it("reports reference counts and resolves binding target labels", async () => {
@@ -203,6 +260,46 @@ describeEmbeddedPostgres("secretService", () => {
     expect(events).toHaveLength(2);
     expect(events.map((event) => event.outcome).sort()).toEqual(["failure", "success"]);
     expect(JSON.stringify(events)).not.toContain("runtime-secret");
+  });
+
+  it("collects declared secret refs that have no binding without resolving values", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secretName = `unbound-${randomUUID()}`;
+    const secret = await svc.create(companyId, {
+      name: secretName,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    const env = {
+      API_KEY: { type: "secret_ref" as const, secretId: secret.id, version: "latest" as const },
+      PLAIN_VALUE: "not-a-secret",
+    };
+
+    const missing = await svc.collectMissingRuntimeBindings(companyId, env, {
+      consumerType: "agent",
+      consumerId: "agent-1",
+    });
+
+    expect(missing).toHaveLength(1);
+    expect(missing[0]).toMatchObject({
+      consumerType: "agent",
+      consumerId: "agent-1",
+      configPath: "env.API_KEY",
+      envKey: "API_KEY",
+      secretId: secret.id,
+      secretName,
+    });
+    // Value-free validation: no access events recorded.
+    expect(await svc.listAccessEvents(companyId, secret.id)).toHaveLength(0);
+
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: "agent-1" }, env);
+
+    const afterBinding = await svc.collectMissingRuntimeBindings(companyId, env, {
+      consumerType: "agent",
+      consumerId: "agent-1",
+    });
+    expect(afterBinding).toEqual([]);
   });
 
   it("denies runtime secret resolution outside the low-trust binding allowlist", async () => {
@@ -901,6 +998,11 @@ describeEmbeddedPostgres("secretService", () => {
         version: 1,
       },
     }));
+
+    const persisted = await svc.getByName(companyId, "Create Rollback");
+    expect(persisted).toBeNull();
+    const versions = await db.select().from(companySecretVersions);
+    expect(versions).toHaveLength(0);
   });
 
   it("keeps a local cleanup handle when create rollback cleanup fails", async () => {
@@ -1374,7 +1476,20 @@ describeEmbeddedPostgres("secretService", () => {
     expect(thrown).toMatchObject({
       status: 403,
       message: "AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.",
-      details: { code: "access_denied" },
+      details: {
+        code: "access_denied",
+        provider: "aws_secrets_manager",
+        operation: "secret_provider_config.discovery.preview",
+        providerConfigId: "discovery-preview",
+        providerVaultContext: "draft_config",
+        region: "us-east-1",
+        credentialPath: "Paperclip server runtime/provider credential path",
+        requiredCapability: "secretsmanager:ListSecrets",
+        actionableMessage:
+          "AWS discovery preview needs secretsmanager:ListSecrets in the selected region for the Paperclip server runtime/provider credential path.",
+        safeAlternative:
+          "If the operator already knows the exact AWS Secrets Manager ARN, paste/link that ARN instead of using discovery. Exact-resource DescribeSecret and runtime read permissions are still required.",
+      },
     });
     expect(JSON.stringify(thrown)).not.toContain("arn:aws");
     expect(JSON.stringify(thrown)).not.toContain("123456789012");
@@ -1952,5 +2067,113 @@ describeEmbeddedPostgres("secretService", () => {
     await expect(svc.resolveSecretValue(companyId, secret.id, "latest")).rejects.toThrow(
       /not active/i,
     );
+  });
+
+  it("records audited ephemeral secret access without requiring a persisted binding", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `ephemeral-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    await seedCompanyMember(companyId, "user-1");
+
+    const resolved = await svc.resolveSecretValueForEphemeralAccess(companyId, secret.id, "latest", {
+      consumerType: "system",
+      consumerId: "environment-probe-config",
+      configPath: "apiKey",
+      actorType: "user",
+      actorId: "user-1",
+    });
+
+    expect(resolved).toBe("runtime-secret");
+    const events = await svc.listAccessEvents(companyId, secret.id);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      companyId,
+      secretId: secret.id,
+      consumerType: "system",
+      consumerId: "environment-probe-config",
+      configPath: "apiKey",
+      actorType: "user",
+      actorId: "user-1",
+      outcome: "success",
+    });
+    expect(JSON.stringify(events)).not.toContain("runtime-secret");
+  });
+
+  it("preserves local implicit board authorization for ephemeral secret access", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `ephemeral-local-board-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+
+    const resolved = await svc.resolveSecretValueForEphemeralAccess(companyId, secret.id, "latest", {
+      consumerType: "system",
+      consumerId: "environment-probe-config",
+      configPath: "apiKey",
+      actorType: "user",
+      actorId: "local-board",
+      actorSource: "local_implicit",
+    });
+
+    expect(resolved).toBe("runtime-secret");
+  });
+
+  it("preserves agent jwt source for ephemeral secret authorization", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `ephemeral-agent-jwt-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "JWT Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      status: "idle",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const resolved = await svc.resolveSecretValueForEphemeralAccess(companyId, secret.id, "latest", {
+      consumerType: "system",
+      consumerId: "environment-probe-config",
+      configPath: "apiKey",
+      actorType: "agent",
+      actorId: agentId,
+      actorSource: "agent_jwt",
+    });
+
+    expect(resolved).toBe("runtime-secret");
+  });
+
+  it("rejects ephemeral secret access for actors without secret-read authorization", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `ephemeral-denied-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+
+    await expect(
+      svc.resolveSecretValueForEphemeralAccess(companyId, secret.id, "latest", {
+        consumerType: "system",
+        consumerId: "environment-probe-config",
+        configPath: "apiKey",
+        actorType: "user",
+        actorId: "user-without-membership",
+      }),
+    ).rejects.toThrow(/active member|secrets:read|forbidden/i);
   });
 });

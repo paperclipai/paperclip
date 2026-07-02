@@ -2,14 +2,16 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildProjectMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { buildIssueReferenceHref, buildProjectMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
 import {
   computeMentionMenuPosition,
   findClosestAutocompleteAnchor,
   findMentionMatch,
   isSameAutocompleteSession,
+  issueMentionTitle,
   MarkdownEditor,
+  type MentionOption,
   placeCaretAfterMentionAnchor,
   shouldAcceptAutocompleteKey,
 } from "./MarkdownEditor";
@@ -162,6 +164,36 @@ function createFileDragEvent(type: string) {
   };
   return event;
 }
+
+describe("issueMentionTitle", () => {
+  it("strips the leading identifier from the mention name", () => {
+    expect(
+      issueMentionTitle({
+        id: "issue:1",
+        kind: "issue",
+        name: "PAP-102 @task references",
+        issueIdentifier: "PAP-102",
+      }),
+    ).toBe("@task references");
+  });
+
+  it("returns the full name when there is no separate title", () => {
+    expect(
+      issueMentionTitle({
+        id: "issue:1",
+        kind: "issue",
+        name: "PAP-7",
+        issueIdentifier: "PAP-7",
+      }),
+    ).toBe("");
+  });
+
+  it("falls back to the name when the identifier is missing", () => {
+    expect(
+      issueMentionTitle({ id: "issue:1", kind: "issue", name: "Some task" }),
+    ).toBe("Some task");
+  });
+});
 
 describe("MarkdownEditor", () => {
   let container: HTMLDivElement;
@@ -685,8 +717,8 @@ describe("MarkdownEditor", () => {
   }
 
   async function openMentionMenuFor(
-    handleChange: ReturnType<typeof vi.fn<(value: string) => void>>,
-    mentions = [
+    handleChange: Mock<(value: string) => void>,
+    mentions: MentionOption[] = [
       {
         id: "project:project-123",
         kind: "project" as const,
@@ -695,6 +727,7 @@ describe("MarkdownEditor", () => {
         projectColor: "#336699",
       },
     ],
+    matchText = "Paperclip App",
   ): Promise<{ option: HTMLButtonElement; root: ReturnType<typeof createRoot>; menu: HTMLElement }> {
     const root = createRoot(container);
 
@@ -728,7 +761,7 @@ describe("MarkdownEditor", () => {
     await flush();
 
     const option = Array.from(document.body.querySelectorAll('button[type="button"]'))
-      .find((node) => node.textContent?.includes("Paperclip App")) as HTMLButtonElement | undefined;
+      .find((node) => node.textContent?.includes(matchText)) as HTMLButtonElement | undefined;
     expect(option).toBeTruthy();
     const menu = document.body.querySelector('[data-testid="mention-autocomplete-menu"]') as HTMLElement | null;
     expect(menu).toBeTruthy();
@@ -750,6 +783,64 @@ describe("MarkdownEditor", () => {
     expect(handleChange).toHaveBeenCalledWith(
       `[@Paperclip App](${buildProjectMentionHref("project-123", "#336699")}) `,
     );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("inserts a compact issue link when an @task reference is selected", async () => {
+    const handleChange = vi.fn();
+    const { option, root } = await openMentionMenuFor(
+      handleChange,
+      [
+        {
+          id: "issue:issue-1",
+          kind: "issue" as const,
+          name: "PAP-102 @task references",
+          issueId: "issue-1",
+          issueIdentifier: "PAP-102",
+        },
+      ],
+      "PAP-102",
+    );
+    const point = { clientX: 100, clientY: 50 };
+
+    act(() => {
+      option.dispatchEvent(createTouchEvent("touchstart", [point]));
+    });
+    act(() => {
+      option.dispatchEvent(createTouchEvent("touchend", [point]));
+    });
+
+    expect(handleChange).toHaveBeenCalledWith(
+      `[PAP-102](${buildIssueReferenceHref("PAP-102")}) `,
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders the task tag and identifier for issue mention options", async () => {
+    const handleChange = vi.fn();
+    const { option, root } = await openMentionMenuFor(
+      handleChange,
+      [
+        {
+          id: "issue:issue-1",
+          kind: "issue" as const,
+          name: "PAP-102 @task references",
+          issueId: "issue-1",
+          issueIdentifier: "PAP-102",
+        },
+      ],
+      "PAP-102",
+    );
+
+    expect(option.textContent).toContain("PAP-102");
+    expect(option.textContent).toContain("@task references");
+    expect(option.textContent).toContain("Task");
 
     await act(async () => {
       root.unmount();

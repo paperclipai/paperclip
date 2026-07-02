@@ -484,7 +484,10 @@ describe("InboxIssueMetaLeading", () => {
       root.render(<InboxIssueMetaLeading issue={createIssue()} isLive />);
     });
 
-    const statusIcon = container.querySelector('span[class*="border-blue-600"]');
+    // The status glyph is an <svg> coloured from its --status-task-icon-* var.
+    const statusIcon = Array.from(container.querySelectorAll("svg")).find((svg) =>
+      (svg.getAttribute("style") ?? "").includes("--status-task-icon"),
+    );
     const liveBadge = container.querySelector('span[class*="px-1.5"][class*="bg-blue-500/10"]');
     const liveBadgeLabel = Array.from(container.querySelectorAll("span")).find(
       (node) => node.textContent === "Live" && node.className.includes("text-"),
@@ -492,9 +495,9 @@ describe("InboxIssueMetaLeading", () => {
     const liveDot = container.querySelector('span[class*="bg-blue-500"]');
     const pulseRing = container.querySelector('span[class*="animate-pulse"]');
 
-    expect(statusIcon).not.toBeNull();
-    expect(statusIcon?.className).not.toContain("!border-muted-foreground");
-    expect(statusIcon?.className).not.toContain("!text-muted-foreground");
+    expect(statusIcon).not.toBeUndefined();
+    // Status accent stays visible — not neutralized to muted.
+    expect(statusIcon?.getAttribute("class") ?? "").not.toContain("!text-muted-foreground");
     expect(liveBadge).not.toBeNull();
     expect(liveBadge?.className).toContain("bg-blue-500/10");
     expect(liveBadgeLabel).not.toBeNull();
