@@ -1,45 +1,28 @@
-WITH ranked_active_templates AS (
-  SELECT
-    id,
-    first_value(id) OVER (
-      PARTITION BY environment_id
-      ORDER BY captured_at DESC NULLS LAST, created_at DESC, id DESC
-    ) AS kept_id,
-    row_number() OVER (
-      PARTITION BY environment_id
-      ORDER BY captured_at DESC NULLS LAST, created_at DESC, id DESC
-    ) AS rank
-  FROM "environment_custom_image_templates"
-  WHERE "status" = 'active'
-)
-UPDATE "environment_custom_image_templates" AS template
-SET
-  "status" = 'superseded',
-  "superseded_by_template_id" = ranked_active_templates.kept_id,
-  "updated_at" = now()
-FROM ranked_active_templates
-WHERE template.id = ranked_active_templates.id
-  AND ranked_active_templates.rank > 1;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM "environment_custom_image_templates"
+    WHERE "status" = 'active'
+    GROUP BY "environment_id"
+    HAVING count(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'Cannot migrate environment custom image templates to environment scope while multiple active templates exist for the same environment. Revoke or supersede the extra active templates before retrying.';
+  END IF;
+END $$;
 --> statement-breakpoint
-WITH ranked_active_sessions AS (
-  SELECT
-    id,
-    row_number() OVER (
-      PARTITION BY environment_id
-      ORDER BY created_at DESC, id DESC
-    ) AS rank
-  FROM "environment_custom_image_setup_sessions"
-  WHERE "status" IN ('starting', 'waiting_for_user', 'capturing')
-)
-UPDATE "environment_custom_image_setup_sessions" AS session
-SET
-  "status" = 'failed',
-  "failure_reason" = 'Closed by migration to environment-scoped custom image sessions.',
-  "finished_at" = COALESCE("finished_at", now()),
-  "updated_at" = now()
-FROM ranked_active_sessions
-WHERE session.id = ranked_active_sessions.id
-  AND ranked_active_sessions.rank > 1;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM "environment_custom_image_setup_sessions"
+    WHERE "status" IN ('starting', 'waiting_for_user', 'capturing')
+    GROUP BY "environment_id"
+    HAVING count(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'Cannot migrate environment custom image setup sessions to environment scope while multiple active sessions exist for the same environment. Finish or cancel the extra sessions before retrying.';
+  END IF;
+END $$;
 --> statement-breakpoint
 DROP INDEX IF EXISTS "environment_custom_image_templates_company_environment_status_idx";
 --> statement-breakpoint

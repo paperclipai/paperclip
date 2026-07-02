@@ -229,6 +229,52 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     expect(rollback.supersededTemplate.id).toBe(replacement.template.id);
   });
 
+  it("reuses the setup provider company context across lifecycle calls", async () => {
+    const { companyId, environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+      secretContextCompanyId: companyId,
+    });
+    expect(started.session.metadata).toMatchObject({
+      setupRpcCompanyId: companyId,
+    });
+
+    await service.refreshSetupSession({
+      sessionId: started.session.id,
+      includeConnectionPayload: true,
+    });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+
+    const lifecycleCalls = workerManager.call.mock.calls
+      .filter(([, method]) => [
+        "environmentStartInteractiveSetup",
+        "environmentGetInteractiveSetup",
+        "environmentCaptureTemplate",
+        "environmentCancelInteractiveSetup",
+      ].includes(method))
+      .map(([, method, params]) => ({
+        method,
+        companyId: (params as Record<string, unknown>).companyId,
+      }));
+
+    expect(lifecycleCalls).toEqual([
+      { method: "environmentStartInteractiveSetup", companyId },
+      { method: "environmentGetInteractiveSetup", companyId },
+      { method: "environmentCaptureTemplate", companyId },
+      { method: "environmentCancelInteractiveSetup", companyId },
+    ]);
+    expect(promoted.session.metadata).toMatchObject({
+      setupRpcCompanyId: companyId,
+    });
+    expect(promoted.template.metadata).toMatchObject({
+      setupRpcCompanyId: companyId,
+    });
+  });
+
   it("revokes the active template before deleting the provider template", async () => {
     const { environmentId } = await seed();
     const workerManager = createWorkerManager();
