@@ -9148,6 +9148,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.reconcileStrandedAssignedIssues();
   }
 
+  async function resolveTimedOutRoutineRecoveryActions() {
+    return recovery.resolveTimedOutRoutineRecoveryActions();
+  }
+
   async function sweepStaleIssueLocks() {
     return recovery.sweepStaleIssueLocks();
   }
@@ -13692,6 +13696,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     reconcileStrandedAssignedIssues,
+
+    resolveTimedOutRoutineRecoveryActions,
 
     sweepStaleIssueLocks,
 
