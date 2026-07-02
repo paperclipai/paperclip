@@ -367,6 +367,8 @@ export {
   issueWorkProductTypeSchema,
   issueWorkProductStatusSchema,
   issueWorkProductReviewStateSchema,
+  REQUIRED_WORK_PRODUCT_TYPES,
+  requiredWorkProductTypeSchema,
   type CreateIssueWorkProduct,
   type IssueWorkProductMetadata,
   type UpdateIssueWorkProduct,

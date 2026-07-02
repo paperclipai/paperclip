@@ -1108,6 +1108,8 @@ export {
   issueWorkProductTypeSchema,
   issueWorkProductStatusSchema,
   issueWorkProductReviewStateSchema,
+  REQUIRED_WORK_PRODUCT_TYPES,
+  requiredWorkProductTypeSchema,
   COMPANY_ARTIFACTS_DEFAULT_LIMIT,
   COMPANY_ARTIFACTS_MAX_LIMIT,
   COMPANY_ARTIFACTS_MAX_QUERY_LENGTH,

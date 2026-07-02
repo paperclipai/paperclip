@@ -15,7 +15,19 @@ describe("mapIntakePayload", () => {
       title: "Bug: login fails",
       description: "Steps to reproduce...",
       sourceRef: "https://github.com/org/repo/issues/42",
+      requiredWorkProductType: "pull_request",
     });
+  });
+
+  it("generic payload can carry requiredWorkProductType and maxCostCents", () => {
+    const mapped = mapIntakePayload({
+      title: "Research task",
+      requiredWorkProductType: "research_report",
+      maxCostCents: 500,
+    });
+    expect(mapped).toMatchObject({ requiredWorkProductType: "research_report", maxCostCents: 500 });
+    // and no default when not provided
+    expect(mapIntakePayload({ title: "Plain" }).requiredWorkProductType).toBeUndefined();
   });
 
   it("maps a generic payload with priority and sourceRef", () => {

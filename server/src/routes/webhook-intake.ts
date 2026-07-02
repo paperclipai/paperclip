@@ -3,7 +3,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { issues } from "@paperclipai/db";
-import { ISSUE_PRIORITIES } from "@paperclipai/shared";
+import { ISSUE_PRIORITIES, requiredWorkProductTypeSchema } from "@paperclipai/shared";
 import { issueService } from "../services/issues.js";
 import { logActivity } from "../services/activity-log.js";
 import { unprocessable } from "../errors.js";
@@ -16,10 +16,12 @@ const mappedPayloadSchema = z.object({
   description: z.string().max(100_000).nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional(),
   sourceRef: z.string().trim().min(1).max(2000).nullable(),
+  requiredWorkProductType: requiredWorkProductTypeSchema.optional(),
+  maxCostCents: z.number().int().positive().optional(),
 });
 
 // Accepts either a GitHub issue webhook payload or a generic
-// {title, body?, priority?, sourceRef?} shape.
+// {title, body?, priority?, sourceRef?, requiredWorkProductType?, maxCostCents?} shape.
 export function mapIntakePayload(body: unknown): z.infer<typeof mappedPayloadSchema> {
   const record = (body ?? {}) as Record<string, unknown>;
   const gh = record.issue as Record<string, unknown> | undefined;
@@ -28,12 +30,16 @@ export function mapIntakePayload(body: unknown): z.infer<typeof mappedPayloadSch
       title: gh.title,
       description: typeof gh.body === "string" && gh.body.length > 0 ? gh.body : null,
       sourceRef: typeof gh.html_url === "string" ? gh.html_url : null,
+      // GitHub issues resolve to code; require a PR by default.
+      requiredWorkProductType: "pull_request" as const,
     }
     : {
       title: record.title,
       description: typeof record.body === "string" && record.body.length > 0 ? record.body : null,
       priority: record.priority,
       sourceRef: typeof record.sourceRef === "string" ? record.sourceRef : null,
+      requiredWorkProductType: record.requiredWorkProductType,
+      maxCostCents: record.maxCostCents,
     };
   const parsed = mappedPayloadSchema.safeParse(raw);
   if (!parsed.success) {
@@ -83,6 +89,8 @@ export function webhookIntakeRoutes(db: Db) {
         status: "backlog",
         originKind: WEBHOOK_INTAKE_ORIGIN_KIND,
         originId: payload.sourceRef,
+        requiredWorkProductType: payload.requiredWorkProductType ?? null,
+        maxCostCents: payload.maxCostCents ?? null,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
       });
     } catch (err) {
