@@ -696,7 +696,9 @@ export function ceoControlRoomService(db: Db) {
             errorReason: agents.errorReason,
           })
           .from(agents)
-          .where(and(eq(agents.companyId, companyId), inArray(agents.adapterType, ["claude_local", "codex_local", "hermes_local", "process", "http"])))
+          // Terminated agents are retired roles, not conveyor lanes — exclude them so the
+          // conveyor reflects the working fleet only.
+          .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated"), inArray(agents.adapterType, ["claude_local", "codex_local", "hermes_local", "process", "http"])))
           .orderBy(agents.name)
           .limit(50),
         db
