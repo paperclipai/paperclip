@@ -2722,6 +2722,53 @@ export function accessRoutes(
       memberships: req.actor.memberships ?? [],
       source: req.actor.source ?? "none",
       keyId: req.actor.source === "board_key" ? req.actor.keyId ?? null : null,
+      expiresAt:
+        req.actor.source === "board_key"
+          ? req.actor.keyExpiresAt?.toISOString() ?? null
+          : null,
+    });
+  });
+
+  // Sliding renewal for board API keys: a still-valid token proves identity,
+  // so it may extend its own key to a fresh TTL window without the interactive
+  // challenge flow. Abandoned tokens still die — nothing renews them.
+  router.post("/cli-auth/refresh", async (req, res) => {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      throw unauthorized("Board authentication required");
+    }
+    if (req.actor.source !== "board_key" || !req.actor.keyId) {
+      throw badRequest("Refresh requires a board API key bearer token");
+    }
+    const keyId = req.actor.keyId;
+    const refreshed = await boardAuth.refreshBoardApiKeyExpiry(keyId);
+    if (refreshed) {
+      const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
+        userId: req.actor.userId,
+        boardApiKeyId: keyId,
+      });
+      for (const companyId of companyIds) {
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId: req.actor.userId,
+          action: "board_api_key.refreshed",
+          entityType: "user",
+          entityId: req.actor.userId,
+          details: {
+            boardApiKeyId: keyId,
+            expiresAt: refreshed.expiresAt?.toISOString() ?? null,
+          },
+        });
+      }
+    }
+    // Not refreshed = key is never-expires or already has a longer runway
+    // than a fresh TTL; report the current expiry either way.
+    const current = refreshed
+      ?? (await boardAuth.getBoardApiKeyForUser(keyId, req.actor.userId));
+    res.json({
+      keyId,
+      refreshed: Boolean(refreshed),
+      expiresAt: current?.expiresAt?.toISOString() ?? null,
     });
   });
 

@@ -547,6 +547,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/companies/issues",
   "POST /api/board-claim/{token}/claim",
   "GET /api/cli-auth/me",
+  "POST /api/cli-auth/refresh",
   "POST /api/companies/{companyId}/invites",
   "GET /api/companies/{companyId}/invites",
   "POST /api/companies/{companyId}/openclaw/invite-prompt",
@@ -2801,6 +2802,14 @@ registry.registerPath({
   tags: ["access"],
   summary: "Get current CLI auth session",
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/cli-auth/refresh",
+  tags: ["access"],
+  summary: "Sliding renewal of the calling board API key's expiry",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({

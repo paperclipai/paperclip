@@ -237,6 +237,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           memberships: access.memberships,
           isInstanceAdmin: access.isInstanceAdmin,
           keyId: boardKey.id,
+          keyExpiresAt: boardKey.expiresAt,
           runId: runAttribution?.id,
           source: "board_key",
         };

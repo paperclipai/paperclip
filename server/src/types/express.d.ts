@@ -18,6 +18,7 @@ declare global {
         }>;
         isInstanceAdmin?: boolean;
         keyId?: string;
+        keyExpiresAt?: Date | null;
         runId?: string;
         source?: "agent_jwt" | "agent_key" | "board_key" | "cloud_tenant" | "local_implicit" | "run_id" | "session" | "none";
       };

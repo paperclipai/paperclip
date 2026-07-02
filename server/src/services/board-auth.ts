@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, eq, gt, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   authUsers,
@@ -148,6 +148,28 @@ export function boardAuthService(db: Db) {
 
   async function touchBoardApiKey(id: string) {
     await db.update(boardApiKeys).set({ lastUsedAt: new Date() }).where(eq(boardApiKeys.id, id));
+  }
+
+  // Sliding renewal: push a still-valid expiring key out to a fresh TTL window.
+  // Never shortens (long-lived service keys pass through untouched), never
+  // resurrects (revoked or already-expired keys don't match the WHERE), and
+  // never converts a never-expires key. Returns null when nothing changed.
+  async function refreshBoardApiKeyExpiry(id: string, nowMs: number = Date.now()) {
+    const target = boardApiKeyExpiresAt(nowMs);
+    return db
+      .update(boardApiKeys)
+      .set({ expiresAt: target })
+      .where(
+        and(
+          eq(boardApiKeys.id, id),
+          isNull(boardApiKeys.revokedAt),
+          isNotNull(boardApiKeys.expiresAt),
+          gt(boardApiKeys.expiresAt, new Date(nowMs)),
+          lt(boardApiKeys.expiresAt, target),
+        ),
+      )
+      .returning({ id: boardApiKeys.id, expiresAt: boardApiKeys.expiresAt })
+      .then((rows) => rows[0] ?? null);
   }
 
   async function revokeBoardApiKey(id: string) {
@@ -443,6 +465,7 @@ export function boardAuthService(db: Db) {
     resolveBoardAccess,
     findBoardApiKeyByToken,
     touchBoardApiKey,
+    refreshBoardApiKeyExpiry,
     revokeBoardApiKey,
     createNamedBoardApiKey,
     listBoardApiKeys,
