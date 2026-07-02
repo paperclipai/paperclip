@@ -81,14 +81,7 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
   const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(status);
   const glyphStatus = isCoveredBlocked ? "in_queue" : status;
 
-  const glyph = (
-    <StatusGlyph
-      status={glyphStatus}
-      size={size}
-      className={cn(onChange && !showLabel && "cursor-pointer", className)}
-      title={ariaLabel}
-    />
-  );
+  const glyph = <StatusGlyph status={glyphStatus} size={size} className={className} title={ariaLabel} />;
 
   if (!onChange) {
     return showLabel ? (
@@ -101,13 +94,19 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
     );
   }
 
+  // The icon-only trigger is a real <button>: an <svg> can't take keyboard
+  // focus, and role="img" + the Radix-injected aria-haspopup is invalid ARIA
+  // (ARIA 1.2 — img is not an interactive role). The button carries the
+  // accessible label; the glyph inside it is decorative (no `title`).
   const trigger = showLabel ? (
     <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
       {glyph}
       <span className="text-sm">{statusLabel(status)}</span>
     </button>
   ) : (
-    glyph
+    <button type="button" aria-label={ariaLabel} className="inline-flex cursor-pointer items-center align-middle">
+      <StatusGlyph status={glyphStatus} size={size} className={className} />
+    </button>
   );
 
   return (
