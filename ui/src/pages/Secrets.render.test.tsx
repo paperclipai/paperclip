@@ -517,7 +517,7 @@ describe("Secrets page layout", () => {
     });
   });
 
-  it("opens reference details from the secrets table count", async () => {
+  it("keeps references reachable from the compact secrets row and detail drawer", async () => {
     mockSecretsApi.list.mockResolvedValue([makeCompanySecret()]);
     mockSecretsApi.usage.mockResolvedValue({
       secretId: "secret-openai",
@@ -563,17 +563,29 @@ describe("Secrets page layout", () => {
     await flushReact();
 
     const referencesButton = container.querySelector(
-      'button[aria-label="View references for OPENAI_API_KEY"]',
+      'button[aria-label="Actions for OPENAI_API_KEY"]',
     ) as HTMLButtonElement | null;
-    expect(referencesButton?.textContent).toBe("2");
+    expect(referencesButton).not.toBeNull();
 
+    const companyRow = Array.from(container.querySelectorAll("[role='row']")).find(
+      (row) => row.textContent?.includes("OPENAI_API_KEY"),
+    ) as HTMLElement | undefined;
     await act(async () => {
-      referencesButton?.click();
+      companyRow?.click();
+    });
+    await flushReact();
+
+    const usageButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Usage"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      usageButton?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      usageButton?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+      usageButton?.click();
     });
     await flushReact();
 
     expect(mockSecretsApi.usage).toHaveBeenCalledWith("secret-openai");
-    expect(document.body.textContent).toContain("Secret references");
     expect(document.body.textContent).toContain("CodexCoder");
     expect(document.body.textContent).toContain("env.OPENAI_API_KEY");
 
@@ -606,7 +618,7 @@ describe("Secrets page layout", () => {
     expect(container.textContent).toContain("Personal GitHub token");
     expect(container.textContent).toContain("Company");
     expect(container.textContent).toContain("Each user");
-    expect(container.textContent).toContain("3 of 5 set");
+    expect(container.textContent).toContain("3/5 set");
     expect(container.textContent).not.toContain("User secret definitions");
     expect(mockSecretsApi.list).toHaveBeenCalledWith("company-1");
     expect(mockSecretsApi.listUserSecretDefinitions).toHaveBeenCalledWith("company-1");
@@ -712,11 +724,11 @@ describe("Secrets page layout", () => {
     await flushReact();
     await flushReact();
 
-    const rowOpenButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Open",
-    ) as HTMLButtonElement | undefined;
+    const definitionRow = Array.from(container.querySelectorAll("[role='row']")).find(
+      (row) => row.textContent?.includes("Personal GitHub token"),
+    ) as HTMLElement | undefined;
     await act(async () => {
-      rowOpenButton?.click();
+      definitionRow?.click();
     });
     await flushReact();
 

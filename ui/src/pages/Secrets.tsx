@@ -8,12 +8,15 @@ import {
   Ban,
   CheckCircle2,
   Cloud,
+  Copy,
   Database,
   Edit3,
   ExternalLink,
   KeyRound,
   Link2,
+  Lock,
   Loader2,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   Search,
@@ -79,7 +82,16 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "../lib/utils";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { PageTabBar } from "../components/PageTabBar";
 import { ImportFromVaultDialog } from "./secrets/ImportFromVaultDialog";
 import { MyUserSecretsTab } from "./secrets/MyUserSecretsTab";
@@ -282,6 +294,107 @@ function modeDescription(managedMode: SecretManagedMode) {
   return managedMode === "paperclip_managed"
     ? "Paperclip owns create and rotation writes for this provider secret."
     : "Paperclip resolves this provider reference but does not rotate the provider value.";
+}
+
+function statusLabel(status: SecretStatus) {
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function statusDotTone(status: SecretStatus) {
+  switch (status) {
+    case "active":
+      return "bg-emerald-500";
+    case "disabled":
+      return "bg-amber-500";
+    case "archived":
+      return "bg-muted-foreground";
+    case "deleted":
+      return "bg-destructive";
+    default:
+      return "bg-muted-foreground";
+  }
+}
+
+function StatusBadge({ status }: { status: SecretStatus }) {
+  return (
+    <span className={cn("inline-flex items-center gap-1.5 text-xs font-medium", statusTextTone(status))}>
+      <span className={cn("h-1.5 w-1.5 rounded-full", statusDotTone(status))} aria-hidden="true" />
+      {statusLabel(status)}
+    </span>
+  );
+}
+
+function MetaChip({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex min-w-0 items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
+      {children}
+    </span>
+  );
+}
+
+function providerIndicatorLabel(
+  secret: CompanySecret,
+  providers: SecretProviderDescriptor[],
+  providerConfigs: CompanySecretProviderConfig[],
+) {
+  const provider = providerLabel(providers, secret.provider);
+  const vault = providerVaultLabel(providerConfigs, secret.providerConfigId);
+  const custody = modeLabel(secret.managedMode);
+  return [
+    `${custody} · ${provider}`,
+    vault ? `Vault: ${vault}` : null,
+    secret.externalRef ? `Reference: ${secret.externalRef}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function SecretProviderIndicator({
+  secret,
+  providers,
+  providerConfigs,
+}: {
+  secret: CompanySecret;
+  providers: SecretProviderDescriptor[];
+  providerConfigs: CompanySecretProviderConfig[];
+}) {
+  const label = providerIndicatorLabel(secret, providers, providerConfigs);
+  const Icon = secret.managedMode === "external_reference" ? ExternalLink : Lock;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          aria-label={label}
+          className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-border bg-muted/40 text-muted-foreground"
+        >
+          <Icon className="h-3 w-3" />
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-80 whitespace-pre-wrap break-words">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function UpdatedWithTooltip({
+  updatedAt,
+  tooltip,
+}: {
+  updatedAt: Date | string | null | undefined;
+  tooltip: string;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          aria-label={tooltip}
+          className="inline-flex cursor-help border-b border-dotted border-muted-foreground/60 text-xs text-muted-foreground"
+        >
+          {formatRelative(updatedAt)}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-72 whitespace-pre-wrap">{tooltip}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 function healthEntryForProvider(
@@ -1137,6 +1250,172 @@ export function Secrets() {
     }));
   }
 
+  function openCompanySecret(secret: CompanySecret) {
+    setSecretDetailTab("details");
+    setSelectedSecretId(secret.id);
+    setSelectedDefinitionId(null);
+  }
+
+  function openUserDefinition(definition: UserSecretDefinition) {
+    setSecretDetailTab("details");
+    setSelectedDefinitionId(definition.id);
+    setSelectedSecretId(null);
+  }
+
+  function openRotateSecret(secret: CompanySecret) {
+    openCompanySecret(secret);
+    setRotateOpen(true);
+    setRotateValue("");
+    setRotateExternalRef("");
+    setRotateProviderConfigId(
+      secret.providerConfigId ?? getDefaultProviderConfigId(providerConfigs, secret.provider),
+    );
+    setRotateError(null);
+  }
+
+  function copySecretKey(key: string) {
+    void copyTextToClipboard(key)
+      .then(() => pushToast({ title: "Secret key copied", body: key, tone: "success" }))
+      .catch((error) =>
+        pushToast({
+          title: "Copy failed",
+          body: error instanceof Error ? error.message : "Unable to copy secret key",
+          tone: "error",
+        }),
+      );
+  }
+
+  function renderRowActions(row: UnifiedSecretRow) {
+    const name = row.kind === "company" ? row.secret.name : row.definition.name;
+    return (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Actions for ${name}`}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <MoreHorizontal className="h-4 w-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-52">
+          <DropdownMenuItem
+            onSelect={() => {
+              if (row.kind === "company") openCompanySecret(row.secret);
+              else openUserDefinition(row.definition);
+            }}
+          >
+            <KeyRound className="h-4 w-4" /> View details
+          </DropdownMenuItem>
+          {row.kind === "company" ? (
+            <>
+              <DropdownMenuItem onSelect={() => setUsageDialogSecretId(row.secret.id)}>
+                <Link2 className="h-4 w-4" /> View references ({row.secret.referenceCount ?? 0})
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => openRotateSecret(row.secret)}>
+                <RefreshCw className="h-4 w-4" />
+                {row.secret.managedMode === "external_reference" ? "Update reference" : "Update value"}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                disabled={statusMutation.isPending}
+                onSelect={() =>
+                  statusMutation.mutate({
+                    id: row.secret.id,
+                    status: row.secret.status === "active" ? "disabled" : "active",
+                  })
+                }
+              >
+                {row.secret.status === "active" ? <Ban className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+                {row.secret.status === "active" ? "Disable" : "Activate"}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={statusMutation.isPending}
+                onSelect={() =>
+                  statusMutation.mutate({
+                    id: row.secret.id,
+                    status: row.secret.status === "archived" ? "active" : "archived",
+                  })
+                }
+              >
+                {row.secret.status === "archived" ? (
+                  <ArchiveRestore className="h-4 w-4" />
+                ) : (
+                  <Archive className="h-4 w-4" />
+                )}
+                {row.secret.status === "archived" ? "Unarchive" : "Archive"}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" onSelect={() => setDeleteConfirm(row.secret)}>
+                <Trash2 className="h-4 w-4" /> Delete secret
+              </DropdownMenuItem>
+            </>
+          ) : (
+            <>
+              <DropdownMenuItem
+                disabled={row.definition.status !== "active"}
+                onSelect={() =>
+                  setSetMyValueFor(
+                    myUserSecrets.find((entry) => entry.definition.id === row.definition.id) ?? {
+                      definition: row.definition,
+                      secret: null,
+                    },
+                  )
+                }
+              >
+                <KeyRound className="h-4 w-4" />
+                {myUserSecrets.find((entry) => entry.definition.id === row.definition.id)?.secret
+                  ? "Update my value"
+                  : "Set my value"}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => openEditDefinition(row.definition)}>
+                <Pencil className="h-4 w-4" /> Edit definition
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                disabled={definitionStatusMutation.isPending}
+                onSelect={() =>
+                  definitionStatusMutation.mutate({
+                    definition: row.definition,
+                    status: row.definition.status === "active" ? "disabled" : "active",
+                  })
+                }
+              >
+                {row.definition.status === "active" ? (
+                  <Ban className="h-4 w-4" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4" />
+                )}
+                {row.definition.status === "active" ? "Disable" : "Activate"}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={definitionStatusMutation.isPending}
+                onSelect={() =>
+                  definitionStatusMutation.mutate({
+                    definition: row.definition,
+                    status: row.definition.status === "archived" ? "active" : "archived",
+                  })
+                }
+              >
+                {row.definition.status === "archived" ? (
+                  <ArchiveRestore className="h-4 w-4" />
+                ) : (
+                  <Archive className="h-4 w-4" />
+                )}
+                {row.definition.status === "archived" ? "Unarchive" : "Archive"}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" onSelect={() => setDefinitionDeleteConfirm(row.definition)}>
+                <Trash2 className="h-4 w-4" /> Delete definition
+              </DropdownMenuItem>
+            </>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    );
+  }
+
   if (!selectedCompanyId) {
     return (
       <div className="p-6 text-sm text-muted-foreground">Select a company to manage secrets.</div>
@@ -1144,6 +1423,7 @@ export function Secrets() {
   }
 
   return (
+    <TooltipProvider>
     <div className="flex h-full min-h-0 flex-col gap-4">
       <div className="flex items-center gap-2">
         <KeyRound className="h-5 w-5 text-muted-foreground" />
@@ -1226,143 +1506,177 @@ export function Secrets() {
             ) : filteredRows.length === 0 ? (
               <EmptyState icon={Search} message="No secrets match your filters." />
             ) : (
-              <table className="w-full text-sm">
-              <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
-                <tr>
-                  <th className="px-3 py-2 text-left font-medium">Name</th>
-                  <th className="px-2 py-2 text-left font-medium">Provided by</th>
-                  <th className="px-2 py-2 text-left font-medium">Mode</th>
-                  <th className="px-2 py-2 text-left font-medium">Provider</th>
-                  <th className="px-2 py-2 text-left font-medium">Status</th>
-                  <th className="px-2 py-2 text-left font-medium">Coverage / version</th>
-                  <th className="px-2 py-2 text-left font-medium">Last updated</th>
-                  <th className="px-2 py-2 text-left font-medium">Last resolved</th>
-                  <th className="px-2 py-2 text-left font-medium">References</th>
-                  <th className="px-2 py-2 text-left font-medium">Reference</th>
-                  <th className="px-3 py-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredRows.map((row) => (
-                  <tr
-                    key={row.id}
-                    className={cn(
-                      "border-b border-border/60 hover:bg-accent/40 cursor-pointer",
-                      row.kind === "company" && selectedSecretId === row.secret.id && "bg-accent/60",
-                      row.kind === "user" && selectedDefinitionId === row.definition.id && "bg-accent/60",
-                    )}
-                    onClick={() => {
-                      setSecretDetailTab("details");
-                      if (row.kind === "company") {
-                        setSelectedSecretId(row.secret.id);
-                        setSelectedDefinitionId(null);
-                      } else {
-                        setSelectedDefinitionId(row.definition.id);
-                        setSelectedSecretId(null);
-                      }
-                    }}
+              <div className="min-w-0 overflow-x-hidden text-sm">
+                <div
+                  role="table"
+                  aria-label="Secrets"
+                  className="hidden min-w-0 md:block"
+                >
+                  <div
+                    role="row"
+                    className="grid grid-cols-[minmax(0,2.4fr)_minmax(5.25rem,0.75fr)_minmax(7rem,1fr)_minmax(5rem,0.7fr)_2.75rem] items-center gap-3 bg-muted/40 px-3 py-2 text-xs uppercase tracking-wide text-muted-foreground"
                   >
-                    <td className="px-3 py-2.5">
-                      <div className="font-medium text-foreground">
-                        {row.kind === "company" ? row.secret.name : row.definition.name}
-                      </div>
-                      <code className="mt-0.5 block text-[11px] text-muted-foreground">
-                        {row.kind === "company" ? row.secret.key : row.definition.key}
-                      </code>
-                    </td>
-                    <td className="px-2 py-2.5">
-                      {row.kind === "company" ? (
-                        <Badge variant="outline" className="text-[11px]">
-                          Company
-                        </Badge>
-                      ) : (
-                        <UserSecretChip label="Each user" />
-                      )}
-                    </td>
-                    <td className="px-2 py-2.5 text-xs text-muted-foreground">
-                      {row.kind === "company" ? modeLabel(row.secret.managedMode) : "Personal value"}
-                    </td>
-                    <td className="px-2 py-2.5 text-xs">
-                      <div>
-                        {row.kind === "company" ? providerLabel(providers, row.secret.provider) : "—"}
-                      </div>
-                    </td>
-                    <td className="px-2 py-2.5">
-                      <span
-                        className={cn(
-                          "text-xs font-medium",
-                          statusTextTone(row.kind === "company" ? row.secret.status : row.definition.status),
-                        )}
-                      >
-                        {row.kind === "company" ? row.secret.status : row.definition.status}
-                      </span>
-                    </td>
-                    <td className="px-2 py-2.5 text-xs">
-                      {row.kind === "company" ? (
-                        <span className="font-mono">v{row.secret.latestVersion}</span>
-                      ) : (
-                        <CoverageInline companyId={selectedCompanyId} definitionId={row.definition.id} />
-                      )}
-                    </td>
-                    <td className="px-2 py-2.5 text-xs text-muted-foreground">
-                      {formatRelative(row.kind === "company" ? row.secret.lastRotatedAt : row.definition.updatedAt)}
-                    </td>
-                    <td className="px-2 py-2.5 text-xs text-muted-foreground">
-                      {row.kind === "company" ? formatRelative(row.secret.lastResolvedAt) : "—"}
-                    </td>
-                    <td className="px-2 py-2.5 text-xs">
-                      {row.kind === "company" ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 px-2 text-xs"
-                          aria-label={`View references for ${row.secret.name}`}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setUsageDialogSecretId(row.secret.id);
+                    <div role="columnheader" className="font-medium">Secret</div>
+                    <div role="columnheader" className="font-medium">Status</div>
+                    <div role="columnheader" className="font-medium">Version / coverage</div>
+                    <div role="columnheader" className="font-medium">Updated</div>
+                    <div role="columnheader" className="sr-only">Actions</div>
+                  </div>
+                  <div role="rowgroup">
+                    {filteredRows.map((row) => {
+                      const status = row.kind === "company" ? row.secret.status : row.definition.status;
+                      const updatedAt = row.kind === "company" ? row.secret.updatedAt : row.definition.updatedAt;
+                      const updatedTooltip =
+                        row.kind === "company"
+                          ? [
+                              `Updated: ${formatRelative(row.secret.updatedAt)}`,
+                              `Last rotated: ${formatRelative(row.secret.lastRotatedAt)}`,
+                              `Last resolved: ${formatRelative(row.secret.lastResolvedAt)}`,
+                            ].join("\n")
+                          : `Updated: ${formatRelative(row.definition.updatedAt)}\nLast resolved: user values resolve per member`;
+                      return (
+                        <div
+                          key={row.id}
+                          role="row"
+                          className={cn(
+                            "grid cursor-pointer grid-cols-[minmax(0,2.4fr)_minmax(5.25rem,0.75fr)_minmax(7rem,1fr)_minmax(5rem,0.7fr)_2.75rem] items-center gap-3 border-b border-border/60 px-3 py-3 hover:bg-accent/40",
+                            row.kind === "company" && selectedSecretId === row.secret.id && "bg-accent/60",
+                            row.kind === "user" && selectedDefinitionId === row.definition.id && "bg-accent/60",
+                          )}
+                          onClick={() => {
+                            if (row.kind === "company") openCompanySecret(row.secret);
+                            else openUserDefinition(row.definition);
                           }}
                         >
-                          {row.secret.referenceCount ?? 0}
-                        </Button>
-                      ) : (
-                        <span className="text-muted-foreground">Env key</span>
-                      )}
-                    </td>
-                    <td className="px-2 py-2.5 text-xs">
-                      {row.kind === "user" ? (
-                        <span className="text-muted-foreground">Each member stores their own value</span>
-                      ) : row.secret.managedMode === "external_reference" ? (
-                        <span className="inline-flex items-center gap-1 font-mono text-muted-foreground">
-                          <Link2 className="h-3 w-3" />
-                          {row.secret.externalRef ?? "—"}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">Owned</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2.5 text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setSecretDetailTab("details");
-                          if (row.kind === "company") {
-                            setSelectedSecretId(row.secret.id);
-                            setSelectedDefinitionId(null);
-                          } else {
-                            setSelectedDefinitionId(row.definition.id);
-                            setSelectedSecretId(null);
-                          }
+                          <div role="cell" className="min-w-0">
+                            <div className="flex min-w-0 items-center gap-1.5">
+                              <span className="truncate font-medium text-foreground">
+                                {row.kind === "company" ? row.secret.name : row.definition.name}
+                              </span>
+                              {row.kind === "company" ? (
+                                <SecretProviderIndicator
+                                  secret={row.secret}
+                                  providers={providers}
+                                  providerConfigs={providerConfigs}
+                                />
+                              ) : (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span
+                                      aria-label="Each user provides and owns their own value"
+                                      className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-violet-500/30 bg-violet-500/5 text-violet-700 dark:text-violet-200"
+                                    >
+                                      <UserRound className="h-3 w-3" />
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Each user provides and owns their own value</TooltipContent>
+                                </Tooltip>
+                              )}
+                            </div>
+                            <code className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                              {row.kind === "company" ? row.secret.key : row.definition.key}
+                            </code>
+                            <div className="mt-1">
+                              {row.kind === "company" ? (
+                                <MetaChip>
+                                  <ShieldCheck className="h-3 w-3" /> Company
+                                </MetaChip>
+                              ) : (
+                                <UserSecretChip label="Each user" />
+                              )}
+                            </div>
+                          </div>
+                          <div role="cell">
+                            <StatusBadge status={status} />
+                          </div>
+                          <div role="cell" className="min-w-0 text-xs">
+                            {row.kind === "company" ? (
+                              <span className="truncate text-muted-foreground">
+                                <span className="font-mono text-foreground">v{row.secret.latestVersion}</span>
+                                <span> · {row.secret.managedMode === "external_reference" ? "linked" : "managed"}</span>
+                              </span>
+                            ) : (
+                              <CoverageInline companyId={selectedCompanyId} definitionId={row.definition.id} compact />
+                            )}
+                          </div>
+                          <div role="cell">
+                            <UpdatedWithTooltip updatedAt={updatedAt} tooltip={updatedTooltip} />
+                          </div>
+                          <div role="cell" className="text-right" onClick={(event) => event.stopPropagation()}>
+                            {renderRowActions(row)}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="space-y-2 md:hidden">
+                  {filteredRows.map((row) => {
+                    const status = row.kind === "company" ? row.secret.status : row.definition.status;
+                    return (
+                      <div
+                        key={row.id}
+                        className={cn(
+                          "cursor-pointer rounded-md border border-border bg-background p-3 hover:bg-accent/30",
+                          row.kind === "company" && selectedSecretId === row.secret.id && "bg-accent/60",
+                          row.kind === "user" && selectedDefinitionId === row.definition.id && "bg-accent/60",
+                        )}
+                        onClick={() => {
+                          if (row.kind === "company") openCompanySecret(row.secret);
+                          else openUserDefinition(row.definition);
                         }}
                       >
-                        Open
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-              </table>
+                        <div className="flex min-w-0 items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="truncate font-medium text-foreground">
+                              {row.kind === "company" ? row.secret.name : row.definition.name}
+                            </div>
+                            <code className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                              {row.kind === "company" ? row.secret.key : row.definition.key}
+                            </code>
+                          </div>
+                          <div onClick={(event) => event.stopPropagation()}>{renderRowActions(row)}</div>
+                        </div>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          {row.kind === "company" ? (
+                            <>
+                              <MetaChip>
+                                <ShieldCheck className="h-3 w-3" /> Company
+                              </MetaChip>
+                              <SecretProviderIndicator
+                                secret={row.secret}
+                                providers={providers}
+                                providerConfigs={providerConfigs}
+                              />
+                              <StatusBadge status={status} />
+                            </>
+                          ) : (
+                            <>
+                              <UserSecretChip label="Each user" />
+                              <StatusBadge status={status} />
+                              <CoverageInline companyId={selectedCompanyId} definitionId={row.definition.id} compact />
+                            </>
+                          )}
+                        </div>
+                        <div className="mt-2 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                          <span className="min-w-0 truncate">
+                            {row.kind === "company" ? (
+                              <>
+                                v{row.secret.latestVersion} ·{" "}
+                                {row.secret.managedMode === "external_reference" ? "linked" : "managed"}
+                              </>
+                            ) : (
+                              "Member-owned values"
+                            )}
+                          </span>
+                          <span>Updated {formatRelative(row.kind === "company" ? row.secret.updatedAt : row.definition.updatedAt)}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             )}
           </div>
         </TabsContent>
@@ -1409,82 +1723,91 @@ export function Secrets() {
         <SheetContent className="w-full sm:max-w-xl flex flex-col gap-0">
           {selectedSecret ? (
             <>
-              <SheetHeader>
-                <SheetTitle className="flex items-center gap-2 text-base">
-                  <KeyRound className="h-4 w-4" />
-                  {selectedSecret.name}
-                  <span className={cn("ml-2 text-sm font-normal", statusTextTone(selectedSecret.status))}>
-                    {selectedSecret.status}
-                  </span>
+              <SheetHeader className="space-y-3">
+                <SheetTitle className="flex min-w-0 items-center gap-2 text-base">
+                  <KeyRound className="h-4 w-4 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">{selectedSecret.name}</span>
+                  <StatusBadge status={selectedSecret.status} />
                 </SheetTitle>
-                <SheetDescription>
-                  {providerLabel(providers, selectedSecret.provider)} · v{selectedSecret.latestVersion} · {modeLabel(selectedSecret.managedMode)}
+                <SheetDescription className="sr-only">
+                  {providerLabel(providers, selectedSecret.provider)} secret {selectedSecret.key}
                 </SheetDescription>
+                <div className="flex min-w-0 items-center gap-2 rounded-md border border-border bg-muted/20 px-2 py-1.5">
+                  <code className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
+                    {selectedSecret.key}
+                  </code>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    onClick={() => copySecretKey(selectedSecret.key)}
+                  >
+                    <Copy className="mr-1 h-3.5 w-3.5" /> Copy
+                  </Button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <MetaChip>
+                    <ShieldCheck className="h-3 w-3" /> Company
+                  </MetaChip>
+                  <MetaChip>{modeLabel(selectedSecret.managedMode)}</MetaChip>
+                  <MetaChip>{providerLabel(providers, selectedSecret.provider)}</MetaChip>
+                  <MetaChip>v{selectedSecret.latestVersion}</MetaChip>
+                </div>
               </SheetHeader>
-              <div className="flex flex-wrap gap-2 px-4 pb-2">
+              <div className="flex items-center gap-2 px-4 pb-2">
                 <Button
                   size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setRotateOpen(true);
-                    setRotateValue("");
-                    setRotateExternalRef("");
-                    setRotateProviderConfigId(
-                      selectedSecret.providerConfigId ??
-                        getDefaultProviderConfigId(providerConfigs, selectedSecret.provider),
-                    );
-                    setRotateError(null);
-                  }}
+                  onClick={() => openRotateSecret(selectedSecret)}
                 >
                   <RefreshCw className="h-3.5 w-3.5 mr-1" />
                   {selectedSecret.managedMode === "external_reference" ? "Update reference" : "Update value"}
                 </Button>
-                {selectedSecret.status === "active" ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => statusMutation.mutate({ id: selectedSecret.id, status: "disabled" })}
-                    disabled={statusMutation.isPending}
-                  >
-                    <Ban className="h-3.5 w-3.5 mr-1" /> Disable
-                  </Button>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => statusMutation.mutate({ id: selectedSecret.id, status: "active" })}
-                    disabled={statusMutation.isPending}
-                  >
-                    <CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Activate
-                  </Button>
-                )}
-                {selectedSecret.status === "archived" ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => statusMutation.mutate({ id: selectedSecret.id, status: "active" })}
-                    disabled={statusMutation.isPending}
-                  >
-                    <ArchiveRestore className="h-3.5 w-3.5 mr-1" /> Unarchive
-                  </Button>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => statusMutation.mutate({ id: selectedSecret.id, status: "archived" })}
-                    disabled={statusMutation.isPending}
-                  >
-                    <Archive className="h-3.5 w-3.5 mr-1" /> Archive
-                  </Button>
-                )}
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="text-destructive hover:text-destructive"
-                  onClick={() => setDeleteConfirm(selectedSecret)}
-                >
-                  <Trash2 className="h-3.5 w-3.5 mr-1" /> Delete
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" aria-label={`More actions for ${selectedSecret.name}`}>
+                      <MoreHorizontal className="mr-1 h-3.5 w-3.5" /> More
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-52">
+                    <DropdownMenuItem
+                      disabled={statusMutation.isPending}
+                      onSelect={() =>
+                        statusMutation.mutate({
+                          id: selectedSecret.id,
+                          status: selectedSecret.status === "active" ? "disabled" : "active",
+                        })
+                      }
+                    >
+                      {selectedSecret.status === "active" ? (
+                        <Ban className="h-4 w-4" />
+                      ) : (
+                        <CheckCircle2 className="h-4 w-4" />
+                      )}
+                      {selectedSecret.status === "active" ? "Disable" : "Activate"}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      disabled={statusMutation.isPending}
+                      onSelect={() =>
+                        statusMutation.mutate({
+                          id: selectedSecret.id,
+                          status: selectedSecret.status === "archived" ? "active" : "archived",
+                        })
+                      }
+                    >
+                      {selectedSecret.status === "archived" ? (
+                        <ArchiveRestore className="h-4 w-4" />
+                      ) : (
+                        <Archive className="h-4 w-4" />
+                      )}
+                      {selectedSecret.status === "archived" ? "Unarchive" : "Archive"}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem variant="destructive" onSelect={() => setDeleteConfirm(selectedSecret)}>
+                      <Trash2 className="h-4 w-4" /> Delete secret
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
               <Tabs value={secretDetailTab} onValueChange={setSecretDetailTab} className="flex-1 min-h-0 flex flex-col">
                 <div className="border-b border-border px-4">
@@ -1501,7 +1824,7 @@ export function Secrets() {
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
                   <TabsContent value="details">
-                    <SecretDetailsTab secret={selectedSecret} providerConfigs={providerConfigs} />
+                    <SecretDetailsTab secret={selectedSecret} providers={providers} providerConfigs={providerConfigs} />
                   </TabsContent>
                   <TabsContent value="usage">
                     <SecretUsageTab loading={usageQuery.isPending} bindings={usageQuery.data?.bindings ?? []} />
@@ -1518,22 +1841,39 @@ export function Secrets() {
             </>
           ) : selectedDefinition ? (
             <>
-              <SheetHeader>
-                <SheetTitle className="flex items-center gap-2 text-base">
-                  <UserRound className="h-4 w-4" />
-                  {selectedDefinition.name}
-                  <span className={cn("ml-2 text-sm font-normal", statusTextTone(selectedDefinition.status))}>
-                    {selectedDefinition.status}
-                  </span>
+              <SheetHeader className="space-y-3">
+                <SheetTitle className="flex min-w-0 items-center gap-2 text-base">
+                  <UserRound className="h-4 w-4 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">{selectedDefinition.name}</span>
+                  <StatusBadge status={selectedDefinition.status} />
                 </SheetTitle>
-                <SheetDescription>
-                  Each user · <span className="font-mono">{selectedDefinition.key}</span>
+                <SheetDescription className="sr-only">
+                  Each user secret definition {selectedDefinition.key}
                 </SheetDescription>
+                <div className="flex min-w-0 items-center gap-2 rounded-md border border-border bg-muted/20 px-2 py-1.5">
+                  <code className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
+                    {selectedDefinition.key}
+                  </code>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    onClick={() => copySecretKey(selectedDefinition.key)}
+                  >
+                    <Copy className="mr-1 h-3.5 w-3.5" /> Copy
+                  </Button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <UserSecretChip label="Each user" />
+                  <MetaChip>
+                    <CoverageInline companyId={selectedCompanyId} definitionId={selectedDefinition.id} compact />
+                  </MetaChip>
+                </div>
               </SheetHeader>
-              <div className="flex flex-wrap gap-2 px-4 pb-2">
+              <div className="flex items-center gap-2 px-4 pb-2">
                 <Button
                   size="sm"
-                  variant={selectedDefinitionMyEntry?.secret ? "outline" : "default"}
                   onClick={() =>
                     setSetMyValueFor(
                       selectedDefinitionMyEntry ?? { definition: selectedDefinition, secret: null },
@@ -1544,75 +1884,55 @@ export function Secrets() {
                   <KeyRound className="h-3.5 w-3.5 mr-1" />
                   {selectedDefinitionMyEntry?.secret ? "Update my value" : "Set my value"}
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => openEditDefinition(selectedDefinition)}>
-                  <Pencil className="h-3.5 w-3.5 mr-1" /> Edit
-                </Button>
-                {selectedDefinition.status === "active" ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      definitionStatusMutation.mutate({
-                        definition: selectedDefinition,
-                        status: "disabled",
-                      })
-                    }
-                    disabled={definitionStatusMutation.isPending}
-                  >
-                    <Ban className="h-3.5 w-3.5 mr-1" /> Disable
-                  </Button>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      definitionStatusMutation.mutate({
-                        definition: selectedDefinition,
-                        status: "active",
-                      })
-                    }
-                    disabled={definitionStatusMutation.isPending}
-                  >
-                    <CheckCircle2 className="h-3.5 w-3.5 mr-1" /> Activate
-                  </Button>
-                )}
-                {selectedDefinition.status === "archived" ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      definitionStatusMutation.mutate({
-                        definition: selectedDefinition,
-                        status: "active",
-                      })
-                    }
-                    disabled={definitionStatusMutation.isPending}
-                  >
-                    <ArchiveRestore className="h-3.5 w-3.5 mr-1" /> Unarchive
-                  </Button>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      definitionStatusMutation.mutate({
-                        definition: selectedDefinition,
-                        status: "archived",
-                      })
-                    }
-                    disabled={definitionStatusMutation.isPending}
-                  >
-                    <Archive className="h-3.5 w-3.5 mr-1" /> Archive
-                  </Button>
-                )}
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="text-destructive hover:text-destructive"
-                  onClick={() => setDefinitionDeleteConfirm(selectedDefinition)}
-                >
-                  <Trash2 className="h-3.5 w-3.5 mr-1" /> Delete
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" aria-label={`More actions for ${selectedDefinition.name}`}>
+                      <MoreHorizontal className="mr-1 h-3.5 w-3.5" /> More
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-52">
+                    <DropdownMenuItem onSelect={() => openEditDefinition(selectedDefinition)}>
+                      <Pencil className="h-4 w-4" /> Edit definition
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      disabled={definitionStatusMutation.isPending}
+                      onSelect={() =>
+                        definitionStatusMutation.mutate({
+                          definition: selectedDefinition,
+                          status: selectedDefinition.status === "active" ? "disabled" : "active",
+                        })
+                      }
+                    >
+                      {selectedDefinition.status === "active" ? (
+                        <Ban className="h-4 w-4" />
+                      ) : (
+                        <CheckCircle2 className="h-4 w-4" />
+                      )}
+                      {selectedDefinition.status === "active" ? "Disable" : "Activate"}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      disabled={definitionStatusMutation.isPending}
+                      onSelect={() =>
+                        definitionStatusMutation.mutate({
+                          definition: selectedDefinition,
+                          status: selectedDefinition.status === "archived" ? "active" : "archived",
+                        })
+                      }
+                    >
+                      {selectedDefinition.status === "archived" ? (
+                        <ArchiveRestore className="h-4 w-4" />
+                      ) : (
+                        <Archive className="h-4 w-4" />
+                      )}
+                      {selectedDefinition.status === "archived" ? "Unarchive" : "Archive"}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem variant="destructive" onSelect={() => setDefinitionDeleteConfirm(selectedDefinition)}>
+                      <Trash2 className="h-4 w-4" /> Delete definition
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
               <Tabs value={secretDetailTab} onValueChange={setSecretDetailTab} className="flex-1 min-h-0 flex flex-col">
                 <div className="border-b border-border px-4">
@@ -1630,7 +1950,7 @@ export function Secrets() {
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
                   <TabsContent value="details">
-                    <UserSecretDetailsTab definition={selectedDefinition} />
+                    <UserSecretDetailsTab companyId={selectedCompanyId} definition={selectedDefinition} />
                   </TabsContent>
                   <TabsContent value="coverage">
                     <UserSecretCoverageTab
@@ -2299,6 +2619,7 @@ export function Secrets() {
         </DialogContent>
       </Dialog>
     </div>
+    </TooltipProvider>
   );
 }
 
@@ -3119,9 +3440,11 @@ function TextField({
 function CoverageInline({
   companyId,
   definitionId,
+  compact = false,
 }: {
   companyId: string;
   definitionId: string;
+  compact?: boolean;
 }) {
   const coverageQuery = useQuery({
     queryKey: queryKeys.secrets.userDefinitionCoverage(companyId, definitionId),
@@ -3132,19 +3455,31 @@ function CoverageInline({
   if (coverageQuery.isPending) return <span className="text-muted-foreground">Loading…</span>;
   if (coverageQuery.isError) return <span className="text-destructive">Coverage unavailable</span>;
   return (
-    <span className="inline-flex items-center gap-1 text-muted-foreground">
+    <span className="inline-flex min-w-0 items-center gap-1 text-muted-foreground">
       <Users className="h-3 w-3" />
-      {coverageSummaryLabel(summary)}
+      <span className="truncate">
+        {compact && summary
+          ? `${summary.configuredCount}/${summary.configuredCount + summary.missingCount + summary.inactiveCount} set`
+          : coverageSummaryLabel(summary)}
+      </span>
       {summary && summary.missingCount > 0 ? (
-        <span className="text-amber-600 dark:text-amber-400">· {summary.missingCount} missing</span>
+        <span className="shrink-0 text-amber-600 dark:text-amber-400">
+          · {compact ? `${summary.missingCount} miss` : `${summary.missingCount} missing`}
+        </span>
       ) : null}
     </span>
   );
 }
 
-function UserSecretDetailsTab({ definition }: { definition: UserSecretDefinition }) {
+function UserSecretDetailsTab({
+  companyId,
+  definition,
+}: {
+  companyId: string;
+  definition: UserSecretDefinition;
+}) {
   return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
+    <dl className="divide-y divide-border/60 text-xs">
       <DetailRow label="Description">
         <span>{definition.description ?? <span className="text-muted-foreground">—</span>}</span>
       </DetailRow>
@@ -3152,18 +3487,16 @@ function UserSecretDetailsTab({ definition }: { definition: UserSecretDefinition
       <DetailRow label="Key">
         <code>{definition.key}</code>
       </DetailRow>
-      <DetailRow label="Status">{definition.status}</DetailRow>
+      <DetailRow label="Status"><StatusBadge status={definition.status} /></DetailRow>
+      <DetailRow label="Coverage">
+        <CoverageInline companyId={companyId} definitionId={definition.id} />
+      </DetailRow>
       <DetailRow label="Created">{formatRelative(definition.createdAt)}</DetailRow>
       <DetailRow label="Updated">{formatRelative(definition.updatedAt)}</DetailRow>
-      <div className="col-span-2">
-        <dt className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
-          Usage guidance
-        </dt>
-        <dd className="text-foreground">
-          {definition.usageGuidance ?? <span className="text-muted-foreground">—</span>}
-        </dd>
-      </div>
-      <div className="col-span-2 rounded-md border border-violet-500/30 bg-violet-500/5 p-2 text-[11px] text-violet-800 dark:text-violet-200">
+      <DetailRow label="Usage guidance">
+        {definition.usageGuidance ?? <span className="text-muted-foreground">—</span>}
+      </DetailRow>
+      <div className="mt-3 rounded-md border border-violet-500/30 bg-violet-500/5 p-2 text-[11px] text-violet-800 dark:text-violet-200">
         No value is stored on this admin row. Each member manages their own value under My secrets.
       </div>
     </dl>
@@ -3251,35 +3584,40 @@ function UserSecretAccessEventsTab() {
 
 function SecretDetailsTab({
   secret,
+  providers,
   providerConfigs,
 }: {
   secret: CompanySecret;
+  providers: SecretProviderDescriptor[];
   providerConfigs: CompanySecretProviderConfig[];
 }) {
   return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
+    <dl className="divide-y divide-border/60 text-xs">
       <DetailRow label="Description">
         <span>{secret.description ?? <span className="text-muted-foreground">—</span>}</span>
       </DetailRow>
+      <DetailRow label="Provided by">Company</DetailRow>
       <DetailRow label="Custody">{modeLabel(secret.managedMode)}</DetailRow>
-      <DetailRow label="Provider">{secret.provider.replaceAll("_", " ")}</DetailRow>
+      <DetailRow label="Provider">{providerLabel(providers, secret.provider)}</DetailRow>
       <DetailRow label="Provider vault">{providerVaultLabel(providerConfigs, secret.providerConfigId)}</DetailRow>
+      <DetailRow label="External ARN">
+        {secret.externalRef ? (
+          <span className="break-all font-mono">{secret.externalRef}</span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </DetailRow>
       <DetailRow label="Latest version">v{secret.latestVersion}</DetailRow>
+      <DetailRow label="References">
+        {(secret.referenceCount ?? 0) === 1
+          ? "1 binding"
+          : `${secret.referenceCount ?? 0} bindings`}
+      </DetailRow>
       <DetailRow label="Created">{formatRelative(secret.createdAt)}</DetailRow>
       <DetailRow label="Updated">{formatRelative(secret.updatedAt)}</DetailRow>
       <DetailRow label="Last rotated">{formatRelative(secret.lastRotatedAt)}</DetailRow>
       <DetailRow label="Last resolved">{formatRelative(secret.lastResolvedAt)}</DetailRow>
-      {secret.externalRef ? (
-        <div className="col-span-2">
-          <dt className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">
-            {secret.managedMode === "external_reference" ? "Linked provider reference" : "Provider-managed path"}
-          </dt>
-          <dd className="font-mono text-xs break-all flex items-center gap-1">
-            <ExternalLink className="h-3 w-3" /> {secret.externalRef}
-          </dd>
-        </div>
-      ) : null}
-      <div className="col-span-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-300">
+      <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-700 dark:text-amber-300">
         {modeDescription(secret.managedMode)} Paperclip never re-displays stored values.
       </div>
     </dl>
@@ -3288,9 +3626,9 @@ function SecretDetailsTab({
 
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div>
+    <div className="grid grid-cols-[8rem_minmax(0,1fr)] gap-3 py-2">
       <dt className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</dt>
-      <dd className="text-foreground">{children}</dd>
+      <dd className="min-w-0 text-foreground">{children}</dd>
     </div>
   );
 }
