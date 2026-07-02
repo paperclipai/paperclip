@@ -12,6 +12,7 @@ import {
   createAgentKeySchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
+  agentSessionResetSchema,
   agentSkillSyncSchema,
   testAdapterEnvironmentSchema,
   // Issue
@@ -1320,6 +1321,18 @@ registry.registerPath({
     body: jsonBody(resetAgentSessionSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/sessions/reset",
+  tags: ["agents"],
+  summary: "Reset agent runtime session (team-scoped)",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(agentSessionResetSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 429: r.tooManyRequests },
 });
 
 registry.registerPath({
