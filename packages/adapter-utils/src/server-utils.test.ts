@@ -605,7 +605,7 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     expect(prompt).toContain("dependency-blocked interaction: yes");
-    expect(prompt).toContain("respond or triage the human comment");
+    expect(prompt).toContain("respond or triage the comment or assignment handoff");
     expect(prompt).toContain("PAP-1723 Finish blocker (todo)");
   });
 

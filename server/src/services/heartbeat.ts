@@ -1759,6 +1759,9 @@ function allowsIssueInteractionWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  if (wakeReason === "issue_assigned" && contextSnapshot?.assignmentHandoff === true) {
+    return true;
+  }
   if (!wakeReason || !ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
   return Boolean(deriveCommentId(contextSnapshot, null));
 }

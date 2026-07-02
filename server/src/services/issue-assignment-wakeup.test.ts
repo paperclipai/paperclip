@@ -40,7 +40,12 @@ describe("queueIssueAssignmentWakeup", () => {
 
     expect(wakeup).toHaveBeenCalledWith("agent-1", expect.objectContaining({
       reason: "issue_assigned",
-      payload: { issueId: "issue-1", mutation: "update" },
+      payload: { issueId: "issue-1", mutation: "update", assignmentHandoff: true },
+      contextSnapshot: expect.objectContaining({
+        issueId: "issue-1",
+        source: "issue.update",
+        assignmentHandoff: true,
+      }),
     }));
   });
 });

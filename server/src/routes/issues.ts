@@ -3849,6 +3849,7 @@ export function issueRoutes(
             issueId: issue.id,
             ...(comment ? { commentId: comment.id } : {}),
             mutation: "update",
+            assignmentHandoff: true,
             ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
             ...(interruptedRunId ? { interruptedRunId } : {}),
           },
@@ -3864,6 +3865,7 @@ export function issueRoutes(
                 }
               : {}),
             source: "issue.update",
+            assignmentHandoff: true,
             ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
             ...(interruptedRunId ? { interruptedRunId } : {}),
           },

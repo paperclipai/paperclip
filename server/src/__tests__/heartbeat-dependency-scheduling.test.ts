@@ -249,6 +249,70 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .then((rows) => rows[0]?.count ?? 0);
     expect(blockedRunsBeforeResolution).toBe(0);
 
+    let finishAssignmentHandoffRun!: () => void;
+    const assignmentHandoffRunCanFinish = new Promise<void>((resolve) => {
+      finishAssignmentHandoffRun = resolve;
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await assignmentHandoffRunCanFinish;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Blocked assignment handoff triaged.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const assignmentHandoffWake = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: blockedIssueId, assignmentHandoff: true },
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        wakeReason: "issue_assigned",
+        assignmentHandoff: true,
+      },
+    });
+    expect(assignmentHandoffWake).not.toBeNull();
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: blockedIssueId,
+      authorAgentId: agentId,
+      authorType: "agent",
+      createdByRunId: assignmentHandoffWake!.id,
+      body: "Blocked assignment handoff triaged.",
+    });
+    finishAssignmentHandoffRun();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, assignmentHandoffWake!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const assignmentHandoffRun = await db
+      .select({
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, assignmentHandoffWake!.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(assignmentHandoffRun?.status).toBe("succeeded");
+    expect(assignmentHandoffRun?.contextSnapshot).toMatchObject({
+      assignmentHandoff: true,
+      dependencyBlockedInteraction: true,
+      unresolvedBlockerIssueIds: [blockerId],
+    });
+
     const interactionWake = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",

@@ -161,7 +161,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
   "- Use direct child issues only from main parent issues for bounded parallel execution lanes. A parent may have at most 10 direct children, and execution lanes must never create child issues or grandchildren.",
   "- If this issue already has `parentId`, coordinate engineer/QA/fix loops inside this same issue thread and escalate blockers in comments instead of creating more issues.",
-  "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
+  "- If woken by a human comment or assignment handoff on a dependency-blocked issue, respond or triage the handoff without treating the blocked deliverable work as unblocked.",
   "- Create direct child execution lanes only when you know what needs to be done and the current issue is a main parent; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
   "- To ask for that input, create an interaction on the current issue with POST /api/issues/{issueId}/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response; for request_confirmation this resumes only after acceptance.",
   "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/{issueId}/comments or PATCH /api/issues/{issueId} comment payload. Generic agent comments on closed issues are inert by default.",
@@ -795,7 +795,7 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.dependencyBlockedInteraction) {
     lines.push("- dependency-blocked interaction: yes");
-    lines.push("- execution scope: respond or triage the human comment; do not treat blocker-dependent deliverable work as unblocked");
+    lines.push("- execution scope: respond or triage the comment or assignment handoff; do not treat blocker-dependent deliverable work as unblocked");
     if (normalized.unresolvedBlockerSummaries.length > 0) {
       const blockers = normalized.unresolvedBlockerSummaries
         .map((blocker) => `${blocker.identifier ?? blocker.id ?? "unknown"}${blocker.title ? ` ${blocker.title}` : ""}${blocker.status ? ` (${blocker.status})` : ""}`)

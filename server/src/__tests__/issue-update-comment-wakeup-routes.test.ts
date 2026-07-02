@@ -42,6 +42,9 @@ vi.mock("../services/index.js", () => ({
       agent: { id: raw },
     })),
   }),
+  budgetService: () => ({
+    upsertPolicy: vi.fn(async () => undefined),
+  }),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({
@@ -112,6 +115,9 @@ function registerModuleMocks() {
         ambiguous: false,
         agent: { id: raw },
       })),
+    }),
+    budgetService: () => ({
+      upsertPolicy: vi.fn(async () => undefined),
     }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
@@ -306,6 +312,7 @@ describe("issue update comment wakeups", () => {
           issueId: existing.id,
           commentId: "comment-1",
           mutation: "update",
+          assignmentHandoff: true,
         }),
         contextSnapshot: expect.objectContaining({
           issueId: existing.id,
@@ -313,6 +320,7 @@ describe("issue update comment wakeups", () => {
           commentId: "comment-1",
           wakeCommentId: "comment-1",
           source: "issue.update",
+          assignmentHandoff: true,
         }),
       }),
     );
