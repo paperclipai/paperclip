@@ -104,30 +104,23 @@ describe("CustomDashboardBuilder", () => {
     return storageKey;
   }
 
-  it("renders live metrics and persists added widgets", () => {
+  it("renders live metrics and persists selected widgets", () => {
     const storageKey = render();
 
     expect(host.textContent).toContain("Dashboard widgets");
     expect(host.textContent).toContain("11");
     expect(host.textContent).toContain("Story points");
 
-    const customize = Array.from(host.querySelectorAll("button")).find((button) => button.textContent?.includes("Customize"));
+    const customize = Array.from(host.querySelectorAll("button")).find((button) => button.textContent?.includes("Metrics"));
     expect(customize).toBeTruthy();
     act(() => {
       customize!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    const metricSelect = host.querySelector("select") as HTMLSelectElement;
-    expect(metricSelect).toBeTruthy();
+    const metricToggle = host.querySelector('input[value="actual_ai_hours"]') as HTMLInputElement;
+    expect(metricToggle).toBeTruthy();
     act(() => {
-      metricSelect.value = "actual_ai_hours";
-      metricSelect.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-
-    const add = Array.from(host.querySelectorAll("button")).find((button) => button.textContent?.includes("Add"));
-    expect(add).toBeTruthy();
-    act(() => {
-      add!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      metricToggle.click();
     });
 
     expect(window.localStorage.getItem(storageKey)).toContain("actual_ai_hours");

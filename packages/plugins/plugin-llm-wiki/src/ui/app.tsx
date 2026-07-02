@@ -1176,6 +1176,17 @@ const BookOpenIcon = makeLucideIcon(
   </>,
 );
 
+const NetworkIcon = makeLucideIcon(
+  <>
+    <rect width="6" height="6" x="16" y="16" rx="1" />
+    <rect width="6" height="6" x="2" y="16" rx="1" />
+    <rect width="6" height="6" x="9" y="2" rx="1" />
+    <path d="M12 8v4" />
+    <path d="M8 17.5 10.5 13" />
+    <path d="M16 17.5 13.5 13" />
+  </>,
+);
+
 const DownloadCloudIcon = makeLucideIcon(
   <>
     <path d="M12 13v8l-4-4" />
@@ -1370,7 +1381,7 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
 // accepted as a compatibility fallback.
 // ---------------------------------------------------------------------------
 
-type SectionKey = "browse" | "ingest" | "query" | "lint" | "history" | "settings";
+type SectionKey = "browse" | "graph" | "ingest" | "query" | "lint" | "history" | "settings";
 
 const SECTIONS: ReadonlyArray<{
   key: SectionKey;
@@ -1379,6 +1390,7 @@ const SECTIONS: ReadonlyArray<{
   description: string;
 }> = [
   { key: "browse", label: "Wiki", Icon: BookOpenIcon, description: "Open wiki pages and raw sources from the sidebar." },
+  { key: "graph", label: "Graph", Icon: NetworkIcon, description: "Visualize wiki pages and source files as a connected graph." },
   { key: "query", label: "Ask", Icon: MessageSquareTextIcon, description: "Ask the Wiki Maintainer agent a cited question against the local wiki." },
   { key: "ingest", label: "Add Content", Icon: PlusCircleIcon, description: "Capture a new source into the active space and queue an ingest operation." },
   { key: "lint", label: "Lint", Icon: ListChecksIcon, description: "Run structural checks for orphan pages, missing backlinks, and stale provenance." },
@@ -1386,7 +1398,7 @@ const SECTIONS: ReadonlyArray<{
   { key: "settings", label: "Settings", Icon: SlidersHorizontalIcon, description: "Folder, agent, project, and routine configuration scoped to this company." },
 ];
 
-const TOP_TOOL_KEYS: ReadonlySet<SectionKey> = new Set<SectionKey>(["query", "ingest"]);
+const TOP_TOOL_KEYS: ReadonlySet<SectionKey> = new Set<SectionKey>(["graph", "query", "ingest"]);
 const BOTTOM_TOOL_KEYS: ReadonlySet<SectionKey> = new Set<SectionKey>(["history", "settings"]);
 const TOP_TOOL_SECTIONS = SECTIONS.filter((section) => TOP_TOOL_KEYS.has(section.key));
 const BOTTOM_TOOL_SECTIONS = SECTIONS.filter((section) => BOTTOM_TOOL_KEYS.has(section.key));
@@ -1827,6 +1839,27 @@ function WikiGraphView({
   );
 }
 
+function GraphTab({ context }: { context: { companyId: string | null } }) {
+  const hostNavigation = useHostNavigation();
+  const { pathname } = useHostLocation();
+  const activeSpaceSlug = useMemo(() => readActiveSpaceSlugFromLocation(pathname), [pathname]);
+  const pages = usePages(context.companyId, { includeRaw: true, spaceSlug: activeSpaceSlug });
+  const isMobile = useIsMobileLayout();
+
+  return (
+    <div style={{ flex: 1, minWidth: 0, overflow: isMobile ? "visible" : "auto" }}>
+      <WikiGraphView
+        data={pages.data}
+        loading={pages.loading}
+        error={pages.error ?? null}
+        onOpenPage={(path) => {
+          hostNavigation.navigate(buildPageHref(path, activeSpaceSlug), { state: wikiSidebarNavigationState(path) });
+        }}
+      />
+    </div>
+  );
+}
+
 export function WikiPage({ context }: PluginPageProps) {
   const { pathname, search } = useHostLocation();
   const isMobile = useIsMobileLayout();
@@ -1939,6 +1972,8 @@ export function WikiPage({ context }: PluginPageProps) {
           <UnconfiguredFolder context={context} folder={overview.data.folder} refresh={overview.refresh} />
         ) : section === "browse" ? (
           <BrowseTab context={context} />
+        ) : section === "graph" ? (
+          <GraphTab context={context} />
         ) : section === "ingest" ? (
           <IngestTab context={context} refreshOverview={overview.refresh} />
         ) : section === "query" ? (

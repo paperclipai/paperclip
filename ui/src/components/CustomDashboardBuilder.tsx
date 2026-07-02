@@ -11,7 +11,6 @@ import {
   Hash,
   LayoutDashboard,
   ListChecks,
-  Plus,
   RotateCcw,
   Settings2,
   Target,
@@ -366,6 +365,16 @@ function newWidgetId(metric: DashboardMetricKey): string {
   return `${metric}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function createWidgetForMetric(metric: DashboardMetricKey): DashboardWidgetConfig {
+  return {
+    id: newWidgetId(metric),
+    metric,
+    scope: "all",
+    statusScope: "all",
+    size: "compact",
+  };
+}
+
 function useDashboardWidgets(storageKey: string, defaults: DashboardWidgetConfig[]) {
   const [widgets, setWidgets] = useState<DashboardWidgetConfig[]>(() => readDashboardWidgets(storageKey, defaults));
 
@@ -483,10 +492,29 @@ function BuilderRow({
   onMove: (direction: -1 | 1) => void;
   onRemove: () => void;
 }) {
+  const definition = METRIC_BY_KEY.get(widget.metric) ?? METRIC_DEFINITIONS[0];
+  const Icon = definition.icon;
+
   return (
-    <div className="rounded-lg border border-border bg-background p-3">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <div className="text-xs font-medium text-muted-foreground">Widget {index + 1}</div>
+    <div className="rounded-lg border border-border bg-background p-3" role="group" aria-label={`Shown metric ${index + 1}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className={cn("mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md", toneClasses(definition.tone))}>
+            <Icon className="h-4 w-4" />
+          </span>
+          <div className="min-w-0">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="truncate text-sm font-medium text-foreground">{widget.label?.trim() || definition.label}</span>
+              <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {scopeLabel(widget.scope)}
+              </span>
+              <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                {statusScopeLabel(widget.statusScope)}
+              </span>
+            </div>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">{definition.description}</p>
+          </div>
+        </div>
         <div className="flex items-center gap-1">
           <Button type="button" variant="ghost" size="icon-xs" disabled={isFirst} onClick={() => onMove(-1)}>
             <ArrowUp className="h-3.5 w-3.5" />
@@ -499,66 +527,58 @@ function BuilderRow({
           </Button>
         </div>
       </div>
-      <div className="grid gap-2 md:grid-cols-[1fr_1fr_1fr_1fr]">
-        <label className="space-y-1">
-          <span className="text-[11px] font-medium text-muted-foreground">Metric</span>
-          <select
-            value={widget.metric}
-            onChange={(event) => onChange({ metric: event.target.value as DashboardMetricKey })}
+
+      <details className="mt-3 rounded-md border border-border bg-muted/20 px-3 py-2">
+        <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Options</summary>
+        <div className="mt-3 grid gap-2 md:grid-cols-3">
+          <label className="space-y-1">
+            <span className="text-[11px] font-medium text-muted-foreground">Scope</span>
+            <select
+              value={widget.scope}
+              onChange={(event) => onChange({ scope: event.target.value as DashboardWidgetScope })}
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs"
+            >
+              <option value="all">All work</option>
+              <option value="human">Human tasks</option>
+              <option value="ai">AI issues</option>
+              <option value="initiative">Initiatives</option>
+            </select>
+          </label>
+          <label className="space-y-1">
+            <span className="text-[11px] font-medium text-muted-foreground">Status</span>
+            <select
+              value={widget.statusScope}
+              onChange={(event) => onChange({ statusScope: event.target.value as DashboardWidgetStatusScope })}
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs"
+            >
+              <option value="all">All statuses</option>
+              <option value="open">Open</option>
+              <option value="done">Done</option>
+              <option value="blocked">Blocked</option>
+            </select>
+          </label>
+          <label className="space-y-1">
+            <span className="text-[11px] font-medium text-muted-foreground">Size</span>
+            <select
+              value={widget.size}
+              onChange={(event) => onChange({ size: event.target.value as DashboardWidgetSize })}
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs"
+            >
+              <option value="compact">Compact</option>
+              <option value="wide">Wide</option>
+            </select>
+          </label>
+        </div>
+        <label className="mt-2 block space-y-1">
+          <span className="text-[11px] font-medium text-muted-foreground">Custom label</span>
+          <input
+            value={widget.label ?? ""}
+            onChange={(event) => onChange({ label: event.target.value })}
+            placeholder={definition.label}
             className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs"
-          >
-            {METRIC_DEFINITIONS.map((definition) => (
-              <option key={definition.key} value={definition.key}>{definition.label}</option>
-            ))}
-          </select>
+          />
         </label>
-        <label className="space-y-1">
-          <span className="text-[11px] font-medium text-muted-foreground">Scope</span>
-          <select
-            value={widget.scope}
-            onChange={(event) => onChange({ scope: event.target.value as DashboardWidgetScope })}
-            className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs"
-          >
-            <option value="all">All work</option>
-            <option value="human">Human tasks</option>
-            <option value="ai">AI issues</option>
-            <option value="initiative">Initiatives</option>
-          </select>
-        </label>
-        <label className="space-y-1">
-          <span className="text-[11px] font-medium text-muted-foreground">Status</span>
-          <select
-            value={widget.statusScope}
-            onChange={(event) => onChange({ statusScope: event.target.value as DashboardWidgetStatusScope })}
-            className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs"
-          >
-            <option value="all">All statuses</option>
-            <option value="open">Open</option>
-            <option value="done">Done</option>
-            <option value="blocked">Blocked</option>
-          </select>
-        </label>
-        <label className="space-y-1">
-          <span className="text-[11px] font-medium text-muted-foreground">Size</span>
-          <select
-            value={widget.size}
-            onChange={(event) => onChange({ size: event.target.value as DashboardWidgetSize })}
-            className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs"
-          >
-            <option value="compact">Compact</option>
-            <option value="wide">Wide</option>
-          </select>
-        </label>
-      </div>
-      <label className="mt-2 block space-y-1">
-        <span className="text-[11px] font-medium text-muted-foreground">Custom label</span>
-        <input
-          value={widget.label ?? ""}
-          onChange={(event) => onChange({ label: event.target.value })}
-          placeholder={METRIC_BY_KEY.get(widget.metric)?.label ?? "Metric label"}
-          className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs"
-        />
-      </label>
+      </details>
     </div>
   );
 }
@@ -581,31 +601,25 @@ export function CustomDashboardBuilder({
   isLoading?: boolean;
 }) {
   const [customizing, setCustomizing] = useState(false);
-  const [newMetric, setNewMetric] = useState<DashboardMetricKey>("open_items");
   const [widgets, saveWidgets] = useDashboardWidgets(storageKey, defaultWidgets);
   const activeProjects = useMemo(
     () => (projects ?? []).filter((project) => !project.archivedAt).length,
     [projects],
   );
+  const selectedMetricKeys = useMemo(() => new Set(widgets.map((widget) => widget.metric)), [widgets]);
 
   const setWidget = useCallback((id: string, patch: Partial<DashboardWidgetConfig>) => {
     saveWidgets(updateWidget(widgets, id, patch));
   }, [saveWidgets, widgets]);
 
-  const addWidget = useCallback(() => {
-    const definition = METRIC_BY_KEY.get(newMetric) ?? METRIC_DEFINITIONS[0];
-    saveWidgets([
-      ...widgets,
-      {
-        id: newWidgetId(newMetric),
-        metric: newMetric,
-        label: definition.label,
-        scope: "all",
-        statusScope: "all",
-        size: "compact",
-      },
-    ]);
-  }, [newMetric, saveWidgets, widgets]);
+  const toggleMetric = useCallback((metric: DashboardMetricKey, checked: boolean) => {
+    if (checked) {
+      if (widgets.some((widget) => widget.metric === metric)) return;
+      saveWidgets([...widgets, createWidgetForMetric(metric)]);
+      return;
+    }
+    saveWidgets(widgets.filter((widget) => widget.metric !== metric));
+  }, [saveWidgets, widgets]);
 
   const resetWidgets = useCallback(() => {
     saveWidgets(defaultWidgets);
@@ -632,7 +646,7 @@ export function CustomDashboardBuilder({
           ) : null}
           <Button type="button" variant="outline" size="sm" onClick={() => setCustomizing((open) => !open)}>
             <Settings2 className="h-4 w-4" />
-            {customizing ? "Done" : "Customize"}
+            {customizing ? "Done" : "Metrics"}
           </Button>
         </div>
       </div>
@@ -641,41 +655,72 @@ export function CustomDashboardBuilder({
         <div className="border-b border-border bg-muted/20 px-4 py-4">
           <div className="mb-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
             <div className="text-xs text-muted-foreground">
-              Add metric cards, change scope, and reorder what the dashboard should show first.
+              Choose the metrics to show. Reorder the selected metrics below and open Options only when a metric needs a narrower scope.
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={newMetric}
-                onChange={(event) => setNewMetric(event.target.value as DashboardMetricKey)}
-                className="h-9 rounded-md border border-input bg-background px-2 text-xs"
-              >
-                {METRIC_DEFINITIONS.map((definition) => (
-                  <option key={definition.key} value={definition.key}>{definition.label}</option>
-                ))}
-              </select>
-              <Button type="button" variant="outline" size="sm" onClick={addWidget}>
-                <Plus className="h-4 w-4" />
-                Add
-              </Button>
               <Button type="button" variant="ghost" size="sm" onClick={resetWidgets}>
                 <RotateCcw className="h-4 w-4" />
                 Reset
               </Button>
             </div>
           </div>
-          <div className="space-y-3">
-            {widgets.map((widget, index) => (
-              <BuilderRow
-                key={widget.id}
-                widget={widget}
-                index={index}
-                isFirst={index === 0}
-                isLast={index === widgets.length - 1}
-                onChange={(patch) => setWidget(widget.id, patch)}
-                onMove={(direction) => saveWidgets(moveWidget(widgets, widget.id, direction))}
-                onRemove={() => saveWidgets(widgets.filter((item) => item.id !== widget.id))}
-              />
-            ))}
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(320px,420px)]">
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              {METRIC_DEFINITIONS.map((definition) => {
+                const checked = selectedMetricKeys.has(definition.key);
+                const Icon = definition.icon;
+                return (
+                  <label
+                    key={definition.key}
+                    className={cn(
+                      "flex min-h-[5rem] cursor-pointer items-start gap-3 rounded-lg border bg-background p-3 transition-colors",
+                      checked ? "border-foreground/40 ring-1 ring-foreground/20" : "border-border hover:border-foreground/20",
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      value={definition.key}
+                      checked={checked}
+                      onChange={(event) => toggleMetric(definition.key, event.currentTarget.checked)}
+                      className="mt-1 h-4 w-4"
+                      aria-label={`Show ${definition.label}`}
+                    />
+                    <span className={cn("inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md", toneClasses(definition.tone))}>
+                      <Icon className="h-4 w-4" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-sm font-medium text-foreground">{definition.label}</span>
+                      <span className="mt-1 block text-xs leading-5 text-muted-foreground">{definition.description}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-medium uppercase tracking-normal text-muted-foreground">Shown metrics</div>
+                <span className="rounded-md bg-muted px-2 py-1 text-xs tabular-nums text-muted-foreground">
+                  {widgets.length}
+                </span>
+              </div>
+              {widgets.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-border bg-background px-4 py-8 text-center text-sm text-muted-foreground">
+                  Pick metrics from the left to build this dashboard.
+                </div>
+              ) : widgets.map((widget, index) => (
+                <BuilderRow
+                  key={widget.id}
+                  widget={widget}
+                  index={index}
+                  isFirst={index === 0}
+                  isLast={index === widgets.length - 1}
+                  onChange={(patch) => setWidget(widget.id, patch)}
+                  onMove={(direction) => saveWidgets(moveWidget(widgets, widget.id, direction))}
+                  onRemove={() => saveWidgets(widgets.filter((item) => item.id !== widget.id))}
+                />
+              ))}
+            </div>
           </div>
         </div>
       ) : null}
