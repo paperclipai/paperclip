@@ -305,8 +305,6 @@ curl -fsS -X POST -H "Authorization: Bearer $BOARD_API_KEY" -H "Content-Type: ap
   "$PAPERCLIP_URL/api/companies/$COMPANY_ID/tools/action-requests/$ACTION_REQUEST_ID/trust-rule" \
   -d '{
     "approvalThreshold": 2,
-    "scope": { "includeAgent": true, "includeTool": true },
-    "argumentFilters": { "allowAny": false, "fieldEquals": { "title": "Approved item" } },
     "expiresAt": "2026-09-01T00:00:00.000Z"
   }' | jq '{id, policyType, priority, config: {trustRule: .config.trustRule}}'
 
@@ -317,6 +315,8 @@ curl -fsS -X POST -H "Authorization: Bearer $BOARD_API_KEY" -H "Content-Type: ap
 ```
 
 Trust rules carry the catalog and schema hashes captured at approval time. If the upstream tool changes its schema or the canonical argument hash drifts, the trust rule stops applying — the next matching call falls back to `require_approval`. The retry-with-`approvedActionRequestId` flow enforces the same invariant for a single approval: change the arguments between approval and retry and the call fails with `reasonCode: "signed_arguments_mismatch"`. This is intentional: an approval is for a specific argument shape, not for "future versions of this tool, sight unseen".
+
+In v1, trust-rule promotion is deliberately narrow: the server derives the reviewed actor/tool scope from the approved invocation and stores the exact reviewed argument hash. Promotion requests that try to widen the scope or replace exact-hash matching with broader argument predicates are rejected. Broader trust authoring needs a separately governed mechanism.
 
 ## Runtime slots
 
@@ -412,7 +412,7 @@ These are intentional gaps as of the MCP Access Governance v1 launch. Track or w
 | Action requests | `POST /api/tool-gateway/action-requests/:id/approve` | Requires `companyId` (body or query). Listing is via the audit log: filter for `tool_gateway.approval_requested`. |
 | Trust rules | `POST /api/companies/:companyId/tools/action-requests/:id/trust-rule`, `POST /api/companies/:companyId/tools/trust-rules/:id/revoke` | Approval-derived allow policies. |
 | Runtime health | `GET /api/companies/:companyId/tools/runtime-health` | Alerts and metrics. Pair with [MCP-RUNTIME-OPERATIONS.md](./MCP-RUNTIME-OPERATIONS.md). |
-| Runtime slots | `GET /api/companies/:companyId/tools/runtime-slots`, `POST /api/tool-gateway/runtime-slots/:id/stop\|restart` | Process supervision. |
+| Runtime slots | `GET /api/companies/:companyId/tools/runtime-slots`, `POST /api/companies/:companyId/tools/runtime-slots/:id/stop\|restart` | Process supervision. |
 | Audit | `GET /api/tool-gateway/audit?companyId=…&limit=…`, `GET /api/companies/:companyId/tools/runs/:runId/decisions` | Call event log. |
 | Stdio templates | `GET /api/companies/:companyId/tools/stdio-templates` | Approved local stdio template IDs only. |
 | Bulk import preview | `POST /api/companies/:companyId/tools/mcp/import-json` | Inspect a discovery JSON without persisting anything. |

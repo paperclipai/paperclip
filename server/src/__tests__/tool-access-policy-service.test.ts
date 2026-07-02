@@ -10,6 +10,7 @@ import {
   heartbeatRuns,
   issues,
   principalPermissionGrants,
+  projects,
   toolAccessAuditEvents,
   toolActionRequests,
   toolApplications,
@@ -172,6 +173,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     await db.delete(companySecrets);
     await db.delete(principalPermissionGrants);
     await db.delete(issues);
+    await db.delete(projects);
     await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -235,6 +237,180 @@ describeEmbeddedPostgres("tool access policy service", () => {
       decision: "allow",
       reasonCode: "allow_profile",
       effectiveProfileIds: [profile.id],
+    });
+  });
+
+  it("uses issue-scoped profiles ahead of company defaults", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    const issue = await createIssue(db, company.id, "Scoped deny");
+
+    const [companyProfile, issueProfile] = await db.insert(toolProfiles).values([
+      {
+        companyId: company.id,
+        profileKey: `company-allow-${randomUUID()}`,
+        name: "Company allow",
+        defaultAction: "deny",
+      },
+      {
+        companyId: company.id,
+        profileKey: `issue-deny-${randomUUID()}`,
+        name: "Issue deny",
+        defaultAction: "deny",
+      },
+    ]).returning();
+    await db.insert(toolProfileBindings).values([
+      {
+        companyId: company.id,
+        profileId: companyProfile!.id,
+        targetType: "company",
+        targetId: company.id,
+      },
+      {
+        companyId: company.id,
+        profileId: issueProfile!.id,
+        targetType: "issue",
+        targetId: issue.id,
+      },
+    ]);
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: companyProfile!.id,
+      selectorType: "tool_name",
+      effect: "include",
+      toolName: "send_email",
+    });
+
+    const result = await toolAccessPolicyService(db).decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+      runContext: { issueId: issue.id },
+      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
+    });
+
+    expect(result).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_default",
+      effectiveProfileIds: [issueProfile!.id],
+    });
+  });
+
+  it("uses agent-scoped profiles ahead of project defaults", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    const project = await db.insert(projects).values({
+      companyId: company.id,
+      name: `Project ${randomUUID()}`,
+    }).returning().then((rows) => rows[0]!);
+
+    const [projectProfile, agentProfile] = await db.insert(toolProfiles).values([
+      {
+        companyId: company.id,
+        profileKey: `project-allow-${randomUUID()}`,
+        name: "Project allow",
+        defaultAction: "deny",
+      },
+      {
+        companyId: company.id,
+        profileKey: `agent-deny-${randomUUID()}`,
+        name: "Agent deny",
+        defaultAction: "deny",
+      },
+    ]).returning();
+    await db.insert(toolProfileBindings).values([
+      {
+        companyId: company.id,
+        profileId: projectProfile!.id,
+        targetType: "project",
+        targetId: project.id,
+      },
+      {
+        companyId: company.id,
+        profileId: agentProfile!.id,
+        targetType: "agent",
+        targetId: agent.id,
+      },
+    ]);
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: projectProfile!.id,
+      selectorType: "tool_name",
+      effect: "include",
+      toolName: "send_email",
+    });
+
+    const result = await toolAccessPolicyService(db).decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+      runContext: { projectId: project.id },
+      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
+    });
+
+    expect(result).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_default",
+      effectiveProfileIds: [agentProfile!.id],
+    });
+  });
+
+  it("uses issue-scoped allows ahead of broader company denies", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    const issue = await createIssue(db, company.id, "Scoped allow");
+
+    const [companyProfile, issueProfile] = await db.insert(toolProfiles).values([
+      {
+        companyId: company.id,
+        profileKey: `company-deny-${randomUUID()}`,
+        name: "Company deny",
+        defaultAction: "deny",
+      },
+      {
+        companyId: company.id,
+        profileKey: `issue-allow-${randomUUID()}`,
+        name: "Issue allow",
+        defaultAction: "deny",
+      },
+    ]).returning();
+    await db.insert(toolProfileBindings).values([
+      {
+        companyId: company.id,
+        profileId: companyProfile!.id,
+        targetType: "company",
+        targetId: company.id,
+      },
+      {
+        companyId: company.id,
+        profileId: issueProfile!.id,
+        targetType: "issue",
+        targetId: issue.id,
+      },
+    ]);
+    await db.insert(toolProfileEntries).values({
+      companyId: company.id,
+      profileId: issueProfile!.id,
+      selectorType: "tool_name",
+      effect: "include",
+      toolName: "send_email",
+    });
+
+    const result = await toolAccessPolicyService(db).decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+      runContext: { issueId: issue.id },
+      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
+    });
+
+    expect(result).toMatchObject({
+      allowed: true,
+      decision: "allow",
+      reasonCode: "allow_profile",
+      effectiveProfileIds: [issueProfile!.id],
     });
   });
 
@@ -1115,6 +1291,92 @@ describeEmbeddedPostgres("tool access policy service", () => {
       actionRequestId: currentVersionAction.actionRequest.id,
       body: { approvalThreshold: 2, scope: { includeCatalogEntry: true } },
     })).rejects.toThrow(/final rule scope; found 1/);
+  });
+
+  it("rejects company-wide trust-rule promotion bodies that drop the reviewed scope", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review scoped sends",
+      policyType: "require_approval",
+      selectors: { toolName: "send_email" },
+    });
+    const args = { to: "ops@example.com", body: "same reviewed payload" };
+    const first = await createApprovedToolAction({
+      db,
+      companyId: company.id,
+      agentId: agent.id,
+      connectionId: connection.id,
+      catalogEntryId: catalogEntry.id,
+      argumentsValue: args,
+      status: "executed",
+    });
+    await createApprovedToolAction({
+      db,
+      companyId: company.id,
+      agentId: agent.id,
+      connectionId: connection.id,
+      catalogEntryId: catalogEntry.id,
+      argumentsValue: args,
+      status: "executed",
+    });
+
+    await expect(toolAccessPolicyService(db).createTrustRuleFromActionRequest({
+      companyId: company.id,
+      actionRequestId: first.actionRequest.id,
+      body: {
+        approvalThreshold: 2,
+        scope: {
+          includeAgent: false,
+          includeProject: false,
+          includeApplication: false,
+          includeConnection: false,
+          includeTool: false,
+        },
+      },
+    })).rejects.toThrow(/reviewed actor\/tool scope/);
+  });
+
+  it("rejects argument-broadening trust-rule promotion bodies", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review exact payload sends",
+      policyType: "require_approval",
+      selectors: { toolName: "send_email" },
+    });
+    const args = { to: "ops@example.com", body: "same reviewed payload" };
+    const first = await createApprovedToolAction({
+      db,
+      companyId: company.id,
+      agentId: agent.id,
+      connectionId: connection.id,
+      catalogEntryId: catalogEntry.id,
+      argumentsValue: args,
+      status: "executed",
+    });
+    await createApprovedToolAction({
+      db,
+      companyId: company.id,
+      agentId: agent.id,
+      connectionId: connection.id,
+      catalogEntryId: catalogEntry.id,
+      argumentsValue: args,
+      status: "executed",
+    });
+
+    await expect(toolAccessPolicyService(db).createTrustRuleFromActionRequest({
+      companyId: company.id,
+      actionRequestId: first.actionRequest.id,
+      body: {
+        approvalThreshold: 2,
+        argumentFilters: { allowAny: true },
+      },
+    })).rejects.toThrow(/exact reviewed argument hash/);
   });
 
   it("falls back to review when a trusted catalog tool changes", async () => {

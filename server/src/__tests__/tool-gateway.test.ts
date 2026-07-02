@@ -1448,7 +1448,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
-  it("applies remote MCP header allowlists, metadata forwarding, and credential precedence", async () => {
+  it("keeps managed credentials authoritative even when legacy override flags are set", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
@@ -1465,6 +1465,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       expect(fakeRequest.headers["x-static-mode"]).toBe("canary");
       expect(fakeRequest.headers["x-paperclip-agent-id"]).toBe(agent.id);
       expect(fakeRequest.headers["x-paperclip-issue-id"]).toBe(issue.id);
+      expect(fakeRequest.headers["x-paperclip-tool-gateway-token"]).toBeUndefined();
       expect(fakeRequest.headers["x-unlisted-header"]).toBeUndefined();
       return {
         body: {
@@ -1500,7 +1501,11 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
           config: {
             url: fake.url,
             headerPolicy: {
-              passthrough: { allowedHeaders: ["x-client-request-id", "authorization"] },
+              allowManagedCredentialOverride: true,
+              passthrough: {
+                allowedHeaders: ["x-client-request-id", "authorization", "x-paperclip-tool-gateway-token"],
+                allowManagedCredentialOverride: true,
+              },
               staticHeaders: [{ name: "x-static-mode", value: "canary" }],
               metadata: { forward: ["agent_id", "issue_id"] },
             },
@@ -1521,6 +1526,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         callerHeaders: {
           authorization: "Bearer caller-must-not-win",
           "x-client-request-id": "caller-123",
+          "x-paperclip-tool-gateway-token": "caller-session-token",
           "x-unlisted-header": "drop-me",
         },
       });
@@ -1533,11 +1539,16 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         headerSummary: {
           credentialHeaderNames: "***REDACTED***",
           passthroughHeaderNames: ["x-client-request-id"],
-          droppedPassthroughHeaderNames: expect.arrayContaining(["authorization", "x-unlisted-header"]),
+          droppedPassthroughHeaderNames: expect.arrayContaining([
+            "authorization",
+            "x-paperclip-tool-gateway-token",
+            "x-unlisted-header",
+          ]),
           staticHeaderNames: ["x-static-mode"],
           metadataHeaderNames: ["x-paperclip-agent-id", "x-paperclip-issue-id"],
           collisionRules: expect.arrayContaining([
             { header: "authorization", source: "caller", action: "kept_managed_credential" },
+            { header: "x-paperclip-tool-gateway-token", source: "caller", action: "dropped_sensitive_header" },
           ]),
         },
       });
@@ -1549,6 +1560,99 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       expect(persisted).not.toContain(credentialValue);
       expect(persisted).not.toContain("caller-must-not-win");
       expect(persisted).not.toContain("caller-123");
+      expect(persisted).not.toContain("caller-session-token");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("drops auth-bearing and Paperclip session headers from passthrough allowlists", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => {
+      expect(fakeRequest.headers.authorization).toBeUndefined();
+      expect(fakeRequest.headers["x-auth-token"]).toBeUndefined();
+      expect(fakeRequest.headers["x-paperclip-tool-gateway-token"]).toBeUndefined();
+      expect(fakeRequest.headers["x-client-request-id"]).toBe("caller-456");
+      return {
+        body: {
+          jsonrpc: "2.0",
+          id: fakeRequest.body?.id,
+          result: { content: [{ type: "text", text: "headers ok" }] },
+        },
+      };
+    });
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "header-policy-sensitive",
+        toolName: "kv_set",
+        url: fake.url,
+      });
+      await db.update(toolConnections)
+        .set({
+          config: {
+            url: fake.url,
+            headerPolicy: {
+              passthrough: {
+                allowedHeaders: [
+                  "authorization",
+                  "x-auth-token",
+                  "x-client-request-id",
+                  "x-paperclip-tool-gateway-token",
+                ],
+              },
+            },
+          },
+        })
+        .where(eq(toolConnections.id, remoteTool.connection.id));
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.connectionId === remoteTool.connection.id);
+      expect(connectedTool).toBeTruthy();
+
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "beta", value: "two" },
+        callerHeaders: {
+          authorization: "Bearer caller-should-drop",
+          "x-auth-token": "drop-auth-token",
+          "x-client-request-id": "caller-456",
+          "x-paperclip-tool-gateway-token": "drop-gateway-token",
+        },
+      });
+
+      const [activity] = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "tool_gateway.call_completed"));
+      expect(activity.details).toMatchObject({
+        headerSummary: {
+          credentialHeaderNames: "***REDACTED***",
+          passthroughHeaderNames: ["x-client-request-id"],
+          droppedPassthroughHeaderNames: expect.arrayContaining([
+            "authorization",
+            "x-auth-token",
+            "x-paperclip-tool-gateway-token",
+          ]),
+          collisionRules: expect.arrayContaining([
+            { header: "authorization", source: "caller", action: "dropped_sensitive_header" },
+            { header: "x-auth-token", source: "caller", action: "dropped_sensitive_header" },
+            { header: "x-paperclip-tool-gateway-token", source: "caller", action: "dropped_sensitive_header" },
+          ]),
+        },
+      });
+      const persisted = JSON.stringify({
+        activity: await db.select().from(activityLog),
+        events: await db.select().from(toolCallEvents),
+        invocations: await db.select().from(toolInvocations),
+      });
+      expect(persisted).not.toContain("caller-should-drop");
+      expect(persisted).not.toContain("drop-auth-token");
+      expect(persisted).not.toContain("drop-gateway-token");
     } finally {
       await fake.close();
     }

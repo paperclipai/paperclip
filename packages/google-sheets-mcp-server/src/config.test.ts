@@ -85,4 +85,31 @@ describe("Google Sheets MCP config", () => {
     expect(config.host).toBe("127.0.0.1");
     expect(config.token).toBeNull();
   });
+
+  it("requires a token for non-loopback HTTP binds", () => {
+    expect(() =>
+      readHttpConfigFromEnv(
+        {
+          GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON: JSON.stringify(serviceAccount),
+          GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: "sheet-1",
+          GOOGLE_SHEETS_MCP_HOST: "0.0.0.0",
+        } as NodeJS.ProcessEnv,
+        [],
+      )
+    ).toThrow("GOOGLE_SHEETS_MCP_TOKEN is required when GOOGLE_SHEETS_MCP_HOST is not loopback.");
+  });
+
+  it("allows loopback HTTP binds without a token", () => {
+    const config = readHttpConfigFromEnv(
+      {
+        GOOGLE_SHEETS_SERVICE_ACCOUNT_JSON: JSON.stringify(serviceAccount),
+        GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: "sheet-1",
+        GOOGLE_SHEETS_MCP_HOST: "::1",
+      } as NodeJS.ProcessEnv,
+      [],
+    );
+
+    expect(config.host).toBe("::1");
+    expect(config.token).toBeNull();
+  });
 });

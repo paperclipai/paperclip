@@ -134,7 +134,7 @@ describe("Google Sheets MCP HTTP server", () => {
     const { base, googleClient } = await startServer(token);
 
     expect((await fetch(`${base}/mcp`)).status).toBe(401);
-    expect((await fetch(`${base}/mcp?token=${token}`)).status).not.toBe(401);
+    expect((await fetch(`${base}/mcp?token=${token}`)).status).toBe(401);
 
     const client = await mcpClient(base, { authorization: `Bearer ${token}` });
     try {
@@ -156,14 +156,6 @@ describe("Google Sheets MCP HTTP server", () => {
       });
     } finally {
       await client.close();
-    }
-
-    const queryClient = await mcpClient(base, undefined, `/mcp?token=${token}`);
-    try {
-      const list = await queryClient.listTools();
-      expect(list.tools.map((tool) => tool.name)).toEqual(expectedTools);
-    } finally {
-      await queryClient.close();
     }
   });
 });

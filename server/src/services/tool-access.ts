@@ -101,6 +101,7 @@ import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
 import { secretService } from "./secrets.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { readSignedToolArgumentsPayload } from "./tool-content-guards.js";
+import { narrowestScopeBindings, profileIdsInBindingOrder } from "./tool-profile-binding-precedence.js";
 import { createToolRuntimeSupervisor, ToolRuntimeSupervisorError } from "./tool-runtime-supervisor.js";
 
 type ActorInfo = {
@@ -1378,7 +1379,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         name: "mcp_runtime_connection_health_degraded",
         severity: input.degradedConnections > 0 ? "critical" : "warning",
         status: input.degradedConnections > 0 || input.disabledConnections > 0 ? "firing" : "ok",
-        threshold: "Any degraded/failed/missing-secret connection or any disabled enabled-path connection.",
+        threshold: "Any active enabled connection with degraded/failed/missing-secret health, or any disabled enabled-path connection.",
         observed: `${input.degradedConnections} degraded connection(s), ${input.disabledConnections} disabled connection(s).`,
         description: "A configured MCP connection is not healthy or has been disabled.",
         firstResponderAction: "Run a connection health check, refresh catalog after recovery, or keep the connection disabled and route agents to alternatives.",
@@ -1467,18 +1468,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       || row.reasonCode === "audit_write_failed"
     ).length;
     const auditWriteFailuresMetric = auditWriteFailures > 0 ? auditWriteFailures : null;
-    const activeConnections = connections.filter((connection) =>
-      connection.status !== "archived"
-      && connection.status !== "disabled"
+    const enabledPathConnections = connections.filter((connection) =>
+      connection.status === "active"
       && connection.enabled
-    ).length;
-    const disabledConnections = connections.filter((connection) =>
-      connection.status !== "archived"
-      && (!connection.enabled || connection.status === "disabled")
-    ).length;
-    const degradedConnections = connections.filter((connection) =>
-      connection.status !== "archived"
-      && ["degraded", "failed", "error", "missing_secret"].includes(connection.healthStatus)
+    );
+    const activeConnections = enabledPathConnections.length;
+    const disabledConnections = connections.filter((connection) => connection.status === "disabled").length;
+    const degradedConnections = enabledPathConnections.filter((connection) =>
+      ["degraded", "failed", "error", "missing_secret"].includes(connection.healthStatus)
     ).length;
     const metrics = {
       windowStartedAt,
@@ -5258,20 +5255,22 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         .from(toolProfileBindings)
         .where(eq(toolProfileBindings.companyId, companyId))
         .orderBy(asc(toolProfileBindings.priority), asc(toolProfileBindings.createdAt));
-      const bindings = allBindings.filter((binding) =>
+      const bindings = narrowestScopeBindings(allBindings.filter((binding) =>
         (binding.targetType === "company" && binding.targetId === companyId)
         || (binding.targetType === "agent" && binding.targetId === agentId)
-      );
+      ));
       if (bindings.length === 0) {
         return { agentId, profiles: [], entries: [], bindings: [], allowedTools: [], allowedToolNames: [] };
       }
-      const profileIds = [...new Set(bindings.map((binding) => binding.profileId))];
+      const profileIds = profileIdsInBindingOrder(bindings);
       const profiles = await db
         .select()
         .from(toolProfiles)
-        .where(and(eq(toolProfiles.companyId, companyId), inArray(toolProfiles.id, profileIds)))
-        .orderBy(asc(toolProfiles.createdAt));
-      const activeProfiles = profiles.filter((profile) => profile.status === "active");
+        .where(and(eq(toolProfiles.companyId, companyId), inArray(toolProfiles.id, profileIds)));
+      const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
+      const activeProfiles = profileIds
+        .map((profileId) => profilesById.get(profileId) ?? null)
+        .filter((profile): profile is typeof toolProfiles.$inferSelect => Boolean(profile && profile.status === "active"));
       if (activeProfiles.length === 0) {
         return {
           agentId,

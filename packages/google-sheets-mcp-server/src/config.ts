@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { z } from "zod";
 
 const serviceAccountSchema = z.object({
@@ -69,6 +70,19 @@ function parsePort(raw: string | number | null | undefined): number {
   return port;
 }
 
+function normalizeBindHost(raw: string | null | undefined): string {
+  return raw?.trim() || "127.0.0.1";
+}
+
+function isLoopbackBindHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
+  if (normalized === "localhost" || normalized === "::1") return true;
+  if (isIP(normalized) === 4) {
+    return normalized.split(".")[0] === "127";
+  }
+  return false;
+}
+
 function readServiceAccountJson(input: GoogleSheetsMcpConfigInput): { raw: string; source: string } {
   const explicitPath = input.serviceAccountJsonPath?.trim();
   if (explicitPath) {
@@ -117,10 +131,14 @@ export function createGoogleSheetsMcpConfig(input: GoogleSheetsMcpConfigInput): 
 
 export function createGoogleSheetsMcpHttpConfig(input: GoogleSheetsMcpHttpConfigInput): GoogleSheetsMcpHttpConfig {
   const token = input.token?.trim();
+  const host = normalizeBindHost(input.host);
+  if (!token && !isLoopbackBindHost(host)) {
+    throw new Error("GOOGLE_SHEETS_MCP_TOKEN is required when GOOGLE_SHEETS_MCP_HOST is not loopback.");
+  }
   return {
     mcpConfig: createGoogleSheetsMcpConfig(input),
     port: parsePort(input.port),
-    host: input.host?.trim() || "127.0.0.1",
+    host,
     token: token ? token : null,
   };
 }

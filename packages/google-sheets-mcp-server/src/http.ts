@@ -29,11 +29,10 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
-function presentedToken(req: IncomingMessage, url: URL): string | null {
+function presentedToken(req: IncomingMessage): string | null {
   const header = req.headers.authorization;
   if (header?.startsWith("Bearer ")) return header.slice("Bearer ".length).trim();
-  const queryToken = url.searchParams.get("token");
-  return queryToken ? queryToken.trim() : null;
+  return null;
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -95,7 +94,7 @@ export function createGoogleSheetsMcpHttpServer(
           return;
         }
 
-        if (requiredToken && presentedToken(req, url) !== requiredToken) {
+        if (requiredToken && presentedToken(req) !== requiredToken) {
           sendJson(res, 401, { error: "Unauthorized. Provide GOOGLE_SHEETS_MCP_TOKEN." });
           return;
         }

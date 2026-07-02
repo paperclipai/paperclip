@@ -74,24 +74,27 @@ http://127.0.0.1:8849/mcp
 
 Then in Paperclip, choose the remote HTTP or "connect with a link" path, paste
 the `/mcp` URL, and configure the bearer token if `GOOGLE_SHEETS_MCP_TOKEN` is
-set. The HTTP server accepts the token as either an `Authorization: Bearer
-<token>` header or a `?token=<token>` query parameter; the Paperclip connection
-should use the bearer-header form for normal testing.
+set. The HTTP server accepts the token only as an `Authorization: Bearer
+<token>` header.
 
 HTTP configuration:
 
-- `GOOGLE_SHEETS_MCP_HOST`: host to bind. Defaults to `127.0.0.1`.
+- `GOOGLE_SHEETS_MCP_HOST`: host to bind. Defaults to `127.0.0.1`. If this is
+  not a loopback host, `GOOGLE_SHEETS_MCP_TOKEN` is required and startup fails
+  closed when the token is omitted.
 - `GOOGLE_SHEETS_MCP_PORT`: port to bind. Defaults to `8849`.
 - `PORT`: platform-style port override. When set, it takes precedence over
   `GOOGLE_SHEETS_MCP_PORT`.
 - `GOOGLE_SHEETS_MCP_TOKEN`: optional shared secret for the `/mcp` route. Omit
-  only for loopback/local testing where no other process can reach the server.
+  only for loopback/local single-operator testing where no other process can
+  reach the server.
 
 The HTTP server reuses the same service-account and spreadsheet allowlist
 environment as stdio. In this phase, the HTTP spreadsheet allowlist is
 process-level configuration (`GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS` or
 `GOOGLE_SHEETS_SPREADSHEET_IDS`), not a per-connection Paperclip gallery wizard
-setting. Restart the HTTP process with a different allowlist when you need to
+setting or shared multi-tenant policy. Treat this as a local/single-operator
+test path. Restart the HTTP process with a different allowlist when you need to
 test a different spreadsheet set.
 
 ## Tools

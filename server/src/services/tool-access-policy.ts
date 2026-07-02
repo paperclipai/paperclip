@@ -42,6 +42,7 @@ import type {
 } from "@paperclipai/shared";
 import { toolPolicyConditionsSchema } from "@paperclipai/shared";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
+import { narrowestScopeBindings, profileIdsInBindingOrder } from "./tool-profile-binding-precedence.js";
 
 type ToolAccessContext = {
   companyId: string;
@@ -978,15 +979,19 @@ export function toolAccessPolicyService(db: Db) {
 
   async function effectiveProfiles(ctx: ToolAccessContext) {
     const bindings = await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, ctx.companyId));
-    const activeBindings = bindings.filter((binding) => targetMatches(binding, ctx));
+    const activeBindings = narrowestScopeBindings(bindings.filter((binding) => targetMatches(binding, ctx)));
     if (activeBindings.length === 0) return { profiles: [], entries: [] as Array<typeof toolProfileEntries.$inferSelect> };
-    const profileIds = [...new Set(activeBindings.map((binding) => binding.profileId))];
+    const profileIds = profileIdsInBindingOrder(activeBindings);
     const profiles = await db.select().from(toolProfiles).where(and(eq(toolProfiles.companyId, ctx.companyId), inArray(toolProfiles.id, profileIds)));
-    const activeProfileIds = profiles.filter((profile) => profile.status === "active").map((profile) => profile.id);
+    const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
+    const activeProfiles = profileIds
+      .map((profileId) => profilesById.get(profileId) ?? null)
+      .filter((profile): profile is typeof toolProfiles.$inferSelect => Boolean(profile && profile.status === "active"));
+    const activeProfileIds = activeProfiles.map((profile) => profile.id);
     const entries = activeProfileIds.length > 0
       ? await db.select().from(toolProfileEntries).where(and(eq(toolProfileEntries.companyId, ctx.companyId), inArray(toolProfileEntries.profileId, activeProfileIds)))
       : [];
-    return { profiles: profiles.filter((profile) => profile.status === "active"), entries };
+    return { profiles: activeProfiles, entries };
   }
 
   async function explicitGrant(ctx: ToolAccessContext): Promise<boolean> {
@@ -1469,6 +1474,91 @@ export function toolAccessPolicyService(db: Db) {
     return selectors;
   }
 
+  const REQUIRED_REVIEWED_TRUST_RULE_SELECTOR_KEYS = [
+    "agentId",
+    "projectId",
+    "applicationId",
+    "connectionId",
+    "toolName",
+  ] as const;
+
+  const OPTIONAL_REVIEWED_TRUST_RULE_SELECTOR_KEYS = ["issueId", "catalogEntryId"] as const;
+
+  function reviewedTrustRuleSelectorValues(input: {
+    invocation: typeof toolInvocations.$inferSelect;
+    issueProjectId: string | null;
+  }): Record<string, string> {
+    const reviewed: Record<string, string> = {};
+    if (input.invocation.agentId) reviewed.agentId = input.invocation.agentId;
+    if (input.issueProjectId) reviewed.projectId = input.issueProjectId;
+    if (input.invocation.applicationId) reviewed.applicationId = input.invocation.applicationId;
+    if (input.invocation.connectionId) reviewed.connectionId = input.invocation.connectionId;
+    if (input.invocation.toolName) reviewed.toolName = input.invocation.toolName;
+    if (input.invocation.issueId) reviewed.issueId = input.invocation.issueId;
+    if (input.invocation.catalogEntryId) reviewed.catalogEntryId = input.invocation.catalogEntryId;
+    return reviewed;
+  }
+
+  function exactReviewedTrustRuleFilters(invocation: typeof toolInvocations.$inferSelect): ToolTrustRuleArgumentFilters {
+    if (!invocation.argumentsHash) {
+      throw unprocessable("Trust rule promotion requires an exact reviewed argument hash on the source action request");
+    }
+    return { exactHash: invocation.argumentsHash };
+  }
+
+  function assertReviewedTrustRuleSelectors(selectors: Record<string, unknown>, reviewed: Record<string, string>) {
+    const allowedKeys = new Set<string>([
+      ...REQUIRED_REVIEWED_TRUST_RULE_SELECTOR_KEYS,
+      ...OPTIONAL_REVIEWED_TRUST_RULE_SELECTOR_KEYS,
+    ]);
+    for (const [key, value] of Object.entries(selectors)) {
+      if (!allowedKeys.has(key)) {
+        throw unprocessable(
+          `Trust rule promotion only supports the reviewed actor/tool scope. Unsupported selector '${key}'.`,
+        );
+      }
+      const expected = reviewed[key];
+      if (!expected || value !== expected) {
+        throw unprocessable(
+          `Trust rule promotion selector '${key}' must exactly match the reviewed scope.`,
+        );
+      }
+    }
+    for (const key of REQUIRED_REVIEWED_TRUST_RULE_SELECTOR_KEYS) {
+      const expected = reviewed[key];
+      if (!expected) continue;
+      if (selectors[key] !== expected) {
+        throw unprocessable(
+          `Trust rule promotion must keep the reviewed actor/tool scope. Missing exact selector '${key}'.`,
+        );
+      }
+    }
+  }
+
+  function assertReviewedTrustRuleArgumentFilters(
+    invocation: typeof toolInvocations.$inferSelect,
+    filters: ToolTrustRuleArgumentFilters | null | undefined,
+  ): ToolTrustRuleArgumentFilters {
+    const exact = exactReviewedTrustRuleFilters(invocation);
+    if (!filters) return exact;
+    if (
+      filters.allowAny === true
+      || filters.allowedHashes?.length
+      || filters.fieldEquals
+      || filters.fieldNotEquals
+      || filters.fieldIn
+      || filters.fieldMatches
+      || filters.fieldExists?.length
+      || filters.fieldAbsent?.length
+    ) {
+      throw unprocessable("Trust rule promotion only supports the exact reviewed argument hash.");
+    }
+    if (filters.exactHash !== exact.exactHash) {
+      throw unprocessable("Trust rule promotion exactHash must match the reviewed argument hash.");
+    }
+    return exact;
+  }
+
   async function createTrustRuleFromActionRequest(input: {
     companyId: string;
     actionRequestId: string;
@@ -1497,12 +1587,6 @@ export function toolAccessPolicyService(db: Db) {
       throw unprocessable("Trust rule promotion requires a reviewed tool catalog version on the source action request");
     }
 
-    const filters = input.body.argumentFilters ?? {
-      exactHash: invocation.argumentsHash,
-    };
-    if (!filters.allowAny && !filters.exactHash && !filters.allowedHashes?.length && !filters.fieldEquals) {
-      throw badRequest("Trust rule requires an argument filter or allowAny=true");
-    }
     const [issue] = invocation.issueId
       ? await db
         .select({ projectId: issues.projectId })
@@ -1510,12 +1594,18 @@ export function toolAccessPolicyService(db: Db) {
         .where(and(eq(issues.id, invocation.issueId), eq(issues.companyId, input.companyId)))
         .limit(1)
       : [null];
+    const reviewedSelectors = reviewedTrustRuleSelectorValues({
+      invocation,
+      issueProjectId: issue?.projectId ?? null,
+    });
     const selectors = trustRuleSelectors({
       invocation,
       issueProjectId: issue?.projectId ?? null,
       selectors: input.body.selectors,
       scope: input.body.scope,
     });
+    assertReviewedTrustRuleSelectors(selectors, reviewedSelectors);
+    const filters = assertReviewedTrustRuleArgumentFilters(invocation, input.body.argumentFilters);
     const approvalThreshold = input.body.approvalThreshold ?? 2;
     const approvedCount = await matchingApprovedActionRequestCount({
       companyId: input.companyId,

@@ -14,9 +14,9 @@ async function main(): Promise<void> {
   console.error(`Google Sheets MCP HTTP server listening on ${base}`);
   console.error(`  MCP endpoint: ${base}/mcp`);
   if (config.token) {
-    console.error("  Auth:         GOOGLE_SHEETS_MCP_TOKEN required (Bearer header or ?token= query).");
+    console.error("  Auth:         GOOGLE_SHEETS_MCP_TOKEN required (Authorization: Bearer header).");
   } else {
-    console.error("  Auth:         none (loopback/local testing mode).");
+    console.error("  Auth:         none (loopback-only local testing mode).");
   }
 }
 

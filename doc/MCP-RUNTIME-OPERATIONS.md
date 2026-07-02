@@ -43,7 +43,7 @@ Metrics surfaced there include:
 | `mcp_runtime_high_error_rate` | Warning/Critical | Warning at >=5 failures and >=10% in 1 hour; critical at >=10 failures or >=25% | Group audit failures by `reasonCode`, then fix credentials/config or disable the affected connection. |
 | `mcp_runtime_capacity_deferrals_repeated` | Warning/Critical | Warning at >=3 capacity deferrals in 1 hour; critical at >=10 | Stop idle/stale slots, reduce noisy workloads, or raise slot caps only after confirming host capacity. |
 | `mcp_runtime_restart_storm` | Warning/Critical | Warning at >=3 restarts in 1 hour; critical on any restart suppression | Stop the slot, inspect stderr/audit reason codes, and keep the connection disabled until the template/upstream is fixed. |
-| `mcp_runtime_connection_health_degraded` | Warning/Critical | Any degraded/failed/missing-secret connection or disabled enabled-path connection | Run health check, refresh catalog after recovery, or keep the connection disabled and route agents to alternatives. |
+| `mcp_runtime_connection_health_degraded` | Warning/Critical | Any active enabled connection with degraded/failed/missing-secret health, or any disabled enabled-path connection | Run health check, refresh catalog after recovery, or keep the connection disabled and route agents to alternatives. |
 | `mcp_runtime_missing_secret_failures` | Warning/Critical | Warning on any missing-secret failure; critical at >=3 in 1 hour | Check secret bindings and provider health without revealing secret values; rotate or rebind missing secrets. |
 | `mcp_runtime_audit_write_failures` | Critical | Any audit write failure | Treat as a control-plane incident; restore DB/audit durability before retrying tool workloads. |
 
@@ -84,8 +84,8 @@ Stop the slot first when it is stale, idle, failed, or confirmed not to be servi
 curl -fsS -X POST \
   -H "Authorization: Bearer $BOARD_API_KEY" \
   -H "Content-Type: application/json" \
-  "$PAPERCLIP_URL/api/tool-gateway/runtime-slots/$SLOT_ID/stop" \
-  -d "{\"companyId\":\"$COMPANY_ID\"}" | jq .
+  "$PAPERCLIP_URL/api/companies/$COMPANY_ID/tools/runtime-slots/$SLOT_ID/stop" \
+  -d '{}' | jq .
 ```
 
 Restart once when the template/config is expected to recover:
@@ -94,8 +94,8 @@ Restart once when the template/config is expected to recover:
 curl -fsS -X POST \
   -H "Authorization: Bearer $BOARD_API_KEY" \
   -H "Content-Type: application/json" \
-  "$PAPERCLIP_URL/api/tool-gateway/runtime-slots/$SLOT_ID/restart" \
-  -d "{\"companyId\":\"$COMPANY_ID\"}" | jq .
+  "$PAPERCLIP_URL/api/companies/$COMPANY_ID/tools/runtime-slots/$SLOT_ID/restart" \
+  -d '{}' | jq .
 ```
 
 If restart suppression fires, do not keep retrying. Disable the connection:
