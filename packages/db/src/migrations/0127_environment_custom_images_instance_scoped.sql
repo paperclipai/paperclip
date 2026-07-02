@@ -24,6 +24,30 @@ BEGIN
   END IF;
 END $$;
 --> statement-breakpoint
+UPDATE "environment_custom_image_templates"
+SET
+  "metadata" = jsonb_set(
+    COALESCE("metadata", '{}'::jsonb),
+    '{setupRpcCompanyId}',
+    to_jsonb("company_id"::text),
+    true
+  ),
+  "updated_at" = now()
+WHERE "company_id" IS NOT NULL
+  AND COALESCE("metadata" ->> 'setupRpcCompanyId', '') = '';
+--> statement-breakpoint
+UPDATE "environment_custom_image_setup_sessions"
+SET
+  "metadata" = jsonb_set(
+    COALESCE("metadata", '{}'::jsonb),
+    '{setupRpcCompanyId}',
+    to_jsonb("company_id"::text),
+    true
+  ),
+  "updated_at" = now()
+WHERE "company_id" IS NOT NULL
+  AND COALESCE("metadata" ->> 'setupRpcCompanyId', '') = '';
+--> statement-breakpoint
 DROP INDEX IF EXISTS "environment_custom_image_templates_company_environment_status_idx";
 --> statement-breakpoint
 DROP INDEX IF EXISTS "environment_custom_image_templates_company_provider_status_idx";
