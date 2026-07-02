@@ -64,6 +64,7 @@ export function cpsExperimentRoutes(db: Db) {
           experimentId: feedback.experimentId,
           label: feedback.label,
           correctedVerdict: feedback.correctedVerdict,
+          routeToRole: feedback.routeToRole,
           judgmentPath: feedback.judgmentPath,
         },
       });

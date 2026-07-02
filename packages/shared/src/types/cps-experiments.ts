@@ -52,6 +52,17 @@ export interface CpsExperimentJudgment {
   [key: string]: unknown;
 }
 
+// Summary of append-only operator feedback labels for one experiment.
+// LABELS.jsonl is append-only, so the last line per experiment is the latest.
+export interface CpsOperatorLabelSummary {
+  count: number;
+  latestLabel: string | null;
+  latestCorrectedVerdict: string | null;
+  latestRouteToRole: string | null;
+  latestComment: string | null;
+  latestAt: string | null;
+}
+
 export interface CpsExperimentEntry {
   id: string;
   runId: string;
@@ -67,6 +78,7 @@ export interface CpsExperimentEntry {
   summary: Record<string, unknown>;
   judgment?: CpsExperimentJudgment | null;
   judgmentPath?: string | null;
+  operatorLabels?: CpsOperatorLabelSummary | null;
 }
 
 export type CpsRunRequestAction =
@@ -124,10 +136,21 @@ export type CpsJudgmentFeedbackLabel =
   | "requires_approval"
   | string;
 
+// Mirrors the JUDGMENT.json blocker `route_to_role` enum. Note: the schema enum
+// is `quant_review`, not the roles-table `quant_research`.
+export type CpsJudgmentRouteRole =
+  | "data_engineering"
+  | "quant_review"
+  | "platform_engineering"
+  | "board"
+  | "external_vendor"
+  | string;
+
 export interface CreateCpsJudgmentFeedbackInput {
   experimentId: string;
   label: CpsJudgmentFeedbackLabel;
   correctedVerdict?: string | null;
+  routeToRole?: CpsJudgmentRouteRole | null;
   comment?: string | null;
 }
 
@@ -138,6 +161,7 @@ export interface CpsJudgmentFeedback {
   experimentId: string;
   label: CpsJudgmentFeedbackLabel;
   correctedVerdict: string | null;
+  routeToRole: CpsJudgmentRouteRole | null;
   comment: string | null;
   createdAt: string;
   createdBy: "board";
@@ -168,6 +192,25 @@ export interface CpsExperimentOverview {
     judgmentByPromotionVerdict: Record<string, number>;
     judgmentByDataFit: Record<string, number>;
     judgmentByRulesDisclosure: Record<string, number>;
+  };
+  labels: {
+    total: number;
+    experimentsLabeled: number;
+    byLabel: Record<string, number>;
+    labelsPath: string;
+  };
+  datasetExport: {
+    trainingPath: string;
+    trainingRows: number | null;
+    trainingUpdatedUtc: string | null;
+    tinkerPath: string;
+    tinkerRows: number | null;
+    tinkerUpdatedUtc: string | null;
+    evalPath: string;
+    evalRows: number | null;
+    evalUpdatedUtc: string | null;
+    evalMinLabels: number;
+    labeledJudgments: number;
   };
   recent: CpsExperimentEntry[];
   entries: CpsExperimentEntry[];

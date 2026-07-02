@@ -76,6 +76,7 @@ describe("CPS experiment routes", () => {
       experimentId: "exp-1",
       label: "agree",
       correctedVerdict: null,
+      routeToRole: null,
       comment: null,
       createdAt: "2026-07-01T00:00:00.000Z",
       createdBy: "board",
@@ -138,5 +139,37 @@ describe("CPS experiment routes", () => {
     expect(mockService.createJudgmentFeedback).toHaveBeenCalledWith(companyId, expect.objectContaining({ experimentId: "exp-1", label: "agree" }));
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "cps.judgment_label.created", entityId: "label-1" }));
     expect(res.body).toMatchObject({ id: "label-1", schema: "cps.judgment_feedback.v1", label: "agree" });
+  });
+
+  it("forwards correction fields and logs routeToRole", async () => {
+    const app = await createApp({ type: "board", userId: "board-user", source: "session", isInstanceAdmin: true, companyIds: [companyId] });
+    mockService.createJudgmentFeedback.mockResolvedValueOnce({
+      schema: "cps.judgment_feedback.v1",
+      id: "label-2",
+      companyId,
+      experimentId: "exp-1",
+      label: "wrong_blocker",
+      correctedVerdict: "DATA_BLOCKED",
+      routeToRole: "data_engineering",
+      comment: "Needs constituents data.",
+      createdAt: "2026-07-02T00:00:00.000Z",
+      createdBy: "board",
+      judgmentPath: "/tmp/exp-1/JUDGMENT.json",
+      path: "/tmp/label-2.json",
+      queuePath: "/tmp/LABELS.jsonl",
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/cps-experiments/judgment-feedback`)
+      .send({ experimentId: "exp-1", label: "wrong_blocker", correctedVerdict: "DATA_BLOCKED", routeToRole: "data_engineering", comment: "Needs constituents data." });
+
+    expect(res.status).toBe(201);
+    expect(mockService.createJudgmentFeedback).toHaveBeenCalledWith(companyId, expect.objectContaining({ routeToRole: "data_engineering", correctedVerdict: "DATA_BLOCKED" }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "cps.judgment_label.created",
+      entityId: "label-2",
+      details: expect.objectContaining({ routeToRole: "data_engineering", correctedVerdict: "DATA_BLOCKED" }),
+    }));
+    expect(res.body).toMatchObject({ id: "label-2", routeToRole: "data_engineering" });
   });
 });

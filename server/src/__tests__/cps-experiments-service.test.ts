@@ -144,10 +144,92 @@ describe("cpsExperimentsService.overview", () => {
 
     expect(feedback.schema).toBe("cps.judgment_feedback.v1");
     expect(feedback.label).toBe("too_optimistic");
+    expect(feedback.routeToRole).toBeNull();
     expect(feedback.judgmentPath).toContain("JUDGMENT.json");
     const stored = JSON.parse(await readFile(feedback.path, "utf8"));
     expect(stored.comment).toBe("Conservative sequencing should dominate.");
     const queue = await readFile(feedback.queuePath, "utf8");
     expect(queue).toContain(feedback.id);
+  });
+
+  it("persists correction fields including blocker re-route", async () => {
+    const svc = cpsExperimentsService({ selfPracticeDir: root });
+    const feedback = await svc.createJudgmentFeedback("company-1", {
+      experimentId: "sp-20260701T000000Z-fixture",
+      label: "wrong_blocker",
+      correctedVerdict: "DATA_BLOCKED",
+      routeToRole: "data_engineering",
+      comment: "Blocker is missing constituents data, not rules.",
+    });
+
+    expect(feedback.correctedVerdict).toBe("DATA_BLOCKED");
+    expect(feedback.routeToRole).toBe("data_engineering");
+    const stored = JSON.parse(await readFile(feedback.path, "utf8"));
+    expect(stored.routeToRole).toBe("data_engineering");
+    expect(stored.correctedVerdict).toBe("DATA_BLOCKED");
+  });
+
+  it("rejects unsupported routeToRole values", async () => {
+    const svc = cpsExperimentsService({ selfPracticeDir: root });
+    // The judgment schema enum is quant_review, not the roles-table quant_research.
+    await expect(svc.createJudgmentFeedback("company-1", {
+      experimentId: "sp-20260701T000000Z-fixture",
+      label: "wrong_blocker",
+      routeToRole: "quant_research",
+    })).rejects.toThrow(/routeToRole/);
+  });
+
+  it("aggregates operator labels and dataset export status in the overview", async () => {
+    const root2 = await mkdtemp(path.join(os.tmpdir(), "cps-experiments-labels-"));
+    try {
+      const expDir = path.join(root2, "exp-a");
+      await mkdir(expDir, { recursive: true });
+      await writeFile(path.join(expDir, "JUDGMENT.json"), JSON.stringify({
+        schema: "cps.experiment_judgment.v1",
+        experiment_id: "exp-a",
+        result_verdict: "INCONCLUSIVE",
+        promotion_verdict: "needs_review",
+      }), "utf8");
+      const trackerDir = path.join(root2, "experiment-tracker-20260702");
+      await mkdir(trackerDir, { recursive: true });
+      await writeFile(path.join(trackerDir, "EXPERIMENTS_INDEX.json"), JSON.stringify({
+        schema: "cps.experiment_index.v1",
+        generated_utc: "2026-07-02T00:00:00.000Z",
+        entry_count: 1,
+        entries: [{ id: "exp-a", updated_utc: "2026-07-02T00:00:00.000Z", kind: "strategy_experiment", status: "ok", decision: null, path: "exp-a", summary: {} }],
+      }), "utf8");
+      await writeFile(path.join(root2, "EXPERIMENT_JUDGMENTS.jsonl"), '{"experiment_id":"exp-a"}\n', "utf8");
+      const evalsDir = path.join(root2, "evals");
+      await mkdir(evalsDir, { recursive: true });
+      await writeFile(path.join(evalsDir, "judgment_tinker_prompt_response.jsonl"), '{"prompt":"p","response":"r"}\n', "utf8");
+
+      const svc = cpsExperimentsService({ selfPracticeDir: root2, evalsDir, staleAfterMs: Number.MAX_SAFE_INTEGER });
+      await svc.createJudgmentFeedback("company-1", {
+        experimentId: "exp-a",
+        label: "disagree",
+        correctedVerdict: "DATA_BLOCKED",
+        routeToRole: "data_engineering",
+        comment: "Needs historical constituents.",
+      });
+      const out = await svc.overview("company-1");
+
+      expect(out.labels.total).toBe(1);
+      expect(out.labels.byLabel.disagree).toBe(1);
+      expect(out.labels.experimentsLabeled).toBe(1);
+      const entry = out.entries.find((candidate) => candidate.id === "exp-a");
+      expect(entry?.operatorLabels).toMatchObject({
+        count: 1,
+        latestLabel: "disagree",
+        latestCorrectedVerdict: "DATA_BLOCKED",
+        latestRouteToRole: "data_engineering",
+      });
+      expect(out.datasetExport.trainingRows).toBe(1);
+      expect(out.datasetExport.tinkerRows).toBe(1);
+      expect(out.datasetExport.evalRows).toBeNull();
+      expect(out.datasetExport.evalMinLabels).toBe(100);
+      expect(out.datasetExport.labeledJudgments).toBe(1);
+    } finally {
+      await rm(root2, { recursive: true, force: true });
+    }
   });
 });

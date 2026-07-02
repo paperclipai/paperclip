@@ -1,12 +1,35 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
-import { AlertTriangle, BarChart3, Clock, FileJson, FlaskConical, ListChecks, ShieldCheck } from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, BarChart3, Clock, Database, FileJson, FlaskConical, ListChecks, ShieldCheck, Tag } from "lucide-react";
 import type { CpsExperimentEntry } from "@paperclipai/shared";
 import { cpsExperimentsApi } from "../api/cps-experiments";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+
+type FeedbackDraft = {
+  label: string;
+  correctedVerdict?: string | null;
+  routeToRole?: string | null;
+  comment?: string | null;
+};
+
+const QUICK_LABELS = ["agree", "disagree", "too_optimistic", "too_conservative", "wrong_blocker", "proceed_autonomously", "archive", "requires_approval"];
+
+// cps.experiment_judgment.v1 result_verdict enum.
+const RESULT_VERDICTS = [
+  "PROMOTE_TO_OPERATOR_DOSSIER",
+  "SHADOW_ONLY",
+  "LOCAL_PROXY_SUPPORTS_MECHANISM",
+  "LOCAL_VALIDATION_KILL",
+  "DATA_BLOCKED",
+  "RULES_BLOCKED",
+  "INCONCLUSIVE",
+];
+
+// Blocker route_to_role enum (schema uses quant_review, not quant_research).
+const ROUTE_ROLES = ["data_engineering", "quant_review", "platform_engineering", "board", "external_vendor"];
 
 const DECISION_STYLES: Record<string, string> = {
   KILL_ARCHIVE: "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300",
@@ -107,6 +130,11 @@ function EntryCard({ entry, selected, onSelect }: { entry: CpsExperimentEntry; s
         <div className="rounded-lg bg-muted/50 px-2 py-1">Files: <span className="font-mono text-foreground">{entry.files.length}</span></div>
         {resultVerdict ? <div className="rounded-lg bg-muted/50 px-2 py-1">Judgment: <span className="font-mono text-foreground">{resultVerdict}</span></div> : null}
         {dataFit ? <div className="rounded-lg bg-muted/50 px-2 py-1">Data: <span className="font-mono text-foreground">{dataFit}</span></div> : null}
+        {entry.operatorLabels?.count ? (
+          <div className="rounded-lg bg-emerald-500/10 px-2 py-1 text-emerald-700 dark:text-emerald-300">
+            Labeled: <span className="font-mono">{entry.operatorLabels.latestLabel}</span>{entry.operatorLabels.count > 1 ? ` ×${entry.operatorLabels.count}` : ""}
+          </div>
+        ) : null}
         {oosMean ? <div className="rounded-lg bg-muted/50 px-2 py-1">Mean: <span className="font-mono text-foreground">{oosMean}</span></div> : null}
         {oosSharpe ? <div className="rounded-lg bg-muted/50 px-2 py-1">Sharpe: <span className="font-mono text-foreground">{oosSharpe}</span></div> : null}
       </div>
@@ -118,6 +146,7 @@ function EntryDetail({
   entry,
   onQueueFollowUp,
   onQueueJudgmentNext,
+  onQueueGenerateJudgment,
   onCreateFeedback,
   isQueueing,
   isLabeling,
@@ -127,12 +156,25 @@ function EntryDetail({
   entry: CpsExperimentEntry;
   onQueueFollowUp: (entry: CpsExperimentEntry) => void;
   onQueueJudgmentNext: (entry: CpsExperimentEntry) => void;
-  onCreateFeedback: (entry: CpsExperimentEntry, label: string) => void;
+  onQueueGenerateJudgment: (entry: CpsExperimentEntry) => void;
+  onCreateFeedback: (entry: CpsExperimentEntry, draft: FeedbackDraft) => void;
   isQueueing: boolean;
   isLabeling: boolean;
   queuedId: string | null;
   labeledId: string | null;
 }) {
+  const [correctionLabel, setCorrectionLabel] = useState("disagree");
+  const [correctedVerdict, setCorrectedVerdict] = useState("");
+  const [routeToRole, setRouteToRole] = useState("");
+  const [comment, setComment] = useState("");
+
+  useEffect(() => {
+    setCorrectionLabel("disagree");
+    setCorrectedVerdict("");
+    setRouteToRole("");
+    setComment("");
+  }, [entry.id]);
+
   const failing = Array.isArray(entry.summary.failing_gates) ? entry.summary.failing_gates.filter((x): x is string => typeof x === "string") : [];
   const safety = entry.summary.safety && typeof entry.summary.safety === "object" ? entry.summary.safety as Record<string, unknown> : null;
   const resultVerdict = judgmentScalar(entry, "result_verdict", "resultVerdict");
@@ -193,18 +235,103 @@ function EntryDetail({
             </div>
           ) : null}
           {nextPrompt ? <pre className="mt-3 max-h-32 overflow-auto rounded-lg bg-muted/40 p-3 text-xs leading-5 text-foreground/90">{nextPrompt}</pre> : null}
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {["agree", "disagree", "too_optimistic", "too_conservative", "wrong_blocker", "proceed_autonomously", "archive", "requires_approval"].map((label) => (
-              <button key={label} type="button" onClick={() => onCreateFeedback(entry, label)} disabled={isLabeling} className="rounded-full border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition hover:border-primary/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60">
-                {label.replace(/_/g, " ")}
+
+          <div className="mt-4 border-t border-border pt-3">
+            <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-muted-foreground"><Tag className="h-3.5 w-3.5" /> Operator label</div>
+            {entry.operatorLabels?.count ? (
+              <div className="mb-2 rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-800 dark:text-emerald-300">
+                {entry.operatorLabels.count} label{entry.operatorLabels.count > 1 ? "s" : ""} · latest <span className="font-mono">{entry.operatorLabels.latestLabel}</span>
+                {entry.operatorLabels.latestCorrectedVerdict ? <> · corrected → <span className="font-mono">{entry.operatorLabels.latestCorrectedVerdict}</span></> : null}
+                {entry.operatorLabels.latestRouteToRole ? <> · routed → <span className="font-mono">{entry.operatorLabels.latestRouteToRole}</span></> : null}
+                {entry.operatorLabels.latestAt ? <> · {fmtDate(entry.operatorLabels.latestAt)}</> : null}
+              </div>
+            ) : null}
+            <div className="flex flex-wrap gap-1.5">
+              {QUICK_LABELS.map((label) => (
+                <button key={label} type="button" onClick={() => onCreateFeedback(entry, { label })} disabled={isLabeling} className="rounded-full border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition hover:border-primary/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60">
+                  {label.replace(/_/g, " ")}
+                </button>
+              ))}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => onCreateFeedback(entry, { label: "wrong_blocker", routeToRole: "data_engineering", comment: "Quick route: needs data engineering." })}
+                disabled={isLabeling}
+                className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[11px] font-semibold text-amber-800 transition hover:bg-amber-500/15 disabled:cursor-not-allowed disabled:opacity-60 dark:text-amber-300"
+              >
+                needs data engineering
               </button>
-            ))}
-            {labeledId ? <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] text-emerald-700 dark:text-emerald-300">labeled {labeledId}</span> : null}
+              <button
+                type="button"
+                onClick={() => onCreateFeedback(entry, { label: "wrong_blocker", routeToRole: "quant_review", comment: "Quick route: needs execution realism review." })}
+                disabled={isLabeling}
+                className="rounded-full border border-sky-500/40 bg-sky-500/10 px-2.5 py-1 text-[11px] font-semibold text-sky-800 transition hover:bg-sky-500/15 disabled:cursor-not-allowed disabled:opacity-60 dark:text-sky-300"
+              >
+                needs execution realism
+              </button>
+              {labeledId ? <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] text-emerald-700 dark:text-emerald-300">labeled {labeledId}</span> : null}
+            </div>
+
+            <details className="mt-3 rounded-lg border border-border bg-muted/30 p-3">
+              <summary className="cursor-pointer text-xs font-semibold text-muted-foreground">Correction form</summary>
+              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
+                  Label
+                  <select value={correctionLabel} onChange={(event) => setCorrectionLabel(event.target.value)} className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus:border-primary">
+                    {QUICK_LABELS.map((label) => <option key={label} value={label}>{label.replace(/_/g, " ")}</option>)}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
+                  Corrected verdict
+                  <select value={correctedVerdict} onChange={(event) => setCorrectedVerdict(event.target.value)} className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus:border-primary">
+                    <option value="">— keep verdict —</option>
+                    {RESULT_VERDICTS.map((verdict) => <option key={verdict} value={verdict}>{verdict}</option>)}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 text-[11px] text-muted-foreground">
+                  Re-route blocker to
+                  <select value={routeToRole} onChange={(event) => setRouteToRole(event.target.value)} className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus:border-primary">
+                    <option value="">— no re-route —</option>
+                    {ROUTE_ROLES.map((role) => <option key={role} value={role}>{role.replace(/_/g, " ")}</option>)}
+                  </select>
+                </label>
+              </div>
+              <textarea
+                value={comment}
+                onChange={(event) => setComment(event.target.value)}
+                placeholder="Free-text correction: what the judgment got wrong, what evidence it missed, what should happen instead…"
+                rows={3}
+                maxLength={2000}
+                className="mt-2 w-full rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground outline-none focus:border-primary"
+              />
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => onCreateFeedback(entry, { label: correctionLabel, correctedVerdict: correctedVerdict || null, routeToRole: routeToRole || null, comment: comment.trim() || null })}
+                  disabled={isLabeling}
+                  className="rounded-full border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isLabeling ? "Saving…" : "Save correction label"}
+                </button>
+                <span className="text-[11px] text-muted-foreground">Appends to LABELS.jsonl — never edits JUDGMENT.json directly.</span>
+              </div>
+            </details>
           </div>
         </section>
       ) : (
-        <section className="rounded-2xl border border-dashed border-border bg-card p-4 text-sm text-muted-foreground">
-          No `JUDGMENT.json` found yet. Queue `generate_judgment` or run a CPS judgment writer to turn this experiment into training data.
+        <section className="rounded-2xl border border-dashed border-border bg-card p-4">
+          <div className="text-sm text-muted-foreground">
+            No `JUDGMENT.json` found yet. Queue `generate_judgment` to turn this experiment into training data — the executor emits a conservative draft (INCONCLUSIVE, needs_review) that you can then correct.
+          </div>
+          <button
+            type="button"
+            onClick={() => onQueueGenerateJudgment(entry)}
+            disabled={isQueueing}
+            className="mt-3 rounded-full border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary transition hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isQueueing ? "Queueing…" : "Queue generate_judgment"}
+          </button>
         </section>
       )}
 
@@ -260,16 +387,20 @@ export function CpsExperiments() {
     refetchInterval: 60_000,
   });
 
+  const queryClient = useQueryClient();
+
   const queueMutation = useMutation({
-    mutationFn: ({ entry, mode }: { entry: CpsExperimentEntry; mode: "generic" | "judgment_next" }) => {
+    mutationFn: ({ entry, mode }: { entry: CpsExperimentEntry; mode: "generic" | "judgment_next" | "generate_judgment" }) => {
       const prompt = mode === "judgment_next"
         ? nextActionPrompt(entry) ?? `Generate or revise the CPS JUDGMENT.json for ${entry.id}. Preserve safety boundaries: no broker actions, no signal publishing, no paid data unless explicitly approved.`
-        : `Paperclip operator requested a bounded CPS follow-up for ${entry.id}. Review the artifact, preserve the current verdict unless evidence changes, and only run safe local research/backtest steps. No broker actions, no signal publishing. If data/paid API is needed, stop and report the exact need unless already explicitly allowed by the request.`;
+        : mode === "generate_judgment"
+          ? `Generate a typed JUDGMENT.json for ${entry.id} from existing local artifacts only. Never invent missing rules or results; if evidence is insufficient, emit INCONCLUSIVE with needs_review and low confidence. No broker actions, no signal publishing, no paid data.`
+          : `Paperclip operator requested a bounded CPS follow-up for ${entry.id}. Review the artifact, preserve the current verdict unless evidence changes, and only run safe local research/backtest steps. No broker actions, no signal publishing. If data/paid API is needed, stop and report the exact need unless already explicitly allowed by the request.`;
       return cpsExperimentsApi.createRunRequest(selectedCompanyId!, {
-        action: mode === "judgment_next" ? "run_next_safe_action" : (entry.decision === "KILL_ARCHIVE" || entry.decision === "KILL" ? "investigate_near_miss" : "rerun_with_variant"),
+        action: mode === "judgment_next" ? "run_next_safe_action" : mode === "generate_judgment" ? "generate_judgment" : (entry.decision === "KILL_ARCHIVE" || entry.decision === "KILL" ? "investigate_near_miss" : "rerun_with_variant"),
         experimentId: entry.id,
         prompt,
-        maxRuntimeMinutes: mode === "judgment_next" ? 120 : 90,
+        maxRuntimeMinutes: mode === "judgment_next" ? 120 : mode === "generate_judgment" ? 60 : 90,
         allowPaidData: false,
         allowPaidCompute: false,
       });
@@ -278,11 +409,14 @@ export function CpsExperiments() {
   });
 
   const labelMutation = useMutation({
-    mutationFn: ({ entry, label }: { entry: CpsExperimentEntry; label: string }) => cpsExperimentsApi.createJudgmentFeedback(selectedCompanyId!, {
+    mutationFn: ({ entry, draft }: { entry: CpsExperimentEntry; draft: FeedbackDraft }) => cpsExperimentsApi.createJudgmentFeedback(selectedCompanyId!, {
       experimentId: entry.id,
-      label,
+      ...draft,
     }),
-    onSuccess: (feedback) => setLabeledId(feedback.id),
+    onSuccess: (feedback) => {
+      setLabeledId(feedback.id);
+      void queryClient.invalidateQueries({ queryKey: ["cps-experiments", selectedCompanyId] });
+    },
   });
 
   const filtered = useMemo(() => {
@@ -344,6 +478,48 @@ export function CpsExperiments() {
         </div>
       </section>
 
+      {data.labels && data.datasetExport ? (
+        <section className="rounded-2xl border border-border bg-card p-4">
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold"><Database className="h-4 w-4 text-muted-foreground" /> Judgment dataset export</div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+              <span className="text-muted-foreground">Operator labels</span>
+              <div className="font-mono text-lg text-foreground">{data.labels.total}</div>
+              <div className="text-muted-foreground">across {data.labels.experimentsLabeled} experiment{data.labels.experimentsLabeled === 1 ? "" : "s"}</div>
+            </div>
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+              <span className="text-muted-foreground">Eval gate progress</span>
+              <div className="font-mono text-lg text-foreground">{data.datasetExport.labeledJudgments} / {data.datasetExport.evalMinLabels}</div>
+              <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+                <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(100, (data.datasetExport.labeledJudgments / data.datasetExport.evalMinLabels) * 100)}%` }} />
+              </div>
+            </div>
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+              <span className="text-muted-foreground">Training rows</span>
+              <div className="font-mono text-lg text-foreground">{data.datasetExport.trainingRows ?? "—"}</div>
+              <div className="text-muted-foreground">{data.datasetExport.trainingUpdatedUtc ? fmtDate(data.datasetExport.trainingUpdatedUtc) : "not exported yet"}</div>
+            </div>
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+              <span className="text-muted-foreground">Tinker rows</span>
+              <div className="font-mono text-lg text-foreground">{data.datasetExport.tinkerRows ?? "—"}</div>
+              <div className="text-muted-foreground">{data.datasetExport.tinkerUpdatedUtc ? fmtDate(data.datasetExport.tinkerUpdatedUtc) : "not exported yet"}</div>
+            </div>
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+              <span className="text-muted-foreground">Frozen eval rows</span>
+              <div className="font-mono text-lg text-foreground">{data.datasetExport.evalRows ?? "—"}</div>
+              <div className="text-muted-foreground">{data.datasetExport.evalRows === null ? `gated until ${data.datasetExport.evalMinLabels} labels` : data.datasetExport.evalUpdatedUtc ? fmtDate(data.datasetExport.evalUpdatedUtc) : ""}</div>
+            </div>
+          </div>
+          {Object.keys(data.labels.byLabel).length ? (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {Object.entries(data.labels.byLabel).map(([label, count]) => (
+                <span key={label} className="rounded-md bg-muted/60 px-2 py-1 font-mono text-[11px] text-muted-foreground">{label}: {count}</span>
+              ))}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex flex-wrap gap-1.5">
           {["all", ...kindOptions].map((kind) => (
@@ -376,7 +552,8 @@ export function CpsExperiments() {
                 entry={selected}
                 onQueueFollowUp={(entry) => queueMutation.mutate({ entry, mode: "generic" })}
                 onQueueJudgmentNext={(entry) => queueMutation.mutate({ entry, mode: "judgment_next" })}
-                onCreateFeedback={(entry, label) => labelMutation.mutate({ entry, label })}
+                onQueueGenerateJudgment={(entry) => queueMutation.mutate({ entry, mode: "generate_judgment" })}
+                onCreateFeedback={(entry, draft) => labelMutation.mutate({ entry, draft })}
                 isQueueing={queueMutation.isPending}
                 isLabeling={labelMutation.isPending}
                 queuedId={queuedId}

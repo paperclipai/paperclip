@@ -13,6 +13,7 @@ import type {
   CpsExperimentJudgment,
   CpsExperimentOverview,
   CpsJudgmentFeedback,
+  CpsOperatorLabelSummary,
   CpsRunRequest,
   CpsRunRequestAction,
 } from "@paperclipai/shared";
@@ -20,14 +21,18 @@ import type {
 export interface CpsExperimentsServiceOptions {
   indexFile?: string;
   selfPracticeDir?: string;
+  evalsDir?: string;
   staleAfterMs?: number;
   recentLimit?: number;
   runRequestsDir?: string;
+  evalMinLabels?: number;
 }
 
 const DEFAULT_SELF_PRACTICE_DIR = "/root/cps/var/self_practice";
 const DEFAULT_STALE_AFTER_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_RECENT_LIMIT = 40;
+// Mirrors the exporter default (`scripts/export-cps-judgment-dataset.py --min-eval-labels`).
+const DEFAULT_EVAL_MIN_LABELS = 100;
 
 type Json = Record<string, unknown>;
 
@@ -84,6 +89,16 @@ const JUDGMENT_FEEDBACK_LABELS = new Set([
   "requires_approval",
 ]);
 
+// JUDGMENT.json blocker route_to_role enum. The schema value is `quant_review`
+// (not the roles-table `quant_research`) — see the judgment-loop plan doc.
+const JUDGMENT_ROUTE_ROLES = new Set([
+  "data_engineering",
+  "quant_review",
+  "platform_engineering",
+  "board",
+  "external_vendor",
+]);
+
 function assertRunRequestInput(input: CreateCpsRunRequestInput) {
   if (!RUN_REQUEST_ACTIONS.has(input.action)) {
     throw new Error(`Unsupported CPS run request action: ${String(input.action)}`);
@@ -104,6 +119,8 @@ function assertJudgmentFeedbackInput(input: CreateCpsJudgmentFeedbackInput) {
   const label = input.label?.trim();
   if (!label || !JUDGMENT_FEEDBACK_LABELS.has(label)) throw new Error("Unsupported judgment feedback label");
   if (input.correctedVerdict && input.correctedVerdict.length > 160) throw new Error("correctedVerdict is too long");
+  const routeToRole = input.routeToRole?.trim();
+  if (routeToRole && !JUDGMENT_ROUTE_ROLES.has(routeToRole)) throw new Error("Unsupported judgment feedback routeToRole");
   if (input.comment && input.comment.length > 2000) throw new Error("comment is too long");
 }
 
@@ -191,6 +208,66 @@ async function fileMtimeMs(filePath: string): Promise<number | null> {
   }
 }
 
+interface OperatorLabelsIndex {
+  byExperiment: Map<string, CpsOperatorLabelSummary>;
+  total: number;
+  byLabel: Record<string, number>;
+}
+
+// Reads the append-only LABELS.jsonl written by createJudgmentFeedback. The
+// file is append-only, so the last line per experiment is the latest label.
+async function readOperatorLabels(labelsFile: string): Promise<OperatorLabelsIndex> {
+  const byExperiment = new Map<string, CpsOperatorLabelSummary>();
+  const byLabel: Record<string, number> = {};
+  let total = 0;
+  let text: string;
+  try {
+    text = await fs.readFile(labelsFile, "utf8");
+  } catch {
+    return { byExperiment, total, byLabel };
+  }
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const rec = asRecord(parsed);
+    if (!rec) continue;
+    const experimentId = asString(rec.experimentId) ?? asString(rec.experiment_id);
+    const label = asString(rec.label);
+    if (!experimentId || !label) continue;
+    total += 1;
+    increment(byLabel, label);
+    const prev = byExperiment.get(experimentId);
+    byExperiment.set(experimentId, {
+      count: (prev?.count ?? 0) + 1,
+      latestLabel: label,
+      latestCorrectedVerdict: asString(rec.correctedVerdict) ?? asString(rec.corrected_verdict),
+      latestRouteToRole: asString(rec.routeToRole) ?? asString(rec.route_to_role),
+      latestComment: asString(rec.comment),
+      latestAt: asString(rec.createdAt) ?? asString(rec.created_at),
+    });
+  }
+  return { byExperiment, total, byLabel };
+}
+
+async function jsonlStatus(filePath: string): Promise<{ rows: number | null; updatedUtc: string | null }> {
+  try {
+    const [text, stat] = await Promise.all([fs.readFile(filePath, "utf8"), fs.stat(filePath)]);
+    const rows = text.split("\n").filter((line) => line.trim().length > 0).length;
+    return { rows, updatedUtc: new Date(stat.mtimeMs).toISOString() };
+  } catch {
+    return { rows: null, updatedUtc: null };
+  }
+}
+
+function resolveEvalsDir(options: CpsExperimentsServiceOptions, selfPracticeDir: string): string {
+  return options.evalsDir ?? process.env.PAPERCLIP_CPS_EVALS_DIR ?? path.join(selfPracticeDir, "..", "evals");
+}
+
 async function resolveIndexFile(options: Pick<CpsExperimentsServiceOptions, "indexFile" | "selfPracticeDir">): Promise<string> {
   if (options.indexFile) return options.indexFile;
   if (process.env.PAPERCLIP_CPS_EXPERIMENTS_INDEX) return process.env.PAPERCLIP_CPS_EXPERIMENTS_INDEX;
@@ -269,6 +346,7 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
         experimentId,
         label: input.label.trim(),
         correctedVerdict: input.correctedVerdict?.trim() || null,
+        routeToRole: input.routeToRole?.trim() || null,
         comment: input.comment?.trim() || null,
         createdAt,
         createdBy: "board",
@@ -292,11 +370,19 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
       const freshestMs = sourceGeneratedMs ?? indexMtimeMs;
       const ageSeconds = freshestMs === null ? null : Math.max(0, Math.round((now - freshestMs) / 1000));
       const selfPracticeDir = options.selfPracticeDir ?? process.env.PAPERCLIP_CPS_SELF_PRACTICE_DIR ?? DEFAULT_SELF_PRACTICE_DIR;
-      const entries = await Promise.all(
+      const labelsFile = path.join(selfPracticeDir, "paperclip-judgment-labels", "LABELS.jsonl");
+      const operatorLabels = await readOperatorLabels(labelsFile);
+      const entries = (await Promise.all(
         (Array.isArray(raw?.entries) ? raw.entries.map(mapEntry).filter((entry): entry is CpsExperimentEntry => entry !== null) : [])
           .map((entry) => readJudgment(entry, selfPracticeDir)),
-      );
+      )).map((entry) => ({ ...entry, operatorLabels: operatorLabels.byExperiment.get(entry.id) ?? null }));
       entries.sort((a, b) => b.updatedUtc.localeCompare(a.updatedUtc));
+
+      const evalsDir = resolveEvalsDir(options, selfPracticeDir);
+      const trainingPath = path.join(selfPracticeDir, "EXPERIMENT_JUDGMENTS.jsonl");
+      const tinkerPath = path.join(evalsDir, "judgment_tinker_prompt_response.jsonl");
+      const evalPath = path.join(evalsDir, "judgment_triage_eval.jsonl");
+      const [training, tinker, evalFile] = await Promise.all([jsonlStatus(trainingPath), jsonlStatus(tinkerPath), jsonlStatus(evalPath)]);
 
       const judgmentByResultVerdict: Record<string, number> = {};
       const judgmentByPromotionVerdict: Record<string, number> = {};
@@ -333,6 +419,25 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
           judgmentByPromotionVerdict,
           judgmentByDataFit,
           judgmentByRulesDisclosure,
+        },
+        labels: {
+          total: operatorLabels.total,
+          experimentsLabeled: operatorLabels.byExperiment.size,
+          byLabel: operatorLabels.byLabel,
+          labelsPath: path.normalize(labelsFile),
+        },
+        datasetExport: {
+          trainingPath: path.normalize(trainingPath),
+          trainingRows: training.rows,
+          trainingUpdatedUtc: training.updatedUtc,
+          tinkerPath: path.normalize(tinkerPath),
+          tinkerRows: tinker.rows,
+          tinkerUpdatedUtc: tinker.updatedUtc,
+          evalPath: path.normalize(evalPath),
+          evalRows: evalFile.rows,
+          evalUpdatedUtc: evalFile.updatedUtc,
+          evalMinLabels: options.evalMinLabels ?? DEFAULT_EVAL_MIN_LABELS,
+          labeledJudgments: entries.filter((entry) => entry.judgment && entry.operatorLabels).length,
         },
         recent: entries.slice(0, recentLimit),
         entries,

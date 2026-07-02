@@ -788,6 +788,8 @@ export type {
   CpsExperimentStatus,
   CpsJudgmentFeedback,
   CpsJudgmentFeedbackLabel,
+  CpsJudgmentRouteRole,
+  CpsOperatorLabelSummary,
   CpsRunRequest,
   CpsRunRequestAction,
   ActivityEvent,
