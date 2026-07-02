@@ -318,8 +318,6 @@ export function Dashboard() {
         </div>
       )}
 
-      <ActiveAgentsPanel companyId={selectedCompanyId!} />
-
       {data && (
         <>
           {data.budgets.activeIncidents > 0 ? (
@@ -456,6 +454,75 @@ export function Dashboard() {
               ) : null}
             </div>
           ) : null}
+
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
+            <MetricCard
+              icon={Bot}
+              value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
+              label="Agents Enabled"
+              to="/agents"
+              description={
+                <span>
+                  {data.agents.running} running{", "}
+                  {data.agents.paused} paused{", "}
+                  {data.agents.error} errors
+                </span>
+              }
+            />
+            <MetricCard
+              icon={CircleDot}
+              value={data.tasks.inProgress}
+              label="Tasks In Progress"
+              to="/issues"
+              description={
+                <span>
+                  {data.tasks.open} open{", "}
+                  {data.tasks.blocked} blocked
+                </span>
+              }
+            />
+            <MetricCard
+              icon={DollarSign}
+              value={formatCents(data.costs.monthSpendCents)}
+              label="Month Spend"
+              to="/costs"
+              description={
+                <span>
+                  {data.costs.monthBudgetCents > 0
+                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
+                    : "Unlimited budget"}
+                </span>
+              }
+            />
+            <MetricCard
+              icon={ShieldCheck}
+              value={data.pendingApprovals + data.budgets.pendingApprovals}
+              label="Pending Approvals"
+              to="/approvals"
+              description={
+                <span>
+                  {data.budgets.pendingApprovals > 0
+                    ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
+                    : "Awaiting board review"}
+                </span>
+              }
+            />
+          </div>
+
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <ChartCard title="Run Activity" subtitle="Last 14 days">
+              <RunActivityChart activity={data.runActivity} />
+            </ChartCard>
+            <ChartCard title="Tasks by Priority" subtitle="Last 14 days">
+              <PriorityChart issues={issues ?? []} />
+            </ChartCard>
+            <ChartCard title="Tasks by Status" subtitle="Last 14 days">
+              <IssueStatusChart issues={issues ?? []} />
+            </ChartCard>
+            <ChartCard title="Success Rate" subtitle="Last 14 days">
+              <SuccessRateChart activity={data.runActivity} />
+            </ChartCard>
+          </div>
 
           {operationalLoopItems.length > 0 ? (
             <div className="overflow-hidden rounded-2xl border border-red-400/25 bg-[radial-gradient(circle_at_8%_0%,rgba(248,113,113,0.22),transparent_32%),linear-gradient(135deg,rgba(26,8,8,0.96),rgba(10,10,18,0.92))] shadow-[0_24px_80px_rgba(127,29,29,0.18)]">
@@ -755,74 +822,7 @@ export function Dashboard() {
             </div>
           ) : null}
 
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
-            <MetricCard
-              icon={Bot}
-              value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
-              label="Agents Enabled"
-              to="/agents"
-              description={
-                <span>
-                  {data.agents.running} running{", "}
-                  {data.agents.paused} paused{", "}
-                  {data.agents.error} errors
-                </span>
-              }
-            />
-            <MetricCard
-              icon={CircleDot}
-              value={data.tasks.inProgress}
-              label="Tasks In Progress"
-              to="/issues"
-              description={
-                <span>
-                  {data.tasks.open} open{", "}
-                  {data.tasks.blocked} blocked
-                </span>
-              }
-            />
-            <MetricCard
-              icon={DollarSign}
-              value={formatCents(data.costs.monthSpendCents)}
-              label="Month Spend"
-              to="/costs"
-              description={
-                <span>
-                  {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
-                </span>
-              }
-            />
-            <MetricCard
-              icon={ShieldCheck}
-              value={data.pendingApprovals + data.budgets.pendingApprovals}
-              label="Pending Approvals"
-              to="/approvals"
-              description={
-                <span>
-                  {data.budgets.pendingApprovals > 0
-                    ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
-                    : "Awaiting board review"}
-                </span>
-              }
-            />
-          </div>
-
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <ChartCard title="Run Activity" subtitle="Last 14 days">
-              <RunActivityChart activity={data.runActivity} />
-            </ChartCard>
-            <ChartCard title="Tasks by Priority" subtitle="Last 14 days">
-              <PriorityChart issues={issues ?? []} />
-            </ChartCard>
-            <ChartCard title="Tasks by Status" subtitle="Last 14 days">
-              <IssueStatusChart issues={issues ?? []} />
-            </ChartCard>
-            <ChartCard title="Success Rate" subtitle="Last 14 days">
-              <SuccessRateChart activity={data.runActivity} />
-            </ChartCard>
-          </div>
+          <ActiveAgentsPanel companyId={selectedCompanyId!} />
 
           <PluginSlotOutlet
             slotTypes={["dashboardWidget"]}

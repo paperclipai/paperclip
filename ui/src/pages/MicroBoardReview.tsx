@@ -132,7 +132,48 @@ export function MicroBoardReview() {
       </section>
 
       {reviewQueue.length === 0 ? (
-        <EmptyState icon={ClipboardCheck} message="No experiments are waiting for board review." />
+        <div className="flex flex-col gap-4">
+          <EmptyState icon={ClipboardCheck} message="No experiments are waiting for board review." />
+          {registry.experiments.length > 0 && (
+            <section className="rounded-3xl border border-border bg-card p-5 shadow-sm">
+              <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                Pipeline — what will arrive here
+              </h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Experiments enter this queue when they reach <code className="rounded bg-muted px-1.5 py-0.5 text-xs">ready_for_board_review</code>.
+                Current registry state:
+              </p>
+              <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                {registry.experiments.map((experiment) => {
+                  const openGates = registry.dependencyRequests.filter(
+                    (gate) => gate.experimentId === experiment.id && gate.status !== "resolved",
+                  ).length;
+                  return (
+                    <div key={experiment.id} className="rounded-2xl border border-border bg-muted/40 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">{experiment.identifier}</div>
+                          <div className="mt-1 font-medium text-foreground">{experiment.title}</div>
+                        </div>
+                        <span className="shrink-0 rounded-full bg-sky-500/10 px-3 py-1 text-xs font-medium text-sky-700 dark:text-sky-300">
+                          {experiment.lifecycleState.replaceAll("_", " ")}
+                        </span>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-4 text-xs text-muted-foreground">
+                        <span>Open gates: {openGates}</span>
+                        <span>Resolved gates: {resolvedGateCount(registry, experiment.id)}</span>
+                        <span>Evidence packs: {evidenceCount(registry, experiment.id)}</span>
+                        <span>
+                          Improvements: {experiment.improvementAttemptCount}/{experiment.maxImprovementAttempts}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+        </div>
       ) : (
         <div className="grid gap-5 lg:grid-cols-2">
           {reviewQueue.map((experiment) => (
