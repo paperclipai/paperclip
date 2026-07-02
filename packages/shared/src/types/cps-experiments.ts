@@ -304,6 +304,82 @@ export interface CpsBacktestQueue {
   starving: boolean;
 }
 
+// E5: read-only view of the unified local data inventory registry
+// (fincli.data_inventory.v1) written by paperclip `pnpm cps:data-inventory`.
+export interface CpsDataInventorySubscription {
+  provider: string;
+  subscription: string;
+  status: string; // "have" | "missing"
+  unlocks: string;
+  link: string;
+}
+
+export interface CpsDataInventoryTickVenue {
+  venue: string;
+  symbols: string[];
+  streams: string[];
+  earliestDate: string | null;
+  latestDate: string | null;
+  days: number | null;
+  bytes: number | null;
+  live: boolean;
+}
+
+export interface CpsDataInventoryOhlcvSource {
+  dataset: string;
+  schema: string;
+  symbol: string;
+  start: string | null;
+  end: string | null;
+  files: number | null;
+  bytes: number | null;
+  fresh: boolean;
+}
+
+export interface CpsDataInventory {
+  present: boolean;
+  registryPath: string;
+  generatedUtc: string | null;
+  stale: boolean;
+  totalBytes: number | null;
+  inventoryFirstRule: string | null;
+  tickVenues: CpsDataInventoryTickVenue[];
+  ohlcvSources: CpsDataInventoryOhlcvSource[];
+  staleSources: string[];
+  subscriptions: CpsDataInventorySubscription[];
+}
+
+// E7: read-only view of the tool catalog (fincli.tool_catalog.v1) written by
+// paperclip `pnpm cps:tool-catalog`.
+export interface CpsToolCatalogEnvironment {
+  name: string;
+  ready: boolean;
+  status: string | null;
+  toolCount: number | null;
+  importOk: number | null;
+  failedImports: string[];
+}
+
+export interface CpsToolCatalogItem {
+  name: string;
+  kind: string;
+  ok: boolean;
+  detail: string | null;
+}
+
+export interface CpsToolCatalog {
+  present: boolean;
+  catalogPath: string;
+  generatedUtc: string | null;
+  stale: boolean;
+  environments: CpsToolCatalogEnvironment[];
+  recorders: CpsToolCatalogItem[];
+  services: CpsToolCatalogItem[];
+  enginesAndAdapters: CpsToolCatalogItem[];
+  executionPlane: string | null;
+  notReady: string[];
+}
+
 export interface CpsExperimentOverview {
   companyId: string;
   generatedAt: string;
@@ -335,6 +411,8 @@ export interface CpsExperimentOverview {
   };
   operatorActions: CpsOperatorAction[];
   backtestQueue: CpsBacktestQueue;
+  dataInventory: CpsDataInventory;
+  toolCatalog: CpsToolCatalog;
   datasetExport: {
     trainingPath: string;
     trainingRows: number | null;

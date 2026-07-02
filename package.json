@@ -58,10 +58,12 @@
     "trust:impact-pack": "node scripts/generate-codebase-impact-pack.mjs --project root-paperclip",
     "test:trust-impact-pack": "node --test scripts/generate-codebase-impact-pack.test.mjs",
     "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs",
-    "cps:backfill-progress": "python scripts/backfill-paper-progress.py",
-    "cps:export-judgments": "python scripts/export-cps-judgment-dataset.py",
-    "cps:scan-judgments": "python scripts/scan-cps-judgments.py",
-    "cps:tinker-readiness": "python scripts/tinker-readiness.py"
+    "cps:backfill-progress": "python3 scripts/backfill-paper-progress.py",
+    "cps:data-inventory": "python3 scripts/build-data-inventory.py",
+    "cps:tool-catalog": "python3 scripts/build-tool-catalog.py",
+    "cps:export-judgments": "python3 scripts/export-cps-judgment-dataset.py",
+    "cps:scan-judgments": "python3 scripts/scan-cps-judgments.py",
+    "cps:tinker-readiness": "python3 scripts/tinker-readiness.py"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

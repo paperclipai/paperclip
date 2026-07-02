@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, BarChart3, Clock, Database, FileJson, FlaskConical, Lightbulb, ListChecks, ListOrdered, ShieldCheck, Tag } from "lucide-react";
+import { AlertTriangle, BarChart3, Clock, Database, FileJson, FlaskConical, HardDrive, Lightbulb, ListChecks, ListOrdered, ShieldCheck, Tag } from "lucide-react";
 import type { CpsExperimentEntry } from "@paperclipai/shared";
 import { cpsExperimentsApi } from "../api/cps-experiments";
 import { EmptyState } from "../components/EmptyState";
@@ -81,6 +81,16 @@ function fmtDate(value: string) {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return value;
   return d.toLocaleString();
+}
+
+function fmtBytes(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "—";
+  let n = value;
+  for (const unit of ["B", "KB", "MB", "GB", "TB"]) {
+    if (n < 1024 || unit === "TB") return `${unit === "B" ? n : n.toFixed(1)}${unit}`;
+    n /= 1024;
+  }
+  return `${n}B`;
 }
 
 function scalar(value: unknown): string | null {
@@ -709,6 +719,130 @@ export function CpsExperiments() {
               <div className="text-muted-foreground">{data.backtestQueue.lastTick?.atUtc ? fmtDate(data.backtestQueue.lastTick.atUtc) : ""}</div>
             </div>
           </div>
+        </section>
+      ) : null}
+
+      {data.dataInventory ? (
+        <section className="rounded-2xl border border-border bg-card p-4">
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-sm font-semibold">
+            <HardDrive className="h-4 w-4 text-muted-foreground" /> Local data inventory
+            {!data.dataInventory.present ? (
+              <span className="rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-300">not built</span>
+            ) : data.dataInventory.stale ? (
+              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">stale</span>
+            ) : null}
+            <span className="ml-auto text-[10px] font-normal text-muted-foreground">
+              pods check this before asking for new or paid data · nothing is bought automatically
+            </span>
+          </div>
+          {data.dataInventory.present ? (
+            <>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+                  <span className="text-muted-foreground">Live tick recorders</span>
+                  <div className="font-mono text-lg text-foreground">
+                    {data.dataInventory.tickVenues.filter((v) => v.live).length} / {data.dataInventory.tickVenues.length}
+                  </div>
+                  <div className="truncate text-muted-foreground">
+                    {data.dataInventory.tickVenues.map((v) => `${v.venue} ${v.live ? "✓" : "✗"}`).join(" · ") || "none"}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+                  <span className="text-muted-foreground">OHLCV sources</span>
+                  <div className="font-mono text-lg text-foreground">{data.dataInventory.ohlcvSources.length}</div>
+                  <div className="text-muted-foreground">
+                    {data.dataInventory.staleSources.length ? `${data.dataInventory.staleSources.length} stale slices` : "all fresh"}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+                  <span className="text-muted-foreground">On disk</span>
+                  <div className="font-mono text-lg text-foreground">{fmtBytes(data.dataInventory.totalBytes)}</div>
+                  <div className="text-muted-foreground">ticks + bars, all local</div>
+                </div>
+                <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+                  <span className="text-muted-foreground">Registry updated</span>
+                  <div className="truncate font-mono text-sm text-foreground">
+                    {data.dataInventory.generatedUtc ? fmtDate(data.dataInventory.generatedUtc) : "—"}
+                  </div>
+                  <div className="truncate text-muted-foreground">{data.dataInventory.registryPath}</div>
+                </div>
+              </div>
+              {data.dataInventory.subscriptions.some((s) => s.status !== "have") ? (
+                <div className="mt-3 space-y-2">
+                  {data.dataInventory.subscriptions.filter((s) => s.status !== "have").map((s) => (
+                    <div key={`${s.provider}-${s.subscription}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+                      <span>
+                        <span className="font-semibold">{s.provider}: {s.subscription}</span> — unlocks {s.unlocks}
+                      </span>
+                      {s.link ? (
+                        <a href={s.link} target="_blank" rel="noreferrer" className="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 font-semibold transition hover:bg-amber-500/20">Open link</a>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+              Registry not built yet — run <code className="font-mono">pnpm cps:data-inventory</code> in /root/paperclip.
+            </div>
+          )}
+        </section>
+      ) : null}
+
+      {data.toolCatalog?.present ? (
+        <section className="rounded-2xl border border-border bg-card p-4">
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-sm font-semibold">
+            <ListChecks className="h-4 w-4 text-muted-foreground" /> Tool catalog
+            {data.toolCatalog.stale ? (
+              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">stale</span>
+            ) : null}
+            <span className="ml-auto text-[10px] font-normal text-muted-foreground">
+              what pods can use · missing tools become install tasks or asks, never ad-hoc installs
+            </span>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+              <span className="text-muted-foreground">Research environments</span>
+              <div className="font-mono text-lg text-foreground">
+                {data.toolCatalog.environments.filter((e) => e.ready).length} / {data.toolCatalog.environments.length} ready
+              </div>
+              <div className="truncate text-muted-foreground">
+                {data.toolCatalog.environments.map((e) => `${e.name.replace(/-py\d+$/, "")} ${e.ready ? "✓" : "✗"}`).join(" · ")}
+              </div>
+            </div>
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+              <span className="text-muted-foreground">Recorders / services</span>
+              <div className="font-mono text-lg text-foreground">
+                {[...data.toolCatalog.recorders, ...data.toolCatalog.services].filter((i) => i.ok).length} / {data.toolCatalog.recorders.length + data.toolCatalog.services.length} up
+              </div>
+              <div className="truncate text-muted-foreground">
+                {data.toolCatalog.services.map((s) => `${s.name} ${s.ok ? "✓" : "✗"}`).join(" · ") || "—"}
+              </div>
+            </div>
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+              <span className="text-muted-foreground">Engines & adapters</span>
+              <div className="font-mono text-lg text-foreground">
+                {data.toolCatalog.enginesAndAdapters.filter((i) => i.ok).length} / {data.toolCatalog.enginesAndAdapters.length}
+              </div>
+              <div className="truncate text-muted-foreground">
+                {data.toolCatalog.enginesAndAdapters.map((e) => `${e.name} ${e.ok ? "✓" : "✗"}`).join(" · ")}
+              </div>
+            </div>
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+              <span className="text-muted-foreground">Execution plane</span>
+              <div className="truncate font-mono text-sm text-foreground">{data.toolCatalog.executionPlane ?? "—"}</div>
+              <div className="text-muted-foreground">
+                {data.toolCatalog.generatedUtc ? `updated ${fmtDate(data.toolCatalog.generatedUtc)}` : ""}
+              </div>
+            </div>
+          </div>
+          {data.toolCatalog.notReady.length ? (
+            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              Not ready: {data.toolCatalog.notReady.join(", ")} — these become install tasks or operator asks.
+            </div>
+          ) : null}
         </section>
       ) : null}
 

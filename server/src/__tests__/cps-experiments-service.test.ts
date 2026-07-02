@@ -399,4 +399,151 @@ describe("cpsExperimentsService.overview", () => {
     expect(out.backtestQueue.stopPresent).toBe(true);
     expect(out.backtestQueue.lastTick?.status).toBe("NO_REACHABLE_WORKERS");
   });
+
+  it("reports the data inventory as absent when the registry file does not exist", async () => {
+    const svc = cpsExperimentsService({ indexFile, dataInventoryFile: path.join(root, "no-such-dir", "INVENTORY.json") });
+    const out = await svc.overview("company-1");
+
+    expect(out.dataInventory.present).toBe(false);
+    expect(out.dataInventory.stale).toBe(true);
+    expect(out.dataInventory.tickVenues).toEqual([]);
+    expect(out.dataInventory.ohlcvSources).toEqual([]);
+    expect(out.dataInventory.subscriptions).toEqual([]);
+  });
+
+  it("summarizes the E5 data inventory registry: tiers, freshness, and subscription asks", async () => {
+    const invFile = path.join(root, "data-inventory", "INVENTORY.json");
+    await mkdir(path.dirname(invFile), { recursive: true });
+    await writeFile(invFile, JSON.stringify({
+      schema: "fincli.data_inventory.v1",
+      generated_utc: new Date().toISOString(),
+      inventory_first_rule: "Pods MUST consult this registry before requesting new or paid data.",
+      tiers: {
+        ohlcv_cache: {
+          root: "/data",
+          sources: [
+            { dataset: "GLBX.MDP3", schema: "ohlcv-1d", symbol: "ES.c.0", start: "2010-07-01", end: "2026-07-01", files: 29, bytes: 400000, fresh: true },
+            { dataset: "GLBX.MDP3", schema: "ohlcv-1h", symbol: "CL.c.0", start: "2010-06-07", end: "2026-06-05", files: 2, bytes: 2000000, fresh: false },
+          ],
+        },
+        tick_recorders: {
+          root: "/ticks",
+          venues: [
+            { venue: "ibkr", symbols: ["ES", "NQ"], streams: ["trades", "bbo"], earliest_date: "2026-06-12", latest_date: "2026-07-02", days: 16, bytes: 800000000, live: true },
+            { venue: "icmarkets", symbols: ["EURUSD"], streams: ["bbo"], earliest_date: "2026-06-12", latest_date: "2026-07-01", days: 21, bytes: 35000000, live: false },
+          ],
+        },
+      },
+      summary: { total_bytes: 802400000, stale_sources: ["GLBX.MDP3/ohlcv-1h/CL.c.0", "icmarkets"] },
+      subscription_map: {
+        curated: true,
+        entries: [
+          { provider: "IBKR", subscription: "US Equity and Options Add-On", status: "missing", unlocks: "US options paper families", link: "https://www.interactivebrokers.com/en/pricing/research-news-marketdata.php" },
+          { provider: "IC Markets", subscription: "FIX API", status: "have", unlocks: "forex BBO recording", link: "https://www.icmarkets.com" },
+        ],
+      },
+    }), "utf8");
+
+    const svc = cpsExperimentsService({ indexFile, dataInventoryFile: invFile });
+    const out = await svc.overview("company-1");
+
+    expect(out.dataInventory.present).toBe(true);
+    expect(out.dataInventory.stale).toBe(false);
+    expect(out.dataInventory.totalBytes).toBe(802400000);
+    expect(out.dataInventory.inventoryFirstRule).toContain("MUST consult");
+    expect(out.dataInventory.tickVenues).toHaveLength(2);
+    expect(out.dataInventory.tickVenues[0]).toMatchObject({ venue: "ibkr", live: true, symbols: ["ES", "NQ"] });
+    expect(out.dataInventory.tickVenues[1]).toMatchObject({ venue: "icmarkets", live: false });
+    expect(out.dataInventory.ohlcvSources).toHaveLength(2);
+    expect(out.dataInventory.ohlcvSources[1]).toMatchObject({ symbol: "CL.c.0", fresh: false });
+    expect(out.dataInventory.staleSources).toEqual(["GLBX.MDP3/ohlcv-1h/CL.c.0", "icmarkets"]);
+    expect(out.dataInventory.subscriptions).toHaveLength(2);
+    expect(out.dataInventory.subscriptions[0]).toMatchObject({ provider: "IBKR", status: "missing" });
+    expect(out.dataInventory.subscriptions[0].link).toContain("interactivebrokers");
+  });
+
+  it("marks an old or wrong-schema registry as stale/absent", async () => {
+    const oldFile = path.join(root, "data-inventory-old", "INVENTORY.json");
+    await mkdir(path.dirname(oldFile), { recursive: true });
+    await writeFile(oldFile, JSON.stringify({
+      schema: "fincli.data_inventory.v1",
+      generated_utc: "2026-06-01T00:00:00Z",
+      tiers: { ohlcv_cache: { sources: [] }, tick_recorders: { venues: [] } },
+      summary: { total_bytes: 0, stale_sources: [] },
+      subscription_map: { entries: [] },
+    }), "utf8");
+    const staleSvc = cpsExperimentsService({ indexFile, dataInventoryFile: oldFile });
+    const staleOut = await staleSvc.overview("company-1");
+    expect(staleOut.dataInventory.present).toBe(true);
+    expect(staleOut.dataInventory.stale).toBe(true);
+
+    const wrongFile = path.join(root, "data-inventory-wrong", "INVENTORY.json");
+    await mkdir(path.dirname(wrongFile), { recursive: true });
+    await writeFile(wrongFile, JSON.stringify({ schema: "something.else.v9" }), "utf8");
+    const wrongSvc = cpsExperimentsService({ indexFile, dataInventoryFile: wrongFile });
+    const wrongOut = await wrongSvc.overview("company-1");
+    expect(wrongOut.dataInventory.present).toBe(false);
+  });
+
+  it("reports the tool catalog as absent when the artifact does not exist", async () => {
+    const svc = cpsExperimentsService({ indexFile, toolCatalogFile: path.join(root, "no-such-dir", "CATALOG.json") });
+    const out = await svc.overview("company-1");
+
+    expect(out.toolCatalog.present).toBe(false);
+    expect(out.toolCatalog.stale).toBe(true);
+    expect(out.toolCatalog.environments).toEqual([]);
+    expect(out.toolCatalog.notReady).toEqual([]);
+  });
+
+  it("summarizes the E7 tool catalog: environments, items, execution plane, not-ready list", async () => {
+    const catFile = path.join(root, "tool-catalog", "CATALOG.json");
+    await mkdir(path.dirname(catFile), { recursive: true });
+    await writeFile(catFile, JSON.stringify({
+      schema: "fincli.tool_catalog.v1",
+      generated_utc: new Date().toISOString(),
+      sections: {
+        python_environments: [
+          { name: "research-papers-py311", ready: true, status: null, tool_count: 34, import_ok: 33, failed_imports: ["pyqstrat"] },
+          { name: "tinker", ready: false, status: "no_api_key", tool_count: null, import_ok: null, failed_imports: [] },
+        ],
+        recorders: [
+          { name: "ibkr-recorder", live: true, symbols: ["ES", "NQ"] },
+        ],
+        services: [
+          { name: "hl-paper-broker-8090", listening: true, port: 8090 },
+          { name: "hl-paper-broker-8091", listening: false, port: 8091 },
+        ],
+        engines: [
+          { name: "cps-evolve", kind: "engine", anchor_present: true, notes: "evolutionary search" },
+        ],
+        broker_adapters: [
+          { name: "tradier-nautilus", kind: "broker_adapter", anchor_present: false, notes: "Tradier NT adapter" },
+        ],
+        execution_plane: {
+          name: "nautilus-execution-plane",
+          production_pin: "1.226.0",
+          production_root: "/root/cps-execution",
+          status: "PASS_FOR_READ_ONLY",
+        },
+      },
+      summary: { not_ready: ["tinker", "hl-paper-broker-8091", "tradier-nautilus"] },
+    }), "utf8");
+
+    const svc = cpsExperimentsService({ indexFile, toolCatalogFile: catFile });
+    const out = await svc.overview("company-1");
+
+    expect(out.toolCatalog.present).toBe(true);
+    expect(out.toolCatalog.stale).toBe(false);
+    expect(out.toolCatalog.environments).toHaveLength(2);
+    expect(out.toolCatalog.environments[0]).toMatchObject({ name: "research-papers-py311", ready: true, importOk: 33 });
+    expect(out.toolCatalog.environments[1]).toMatchObject({ name: "tinker", ready: false, status: "no_api_key" });
+    expect(out.toolCatalog.recorders[0]).toMatchObject({ name: "ibkr-recorder", ok: true, detail: "ES, NQ" });
+    expect(out.toolCatalog.services).toHaveLength(2);
+    expect(out.toolCatalog.services[1]).toMatchObject({ ok: false, detail: "port 8091" });
+    expect(out.toolCatalog.enginesAndAdapters).toHaveLength(2);
+    expect(out.toolCatalog.enginesAndAdapters[1]).toMatchObject({ name: "tradier-nautilus", ok: false });
+    expect(out.toolCatalog.executionPlane).toContain("1.226.0");
+    expect(out.toolCatalog.executionPlane).toContain("PASS_FOR_READ_ONLY");
+    expect(out.toolCatalog.notReady).toEqual(["tinker", "hl-paper-broker-8091", "tradier-nautilus"]);
+  });
 });

@@ -13,7 +13,14 @@ import type {
   CpsBacktestQueue,
   CpsBacktestQueueLastTick,
   CpsBacktestQueueSummary,
+  CpsDataInventory,
+  CpsDataInventoryOhlcvSource,
+  CpsDataInventorySubscription,
+  CpsDataInventoryTickVenue,
   CpsExperimentEntry,
+  CpsToolCatalog,
+  CpsToolCatalogEnvironment,
+  CpsToolCatalogItem,
   CpsExperimentJudgment,
   CpsExperimentOverview,
   CpsIdeaIntake,
@@ -35,10 +42,16 @@ export interface CpsExperimentsServiceOptions {
   runRequestsDir?: string;
   evalMinLabels?: number;
   backtestQueueDir?: string;
+  dataInventoryFile?: string;
+  toolCatalogFile?: string;
 }
 
 const DEFAULT_SELF_PRACTICE_DIR = "/root/cps/var/self_practice";
 const DEFAULT_BACKTEST_QUEUE_DIR = "/root/cps/var/backtest_queue";
+const DEFAULT_DATA_INVENTORY_FILE = "/root/cps/var/data_inventory/INVENTORY.json";
+// Registry is rebuilt daily by cron; older than 48h means the loop is broken.
+const DATA_INVENTORY_STALE_MS = 48 * 60 * 60 * 1000;
+const DEFAULT_TOOL_CATALOG_FILE = "/root/cps/var/toolbelt/CATALOG.json";
 const DEFAULT_STALE_AFTER_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_RECENT_LIMIT = 40;
 // Mirrors the exporter default (`scripts/export-cps-judgment-dataset.py --min-eval-labels`).
@@ -395,6 +408,203 @@ function resolveBacktestQueueDir(options: CpsExperimentsServiceOptions): string 
   return options.backtestQueueDir ?? process.env.PAPERCLIP_CPS_BACKTEST_QUEUE_DIR ?? DEFAULT_BACKTEST_QUEUE_DIR;
 }
 
+function resolveDataInventoryFile(options: CpsExperimentsServiceOptions): string {
+  return options.dataInventoryFile ?? process.env.PAPERCLIP_CPS_DATA_INVENTORY_FILE ?? DEFAULT_DATA_INVENTORY_FILE;
+}
+
+// E5: read-only view of the unified data inventory registry
+// (fincli.data_inventory.v1) written by `pnpm cps:data-inventory`. The board
+// only reads the artifact — scanning/refresh stay CLI/cron-side.
+async function readDataInventory(options: CpsExperimentsServiceOptions): Promise<CpsDataInventory> {
+  const registryPath = resolveDataInventoryFile(options);
+  const absent: CpsDataInventory = {
+    present: false,
+    registryPath: path.normalize(registryPath),
+    generatedUtc: null,
+    stale: true,
+    totalBytes: null,
+    inventoryFirstRule: null,
+    tickVenues: [],
+    ohlcvSources: [],
+    staleSources: [],
+    subscriptions: [],
+  };
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await fs.readFile(registryPath, "utf8")) as unknown;
+  } catch {
+    return absent;
+  }
+  const reg = asRecord(raw);
+  if (!reg || !String(reg.schema ?? "").startsWith("fincli.data_inventory.")) return absent;
+  const tiers = asRecord(reg.tiers) ?? {};
+  const tickTier = asRecord(tiers.tick_recorders) ?? {};
+  const ohlcvTier = asRecord(tiers.ohlcv_cache) ?? {};
+  const summary = asRecord(reg.summary) ?? {};
+  const subMap = asRecord(reg.subscription_map) ?? {};
+  const generatedUtc = asString(reg.generated_utc);
+  const generatedMs = parseDateMs(generatedUtc);
+  const tickVenues: CpsDataInventoryTickVenue[] = (Array.isArray(tickTier.venues) ? tickTier.venues : [])
+    .map((item) => {
+      const rec = asRecord(item);
+      if (!rec) return null;
+      return {
+        venue: asString(rec.venue) ?? "unknown",
+        symbols: asStringArray(rec.symbols) ?? [],
+        streams: asStringArray(rec.streams) ?? [],
+        earliestDate: asString(rec.earliest_date),
+        latestDate: asString(rec.latest_date),
+        days: typeof rec.days === "number" ? rec.days : null,
+        bytes: typeof rec.bytes === "number" ? rec.bytes : null,
+        live: rec.live === true,
+      };
+    })
+    .filter((v): v is CpsDataInventoryTickVenue => v !== null);
+  const ohlcvSources: CpsDataInventoryOhlcvSource[] = (Array.isArray(ohlcvTier.sources) ? ohlcvTier.sources : [])
+    .map((item) => {
+      const rec = asRecord(item);
+      if (!rec) return null;
+      return {
+        dataset: asString(rec.dataset) ?? "unknown",
+        schema: asString(rec.schema) ?? "unknown",
+        symbol: asString(rec.symbol) ?? "unknown",
+        start: asString(rec.start),
+        end: asString(rec.end),
+        files: typeof rec.files === "number" ? rec.files : null,
+        bytes: typeof rec.bytes === "number" ? rec.bytes : null,
+        fresh: rec.fresh === true,
+      };
+    })
+    .filter((s): s is CpsDataInventoryOhlcvSource => s !== null);
+  const subscriptions: CpsDataInventorySubscription[] = (Array.isArray(subMap.entries) ? subMap.entries : [])
+    .map((item) => {
+      const rec = asRecord(item);
+      if (!rec) return null;
+      return {
+        provider: asString(rec.provider) ?? "unknown",
+        subscription: asString(rec.subscription) ?? "unknown",
+        status: asString(rec.status) ?? "unknown",
+        unlocks: asString(rec.unlocks) ?? "",
+        link: asString(rec.link) ?? "",
+      };
+    })
+    .filter((s): s is CpsDataInventorySubscription => s !== null);
+  return {
+    present: true,
+    registryPath: path.normalize(registryPath),
+    generatedUtc: generatedUtc ?? null,
+    stale: generatedMs === null ? true : Date.now() - generatedMs > DATA_INVENTORY_STALE_MS,
+    totalBytes: typeof summary.total_bytes === "number" ? summary.total_bytes : null,
+    inventoryFirstRule: asString(reg.inventory_first_rule),
+    tickVenues,
+    ohlcvSources,
+    staleSources: asStringArray(summary.stale_sources) ?? [],
+    subscriptions,
+  };
+}
+
+function resolveToolCatalogFile(options: CpsExperimentsServiceOptions): string {
+  return options.toolCatalogFile ?? process.env.PAPERCLIP_CPS_TOOL_CATALOG_FILE ?? DEFAULT_TOOL_CATALOG_FILE;
+}
+
+// E7: read-only view of the tool catalog (fincli.tool_catalog.v1) written by
+// `pnpm cps:tool-catalog`. The board only reads the artifact — scanning stays
+// CLI/cron-side; nothing is installed from here.
+async function readToolCatalog(options: CpsExperimentsServiceOptions): Promise<CpsToolCatalog> {
+  const catalogPath = resolveToolCatalogFile(options);
+  const absent: CpsToolCatalog = {
+    present: false,
+    catalogPath: path.normalize(catalogPath),
+    generatedUtc: null,
+    stale: true,
+    environments: [],
+    recorders: [],
+    services: [],
+    enginesAndAdapters: [],
+    executionPlane: null,
+    notReady: [],
+  };
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await fs.readFile(catalogPath, "utf8")) as unknown;
+  } catch {
+    return absent;
+  }
+  const cat = asRecord(raw);
+  if (!cat || !String(cat.schema ?? "").startsWith("fincli.tool_catalog.")) return absent;
+  const sections = asRecord(cat.sections) ?? {};
+  const summary = asRecord(cat.summary) ?? {};
+  const generatedUtc = asString(cat.generated_utc);
+  const generatedMs = parseDateMs(generatedUtc);
+  const environments: CpsToolCatalogEnvironment[] = (Array.isArray(sections.python_environments) ? sections.python_environments : [])
+    .map((item) => {
+      const rec = asRecord(item);
+      if (!rec) return null;
+      return {
+        name: asString(rec.name) ?? "unknown",
+        ready: rec.ready === true,
+        status: asString(rec.status),
+        toolCount: typeof rec.tool_count === "number" ? rec.tool_count : null,
+        importOk: typeof rec.import_ok === "number" ? rec.import_ok : null,
+        failedImports: asStringArray(rec.failed_imports) ?? [],
+      };
+    })
+    .filter((e): e is CpsToolCatalogEnvironment => e !== null);
+  const recorders: CpsToolCatalogItem[] = (Array.isArray(sections.recorders) ? sections.recorders : [])
+    .map((item) => {
+      const rec = asRecord(item);
+      if (!rec) return null;
+      return {
+        name: asString(rec.name) ?? "unknown",
+        kind: "recorder",
+        ok: rec.live === true,
+        detail: (asStringArray(rec.symbols) ?? []).join(", ") || null,
+      };
+    })
+    .filter((r): r is CpsToolCatalogItem => r !== null);
+  const services: CpsToolCatalogItem[] = (Array.isArray(sections.services) ? sections.services : [])
+    .map((item) => {
+      const rec = asRecord(item);
+      if (!rec) return null;
+      return {
+        name: asString(rec.name) ?? "unknown",
+        kind: "service",
+        ok: rec.listening === true,
+        detail: typeof rec.port === "number" ? `port ${rec.port}` : null,
+      };
+    })
+    .filter((s): s is CpsToolCatalogItem => s !== null);
+  const anchorItems = (key: "engines" | "broker_adapters"): CpsToolCatalogItem[] =>
+    (Array.isArray(sections[key]) ? sections[key] as unknown[] : [])
+      .map((item) => {
+        const rec = asRecord(item);
+        if (!rec) return null;
+        return {
+          name: asString(rec.name) ?? "unknown",
+          kind: asString(rec.kind) ?? "engine",
+          ok: rec.anchor_present === true,
+          detail: asString(rec.notes),
+        };
+      })
+      .filter((a): a is CpsToolCatalogItem => a !== null);
+  const execution = asRecord(sections.execution_plane);
+  const executionPlane = execution
+    ? `NautilusTrader ${asString(execution.production_pin) ?? "?"} at ${asString(execution.production_root) ?? "?"} [${asString(execution.status) ?? "?"}]`
+    : null;
+  return {
+    present: true,
+    catalogPath: path.normalize(catalogPath),
+    generatedUtc: generatedUtc ?? null,
+    stale: generatedMs === null ? true : Date.now() - generatedMs > DATA_INVENTORY_STALE_MS,
+    environments,
+    recorders,
+    services,
+    enginesAndAdapters: [...anchorItems("engines"), ...anchorItems("broker_adapters")],
+    executionPlane,
+    notReady: asStringArray(summary.not_ready) ?? [],
+  };
+}
+
 // E1: read-only view of the shared pod backtest queue (fincli.backtest_queue.v1)
 // written by tools/backtest_queue.py + the supervised dispatcher tick. The board
 // only reads state here — submission/dispatch stay CLI/cron-side.
@@ -677,11 +887,13 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
       const trainingPath = path.join(selfPracticeDir, "EXPERIMENT_JUDGMENTS.jsonl");
       const tinkerPath = path.join(evalsDir, "judgment_tinker_prompt_response.jsonl");
       const evalPath = path.join(evalsDir, "judgment_triage_eval.jsonl");
-      const [training, tinker, evalFile, backtestQueue] = await Promise.all([
+      const [training, tinker, evalFile, backtestQueue, dataInventory, toolCatalog] = await Promise.all([
         jsonlStatus(trainingPath),
         jsonlStatus(tinkerPath),
         jsonlStatus(evalPath),
         readBacktestQueue(options),
+        readDataInventory(options),
+        readToolCatalog(options),
       ]);
 
       const judgmentByResultVerdict: Record<string, number> = {};
@@ -728,6 +940,8 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
         },
         operatorActions,
         backtestQueue,
+        dataInventory,
+        toolCatalog,
         datasetExport: {
           trainingPath: path.normalize(trainingPath),
           trainingRows: training.rows,
