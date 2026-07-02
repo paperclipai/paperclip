@@ -1158,8 +1158,8 @@ export function pluginLoader(
         "plugin-loader: fetching plugin from local path",
       );
     } else {
-      // npm install
-      const spec = version ? `${packageName}@${version}` : packageName!;
+      // npm install — @latest when no pin so upgrades refresh the tarball (prefix package.json can otherwise keep the old semver).
+      const spec = version ? `${packageName}@${version}` : `${packageName}@latest`;
 
       log.info(
         { spec, installDir: targetInstallDir },

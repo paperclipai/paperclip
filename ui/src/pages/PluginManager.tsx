@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { PluginRecord } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, Settings, Trash } from "lucide-react";
+import { AlertTriangle, FlaskConical, Plus, Power, Puzzle, RefreshCw, Settings, Trash } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { pluginsApi } from "@/api/plugins";
@@ -68,6 +68,106 @@ function ExperimentalBadge() {
   );
 }
 
+function isNpmInstalledPlugin(plugin: PluginRecord): boolean {
+  return !plugin.packagePath;
+}
+
+function fetchNpmLatestVersion(packageName: string): Promise<string | null> {
+  return fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`, {
+    signal: AbortSignal.timeout(5000),
+  })
+    .then((res) => res.json())
+    .then((data) => (typeof data?.version === "string" ? (data.version as string) : null))
+    .catch(() => null);
+}
+
+function UpgradePluginDialog({
+  plugin,
+  open,
+  isUpgrading,
+  onConfirm,
+  onCancel,
+}: {
+  plugin: PluginRecord | null;
+  open: boolean;
+  isUpgrading: boolean;
+  onConfirm: (targetVersion?: string) => void;
+  onCancel: () => void;
+}) {
+  const { data: latestVersion, isLoading: isFetchingVersion } = useQuery({
+    queryKey: ["npm-latest-version", plugin?.packageName],
+    queryFn: () => {
+      if (!plugin?.packageName) return null;
+      return fetchNpmLatestVersion(plugin.packageName);
+    },
+    enabled: open && !!plugin?.packageName,
+    staleTime: 60_000,
+  });
+
+  const installedVersion = plugin?.manifestJson.version ?? plugin?.version;
+  const isUpToDate = installedVersion && latestVersion && installedVersion === latestVersion;
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onCancel(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Upgrade Plugin</DialogTitle>
+          <DialogDescription>
+            Pull the latest version of{" "}
+            <strong>{plugin?.packageName}</strong> from npm. Plugin settings are
+            preserved; the worker restarts with the new package.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="rounded-md border bg-muted/50 px-4 py-3 text-sm space-y-1">
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">Package</span>
+            <span className="font-mono">{plugin?.packageName}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">Installed</span>
+            <span className="font-mono">
+              {installedVersion ? `v${installedVersion}` : "unknown"}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">Latest on npm</span>
+            <span className="font-mono">
+              {isFetchingVersion
+                ? "checking..."
+                : latestVersion
+                  ? `v${latestVersion}`
+                  : "unavailable"}
+            </span>
+          </div>
+          {isUpToDate && (
+            <p className="text-xs text-muted-foreground pt-1">
+              npm reports you are on the latest published package version.
+            </p>
+          )}
+          {!isUpToDate && latestVersion && installedVersion && (
+            <p className="text-xs text-muted-foreground pt-1">
+              Upgrade will install v{latestVersion} from npm.
+            </p>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel} disabled={isUpgrading}>
+            Cancel
+          </Button>
+          <Button
+            disabled={isUpgrading || isFetchingVersion}
+            onClick={() => onConfirm(latestVersion ?? undefined)}
+          >
+            {isUpgrading ? "Upgrading..." : latestVersion ? `Upgrade to v${latestVersion}` : "Upgrade"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /**
  * PluginManager page component.
  *
@@ -95,6 +195,7 @@ export function PluginManager() {
   const [installDialogOpen, setInstallDialogOpen] = useState(false);
   const [uninstallPluginId, setUninstallPluginId] = useState<string | null>(null);
   const [uninstallPluginName, setUninstallPluginName] = useState<string>("");
+  const [upgradeTarget, setUpgradeTarget] = useState<PluginRecord | null>(null);
   const [errorDetailsPlugin, setErrorDetailsPlugin] = useState<PluginRecord | null>(null);
 
   useEffect(() => {
@@ -169,8 +270,35 @@ export function PluginManager() {
     },
   });
 
+  const upgradeMutation = useMutation({
+    mutationFn: ({ pluginId, version }: { pluginId: string; version?: string }) =>
+      pluginsApi.upgrade(pluginId, version),
+    onSuccess: (result, variables) => {
+      invalidatePluginQueries();
+      setUpgradeTarget(null);
+      const version = result?.manifestJson?.version ?? result?.version;
+      const needsApproval = result?.status === "upgrade_pending";
+      pushToast({
+        title: needsApproval ? "Upgrade pending approval" : "Plugin upgraded",
+        body: needsApproval
+          ? "New capabilities require review — click Enable to activate."
+          : version
+            ? variables.version && version !== variables.version
+              ? `Installed v${version} (requested v${variables.version}).`
+              : `Now running v${version}.`
+            : undefined,
+        tone: needsApproval ? "info" : "success",
+      });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to upgrade plugin", body: err.message, tone: "error" });
+    },
+  });
+
   const installedPlugins = plugins ?? [];
   const bundledPlugins = bundledQuery.data ?? [];
+  const upgradingPluginId =
+    upgradeMutation.isPending ? (upgradeMutation.variables?.pluginId ?? null) : null;
   const installedByPackageName = new Map(installedPlugins.map((plugin) => [plugin.packageName, plugin]));
   const bundledByPackageName = new Map(bundledPlugins.map((plugin) => [plugin.packageName, plugin]));
   // Scope the in-section banner to bundled (local-path) installs so an npm-dialog
@@ -209,6 +337,7 @@ export function PluginManager() {
               <DialogTitle>Install Plugin</DialogTitle>
               <DialogDescription>
                 Enter the npm package name of the plugin you wish to install.
+                If it is already installed, use <strong>Upgrade</strong> on the plugin row instead.
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
@@ -445,13 +574,37 @@ export function PluginManager() {
                             plugin.status === "ready" ? "bg-green-600 hover:bg-green-700" : ""
                           )}
                         >
-                          {plugin.status}
+                          {plugin.status === "upgrade_pending" ? "upgrade pending" : plugin.status}
                         </Badge>
+                        {isNpmInstalledPlugin(plugin) &&
+                          (plugin.status === "ready" || plugin.status === "upgrade_pending") && (
+                          <Button
+                            variant="outline"
+                            size="icon-sm"
+                            className="h-8 w-8"
+                            title="Upgrade plugin (pull latest from npm)"
+                            disabled={upgradingPluginId === plugin.id}
+                            onClick={() => setUpgradeTarget(plugin)}
+                          >
+                            <RefreshCw
+                              className={cn(
+                                "h-4 w-4",
+                                upgradingPluginId === plugin.id && "animate-spin",
+                              )}
+                            />
+                          </Button>
+                        )}
                         <Button
                           variant="outline"
                           size="icon-sm"
                           className="h-8 w-8"
-                          title={plugin.status === "ready" ? "Disable" : "Enable"}
+                          title={
+                            plugin.status === "ready"
+                              ? "Disable"
+                              : plugin.status === "upgrade_pending"
+                                ? "Approve upgrade and enable"
+                                : "Enable"
+                          }
                           onClick={() => {
                             if (plugin.status === "ready") {
                               disableMutation.mutate(plugin.id);
@@ -491,6 +644,18 @@ export function PluginManager() {
           </ul>
         )}
       </section>
+
+      <UpgradePluginDialog
+        plugin={upgradeTarget}
+        open={upgradeTarget !== null}
+        isUpgrading={upgradingPluginId !== null && upgradeTarget?.id === upgradingPluginId}
+        onConfirm={(targetVersion) => {
+          if (upgradeTarget) {
+            upgradeMutation.mutate({ pluginId: upgradeTarget.id, version: targetVersion });
+          }
+        }}
+        onCancel={() => setUpgradeTarget(null)}
+      />
 
       <Dialog
         open={uninstallPluginId !== null}

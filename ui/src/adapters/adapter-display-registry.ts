@@ -139,16 +139,35 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
 // Public API
 // ---------------------------------------------------------------------------
 
+function titleCaseSegment(segment: string): string {
+  return segment.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 function humanizeType(type: string): string {
   // Strip known type suffixes so "droid_local" → "Droid", not "Droid Local"
   let base = type;
+  let hadKnownSuffix = false;
   for (const suffix of Object.keys(TYPE_SUFFIXES)) {
     if (base.endsWith(suffix)) {
       base = base.slice(0, -suffix.length);
+      hadKnownSuffix = true;
       break;
     }
   }
-  return base.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+  const parts = base.split("_").filter(Boolean);
+  if (parts.length === 0) return type;
+  if (parts.length === 1) return titleCaseSegment(parts[0]!);
+
+  // Suffix types keep flat spacing; withSuffix adds "(local)" / "(gateway)" once.
+  if (hadKnownSuffix) {
+    return parts.map(titleCaseSegment).join(" ");
+  }
+
+  // External adapters: cursor_phantom_agent → "Cursor (Phantom Agent)"
+  const head = titleCaseSegment(parts[0]!);
+  const tail = parts.slice(1).map(titleCaseSegment).join(" ");
+  return `${head} (${tail})`;
 }
 
 export function getAdapterLabel(type: string): string {
