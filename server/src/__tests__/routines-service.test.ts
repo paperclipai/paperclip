@@ -362,6 +362,27 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(updated?.variables.find((v) => v.name === "shadow")?.defaultValue).toBe("true");
   });
 
+  it("accepts 'value' as a caller-friendly alias for 'defaultValue' in PATCH variable inputs", async () => {
+    const { routine, svc } = await seedFixture();
+    // Agents may PATCH with {name, value} instead of {name, defaultValue}.
+    // sanitizeRoutineVariableInputs should treat `value` as a fallback for `defaultValue`
+    // so the variable is persisted with the correct value rather than null.
+    const updated = await svc.update(
+      routine.id,
+      {
+        variables: [
+          // Cast to any to simulate a caller sending the non-schema `value` field
+          { name: "shadow", value: "true" } as any,
+          { name: "shadow_issue_id", value: "abc-123" } as any,
+        ],
+      },
+      {},
+    );
+    expect(updated?.variables).toHaveLength(2);
+    expect(updated?.variables.find((v) => v.name === "shadow")?.defaultValue).toBe("true");
+    expect(updated?.variables.find((v) => v.name === "shadow_issue_id")?.defaultValue).toBe("abc-123");
+  });
+
   it("stores routine env in revisions, syncs routine secret bindings, and stamps runs with the dispatch revision", async () => {
     const { agentId, companyId, projectId, svc } = await seedFixture();
     const secrets = secretService(db);

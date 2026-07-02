@@ -266,13 +266,15 @@ function assertRoutineVariableDefinitions(variables: RoutineVariable[]) {
 }
 
 function sanitizeRoutineVariableInputs(
-  variables: Array<Partial<RoutineVariable> & Pick<RoutineVariable, "name">> | null | undefined,
+  variables: Array<Partial<RoutineVariable> & Pick<RoutineVariable, "name"> & { value?: unknown }> | null | undefined,
 ): RoutineVariable[] {
   return (variables ?? []).map((variable) => ({
     name: variable.name,
     label: variable.label ?? null,
     type: variable.type ?? "text",
-    defaultValue: variable.defaultValue ?? null,
+    // Accept `value` as a caller-friendly alias for `defaultValue` so agents
+    // that patch variables with {name, value} don't silently lose their values.
+    defaultValue: variable.defaultValue ?? (variable.value as RoutineVariable["defaultValue"] | undefined) ?? null,
     required: variable.required ?? true,
     options: variable.options ?? [],
   }));
