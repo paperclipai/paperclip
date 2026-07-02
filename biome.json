@@ -1,0 +1,73 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.2/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": [
+      "server/src/**",
+      "ui/src/**",
+      "cli/src/**",
+      "packages/*/src/**",
+      "packages/adapters/*/src/**",
+      "packages/plugins/*/src/**",
+      "!**/*.json",
+      "!**/*.css"
+    ]
+  },
+  "formatter": {
+    "enabled": false
+  },
+  "assist": {
+    "enabled": false
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "style": {
+        "noNonNullAssertion": "off"
+      },
+      "suspicious": {
+        "noExplicitAny": "off",
+        "noArrayIndexKey": "warn",
+        "noThenProperty": "warn",
+        "noControlCharactersInRegex": "warn",
+        "noImplicitAnyLet": "warn",
+        "noAssignInExpressions": "warn",
+        "useIterableCallbackReturn": "warn",
+        "noShadowRestrictedNames": "warn",
+        "noRedeclare": "warn"
+      },
+      "complexity": {
+        "useLiteralKeys": "off"
+      },
+      "correctness": {
+        "useExhaustiveDependencies": "warn",
+        "useHookAtTopLevel": "warn",
+        "noVoidTypeReturn": "warn",
+        "noChildrenProp": "warn"
+      },
+      "security": {
+        "noDangerouslySetInnerHtml": "warn"
+      },
+      "a11y": {
+        "useButtonType": "warn",
+        "noLabelWithoutControl": "warn",
+        "noStaticElementInteractions": "warn",
+        "useSemanticElements": "warn",
+        "useAriaPropsSupportedByRole": "warn",
+        "useAriaPropsForRole": "warn",
+        "useKeyWithClickEvents": "warn",
+        "noAutofocus": "warn",
+        "noNoninteractiveTabindex": "warn",
+        "useFocusableInteractive": "warn",
+        "noRedundantRoles": "warn",
+        "useMediaCaption": "warn",
+        "noSvgWithoutTitle": "warn"
+      }
+    }
+  }
+}

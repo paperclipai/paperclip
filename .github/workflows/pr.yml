@@ -195,11 +195,37 @@ jobs:
             pnpm test:run:general -- --group '${{ matrix.group }}'
           fi
 
+  lint:
+    name: Lint
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # Biome ships as a standalone binary, so dlx avoids the full workspace
+      # install. Keep the version in sync with the root devDependency.
+      - name: Biome lint
+        run: pnpm dlx @biomejs/biome@2.5.2 lint
+
   verify:
     # Preserve the legacy required-check name while the underlying work runs in parallel.
     name: verify
     if: ${{ always() }}
-    needs: [typecheck_release_registry, general_tests, build]
+    needs: [typecheck_release_registry, general_tests, build, lint]
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -209,10 +235,12 @@ jobs:
           TYPECHECK_RELEASE_REGISTRY_RESULT: ${{ needs.typecheck_release_registry.result }}
           GENERAL_TESTS_RESULT: ${{ needs.general_tests.result }}
           BUILD_RESULT: ${{ needs.build.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
         run: |
           test "$TYPECHECK_RELEASE_REGISTRY_RESULT" = "success"
           test "$GENERAL_TESTS_RESULT" = "success"
           test "$BUILD_RESULT" = "success"
+          test "$LINT_RESULT" = "success"
 
   build:
     name: Build

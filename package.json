@@ -35,6 +35,8 @@
     "release:github": "./scripts/create-github-release.sh",
     "release:rollback": "./scripts/rollback-latest.sh",
     "release:bootstrap-package": "node scripts/bootstrap-npm-package.mjs",
+    "lint": "biome lint",
+    "lint:fix": "biome lint --write",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "check:no-git-push": "node scripts/check-no-git-push.mjs",
     "test:check-no-git-push": "node --test scripts/check-no-git-push.test.mjs",
@@ -58,6 +60,7 @@
     "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.2",
     "@playwright/test": "^1.58.2",
     "cross-env": "^10.1.0",
     "esbuild": "^0.28.1",
