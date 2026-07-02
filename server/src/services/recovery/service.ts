@@ -3993,10 +3993,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           {},
           {
             authorType: "system",
-            metadata: {
-              recoveryActionId: action.id,
-              outcome: "restored",
-            },
           },
         );
       }
