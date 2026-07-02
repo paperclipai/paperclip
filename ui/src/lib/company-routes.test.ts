@@ -43,4 +43,13 @@ describe("company routes", () => {
     expect(applyCompanyPrefix("/work?filter=human_task", "PAP")).toBe("/PAP/work?filter=human_task");
     expect(toCompanyRelativePath("/PAP/work?filter=ai_task")).toBe("/work?filter=ai_task");
   });
+
+  it("treats work lane routes as board routes that need a company prefix", () => {
+    for (const route of ["/initiatives", "/tickets", "/ai-issues"]) {
+      expect(isBoardPathWithoutPrefix(route)).toBe(true);
+      expect(extractCompanyPrefixFromPath(route)).toBeNull();
+      expect(applyCompanyPrefix(route, "PAP")).toBe(`/PAP${route}`);
+      expect(toCompanyRelativePath(`/PAP${route}`)).toBe(route);
+    }
+  });
 });

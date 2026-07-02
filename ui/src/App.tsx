@@ -317,6 +317,9 @@ export function App() {
           <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/members" element={<UnprefixedBoardRedirect />} />
           <Route path="work" element={<UnprefixedBoardRedirect />} />
+          <Route path="initiatives" element={<UnprefixedBoardRedirect />} />
+          <Route path="tickets" element={<UnprefixedBoardRedirect />} />
+          <Route path="ai-issues" element={<UnprefixedBoardRedirect />} />
           <Route path="cycles" element={<UnprefixedBoardRedirect />} />
           <Route path="workspaces" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
