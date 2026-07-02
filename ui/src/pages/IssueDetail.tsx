@@ -460,7 +460,7 @@ function ActorIdentity({ evt, agentMap, userProfileMap }: { evt: ActivityEvent; 
   return <Identity name={id || "Unknown"} size="sm" />;
 }
 
-type AttributionActor = {
+export type AttributionActor = {
   kind: "agent" | "user";
   id: string;
   name: string;
@@ -469,6 +469,15 @@ type AttributionActor = {
 
 function sameAttributionActor(left: AttributionActor | null, right: AttributionActor | null): boolean {
   return Boolean(left && right && left.kind === right.kind && left.id === right.id);
+}
+
+export function shouldShowResponsibleAttribution(
+  creator: AttributionActor | null,
+  assignee: AttributionActor | null,
+  responsibleActor: AttributionActor | null,
+): boolean {
+  if (sameAttributionActor(creator, responsibleActor)) return false;
+  return Boolean(responsibleActor || creator || assignee);
 }
 
 function AttributionIdentity({ actor }: { actor: AttributionActor }) {
@@ -540,7 +549,11 @@ function IssueAttributionByline({
       }
     : null;
   const showAssignee = Boolean(assignee && !sameAttributionActor(creator, assignee));
-  const showResponsible = !sameAttributionActor(creator, responsibleActor);
+  const showResponsible = shouldShowResponsibleAttribution(
+    creator,
+    showAssignee ? assignee : null,
+    responsibleActor,
+  );
 
   if (!creator && !showAssignee && !showResponsible) return null;
 

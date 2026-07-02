@@ -7,7 +7,12 @@ import { NavigationType } from "react-router-dom";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { canBoardResolveRecoveryAction, IssueDetail, shouldScrollIssueDetailToTopOnNavigation } from "./IssueDetail";
+import {
+  canBoardResolveRecoveryAction,
+  IssueDetail,
+  shouldScrollIssueDetailToTopOnNavigation,
+  shouldShowResponsibleAttribution,
+} from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
 
 const mockIssuesApi = vi.hoisted(() => ({
@@ -2303,6 +2308,27 @@ describe("canBoardResolveRecoveryAction", () => {
         userId: "user-1",
       }),
     ).toBe(false);
+  });
+});
+
+describe("shouldShowResponsibleAttribution", () => {
+  it("suppresses the responsible byline clause when no actor exists", () => {
+    expect(shouldShowResponsibleAttribution(null, null, null)).toBe(false);
+  });
+
+  it("shows an unassigned responsible clause when another byline actor anchors it", () => {
+    expect(
+      shouldShowResponsibleAttribution(
+        { kind: "agent", id: "agent-1", name: "CodexCoder" },
+        null,
+        null,
+      ),
+    ).toBe(true);
+  });
+
+  it("hides responsible when it is the same actor as the creator", () => {
+    const creator = { kind: "user" as const, id: "user-1", name: "Riley Board" };
+    expect(shouldShowResponsibleAttribution(creator, null, creator)).toBe(false);
   });
 });
 

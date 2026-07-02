@@ -2271,16 +2271,11 @@ export function IssueProperties({
         {!createdByResponsibleUser ? (
           <PropertyRow label="Responsible">
             {responsibleUser.userId ? (
-              <>
-                <Identity
-                  name={responsibleUserLabel ?? responsibleUserProfile?.label ?? "User"}
-                  avatarUrl={responsibleUserProfile?.image ?? null}
-                  size="sm"
-                />
-                {responsibleUser.isAutoDerived ? (
-                  <span className="text-xs text-muted-foreground">(auto)</span>
-                ) : null}
-              </>
+              <Identity
+                name={responsibleUserLabel ?? responsibleUserProfile?.label ?? "User"}
+                avatarUrl={responsibleUserProfile?.image ?? null}
+                size="sm"
+              />
             ) : (
               <span className="text-sm text-muted-foreground">Unassigned</span>
             )}
