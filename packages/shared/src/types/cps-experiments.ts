@@ -52,6 +52,61 @@ export interface CpsExperimentJudgment {
   [key: string]: unknown;
 }
 
+// Paper/experiment lifecycle progress sidecar (`PROGRESS.json`), schema
+// cps.paper_progress.v1. Canonical stage order: intake -> decomposed ->
+// inventory -> data_check -> replication -> oos_validation -> shadow -> dossier.
+export type CpsPaperStage =
+  | "intake"
+  | "decomposed"
+  | "inventory"
+  | "data_check"
+  | "replication"
+  | "oos_validation"
+  | "shadow"
+  | "dossier"
+  | string;
+
+export type CpsPaperStageStatus = "done" | "in_progress" | "stuck" | "pending" | "skipped" | string;
+
+export interface CpsPaperProgressBlocker {
+  kind?: string;
+  human_required?: boolean;
+  humanRequired?: boolean;
+  simple_ask?: string;
+  simpleAsk?: string;
+  link?: string;
+  [key: string]: unknown;
+}
+
+export interface CpsPaperProgressStage {
+  stage: CpsPaperStage;
+  status: CpsPaperStageStatus;
+  at?: string;
+  missing?: string[];
+  note?: string;
+  blocker?: CpsPaperProgressBlocker | null;
+  [key: string]: unknown;
+}
+
+export interface CpsPaperProgress {
+  schema: "cps.paper_progress.v1" | string;
+  paper_id?: string;
+  paperId?: string;
+  updated_utc?: string;
+  updatedUtc?: string;
+  stages?: CpsPaperProgressStage[];
+  [key: string]: unknown;
+}
+
+// One human-required blocker surfaced to the board, in simple language.
+export interface CpsOperatorAction {
+  experimentId: string;
+  stage: string;
+  kind: string | null;
+  simpleAsk: string;
+  link: string | null;
+}
+
 // Summary of append-only operator feedback labels for one experiment.
 // LABELS.jsonl is append-only, so the last line per experiment is the latest.
 export interface CpsOperatorLabelSummary {
@@ -79,6 +134,8 @@ export interface CpsExperimentEntry {
   judgment?: CpsExperimentJudgment | null;
   judgmentPath?: string | null;
   operatorLabels?: CpsOperatorLabelSummary | null;
+  progress?: CpsPaperProgress | null;
+  progressPath?: string | null;
 }
 
 export type CpsRunRequestAction =
@@ -199,6 +256,7 @@ export interface CpsExperimentOverview {
     byLabel: Record<string, number>;
     labelsPath: string;
   };
+  operatorActions: CpsOperatorAction[];
   datasetExport: {
     trainingPath: string;
     trainingRows: number | null;

@@ -13,7 +13,9 @@ import type {
   CpsExperimentJudgment,
   CpsExperimentOverview,
   CpsJudgmentFeedback,
+  CpsOperatorAction,
   CpsOperatorLabelSummary,
+  CpsPaperProgress,
   CpsRunRequest,
   CpsRunRequestAction,
 } from "@paperclipai/shared";
@@ -188,6 +190,48 @@ async function readJudgment(entry: CpsExperimentEntry, selfPracticeDir: string):
   } catch {
     return { ...entry, judgment: null, judgmentPath: null };
   }
+}
+
+// Reads the cps.paper_progress.v1 sidecar written by pods/backfill tooling.
+async function readProgress(entry: CpsExperimentEntry, selfPracticeDir: string): Promise<CpsExperimentEntry> {
+  const entryDir = resolveEntryDir(entry, selfPracticeDir);
+  if (!entryDir) return { ...entry, progress: null, progressPath: null };
+  const progressPath = path.join(entryDir, "PROGRESS.json");
+  try {
+    const text = await fs.readFile(progressPath, "utf8");
+    const parsed = JSON.parse(text) as unknown;
+    const progress = asRecord(parsed) as CpsPaperProgress | null;
+    return { ...entry, progress, progressPath: progress ? path.normalize(progressPath) : null };
+  } catch {
+    return { ...entry, progress: null, progressPath: null };
+  }
+}
+
+// Collects stuck, human-required stage blockers across all entries into the
+// board's plain-language "Operator actions" list.
+function collectOperatorActions(entries: CpsExperimentEntry[]): CpsOperatorAction[] {
+  const actions: CpsOperatorAction[] = [];
+  for (const entry of entries) {
+    const stages = Array.isArray(entry.progress?.stages) ? entry.progress.stages : [];
+    for (const stage of stages) {
+      const rec = asRecord(stage);
+      if (!rec) continue;
+      if (asString(rec.status) !== "stuck") continue;
+      const blocker = asRecord(rec.blocker);
+      if (!blocker) continue;
+      const humanRequired = blocker.human_required === true || blocker.humanRequired === true;
+      if (!humanRequired) continue;
+      const stageName = asString(rec.stage) ?? "unknown";
+      actions.push({
+        experimentId: entry.id,
+        stage: stageName,
+        kind: asString(blocker.kind),
+        simpleAsk: asString(blocker.simple_ask) ?? asString(blocker.simpleAsk) ?? `Experiment ${entry.id} is stuck at stage "${stageName}" and needs a human decision.`,
+        link: asString(blocker.link),
+      });
+    }
+  }
+  return actions;
 }
 
 async function readIndex(indexFile: string): Promise<Json | null> {
@@ -374,9 +418,10 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
       const operatorLabels = await readOperatorLabels(labelsFile);
       const entries = (await Promise.all(
         (Array.isArray(raw?.entries) ? raw.entries.map(mapEntry).filter((entry): entry is CpsExperimentEntry => entry !== null) : [])
-          .map((entry) => readJudgment(entry, selfPracticeDir)),
+          .map((entry) => readJudgment(entry, selfPracticeDir).then((withJudgment) => readProgress(withJudgment, selfPracticeDir))),
       )).map((entry) => ({ ...entry, operatorLabels: operatorLabels.byExperiment.get(entry.id) ?? null }));
       entries.sort((a, b) => b.updatedUtc.localeCompare(a.updatedUtc));
+      const operatorActions = collectOperatorActions(entries);
 
       const evalsDir = resolveEvalsDir(options, selfPracticeDir);
       const trainingPath = path.join(selfPracticeDir, "EXPERIMENT_JUDGMENTS.jsonl");
@@ -426,6 +471,7 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
           byLabel: operatorLabels.byLabel,
           labelsPath: path.normalize(labelsFile),
         },
+        operatorActions,
         datasetExport: {
           trainingPath: path.normalize(trainingPath),
           trainingRows: training.rows,

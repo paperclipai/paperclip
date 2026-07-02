@@ -516,7 +516,13 @@ export type {
   CpsJudgmentFeedback,
   CpsJudgmentFeedbackLabel,
   CpsJudgmentRouteRole,
+  CpsOperatorAction,
   CpsOperatorLabelSummary,
+  CpsPaperProgress,
+  CpsPaperProgressBlocker,
+  CpsPaperProgressStage,
+  CpsPaperStage,
+  CpsPaperStageStatus,
   CpsRunRequest,
   CpsRunRequestAction,
 } from "./cps-experiments.js";

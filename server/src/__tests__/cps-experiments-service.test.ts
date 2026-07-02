@@ -190,6 +190,22 @@ describe("cpsExperimentsService.overview", () => {
         result_verdict: "INCONCLUSIVE",
         promotion_verdict: "needs_review",
       }), "utf8");
+      await writeFile(path.join(expDir, "PROGRESS.json"), JSON.stringify({
+        schema: "cps.paper_progress.v1",
+        paper_id: "exp-a",
+        stages: [
+          { stage: "intake", status: "done", at: "2026-07-02T00:00:00Z" },
+          { stage: "decomposed", status: "done" },
+          { stage: "inventory", status: "stuck", blocker: { kind: "tooling", human_required: false } },
+          { stage: "data_check", status: "stuck", blocker: {
+            kind: "data_subscription",
+            human_required: true,
+            simple_ask: "Subscribe to the IBKR US options add-on so we can pull SPY options history.",
+            link: "https://www.interactivebrokers.com/en/pricing/research-news-marketdata.php",
+          } },
+          { stage: "replication", status: "pending" },
+        ],
+      }), "utf8");
       const trackerDir = path.join(root2, "experiment-tracker-20260702");
       await mkdir(trackerDir, { recursive: true });
       await writeFile(path.join(trackerDir, "EXPERIMENTS_INDEX.json"), JSON.stringify({
@@ -228,6 +244,19 @@ describe("cpsExperimentsService.overview", () => {
       expect(out.datasetExport.evalRows).toBeNull();
       expect(out.datasetExport.evalMinLabels).toBe(100);
       expect(out.datasetExport.labeledJudgments).toBe(1);
+
+      // Paper progress sidecar + operator actions: only stuck AND human_required
+      // stages surface; the non-human tooling blocker must be excluded.
+      expect(entry?.progress?.schema).toBe("cps.paper_progress.v1");
+      expect(entry?.progressPath).toContain("PROGRESS.json");
+      expect(out.operatorActions).toHaveLength(1);
+      expect(out.operatorActions[0]).toMatchObject({
+        experimentId: "exp-a",
+        stage: "data_check",
+        kind: "data_subscription",
+        link: "https://www.interactivebrokers.com/en/pricing/research-news-marketdata.php",
+      });
+      expect(out.operatorActions[0].simpleAsk).toContain("IBKR");
     } finally {
       await rm(root2, { recursive: true, force: true });
     }

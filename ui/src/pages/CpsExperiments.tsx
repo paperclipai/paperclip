@@ -31,6 +31,41 @@ const RESULT_VERDICTS = [
 // Blocker route_to_role enum (schema uses quant_review, not quant_research).
 const ROUTE_ROLES = ["data_engineering", "quant_review", "platform_engineering", "board", "external_vendor"];
 
+// Canonical cps.paper_progress.v1 stage order.
+const PAPER_STAGES = ["intake", "decomposed", "inventory", "data_check", "replication", "oos_validation", "shadow", "dossier"];
+
+const STAGE_SEGMENT_STYLES: Record<string, string> = {
+  done: "bg-emerald-500",
+  in_progress: "bg-sky-500",
+  stuck: "bg-rose-500",
+  skipped: "bg-slate-400",
+  pending: "bg-muted",
+};
+
+function stageStatusMap(progress: CpsExperimentEntry["progress"]): Record<string, { status: string; blocker?: Record<string, unknown> | null }> {
+  const out: Record<string, { status: string; blocker?: Record<string, unknown> | null }> = {};
+  for (const raw of Array.isArray(progress?.stages) ? progress.stages : []) {
+    const rec = recordValue(raw);
+    const stage = scalar(rec?.stage);
+    const status = scalar(rec?.status);
+    if (stage && status) out[stage] = { status, blocker: recordValue(rec?.blocker) };
+  }
+  return out;
+}
+
+function StageBar({ progress, compact = false }: { progress: CpsExperimentEntry["progress"]; compact?: boolean }) {
+  if (!progress) return null;
+  const map = stageStatusMap(progress);
+  return (
+    <div className={`flex w-full gap-0.5 ${compact ? "mt-2" : ""}`} title={PAPER_STAGES.map((stage) => `${stage}: ${map[stage]?.status ?? "pending"}`).join("\n")}>
+      {PAPER_STAGES.map((stage) => {
+        const status = map[stage]?.status ?? "pending";
+        return <div key={stage} className={`h-1.5 flex-1 rounded-full ${STAGE_SEGMENT_STYLES[status] ?? "bg-muted"}`} />;
+      })}
+    </div>
+  );
+}
+
 const DECISION_STYLES: Record<string, string> = {
   KILL_ARCHIVE: "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300",
   KILL: "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-300",
@@ -138,6 +173,7 @@ function EntryCard({ entry, selected, onSelect }: { entry: CpsExperimentEntry; s
         {oosMean ? <div className="rounded-lg bg-muted/50 px-2 py-1">Mean: <span className="font-mono text-foreground">{oosMean}</span></div> : null}
         {oosSharpe ? <div className="rounded-lg bg-muted/50 px-2 py-1">Sharpe: <span className="font-mono text-foreground">{oosSharpe}</span></div> : null}
       </div>
+      <StageBar progress={entry.progress ?? null} compact />
     </button>
   );
 }
@@ -335,6 +371,42 @@ function EntryDetail({
         </section>
       )}
 
+      {entry.progress ? (
+        <section className="rounded-2xl border border-border bg-card p-4">
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold"><ListChecks className="h-4 w-4 text-sky-500" /> Paper progress</div>
+          <StageBar progress={entry.progress} />
+          <div className="mt-3 grid gap-1.5">
+            {PAPER_STAGES.map((stage) => {
+              const info = stageStatusMap(entry.progress)[stage];
+              const status = info?.status ?? "pending";
+              const blocker = info?.blocker;
+              const humanRequired = blocker?.human_required === true || blocker?.humanRequired === true;
+              const chipClass = status === "done" ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                : status === "in_progress" ? "bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                : status === "stuck" ? "bg-rose-500/10 text-rose-700 dark:text-rose-300"
+                : "bg-muted/50 text-muted-foreground";
+              return (
+                <div key={stage} className="flex flex-col gap-1">
+                  <div className="flex items-center justify-between rounded-lg bg-muted/30 px-3 py-1.5 text-xs">
+                    <span className="text-foreground">{stage.replace(/_/g, " ")}</span>
+                    <span className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${chipClass}`}>{status.replace(/_/g, " ")}</span>
+                  </div>
+                  {status === "stuck" && blocker ? (
+                    <div className={`rounded-lg px-3 py-2 text-xs ${humanRequired ? "bg-amber-500/10 text-amber-800 dark:text-amber-200" : "bg-muted/50 text-muted-foreground"}`}>
+                      {humanRequired ? <span className="font-semibold">Needs you: </span> : <span className="font-semibold">Blocked: </span>}
+                      {scalar(blocker.simple_ask) ?? scalar(blocker.simpleAsk) ?? scalar(blocker.kind) ?? "see PROGRESS.json"}
+                      {scalar(blocker.link) ? (
+                        <a href={scalar(blocker.link)!} target="_blank" rel="noreferrer" className="ml-2 underline">Open link</a>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+
       {failing.length ? (
         <section className="rounded-2xl border border-border bg-card p-4">
           <div className="mb-2 flex items-center gap-2 text-sm font-semibold"><AlertTriangle className="h-4 w-4 text-amber-500" /> Failing gates</div>
@@ -477,6 +549,30 @@ export function CpsExperiments() {
           </div>
         </div>
       </section>
+
+      {data.operatorActions?.length ? (
+        <section className="rounded-2xl border border-amber-500/40 bg-amber-500/5 p-4">
+          <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-200">
+            <AlertTriangle className="h-4 w-4" /> Operator actions — only you can unblock these ({data.operatorActions.length})
+          </div>
+          <div className="grid gap-1.5">
+            {data.operatorActions.map((action, index) => (
+              <div key={`${action.experimentId}-${action.stage}-${index}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-card px-3 py-2 text-xs">
+                <div className="min-w-0">
+                  <span className="text-foreground">{action.simpleAsk}</span>
+                  <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">{action.experimentId} · stage {action.stage}{action.kind ? ` · ${action.kind}` : ""}</div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {action.link ? (
+                    <a href={action.link} target="_blank" rel="noreferrer" className="rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 font-semibold text-amber-800 transition hover:bg-amber-500/20 dark:text-amber-200">Open link</a>
+                  ) : null}
+                  <button type="button" onClick={() => setSelectedId(action.experimentId)} className="rounded-full border border-border px-3 py-1 text-muted-foreground transition hover:text-foreground">View</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {data.labels && data.datasetExport ? (
         <section className="rounded-2xl border border-border bg-card p-4">
