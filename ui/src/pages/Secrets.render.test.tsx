@@ -575,13 +575,11 @@ describe("Secrets page layout", () => {
     });
     await flushReact();
 
-    const usageButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("Usage"),
+    const viewUsageButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("View in Usage"),
     ) as HTMLButtonElement | undefined;
     await act(async () => {
-      usageButton?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-      usageButton?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
-      usageButton?.click();
+      viewUsageButton?.click();
     });
     await flushReact();
 
@@ -620,6 +618,17 @@ describe("Secrets page layout", () => {
     expect(container.textContent).toContain("Each user");
     expect(container.textContent).toContain("3/5 set");
     expect(container.textContent).not.toContain("User secret definitions");
+
+    const listContainer = container.querySelector('[data-testid="secrets-list-container"]');
+    const tableView = container.querySelector('[data-testid="secrets-table-view"]');
+    const cardView = container.querySelector('[data-testid="secrets-card-view"]');
+    expect(listContainer?.className).toContain("@container");
+    expect(tableView?.className).toContain("@min-[40rem]:block");
+    expect(tableView?.className).not.toContain("md:block");
+    expect(tableView?.querySelector("[role='row']")?.className).toContain("minmax(12rem,2.4fr)");
+    expect(cardView?.className).toContain("@min-[40rem]:hidden");
+    expect(cardView?.className).not.toContain("md:hidden");
+
     expect(mockSecretsApi.list).toHaveBeenCalledWith("company-1");
     expect(mockSecretsApi.listUserSecretDefinitions).toHaveBeenCalledWith("company-1");
 
@@ -704,8 +713,8 @@ describe("Secrets page layout", () => {
   });
 
   it("opens the New secret dialog when provider queries fail", async () => {
-    mockSecretsApi.providers.mockRejectedValueOnce(new ApiError(403, "Providers unavailable"));
-    mockSecretsApi.providerConfigs.mockRejectedValueOnce(new ApiError(403, "Provider vaults unavailable"));
+    mockSecretsApi.providers.mockRejectedValueOnce(new ApiError("Providers unavailable", 403, null));
+    mockSecretsApi.providerConfigs.mockRejectedValueOnce(new ApiError("Provider vaults unavailable", 403, null));
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -774,13 +783,11 @@ describe("Secrets page layout", () => {
     expect(document.body.textContent).toContain("Usage");
     expect(document.body.textContent).toContain("Access events");
 
-    const coverageButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Coverage",
+    const viewCoverageButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("View in Coverage"),
     ) as HTMLButtonElement | undefined;
     await act(async () => {
-      coverageButton?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-      coverageButton?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
-      coverageButton?.click();
+      viewCoverageButton?.click();
     });
     await flushReact();
 
