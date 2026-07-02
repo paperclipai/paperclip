@@ -344,6 +344,61 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(source?.status).not.toBe("blocked");
   });
 
+  it("hard-cancels the underlying run when output silence crosses the critical threshold", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(result.created).toBe(1);
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("silent_stall");
+    expect(run?.finishedAt).not.toBeNull();
+    expect(run?.error).toContain("stale-run watchdog");
+
+    const cancelEvent = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId))
+      .then((rows) => rows.find((row) => row.message?.includes("Stale-run watchdog cancelled")));
+    expect(cancelEvent).toBeTruthy();
+  });
+
+  it("calls the cancelRun dep via recoveryService directly when the run is critical", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+    });
+    const cancelRun = vi.fn(async () => undefined);
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(), cancelRun });
+
+    const result = await recovery.scanSilentActiveRuns({ now, companyId });
+    expect(result.created).toBe(1);
+    expect(cancelRun).toHaveBeenCalledTimes(1);
+    expect(cancelRun.mock.calls[0]?.[0]).toBe(runId);
+    expect(cancelRun.mock.calls[0]?.[2]).toMatchObject({ errorCode: "silent_stall" });
+  });
+
+  it("does NOT call cancelRun for suspicious-only (sub-critical) silent runs", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const cancelRun = vi.fn(async () => undefined);
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(), cancelRun });
+
+    const result = await recovery.scanSilentActiveRuns({ now, companyId });
+    expect(result.created).toBe(1);
+    expect(cancelRun).not.toHaveBeenCalled();
+  });
+
   it("emits the source-issue escalation comment only once across repeated critical scans", async () => {
     // Regression: when the same evaluation issue stays open and the watchdog re-evaluates the
     // run as critical on every scan cycle, ensureSourceIssueCommentedForStaleEvaluation must NOT
@@ -517,7 +572,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     expect(result).toMatchObject({ created: 1, folded: 0 });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(run?.status).toBe("running");
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("silent_stall");
     const [evaluation] = await db
       .select()
       .from(issues)
@@ -561,7 +617,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     expect(result).toMatchObject({ created: 1, folded: 0 });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(run?.status).toBe("running");
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("silent_stall");
     const [evaluation] = await db
       .select()
       .from(issues)

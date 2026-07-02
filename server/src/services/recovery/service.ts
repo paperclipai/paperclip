@@ -112,6 +112,12 @@ type RecoveryWakeup = (
   opts?: RecoveryWakeupOptions,
 ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
 
+export type RecoveryCancelRun = (
+  runId: string,
+  reason?: string,
+  options?: { errorCode?: string; eventMessage?: string; resultJson?: Record<string, unknown> },
+) => Promise<unknown>;
+
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
   "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
@@ -509,7 +515,10 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
   ].join("\n");
 }
 
-export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup }) {
+export function recoveryService(
+  db: Db,
+  deps: { enqueueWakeup: RecoveryWakeup; cancelRun?: RecoveryCancelRun },
+) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -1778,6 +1787,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       now: input.now,
     });
     const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
+    const hardCancelSilentRun = async (eventMessageSuffix: string) => {
+      if (!deps.cancelRun) return;
+      const silenceLabel = formatDuration(evidence.silenceAgeMs);
+      try {
+        await deps.cancelRun(
+          input.run.id,
+          `Cancelled by stale-run watchdog after ${silenceLabel} of output silence (${eventMessageSuffix}).`,
+          {
+            errorCode: "silent_stall",
+            eventMessage: `Stale-run watchdog cancelled silent run (${eventMessageSuffix})`,
+            resultJson: {
+              silentStallCancellation: {
+                silenceAgeMs: evidence.silenceAgeMs,
+                lastOutputAt: input.run.lastOutputAt?.toISOString() ?? null,
+                criticalThresholdMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
+              },
+            },
+          },
+        );
+      } catch (err) {
+        logger.warn(
+          { err, runId: input.run.id },
+          "stale-run watchdog failed to hard-cancel silent run",
+        );
+      }
+    };
     if (existing) {
       if (level === "critical" && existing.priority !== "high") {
         await issuesSvc.update(existing.id, {
@@ -1795,6 +1830,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           evaluationIssue: existing,
           run: input.run,
         });
+        await hardCancelSilentRun("escalated to critical");
         return { kind: "escalated" as const, evaluationIssueId: existing.id };
       }
       if (level === "critical") {
@@ -1803,6 +1839,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           evaluationIssue: existing,
           run: input.run,
         });
+        await hardCancelSilentRun("existing critical evaluation");
       }
       return { kind: "existing" as const, evaluationIssueId: existing.id };
     }
@@ -1865,6 +1902,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         evaluationIssue: evaluation,
         run: input.run,
       });
+      await hardCancelSilentRun("new critical evaluation");
     }
     if (ownerAgentId) {
       await deps.enqueueWakeup(ownerAgentId, {
