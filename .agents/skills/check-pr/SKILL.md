@@ -176,17 +176,17 @@ For GitLab installations with Greptile integration, apply the same freshness rul
 # 1. Get the MR's current head SHA
 MR_SHA=$(glab mr view <MR_IID> --output json | jq -r '.sha // .diff_refs.head_sha')
 
-# 2. Find pipeline(s) for that EXACT sha, then the Greptile job within each.
-GREPTILE_JOBS='[]'
-for PIPELINE_ID in $(glab api "projects/:fullpath/merge_requests/<MR_IID>/pipelines" \
-  | jq -r --arg sha "$MR_SHA" '.[] | select(.sha == $sha) | .id'); do
-  PIPELINE_GREPTILE_JOBS=$(glab api "projects/:fullpath/pipelines/$PIPELINE_ID/jobs" \
+# 2. Find the latest pipeline for that EXACT sha, then the Greptile job within it.
+LATEST_PIPELINE_ID=$(glab api "projects/:fullpath/merge_requests/<MR_IID>/pipelines" \
+  | jq -r --arg sha "$MR_SHA" '[.[] | select(.sha == $sha)] | sort_by(.id) | last | .id // empty')
+
+if [ -n "$LATEST_PIPELINE_ID" ]; then
+  GREPTILE_JOBS=$(glab api "projects/:fullpath/pipelines/$LATEST_PIPELINE_ID/jobs" \
     | jq --arg sha "$MR_SHA" '[.[] | select(.name | test("greptile"; "i"))
         | {name, status, pipeline_sha: $sha}]')
-  GREPTILE_JOBS=$(jq -s 'add' \
-    <(printf '%s\n' "$GREPTILE_JOBS") \
-    <(printf '%s\n' "$PIPELINE_GREPTILE_JOBS"))
-done
+else
+  GREPTILE_JOBS='[]'
+fi
 
 GREPTILE_JOB_SUCCESS=$(echo "$GREPTILE_JOBS" \
   | jq '[.[] | select(.status == "success")] | length')
