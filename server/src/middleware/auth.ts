@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, agents, authUsers, companies, companyMemberships, heartbeatRuns, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -21,6 +21,39 @@ interface ActorMiddlewareOptions {
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
+
+  async function resolveLocalRunActor(runId: string) {
+    if (opts.deploymentMode !== "local_trusted") return null;
+
+    const run = await db
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        companyId: heartbeatRuns.companyId,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    if (!run) return null;
+
+    const agentRecord = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, run.agentId))
+      .then((rows) => rows[0] ?? null);
+    if (!agentRecord || agentRecord.companyId !== run.companyId) return null;
+    if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") return null;
+
+    return {
+      type: "agent" as const,
+      agentId: run.agentId,
+      companyId: run.companyId,
+      keyId: undefined,
+      runId: run.id,
+      source: "local_run_header" as const,
+    };
+  }
+
   return async (req, _res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
@@ -38,6 +71,15 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
+      if (runIdHeader) {
+        const runActor = await resolveLocalRunActor(runIdHeader);
+        if (runActor) {
+          req.actor = runActor;
+          next();
+          return;
+        }
+      }
+
       if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
         const cloudTenantActor = await resolveCloudTenantActor(db, req);
         if (cloudTenantActor) {

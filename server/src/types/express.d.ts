@@ -22,7 +22,15 @@ declare global {
         keyId?: string;
         keyScope?: AgentApiKeyScope;
         runId?: string;
-        source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant" | "none";
+        source?:
+          | "local_implicit"
+          | "session"
+          | "board_key"
+          | "agent_key"
+          | "agent_jwt"
+          | "local_run_header"
+          | "cloud_tenant"
+          | "none";
       };
     }
   }
