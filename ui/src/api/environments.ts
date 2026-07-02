@@ -67,17 +67,14 @@ export const environmentsApi = {
     config?: Record<string, unknown>;
     metadata?: Record<string, unknown> | null;
   }) => api.post<EnvironmentProbeResult>(`/companies/${companyId}/environments/probe-config`, body),
-  customImageTemplate: (environmentId: string, companyId: string) =>
-    api.get<EnvironmentCustomImageOverview>(
-      `/environments/${environmentId}/custom-image-template?companyId=${encodeURIComponent(companyId)}`,
-    ),
+  customImageTemplate: (environmentId: string) =>
+    api.get<EnvironmentCustomImageOverview>(`/environments/${environmentId}/custom-image-template`),
   startCustomImageSetupSession: (
     environmentId: string,
-    companyId: string,
     body: StartEnvironmentCustomImageSetupSession = {},
   ) =>
     api.post<EnvironmentCustomImageSetupSessionResult>(
-      `/environments/${environmentId}/custom-image-setup-sessions?companyId=${encodeURIComponent(companyId)}`,
+      `/environments/${environmentId}/custom-image-setup-sessions`,
       body,
     ),
   customImageSetupSession: (sessionId: string) =>
@@ -100,17 +97,16 @@ export const environmentsApi = {
       `/environment-custom-image-setup-sessions/${sessionId}/cancel`,
       body,
     ),
-  rollbackCustomImageTemplate: (environmentId: string, companyId: string) =>
+  rollbackCustomImageTemplate: (environmentId: string) =>
     api.post<EnvironmentCustomImageRollbackResult>(
-      `/environments/${environmentId}/custom-image-template/rollback?companyId=${encodeURIComponent(companyId)}`,
+      `/environments/${environmentId}/custom-image-template/rollback`,
       {},
     ),
   disableCustomImageTemplate: (
     environmentId: string,
-    companyId: string,
     options: { deleteProviderTemplate?: boolean } = {},
   ) =>
     api.delete<EnvironmentCustomImageTemplate>(
-      `/environments/${environmentId}/custom-image-template?companyId=${encodeURIComponent(companyId)}&deleteProviderTemplate=${options.deleteProviderTemplate === true ? "true" : "false"}`,
+      `/environments/${environmentId}/custom-image-template?deleteProviderTemplate=${options.deleteProviderTemplate === true ? "true" : "false"}`,
     ),
 };

@@ -31,6 +31,7 @@ import {
   resolveSandboxProviderSecretRefPaths,
   stripSandboxProviderEnvelope,
 } from "./environment-config.js";
+import { secretService } from "./secrets.js";
 import {
   resolvePluginExecuteRpcTimeoutMs,
   resolvePluginSandboxProviderDriverByKey,
@@ -72,7 +73,6 @@ export interface EnvironmentCustomImageSetupCleanupResult {
 function toSession(row: SetupSessionRow): EnvironmentCustomImageSetupSession {
   return {
     id: row.id,
-    companyId: row.companyId,
     environmentId: row.environmentId,
     templateId: row.templateId ?? null,
     promotedTemplateId: row.promotedTemplateId ?? null,
@@ -179,10 +179,9 @@ function sourceTemplateFromConfig(
 
 async function resolveActiveTemplate(
   db: Db,
-  input: { companyId: string; environmentId: string; provider?: string | null },
+  input: { environmentId: string; provider?: string | null },
 ): Promise<EnvironmentCustomImageTemplate | null> {
   const conditions = [
-    eq(environmentCustomImageTemplates.companyId, input.companyId),
     eq(environmentCustomImageTemplates.environmentId, input.environmentId),
     eq(environmentCustomImageTemplates.status, "active"),
   ];
@@ -203,6 +202,7 @@ export function environmentCustomImageService(
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
 ) {
   const environments = environmentService(db);
+  const secrets = secretService(db);
 
   async function getTemplateById(id: string): Promise<EnvironmentCustomImageTemplate | null> {
     const row = await db
@@ -223,14 +223,12 @@ export function environmentCustomImageService(
   }
 
   async function getActiveSetupSession(input: {
-    companyId: string;
     environmentId: string;
   }): Promise<EnvironmentCustomImageSetupSession | null> {
     const row = await db
       .select()
       .from(environmentCustomImageSetupSessions)
       .where(and(
-        eq(environmentCustomImageSetupSessions.companyId, input.companyId),
         eq(environmentCustomImageSetupSessions.environmentId, input.environmentId),
         inArray(environmentCustomImageSetupSessions.status, [...ACTIVE_SETUP_STATUSES]),
       ))
@@ -240,14 +238,12 @@ export function environmentCustomImageService(
   }
 
   async function getLatestSetupSession(input: {
-    companyId: string;
     environmentId: string;
   }): Promise<EnvironmentCustomImageSetupSession | null> {
     const row = await db
       .select()
       .from(environmentCustomImageSetupSessions)
       .where(and(
-        eq(environmentCustomImageSetupSessions.companyId, input.companyId),
         eq(environmentCustomImageSetupSessions.environmentId, input.environmentId),
       ))
       .orderBy(desc(environmentCustomImageSetupSessions.createdAt))
@@ -261,8 +257,23 @@ export function environmentCustomImageService(
     return environment;
   }
 
+  async function resolveSecretContextCompanyId(
+    environmentId: string,
+    explicitCompanyId?: string | null,
+  ): Promise<string | null> {
+    if (explicitCompanyId) return explicitCompanyId;
+    const bindingCompanyIds = await secrets.listBindingCompanyIdsForTarget({
+      targetType: "environment",
+      targetId: environmentId,
+    });
+    if (bindingCompanyIds.length > 1) {
+      throw conflict("Environment secret bindings span multiple companies and require explicit companyId context.");
+    }
+    return bindingCompanyIds[0] ?? null;
+  }
+
   async function resolveSetupProvider(input: {
-    companyId: string;
+    secretContextCompanyId?: string | null;
     environment: Environment;
     requireCapture?: boolean;
     requireDelete?: boolean;
@@ -270,9 +281,13 @@ export function environmentCustomImageService(
     if (!options.pluginWorkerManager) {
       throw unprocessable("Environment customImage setup requires a running plugin worker manager.");
     }
+    const secretContextCompanyId = await resolveSecretContextCompanyId(
+      input.environment.id,
+      input.secretContextCompanyId,
+    );
     const parsed = await resolveEnvironmentDriverConfigForRuntime(
       db,
-      input.companyId,
+      secretContextCompanyId,
       input.environment,
       { issueId: null, heartbeatRunId: null },
     );
@@ -300,6 +315,7 @@ export function environmentCustomImageService(
     }
     return {
       provider,
+      rpcCompanyId: secretContextCompanyId ?? "instance",
       pluginId: resolved.plugin.id,
       driver: resolved.driver,
       runtimeConfig: parsed.config,
@@ -308,17 +324,20 @@ export function environmentCustomImageService(
   }
 
   async function callProviderStart(input: {
-    companyId: string;
     environment: Environment;
     sessionId: string;
     expiresAt: Date;
     sourceTemplateRef: string | null;
     sourceTemplateKind: EnvironmentCustomImageTemplateKind | null;
+    secretContextCompanyId?: string | null;
   }): Promise<PluginEnvironmentInteractiveSetupSession> {
-    const provider = await resolveSetupProvider({ companyId: input.companyId, environment: input.environment });
+    const provider = await resolveSetupProvider({
+      secretContextCompanyId: input.secretContextCompanyId,
+      environment: input.environment,
+    });
     return await options.pluginWorkerManager!.call(provider.pluginId, "environmentStartInteractiveSetup", {
       driverKey: provider.provider,
-      companyId: input.companyId,
+      companyId: provider.rpcCompanyId,
       environmentId: input.environment.id,
       issueId: null,
       config: provider.driverConfig,
@@ -338,10 +357,10 @@ export function environmentCustomImageService(
     includeConnectionPayload: boolean;
   }): Promise<PluginEnvironmentInteractiveSetupSession> {
     const environment = await requireEnvironment(input.session.environmentId);
-    const provider = await resolveSetupProvider({ companyId: input.session.companyId, environment });
+    const provider = await resolveSetupProvider({ environment });
     return await options.pluginWorkerManager!.call(provider.pluginId, "environmentGetInteractiveSetup", {
       driverKey: provider.provider,
-      companyId: input.session.companyId,
+      companyId: provider.rpcCompanyId,
       environmentId: environment.id,
       issueId: null,
       config: provider.driverConfig,
@@ -361,13 +380,12 @@ export function environmentCustomImageService(
   }): Promise<PluginEnvironmentCaptureTemplateResult> {
     const environment = await requireEnvironment(input.session.environmentId);
     const provider = await resolveSetupProvider({
-      companyId: input.session.companyId,
       environment,
       requireCapture: true,
     });
     return await options.pluginWorkerManager!.call(provider.pluginId, "environmentCaptureTemplate", {
       driverKey: provider.provider,
-      companyId: input.session.companyId,
+      companyId: provider.rpcCompanyId,
       environmentId: environment.id,
       issueId: null,
       config: provider.driverConfig,
@@ -388,10 +406,10 @@ export function environmentCustomImageService(
     reason: string | null;
   }): Promise<PluginEnvironmentCancelInteractiveSetupResult> {
     const environment = await requireEnvironment(input.session.environmentId);
-    const provider = await resolveSetupProvider({ companyId: input.session.companyId, environment });
+    const provider = await resolveSetupProvider({ environment });
     return await options.pluginWorkerManager!.call(provider.pluginId, "environmentCancelInteractiveSetup", {
       driverKey: provider.provider,
-      companyId: input.session.companyId,
+      companyId: provider.rpcCompanyId,
       environmentId: environment.id,
       issueId: null,
       config: provider.driverConfig,
@@ -413,13 +431,12 @@ export function environmentCustomImageService(
     }
     const environment = await requireEnvironment(input.template.environmentId);
     const provider = await resolveSetupProvider({
-      companyId: input.template.companyId,
       environment,
       requireDelete: true,
     });
     return await options.pluginWorkerManager!.call(provider.pluginId, "environmentDeleteTemplate", {
       driverKey: provider.provider,
-      companyId: input.template.companyId,
+      companyId: provider.rpcCompanyId,
       environmentId: environment.id,
       issueId: null,
       config: provider.driverConfig,
@@ -509,7 +526,6 @@ export function environmentCustomImageService(
 
   return {
     getOverview: async (input: {
-      companyId: string;
       environmentId: string;
     }): Promise<EnvironmentCustomImageOverview> => {
       await requireEnvironment(input.environmentId);
@@ -522,7 +538,6 @@ export function environmentCustomImageService(
     },
 
     getActiveTemplate: async (input: {
-      companyId: string;
       environmentId: string;
       provider?: string | null;
     }): Promise<EnvironmentCustomImageTemplate | null> => resolveActiveTemplate(db, input),
@@ -530,15 +545,18 @@ export function environmentCustomImageService(
     getSessionById,
 
     startSetupSession: async (input: {
-      companyId: string;
       environmentId: string;
       templateId?: string | null;
       ttlSeconds?: number | null;
       actor: { userId?: string | null; agentId?: string | null };
+      secretContextCompanyId?: string | null;
       now?: Date;
     }): Promise<EnvironmentCustomImageSetupSessionResult> => {
       const environment = await requireEnvironment(input.environmentId);
-      const provider = await resolveSetupProvider({ companyId: input.companyId, environment });
+      const provider = await resolveSetupProvider({
+        secretContextCompanyId: input.secretContextCompanyId,
+        environment,
+      });
       const activeSession = await getActiveSetupSession(input);
       if (activeSession) {
         throw conflict("An environment customImage setup session is already active for this environment.");
@@ -546,7 +564,6 @@ export function environmentCustomImageService(
       const selectedTemplate = input.templateId
         ? await getTemplateById(input.templateId)
         : await resolveActiveTemplate(db, {
-            companyId: input.companyId,
             environmentId: input.environmentId,
             provider: provider.provider,
           });
@@ -556,13 +573,12 @@ export function environmentCustomImageService(
       if (
         selectedTemplate &&
         (
-          selectedTemplate.companyId !== input.companyId ||
           selectedTemplate.environmentId !== input.environmentId ||
           selectedTemplate.provider !== provider.provider ||
           selectedTemplate.status !== "active"
         )
       ) {
-        throw unprocessable("Setup template must be the active template for this company and environment.");
+        throw unprocessable("Setup template must be the active template for this environment.");
       }
       const source = selectedTemplate
         ? {
@@ -581,7 +597,6 @@ export function environmentCustomImageService(
       const fingerprint = fingerprintEnvironmentSandboxProviderConfig(provider.runtimeConfig);
       await db.insert(environmentCustomImageSetupSessions).values({
         id: sessionId,
-        companyId: input.companyId,
         environmentId: input.environmentId,
         templateId: selectedTemplate?.id ?? null,
         provider: provider.provider,
@@ -599,12 +614,12 @@ export function environmentCustomImageService(
 
       try {
         const providerSession = await callProviderStart({
-          companyId: input.companyId,
           environment,
           sessionId,
           expiresAt,
           sourceTemplateRef: source.sourceTemplateRef,
           sourceTemplateKind: source.sourceTemplateKind,
+          secretContextCompanyId: input.secretContextCompanyId,
         });
         const session = await updateSessionFromProvider(sessionId, providerSession);
         return {
@@ -666,7 +681,6 @@ export function environmentCustomImageService(
       }
       await markSessionStatus({ sessionId: session.id, status: "capturing" });
       const currentActive = await resolveActiveTemplate(db, {
-        companyId: session.companyId,
         environmentId: session.environmentId,
         provider: session.provider,
       });
@@ -680,7 +694,6 @@ export function environmentCustomImageService(
             })
           : null;
         const provider = await resolveSetupProvider({
-          companyId: session.companyId,
           environment,
           requireCapture: true,
         });
@@ -699,9 +712,7 @@ export function environmentCustomImageService(
               updatedAt: now,
             })
             .where(and(
-              eq(environmentCustomImageTemplates.companyId, session.companyId),
               eq(environmentCustomImageTemplates.environmentId, session.environmentId),
-              eq(environmentCustomImageTemplates.provider, session.provider),
               eq(environmentCustomImageTemplates.status, "active"),
             ))
             .returning({ id: environmentCustomImageTemplates.id });
@@ -709,7 +720,6 @@ export function environmentCustomImageService(
             .insert(environmentCustomImageTemplates)
             .values({
               id: templateId,
-              companyId: session.companyId,
               environmentId: session.environmentId,
               provider: session.provider,
               templateKind: readTemplateKind(captured.templateKind),
@@ -790,7 +800,6 @@ export function environmentCustomImageService(
     },
 
     rollbackTemplate: async (input: {
-      companyId: string;
       environmentId: string;
       now?: Date;
     }): Promise<{
@@ -804,7 +813,6 @@ export function environmentCustomImageService(
         .select()
         .from(environmentCustomImageTemplates)
         .where(and(
-          eq(environmentCustomImageTemplates.companyId, input.companyId),
           eq(environmentCustomImageTemplates.environmentId, input.environmentId),
           eq(environmentCustomImageTemplates.provider, active.provider),
           eq(environmentCustomImageTemplates.status, "superseded"),
@@ -843,7 +851,6 @@ export function environmentCustomImageService(
     },
 
     disableTemplate: async (input: {
-      companyId: string;
       environmentId: string;
       deleteProviderTemplate?: boolean;
       now?: Date;

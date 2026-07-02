@@ -1346,6 +1346,7 @@ describe("environment routes", () => {
     expect(mockProbeEnvironment).toHaveBeenCalledWith(expect.anything(), environment, {
       companyId: null,
       pluginWorkerManager: undefined,
+      applyCustomImageTemplate: false,
     });
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -1444,6 +1445,7 @@ describe("environment routes", () => {
     expect(mockProbeEnvironment).toHaveBeenCalledWith(expect.anything(), environment, {
       companyId: null,
       pluginWorkerManager: undefined,
+      applyCustomImageTemplate: true,
     });
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -1458,6 +1460,48 @@ describe("environment routes", () => {
         }),
       }),
     );
+  });
+
+  it("probes saved sandbox environments with the active custom image template without company context", async () => {
+    const environment = {
+      ...createEnvironment(),
+      id: "env-sandbox",
+      name: "Daytona Sandbox",
+      driver: "sandbox" as const,
+      config: {
+        provider: "daytona",
+        image: "ubuntu:24.04",
+        reuseLease: true,
+      },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockProbeEnvironment.mockResolvedValue({
+      ok: true,
+      driver: "sandbox",
+      summary: "Connected to Daytona sandbox.",
+      details: {
+        provider: "daytona",
+        snapshot: "captured-template",
+      },
+    });
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post(`/api/environments/${environment.id}/probe`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.driver).toBe("sandbox");
+    expect(mockProbeEnvironment).toHaveBeenCalledWith(expect.anything(), environment, {
+      companyId: null,
+      pluginWorkerManager: undefined,
+      applyCustomImageTemplate: true,
+    });
   });
 
   it("probes unsaved provider config without persisting secrets", async () => {

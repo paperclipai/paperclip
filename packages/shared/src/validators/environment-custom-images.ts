@@ -32,7 +32,6 @@ export type EnvironmentCustomImageSetupConnectionSummary =
 
 export const environmentCustomImageTemplateSchema = z.object({
   id: z.string().uuid(),
-  companyId: z.string().uuid(),
   environmentId: z.string().uuid(),
   provider: providerKeySchema,
   templateKind: environmentCustomImageTemplateKindSchema,
@@ -54,7 +53,6 @@ export type EnvironmentCustomImageTemplate =
 
 export const environmentCustomImageSetupSessionSchema = z.object({
   id: z.string().uuid(),
-  companyId: z.string().uuid(),
   environmentId: z.string().uuid(),
   templateId: z.string().uuid().nullable(),
   promotedTemplateId: z.string().uuid().nullable(),

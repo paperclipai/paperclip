@@ -556,7 +556,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
 
 export async function resolveEnvironmentDriverConfigForRuntime(
   db: Db,
-  companyId: string,
+  companyId: string | null,
   environment: Pick<Environment, "driver" | "config"> & Partial<Pick<Environment, "id">>,
   context?: {
     issueId?: string | null;
@@ -576,6 +576,9 @@ export async function resolveEnvironmentDriverConfigForRuntime(
   }
 
   if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef) {
+    if (!companyId) {
+      throw unprocessable("Runtime secret resolution requires a companyId context");
+    }
     return {
       driver: "ssh",
       config: {
@@ -600,22 +603,31 @@ export async function resolveEnvironmentDriverConfigForRuntime(
 
   if (parsed.driver === "sandbox" && parsed.config.provider !== "fake") {
     const schema = await getSandboxProviderConfigSchema(db, parsed.config.provider);
-    const runtimeConfig = await resolveConfigSecretRefsForRuntime({
-      db,
-      companyId,
-      config: parsed.config as Record<string, unknown>,
-      schema,
-      context: {
-        consumerId: environmentId!,
-        issueId: context?.issueId ?? null,
-        heartbeatRunId: context?.heartbeatRunId ?? null,
-      },
-    }) as SandboxEnvironmentConfig;
+    let runtimeConfig = parsed.config;
+    if (companyId) {
+      runtimeConfig = await resolveConfigSecretRefsForRuntime({
+        db,
+        companyId,
+        config: parsed.config as Record<string, unknown>,
+        schema,
+        context: {
+          consumerId: environmentId!,
+          issueId: context?.issueId ?? null,
+          heartbeatRunId: context?.heartbeatRunId ?? null,
+        },
+      }) as SandboxEnvironmentConfig;
+    } else {
+      for (const path of collectSecretRefPaths(schema)) {
+        const current = readConfigValueAtPath(parsed.config as Record<string, unknown>, path);
+        if (typeof current === "string" && isUuidSecretRef(current.trim())) {
+          throw unprocessable("Runtime secret resolution requires a companyId context");
+        }
+      }
+    }
     return {
       driver: "sandbox",
       config: environmentId && (context?.issueId || context?.heartbeatRunId || context?.applyCustomImageTemplate)
         ? await resolveActiveEnvironmentCustomImageTemplateForRuntime(db, {
-            companyId,
             environmentId,
             baseConfig: parsed.config,
             runtimeConfig,

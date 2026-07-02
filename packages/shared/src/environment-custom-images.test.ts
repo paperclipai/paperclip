@@ -11,16 +11,14 @@ import {
   startEnvironmentCustomImageSetupSessionSchema,
 } from "./validators/environment-custom-images.js";
 
-const companyId = "11111111-1111-4111-8111-111111111111";
 const environmentId = "22222222-2222-4222-8222-222222222222";
 const templateId = "33333333-3333-4333-8333-333333333333";
 const sessionId = "44444444-4444-4444-8444-444444444444";
 
 describe("environment customImage validators", () => {
-  it("requires company and environment scope on templates and setup sessions", () => {
+  it("requires environment scope on templates and setup sessions", () => {
     const template = environmentCustomImageTemplateSchema.parse({
       id: templateId,
-      companyId,
       environmentId,
       provider: "daytona",
       templateKind: "snapshot",
@@ -38,12 +36,10 @@ describe("environment customImage validators", () => {
       updatedAt: "2026-06-25T12:00:00.000Z",
     });
 
-    expect(template.companyId).toBe(companyId);
     expect(template.environmentId).toBe(environmentId);
 
     const session = environmentCustomImageSetupSessionSchema.parse({
       id: sessionId,
-      companyId,
       environmentId,
       templateId,
       promotedTemplateId: null,
@@ -69,7 +65,6 @@ describe("environment customImage validators", () => {
       updatedAt: "2026-06-25T12:00:00.000Z",
     });
 
-    expect(session.companyId).toBe(companyId);
     expect(session.environmentId).toBe(environmentId);
   });
 
