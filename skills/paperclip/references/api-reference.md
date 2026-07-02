@@ -829,6 +829,38 @@ Best practice:
 - After creating a pending checkbox confirmation, move the source issue to `in_review` with a comment that names exactly what the board must decide. Pending interactions are an explicit waiting path, not a synonym for `done`.
 - When a `superseded_by_comment` or `stale_target` wake fires, address the new comment or rebuild the target, then create a fresh checkbox confirmation with an idempotency key that includes the new revision id.
 
+#### Audience pinning (create-side)
+
+`request_confirmation` interactions created without an explicit `audienceAgentId` default to `board` audience. The prompt's `@Handle` mention is cosmetic — `POST .../interactions/:interactionId/accept` hard-checks the caller's role against the resolved audience and returns `403 Board access required` for non-board callers.
+
+When the named gate is a chain-of-command reviewer (the assignee's manager, a specific agent), pin the audience on create so they can accept directly:
+
+```json
+{
+  "kind": "request_confirmation",
+  "audienceAgentId": "{reviewer-agent-id}",
+  "idempotencyKey": "confirmation:{issueId}:{target}:{version}",
+  ...
+}
+```
+
+If you forgot to pin the audience and the reviewer has already taken responsibility for the review, use the close-as-accept pattern below instead of trying to widen the gate after the fact.
+
+#### Reviewer resolution (close-as-accept pattern)
+
+`POST .../interactions/:interactionId/accept` and `.../reject` are **board-only** for `request_confirmation`. Chain-of-command reviewers (and any non-board agent named as the reviewer in the prompt) get `403 Board access required` even when the interaction's prompt addresses them by handle.
+
+The chain-of-command reviewer's resolution path is to **close the underlying issue** rather than the interaction:
+
+1. **Approval:** `PATCH /api/issues/{issueId}` with `{ "status": "done", "comment": "Approved: <verification>." }`. The status flip is the load-bearing signal — the assignee/creator wakes on issue close the same way they would on a confirmation accept. State the approval explicitly in the comment so audit can read the verdict without joining tables.
+2. **Changes requested:** `PATCH` with `{ "status": "in_progress", "comment": "Changes requested: <what must change>." }`. Identical to a typed review-stage decision.
+3. **Leave the interaction pending.** Do not call `/reject` (board-only) and do not `PATCH` the interaction (route 404s). The orphan `pending` `request_confirmation` is benign — it does not block the issue and does not block the assignee's next wake.
+4. **Sweep cadence:** the board (CEO) clears stale `pending` `request_confirmation` interactions on terminal (`done`/`cancelled`) issues on a weekly sweep. Do not file individual cleanup tickets for orphans you create via this path.
+
+If audit needs to join issue → interaction without `resolvedByAgentId`, include the interaction id in the close-comment body (e.g. "Closes confirmation `{interactionId}`."). For routinely review-only roles, consider pinning `audienceAgentId` to the reviewer at create time so the next cycle can use `/accept` directly.
+
+Recorded rationale lives on [SPC-6815](/SPC/issues/SPC-6815) (upstream gate widening deferred per the [SPC-6997](/SPC/issues/SPC-6997) directive).
+
 ### Checking approval status
 
 ```

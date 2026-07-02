@@ -4714,6 +4714,37 @@ export function issueService(db: Db) {
       return listIssueProductivityReviewMap(dbOrTx, companyId, sourceIssueIds);
     },
 
+    listQueuedWakesForIssue: async (
+      companyId: string,
+      issueId: string,
+      dbOrTx: any = db,
+    ): Promise<Array<{
+      id: string;
+      status: string;
+      reason: string | null;
+      agentId: string;
+      requestedAt: Date;
+    }>> => {
+      const rows = await dbOrTx
+        .select({
+          id: agentWakeupRequests.id,
+          status: agentWakeupRequests.status,
+          reason: agentWakeupRequests.reason,
+          agentId: agentWakeupRequests.agentId,
+          requestedAt: agentWakeupRequests.requestedAt,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            inArray(agentWakeupRequests.status, BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .orderBy(desc(agentWakeupRequests.requestedAt));
+      return rows;
+    },
+
     listWakeableBlockedDependents: async (blockerIssueId: string) => {
       const blockerIssue = await db
         .select({ id: issues.id, companyId: issues.companyId })

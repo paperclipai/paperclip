@@ -153,6 +153,7 @@ function createDb(requireBoardApprovalForNewAgents = false) {
         where: vi.fn(async () => [
           {
             id: "company-1",
+            companyId: "company-1",
             requireBoardApprovalForNewAgents,
           },
         ]),
@@ -745,15 +746,17 @@ describe.sequential("agent skill routes", () => {
   it("includes canonical desired skills in hire approvals", async () => {
     const db = createDb(true);
 
-    const res = await request(await createApp(db))
-      .post("/api/companies/company-1/agent-hires")
-      .send({
-        name: "QA Agent",
-        role: "engineer",
-        adapterType: "claude_local",
-        desiredSkills: ["paperclip"],
-        adapterConfig: {},
-      });
+    const res = await requestApp(await createApp(db), (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agent-hires")
+        .send({
+          name: "QA Agent",
+          role: "engineer",
+          adapterType: "claude_local",
+          desiredSkills: ["paperclip"],
+          adapterConfig: {},
+        }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockApprovalService.create).toHaveBeenCalledWith(
@@ -773,17 +776,19 @@ describe.sequential("agent skill routes", () => {
     const db = createDb(true);
     const sourceIssueId = "22222222-2222-4222-8222-222222222222";
 
-    const res = await request(await createApp(db))
-      .post("/api/companies/company-1/agent-hires")
-      .send({
-        name: "Security Engineer",
-        role: "engineer",
-        icon: "crown",
-        adapterType: "claude_local",
-        desiredSkills: ["paperclip"],
-        adapterConfig: {},
-        sourceIssueId,
-      });
+    const res = await requestApp(await createApp(db), (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agent-hires")
+        .send({
+          name: "Security Engineer",
+          role: "engineer",
+          icon: "crown",
+          adapterType: "claude_local",
+          desiredSkills: ["paperclip"],
+          adapterConfig: {},
+          sourceIssueId,
+        }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockAgentService.create).toHaveBeenCalledWith(
@@ -817,19 +822,21 @@ describe.sequential("agent skill routes", () => {
   });
 
   it("uses managed AGENTS config in hire approval payloads", async () => {
-    const res = await request(await createApp(createDb(true)))
-      .post("/api/companies/company-1/agent-hires")
-      .send({
-        name: "QA Agent",
-        role: "engineer",
-        adapterType: "claude_local",
-        adapterConfig: {},
-        instructionsBundle: {
-          files: {
-            "AGENTS.md": "You are QA.",
+    const res = await requestApp(await createApp(createDb(true)), (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agent-hires")
+        .send({
+          name: "QA Agent",
+          role: "engineer",
+          adapterType: "claude_local",
+          adapterConfig: {},
+          instructionsBundle: {
+            files: {
+              "AGENTS.md": "You are QA.",
+            },
           },
-        },
-      });
+        }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     const approvalInput = mockApprovalService.create.mock.calls.at(-1)?.[1] as
@@ -853,18 +860,20 @@ describe.sequential("agent skill routes", () => {
   });
 
   it("rejects legacy prompt templates for hire approval payloads", async () => {
-    const res = await request(await createApp(createDb(true)))
-      .post("/api/companies/company-1/agent-hires")
-      .send({
-        name: "QA Agent",
-        role: "engineer",
-        adapterType: "claude_local",
-        adapterConfig: {
-          instructionsFilePath: "/tmp/existing/AGENTS.md",
-          promptTemplate: "You are QA.",
-          bootstrapPromptTemplate: "Bootstrap QA.",
-        },
-      });
+    const res = await requestApp(await createApp(createDb(true)), (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agent-hires")
+        .send({
+          name: "QA Agent",
+          role: "engineer",
+          adapterType: "claude_local",
+          adapterConfig: {
+            instructionsFilePath: "/tmp/existing/AGENTS.md",
+            promptTemplate: "You are QA.",
+            bootstrapPromptTemplate: "Bootstrap QA.",
+          },
+        }),
+    );
 
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(res.body.error).toContain("New agents must use instructionsBundle/AGENTS.md");
