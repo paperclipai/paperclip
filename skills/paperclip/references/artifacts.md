@@ -52,31 +52,37 @@ workspace root; do not use host-local absolute paths in `resourceRef`.
 Create the work product with:
 
 ```bash
-curl -sS -X POST \
+# Safe: write auth to config file so token stays out of curl argv (/proc/*/cmdline is world-readable)
+_AUTH=$(mktemp); chmod 600 "$_AUTH"
+printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+printf 'header = "X-Paperclip-Run-Id: %s"\n' "$PAPERCLIP_RUN_ID" >> "$_AUTH"
+curl -sS -X POST --config "$_AUTH" \
   "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/work-products" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
   -H "Content-Type: application/json" \
   --data-binary @workspace-file-work-product.json
+rm -f "$_AUTH"
 ```
 
 If the helper is unavailable, use the Paperclip API directly:
 
 ```bash
-curl -sS -X POST \
+_AUTH=$(mktemp); chmod 600 "$_AUTH"
+printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+printf 'header = "X-Paperclip-Run-Id: %s"\n' "$PAPERCLIP_RUN_ID" >> "$_AUTH"
+curl -sS -X POST --config "$_AUTH" \
   "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
   -F 'file=@"path/to/output.webm";type=video/webm'
+rm -f "$_AUTH"
 ```
 
 Then create a work product when the file is the deliverable. The server canonicalizes attachment-backed artifact metadata from the `attachmentId`:
 
 ```bash
-curl -sS -X POST \
+_AUTH=$(mktemp); chmod 600 "$_AUTH"
+printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+printf 'header = "X-Paperclip-Run-Id: %s"\n' "$PAPERCLIP_RUN_ID" >> "$_AUTH"
+curl -sS -X POST --config "$_AUTH" \
   "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/work-products" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
   -H "Content-Type: application/json" \
   --data-binary '{
     "type": "artifact",
@@ -87,6 +93,7 @@ curl -sS -X POST \
     "isPrimary": true,
     "metadata": { "attachmentId": "<uploaded-attachment-id>" }
   }'
+rm -f "$_AUTH"
 ```
 
 In your final issue comment, link the uploaded attachment or work product and
