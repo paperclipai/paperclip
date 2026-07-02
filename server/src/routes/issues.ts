@@ -1021,7 +1021,6 @@ function queueResolvedInteractionContinuationWakeup(input: {
 
 function readCheckboxSelectionForWake(input: {
   kind: string;
-  status: string;
   payload?: unknown;
   result?: unknown;
 }) {
