@@ -12,7 +12,13 @@ const DEFAULT_BRIDGE_POLL_INTERVAL_MS = 100;
 const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
-const DEFAULT_BRIDGE_MAX_BODY_BYTES = 256 * 1024;
+// Must comfortably exceed the largest legitimate request/response an in-sandbox
+// agent exchanges over the bridge. Issue documents (plans/specs) allow a 512KB
+// body (upsertIssueDocumentSchema: z.string().max(524288)); a PUT wraps that in
+// a JSON envelope and a GET returns it with metadata, so 256KB rejected real
+// document reads/writes with an opaque 502. 1MB covers a max document plus its
+// JSON envelope with margin; the queue protocol already base64-chunks large bodies.
+const DEFAULT_BRIDGE_MAX_BODY_BYTES = 1024 * 1024;
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
@@ -102,6 +108,9 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_HEADER_ALLOWLIST = [
   "content-type",
   "if-match",
   "if-none-match",
+  // Exactly-once semantics for retried mutating calls (e.g. routine runs, hires).
+  // Without this the server can't dedupe an agent's retry and may double-execute.
+  "idempotency-key",
 ] as const;
 
 export interface SandboxCallbackBridgeRequest {

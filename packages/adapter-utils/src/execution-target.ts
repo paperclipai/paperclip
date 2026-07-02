@@ -1155,22 +1155,67 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
         }
         headers.set("authorization", `Bearer ${hostApiToken}`);
         headers.set("x-paperclip-run-id", input.runId);
-        const response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
-          method,
-          headers,
-          ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
-          signal: AbortSignal.timeout(30_000),
-        });
+        let response: Response;
+        try {
+          response = await fetch(buildBridgeForwardUrl(hostApiUrl, request), {
+            method,
+            headers,
+            ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
+            signal: AbortSignal.timeout(30_000),
+          });
+        } catch (error) {
+          // Map fetch failures to a faithful status the in-sandbox agent can act
+          // on, instead of letting them surface as an opaque generic 502. A
+          // timeout in particular is ambiguous on a mutating call ("did my write
+          // land?"), so it must be distinguishable — otherwise the agent tends to
+          // confabulate an outcome.
+          const name = error instanceof Error ? error.name : "";
+          if (name === "TimeoutError" || name === "AbortError") {
+            return {
+              status: 504,
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                error: "The Paperclip API did not respond within the 30s bridge timeout. The request may or may not have been applied; re-read state before retrying.",
+                code: "bridge_upstream_timeout",
+              }),
+            };
+          }
+          return {
+            status: 502,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              error: `Bridge could not reach the Paperclip API: ${error instanceof Error ? error.message : String(error)}`,
+              code: "bridge_upstream_unreachable",
+            }),
+          };
+        }
         if (bridgeDebugEnabled) {
           await onLog(
             "stdout",
             `[paperclip] Bridge proxy response ${response.status} for ${method} ${request.path}${request.query ? `?${request.query}` : ""}\n`,
           );
         }
+        let body: string;
+        try {
+          body = await readBridgeForwardResponseBody(response, maxBodyBytes);
+        } catch (error) {
+          // Oversized response body: surface a clear 413 (not a generic 502) so
+          // the agent knows the call succeeded server-side but the payload was
+          // too large to relay, rather than assuming the operation failed.
+          return {
+            status: 413,
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              error: error instanceof Error ? error.message : String(error),
+              code: "bridge_response_too_large",
+              upstreamStatus: response.status,
+            }),
+          };
+        }
         return {
           status: response.status,
           headers: buildBridgeResponseHeaders(response),
-          body: await readBridgeForwardResponseBody(response, maxBodyBytes),
+          body,
         };
       },
     });
