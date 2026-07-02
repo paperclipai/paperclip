@@ -105,6 +105,7 @@ import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { AgentIcon } from "./AgentIconPicker";
+import { CursorSessionLink } from "./CursorSessionLink";
 import {
   AssigneeChip,
   ComposerHandoffPreviewRow,
@@ -160,7 +161,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp, Trash2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ClipboardList, Copy, ExternalLink, Hammer, Loader2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp, Trash2 } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
@@ -1533,6 +1534,7 @@ function IssueChatAssistantMessage({
   const runId = typeof custom.runId === "string" ? custom.runId : null;
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
   const runStatus = typeof custom.runStatus === "string" ? custom.runStatus : null;
+  const cursorAgentId = typeof custom.cursorAgentId === "string" ? custom.cursorAgentId : null;
   const agentId = authorAgentId ?? runAgentId;
   const agentIcon = agentId ? agentMap?.get(agentId)?.icon : undefined;
   const commentId = typeof custom.commentId === "string" ? custom.commentId : null;
@@ -1687,6 +1689,18 @@ function IssueChatAssistantMessage({
               </Link>
             </DropdownMenuItem>
           ) : null}
+          {cursorAgentId ? (
+            <DropdownMenuItem asChild>
+              <a
+                href={`https://cursor.com/agents/${encodeURIComponent(cursorAgentId)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <ExternalLink className="mr-2 h-3.5 w-3.5" />
+                Open in Cursor
+              </a>
+            </DropdownMenuItem>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>
@@ -1791,6 +1805,7 @@ function IssueChatAssistantMessage({
                   Running
                 </span>
               ) : null}
+              {cursorAgentId ? <CursorSessionLink cursorAgentId={cursorAgentId} /> : null}
             </div>
           )}
 
@@ -2575,6 +2590,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
   const runAgentId = typeof custom.runAgentId === "string" ? custom.runAgentId : null;
   const runAgentName = typeof custom.runAgentName === "string" ? custom.runAgentName : null;
   const runStatus = typeof custom.runStatus === "string" ? custom.runStatus : null;
+  const cursorAgentId = typeof custom.cursorAgentId === "string" ? custom.cursorAgentId : null;
   const actorName = typeof custom.actorName === "string" ? custom.actorName : null;
   const actorType = typeof custom.actorType === "string" ? custom.actorType : null;
   const actorId = typeof custom.actorId === "string" ? custom.actorId : null;
@@ -2732,6 +2748,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
             status={runStatus}
             operatorInterrupted={custom.runOperatorInterrupted === true}
           />
+          {cursorAgentId ? <CursorSessionLink cursorAgentId={cursorAgentId} /> : null}
           <a
             href={anchorId ? `#${anchorId}` : undefined}
             className="text-xs text-muted-foreground/70 transition-colors hover:text-foreground hover:underline"
