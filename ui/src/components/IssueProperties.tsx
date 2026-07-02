@@ -14,7 +14,7 @@ import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, isAgentTaskTarget } from "../lib/company-members";
-import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../lib/issue-assignee-overrides";
+import { ISSUE_OVERRIDE_ADAPTER_TYPES, isProfileLane, profileLaneFromOverrides, type IssueModelLane } from "../lib/issue-assignee-overrides";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import {
   getRecentAssigneeIds,
@@ -401,7 +401,8 @@ function thinkingEffortValueFor(adapterType: string | null | undefined, adapterC
 }
 
 function overrideLane(overrides: Issue["assigneeAdapterOverrides"]): IssueModelLane {
-  if (overrides?.modelProfile === "cheap") return "cheap";
+  const profileLane = profileLaneFromOverrides(overrides?.modelProfile);
+  if (profileLane) return profileLane;
   if (overrides?.adapterConfig) return "custom";
   return "primary";
 }
@@ -938,11 +939,11 @@ export function IssueProperties({
       updateAssigneeAdapterOverrides(null);
       return;
     }
-    if (lane === "cheap") {
+    if (isProfileLane(lane)) {
       updateAssigneeAdapterOverrides(
         compactRecord({
           useProjectWorkspace: assigneeAdapterOverrides?.useProjectWorkspace,
-          modelProfile: "cheap",
+          modelProfile: lane,
         }),
       );
       return;
@@ -950,8 +951,8 @@ export function IssueProperties({
     updateAssigneeAdapterOverrides(buildAssigneeOverrideWithConfig(assigneeOverrideAdapterConfig) ?? { adapterConfig: {} });
   };
   const assigneeOptionsTrigger = (() => {
-    if (assigneeOverrideLane === "cheap") {
-      return <span className="text-sm">Cheap model</span>;
+    if (isProfileLane(assigneeOverrideLane)) {
+      return <span className="text-sm capitalize">{assigneeOverrideLane} model</span>;
     }
     if (assigneeOverrideLane === "custom") {
       const details = [
@@ -972,7 +973,14 @@ export function IssueProperties({
       <div className="space-y-1.5">
         <div className="text-xs text-muted-foreground">Model lane</div>
         <div className="flex w-full overflow-hidden rounded-md border border-border" role="radiogroup" aria-label="Model lane">
-          {(["primary", ...(assigneeSupportsCheapLane ? (["cheap"] as const) : ([] as const)), "custom"] as const).map((lane) => (
+          {([
+            "primary",
+            ...(assigneeSupportsCheapLane ? (["cheap"] as const) : ([] as const)),
+            ...(isProfileLane(assigneeOverrideLane) && assigneeOverrideLane !== "cheap"
+              ? ([assigneeOverrideLane] as const)
+              : ([] as const)),
+            "custom",
+          ] as IssueModelLane[]).map((lane) => (
             <button
               key={lane}
               type="button"
@@ -984,7 +992,7 @@ export function IssueProperties({
               )}
               onClick={() => setAssigneeOverrideLane(lane)}
             >
-              {lane === "primary" ? "Primary" : lane === "cheap" ? "Cheap" : "Custom"}
+              {lane === "primary" ? "Primary" : lane === "custom" ? "Custom" : lane.charAt(0).toUpperCase() + lane.slice(1)}
             </button>
           ))}
         </div>

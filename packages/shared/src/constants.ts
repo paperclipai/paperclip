@@ -79,7 +79,7 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
-export const MODEL_PROFILE_KEYS = ["cheap"] as const;
+export const MODEL_PROFILE_KEYS = ["cheap", "standard", "premium", "flagship"] as const;
 export type ModelProfileKey = (typeof MODEL_PROFILE_KEYS)[number];
 
 export const AGENT_ICON_NAMES = [
@@ -200,6 +200,8 @@ export const INBOX_MINE_ISSUE_STATUS_FILTER = INBOX_MINE_ISSUE_STATUSES.join(","
 
 export const ISSUE_PRIORITIES = ["critical", "high", "medium", "low"] as const;
 export type IssuePriority = (typeof ISSUE_PRIORITIES)[number];
+export const ISSUE_COMPLEXITIES = ["trivial", "standard", "complex"] as const;
+export type IssueComplexity = (typeof ISSUE_COMPLEXITIES)[number];
 export const ISSUE_WORK_MODES = ["standard", "ask", "planning"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;

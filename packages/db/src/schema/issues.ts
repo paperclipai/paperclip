@@ -33,6 +33,7 @@ export const issues = pgTable(
     status: text("status").notNull().default("backlog"),
     workMode: text("work_mode").notNull().default("standard"),
     priority: text("priority").notNull().default("medium"),
+    complexity: text("complexity"),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id),
     assigneeUserId: text("assignee_user_id"),
     checkoutRunId: uuid("checkout_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),

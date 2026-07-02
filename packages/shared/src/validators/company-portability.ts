@@ -168,6 +168,7 @@ export const portabilityIssueManifestEntrySchema = z.object({
   legacyRecurrence: z.record(z.string(), z.unknown()).nullable(),
   status: z.string().nullable(),
   priority: z.string().nullable(),
+  complexity: z.string().nullable().default(null),
   labelIds: z.array(z.string().min(1)).default([]),
   billingCode: z.string().nullable(),
   executionWorkspaceSettings: z.record(z.string(), z.unknown()).nullable(),

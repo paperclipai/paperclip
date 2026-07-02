@@ -33,6 +33,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  ISSUE_COMPLEXITIES,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
   PROJECT_ICON_NAMES,
@@ -616,6 +617,7 @@ type IssueLike = {
   assigneeAgentId: string | null;
   status: string;
   priority: string;
+  complexity?: string | null;
   labelIds?: string[];
   billingCode: string | null;
   executionWorkspaceSettings: Record<string, unknown> | null;
@@ -2925,6 +2927,7 @@ function buildManifestFromPackageFiles(
       legacyRecurrence,
       status: asString(extension.status) ?? asString(routineExtensionRaw.status),
       priority: asString(extension.priority) ?? asString(routineExtensionRaw.priority),
+      complexity: asString(extension.complexity),
       labelIds: Array.isArray(extension.labelIds)
         ? extension.labelIds.filter((entry): entry is string => typeof entry === "string")
         : [],
@@ -3701,6 +3704,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         identifier: issue.identifier,
         status: issue.status,
         priority: issue.priority,
+        complexity: issue.complexity ?? undefined,
         labelIds: issue.labelIds ?? undefined,
         billingCode: issue.billingCode ?? null,
         projectWorkspaceKey: projectWorkspaceKey ?? undefined,
@@ -4959,6 +4963,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
               ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
               : "medium",
+            complexity: manifestIssue.complexity && ISSUE_COMPLEXITIES.includes(manifestIssue.complexity as any)
+              ? manifestIssue.complexity as typeof ISSUE_COMPLEXITIES[number]
+              : null,
             billingCode: manifestIssue.billingCode,
             assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides,
             executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings,

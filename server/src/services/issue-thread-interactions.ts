@@ -1018,6 +1018,7 @@ export function issueThreadInteractionService(db: Db) {
             status: "todo",
             workMode: task.workMode ?? "standard",
             priority: task.priority ?? "medium",
+            complexity: task.complexity ?? null,
             assigneeAgentId: task.assigneeAgentId ?? null,
             assigneeUserId: task.assigneeUserId ?? null,
             projectId: task.projectId ?? issue.projectId,
