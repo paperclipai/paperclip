@@ -1,6 +1,62 @@
+import { mkdtemp, readdir, rm, mkdir } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ensureRemoteOpenCodeModelConfiguredAndAvailable } from "./execute.js";
+import { buildOpenCodeSkillsDir, ensureRemoteOpenCodeModelConfiguredAndAvailable } from "./execute.js";
+
+describe("buildOpenCodeSkillsDir create-agent inclusion", () => {
+  const cleanupDirs: string[] = [];
+
+  afterEach(async () => {
+    while (cleanupDirs.length > 0) {
+      const dir = cleanupDirs.pop();
+      if (!dir) continue;
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  async function makeConfigWithSkills() {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-skilltest-"));
+    cleanupDirs.push(root);
+    const createAgentSource = path.join(root, "paperclip-create-agent");
+    const otherSource = path.join(root, "paperclip");
+    await mkdir(createAgentSource, { recursive: true });
+    await mkdir(otherSource, { recursive: true });
+    // Runtime skills are configured directly on the adapter config so the helper
+    // resolves them without touching the packaged skills directory.
+    return {
+      paperclipRuntimeSkills: [
+        {
+          key: "paperclipai/paperclip/paperclip-create-agent",
+          runtimeName: "paperclip-create-agent",
+          source: createAgentSource,
+        },
+        {
+          key: "paperclipai/paperclip/paperclip",
+          runtimeName: "paperclip",
+          source: otherSource,
+        },
+      ],
+    } as Record<string, unknown>;
+  }
+
+  it("includes the paperclip-create-agent skill when the agent can hire", async () => {
+    const config = await makeConfigWithSkills();
+    const dir = await buildOpenCodeSkillsDir(config, { canCreateAgents: true });
+    cleanupDirs.push(path.dirname(dir));
+    const entries = await readdir(dir);
+    expect(entries).toContain("paperclip-create-agent");
+  });
+
+  it("excludes the paperclip-create-agent skill when the agent cannot hire", async () => {
+    const config = await makeConfigWithSkills();
+    const dir = await buildOpenCodeSkillsDir(config, { canCreateAgents: false });
+    cleanupDirs.push(path.dirname(dir));
+    const entries = await readdir(dir);
+    expect(entries).not.toContain("paperclip-create-agent");
+  });
+});
 
 describe("ensureRemoteOpenCodeModelConfiguredAndAvailable", () => {
   afterEach(() => {

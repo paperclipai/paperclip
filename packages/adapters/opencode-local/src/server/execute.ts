@@ -43,6 +43,7 @@ import {
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   resolvePaperclipDesiredSkillNames,
+  PAPERCLIP_CREATE_AGENT_SKILL_KEY,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import {
@@ -193,12 +194,28 @@ async function ensureOpenCodeSkillsInjected(
   }
 }
 
-async function buildOpenCodeSkillsDir(config: Record<string, unknown>): Promise<string> {
+/**
+ * Skills that must be mounted for this agent regardless of its explicit
+ * desiredSkills configuration. An agent that can hire (`canCreateAgents`) needs
+ * the create-agent skill so it has the hire-flow instructions in its sandbox.
+ */
+function alwaysIncludeSkillKeysForAgent(opts?: { canCreateAgents?: boolean }): string[] {
+  return opts?.canCreateAgents ? [PAPERCLIP_CREATE_AGENT_SKILL_KEY] : [];
+}
+
+export async function buildOpenCodeSkillsDir(
+  config: Record<string, unknown>,
+  opts?: { canCreateAgents?: boolean },
+): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-skills-"));
   const target = path.join(tmp, "skills");
   await fs.mkdir(target, { recursive: true });
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredNames = new Set(resolvePaperclipDesiredSkillNames(config, availableEntries));
+  const desiredNames = new Set(
+    resolvePaperclipDesiredSkillNames(config, availableEntries, {
+      alwaysIncludeSkillKeys: alwaysIncludeSkillKeysForAgent(opts),
+    }),
+  );
   for (const entry of availableEntries) {
     if (!desiredNames.has(entry.key)) continue;
     await fs.symlink(entry.source, path.join(target, entry.runtimeName));
@@ -241,7 +258,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const openCodeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredOpenCodeSkillNames = resolvePaperclipDesiredSkillNames(config, openCodeSkillEntries);
+  const desiredOpenCodeSkillNames = resolvePaperclipDesiredSkillNames(config, openCodeSkillEntries, {
+    alwaysIncludeSkillKeys: alwaysIncludeSkillKeysForAgent({
+      canCreateAgents: Boolean(agent.permissions?.canCreateAgents),
+    }),
+  });
   if (!executionTargetIsRemote) {
     await ensureOpenCodeSkillsInjected(
       onLog,
@@ -364,7 +385,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
     if (executionTarget?.kind === "remote") {
-      localSkillsDir = await buildOpenCodeSkillsDir(config);
+      localSkillsDir = await buildOpenCodeSkillsDir(config, {
+        canCreateAgents: Boolean(agent.permissions?.canCreateAgents),
+      });
       await onLog(
         "stdout",
         `[paperclip] Syncing workspace and OpenCode runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
