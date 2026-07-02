@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Issue, IssueRecoveryAction } from "@paperclipai/shared";
+import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Eye, Flag, X } from "lucide-react";
 import {
@@ -8,10 +8,15 @@ import {
   withIssueDetailHeaderSeed,
 } from "../lib/issueDetailBreadcrumb";
 import { cn } from "../lib/utils";
-import { deriveActiveRecoveryDisplayState, RECOVERY_CHIP_DEFAULT_TONE } from "../lib/recovery-display";
+import {
+  deriveActiveRecoveryDisplayState,
+  RECOVERY_CHIP_DEFAULT_TONE,
+  recoveryChipLabel,
+} from "../lib/recovery-display";
 import { StatusIcon } from "./StatusIcon";
 import { productivityReviewTriggerLabel } from "./ProductivityReviewBadge";
 import { hasAssignedBacklogBlocker } from "../lib/issue-blockers";
+import { ExternalObjectStatusSummary } from "./ExternalObjectStatusSummary";
 
 type UnreadState = "hidden" | "visible" | "fading";
 
@@ -24,6 +29,11 @@ interface IssueRowProps {
   desktopLeadingSpacer?: boolean;
   mobileMeta?: ReactNode;
   desktopTrailing?: ReactNode;
+  /**
+   * Optional pre-fetched external-object summary. Renders a compact severity
+   * marker before the rest of `desktopTrailing` on desktop only.
+   */
+  externalObjectSummary?: ExternalObjectSummary | null;
   trailingMeta?: ReactNode;
   titleSuffix?: ReactNode;
   titleClassName?: string;
@@ -47,6 +57,7 @@ export function IssueRow({
   desktopLeadingSpacer = false,
   mobileMeta,
   desktopTrailing,
+  externalObjectSummary,
   trailingMeta,
   titleSuffix,
   titleClassName,
@@ -116,7 +127,7 @@ export function IssueRow({
       )}
     >
       <span className="flex shrink-0 items-center gap-1 pt-px sm:hidden">
-        {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} className={selectedStatusClass} />}
+        {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} size="lg" className={selectedStatusClass} />}
         {productivityReviewIndicator}
         {parkedBlockerIndicator}
         {recoveryIndicator}
@@ -137,7 +148,7 @@ export function IssueRow({
           {desktopMetaLeading ?? (
             <>
               <span className="hidden shrink-0 items-center gap-1 sm:inline-flex">
-                <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} className={selectedStatusClass} />
+                <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} size="lg" className={selectedStatusClass} />
                 {productivityReviewIndicator}
               </span>
               {checklistStep}
@@ -158,8 +169,11 @@ export function IssueRow({
           ) : null}
         </span>
       </span>
-      {(desktopTrailing || trailingMeta) ? (
+      {(desktopTrailing || trailingMeta || externalObjectSummary) ? (
         <span className="ml-auto hidden shrink-0 items-center gap-2 sm:order-3 sm:flex sm:gap-3">
+          {externalObjectSummary ? (
+            <ExternalObjectStatusSummary summary={externalObjectSummary} compact />
+          ) : null}
           {desktopTrailing}
           {trailingMeta ? (
             <span className="text-xs text-muted-foreground">{trailingMeta}</span>
@@ -233,21 +247,23 @@ function renderRecoveryChip(action: IssueRecoveryAction, selected: boolean): Rea
   if (!state) return null;
   const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
   const Icon = tone.icon;
+  const label = recoveryChipLabel(state, action.kind);
   return (
     <span
       data-testid="issue-row-recovery-indicator"
       data-recovery-state={state}
+      data-recovery-kind={action.kind}
       role="status"
-      aria-label={tone.label}
+      aria-label={label}
       className={cn(
         "ml-1.5 inline-flex shrink-0 items-center gap-0.5 rounded-full border px-2 py-0.5 text-[10px] font-medium",
         tone.className,
         selected ? "!border-muted-foreground !text-muted-foreground" : null,
       )}
-      title={`${tone.label} — open the source issue to act.`}
+      title={`${label} — open the source task to act.`}
     >
       <Icon className="h-2.5 w-2.5" aria-hidden />
-      {tone.label}
+      {label}
     </span>
   );
 }

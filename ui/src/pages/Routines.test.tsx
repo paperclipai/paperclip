@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act, type AnchorHTMLAttributes, type ReactNode } from "react";
+import type { AnchorHTMLAttributes, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, RoutineListItem } from "@paperclipai/shared";
@@ -8,6 +9,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Routines, buildRoutineGroups, sortRoutines } from "./Routines";
 
 let currentSearch = "";
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
 
 const navigateMock = vi.fn();
 const routinesListMock = vi.fn<(companyId: string) => Promise<RoutineListItem[]>>();
@@ -456,6 +465,86 @@ describe("Routines page", () => {
     });
   });
 
+  it("defaults the routines list to project groups sorted by title", async () => {
+    routinesListMock.mockResolvedValue([
+      createRoutine({ id: "routine-1", title: "Weekly digest", projectId: "project-1" }),
+      createRoutine({ id: "routine-2", title: "Morning sync", projectId: "project-1" }),
+      createRoutine({ id: "routine-3", title: "Agent review", projectId: "project-2" }),
+    ]);
+    issuesListMock.mockResolvedValue([]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Routines />
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Project Alpha"); attempts += 1) {
+      await act(async () => {
+        await flush();
+      });
+    }
+
+    const text = container.textContent ?? "";
+    expect(text.indexOf("Project Alpha")).toBeLessThan(text.indexOf("Project Beta"));
+    expect(text.indexOf("Morning sync")).toBeLessThan(text.indexOf("Weekly digest"));
+    expect(text.indexOf("Project Alpha")).toBeLessThan(text.indexOf("Morning sync"));
+    expect(text.indexOf("Weekly digest")).toBeLessThan(text.indexOf("Project Beta"));
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("hides archived routines from the routines list", async () => {
+    routinesListMock.mockResolvedValue([
+      createRoutine({ id: "routine-1", title: "Morning sync", status: "active" }),
+      createRoutine({ id: "routine-2", title: "Archived cleanup", status: "archived" }),
+    ]);
+    issuesListMock.mockResolvedValue([]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Routines />
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Morning sync"); attempts += 1) {
+      await act(async () => {
+        await flush();
+      });
+    }
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("1 routine");
+    expect(text).toContain("Morning sync");
+    expect(text).not.toContain("Archived cleanup");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("shows an outlined row-level run now button on the routines table", async () => {
     routinesListMock.mockResolvedValue([createRoutine({ id: "routine-1", title: "Morning sync" })]);
     issuesListMock.mockResolvedValue([]);
@@ -583,6 +672,12 @@ describe("Routines page", () => {
       );
       await flush();
     });
+
+    for (let attempts = 0; attempts < 5 && issuesListMock.mock.calls.length === 0; attempts += 1) {
+      await act(async () => {
+        await flush();
+      });
+    }
 
     expect(issuesListMock).toHaveBeenCalledWith("company-1", { originKind: "routine_execution" });
 

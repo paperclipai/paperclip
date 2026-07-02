@@ -132,6 +132,22 @@ For a first-time local install, you can bootstrap and run in one command:
 pnpm paperclipai run
 ```
 
+> **Note: private npm registry `.npmrc` + first-run onboarding**
+>
+> The first-run experience often starts with `npx paperclipai onboard --yes` (before you have a repo checkout). If your global `~/.npmrc` sets `registry` to a private registry (for example GitHub Packages), `npx` may try to resolve `paperclipai` from that private registry and fail with `E404`.
+>
+> Diagnostic:
+>
+> ```sh
+> npm config get registry
+> ```
+>
+> Workaround (cross-platform; force the public npm registry for this command):
+>
+> ```sh
+> npx --registry https://registry.npmjs.org paperclipai onboard --yes
+> ```
+
 `paperclipai run` does:
 
 1. auto-onboard if config is missing
@@ -180,7 +196,8 @@ Every local install keeps runtime state directly under the selected instance roo
   secrets/master.key                             # local_encrypted master key
   workspaces/<agent-id>/                         # default agent workspaces
   projects/                                      # project execution workspaces
-  companies/<company-id>/codex-home/             # per-company codex_local home
+  companies/<company-id>/agents/<agent-id>/codex-home/
+                                                   # per-agent codex_local home
 ```
 
 `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` override the home root and instance id respectively. `paperclipai onboard` echoes the resolved values in its banner (`Local home: <home> | instance: <id> | config: <path>`) so you can confirm where state will land before continuing.
@@ -214,9 +231,9 @@ pnpm paperclipai configure --section storage
 
 ## Agent Artifact Uploads
 
-When an agent generates a file that a board user or reviewer should inspect,
-attach it to the issue before marking the task complete. Do not rely on a local
-workspace path as the only access path.
+When an agent generates a file that a board user or reviewer should inspect as
+a deliverable, attach it to the issue before marking the task complete. Do not
+rely on a local workspace path as the only access path.
 
 Use the helper bundled with the Paperclip skill from the repo root:
 
@@ -237,6 +254,10 @@ skills/paperclip/scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
 The helper uploads the file as an issue attachment, creates an artifact work
 product by default, and prints markdown links for the final issue comment. See
 `doc/AGENT-ARTIFACTS.md` for the full completion pattern and direct API shape.
+If a file intentionally remains workspace-only, create a work product with
+`metadata.resourceRef.kind: "workspace_file"` and include the workspace-relative
+path in the final comment. Use browse/search only as the fallback for recovering
+that file, not as the main completion path for deliverables.
 
 ## Default Agent Workspaces
 
@@ -246,13 +267,21 @@ When a local agent run has no resolved project/session workspace, Paperclip fall
 
 This path honors `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` in non-default setups.
 
-For `codex_local`, Paperclip also manages a per-company Codex home under the instance root and seeds it from the shared Codex login/config home (`$CODEX_HOME` or `~/.codex`):
+For `codex_local`, Paperclip assigns new and updated agents an isolated Codex home under the instance root and blocks shared host/company Codex homes:
 
-- `~/.paperclip/instances/default/companies/<company-id>/codex-home`
+- `~/.paperclip/instances/default/companies/<company-id>/agents/<agent-id>/codex-home`
+
+Paperclip also persists an empty `OPENAI_API_KEY` override for those agents so a host-level `OPENAI_API_KEY` cannot leak into Codex runs through process inheritance. If an operator explicitly configures `adapterConfig.env.CODEX_HOME`, it must not point at the shared company `codex-home`, `$CODEX_HOME`, or `~/.codex`.
 
 If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs fail at execution time with a clear adapter error. Quota polling uses a short-lived `codex app-server` subprocess: when `codex` cannot be spawned, that provider reports `ok: false` in aggregated quota results and the API server keeps running (it must not exit on a missing binary).
 
 Local adapters require their corresponding CLI/session setup on the machine running Paperclip. External adapters are installed through the adapter/plugin flow and should not require hardcoded imports in `server/` or `ui/`.
+
+## Config Freshness
+
+Agent, project, environment, secret, skill, and workspace config edits are sampled at the next run boundary. A heartbeat that is already running finishes with the config it started with.
+
+When effective run config changes, Paperclip may intentionally skip a saved adapter session, refresh persisted workspace runtime config, replace a reused execution workspace, or avoid reusing a sandbox/environment lease. Fresh execution can lose adapter-specific session, workspace, or sandbox state; correctness of the next run's config takes priority over continuity. Plain environment values affect freshness through value hashes; run result JSON and workspace operation logs expose only the non-sensitive freshness decision categories, without storing secret values, full env maps, provider credentials, or private path details.
 
 ## Worktree-local Instances
 
@@ -502,6 +531,38 @@ CI runs `pnpm --filter @paperclipai/skills-catalog validate` and the package's
 vitest suite, so always regenerate the manifest in the same commit as the
 catalog change.
 
+## App-Shipped Teams Catalog
+
+The team catalog package mirrors the skills catalog workflow for
+agentcompanies/v1 team packages:
+
+```text
+packages/teams-catalog/
+  catalog/
+    bundled/<category>/<slug>/TEAM.md
+    optional/<category>/<slug>/TEAM.md
+  generated/catalog.json
+  scripts/
+    build-catalog-manifest.ts
+    validate-catalog.ts
+```
+
+Validate without writing the manifest:
+
+```sh
+pnpm --filter @paperclipai/teams-catalog validate
+```
+
+Regenerate `generated/catalog.json` after editing catalog team files:
+
+```sh
+pnpm --filter @paperclipai/teams-catalog build:manifest
+```
+
+Team install/preview APIs enforce source policy. External skill sources require
+explicit approval flags, and local-path skill sources are development-only
+unless `allowLocalPathSources` is set by the caller.
+
 ## Quick Health Checks
 
 In another terminal:
@@ -654,6 +715,13 @@ The board UI generates agent onboarding prompts from the add-agent modal (`+` in
 - `GET /api/invites/:token/onboarding.txt` returns a plain-text onboarding doc intended for both human operators and agents (llm.txt-style handoff), including optional inviter message and suggested network host candidates.
 - `GET /api/skills/index` lists available skill documents.
 - `GET /api/skills/paperclip` returns the Paperclip heartbeat skill markdown.
+
+Hermes gateway agents use this same generic agent invite flow with
+`adapterType=hermes_gateway` and `agentDefaultsPayload.apiBaseUrl` /
+`agentDefaultsPayload.apiKey`. See
+[HERMES_GATEWAY_ONBOARDING.md](./HERMES_GATEWAY_ONBOARDING.md) for the full
+operator path, including Hermes credentials, invite approval, key claim, and
+fresh-state Docker smoke setup.
 
 ## OpenClaw Join Smoke Test
 

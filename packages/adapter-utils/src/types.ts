@@ -4,6 +4,7 @@
 
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
+import type { RuntimeStatusSink } from "./runtime-progress.js";
 
 export interface AdapterAgent {
   id: string;
@@ -64,7 +65,7 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
-export type AdapterExecutionErrorFamily = "transient_upstream";
+export type AdapterExecutionErrorFamily = "transient_upstream" | "model_refusal";
 
 export interface AdapterExecutionResult {
   exitCode: number | null;
@@ -136,6 +137,7 @@ export interface AdapterExecutionContext {
   };
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
+  onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
 }
@@ -186,17 +188,16 @@ export type AdapterSkillState =
 
 export type AdapterSkillOrigin =
   | "company_managed"
-  | "paperclip_required"
   | "user_installed"
   | "external_unknown";
 
 export interface AdapterSkillEntry {
   key: string;
   runtimeName: string | null;
+  versionId?: string | null;
+  currentVersionId?: string | null;
   desired: boolean;
   managed: boolean;
-  required?: boolean;
-  requiredReason?: string | null;
   state: AdapterSkillState;
   origin?: AdapterSkillOrigin;
   originLabel?: string | null;
@@ -212,6 +213,7 @@ export interface AdapterSkillSnapshot {
   supported: boolean;
   mode: AdapterSkillSyncMode;
   desiredSkills: string[];
+  desiredSkillEntries?: Array<{ key: string; versionId: string | null }>;
   entries: AdapterSkillEntry[];
   warnings: string[];
 }
@@ -502,4 +504,19 @@ export interface CreateConfigValues {
   intervalSec: number;
   /** Arbitrary key-value pairs populated by schema-driven config fields. */
   adapterSchemaValues?: Record<string, unknown>;
+  // openclaw_gateway adapter fields
+  authToken?: string;
+  agentId?: string;
+  sessionKeyStrategy?: string;
+  sessionKey?: string;
+  timeoutSec?: number;
+  waitTimeoutMs?: number;
+  disableDeviceAuth?: boolean;
+  autoPairOnFirstConnect?: boolean;
+  devicePrivateKeyPem?: string;
+  role?: string;
+  scopes?: string;
+  paperclipApiUrl?: string;
+  headersJson?: string;
+  password?: string;
 }

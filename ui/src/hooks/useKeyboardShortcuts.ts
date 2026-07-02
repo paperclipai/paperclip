@@ -10,6 +10,7 @@ interface ShortcutHandlers {
   onNewIssue?: () => void;
   onSearch?: () => void;
   onToggleSidebar?: () => void;
+  onToggleCollapse?: () => void;
   onTogglePanel?: () => void;
   onShowShortcuts?: () => void;
 }
@@ -19,6 +20,7 @@ export function useKeyboardShortcuts({
   onNewIssue,
   onSearch,
   onToggleSidebar,
+  onToggleCollapse,
   onTogglePanel,
   onShowShortcuts,
 }: ShortcutHandlers) {
@@ -67,6 +69,12 @@ export function useKeyboardShortcuts({
         onToggleSidebar?.();
       }
 
+      // Cmd/Ctrl+B → Collapse/expand sidebar (desktop) or toggle drawer (mobile)
+      if ((e.key === "b" || e.key === "B") && (e.metaKey || e.ctrlKey) && !e.altKey) {
+        e.preventDefault();
+        onToggleCollapse?.();
+      }
+
       // ] → Toggle Panel
       if (e.key === "]" && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
@@ -76,5 +84,5 @@ export function useKeyboardShortcuts({
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [enabled, onNewIssue, onSearch, onToggleSidebar, onTogglePanel, onShowShortcuts]);
+  }, [enabled, onNewIssue, onSearch, onToggleSidebar, onToggleCollapse, onTogglePanel, onShowShortcuts]);
 }

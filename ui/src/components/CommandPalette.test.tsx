@@ -1,11 +1,20 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { KeyboardEventHandler, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommandPalette } from "./CommandPalette";
+import { queryKeys } from "../lib/queryKeys";
+
+function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  return result;
+}
 
 const companyState = vi.hoisted(() => ({
   selectedCompanyId: "company-1",
@@ -33,6 +42,10 @@ const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => companyState,
 }));
@@ -49,9 +62,13 @@ vi.mock("../context/SidebarContext", () => ({
 const navigateState = vi.hoisted(() => ({
   navigate: vi.fn(),
 }));
+const locationState = vi.hoisted(() => ({
+  location: { pathname: "/", search: "", hash: "" },
+}));
 
 vi.mock("@/lib/router", () => ({
   useNavigate: () => navigateState.navigate,
+  useLocation: () => locationState.location,
 }));
 
 vi.mock("../api/issues", () => ({
@@ -64,6 +81,10 @@ vi.mock("../api/agents", () => ({
 
 vi.mock("../api/projects", () => ({
   projectsApi: mockProjectsApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("./Identity", () => ({
@@ -133,7 +154,11 @@ async function waitForAssertion(assertion: () => void, attempts = 20) {
   throw lastError;
 }
 
-function renderWithQueryClient(node: ReactNode, container: HTMLDivElement) {
+function renderWithQueryClient(
+  node: ReactNode,
+  container: HTMLDivElement,
+  seedQueryClient?: (queryClient: QueryClient) => void,
+) {
   const root = createRoot(container);
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -142,6 +167,7 @@ function renderWithQueryClient(node: ReactNode, container: HTMLDivElement) {
       },
     },
   });
+  seedQueryClient?.(queryClient);
 
   act(() => {
     root.render(
@@ -166,10 +192,17 @@ describe("CommandPalette", () => {
     mockIssuesApi.list.mockReset();
     mockAgentsApi.list.mockReset();
     mockProjectsApi.list.mockReset();
+    mockInstanceSettingsApi.getExperimental.mockReset();
     navigateState.navigate.mockReset();
+    locationState.location.pathname = "/";
+    locationState.location.search = "";
+    locationState.location.hash = "";
     mockIssuesApi.list.mockResolvedValue([]);
     mockAgentsApi.list.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableExperimentalFileViewer: false,
+    });
   });
 
   afterEach(() => {
@@ -196,6 +229,52 @@ describe("CommandPalette", () => {
         limit: 10,
         includeRoutineExecutions: true,
       });
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("hides the issue file viewer command by default", async () => {
+    locationState.location.pathname = "/issues/PAP-1";
+    const { root } = renderWithQueryClient(<CommandPalette />, container);
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Create new task");
+    });
+    expect(container.textContent).not.toContain("Open file in this issue");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("shows the issue file viewer command when the experimental flag is enabled", async () => {
+    locationState.location.pathname = "/issues/PAP-1";
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableExperimentalFileViewer: true,
+    });
+    const { root } = renderWithQueryClient(
+      <CommandPalette />,
+      container,
+      (queryClient) => {
+        queryClient.setQueryData(queryKeys.instance.experimentalSettings, {
+          enableExperimentalFileViewer: true,
+        });
+      },
+    );
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Open file in this issue");
     });
 
     act(() => {
@@ -234,6 +313,67 @@ describe("CommandPalette", () => {
 
     await waitForAssertion(() => {
       expect(navigateState.navigate).toHaveBeenCalledWith("/search?q=auth%20flake");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("promotes matching projects above the Tasks group when typing", async () => {
+    const projects = [
+      { id: "p1", urlKey: "mobile", name: "Mobile App", description: "iOS client", archivedAt: null },
+      { id: "p2", urlKey: "billing", name: "Billing Service", description: null, archivedAt: null },
+    ];
+    mockProjectsApi.list.mockResolvedValue(projects);
+    mockIssuesApi.list.mockImplementation((_companyId: string, opts?: { q?: string }) =>
+      Promise.resolve(opts?.q ? [{ id: "i1", identifier: "ENG-9", title: "Fix login" }] : []),
+    );
+
+    const { root } = renderWithQueryClient(<CommandPalette />, container, (queryClient) => {
+      // Seed the caches so the already-loaded data is available synchronously —
+      // this harness's flush model doesn't reliably propagate fresh async fetches.
+      queryClient.setQueryData(queryKeys.projects.list("company-1"), projects);
+      queryClient.setQueryData(queryKeys.issues.search("company-1", "mob", undefined, 10), [
+        { id: "i1", identifier: "ENG-9", title: "Fix login" },
+      ]);
+    });
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+    });
+
+    const input = container.querySelector('input[aria-label="Command search"]') as HTMLInputElement;
+    act(() => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      nativeSetter.call(input, "mob");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      const match = container.querySelector('button[data-testid="command-project-match"]');
+      expect(match).not.toBeNull();
+      expect(match!.textContent).toContain("Mobile App");
+    });
+
+    // Non-matching project is excluded from the typeahead results.
+    expect(container.textContent).not.toContain("Billing Service");
+
+    // The promoted project renders above the fold — before the Tasks group.
+    await waitForAssertion(() => {
+      const text = container.textContent ?? "";
+      expect(text).toContain("Fix login");
+      expect(text.indexOf("Mobile App")).toBeLessThan(text.indexOf("Fix login"));
+    });
+
+    // Selecting the promoted project navigates to its URL.
+    act(() => {
+      container
+        .querySelector('button[data-testid="command-project-match"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      expect(navigateState.navigate).toHaveBeenCalledWith("/projects/mobile");
     });
 
     act(() => {

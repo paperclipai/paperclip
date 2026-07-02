@@ -38,6 +38,7 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
 }));
 
@@ -187,6 +188,12 @@ const projectGoal = {
 describe.sequential("issue goal context routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "issue:read",
+      reason: "allow_test",
+      explanation: "Allowed by test mock.",
+    });
     mockIssueService.getById.mockResolvedValue(legacyProjectLinkedIssue);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
@@ -204,13 +211,15 @@ describe.sequential("issue goal context routes", () => {
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
-    mockDb.select.mockReturnValue({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          orderBy: vi.fn(async () => []),
-        })),
-      })),
-    });
+    const emptyQuery: any = {};
+    emptyQuery.from = vi.fn(() => emptyQuery);
+    emptyQuery.innerJoin = vi.fn(() => emptyQuery);
+    emptyQuery.where = vi.fn(() => emptyQuery);
+    emptyQuery.orderBy = vi.fn(() => emptyQuery);
+    emptyQuery.limit = vi.fn(async () => []);
+    emptyQuery.then = (resolve: (rows: unknown[]) => unknown, reject?: (error: unknown) => unknown) =>
+      Promise.resolve([]).then(resolve, reject);
+    mockDb.select.mockReturnValue(emptyQuery);
     mockDb.execute.mockResolvedValue([]);
     mockProjectService.getById.mockResolvedValue({
       id: legacyProjectLinkedIssue.projectId,

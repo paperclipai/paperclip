@@ -12,6 +12,8 @@ export const DEFAULT_GEMINI_LOCAL_MODEL = "auto";
 
 export const models = [
   { id: DEFAULT_GEMINI_LOCAL_MODEL, label: "Auto" },
+  { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
+  { id: "gemini-3.1-pro-preview-customtools", label: "Gemini 3.1 Pro Preview (Custom Tools)" },
   { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
@@ -60,7 +62,8 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
-- Runs use positional prompt arguments, not stdin.
+- Runs use --prompt for non-interactive execution, not stdin.
+- The adapter sets a headless-safe terminal/browser environment for Gemini CLI child processes so unattended runs do not wait on browser auth or 256-color terminal prompts.
 - Sessions resume with --resume when stored session cwd matches the current cwd.
 - Paperclip auto-injects local skills into \`~/.gemini/skills/\` via symlinks, so the CLI can discover both credentials and skills in their natural location.
 - Authentication can use GEMINI_API_KEY / GOOGLE_API_KEY or local Gemini CLI login.

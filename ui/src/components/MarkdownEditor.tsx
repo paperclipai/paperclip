@@ -33,11 +33,12 @@ import {
 } from "@mdxeditor/editor";
 import {
   buildAgentMentionHref,
+  buildIssueReferenceHref,
   buildProjectMentionHref,
   buildRoutineMentionHref,
   buildUserMentionHref,
 } from "@paperclipai/shared";
-import { Boxes, CalendarClock, User } from "lucide-react";
+import { Boxes, CalendarClock, Hash, User } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
@@ -53,12 +54,15 @@ import { useEditorAutocomplete, type SlashCommandOption } from "../context/Edito
 export interface MentionOption {
   id: string;
   name: string;
-  kind?: "agent" | "project" | "user";
+  kind?: "agent" | "project" | "user" | "issue";
   agentId?: string;
   agentIcon?: string | null;
   projectId?: string;
   projectColor?: string | null;
   userId?: string;
+  /** Issue/task references (PAP-95f). `name` carries the searchable identifier + title. */
+  issueId?: string;
+  issueIdentifier?: string;
 }
 
 /* ---- Editor props ---- */
@@ -86,6 +90,7 @@ interface MarkdownEditorProps {
 
 export interface MarkdownEditorRef {
   focus: () => void;
+  insertMarkdown: (markdown: string) => void;
 }
 
 function readHtmlAttribute(attrs: string, name: string): string | null {
@@ -420,7 +425,23 @@ function isSelectionInsideCodeLikeElement(container: HTMLElement | null) {
   return false;
 }
 
+/** The human title of an issue mention — `name` minus its leading identifier. */
+export function issueMentionTitle(option: MentionOption): string {
+  const name = option.name.trim();
+  const identifier = option.issueIdentifier?.trim();
+  if (identifier && name.toLowerCase().startsWith(identifier.toLowerCase())) {
+    return name.slice(identifier.length).trim();
+  }
+  return name;
+}
+
 function mentionMarkdown(option: MentionOption): string {
+  if (option.kind === "issue" && option.issueIdentifier) {
+    // Insert a compact issue link (e.g. `[PAP-123](/issues/PAP-123)`). The chip
+    // decorator recognizes this href as an `issue` mention and renders it as a
+    // task chip; MarkdownBody linkifies the same href on display.
+    return `[${option.issueIdentifier}](${buildIssueReferenceHref(option.issueIdentifier)}) `;
+  }
   if (option.kind === "project" && option.projectId) {
     return `[@${option.name}](${buildProjectMentionHref(option.projectId, option.projectColor ?? null)}) `;
   }
@@ -482,6 +503,9 @@ function autocompleteOptionMatchesLink(option: AutocompleteOption, href: string)
     return parsed.kind === "routine" && parsed.routineId === option.routineId;
   }
 
+  if (option.kind === "issue" && option.issueIdentifier) {
+    return parsed.kind === "issue" && parsed.identifier === option.issueIdentifier;
+  }
   if (option.kind === "project" && option.projectId) {
     return parsed.kind === "project" && parsed.projectId === option.projectId;
   }
@@ -658,6 +682,28 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       .slice(0, MAX_AUTOCOMPLETE_OPTIONS);
   }, [mentionState, mentions, slashCommands]);
 
+  const insertMarkdown = useCallback((markdown: string) => {
+    if (readOnly) return;
+    if (!richEditorError && ref.current) {
+      ref.current.insertMarkdown(markdown);
+      return;
+    }
+    const textarea = fallbackTextareaRef.current;
+    if (!textarea) {
+      onChange(`${value}${markdown}`);
+      return;
+    }
+    const start = textarea.selectionStart ?? value.length;
+    const end = textarea.selectionEnd ?? value.length;
+    const next = `${value.slice(0, start)}${markdown}${value.slice(end)}`;
+    onChange(next);
+    requestAnimationFrame(() => {
+      textarea.focus();
+      const cursor = start + markdown.length;
+      textarea.setSelectionRange(cursor, cursor);
+    });
+  }, [onChange, readOnly, richEditorError, value]);
+
   useImperativeHandle(forwardedRef, () => ({
     focus: () => {
       if (richEditorError) {
@@ -666,7 +712,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       }
       ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
     },
-  }), [richEditorError]);
+    insertMarkdown,
+  }), [insertMarkdown, richEditorError]);
 
   const autoSizeFallbackTextarea = useCallback((element: HTMLTextAreaElement | null) => {
     if (!element) return;
@@ -1300,6 +1347,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : option.kind === "skill" ? (
                   <Boxes className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                ) : option.kind === "issue" ? (
+                  <Hash className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : option.kind === "project" && option.projectId ? (
                   <span
                     className="inline-flex h-2 w-2 rounded-full border border-border/50"
@@ -1313,11 +1362,25 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                     className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
                   />
                 )}
-                <span>
-                  {option.kind === "skill" || option.kind === "routine"
-                    ? slashCommandLabel(option)
-                    : option.name}
-                </span>
+                {option.kind === "issue" && option.issueIdentifier ? (
+                  <span className="flex min-w-0 items-baseline gap-1.5">
+                    <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                      {option.issueIdentifier}
+                    </span>
+                    <span className="truncate">{issueMentionTitle(option)}</span>
+                  </span>
+                ) : (
+                  <span className="truncate">
+                    {option.kind === "skill" || option.kind === "routine"
+                      ? slashCommandLabel(option)
+                      : option.name}
+                  </span>
+                )}
+                {option.kind === "issue" && (
+                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Task
+                  </span>
+                )}
                 {option.kind === "project" && option.projectId && (
                   <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
                     Project

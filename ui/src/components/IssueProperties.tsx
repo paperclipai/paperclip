@@ -1,22 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
-import type { Issue, IssueLabel, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
+import type { Issue, IssueLabel, Project } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterModel } from "../api/agents";
 import { accessApi } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
+import { executionWorkspacesApi } from "../api/execution-workspaces";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
-import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap } from "../lib/company-members";
+import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, isAgentTaskTarget } from "../lib/company-members";
 import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../lib/issue-assignee-overrides";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import {
   getRecentAssigneeIds,
-  getRecentAssigneeSelectionIds,
   sortAgentsByRecency,
   trackRecentAssignee,
   trackRecentAssigneeUser,
@@ -35,6 +36,20 @@ import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
 import { IssueReferencePill } from "./IssueReferencePill";
 import { formatDate, formatDateTime, cn, projectUrl } from "../lib/utils";
+import { ExternalObjectStatusIcon } from "./ExternalObjectStatusIcon";
+import type { IssueExternalObjectGroup } from "../hooks/useIssueExternalObjects";
+import {
+  externalObjectCategoryLabel,
+  externalObjectDisplayLabel,
+  externalObjectIconForKey,
+  externalObjectProviderLabel,
+  externalObjectToneSeverity,
+  externalObjectTypeLabel,
+} from "../lib/external-objects";
+import {
+  externalObjectStatusIcon,
+  externalObjectStatusIconDefault,
+} from "../lib/status-colors";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -48,10 +63,22 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock, RotateCcw, Loader2, CheckCircle2 } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, X, Clock, RotateCcw, Loader2, CheckCircle2, ScanEye } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
+import {
+  AssigneeRunningBanner,
+  InterruptAssignConfirm,
+  type HandoffChipResolvers,
+} from "./interrupt-handoff/InterruptHandoffViews";
+import { describeReassignInterrupt } from "../lib/interrupt-handoff";
+import {
+  buildWorkspaceRuntimeControlSections,
+  WorkspaceRuntimeQuickControls,
+  type WorkspaceRuntimeControlRequest,
+} from "./WorkspaceRuntimeControls";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
   const [copied, setCopied] = useState(false);
@@ -73,11 +100,17 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.C
         type="button"
         className="text-sm font-mono min-w-0 break-all text-left cursor-pointer hover:text-foreground transition-colors"
         onClick={handleCopy}
-        title={copied ? "Copied!" : "Click to copy"}
+        title={copied ? "Copied" : "Copy to clipboard"}
+        aria-label={`Copy ${value} to clipboard`}
       >
         {value}
       </button>
-      {copied && <Check className="h-3 w-3 text-green-500 shrink-0 mt-0.5" />}
+      {copied && (
+        <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-300" role="status">
+          <Check className="h-3 w-3 shrink-0" />
+          Copied
+        </span>
+      )}
     </div>
   );
 }
@@ -123,12 +156,6 @@ function isMainIssueWorkspace(input: {
   return linkedProjectWorkspaceId === primaryWorkspaceId;
 }
 
-function runningRuntimeServiceWithUrl(
-  runtimeServices: WorkspaceRuntimeService[] | null | undefined,
-) {
-  return runtimeServices?.find((service) => service.status === "running" && service.url?.trim()) ?? null;
-}
-
 function toDateTimeLocalValue(value: string | null | undefined) {
   if (!value) return "";
   const date = new Date(value);
@@ -143,16 +170,173 @@ interface IssuePropertiesProps {
   onAddSubIssue?: () => void;
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
+  /** Whether an agent run is currently in flight on this issue, so the assignee
+   * picker can warn that reassigning will interrupt it. */
+  hasActiveRun?: boolean;
+  externalObjects?: IssueExternalObjectGroup[];
+  externalObjectsLoading?: boolean;
+  externalObjectsError?: boolean;
+  onRetryExternalObjects?: () => void;
 }
 
 const ISSUE_BLOCKER_SEARCH_LIMIT = 50;
+const ISSUE_PROPERTY_RELATION_PREVIEW_COUNT = 5;
 
-function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
+function PropertyRow({
+  label,
+  children,
+  labelClassName,
+}: {
+  label: React.ReactNode;
+  children: React.ReactNode;
+  labelClassName?: string;
+}) {
   return (
     <div className="flex items-start gap-3 py-1.5">
-      <span className="text-xs text-muted-foreground shrink-0 w-20 mt-0.5">{label}</span>
+      <span className={cn("text-xs text-muted-foreground shrink-0 w-20 mt-0.5", labelClassName)}>{label}</span>
       <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap">{children}</div>
     </div>
+  );
+}
+
+function sortExternalObjectGroups(groups: IssueExternalObjectGroup[]) {
+  return [...groups].sort((a, b) => {
+    const aTone = externalObjectToneSeverity(a.group.object?.statusTone);
+    const bTone = externalObjectToneSeverity(b.group.object?.statusTone);
+    return bTone - aTone;
+  });
+}
+
+function externalObjectRowDisplayKey(group: IssueExternalObjectGroup): string {
+  const { pill } = group;
+  const displayKey = pill.displayKey?.trim();
+  if (displayKey) return displayKey;
+  if (pill.providerKey === "github") {
+    if (pill.objectType === "pull_request") return "Github Pull Request";
+    if (pill.objectType === "issue") return "Github Issue";
+  }
+  return externalObjectDisplayLabel(pill.providerKey, pill.objectType);
+}
+
+function externalObjectRowLabel(group: IssueExternalObjectGroup): React.ReactNode {
+  const { pill } = group;
+  const displayKey = externalObjectRowDisplayKey(group);
+  const Icon = externalObjectIconForKey(pill.iconKey);
+  return (
+    <span className="inline-flex min-w-0 items-start gap-1">
+      {Icon ? <Icon aria-hidden="true" className="h-3 w-3 shrink-0 mt-0.5" /> : null}
+      <span className="whitespace-normal break-words leading-tight">{displayKey}</span>
+    </span>
+  );
+}
+
+function githubObjectPropertyValue(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname !== "github.com") return null;
+    const [, owner, repo, kind, number] = parsed.pathname.split("/");
+    if (!owner || !repo || !number) return null;
+    if (kind === "pull") return `PR ${number}`;
+    if (kind === "issues") return `Issue ${number}`;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function externalObjectPropertyStatusLabel(group: IssueExternalObjectGroup): string {
+  return group.pill.statusLabel ?? externalObjectCategoryLabel(group.pill.statusCategory);
+}
+
+function externalObjectPropertyValue(group: IssueExternalObjectGroup): string {
+  const { pill } = group;
+  const statusLabel = externalObjectPropertyStatusLabel(group);
+  const githubLabel = pill.providerKey === "github" ? githubObjectPropertyValue(pill.url) : null;
+  const base = githubLabel ?? pill.displayTitle?.trim() ?? externalObjectRowDisplayKey(group);
+  return statusLabel ? `${base} - ${statusLabel}` : base;
+}
+
+function isMergedExternalObject(group: IssueExternalObjectGroup): boolean {
+  const statusLabel = externalObjectPropertyStatusLabel(group);
+  return group.pill.statusIconKey === "git-merge" || statusLabel.toLowerCase() === "merged";
+}
+
+function externalObjectPropertyTone(group: IssueExternalObjectGroup): string {
+  if (isMergedExternalObject(group)) {
+    return "text-violet-600 dark:text-violet-400";
+  }
+  const tone = externalObjectStatusIcon[group.pill.statusCategory] ?? externalObjectStatusIconDefault;
+  return tone.split(" ").filter((c) => c.startsWith("text-")).join(" ");
+}
+
+function externalObjectPropertyStatusIconKey(group: IssueExternalObjectGroup): string | null | undefined {
+  if (isMergedExternalObject(group)) return group.pill.statusIconKey ?? "git-merge";
+  return group.pill.statusIconKey;
+}
+
+function externalObjectPropertyTitle(group: IssueExternalObjectGroup): string {
+  const { pill, sourceLabels } = group;
+  const base = pill.displayTitle ?? externalObjectPropertyValue(group);
+  return sourceLabels.length > 0 ? `${base} - ${sourceLabels.join(", ")}` : base;
+}
+
+function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGroup }) {
+  const { pill, mentionCount } = group;
+  const statusLabel = externalObjectPropertyStatusLabel(group);
+  const providerLabel = externalObjectProviderLabel(pill.providerKey);
+  const typeLabel = externalObjectTypeLabel(pill.objectType);
+  const value = externalObjectPropertyValue(group);
+  const content = (
+    <>
+      <ExternalObjectStatusIcon
+        category={pill.statusCategory}
+        liveness={pill.liveness}
+        statusIconKey={externalObjectPropertyStatusIconKey(group)}
+        sizeClassName="h-3 w-3"
+        label={`${providerLabel}: ${statusLabel}`}
+      />
+      <span className="min-w-0 truncate">{value}</span>
+      {mentionCount > 1 ? (
+        <span className="tabular-nums text-[10px] font-medium opacity-80">x{mentionCount}</span>
+      ) : null}
+    </>
+  );
+  const className = cn(
+    "inline-flex min-w-0 max-w-full items-center gap-1 text-xs font-medium no-underline",
+    externalObjectPropertyTone(group),
+    pill.url ? "hover:underline focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring" : "",
+  );
+
+  if (pill.url) {
+    return (
+      <a
+        href={pill.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        data-mention-kind="external-object"
+        data-external-status={pill.statusCategory}
+        data-external-liveness={pill.liveness}
+        className={className}
+        title={externalObjectPropertyTitle(group)}
+        aria-label={`${providerLabel} ${typeLabel} - ${statusLabel}: ${pill.displayTitle ?? value}`}
+      >
+        {content}
+      </a>
+    );
+  }
+
+  return (
+    <span
+      data-mention-kind="external-object"
+      data-external-status={pill.statusCategory}
+      data-external-liveness={pill.liveness}
+      className={className}
+      title={externalObjectPropertyTitle(group)}
+      aria-label={`${providerLabel} ${typeLabel} - ${statusLabel}: ${pill.displayTitle ?? value}`}
+    >
+      {content}
+    </span>
   );
 }
 
@@ -242,6 +426,11 @@ function RemovableIssueReferencePill({
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const issueLabel = issue.identifier ?? issue.title;
   const confirmLabel = issue.identifier ? `${issue.identifier}: ${issue.title}` : issue.title;
+  const chipClassName = cn(
+    "paperclip-mention-chip paperclip-mention-chip--issue",
+    "inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs no-underline",
+    issue.identifier && "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
+  );
   const content = (
     <>
       <StatusIcon status={issue.status} className="h-3 w-3 shrink-0" />
@@ -261,18 +450,10 @@ function RemovableIssueReferencePill({
 
   return (
     <>
-      <span
-        data-mention-kind="issue"
-        className={cn(
-          "paperclip-mention-chip paperclip-mention-chip--issue group",
-          "inline-flex items-center gap-1 rounded-full border border-border py-0.5 pl-1 pr-2 text-xs",
-        )}
-        title={issue.title}
-        aria-label={`Issue ${issueLabel}: ${issue.title}`}
-      >
+      <span className="group relative inline-flex">
         <button
           type="button"
-          className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-colors transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-ring group-hover:opacity-100"
+          className="absolute -right-1 -top-1 z-10 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-border bg-background text-muted-foreground opacity-0 shadow-sm transition-colors transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-ring group-hover:opacity-100"
           aria-label={removeLabel}
           title={removeLabel}
           onClick={handleRemove}
@@ -282,13 +463,22 @@ function RemovableIssueReferencePill({
         {issue.identifier ? (
           <Link
             to={`/issues/${issueLabel}`}
-            className="inline-flex min-w-0 items-center gap-1 no-underline hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring"
-            aria-label={`Issue ${issueLabel}: ${issue.title}`}
+            data-mention-kind="issue"
+            className={chipClassName}
+            title={issue.title}
+            aria-label={`Task ${issueLabel}: ${issue.title}`}
           >
             {content}
           </Link>
         ) : (
-          <span className="inline-flex min-w-0 items-center gap-1">{content}</span>
+          <span
+            data-mention-kind="issue"
+            className={chipClassName}
+            title={issue.title}
+            aria-label={`Task: ${issue.title}`}
+          >
+            {content}
+          </span>
         )}
       </span>
       <Dialog open={isConfirmOpen} onOpenChange={setIsConfirmOpen}>
@@ -296,7 +486,7 @@ function RemovableIssueReferencePill({
           <DialogHeader>
             <DialogTitle>Remove blocker?</DialogTitle>
             <DialogDescription>
-              Remove {confirmLabel} as a blocker for this issue.
+              Remove {confirmLabel} as a blocker for this task.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -310,6 +500,27 @@ function RemovableIssueReferencePill({
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+function ExpandRelationListButton({
+  hiddenCount,
+  expanded,
+  onClick,
+}: {
+  hiddenCount: number;
+  expanded: boolean;
+  onClick: () => void;
+}) {
+  if (!expanded && hiddenCount <= 0) return null;
+  return (
+    <button
+      type="button"
+      className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+      onClick={onClick}
+    >
+      {expanded ? "show less" : `and ${hiddenCount} more...`}
+    </button>
   );
 }
 
@@ -381,16 +592,36 @@ export function IssueProperties({
   onAddSubIssue,
   onUpdate,
   inline,
+  hasActiveRun = false,
+  externalObjects,
+  externalObjectsLoading,
+  externalObjectsError,
+  onRetryExternalObjects,
 }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
+  /** When a run is live, a selection is staged here until the operator confirms
+   * the interrupt rather than applying it immediately. */
+  const [pendingAssignee, setPendingAssignee] = useState<{
+    assigneeAgentId: string | null;
+    assigneeUserId: string | null;
+    label: string;
+    track?: () => void;
+  } | null>(null);
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
   const [blockedByOpen, setBlockedByOpen] = useState(false);
   const [blockedBySearch, setBlockedBySearch] = useState("");
+  const [blockedByExpanded, setBlockedByExpanded] = useState(false);
+  const [subTasksExpanded, setSubTasksExpanded] = useState(false);
   const [parentOpen, setParentOpen] = useState(false);
   const [parentSearch, setParentSearch] = useState("");
   const [reviewersOpen, setReviewersOpen] = useState(false);
@@ -407,7 +638,17 @@ export function IssueProperties({
   const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
   const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
+  const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
+  const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
+  const [watchdogOpen, setWatchdogOpen] = useState(false);
+  const [watchdogAgentInput, setWatchdogAgentInput] = useState(issue.watchdog?.watchdogAgentId ?? "");
+  const [watchdogInstructionsInput, setWatchdogInstructionsInput] = useState(issue.watchdog?.instructions ?? "");
   const normalizedBlockedBySearch = blockedBySearch.trim();
+
+  useEffect(() => {
+    setBlockedByExpanded(false);
+    setSubTasksExpanded(false);
+  }, [issue.id]);
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -508,10 +749,55 @@ export function IssueProperties({
     [issue, issueProject],
   );
   const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId) && !issueUsesMainWorkspace;
-  const liveWorkspaceService = useMemo(() => {
-    if (issueUsesMainWorkspace) return null;
-    return runningRuntimeServiceWithUrl(issue.currentExecutionWorkspace?.runtimeServices);
-  }, [issue.currentExecutionWorkspace?.runtimeServices, issueUsesMainWorkspace]);
+  const workspaceRuntimeConfig = issueUsesMainWorkspace
+    ? null
+    : issue.currentExecutionWorkspace?.config?.workspaceRuntime ?? null;
+  const workspaceRuntimeServices = issue.currentExecutionWorkspace?.runtimeServices ?? [];
+  const workspaceCanRunCommands = Boolean(issue.currentExecutionWorkspace?.cwd);
+  const workspaceCanStartServices = Boolean(workspaceRuntimeConfig) && workspaceCanRunCommands;
+  const workspaceRuntimeSections = useMemo(() => buildWorkspaceRuntimeControlSections({
+    runtimeConfig: workspaceRuntimeConfig,
+    runtimeServices: workspaceRuntimeServices,
+    canStartServices: workspaceCanStartServices,
+    canRunJobs: workspaceCanRunCommands,
+  }), [workspaceCanRunCommands, workspaceCanStartServices, workspaceRuntimeConfig, workspaceRuntimeServices]);
+  const hasWorkspaceRuntimeControls = !issueUsesMainWorkspace && (
+    workspaceRuntimeSections.services.length > 0
+    || workspaceRuntimeSections.otherServices.length > 0
+  );
+  const controlWorkspaceRuntime = useMutation({
+    mutationFn: (request: WorkspaceRuntimeControlRequest) => {
+      const workspaceId = issue.currentExecutionWorkspace?.id ?? issue.executionWorkspaceId;
+      if (!workspaceId) throw new Error("This task is not attached to a workspace.");
+      return executionWorkspacesApi.controlRuntimeCommands(workspaceId, request.action, request);
+    },
+    onSuccess: (result, request) => {
+      queryClient.setQueryData(queryKeys.executionWorkspaces.detail(result.workspace.id), result.workspace);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(result.workspace.projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(result.workspace.companyId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.workspaceOperations(result.workspace.id) });
+      if (companyId) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId) });
+      }
+      setRuntimeActionErrorMessage(null);
+      setRuntimeActionMessage(
+        request.action === "run"
+          ? "Workspace job completed."
+          : request.action === "stop"
+            ? "Workspace service stopped."
+            : request.action === "restart"
+              ? "Workspace service restarted."
+              : "Workspace service started.",
+      );
+    },
+    onError: (error) => {
+      setRuntimeActionMessage(null);
+      setRuntimeActionErrorMessage(error instanceof Error ? error.message : "Failed to control workspace commands.");
+    },
+  });
+  const pendingWorkspaceRuntimeAction = controlWorkspaceRuntime.isPending ? controlWorkspaceRuntime.variables ?? null : null;
   const referencedIssueIdentifiers = issue.referencedIssueIdentifiers ?? [];
   const relatedTasks = useMemo(() => {
     const excluded = new Set<string>();
@@ -543,14 +829,9 @@ export function IssueProperties({
   };
 
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [assigneeOpen]);
-  const recentAssigneeSelectionIds = useMemo(() => getRecentAssigneeSelectionIds(), [assigneeOpen]);
   const sortedAgents = useMemo(
-    () => sortAgentsByRecency((agents ?? []).filter((a) => a.status !== "terminated"), recentAssigneeIds),
+    () => sortAgentsByRecency((agents ?? []).filter(isAgentTaskTarget), recentAssigneeIds),
     [agents, recentAssigneeIds],
-  );
-  const recentAssigneeValues = useMemo(
-    () => recentAssigneeSelectionIds,
-    [recentAssigneeSelectionIds],
   );
   const recentProjectIds = useMemo(() => getRecentProjectIds(), [projectOpen]);
   const userLabelMap = useMemo(
@@ -766,7 +1047,7 @@ export function IssueProperties({
     <div className="w-full space-y-2 p-2">
       <p className="text-xs text-muted-foreground">
         {assignee
-          ? "This assignee's adapter does not expose editable issue overrides."
+          ? "This assignee's adapter does not expose editable task overrides."
           : "Select a compatible agent assignee to edit these overrides."}
       </p>
       <button
@@ -788,6 +1069,51 @@ export function IssueProperties({
     : issue.assigneeUserId
       ? `user:${issue.assigneeUserId}`
       : "";
+
+  // --- Interrupt-handoff clarity for the assignee picker (design surface 2) ---
+  const handoffResolvers: HandoffChipResolvers = useMemo(
+    () => ({
+      agentMap: new Map((agents ?? []).map((agent) => [agent.id, { name: agent.name, icon: agent.icon }])),
+      resolveUserLabel: (id) => userLabel(id),
+    }),
+    // userLabel closes over userLabelMap + currentUserId, both reflected here.
+    [agents, userLabelMap, currentUserId],
+  );
+  const reassignInterruptCopy = useMemo(
+    () => describeReassignInterrupt({ runningAgentName: assignee?.name ?? null }),
+    [assignee?.name],
+  );
+  const closeAssigneePicker = () => {
+    setAssigneeOpen(false);
+    setAssigneeSearch("");
+    setPendingAssignee(null);
+  };
+  const applyAssignee = (next: { assigneeAgentId: string | null; assigneeUserId: string | null }, track?: () => void) => {
+    track?.();
+    onUpdate(next);
+    closeAssigneePicker();
+  };
+  /** Apply a selection immediately, or stage it for confirmation while a run is live. */
+  const selectAssignee = (
+    next: { assigneeAgentId: string | null; assigneeUserId: string | null },
+    label: string,
+    track?: () => void,
+  ) => {
+    const nextValue = next.assigneeAgentId
+      ? `agent:${next.assigneeAgentId}`
+      : next.assigneeUserId
+        ? `user:${next.assigneeUserId}`
+        : "";
+    if (nextValue === selectedAssigneeValue) {
+      closeAssigneePicker();
+      return;
+    }
+    if (hasActiveRun) {
+      setPendingAssignee({ ...next, label, track });
+      return;
+    }
+    applyAssignee(next, track);
+  };
   const updateExecutionPolicy = (nextReviewers: string[], nextApprovers: string[]) => {
     onUpdate({
       executionPolicy: buildExecutionPolicy({
@@ -865,6 +1191,168 @@ export function IssueProperties({
     issue.executionPolicy?.monitor?.notes,
     issue.executionPolicy?.monitor?.serviceName,
   ]);
+  // Re-sync watchdog editor inputs when the persisted watchdog changes (and reset on close).
+  useEffect(() => {
+    if (watchdogOpen) return;
+    setWatchdogAgentInput(issue.watchdog?.watchdogAgentId ?? "");
+    setWatchdogInstructionsInput(issue.watchdog?.instructions ?? "");
+  }, [issue.watchdog?.watchdogAgentId, issue.watchdog?.instructions, watchdogOpen]);
+
+  const watchdogAgentOptions = useMemo<InlineEntityOption[]>(
+    () =>
+      (agents ?? [])
+        .filter(isAgentTaskTarget)
+        .map((agent) => ({
+          id: agent.id,
+          label: agent.name,
+          searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
+        })),
+    [agents],
+  );
+  const upsertWatchdog = useMutation({
+    mutationFn: (data: { agentId: string; instructions: string | null }) =>
+      issuesApi.upsertWatchdog(issue.id, data),
+    onSuccess: (watchdog) => {
+      queryClient.setQueryData<Issue>(queryKeys.issues.detail(issue.id), (current) =>
+        current ? { ...current, watchdog } : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+      setWatchdogOpen(false);
+    },
+  });
+  const deleteWatchdog = useMutation({
+    mutationFn: () => issuesApi.deleteWatchdog(issue.id),
+    onSuccess: () => {
+      queryClient.setQueryData<Issue>(queryKeys.issues.detail(issue.id), (current) =>
+        current ? { ...current, watchdog: null } : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+      setWatchdogOpen(false);
+    },
+  });
+  const saveWatchdog = () => {
+    if (!watchdogAgentInput) return;
+    upsertWatchdog.mutate({
+      agentId: watchdogAgentInput,
+      instructions: watchdogInstructionsInput.trim() || null,
+    });
+  };
+  const removeWatchdog = () => {
+    if (issue.watchdog) {
+      deleteWatchdog.mutate();
+    } else {
+      setWatchdogOpen(false);
+    }
+    setWatchdogAgentInput("");
+    setWatchdogInstructionsInput("");
+  };
+  const watchdogMutationError =
+    upsertWatchdog.error instanceof Error
+      ? upsertWatchdog.error.message
+      : deleteWatchdog.error instanceof Error
+        ? deleteWatchdog.error.message
+        : null;
+  const watchdogIssueRef = (childIssues ?? []).find(
+    (child) => child.id === issue.watchdog?.watchdogIssueId,
+  );
+  const watchdogTrigger = issue.watchdog ? (
+    <span className="inline-flex min-w-0 max-w-full flex-wrap items-start gap-x-1.5 gap-y-0.5 text-sm leading-5">
+      {(() => {
+        const agent = (agents ?? []).find((candidate) => candidate.id === issue.watchdog?.watchdogAgentId);
+        return agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null;
+      })()}
+      <span className="min-w-0 max-w-40 truncate">{agentName(issue.watchdog.watchdogAgentId)}</span>
+      {issue.watchdog.instructions?.trim() ? (
+        <span className="min-w-0 flex-1 basis-32 whitespace-normal break-words text-muted-foreground">
+          · {issue.watchdog.instructions.trim()}
+        </span>
+      ) : null}
+      {issue.watchdog.status === "disabled" ? (
+        <span className="shrink-0 text-xs text-muted-foreground">(disabled)</span>
+      ) : null}
+    </span>
+  ) : (
+    <span className="text-sm text-muted-foreground">Set watchdog</span>
+  );
+  const watchdogContent = (
+    <div className="space-y-3 p-2">
+      <div className="space-y-1.5">
+        <div className="text-xs font-medium text-foreground">Watchdog agent</div>
+        <InlineEntitySelector
+          value={watchdogAgentInput}
+          options={watchdogAgentOptions}
+          placeholder="Select agent"
+          noneLabel="No watchdog agent"
+          searchPlaceholder="Search agents..."
+          emptyMessage="No agents found."
+          onChange={setWatchdogAgentInput}
+          renderTriggerValue={(option) => {
+            if (!option) return <span className="text-muted-foreground">Select agent</span>;
+            const agent = (agents ?? []).find((candidate) => candidate.id === option.id);
+            return (
+              <>
+                {agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                <span className="truncate">{option.label}</span>
+              </>
+            );
+          }}
+          renderOption={(option) => {
+            const agent = (agents ?? []).find((candidate) => candidate.id === option.id);
+            return (
+              <>
+                {agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                <span className="truncate">{option.label}</span>
+              </>
+            );
+          }}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <div className="text-xs font-medium text-foreground">
+          Instructions <span className="font-normal text-muted-foreground">(optional)</span>
+        </div>
+        <Textarea
+          value={watchdogInstructionsInput}
+          onChange={(event) => setWatchdogInstructionsInput(event.target.value)}
+          placeholder="What should the watchdog watch for and how should it keep work moving?"
+          rows={4}
+          className="text-xs"
+        />
+      </div>
+      {watchdogIssueRef ? (
+        <div className="text-xs text-muted-foreground">
+          Watchdog task:{" "}
+          <Link to={`/issues/${watchdogIssueRef.id}`} className="text-primary hover:underline">
+            {watchdogIssueRef.identifier ?? "View task"}
+          </Link>
+        </div>
+      ) : null}
+      {watchdogMutationError ? (
+        <div className="rounded border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive">
+          {watchdogMutationError}
+        </div>
+      ) : null}
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          className="text-xs text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
+          disabled={deleteWatchdog.isPending || (!issue.watchdog && !watchdogAgentInput)}
+          onClick={removeWatchdog}
+        >
+          {deleteWatchdog.isPending ? "Removing…" : "Remove"}
+        </button>
+        <Button
+          type="button"
+          size="sm"
+          className="h-7 text-xs"
+          disabled={!watchdogAgentInput || upsertWatchdog.isPending}
+          onClick={saveWatchdog}
+        >
+          {upsertWatchdog.isPending ? "Saving…" : issue.watchdog ? "Update" : "Set watchdog"}
+        </Button>
+      </div>
+    </div>
+  );
 
   const updateMonitor = (nextMonitor: Issue["executionPolicy"] extends infer T
     ? T extends { monitor?: infer M | null } | null | undefined
@@ -1287,48 +1775,122 @@ export function IssueProperties({
     </>
   );
 
-  const assigneePickerOptions = orderItemsBySelectedAndRecent(
-    [
-      { id: "", kind: "none" as const, label: "No assignee", searchText: "" },
-      ...(currentUserId
-        ? [{
-            id: `user:${currentUserId}`,
-            kind: "user" as const,
-            userId: currentUserId,
-            label: "Assign to me",
-            searchText: userLabel(currentUserId) ?? "",
-          }]
-        : []),
-      ...(issue.createdByUserId && issue.createdByUserId !== currentUserId
-        ? [{
-            id: `user:${issue.createdByUserId}`,
-            kind: "user" as const,
-            userId: issue.createdByUserId,
-            label: creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester",
-            searchText: creatorUserLabel ?? "requester",
-          }]
-        : []),
-      ...otherUserOptions.map((option) => ({
-        id: option.id,
-        kind: "user" as const,
-        userId: option.id.slice("user:".length),
-        label: option.label,
-        searchText: option.searchText ?? "",
-      })),
-      ...sortedAgents.map((agent) => ({
-        id: `agent:${agent.id}`,
-        kind: "agent" as const,
-        agent,
-        label: agent.name,
-        searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
-      })),
-    ],
-    selectedAssigneeValue,
-    recentAssigneeValues,
+  // Grouped picker options (design surface 2): a board-users section and an
+  // agents section, plus the "No assignee" reset. Agents stay recency-sorted
+  // within their group via `sortedAgents`.
+  const userAssigneeOptions = [
+    ...(currentUserId
+      ? [{
+          kind: "user" as const,
+          value: `user:${currentUserId}`,
+          userId: currentUserId,
+          label: "Assign to me",
+          searchText: userLabel(currentUserId) ?? "",
+        }]
+      : []),
+    ...(issue.createdByUserId && issue.createdByUserId !== currentUserId
+      ? [{
+          kind: "user" as const,
+          value: `user:${issue.createdByUserId}`,
+          userId: issue.createdByUserId,
+          label: creatorUserLabel ? `Assign to ${creatorUserLabel}` : "Assign to requester",
+          searchText: creatorUserLabel ?? "requester",
+        }]
+      : []),
+    ...otherUserOptions.map((option) => ({
+      kind: "user" as const,
+      value: option.id,
+      userId: option.id.slice("user:".length),
+      label: option.label,
+      searchText: option.searchText ?? "",
+    })),
+  ];
+  const agentAssigneeOptions = sortedAgents.map((agent) => ({
+    kind: "agent" as const,
+    value: `agent:${agent.id}`,
+    agent,
+    label: agent.name,
+    searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
+  }));
+
+  const matchesAssigneeSearch = (label: string, searchText: string) => {
+    if (!assigneeSearch.trim()) return true;
+    return `${label} ${searchText}`.toLowerCase().includes(assigneeSearch.toLowerCase());
+  };
+
+  type AssigneeOptionLike =
+    | { kind: "none"; value: string; label: string; searchText: string }
+    | { kind: "user"; value: string; userId: string; label: string; searchText: string }
+    | { kind: "agent"; value: string; agent: (typeof agentAssigneeOptions)[number]["agent"]; label: string; searchText: string };
+
+  const renderAssigneeOption = (option: AssigneeOptionLike) => (
+    <button
+      key={option.value || "__none__"}
+      className={cn(
+        "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
+        option.value === selectedAssigneeValue && "bg-accent",
+      )}
+      onClick={() => {
+        if (option.kind === "agent") {
+          selectAssignee({ assigneeAgentId: option.agent.id, assigneeUserId: null }, option.label, () =>
+            trackRecentAssignee(option.agent.id),
+          );
+        } else if (option.kind === "user") {
+          selectAssignee({ assigneeAgentId: null, assigneeUserId: option.userId }, option.label, () =>
+            trackRecentAssigneeUser(option.userId),
+          );
+        } else {
+          selectAssignee({ assigneeAgentId: null, assigneeUserId: null }, option.label);
+        }
+      }}
+    >
+      {option.kind === "agent" ? (
+        <AgentIcon icon={option.agent.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
+      ) : option.kind === "user" ? (
+        <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+      ) : null}
+      <span className="min-w-0 flex-1 truncate">{option.label}</span>
+      {option.value === selectedAssigneeValue ? (
+        <Check className="ml-auto h-3.5 w-3.5 shrink-0 text-foreground" aria-hidden="true" />
+      ) : null}
+    </button>
   );
 
-  const assigneeContent = (
+  const visibleUserOptions = userAssigneeOptions.filter((option) =>
+    matchesAssigneeSearch(option.label, option.searchText),
+  );
+  const visibleAgentOptions = agentAssigneeOptions.filter((option) =>
+    matchesAssigneeSearch(option.label, option.searchText),
+  );
+  const showNoAssigneeOption = matchesAssigneeSearch("No assignee", "");
+  const sectionHeader = (text: string) => (
+    <div className="px-2 pb-0.5 pt-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+      {text}
+    </div>
+  );
+
+  const assigneeContent = pendingAssignee ? (
+    <div className="space-y-2 p-1">
+      <InterruptAssignConfirm
+        copy={reassignInterruptCopy}
+        to={{ agentId: pendingAssignee.assigneeAgentId, userId: pendingAssignee.assigneeUserId }}
+        resolvers={handoffResolvers}
+        onConfirm={() =>
+          applyAssignee(
+            { assigneeAgentId: pendingAssignee.assigneeAgentId, assigneeUserId: pendingAssignee.assigneeUserId },
+            pendingAssignee.track,
+          )
+        }
+        onCancel={() => setPendingAssignee(null)}
+      />
+    </div>
+  ) : (
     <>
+      {hasActiveRun ? (
+        <div className="px-1 pt-1">
+          <AssigneeRunningBanner copy={reassignInterruptCopy} />
+        </div>
+      ) : null}
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
         placeholder="Search assignees..."
@@ -1336,41 +1898,25 @@ export function IssueProperties({
         onChange={(e) => setAssigneeSearch(e.target.value)}
         autoFocus={!inline}
       />
-      <div className="max-h-48 overflow-y-auto overscroll-contain">
-        {assigneePickerOptions
-          .filter((option) => {
-            if (!assigneeSearch.trim()) return true;
-            const q = assigneeSearch.toLowerCase();
-            return `${option.label} ${option.searchText}`.toLowerCase().includes(q);
-          })
-          .map((option) => (
-            <button
-              key={option.id || "__none__"}
-              className={cn(
-                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                option.id === selectedAssigneeValue && "bg-accent",
-              )}
-              onClick={() => {
-                if (option.kind === "agent") {
-                  trackRecentAssignee(option.agent.id);
-                  onUpdate({ assigneeAgentId: option.agent.id, assigneeUserId: null });
-                } else if (option.kind === "user") {
-                  trackRecentAssigneeUser(option.userId);
-                  onUpdate({ assigneeAgentId: null, assigneeUserId: option.userId });
-                } else {
-                  onUpdate({ assigneeAgentId: null, assigneeUserId: null });
-                }
-                setAssigneeOpen(false);
-              }}
-            >
-              {option.kind === "agent" ? (
-                <AgentIcon icon={option.agent.icon} className="shrink-0 h-3 w-3 text-muted-foreground" />
-              ) : option.kind === "user" ? (
-                <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-              ) : null}
-              {option.label}
-            </button>
-          ))}
+      <div className="max-h-56 overflow-y-auto overscroll-contain">
+        {showNoAssigneeOption
+          ? renderAssigneeOption({ kind: "none", value: "", label: "No assignee", searchText: "" })
+          : null}
+        {visibleAgentOptions.length > 0 ? (
+          <>
+            {sectionHeader("Agents")}
+            {visibleAgentOptions.map((option) => renderAssigneeOption(option))}
+          </>
+        ) : null}
+        {visibleUserOptions.length > 0 ? (
+          <>
+            {sectionHeader("Board users")}
+            {visibleUserOptions.map((option) => renderAssigneeOption(option))}
+          </>
+        ) : null}
+        {!showNoAssigneeOption && visibleAgentOptions.length === 0 && visibleUserOptions.length === 0 ? (
+          <div className="px-2 py-2 text-xs text-muted-foreground">No matches.</div>
+        ) : null}
       </div>
     </>
   );
@@ -1558,6 +2104,15 @@ export function IssueProperties({
   );
 
   const blockedByIds = issue.blockedBy?.map((relation) => relation.id) ?? [];
+  const blockedByRelations = issue.blockedBy ?? [];
+  const visibleBlockedByRelations = blockedByExpanded
+    ? blockedByRelations
+    : blockedByRelations.slice(0, ISSUE_PROPERTY_RELATION_PREVIEW_COUNT);
+  const hiddenBlockedByCount = blockedByRelations.length - visibleBlockedByRelations.length;
+  const visibleChildIssues = subTasksExpanded
+    ? childIssues
+    : childIssues.slice(0, ISSUE_PROPERTY_RELATION_PREVIEW_COUNT);
+  const hiddenChildIssueCount = childIssues.length - visibleChildIssues.length;
   const descendantIssueIds = useMemo(() => {
     if (!allIssues?.length) return new Set<string>();
     const childrenByParentId = new Map<string, string[]>();
@@ -1621,7 +2176,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder="Search tasks..."
         value={parentSearch}
         onChange={(e) => setParentSearch(e.target.value)}
         autoFocus={!inline}
@@ -1693,11 +2248,11 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder="Search tasks..."
         value={blockedBySearch}
         onChange={(e) => setBlockedBySearch(e.target.value)}
         autoFocus={!inline}
-        aria-label="Search issues to add as blockers"
+        aria-label="Search tasks to add as blockers"
       />
       <div className="max-h-48 overflow-y-auto overscroll-contain">
         <button
@@ -1734,9 +2289,9 @@ export function IssueProperties({
           );
         })}
         {blockerOptionsLoading ? (
-          <div className="px-2 py-2 text-xs text-muted-foreground">Searching issues...</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">Searching tasks...</div>
         ) : blockerOptions.length === 0 ? (
-          <div className="px-2 py-2 text-xs text-muted-foreground">No matching issues.</div>
+          <div className="px-2 py-2 text-xs text-muted-foreground">No matching tasks.</div>
         ) : null}
       </div>
     </>
@@ -1758,6 +2313,7 @@ export function IssueProperties({
         <PropertyRow label="Status">
           <StatusIcon
             status={issue.status}
+            size="lg"
             blockerAttention={issue.blockerAttention}
             onChange={(status) => onUpdate({ status })}
             showLabel
@@ -1789,7 +2345,7 @@ export function IssueProperties({
           inline={inline}
           label="Assignee"
           open={assigneeOpen}
-          onOpenChange={(open) => { setAssigneeOpen(open); if (!open) setAssigneeSearch(""); }}
+          onOpenChange={(open) => { setAssigneeOpen(open); if (!open) { setAssigneeSearch(""); setPendingAssignee(null); } }}
           triggerContent={assigneeTrigger}
           popoverClassName="w-52"
           extra={issue.assigneeAgentId ? (
@@ -1851,6 +2407,46 @@ export function IssueProperties({
           {projectContent}
         </PropertyPicker>
 
+        {externalObjectsError ? (
+          <PropertyRow label="External objects">
+            <span className="text-xs text-muted-foreground">
+              Couldn't load external objects.
+              {onRetryExternalObjects ? (
+                <>
+                  {" "}
+                  <button
+                    type="button"
+                    className="text-primary underline-offset-2 hover:underline"
+                    onClick={onRetryExternalObjects}
+                  >
+                    Retry
+                  </button>
+                </>
+              ) : null}
+            </span>
+          </PropertyRow>
+        ) : externalObjectsLoading ? (
+          <PropertyRow label="External objects">
+            <span className="h-4 w-24 animate-pulse rounded bg-muted/40" />
+          </PropertyRow>
+        ) : externalObjects && externalObjects.length > 0 ? (
+          <>
+            {sortExternalObjectGroups(externalObjects)
+              .map((externalObject) => {
+                const { pill, group } = externalObject;
+                return (
+                  <PropertyRow
+                    key={group.object?.id ?? `${pill.providerKey}:${pill.objectType}:${pill.url ?? "anon"}`}
+                    label={externalObjectRowLabel(externalObject)}
+                    labelClassName="w-20 max-w-20 whitespace-normal leading-tight"
+                  >
+                    <ExternalObjectPropertyValue group={externalObject} />
+                  </PropertyRow>
+                );
+              })}
+          </>
+        ) : null}
+
         <PropertyPicker
           inline={inline}
           label="Parent"
@@ -1870,9 +2466,14 @@ export function IssueProperties({
         {inline ? (
           <div>
             <PropertyRow label="Blocked by">
-              {(issue.blockedBy ?? []).map((relation) => (
+              {visibleBlockedByRelations.map((relation) => (
                 <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
               ))}
+              <ExpandRelationListButton
+                hiddenCount={hiddenBlockedByCount}
+                expanded={blockedByExpanded}
+                onClick={() => setBlockedByExpanded((expanded) => !expanded)}
+              />
               {renderAddBlockedByButton(() => setBlockedByOpen((open) => !open))}
             </PropertyRow>
             {blockedByOpen && (
@@ -1883,9 +2484,14 @@ export function IssueProperties({
           </div>
         ) : (
           <PropertyRow label="Blocked by">
-            {(issue.blockedBy ?? []).map((relation) => (
+            {visibleBlockedByRelations.map((relation) => (
               <RemovableIssueReferencePill key={relation.id} issue={relation} onRemove={removeBlockedBy} />
             ))}
+            <ExpandRelationListButton
+              hiddenCount={hiddenBlockedByCount}
+              expanded={blockedByExpanded}
+              onClick={() => setBlockedByExpanded((expanded) => !expanded)}
+            />
             <Popover
               open={blockedByOpen}
               onOpenChange={(open) => {
@@ -1913,13 +2519,18 @@ export function IssueProperties({
           ) : null}
         </PropertyRow>
 
-        <PropertyRow label="Sub-issues">
+        <PropertyRow label="Sub-tasks">
           <div className="flex flex-wrap items-center gap-1.5">
             {childIssues.length > 0
-              ? childIssues.map((child) => (
+              ? visibleChildIssues.map((child) => (
                 <IssueReferencePill key={child.id} issue={child} />
               ))
               : null}
+            <ExpandRelationListButton
+              hiddenCount={hiddenChildIssueCount}
+              expanded={subTasksExpanded}
+              onClick={() => setSubTasksExpanded((expanded) => !expanded)}
+            />
             {onAddSubIssue ? (
               <button
                 type="button"
@@ -1927,7 +2538,7 @@ export function IssueProperties({
                 onClick={onAddSubIssue}
               >
                 <Plus className="h-3 w-3" />
-              Add sub-issue
+              Add sub-task
               </button>
             ) : null}
           </div>
@@ -2015,6 +2626,32 @@ export function IssueProperties({
           {monitorContent}
         </PropertyPicker>
 
+        {taskWatchdogsEnabled ? (
+          <PropertyPicker
+            inline={inline}
+            label="Watchdog"
+            open={watchdogOpen}
+            onOpenChange={setWatchdogOpen}
+            triggerContent={watchdogTrigger}
+            triggerClassName="min-w-0 max-w-full"
+            popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-96")}
+            extra={
+              watchdogIssueRef ? (
+                <Link
+                  to={`/issues/${watchdogIssueRef.id}`}
+                  className="ml-1 inline-flex shrink-0 items-center gap-0.5 rounded-full border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                  title="Open watchdog task"
+                >
+                  <ScanEye className="h-3 w-3" />
+                  {watchdogIssueRef.identifier ?? "Task"}
+                </Link>
+              ) : undefined
+            }
+          >
+            {watchdogContent}
+          </PropertyPicker>
+        ) : null}
+
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">
             <span className="text-sm font-mono">{issue.requestDepth}</span>
@@ -2022,32 +2659,41 @@ export function IssueProperties({
         )}
       </div>
 
-      {liveWorkspaceService || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
+      {hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
         <>
           <Separator />
           <div className="space-y-1">
-            {liveWorkspaceService?.url && (
-              <PropertyRow label="Service">
-                <a
-                  href={liveWorkspaceService.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex min-w-0 items-start gap-1 text-sm font-mono text-emerald-700 hover:text-emerald-800 hover:underline dark:text-emerald-300 dark:hover:text-emerald-200"
-                >
-                  <span className="min-w-0 break-all">{liveWorkspaceService.url}</span>
-                  <ExternalLink className="mt-1 h-3 w-3 shrink-0" />
-                </a>
-              </PropertyRow>
-            )}
             {showWorkspaceDetailLink && issue.executionWorkspaceId && (
               <PropertyRow label="Workspace">
                 <Link
                   to={`/execution-workspaces/${issue.executionWorkspaceId}`}
-                  className="text-sm text-primary hover:underline inline-flex items-center gap-1"
+                  className="text-sm text-primary hover:underline inline-flex min-w-0 items-center gap-1.5"
                 >
+                  <Hexagon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   View workspace
-                  <ExternalLink className="h-3 w-3" />
+                  <ExternalLink className="h-3 w-3 shrink-0" />
                 </Link>
+              </PropertyRow>
+            )}
+            {hasWorkspaceRuntimeControls && (
+              <PropertyRow label="Service">
+                <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                  <WorkspaceRuntimeQuickControls
+                    sections={workspaceRuntimeSections}
+                    isPending={controlWorkspaceRuntime.isPending}
+                    pendingRequest={pendingWorkspaceRuntimeAction}
+                    onAction={(request) => controlWorkspaceRuntime.mutate(request)}
+                    square
+                    align="start"
+                    iconOnly
+                  />
+                  {runtimeActionMessage ? (
+                    <span className="text-xs text-muted-foreground" role="status">{runtimeActionMessage}</span>
+                  ) : null}
+                  {runtimeActionErrorMessage ? (
+                    <span className="text-xs text-destructive" role="alert">{runtimeActionErrorMessage}</span>
+                  ) : null}
+                </div>
               </PropertyRow>
             )}
             {issue.currentExecutionWorkspace?.branchName && (

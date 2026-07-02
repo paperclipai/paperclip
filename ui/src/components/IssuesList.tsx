@@ -9,6 +9,7 @@ import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
+import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
 import {
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
@@ -42,6 +43,7 @@ import {
   type InboxIssueColumn,
 } from "../lib/inbox";
 import { cn, formatDurationMs, formatTokens } from "../lib/utils";
+import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import {
   InboxIssueMetaLeading,
   InboxIssueTrailingColumns,
@@ -470,9 +472,9 @@ function IssueSearchInput({
             e.currentTarget.blur();
           }
         }}
-        placeholder="Search issues..."
+        placeholder="Search tasks..."
         className="pl-7 text-xs sm:text-sm"
-        aria-label="Search issues"
+        aria-label="Search tasks"
         data-page-search-target="true"
       />
     </div>
@@ -531,7 +533,7 @@ function SubIssueProgressSummaryStrip({
                   className="text-muted-foreground tabular-nums"
                   title={`${costSummary.runCount.toLocaleString()} run${
                     costSummary.runCount === 1 ? "" : "s"
-                  } across ${costSummary.issueCount} sub-issue${
+                  } across ${costSummary.issueCount} sub-task${
                     costSummary.issueCount === 1 ? "" : "s"
                   }`}
                 >
@@ -545,7 +547,7 @@ function SubIssueProgressSummaryStrip({
           </div>
           <div
             role="progressbar"
-            aria-label="Sub-issues completion progress"
+            aria-label="Sub-tasks completion progress"
             aria-valuemin={0}
             aria-valuenow={summary.doneCount}
             aria-valuemax={summary.totalCount}
@@ -582,11 +584,11 @@ function SubIssueProgressSummaryStrip({
               </Link>
             </>
           ) : summary.totalCount === 0 ? (
-            <div className="text-sm font-medium text-foreground">No active sub-issues</div>
+            <div className="text-sm font-medium text-foreground">No active sub-tasks</div>
           ) : summary.doneCount === summary.totalCount ? (
-            <div className="text-sm font-medium text-foreground">All sub-issues done</div>
+            <div className="text-sm font-medium text-foreground">All sub-tasks done</div>
           ) : (
-            <div className="text-sm font-medium text-foreground">No actionable sub-issues</div>
+            <div className="text-sm font-medium text-foreground">No actionable sub-tasks</div>
           )}
         </div>
       </div>
@@ -641,7 +643,9 @@ export function IssuesList({
     retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const experimentalSettingsLoaded = experimentalSettings !== undefined;
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
+  const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true;
 
   // Scope the storage key per company so folding/view state is independent across companies.
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
@@ -690,6 +694,11 @@ export function IssuesList({
       return next;
     });
   }, [scopedKey]);
+
+  useEffect(() => {
+    if (!experimentalSettingsLoaded || externalObjectsEnabled || viewState.externalObjectStatuses.length === 0) return;
+    updateView({ externalObjectStatuses: [] });
+  }, [experimentalSettingsLoaded, externalObjectsEnabled, updateView, viewState.externalObjectStatuses.length]);
 
   // Prune stale IDs from collapsedParents whenever the issue list changes.
   // Deleted or reassigned issues leave orphan IDs in localStorage; this keeps
@@ -920,6 +929,10 @@ export function IssuesList({
     [isolatedWorkspacesEnabled],
   );
   const availableIssueColumnSet = useMemo(() => new Set(availableIssueColumns), [availableIssueColumns]);
+  const subtreeLiveCounts = useMemo(
+    () => collectSubtreeLiveCounts(issues, liveIssueIds ?? new Set<string>()),
+    [issues, liveIssueIds],
+  );
   const visibleTrailingIssueColumns = useMemo(
     () => issueTrailingColumns.filter((column) => visibleIssueColumnSet.has(column) && availableIssueColumnSet.has(column)),
     [availableIssueColumnSet, visibleIssueColumnSet],
@@ -962,32 +975,58 @@ export function IssuesList({
     [boardIssueQueries, searchWithinLoadedIssues, viewState.viewMode],
   );
 
-  const filtered = useMemo(() => {
+  const sourceIssues = useMemo(() => {
     const useRemoteSearch = normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues;
-    const sourceIssues = boardIssues ?? (useRemoteSearch ? searchedIssues : issues);
-    const searchScopedIssues = normalizedIssueSearch.length > 0 && searchWithinLoadedIssues
+    return boardIssues ?? (useRemoteSearch ? searchedIssues : issues);
+  }, [boardIssues, issues, normalizedIssueSearch, searchedIssues, searchWithinLoadedIssues]);
+
+  const searchScopedIssues = useMemo(
+    () => normalizedIssueSearch.length > 0 && searchWithinLoadedIssues
       ? sourceIssues.filter((issue) => issueMatchesLocalSearch(issue, normalizedIssueSearch))
-      : sourceIssues;
+      : sourceIssues,
+    [normalizedIssueSearch, searchWithinLoadedIssues, sourceIssues],
+  );
+  const hasExternalObjectStatusFilters = viewState.externalObjectStatuses.length > 0;
+  const issueIdsForExternalObjectSummaries = useMemo(
+    () => (viewState.viewMode === "list" || hasExternalObjectStatusFilters
+      ? searchScopedIssues.map((issue) => issue.id)
+      : []),
+    [hasExternalObjectStatusFilters, searchScopedIssues, viewState.viewMode],
+  );
+  const {
+    summaries: externalObjectSummaryByIssueId,
+    isLoading: externalObjectSummariesLoading,
+    isReady: externalObjectSummariesReady,
+  } = useIssueExternalObjectSummaries(
+    selectedCompanyId,
+    issueIdsForExternalObjectSummaries,
+  );
+  const issueFilterContext = useMemo(() => ({
+    ...issueFilterWorkspaceContext,
+    externalObjectSummaryByIssueId,
+    externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
+  }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId, issueFilterWorkspaceContext]);
+  const externalObjectFilterLoading = hasExternalObjectStatusFilters
+    && externalObjectSummariesLoading
+    && !externalObjectSummariesReady;
+
+  const filtered = useMemo(() => {
     const filteredByControls = applyIssueFilters(
       searchScopedIssues,
       viewState,
       currentUserId,
       enableRoutineVisibilityFilter,
       liveIssueIds,
-      issueFilterWorkspaceContext,
+      issueFilterContext,
     );
     return sortIssues(filteredByControls, viewState);
   }, [
-    boardIssues,
-    issues,
-    searchedIssues,
-    searchWithinLoadedIssues,
+    searchScopedIssues,
     viewState,
-    normalizedIssueSearch,
     currentUserId,
     enableRoutineVisibilityFilter,
     liveIssueIds,
-    issueFilterWorkspaceContext,
+    issueFilterContext,
   ]);
 
   const progressSummary = useMemo(
@@ -1289,8 +1328,8 @@ export function IssuesList({
     viewState.groupBy,
   ]);
 
-  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Issue";
-  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Issue";
+  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Task";
+  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Task";
   const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[] }) => {
     openNewIssue(newIssueDefaults(group));
   }, [newIssueDefaults, openNewIssue]);
@@ -1349,11 +1388,13 @@ export function IssuesList({
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
           {/* View mode toggle */}
-          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1">
+          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1" role="group" aria-label="View mode">
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
               title="List view"
+              aria-label="List view"
+              aria-pressed={viewState.viewMode === "list"}
             >
               <List className="h-3.5 w-3.5" />
             </button>
@@ -1361,6 +1402,8 @@ export function IssuesList({
               className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
               title="Board view"
+              aria-label="Board view"
+              aria-pressed={viewState.viewMode === "board"}
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
@@ -1461,7 +1504,7 @@ export function IssuesList({
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-            title="Choose which issue columns stay visible"
+            title="Choose which task columns stay visible"
             iconOnly
           />
 
@@ -1474,6 +1517,7 @@ export function IssuesList({
             projects={projects?.map((project) => ({ id: project.id, name: project.name }))}
             labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
             currentUserId={currentUserId}
+            enableExternalObjectFilters={externalObjectsEnabled}
             enableRoutineVisibilityFilter={enableRoutineVisibilityFilter}
             iconOnly
             workspaces={isolatedWorkspacesEnabled ? workspaceOptions : undefined}
@@ -1539,7 +1583,7 @@ export function IssuesList({
                     ["assignee", "Assignee"],
                     ["project", "Project"],
                     ["workspace", "Workspace"],
-                    ["parent", "Parent Issue"],
+                    ["parent", "Parent Task"],
                     ["none", "None"],
                   ] as const).map(([value, label]) => (
                     <button
@@ -1560,7 +1604,7 @@ export function IssuesList({
         </div>
       </div>
 
-      {isLoading && <PageSkeleton variant="issues-list" />}
+      {(isLoading || externalObjectFilterLoading) && <PageSkeleton variant="issues-list" />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {!searchWithinLoadedIssues && normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
@@ -1569,13 +1613,13 @@ export function IssuesList({
       )}
       {boardColumnLimitReached && (
         <p className="text-xs text-muted-foreground">
-          Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} issues. Refine filters or search to reveal the rest.
+          Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} tasks. Refine filters or search to reveal the rest.
         </p>
       )}
-      {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
+      {!isLoading && !externalObjectFilterLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No issues match the current filters or search."
+          message="No tasks match the current filters or search."
           action={createActionLabel}
           onAction={() => openCreateIssueDialog()}
         />
@@ -1625,8 +1669,8 @@ export function IssuesList({
                     variant="ghost"
                     size="icon-xs"
                     className="-mr-2 text-muted-foreground"
-                    title={`New issue in ${group.label}`}
-                    aria-label={`New issue in ${group.label}`}
+                    title={`New task in ${group.label}`}
+                    aria-label={`New task in ${group.label}`}
                     onClick={() => openCreateIssueDialog(group)}
                   >
                     <Plus className="h-3 w-3" />
@@ -1744,6 +1788,7 @@ export function IssuesList({
                         checklistDependencyChips={checklistDependencyChips}
                         checklistRowId={checklistRowId}
                         titleClassName={doneRowTitleClass}
+                        externalObjectSummary={externalObjectSummaryByIssueId.get(issue.id) ?? null}
                         titleSuffix={(
                           <>
                             {hasChildren && !isExpanded ? (
@@ -1771,7 +1816,7 @@ export function IssuesList({
                               <span
                                 className="ml-1.5 inline-flex items-center gap-1 rounded-full border border-amber-400/45 bg-amber-50/60 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
                                 aria-label="Needs next step"
-                                title="This issue needs a next step"
+                                title="This task needs a next step"
                               >
                                 <CircleDot className="h-3 w-3" />
                                 Needs next step
@@ -1786,8 +1831,8 @@ export function IssuesList({
                               <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                             </button>
                           ) : (
-                            <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                              <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                            <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                              <StatusIcon status={issue.status} size="lg" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                             </span>
                           )
                         }
@@ -1808,12 +1853,13 @@ export function IssuesList({
                             <InboxIssueMetaLeading
                               issue={issue}
                               isLive={liveIssueIds?.has(issue.id) === true}
+                              subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
                               showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
                               showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
                               checklistStepNumber={checklistStepNumber}
                               statusSlot={(
-                                <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                                  <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                                <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                                  <StatusIcon status={issue.status} size="lg" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                                 </span>
                               )}
                             />
@@ -1959,10 +2005,10 @@ export function IssuesList({
             <div className="py-2" data-testid="issues-load-more-sentinel">
               <p className="text-xs text-muted-foreground">
                 {isLoadingMoreIssues
-                  ? "Loading more issues..."
+                  ? "Loading more tasks..."
                   : remainingIssueRowCount > 0
-                    ? `Rendering ${Math.min(renderedIssueRowLimit, filtered.length)} of ${filtered.length} issues`
-                    : "Scroll to load more issues"}
+                    ? `Rendering ${Math.min(renderedIssueRowLimit, filtered.length)} of ${filtered.length} tasks`
+                    : "Scroll to load more tasks"}
               </p>
             </div>
           )}

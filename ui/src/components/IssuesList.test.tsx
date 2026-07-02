@@ -42,6 +42,10 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
 
+const mockExternalObjectsApi = vi.hoisted(() => ({
+  getIssueSummaries: vi.fn(),
+}));
+
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => companyState,
 }));
@@ -87,6 +91,10 @@ vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
+vi.mock("../api/externalObjects", () => ({
+  externalObjectsApi: mockExternalObjectsApi,
+}));
+
 vi.mock("./IssueRow", () => ({
   IssueRow: ({
     issue,
@@ -97,6 +105,7 @@ vi.mock("./IssueRow", () => ({
     checklistCurrentStep,
     checklistDependencyChips,
     checklistRowId,
+    externalObjectSummary,
   }: {
     issue: Issue;
     desktopMetaLeading?: ReactNode;
@@ -106,6 +115,7 @@ vi.mock("./IssueRow", () => ({
     checklistCurrentStep?: boolean;
     checklistDependencyChips?: ReactNode;
     checklistRowId?: string;
+    externalObjectSummary?: { total: number } | null;
   }) => (
     <div
       data-testid="issue-row"
@@ -115,6 +125,9 @@ vi.mock("./IssueRow", () => ({
       data-title-class={titleClassName ?? undefined}
     >
       <span>{issue.title}</span>
+      {externalObjectSummary ? (
+        <span data-testid="external-object-summary">{externalObjectSummary.total}</span>
+      ) : null}
       {desktopMetaLeading}
       {desktopTrailing}
       {checklistDependencyChips}
@@ -286,6 +299,7 @@ describe("IssuesList", () => {
     mockExecutionWorkspacesApi.list.mockReset();
     mockExecutionWorkspacesApi.listSummaries.mockReset();
     mockInstanceSettingsApi.getExperimental.mockReset();
+    mockExternalObjectsApi.getIssueSummaries.mockReset();
     mockIssuesApi.list.mockResolvedValue([]);
     mockIssuesApi.listLabels.mockResolvedValue([]);
     mockAuthApi.getSession.mockResolvedValue({ user: null, session: null });
@@ -293,14 +307,142 @@ describe("IssuesList", () => {
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableExternalObjects: false,
+    });
     setDocumentScrollMetrics({ innerHeight: 600, scrollY: 0, scrollHeight: 2400 });
+    mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({ summaries: {} });
     localStorage.clear();
   });
 
   afterEach(() => {
     vi.useRealTimers();
     container.remove();
+  });
+
+  it("forwards external-object summaries into issue rows", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableExternalObjects: true,
+    });
+    mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({
+      summaries: {
+        "issue-1": {
+          total: 2,
+          byStatusCategory: { failed: 1, succeeded: 1 },
+          byLiveness: { fresh: 2 },
+          highestSeverity: "danger",
+          staleCount: 0,
+          authRequiredCount: 0,
+          unreachableCount: 0,
+          objects: [],
+        },
+      },
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue()]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockExternalObjectsApi.getIssueSummaries).toHaveBeenCalledWith("company-1", ["issue-1"]);
+      expect(container.querySelector("[data-testid='external-object-summary']")?.textContent).toBe("2");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not load external-object summaries when the experimental flag is disabled", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue()]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalled();
+      expect(container.querySelector("[data-testid='issue-row']")).not.toBeNull();
+    });
+    expect(mockExternalObjectsApi.getIssueSummaries).not.toHaveBeenCalled();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("filters issue rows by external-object status summaries", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableExternalObjects: true,
+    });
+    const failedIssue = createIssue({ id: "issue-failed", identifier: "PAP-10", title: "Failed external object" });
+    const freshIssue = createIssue({ id: "issue-fresh", identifier: "PAP-11", title: "Fresh external object" });
+    const noObjectIssue = createIssue({ id: "issue-none", identifier: "PAP-12", title: "No external object" });
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ externalObjectStatuses: ["failed"] }));
+    mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({
+      summaries: {
+        "issue-failed": {
+          total: 1,
+          byStatusCategory: { failed: 1 },
+          byLiveness: { fresh: 1 },
+          highestSeverity: "danger",
+          staleCount: 0,
+          authRequiredCount: 0,
+          unreachableCount: 0,
+          objects: [],
+        },
+        "issue-fresh": {
+          total: 1,
+          byStatusCategory: { succeeded: 1 },
+          byLiveness: { fresh: 1 },
+          highestSeverity: "success",
+          staleCount: 0,
+          authRequiredCount: 0,
+          unreachableCount: 0,
+          objects: [],
+        },
+      },
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[failedIssue, freshIssue, noObjectIssue]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockExternalObjectsApi.getIssueSummaries).toHaveBeenCalledWith(
+        "company-1",
+        ["issue-failed", "issue-fresh", "issue-none"],
+      );
+      expect(container.textContent).toContain("Failed external object");
+      expect(container.textContent).not.toContain("Fresh external object");
+      expect(container.textContent).not.toContain("No external object");
+    });
+
+    act(() => {
+      root.unmount();
+    });
   });
 
   it("renders server search results instead of filtering the full issue list locally", async () => {
@@ -452,12 +594,12 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New issue in Feature Branch"]');
+      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New task in Feature Branch"]');
       expect(button).not.toBeNull();
     });
 
     await act(async () => {
-      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New issue in Feature Branch"]');
+      const button = container.querySelector<HTMLButtonElement>('button[aria-label="New task in Feature Branch"]');
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
     });
@@ -884,7 +1026,7 @@ describe("IssuesList", () => {
       container,
     );
 
-    const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement | null;
+    const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement | null;
     expect(input).not.toBeNull();
     const valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
     expect(valueSetter).toBeTypeOf("function");
@@ -1157,7 +1299,7 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Some board columns are showing up to 200 issues. Refine filters or search to reveal the rest.");
+      expect(container.textContent).toContain("Some board columns are showing up to 200 tasks. Refine filters or search to reveal the rest.");
     });
 
     act(() => {
@@ -1187,7 +1329,7 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
-      expect(container.textContent).toContain("Rendering 100 of 220 issues");
+      expect(container.textContent).toContain("Rendering 100 of 220 tasks");
     });
 
     act(() => {
@@ -1226,7 +1368,7 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(250);
-      expect(container.textContent).toContain("Rendering 250 of 420 issues");
+      expect(container.textContent).toContain("Rendering 250 of 420 tasks");
     });
 
     act(() => {
@@ -1312,8 +1454,9 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
     });
-    await flush();
-    expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
+    await waitForAssertion(() => {
+      expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
+    });
     await flush();
     expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
 
@@ -1669,13 +1812,13 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement | null;
+      const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement | null;
       expect(input).not.toBeNull();
       input?.focus();
       expect(document.activeElement).toBe(input);
     });
 
-    const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement;
+    const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement;
     act(() => {
       input.dispatchEvent(new KeyboardEvent("keydown", {
         key: "Enter",
@@ -1705,13 +1848,13 @@ describe("IssuesList", () => {
     );
 
     await waitForAssertion(() => {
-      const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement | null;
+      const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement | null;
       expect(input).not.toBeNull();
       input?.focus();
       expect(document.activeElement).toBe(input);
     });
 
-    const input = container.querySelector('input[aria-label="Search issues"]') as HTMLInputElement;
+    const input = container.querySelector('input[aria-label="Search tasks"]') as HTMLInputElement;
     act(() => {
       input.dispatchEvent(new KeyboardEvent("keydown", {
         key: "Escape",
@@ -1744,6 +1887,40 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(mockExecutionWorkspacesApi.listSummaries).toHaveBeenCalledWith("company-1");
       expect(mockExecutionWorkspacesApi.list).not.toHaveBeenCalled();
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  // PAP-246 (QA of PAP-245/PAP-243a): the desktop row status glyph must render
+  // at lg (20px). The earlier IssueRow unit test passed because it rendered
+  // IssueRow WITHOUT IssuesList's own leading slots, hitting the
+  // `?? <StatusIcon size="lg">` fallback — but the live list always supplies its
+  // own `statusSlot`. This asserts the real list-supplied slot is lg.
+  it("renders the desktop row status glyph at lg (20px)", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ status: "in_progress" })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const glyphs = Array.from(container.querySelectorAll("svg")).filter(
+        (svg) => svg.getAttribute("width") === "20" && svg.getAttribute("height") === "20",
+      );
+      expect(glyphs.length).toBeGreaterThan(0);
+      // No 16px (md) status glyph should leak through from the list's slot.
+      const mdGlyphs = Array.from(container.querySelectorAll("svg")).filter(
+        (svg) => svg.getAttribute("width") === "16" && svg.getAttribute("height") === "16",
+      );
+      expect(mdGlyphs.length).toBe(0);
     });
 
     act(() => {

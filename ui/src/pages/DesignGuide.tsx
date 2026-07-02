@@ -112,7 +112,8 @@ import {
   AvatarGroup,
   AvatarGroupCount,
 } from "@/components/ui/avatar";
-import { StatusBadge } from "@/components/StatusBadge";
+import { AgentCapsule, AGENT_GRADIENT_COUNT } from "@/components/AgentCapsule";
+import { StatusBadge, IssueStatusBadge } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
 import { PriorityIcon } from "@/components/PriorityIcon";
 import { agentStatusDot, agentStatusDotDefault } from "@/lib/status-colors";
@@ -126,6 +127,25 @@ import { Identity } from "@/components/Identity";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { MembershipAction } from "@/components/MembershipAction";
 import { IssueOutputSection } from "@/components/issue-output/IssueOutputSection";
+import {
+  EnvInputsList,
+  ExternalSourcesList,
+  RequiredSkillsList,
+  StepSkillPlan,
+  StepSourcePolicy,
+  TeamCard,
+  TeamHierarchyPreview,
+  TeamRow,
+} from "@/pages/TeamCatalog";
+import {
+  currentInstalledState,
+  onboardingTeams,
+  optionalTeam,
+  outOfDateInstalledState,
+  sampleSkillPreparations,
+  sampleTeam,
+  warnTeam,
+} from "@/pages/TeamCatalog.fixtures";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 
 /* ------------------------------------------------------------------ */
@@ -221,6 +241,24 @@ function SubSection({ title, children }: { title: string; children: React.ReactN
   );
 }
 
+// Onboarding seam (design §6 + §12.5): the TeamCard tile in its "Pick a starter
+// team" 3-col grid, with the first defaultInstall tile selected.
+function TeamCardShowcase() {
+  const [selectedId, setSelectedId] = useState(onboardingTeams[0]?.id ?? null);
+  return (
+    <div className="grid max-w-2xl gap-4 md:grid-cols-2 lg:grid-cols-3">
+      {onboardingTeams.map((team) => (
+        <TeamCard
+          key={team.id}
+          team={team}
+          selected={team.id === selectedId}
+          onSelect={() => setSelectedId(team.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Color swatch                                                       */
 /* ------------------------------------------------------------------ */
@@ -259,6 +297,9 @@ export function DesignGuide() {
     { key: "status", label: "Status", value: "Active" },
     { key: "priority", label: "Priority", value: "High" },
   ]);
+  const [allowExternal, setAllowExternal] = useState(false);
+  const [allowUnpinned, setAllowUnpinned] = useState(false);
+  const [allowLocalPath, setAllowLocalPath] = useState(false);
 
   return (
     <div className="space-y-10 max-w-4xl">
@@ -479,6 +520,16 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
+        <SubSection title="IssueStatusBadge (brand chip + glyph — PAP-75)">
+          <div className="flex items-center gap-2 flex-wrap">
+            {["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"].map(
+              (s) => (
+                <IssueStatusBadge key={s} status={s} />
+              )
+            )}
+          </div>
+        </SubSection>
+
         <SubSection title="StatusIcon (interactive)">
           <div className="flex items-center gap-3 flex-wrap">
             {["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"].map(
@@ -551,6 +602,69 @@ export function DesignGuide() {
             <IssueReferencePill issue={{ id: "demo-3", identifier: "PAP-789", title: "Done status", status: "done" }} />
             <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: "Blocked status", status: "blocked" }} />
             <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: "Removed (strikethrough)", status: "todo" }} />
+          </div>
+        </SubSection>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  AGENT CAPSULE                                                */}
+      {/* ============================================================ */}
+      <Section title="Agent Capsule">
+        <p className="text-sm text-muted-foreground max-w-prose">
+          The brand &quot;capsule is the agent&quot; motif. A single agent reads as a tall
+          pill that moves through three states as it comes to life. The online fill uses
+          the live brand agent-gradient tokens (<code className="font-mono">--agent-Na</code> →{" "}
+          <code className="font-mono">--agent-Nb</code>); <code className="font-mono">prefers-reduced-motion</code>{" "}
+          skips the liquid rise and pulses and renders the final state.
+        </p>
+        <SubSection title="States">
+          <div className="flex items-end gap-10">
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="slot" />
+              <span className="text-xs text-muted-foreground">slot</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="configured" />
+              <span className="text-xs text-muted-foreground">configured</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" gradient={5} />
+              <span className="text-xs text-muted-foreground">online</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" gradient={5} glow="blue" />
+              <span className="text-xs text-muted-foreground">online · blue glow</span>
+            </div>
+          </div>
+        </SubSection>
+        <SubSection title="Sizes">
+          <div className="flex items-end gap-8">
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" size="sm" gradient={1} />
+              <span className="text-xs text-muted-foreground">sm</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" size="md" gradient={4} />
+              <span className="text-xs text-muted-foreground">md</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" size="lg" gradient={8} />
+              <span className="text-xs text-muted-foreground">lg</span>
+            </div>
+            <div className="flex flex-col items-center gap-2">
+              <AgentCapsule state="online" size={{ width: 28, height: 96 }} gradient={6} />
+              <span className="text-xs text-muted-foreground">custom px</span>
+            </div>
+          </div>
+        </SubSection>
+        <SubSection title="Gradients">
+          <div className="flex items-end gap-3 flex-wrap">
+            {Array.from({ length: AGENT_GRADIENT_COUNT }, (_, i) => (
+              <div key={i} className="flex flex-col items-center gap-1.5">
+                <AgentCapsule state="online" size="sm" gradient={i + 1} />
+                <span className="text-[10px] font-mono text-muted-foreground">{i + 1}</span>
+              </div>
+            ))}
           </div>
         </SubSection>
       </Section>
@@ -925,7 +1039,7 @@ export function DesignGuide() {
             identifier="PAP-001"
             title="Implement authentication flow"
             subtitle="Assigned to Agent Alpha"
-            trailing={<StatusBadge status="in_progress" />}
+            trailing={<IssueStatusBadge status="in_progress" />}
             onClick={() => {}}
           />
           <EntityRow
@@ -938,7 +1052,7 @@ export function DesignGuide() {
             identifier="PAP-002"
             title="Set up CI/CD pipeline"
             subtitle="Completed 2 days ago"
-            trailing={<StatusBadge status="done" />}
+            trailing={<IssueStatusBadge status="done" />}
             onClick={() => {}}
           />
           <EntityRow
@@ -950,7 +1064,7 @@ export function DesignGuide() {
             }
             identifier="PAP-003"
             title="Write API documentation"
-            trailing={<StatusBadge status="todo" />}
+            trailing={<IssueStatusBadge status="todo" />}
             onClick={() => {}}
           />
           <EntityRow
@@ -963,7 +1077,7 @@ export function DesignGuide() {
             identifier="PAP-004"
             title="Deploy to production"
             subtitle="Blocked by PAP-001"
-            trailing={<StatusBadge status="blocked" />}
+            trailing={<IssueStatusBadge status="blocked" />}
             selected
           />
         </div>
@@ -1417,6 +1531,94 @@ export function DesignGuide() {
 
       {/* ============================================================ */}
       {/*  ICON REFERENCE                                               */}
+      {/* ============================================================ */}
+      {/*  TEAM CATALOG                                                 */}
+      {/* ============================================================ */}
+      <Section title="Team Catalog">
+        <p className="text-sm text-muted-foreground">
+          Components from the Team Catalog browse/install surface (<code className="font-mono text-xs">/teams-catalog</code>).
+          Fixtures are shared with the Storybook stories.
+        </p>
+
+        <SubSection title="TeamRow (browse list)">
+          <div className="w-[28rem] rounded-md border border-border">
+            <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Bundled · 1
+            </div>
+            <TeamRow team={sampleTeam} selected onSelect={() => {}} />
+            <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Optional · 2
+            </div>
+            <TeamRow team={optionalTeam} selected={false} onSelect={() => {}} />
+            <div className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Installed · 2
+            </div>
+            <TeamRow team={sampleTeam} selected={false} onSelect={() => {}} installed={outOfDateInstalledState} />
+            <TeamRow team={warnTeam} selected={false} onSelect={() => {}} installed={currentInstalledState} />
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Installed teams collapse under <code className="font-mono">INSTALLED · N</code>; an out-of-date
+            install (server <code className="font-mono">originHash</code> ≠ catalog <code className="font-mono">contentHash</code>)
+            shows the amber <code className="font-mono">↑</code> badge (PAP-10256).
+          </p>
+        </SubSection>
+
+        <SubSection title="TeamCard (onboarding grid)">
+          <p className="text-xs text-muted-foreground">
+            Square tile for the onboarding &ldquo;Pick a starter team&rdquo; grid. Selected tile gets{" "}
+            <code className="font-mono">ring-2 ring-ring</code>. Drives the{" "}
+            <code className="font-mono">useInstallTeamCatalogEntry</code> simplified flow.
+          </p>
+          <TeamCardShowcase />
+        </SubSection>
+
+        <SubSection title="TeamHierarchyPreview">
+          <div className="max-w-md">
+            <TeamHierarchyPreview team={sampleTeam} />
+          </div>
+        </SubSection>
+
+        <SubSection title="RequiredSkillsList">
+          <div className="max-w-xl">
+            <RequiredSkillsList skills={sampleTeam.requiredSkills} />
+          </div>
+        </SubSection>
+
+        <SubSection title="EnvInputsList">
+          <div className="max-w-xl">
+            <EnvInputsList inputs={sampleTeam.envInputs} />
+          </div>
+        </SubSection>
+
+        <SubSection title="ExternalSourcesList">
+          <div className="max-w-xl">
+            <ExternalSourcesList sources={sampleTeam.sourceRefs} />
+          </div>
+        </SubSection>
+
+        <SubSection title="Source policy step (StepSourcePolicy)">
+          <div className="max-w-xl rounded-md border border-border p-4">
+            <StepSourcePolicy
+              team={warnTeam}
+              allowExternalSources={allowExternal}
+              allowUnpinnedOptionalSources={allowUnpinned}
+              allowLocalPathSources={allowLocalPath}
+              onChange={(key, value) => {
+                if (key === "external") setAllowExternal(value);
+                if (key === "unpinned") setAllowUnpinned(value);
+                if (key === "localPath") setAllowLocalPath(value);
+              }}
+            />
+          </div>
+        </SubSection>
+
+        <SubSection title="Skill plan step (StepSkillPlan)">
+          <div className="max-w-xl rounded-md border border-border p-4">
+            <StepSkillPlan team={sampleTeam} preparations={sampleSkillPreparations} />
+          </div>
+        </SubSection>
+      </Section>
+
       {/* ============================================================ */}
       <Section title="Common Icons (Lucide)">
         <div className="grid grid-cols-4 md:grid-cols-6 gap-4">

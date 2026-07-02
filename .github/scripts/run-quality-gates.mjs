@@ -11,6 +11,8 @@ import { fileURLToPath } from 'node:url';
 import { ghFetch } from './get-bot-token.mjs';
 import { fetchAllPullRequestFiles } from './fetch-pr-files.mjs';
 import { checkTemplate } from './check-pr-template.mjs';
+import { checkLinkedIssue } from './check-pr-linked-issue.mjs';
+import { checkDedupSearch } from './check-pr-dedup-search.mjs';
 import { checkTestCoverage } from './check-pr-test-coverage.mjs';
 import { checkLockfile } from './check-pr-lockfile.mjs';
 import { checkDependencies } from './check-pr-dependencies.mjs';
@@ -109,9 +111,11 @@ async function main() {
 
   // Run all quality gates (pure functions run sync, deps check is async)
   const prTitle = pr.title ?? '';
-  const [templateResult, testResult, lockfileResult, depsResult] =
+  const [templateResult, issueResult, dedupResult, testResult, lockfileResult, depsResult] =
     await Promise.all([
       Promise.resolve(checkTemplate(prBody)),
+      Promise.resolve(checkLinkedIssue(prBody, prTitle)),
+      Promise.resolve(checkDedupSearch(prBody, prTitle)),
       Promise.resolve(checkTestCoverage(files, prTitle)),
       Promise.resolve(checkLockfile(files, author, branch)),
       checkDependencies(files, GH_TOKEN, GH_REPO, prNumber, pr.base?.ref),
@@ -119,6 +123,8 @@ async function main() {
 
   const allFailures = [
     ...templateResult.failures,
+    ...issueResult.failures,
+    ...dedupResult.failures,
     ...testResult.failures,
     ...lockfileResult.failures,
   ];

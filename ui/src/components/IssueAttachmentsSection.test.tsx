@@ -60,8 +60,6 @@ function makeAttachment(overrides: Partial<IssueAttachment> = {}): IssueAttachme
     createdAt: new Date("2026-06-01T00:00:00.000Z"),
     updatedAt: new Date("2026-06-01T00:00:00.000Z"),
     contentPath: "/api/attachments/attachment-1/content",
-    openPath: "/api/attachments/attachment-1/content",
-    downloadPath: "/api/attachments/attachment-1/content?download=1",
     ...overrides,
   };
 }
@@ -209,6 +207,40 @@ describe("IssueAttachmentsSection", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("lets video attachments open the shared media gallery", async () => {
+    const attachment = makeAttachment({
+      id: "video-attachment",
+      originalFilename: "demo.webm",
+      contentType: "video/webm",
+      contentPath: "/api/attachments/video-attachment/content",
+    });
+    const onImageClick = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueAttachmentsSection
+            attachments={[attachment]}
+            onDelete={vi.fn()}
+            onImageClick={onImageClick}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const browse = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Browse demo.webm in gallery"]',
+    );
+    expect(browse).toBeTruthy();
+
+    await act(async () => {
+      browse?.click();
+    });
+
+    expect(onImageClick).toHaveBeenCalledWith(attachment);
+  });
+
   it("treats mp4 filenames as playable videos even with a generic binary content type", async () => {
     const attachment = makeAttachment({
       id: "misclassified-mp4",
@@ -271,8 +303,6 @@ describe("IssueAttachmentsSection", () => {
       originalFilename: "report.pdf",
       contentType: "application/pdf",
       contentPath: "/api/attachments/pdf-attachment/content",
-      openPath: "/api/attachments/pdf-attachment/content",
-      downloadPath: "/api/attachments/pdf-attachment/content?download=1",
     });
 
     await act(async () => {

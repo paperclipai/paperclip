@@ -23,4 +23,27 @@ describe("EntityRow", () => {
     expect(markup).toContain("text-foreground/55");
     expect(markup).not.toContain("text-inherit");
   });
+
+  it("renders an optional meta slot and stops the title from flex-growing", () => {
+    const markup = renderToStaticMarkup(
+      <EntityRow
+        title="Alpha"
+        meta={<span data-testid="meta-cell">gpt-5.4</span>}
+        trailing={<span data-testid="trailing-cell">badge</span>}
+      />,
+    );
+
+    // meta content renders alongside trailing
+    expect(markup).toContain("meta-cell");
+    expect(markup).toContain("trailing-cell");
+    // a flex-1 spacer is inserted (between meta and trailing); the title block
+    // itself no longer flex-grows
+    expect(markup).toContain('class="flex-1"');
+    expect(markup).not.toContain("min-w-0 flex-1");
+  });
+
+  it("keeps the title flex-growing when no meta is provided", () => {
+    const markup = renderToStaticMarkup(<EntityRow title="Alpha" />);
+    expect(markup).toContain("min-w-0 flex-1");
+  });
 });

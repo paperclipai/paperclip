@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import type { AnchorHTMLAttributes, ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -26,6 +26,18 @@ vi.mock("../api/issues", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+function act<T>(callback: () => T): T {
+  let result: T | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  const maybePromise = result as unknown as PromiseLike<unknown>;
+  if (result && typeof maybePromise.then === "function") {
+    throw new TypeError("This test act shim only supports synchronous callbacks.");
+  }
+  return result as T;
+}
 
 let root: ReturnType<typeof createRoot> | null = null;
 let container: HTMLDivElement | null = null;
@@ -124,11 +136,11 @@ describe("IssueBlockedNotice", () => {
       />,
     );
 
-    expect(node.textContent).toContain("This issue still needs a next step.");
+    expect(node.textContent).toContain("This task still needs a next step.");
     expect(node.textContent).toContain("Corrective wake queued for CodexCoder");
     expect(node.textContent).toContain("Detected progress: Updated the plan");
     expect(node.textContent).not.toContain("Retry now");
-    expect(node.textContent).not.toContain("Work on this issue is blocked until");
+    expect(node.textContent).not.toContain("Work on this task is blocked until");
     expect(node.querySelector('[data-successful-run-handoff="required"]')).not.toBeNull();
   });
 
@@ -158,9 +170,8 @@ describe("IssueBlockedNotice", () => {
     expect(button).not.toBeNull();
     expect(button!.textContent ?? "").toContain("Retry now");
 
-    await act(async () => {
+    act(() => {
       button!.click();
-      await Promise.resolve();
     });
 
     await vi.waitFor(() => {
@@ -263,6 +274,65 @@ describe("IssueBlockedNotice", () => {
     );
     expect(indicator).not.toBeNull();
     expect(indicator?.getAttribute("data-recovery-state")).toBe("needed");
+    expect(indicator?.getAttribute("data-recovery-kind")).toBe("missing_disposition");
     expect(indicator?.textContent).toContain("Recovery needed");
+  });
+
+  it("labels a workspace_validation blocker recovery distinctly", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[
+          {
+            id: "blocker-2",
+            identifier: "PAP-409",
+            title: "Workspace cwd lost git context",
+            status: "blocked",
+            priority: "medium",
+            assigneeAgentId: null,
+            assigneeUserId: null,
+            activeRecoveryAction: {
+              id: "rec-2",
+              companyId: "co-1",
+              sourceIssueId: "blocker-2",
+              recoveryIssueId: null,
+              kind: "workspace_validation",
+              status: "active",
+              ownerType: "agent",
+              ownerAgentId: "agent-cto",
+              ownerUserId: null,
+              previousOwnerAgentId: null,
+              returnOwnerAgentId: null,
+              cause: "workspace_validation_failed",
+              fingerprint: "fp-2",
+              evidence: {
+                latestRunErrorCode: "workspace_validation_failed",
+              },
+              nextAction:
+                "Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution.",
+              wakePolicy: { type: "wake_owner" },
+              monitorPolicy: null,
+              attemptCount: 1,
+              maxAttempts: 3,
+              timeoutAt: null,
+              lastAttemptAt: null,
+              outcome: null,
+              resolutionNote: null,
+              resolvedAt: null,
+              createdAt: "2026-05-01T00:00:00.000Z",
+              updatedAt: "2026-05-01T00:00:00.000Z",
+            },
+          },
+        ]}
+      />,
+    );
+
+    const indicator = node.querySelector(
+      '[data-testid="issue-blocked-notice-recovery-indicator"]',
+    );
+    expect(indicator).not.toBeNull();
+    expect(indicator?.getAttribute("data-recovery-state")).toBe("needed");
+    expect(indicator?.getAttribute("data-recovery-kind")).toBe("workspace_validation");
+    expect(indicator?.textContent).toContain("Workspace recovery needed");
   });
 });
