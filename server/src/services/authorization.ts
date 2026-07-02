@@ -448,6 +448,18 @@ function activeActorMembership(
   return memberships?.find((membership) => membership.companyId === companyId && membership.status === "active") ?? null;
 }
 
+function activeResponsibleUserCanAuthorizeIssueAction(
+  action: AuthorizationAction,
+  membership: ResponsibleUserSnapshot["activeMembership"],
+) {
+  return Boolean(
+    membership &&
+    membership.status === "active" &&
+    membership.membershipRole !== "viewer" &&
+    (action === "issue:comment" || action === "issue:mutate")
+  );
+}
+
 export function authorizationDeniedDetails(decision: AuthorizationDecision) {
   return {
     ...(decision.code ? { code: decision.code } : {}),
@@ -1672,6 +1684,14 @@ export function authorizationService(db: Db) {
           reason: "deny_missing_membership",
           explanation: `Responsible user ${responsibleUserId} is unavailable for company ${companyId}.`,
         });
+
+    if (
+      !userDecision.allowed &&
+      userDecision.reason === "deny_unsupported_action" &&
+      activeResponsibleUserCanAuthorizeIssueAction(input.action, snapshot.activeMembership)
+    ) {
+      return agentDecision;
+    }
 
     if (userDecision.allowed) return agentDecision;
 

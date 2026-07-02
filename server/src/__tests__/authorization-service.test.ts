@@ -337,6 +337,81 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("allows active non-viewer responsible users to authorize assigned agent issue mutations", async () => {
+    const company = await createCompany(db, "ResponsibleUserIssueMutation");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Assigned issue mutation",
+      assigneeAgentId: actorAgent.id,
+    });
+    const responsibleUserId = await createUser(db);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+
+    await expect(authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: actorAgent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_self",
+    });
+  });
+
+  it("keeps responsible-user issue mutations denied for viewer memberships", async () => {
+    const company = await createCompany(db, "ResponsibleUserIssueViewerDenied");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Assigned viewer-denied mutation",
+      assigneeAgentId: actorAgent.id,
+    });
+    const responsibleUserId = await createUser(db);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "viewer",
+    });
+
+    await expect(authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: actorAgent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAUTHORIZED",
+      reason: "deny_unsupported_action",
+    });
+  });
+
   it("fails closed when the responsible user is unavailable", async () => {
     const company = await createCompany(db, "ResponsibleUserUnavailable");
     const actorAgent = await createAgent(db, company.id, { role: "engineer" });
