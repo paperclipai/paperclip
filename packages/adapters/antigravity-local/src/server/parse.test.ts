@@ -68,6 +68,7 @@ describe("antigravity_local parser", () => {
 
   it("does not classify ordinary text mentioning max_turns as a turn-limit failure", () => {
     expect(isAntigravityTurnLimitResult("Documented config key max_turns in README", "", 0)).toBe(false);
+    expect(isAntigravityTurnLimitResult("", "A tool transcript said the turn limit reached this example", 1)).toBe(false);
     expect(isAntigravityTurnLimitResult("", "Error: max_turns_exhausted", 1)).toBe(true);
     expect(isAntigravityTurnLimitResult("", "", 53)).toBe(true);
   });

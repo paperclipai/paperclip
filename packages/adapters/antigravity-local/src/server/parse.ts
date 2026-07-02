@@ -124,7 +124,7 @@ export function isAntigravityTurnLimitResult(
 ): boolean {
   if (exitCode === 53) return true;
   const combined = `${stdout}\n${stderr}`;
-  return /(?:^|[^a-z0-9_])(?:max_turns_exhausted|turn_limit_exhausted)(?:[^a-z0-9_]|$)|(?:max(?:imum)?\s+turns?|turn\s+limit)\s+(?:exhausted|reached)/i.test(combined);
+  return /(?:^|[^a-z0-9_])(?:max_turns_exhausted|turn_limit_exhausted)(?:[^a-z0-9_]|$)/i.test(combined);
 }
 
 /**

@@ -435,6 +435,8 @@ describe("antigravity_local execute", () => {
       .find((script) => script.includes(".gemini/skills") && script.includes("antigravity/skills"));
     expect(syncScript).toBeDefined();
     expect(syncScript).not.toContain("rm -rf \"/home/agent/.gemini/skills\"");
+    expect(syncScript).not.toContain("rm -rf \"$target\"");
+    expect(syncScript).toContain("[ -e \"$target\" ] || [ -L \"$target\" ]");
     expect(syncScript).toContain("for skill_dir in");
   });
 });

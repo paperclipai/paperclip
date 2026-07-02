@@ -181,9 +181,11 @@ function buildRemoteAntigravitySkillsSyncCommand(input: {
     `  skill_name=\${skill_dir##*/}`,
     `  target=${targetDir}/"$skill_name"`,
     `  tmp=${targetDir}/".paperclip-$skill_name.tmp-$$"`,
+    `  if [ -e "$target" ] || [ -L "$target" ]; then`,
+    `    continue`,
+    `  fi`,
     `  rm -rf "$tmp"`,
     `  cp -a "$skill_dir" "$tmp"`,
-    `  rm -rf "$target"`,
     `  mv "$tmp" "$target"`,
     "done",
   ].join("\n");
