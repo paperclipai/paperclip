@@ -63,7 +63,8 @@ async function seedGraph(db: Db, input: {
   projectSourceType?: string;
   targetProjectSourceType?: string;
 }): Promise<TestGraph> {
-  const suffix = crypto.randomUUID().slice(0, 8);
+  const suffix = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+  const prefixSuffix = suffix.toUpperCase();
   const companyId = crypto.randomUUID();
   const otherCompanyId = crypto.randomUUID();
   const goalId = crypto.randomUUID();
@@ -79,8 +80,8 @@ async function seedGraph(db: Db, input: {
   const otherIssueId = crypto.randomUUID();
 
   await db.insert(companies).values([
-    { id: companyId, name: `Company ${suffix}`, issuePrefix: `F${suffix.slice(0, 4).toUpperCase()}` },
-    { id: otherCompanyId, name: `Other ${suffix}`, issuePrefix: `G${suffix.slice(0, 4).toUpperCase()}` },
+    { id: companyId, name: `Company ${suffix}`, issuePrefix: `F${prefixSuffix}` },
+    { id: otherCompanyId, name: `Other ${suffix}`, issuePrefix: `G${prefixSuffix}` },
   ]);
   await db.insert(goals).values([
     { id: goalId, companyId, title: "Goal", level: "company", status: "active" },
