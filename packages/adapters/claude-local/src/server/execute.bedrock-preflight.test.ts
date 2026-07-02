@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 
 const { runChildProcess, ensureCommandResolvable, resolveCommandForLogs } = vi.hoisted(() => {
   const claudeStdout = [
@@ -11,7 +12,7 @@ const { runChildProcess, ensureCommandResolvable, resolveCommandForLogs } = vi.h
   ].join("\n");
   return {
     // Default: STS probe succeeds (exit 0), Claude spawn returns a normal result.
-    runChildProcess: vi.fn(async (_runId: string, command: string) => {
+    runChildProcess: vi.fn(async (_runId: string, command: string): Promise<RunProcessResult> => {
       if (command === "aws") {
         return {
           exitCode: 0,
