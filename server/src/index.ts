@@ -807,6 +807,14 @@ export async function startServer(): Promise<StartedServer> {
         logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
       }
 
+      // FUL-633: model-call hang recovery. Same gating model as
+      // `scanSilentActiveRuns` — feature-flag gated inside the scanner. No-op
+      // while `ENABLE_MODEL_CALL_HANG_RECOVERY` is off.
+      const hangScanned = await heartbeat.scanModelCallHangRecovery();
+      if (hangScanned.enabled && (hangScanned.autoCancelled > 0 || hangScanned.escalated > 0)) {
+        logger.warn({ ...hangScanned }, "startup model-call hang watchdog fired recovery");
+      }
+
       const swept = await heartbeat.sweepStaleIssueLocks();
       if (swept.cleared > 0) {
         logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
@@ -875,6 +883,14 @@ export async function startServer(): Promise<StartedServer> {
           const scanned = await heartbeat.scanSilentActiveRuns();
           if (scanned.created > 0 || scanned.escalated > 0) {
             logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
+          }
+        })
+        .then(async () => {
+          // FUL-633: model-call hang periodic recovery scan. Mirrors
+          // `scanSilentActiveRuns` — feature-flag gated inside the scanner.
+          const hangScanned = await heartbeat.scanModelCallHangRecovery();
+          if (hangScanned.enabled && (hangScanned.autoCancelled > 0 || hangScanned.escalated > 0)) {
+            logger.warn({ ...hangScanned }, "periodic model-call hang watchdog fired recovery");
           }
         })
         .then(async () => {
