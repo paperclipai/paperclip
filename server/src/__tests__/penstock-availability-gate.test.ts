@@ -77,7 +77,9 @@ describe("createPenstockAvailabilityGate", () => {
     expect(result.allow === false ? result.resumeAt?.toISOString() : null).toBe("2026-06-30T08:05:00.000Z");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(String(url)).toBe("https://api.penstock.run/v1/pools/default/capacity?provider=anthropic");
+    expect(String(url)).toBe(
+      "https://api.penstock.run/v1/pools/default/capacity?provider=anthropic&model=claude-sonnet-4-6%5B1m%5D",
+    );
     expect((init as RequestInit).method).toBe("GET");
     expect((init as RequestInit).body).toBeUndefined();
   });
@@ -118,7 +120,7 @@ describe("createPenstockAvailabilityGate", () => {
     expect(result.allow === false ? result.resumeAt?.toISOString() : null).toBe("2026-06-30T08:05:00.000Z");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
-      "https://api.penstock.run/v1/pools/default/capacity?provider=anthropic",
+      "https://api.penstock.run/v1/pools/default/capacity?provider=anthropic&model=claude-opus-4-8%5B1m%5D",
     );
     expect(log.info).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -146,8 +148,16 @@ describe("createPenstockAvailabilityGate", () => {
 
     await gate.checkAdapter(input);
     await gate.checkAdapter({ ...input, agentId: "agent-2" });
+    await gate.checkAdapter({
+      ...input,
+      agentId: "agent-3",
+      adapterConfig: {
+        ...input.adapterConfig,
+        model: "claude-sonnet-4-6[1m]",
+      },
+    });
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("falls back to the legacy message probe when capacity readback is unavailable", async () => {
@@ -187,7 +197,7 @@ describe("createPenstockAvailabilityGate", () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
-      "https://api.penstock.run/v1/pools/default/capacity?provider=anthropic",
+      "https://api.penstock.run/v1/pools/default/capacity?provider=anthropic&model=claude-sonnet-4-6%5B1m%5D",
     );
     const [url, init] = fetchMock.mock.calls[1]!;
     expect(String(url)).toBe("https://api.penstock.run/anthropic/v1/messages");

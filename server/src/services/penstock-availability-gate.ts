@@ -81,7 +81,7 @@ export function createPenstockAvailabilityGate(
       if (!resolved) return { allow: true };
 
       const nowMs = input.now.getTime();
-      const key = `${resolved.capacityUrl.origin}${resolved.capacityUrl.pathname}::anthropic`;
+      const key = `${resolved.capacityUrl.origin}${resolved.capacityUrl.pathname}::anthropic::${resolved.model}`;
       const cached = cache.get(key);
       if (cached && nowMs - cached.fetchedAt < cacheTtlMs) {
         return cached.result;
@@ -143,7 +143,7 @@ function resolvePenstockAnthropicCheck(
 
   try {
     return {
-      capacityUrl: buildCapacityUrl(baseUrl),
+      capacityUrl: buildCapacityUrl(baseUrl, model),
       messagesUrl: buildMessagesUrl(baseUrl),
       token,
       model,
@@ -168,10 +168,12 @@ function buildMessagesUrl(baseUrl: string): URL {
   return new URL(`${trimmed}/v1/messages`);
 }
 
-function buildCapacityUrl(baseUrl: string): URL {
+function buildCapacityUrl(baseUrl: string, model: string): URL {
   const url = new URL(baseUrl);
   url.pathname = "/v1/pools/default/capacity";
-  url.search = "provider=anthropic";
+  url.search = "";
+  url.searchParams.set("provider", "anthropic");
+  url.searchParams.set("model", model);
   url.hash = "";
   return url;
 }
