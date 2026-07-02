@@ -1906,7 +1906,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       expect(inboxIssues[0]?.title).toContain("CapAgent");
 
       const secondRun = await svc.runRoutine(routine.id, { source: "manual" });
-      expect(secondRun.status).toBe("issue_created");
+      expect(secondRun.status).toBe("coalesced");
 
       const warningsAfterSecond = await db.select().from(tokenCapWarnings).where(eq(tokenCapWarnings.agentId, agentId));
       expect(warningsAfterSecond).toHaveLength(1);
