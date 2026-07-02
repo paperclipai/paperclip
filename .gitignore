@@ -74,3 +74,4 @@ tests/release-smoke/playwright-report/
 .mic212/
 /server/MIC-*.md
 /server/MIC-*.txt
+scripts/__pycache__/
