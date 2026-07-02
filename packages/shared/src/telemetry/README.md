@@ -11,10 +11,6 @@ Shared enum constants live in `packages/shared/src/constants.ts`. Use those
 constants when code needs a reusable domain, but treat the generated telemetry
 types as the final authority for emitted first-party telemetry shapes.
 
-This document does not describe where events are delivered or how events are
-handled after emission. That is outside this repository's public telemetry
-contract.
-
 ## Public Sources
 
 Use these files when reviewing or changing telemetry code:
@@ -36,6 +32,12 @@ will drift as the generated contract changes.
 
 ## Emission Boundary
 
+Paperclip telemetry uses named events with explicit dimension fields. Treat
+open-ended string dimensions as public contract values, not as a place for user
+content or private operational data. Do not send PII, secrets, credentials,
+private paths, prompts, model output, or other sensitive values through
+telemetry dimensions.
+
 Telemetry emitters send raw dimension values. They must not pre-normalize
 enum-like values into a reporting form just to match today's known domain.
 
@@ -47,6 +49,10 @@ to a stable reporting shape.
 
 Do not add client-side lowercasing, alias mapping, or fallback mapping unless
 the generated telemetry contract specifically requires that emitted value.
+
+If a dimension is privacy-protected before emission, emit only the protected
+value and its matching public marker as defined by the typed helper or generated
+contract. Do not emit private source material in telemetry dimensions.
 
 ## Dimension Values
 
@@ -77,11 +83,13 @@ the emitting layer. Do not use a sentinel to hide a concrete value that is new,
 custom, or not yet represented by a shared constant. Emit the concrete raw value
 and let the receiving layer canonicalize it.
 
-If a dimension is privacy-protected before emission, emit only the protected
-value and its matching public marker as defined by the typed helper or generated
-contract. Do not emit private source material in telemetry dimensions.
-
 ## Adding Or Changing Telemetry
+
+Client code is responsible for emitting approved telemetry events at the right
+place in the product. It is not responsible for deciding which new events should
+exist. Do not introduce ad hoc event names, dimensions, or enum domains in client
+code; they must exist in the generated telemetry contract before emitters use
+them.
 
 1. Start from `generated/paperclip-telemetry.ts`. The generated types are what
    reviewers use to verify event names, dimensions, optionality, value types,
