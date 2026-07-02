@@ -295,6 +295,7 @@ export function getCreateProviderBlockReason(
   provider: SecretProviderDescriptor | null | undefined,
   mode: CreateMode,
   health: SecretProviderHealthResponse | null,
+  providerConfig?: CompanySecretProviderConfig | null,
 ) {
   if (!provider) return "Select a provider.";
   if (mode === "managed" && provider.supportsManagedValues === false) {
@@ -303,11 +304,20 @@ export function getCreateProviderBlockReason(
   if (mode === "external" && provider.supportsExternalReferences === false) {
     return `${provider.label} does not support linked external references.`;
   }
+  const selectedProviderConfigBlockReason = providerConfig?.provider === provider.id
+    ? getProviderConfigBlockReason(providerConfig)
+    : null;
+  const selectedProviderConfigReady =
+    providerConfig?.provider === provider.id && !selectedProviderConfigBlockReason;
   if (provider.configured === false) {
+    if (selectedProviderConfigReady) return null;
+    if (selectedProviderConfigBlockReason) return selectedProviderConfigBlockReason;
     const healthEntry = healthEntryForProvider(health, provider.id);
+    const deploymentMessage = `Deployment default ${provider.label} is not configured.`;
+    const nextStep = " Select a ready provider vault or configure the deployment default.";
     return healthEntry?.message
-      ? `${provider.label} is not configured in this deployment. ${healthEntry.message}`
-      : `${provider.label} is not configured in this deployment.`;
+      ? `${deploymentMessage}${nextStep} ${healthEntry.message}`
+      : `${deploymentMessage}${nextStep}`;
   }
   const healthEntry = healthEntryForProvider(health, provider.id);
   if (healthEntry?.status === "error") {
@@ -319,8 +329,16 @@ export function getCreateProviderBlockReason(
 function providerHealthText(
   provider: SecretProviderDescriptor | null | undefined,
   health: SecretProviderHealthResponse | null,
+  providerConfig?: CompanySecretProviderConfig | null,
 ) {
   if (!provider) return null;
+  if (
+    provider.configured === false &&
+    providerConfig?.provider === provider.id &&
+    !getProviderConfigBlockReason(providerConfig)
+  ) {
+    return `Using selected provider vault. Deployment default ${provider.label} is not configured.`;
+  }
   const entry = healthEntryForProvider(health, provider.id);
   if (!entry) return null;
   const warnings = entry.warnings?.join(" ");
@@ -344,17 +362,54 @@ export function getProviderConfigBlockReason(
   return null;
 }
 
-export function getDefaultProviderConfigId(
+export function getSelectableProviderConfig(
   configs: CompanySecretProviderConfig[],
   provider: SecretProvider,
 ) {
   const providerConfigs = configs.filter((config) => config.provider === provider);
-  const selectable = providerConfigs.filter((config) => !getProviderConfigBlockReason(config));
   return (
-    selectable.find((config) => config.isDefault)?.id ??
-    selectable[0]?.id ??
+    providerConfigs.find((config) => config.isDefault && !getProviderConfigBlockReason(config)) ??
+    providerConfigs.find((config) => !getProviderConfigBlockReason(config)) ??
+    null
+  );
+}
+
+export function getDefaultProviderConfigId(
+  configs: CompanySecretProviderConfig[],
+  provider: SecretProvider,
+) {
+  const selected = getSelectableProviderConfig(configs, provider);
+  const providerConfigs = configs.filter((config) => config.provider === provider);
+  return (
+    selected?.id ??
     providerConfigs.find((config) => config.isDefault)?.id ??
     ""
+  );
+}
+
+export function findCreateProviderReplacement({
+  providers,
+  providerConfigs,
+  currentProvider,
+  mode,
+  health,
+}: {
+  providers: SecretProviderDescriptor[];
+  providerConfigs: CompanySecretProviderConfig[];
+  currentProvider: SecretProvider;
+  mode: CreateMode;
+  health: SecretProviderHealthResponse | null;
+}) {
+  return (
+    providers.find((provider) => {
+      const selectedConfig =
+        provider.id === currentProvider
+          ? providerConfigs.find(
+              (config) => config.provider === provider.id && !getProviderConfigBlockReason(config),
+            ) ?? null
+          : getSelectableProviderConfig(providerConfigs, provider.id);
+      return !getCreateProviderBlockReason(provider, mode, health, selectedConfig);
+    }) ?? null
   );
 }
 
@@ -573,11 +628,13 @@ export function Secrets() {
     selectedCreateProvider,
     createMode,
     providerHealthQuery.data ?? null,
+    selectedCreateProviderConfig,
   ) ?? getProviderConfigBlockReason(selectedCreateProviderConfig);
   const rotateProviderBlockReason = getProviderConfigBlockReason(selectedRotateProviderConfig);
   const createProviderHealthText = providerHealthText(
     selectedCreateProvider,
     providerHealthQuery.data ?? null,
+    selectedCreateProviderConfig,
   );
   const awsManagedPathPreview = getAwsManagedPathPreview({
     provider: selectedCreateProvider,
@@ -1006,12 +1063,16 @@ export function Secrets() {
       providers.find((provider) => provider.id === createForm.provider) ?? null,
       createMode,
       providerHealthQuery.data ?? null,
+      providerConfigs.find((config) => config.id === createForm.providerConfigId) ?? null,
     );
     if (!currentBlockReason) return;
-    const replacement = providers.find(
-      (provider) =>
-        !getCreateProviderBlockReason(provider, createMode, providerHealthQuery.data ?? null),
-    );
+    const replacement = findCreateProviderReplacement({
+      providers,
+      providerConfigs,
+      currentProvider: createForm.provider,
+      mode: createMode,
+      health: providerHealthQuery.data ?? null,
+    });
     if (replacement && replacement.id !== createForm.provider) {
       setCreateForm((current) => ({
         ...current,
@@ -1635,7 +1696,7 @@ export function Secrets() {
       )}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto p-4 sm:max-w-lg sm:p-6">
           <DialogHeader>
             <DialogTitle>{editingDefinition ? "Edit user-provided secret" : "Create secret"}</DialogTitle>
             <DialogDescription>
@@ -1643,7 +1704,7 @@ export function Secrets() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label className="text-xs font-medium" htmlFor="new-secret-name">Name</label>
                 <Input
@@ -1721,7 +1782,7 @@ export function Secrets() {
                     }));
                   }}
                 >
-                  <TabsList className="grid w-full grid-cols-2">
+                  <TabsList className="grid h-auto w-full grid-cols-2">
                     <TabsTrigger value="company">Company</TabsTrigger>
                     <TabsTrigger value="user">Each user</TabsTrigger>
                   </TabsList>
@@ -1735,9 +1796,19 @@ export function Secrets() {
             {secretValueProvider === "company" ? (
               <>
                 <Tabs value={createMode} onValueChange={(value) => setCreateMode(value as CreateMode)}>
-                  <TabsList className="w-full grid grid-cols-2">
-                    <TabsTrigger value="managed">Managed value</TabsTrigger>
-                    <TabsTrigger value="external">External reference</TabsTrigger>
+                  <TabsList className="grid h-auto w-full grid-cols-2">
+                    <TabsTrigger
+                      value="managed"
+                      className="min-h-9 whitespace-normal px-1.5 text-center text-xs leading-tight sm:text-sm"
+                    >
+                      Managed value
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="external"
+                      className="min-h-9 whitespace-normal px-1.5 text-center text-xs leading-tight sm:text-sm"
+                    >
+                      External reference
+                    </TabsTrigger>
                   </TabsList>
                 </Tabs>
                 <div>
@@ -1762,12 +1833,18 @@ export function Secrets() {
                         key={provider.id}
                         value={provider.id}
                         disabled={Boolean(
-                          getCreateProviderBlockReason(provider, createMode, providerHealthQuery.data ?? null),
+                          getCreateProviderBlockReason(
+                            provider,
+                            createMode,
+                            providerHealthQuery.data ?? null,
+                            getSelectableProviderConfig(providerConfigs, provider.id),
+                          ),
                         )}
                       >
                         {provider.label}
-                        {provider.configured === false
-                          ? " (not configured)"
+                        {provider.configured === false &&
+                        !getSelectableProviderConfig(providerConfigs, provider.id)
+                          ? " (deployment default missing)"
                           : provider.requiresExternalRef
                             ? " (external only)"
                             : ""}
