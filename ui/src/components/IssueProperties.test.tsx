@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+import { act } from "react-dom/test-utils";
 import type {
   Agent,
   ExecutionWorkspace,
