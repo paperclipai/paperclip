@@ -15,6 +15,18 @@ export interface Approval {
   updatedAt: Date;
 }
 
+export type ApprovalDecisionAction = "approve" | "reject" | "revision";
+
+export interface ApprovalDecisionOption {
+  id: string;
+  label: string;
+  action: ApprovalDecisionAction;
+  description?: string | null;
+  decisionNote?: string | null;
+  nextStep?: string | null;
+  tone?: "default" | "success" | "danger" | "warning" | null;
+}
+
 export interface ApprovalComment {
   id: string;
   companyId: string;

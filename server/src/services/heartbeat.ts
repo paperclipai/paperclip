@@ -318,7 +318,11 @@ function mergeAdapterRecoveryMetadata(input: {
       : {}),
   };
 }
-const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set(["approval_approved"]);
+const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
+  "approval_approved",
+  "approval_rejected",
+  "approval_revision_requested",
+]);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "claude_tui",
@@ -1814,6 +1818,8 @@ function describeSessionResetReason(
   if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
   if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
   if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
+  if (wakeReason === "approval_rejected") return "wake reason is approval_rejected";
+  if (wakeReason === "approval_revision_requested") return "wake reason is approval_revision_requested";
   return null;
 }
 

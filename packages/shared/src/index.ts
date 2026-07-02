@@ -624,6 +624,8 @@ export type {
   PluginApiRouteDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
+  ApprovalDecisionAction,
+  ApprovalDecisionOption,
   PluginDatabaseNamespaceRecord,
   PluginMigrationRecord,
   PluginStateRecord,

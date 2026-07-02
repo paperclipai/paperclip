@@ -13,12 +13,16 @@ export type CreateApproval = z.infer<typeof createApprovalSchema>;
 
 export const resolveApprovalSchema = z.object({
   decisionNote: multilineTextSchema.optional().nullable(),
+  decisionOptionId: z.string().trim().min(1).max(160).optional().nullable(),
+  decisionOptionLabel: multilineTextSchema.pipe(z.string().max(500)).optional().nullable(),
 });
 
 export type ResolveApproval = z.infer<typeof resolveApprovalSchema>;
 
 export const requestApprovalRevisionSchema = z.object({
   decisionNote: multilineTextSchema.optional().nullable(),
+  decisionOptionId: z.string().trim().min(1).max(160).optional().nullable(),
+  decisionOptionLabel: multilineTextSchema.pipe(z.string().max(500)).optional().nullable(),
 });
 
 export type RequestApprovalRevision = z.infer<typeof requestApprovalRevisionSchema>;

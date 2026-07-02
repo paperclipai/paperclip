@@ -49,12 +49,11 @@ const CYCLE_STATUS_FILTERS: Array<{ value: CycleStatusFilter; label: string }> =
   { value: "active", label: "Active" },
   { value: "planned", label: "Upcoming" },
   { value: "completed", label: "Completed" },
-  { value: "unassigned", label: "Backlog" },
   { value: "archived", label: "Archived" },
 ];
 
-type CycleSelection = "all" | "unassigned" | string;
-type CycleStatusFilter = "all" | "unassigned" | WorkCycle["status"];
+type CycleSelection = "all" | string;
+type CycleStatusFilter = "all" | WorkCycle["status"];
 
 type NewCycleForm = {
   name: string;
@@ -296,19 +295,7 @@ function buildCycleSummaries(
     issues.filter((issue) => issue.cycleId === cycle.id),
   ));
 
-  const unassignedIssues = issues.filter((issue) => !issue.cycleId && isOpenIssue(issue));
-  summaries.push(summarizeCycle(
-    "unassigned",
-    null,
-    "Cycle backlog",
-    "No cycle selected",
-    "Needs planning",
-    unassignedIssues,
-  ));
-
   return summaries.sort((a, b) => {
-    if (a.id === "unassigned") return 1;
-    if (b.id === "unassigned") return -1;
     const statusOrder = (cycle: WorkCycle | null) => {
       if (!cycle) return 4;
       if (cycle.status === "active") return 0;
@@ -342,9 +329,7 @@ function canTransferAllOpenWork(targetCycle: WorkCycle, issues: Issue[]) {
 
 type CycleOverviewPanelProps = {
   summaries: CycleSummary[];
-  backlogCount: number;
   onSelectCycle: (cycleId: CycleSelection) => void;
-  onOpenBacklog: () => void;
 };
 
 const CYCLE_OVERVIEW_LANES: Array<{
@@ -401,9 +386,7 @@ function CycleOverviewCard({
 
 function CycleOverviewPanel({
   summaries,
-  backlogCount,
   onSelectCycle,
-  onOpenBacklog,
 }: CycleOverviewPanelProps) {
   const cycleSummaries = summaries.filter(
     (summary): summary is CycleSummary & { cycle: WorkCycle } =>
@@ -412,24 +395,6 @@ function CycleOverviewPanel({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-muted/20 px-3 py-3">
-        <div className="min-w-0">
-          <div className="text-sm font-medium text-foreground">Backlog planning queue</div>
-          <div className="mt-0.5 text-xs text-muted-foreground">
-            {backlogCount} open item{backlogCount === 1 ? "" : "s"} are not assigned to a cycle.
-          </div>
-        </div>
-        <button
-          type="button"
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent disabled:opacity-50"
-          onClick={onOpenBacklog}
-          disabled={backlogCount === 0}
-        >
-          <Archive className="h-3.5 w-3.5" />
-          Plan backlog
-        </button>
-      </div>
-
       <div className="grid gap-3 xl:grid-cols-3">
         {CYCLE_OVERVIEW_LANES.map((lane) => {
           const laneSummaries = cycleSummaries.filter((summary) => summary.cycle.status === lane.status);
@@ -469,6 +434,7 @@ export function Cycles() {
   const [cycleStatusFilter, setCycleStatusFilter] = useState<CycleStatusFilter>("all");
   const [newCycle, setNewCycle] = useState<NewCycleForm>(() => emptyNewCycleForm());
   const [transferTargetCycleId, setTransferTargetCycleId] = useState("");
+  const [addWorkOpen, setAddWorkOpen] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Cycles" }]);
@@ -600,17 +566,12 @@ export function Cycles() {
     planned: cycles.filter((cycle) => cycle.status === "planned").length,
     completed: cycles.filter((cycle) => cycle.status === "completed").length,
     archived: cycles.filter((cycle) => cycle.status === "archived").length,
-    unassigned: unassignedOpenIssues.length,
-  }), [cycles, unassignedOpenIssues]);
+  }), [cycles]);
 
   const filteredSummaries = useMemo(() => {
     const normalizedQuery = cycleSearch.trim().toLowerCase();
     return summaries.filter((summary) => {
-      if (cycleStatusFilter === "unassigned") {
-        if (summary.id !== "unassigned") return false;
-      } else if (summary.id === "unassigned") {
-        return false;
-      } else if (summary.cycle) {
+      if (summary.cycle) {
         if (cycleStatusFilter === "all" && summary.cycle.status === "archived") return false;
         if (cycleStatusFilter !== "all" && summary.cycle.status !== cycleStatusFilter) return false;
       }
@@ -619,7 +580,7 @@ export function Cycles() {
         summary.label,
         summary.projectLabel,
         summary.dateLabel,
-        summary.cycle?.status ?? "unassigned",
+        summary.cycle?.status ?? "",
       ].some((value) => value.toLowerCase().includes(normalizedQuery));
     });
   }, [cycleSearch, cycleStatusFilter, summaries]);
@@ -660,6 +621,16 @@ export function Cycles() {
     : summaries.find((summary) => summary.id === selectedCycleId) ?? null;
   const selectedCycle = selectedSummary?.cycle ?? null;
   const visibleIssues = selectedSummary ? selectedSummary.issues : [];
+  const addWorkCandidates = useMemo(() => {
+    if (!selectedCycle) return [];
+    return unassignedOpenIssues
+      .filter((issue) => isAssignableCycleForIssue(selectedCycle, issue))
+      .sort((a, b) => {
+        const priorityDelta = (PRIORITY_POINTS[b.priority] ?? 0) - (PRIORITY_POINTS[a.priority] ?? 0);
+        if (priorityDelta !== 0) return priorityDelta;
+        return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+      });
+  }, [selectedCycle, unassignedOpenIssues]);
   const detailMetrics = selectedSummary ?? {
     issueCount: totals.allIssues,
     openCount: totals.openIssues,
@@ -706,6 +677,10 @@ export function Cycles() {
     if (summaries.some((summary) => summary.id === selectedCycleId)) return;
     setSelectedCycleId("all");
   }, [selectedCycleId, summaries]);
+
+  useEffect(() => {
+    setAddWorkOpen(false);
+  }, [selectedCycleId]);
 
   if (!selectedCompanyId) {
     return <EmptyState icon={RefreshCw} message="Select a company to view cycles." />;
@@ -891,9 +866,7 @@ export function Cycles() {
                   {CYCLE_STATUS_FILTERS.map((filter) => {
                     const count = filter.value === "all"
                       ? filterCounts.all
-                      : filter.value === "unassigned"
-                        ? filterCounts.unassigned
-                        : filterCounts[filter.value];
+                      : filterCounts[filter.value];
                     return (
                       <button
                         key={filter.value}
@@ -906,11 +879,6 @@ export function Cycles() {
                         )}
                         onClick={() => {
                           setCycleStatusFilter(filter.value);
-                          if (filter.value === "unassigned") {
-                            setSelectedCycleId("unassigned");
-                          } else if (selectedCycleId === "unassigned") {
-                            setSelectedCycleId("all");
-                          }
                         }}
                       >
                         {filter.label}
@@ -955,8 +923,7 @@ export function Cycles() {
                     <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground">
                       {summary.cycle?.status === "active" ? <Play className="h-4 w-4 text-emerald-500" /> :
                         summary.cycle?.status === "completed" ? <Lock className="h-4 w-4" /> :
-                          summary.id === "unassigned" ? <Archive className="h-4 w-4" /> :
-                            <CalendarClock className="h-4 w-4" />}
+                          <CalendarClock className="h-4 w-4" />}
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex min-w-0 items-center gap-2">
@@ -1007,16 +974,12 @@ export function Cycles() {
                         <span className={cn("rounded-full border px-2 py-0.5 text-xs capitalize", statusClassName(selectedCycle.status))}>
                           {statusLabel(selectedCycle.status)}
                         </span>
-                      ) : selectedCycleId === "unassigned" ? (
-                        <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">backlog</span>
                       ) : null}
                     </div>
                     <p className="mt-1 text-sm text-muted-foreground">
                       {selectedCycle
                         ? `${projectName(projects, selectedCycle.projectId)} · ${formatDateRange(selectedCycle)}`
-                        : selectedCycleId === "unassigned"
-                          ? "Open work that has not been planned into a cycle."
-                          : "Active, upcoming, and completed cycles. Open backlog only when you are planning scope."}
+                        : "Active, upcoming, and completed cycles. Add unplanned work from inside a selected cycle."}
                     </p>
                   </div>
 
@@ -1071,6 +1034,19 @@ export function Cycles() {
                         >
                           <Archive className="h-3.5 w-3.5" />
                           Archive
+                        </button>
+                      ) : null}
+                      {selectedCycle.status !== "completed" && selectedCycle.status !== "archived" ? (
+                        <button
+                          type="button"
+                          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent disabled:opacity-50"
+                          onClick={() => setAddWorkOpen((open) => !open)}
+                          disabled={addWorkCandidates.length === 0}
+                          title={addWorkCandidates.length === 0 ? "No compatible unplanned work for this cycle." : undefined}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          Add work
+                          <span className="text-xs tabular-nums text-muted-foreground">{addWorkCandidates.length}</span>
                         </button>
                       ) : null}
                     </div>
@@ -1186,30 +1162,85 @@ export function Cycles() {
                     </div>
                   </div>
                 ) : null}
+
+                {selectedCycle && addWorkOpen ? (
+                  <div className="mt-3 rounded-md border border-border bg-muted/20 p-3">
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-semibold text-foreground">Add unplanned work</div>
+                        <div className="text-xs text-muted-foreground">
+                          Compatible open issues without a cycle. This list stays hidden until you plan scope.
+                        </div>
+                      </div>
+                      <span className="text-xs tabular-nums text-muted-foreground">
+                        {addWorkCandidates.length} available
+                      </span>
+                    </div>
+                    {addWorkCandidates.length === 0 ? (
+                      <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
+                        No compatible unplanned work for this cycle.
+                      </div>
+                    ) : (
+                      <div className="max-h-72 overflow-auto rounded-md border border-border bg-background">
+                        {addWorkCandidates.slice(0, 50).map((issue) => {
+                          const project = issue.projectId ? projects?.find((item) => item.id === issue.projectId) : null;
+                          return (
+                            <div key={issue.id} className="flex items-center gap-3 border-b border-border px-3 py-2 last:border-b-0">
+                              <div className="min-w-0 flex-1">
+                                <Link to={`/issues/${issue.identifier ?? issue.id}`} className="block min-w-0">
+                                  <span className="mr-2 font-mono text-xs text-muted-foreground">
+                                    {issue.identifier ?? issue.id.slice(0, 8)}
+                                  </span>
+                                  <span className="text-sm font-medium text-foreground">{issue.title}</span>
+                                </Link>
+                                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                  <span>{project?.name ?? "No project"}</span>
+                                  <span>{pointsForIssue(issue)} pts</span>
+                                  <span>{estimateHoursForIssue(issue)}h</span>
+                                  <span className="capitalize">{issue.priority}</span>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent disabled:opacity-50"
+                                disabled={updateIssueCycle.isPending}
+                                onClick={() => updateIssueCycle.mutate({
+                                  issueId: issue.id,
+                                  cycleId: selectedCycle.id,
+                                })}
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                                Add
+                              </button>
+                            </div>
+                          );
+                        })}
+                        {addWorkCandidates.length > 50 ? (
+                          <div className="px-3 py-2 text-xs text-muted-foreground">
+                            Showing first 50 compatible issues. Use issue filters to narrow the backlog before planning.
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
               </div>
 
               <div className="p-4">
                 {selectedCycleId === "all" ? (
                   <CycleOverviewPanel
                     summaries={summaries}
-                    backlogCount={filterCounts.unassigned}
                     onSelectCycle={setSelectedCycleId}
-                    onOpenBacklog={() => {
-                      setCycleStatusFilter("unassigned");
-                      setSelectedCycleId("unassigned");
-                    }}
                   />
                 ) : (
                   <>
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div>
                         <h3 className="text-sm font-semibold text-foreground">
-                          {selectedCycleId === "unassigned" ? "Backlog planning queue" : "Cycle work items"}
+                          Cycle work items
                         </h3>
                         <p className="text-xs text-muted-foreground">
-                          {selectedCycleId === "unassigned"
-                            ? "Assign these items into an active or upcoming cycle when you are planning scope."
-                            : "Set the cycle directly here, or open the issue properties panel for deeper planning."}
+                          Set the cycle directly here, or open the issue properties panel for deeper planning.
                         </p>
                       </div>
                       <span className="text-xs text-muted-foreground">{visibleIssues.length} shown</span>

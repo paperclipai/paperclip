@@ -107,16 +107,22 @@ function errorMessage(err: unknown): string {
 
 function bootstrapResultSummary(result: unknown): string {
   const record = result && typeof result === "object"
-    ? result as { writtenFiles?: unknown; preservedFiles?: unknown }
+    ? result as { writtenFiles?: unknown; preservedFiles?: unknown; folder?: { path?: unknown; realPath?: unknown } }
     : {};
   const writtenFiles = Array.isArray(record.writtenFiles) ? record.writtenFiles : [];
   const preservedFiles = Array.isArray(record.preservedFiles) ? record.preservedFiles : [];
+  const path = typeof record.folder?.realPath === "string"
+    ? record.folder.realPath
+    : typeof record.folder?.path === "string"
+      ? record.folder.path
+      : null;
+  const suffix = path ? ` Root: ${path}` : "";
   if (writtenFiles.length > 0 && preservedFiles.length > 0) {
-    return `Created ${writtenFiles.length} baseline file(s); preserved ${preservedFiles.length}.`;
+    return `Created ${writtenFiles.length} baseline file(s); preserved ${preservedFiles.length}.${suffix}`;
   }
-  if (writtenFiles.length > 0) return `Created ${writtenFiles.length} baseline file(s).`;
-  if (preservedFiles.length > 0) return `Baseline already complete; preserved ${preservedFiles.length} file(s).`;
-  return "Folder checked and bootstrap completed.";
+  if (writtenFiles.length > 0) return `Created ${writtenFiles.length} baseline file(s).${suffix}`;
+  if (preservedFiles.length > 0) return `Baseline already complete; preserved ${preservedFiles.length} file(s).${suffix}`;
+  return `Folder checked and bootstrap completed.${suffix}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -3220,7 +3226,29 @@ const shellStyle: CSSProperties = {
 // Pre-flight: prompt for folder before any tab can be useful.
 // ---------------------------------------------------------------------------
 
-function UnconfiguredFolder({ context, folder, refresh }: { context: { companyId: string | null }; folder?: FolderStatus; refresh: () => void }) {
+function sanitizePathSegment(value: string | null | undefined): string {
+  const normalized = (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return normalized || "company";
+}
+
+function recommendedWikiRootPath(context: PluginPageProps["context"]): string {
+  return `/paperclip/instances/default/wiki/${sanitizePathSegment(context.companyPrefix ?? context.companyId)}`;
+}
+
+function localFolderPathProblem(path: string): string | null {
+  const trimmed = path.trim();
+  if (!trimmed) return "Enter an absolute folder path.";
+  if (!trimmed.startsWith("/")) {
+    return "Wiki folders must use an absolute server path, for example /paperclip/instances/default/wiki/six_zenith.";
+  }
+  return null;
+}
+
+function UnconfiguredFolder({ context, folder, refresh }: { context: PluginPageProps["context"]; folder?: FolderStatus; refresh: () => void }) {
   const bootstrap = usePluginAction("bootstrap-root");
   const toast = usePluginToast();
   const isMobile = useIsMobileLayout();
@@ -3228,6 +3256,8 @@ function UnconfiguredFolder({ context, folder, refresh }: { context: { companyId
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const configuredButUnhealthy = Boolean(folder?.configured);
+  const recommendedPath = recommendedWikiRootPath(context);
+  const pathProblem = localFolderPathProblem(path);
 
   useEffect(() => {
     setPath(folder?.path ?? "");
@@ -3235,6 +3265,12 @@ function UnconfiguredFolder({ context, folder, refresh }: { context: { companyId
 
   async function submit() {
     if (!context.companyId || !path.trim()) return;
+    const problem = localFolderPathProblem(path);
+    if (problem) {
+      setErrorMsg(problem);
+      toast({ tone: "error", title: "Wiki root path is invalid", body: problem });
+      return;
+    }
     setBusy(true);
     setErrorMsg(null);
     try {
@@ -3261,6 +3297,9 @@ function UnconfiguredFolder({ context, folder, refresh }: { context: { companyId
               : "Pick an absolute path on this machine. The plugin creates "}
             {!configuredButUnhealthy ? <><Mono>raw/</Mono>, <Mono>wiki/</Mono>, <Mono>AGENTS.md</Mono>, <Mono>IDEA.md</Mono>, <Mono>wiki/index.md</Mono>, and <Mono>wiki/log.md</Mono> if they don't already exist.</> : null}
           </Tiny>
+          <Callout tone="info">
+            Recommended root: <Mono>{recommendedPath}</Mono>
+          </Callout>
           {folder?.problems?.length ? (
             <Callout tone="danger">
               <div style={{ display: "grid", gap: 6 }}>
@@ -3280,9 +3319,19 @@ function UnconfiguredFolder({ context, folder, refresh }: { context: { companyId
               onApply={submit}
               applyLabel={configuredButUnhealthy ? "Repair & bootstrap" : "Configure & bootstrap"}
               busy={busy}
-              disabled={!path.trim()}
+              disabled={!path.trim() || Boolean(pathProblem)}
             />
+            {pathProblem ? <Callout tone="warn">{pathProblem}</Callout> : null}
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  setPath(recommendedPath);
+                  setErrorMsg(null);
+                }}
+              >
+                Use recommended path
+              </Button>
               <Button variant="ghost" onClick={() => refresh()}>I already configured it</Button>
             </div>
             {errorMsg ? <Callout tone="danger">{errorMsg}</Callout> : null}

@@ -42,7 +42,7 @@ import {
 import type { InboxIssueColumn } from "../lib/inbox";
 import type { Agent, Issue, IssuePriority, IssueStatus, IssueWorkItemType, Project } from "@paperclipai/shared";
 
-const WORK_HUB_PAGE_SIZE = 500;
+const WORK_HUB_PAGE_SIZE = 1000;
 const WORK_HUB_HUMAN_WORK_ITEM_TYPES = ["initiative", "human_task"] as const satisfies readonly IssueWorkItemType[];
 const WORK_HUB_OPEN_STATUSES = new Set<IssueStatus>(["backlog", "todo", "in_progress", "in_review", "blocked"]);
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -178,6 +178,18 @@ function mergeIssuePagesStable(pages: Issue[][]): Issue[] {
 
 function getNextPageOffset(loaded: number, offset: number): number | undefined {
   return loaded >= WORK_HUB_PAGE_SIZE ? offset + WORK_HUB_PAGE_SIZE : undefined;
+}
+
+function useAutoFetchIssuePages(
+  enabled: boolean,
+  hasNextPage: boolean | undefined,
+  isFetchingNextPage: boolean,
+  fetchNextPage: (options?: { cancelRefetch?: boolean }) => Promise<unknown>,
+) {
+  useEffect(() => {
+    if (!enabled || !hasNextPage || isFetchingNextPage) return;
+    void fetchNextPage({ cancelRefetch: false });
+  }, [enabled, fetchNextPage, hasNextPage, isFetchingNextPage]);
 }
 
 function isOpenWork(issue: Issue): boolean {
@@ -711,51 +723,95 @@ export function WorkHub() {
     [],
   );
 
-  const { data: dashboardHumanTasks = [] } = useQuery({
+  const dashboardHumanTasksQuery = useInfiniteQuery({
     queryKey: [
       ...queryKeys.issues.list(selectedCompanyId!),
       "work-hub-dashboard",
       "human_task",
       WORK_HUB_PAGE_SIZE,
     ],
-    queryFn: () => issuesApi.list(selectedCompanyId!, {
+    queryFn: ({ pageParam }) => issuesApi.list(selectedCompanyId!, {
       excludeRoutineExecutions: true,
       workItemType: "human_task",
       limit: WORK_HUB_PAGE_SIZE,
+      offset: pageParam,
     }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, _allPages, lastPageParam) =>
+      getNextPageOffset(lastPage.length, lastPageParam),
     enabled: !!selectedCompanyId,
     placeholderData: (previousData) => previousData,
   });
-  const { data: dashboardInitiatives = [] } = useQuery({
+  const dashboardInitiativesQuery = useInfiniteQuery({
     queryKey: [
       ...queryKeys.issues.list(selectedCompanyId!),
       "work-hub-dashboard",
       "initiative",
       WORK_HUB_PAGE_SIZE,
     ],
-    queryFn: () => issuesApi.list(selectedCompanyId!, {
+    queryFn: ({ pageParam }) => issuesApi.list(selectedCompanyId!, {
       excludeRoutineExecutions: true,
       workItemType: "initiative",
       limit: WORK_HUB_PAGE_SIZE,
+      offset: pageParam,
     }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, _allPages, lastPageParam) =>
+      getNextPageOffset(lastPage.length, lastPageParam),
     enabled: !!selectedCompanyId,
     placeholderData: (previousData) => previousData,
   });
-  const { data: dashboardExecutionIssues = [] } = useQuery({
+  const dashboardExecutionIssuesQuery = useInfiniteQuery({
     queryKey: [
       ...queryKeys.issues.list(selectedCompanyId!),
       "work-hub-dashboard",
       "ai_task",
       WORK_HUB_PAGE_SIZE,
     ],
-    queryFn: () => issuesApi.list(selectedCompanyId!, {
+    queryFn: ({ pageParam }) => issuesApi.list(selectedCompanyId!, {
       excludeRoutineExecutions: true,
       workItemType: "ai_task",
       limit: WORK_HUB_PAGE_SIZE,
+      offset: pageParam,
     }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage, _allPages, lastPageParam) =>
+      getNextPageOffset(lastPage.length, lastPageParam),
     enabled: !!selectedCompanyId,
     placeholderData: (previousData) => previousData,
   });
+
+  useAutoFetchIssuePages(
+    !!selectedCompanyId,
+    dashboardHumanTasksQuery.hasNextPage,
+    dashboardHumanTasksQuery.isFetchingNextPage,
+    dashboardHumanTasksQuery.fetchNextPage,
+  );
+  useAutoFetchIssuePages(
+    !!selectedCompanyId,
+    dashboardInitiativesQuery.hasNextPage,
+    dashboardInitiativesQuery.isFetchingNextPage,
+    dashboardInitiativesQuery.fetchNextPage,
+  );
+  useAutoFetchIssuePages(
+    !!selectedCompanyId,
+    dashboardExecutionIssuesQuery.hasNextPage,
+    dashboardExecutionIssuesQuery.isFetchingNextPage,
+    dashboardExecutionIssuesQuery.fetchNextPage,
+  );
+
+  const dashboardHumanTasks = useMemo(
+    () => mergeIssuePagesStable(dashboardHumanTasksQuery.data?.pages ?? []),
+    [dashboardHumanTasksQuery.data],
+  );
+  const dashboardInitiatives = useMemo(
+    () => mergeIssuePagesStable(dashboardInitiativesQuery.data?.pages ?? []),
+    [dashboardInitiativesQuery.data],
+  );
+  const dashboardExecutionIssues = useMemo(
+    () => mergeIssuePagesStable(dashboardExecutionIssuesQuery.data?.pages ?? []),
+    [dashboardExecutionIssuesQuery.data],
+  );
 
   const dashboardIssues = useMemo(
     () => [...dashboardHumanTasks, ...dashboardInitiatives, ...dashboardExecutionIssues],
@@ -763,12 +819,16 @@ export function WorkHub() {
   );
   const dashboardCaps = useMemo(
     () => ({
-      all: dashboardHumanTasks.length >= WORK_HUB_PAGE_SIZE || dashboardInitiatives.length >= WORK_HUB_PAGE_SIZE,
-      human_task: dashboardHumanTasks.length >= WORK_HUB_PAGE_SIZE,
-      initiative: dashboardInitiatives.length >= WORK_HUB_PAGE_SIZE,
-      execution: dashboardExecutionIssues.length >= WORK_HUB_PAGE_SIZE,
+      all: dashboardHumanTasksQuery.hasNextPage === true || dashboardInitiativesQuery.hasNextPage === true,
+      human_task: dashboardHumanTasksQuery.hasNextPage === true,
+      initiative: dashboardInitiativesQuery.hasNextPage === true,
+      execution: dashboardExecutionIssuesQuery.hasNextPage === true,
     } satisfies Record<WorkItemFilter, boolean>),
-    [dashboardExecutionIssues.length, dashboardHumanTasks.length, dashboardInitiatives.length],
+    [
+      dashboardExecutionIssuesQuery.hasNextPage,
+      dashboardHumanTasksQuery.hasNextPage,
+      dashboardInitiativesQuery.hasNextPage,
+    ],
   );
 
   const dashboard = useMemo(

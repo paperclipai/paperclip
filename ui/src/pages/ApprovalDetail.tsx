@@ -1,19 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { approvalsApi } from "../api/approvals";
+import { approvalsApi, type ApprovalDecisionRequest } from "../api/approvals";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
-import { approvalLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } from "../components/ApprovalPayload";
+import {
+  approvalDecisionOptions,
+  approvalLabel,
+  typeIcon,
+  defaultTypeIcon,
+  ApprovalPayloadRenderer,
+} from "../components/ApprovalPayload";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
-import type { ApprovalComment } from "@paperclipai/shared";
+import type { ApprovalComment, ApprovalDecisionOption } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
 
 export function ApprovalDetail() {
@@ -84,8 +90,16 @@ export function ApprovalDetail() {
     }
   };
 
+  function decisionRequest(option: ApprovalDecisionOption): ApprovalDecisionRequest {
+    return {
+      decisionNote: option.decisionNote ?? option.label,
+      decisionOptionId: option.id,
+      decisionOptionLabel: option.label,
+    };
+  }
+
   const approveMutation = useMutation({
-    mutationFn: () => approvalsApi.approve(approvalId!),
+    mutationFn: (decision?: ApprovalDecisionRequest | null) => approvalsApi.approve(approvalId!, decision),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -95,7 +109,7 @@ export function ApprovalDetail() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: () => approvalsApi.reject(approvalId!),
+    mutationFn: (decision?: ApprovalDecisionRequest | null) => approvalsApi.reject(approvalId!, decision),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -104,7 +118,7 @@ export function ApprovalDetail() {
   });
 
   const revisionMutation = useMutation({
-    mutationFn: () => approvalsApi.requestRevision(approvalId!),
+    mutationFn: (decision?: ApprovalDecisionRequest | null) => approvalsApi.requestRevision(approvalId!, decision),
     onSuccess: () => {
       setError(null);
       refresh();
@@ -145,11 +159,13 @@ export function ApprovalDetail() {
   if (!approval) return <p className="text-sm text-muted-foreground">Approval not found.</p>;
 
   const payload = approval.payload as Record<string, unknown>;
+  const decisionOptions = approvalDecisionOptions(payload);
   const linkedAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
   const isActionable = approval.status === "pending" || approval.status === "revision_requested";
   const isBudgetApproval = approval.type === "budget_override_required";
   const TypeIcon = typeIcon[approval.type] ?? defaultTypeIcon;
   const showApprovedBanner = searchParams.get("resolved") === "approved" && approval.status === "approved";
+  const decisionPending = approveMutation.isPending || rejectMutation.isPending || revisionMutation.isPending;
   const primaryLinkedIssue = linkedIssues?.[0] ?? null;
   const resolvedCta =
     primaryLinkedIssue
@@ -261,12 +277,47 @@ export function ApprovalDetail() {
           </div>
         )}
         <div className="flex flex-wrap items-center gap-2">
-          {isActionable && !isBudgetApproval && (
+          {isActionable && !isBudgetApproval && decisionOptions.length > 0 && (
+            <div className="w-full rounded-lg border border-border/70 bg-muted/20 p-3">
+              <div className="mb-2 text-xs font-medium text-muted-foreground">
+                Choose a decision
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {decisionOptions.map((option) => {
+                  const isApprove = option.action === "approve";
+                  const isReject = option.action === "reject";
+                  return (
+                    <Button
+                      key={option.id}
+                      size="sm"
+                      variant={isReject ? "destructive" : isApprove ? "default" : "outline"}
+                      className={isApprove ? "bg-green-700 text-white hover:bg-green-600" : undefined}
+                      onClick={() => {
+                        const input = decisionRequest(option);
+                        if (option.action === "reject") {
+                          rejectMutation.mutate(input);
+                        } else if (option.action === "revision") {
+                          revisionMutation.mutate(input);
+                        } else {
+                          approveMutation.mutate(input);
+                        }
+                      }}
+                      disabled={decisionPending}
+                      title={option.description ?? option.nextStep ?? undefined}
+                    >
+                      {option.label}
+                    </Button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {isActionable && !isBudgetApproval && decisionOptions.length === 0 && (
             <>
               <Button
                 size="sm"
                 className="bg-green-700 hover:bg-green-600 text-white"
-                onClick={() => approveMutation.mutate()}
+                onClick={() => approveMutation.mutate(null)}
                 disabled={approveMutation.isPending}
               >
                 Approve
@@ -274,7 +325,7 @@ export function ApprovalDetail() {
               <Button
                 variant="destructive"
                 size="sm"
-                onClick={() => rejectMutation.mutate()}
+                onClick={() => rejectMutation.mutate(null)}
                 disabled={rejectMutation.isPending}
               >
                 Reject
@@ -290,7 +341,7 @@ export function ApprovalDetail() {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => revisionMutation.mutate()}
+              onClick={() => revisionMutation.mutate(null)}
               disabled={revisionMutation.isPending}
             >
               Request revision

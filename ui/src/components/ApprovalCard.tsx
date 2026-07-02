@@ -8,6 +8,7 @@ import {
   typeIcon,
   defaultTypeIcon,
   ApprovalPayloadRenderer,
+  approvalDecisionOptions,
   typeLabel,
 } from "./ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
@@ -45,10 +46,12 @@ export function ApprovalCard({
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const kindLabel = typeLabel[approval.type] ?? approval.type;
   const subject = approvalSubject(payload);
+  const decisionOptions = approvalDecisionOptions(payload);
   const showResolutionButtons =
     Boolean(onApprove && onReject) &&
     approval.type !== "budget_override_required" &&
-    (approval.status === "pending" || approval.status === "revision_requested");
+    (approval.status === "pending" || approval.status === "revision_requested") &&
+    decisionOptions.length === 0;
   const hasFooter = showResolutionButtons || Boolean(detailLink || onOpen);
 
   return (
@@ -106,6 +109,12 @@ export function ApprovalCard({
           <span className="font-medium text-foreground">Decision note.</span> {approval.decisionNote}
         </div>
       )}
+
+      {decisionOptions.length > 0 && (approval.status === "pending" || approval.status === "revision_requested") ? (
+        <div className="mt-4 rounded-lg border border-blue-500/20 bg-blue-500/10 px-3.5 py-3 text-xs leading-5 text-blue-700 dark:text-blue-200">
+          This request has {decisionOptions.length} decision option{decisionOptions.length === 1 ? "" : "s"}. Open the detail page to choose one with the full context.
+        </div>
+      ) : null}
 
       {hasFooter ? (
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-4">
