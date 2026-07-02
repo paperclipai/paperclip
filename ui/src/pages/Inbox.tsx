@@ -2198,7 +2198,7 @@ export function Inbox() {
                     {([
                       ["none", "None"],
                       ["type", "Type"],
-                      ["assignee", "Assignee"],
+                      ["assignee", "Responsible"],
                       ["project", "Project"],
                       ...(isolatedWorkspacesEnabled ? ([["workspace", "Workspace"]] as const) : []),
                     ] as const).map(([value, label]) => (

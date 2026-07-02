@@ -1112,7 +1112,7 @@ export function DesignGuide() {
             }
             identifier="PAP-001"
             title="Implement authentication flow"
-            subtitle="Assigned to Agent Alpha"
+            subtitle="Responsible: Agent Alpha"
             trailing={<IssueStatusBadge status="in_progress" />}
             onClick={() => {}}
           />
@@ -1418,7 +1418,7 @@ export function DesignGuide() {
             <PriorityIcon priority="high" />
           </div>
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Assignee</span>
+            <span className="text-xs text-muted-foreground">Responsible</span>
             <div className="flex items-center gap-1.5">
               <Avatar size="sm"><AvatarFallback>A</AvatarFallback></Avatar>
               <span className="text-xs">Agent Alpha</span>

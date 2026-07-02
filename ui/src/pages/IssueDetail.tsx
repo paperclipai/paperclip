@@ -3693,7 +3693,7 @@ export function IssueDetail() {
   const pausedComposerHint = activePauseHold
     ? (
       issue.assigneeAgentId
-        ? `Sending this comment will wake ${agentMap.get(issue.assigneeAgentId)?.name ?? "the assignee"} for triage while the subtree remains paused.`
+        ? `Sending this comment will wake ${agentMap.get(issue.assigneeAgentId)?.name ?? "the responsible"} for triage while the subtree remains paused.`
         : "Assign an agent to wake them for triage while the subtree remains paused."
     )
     : null;
@@ -3779,8 +3779,8 @@ export function IssueDetail() {
                 </span>
                 <span className="text-xs text-amber-900/80 dark:text-amber-100/80">
                   {childIssues.length === 0
-                    ? "Task execution is held until resume. Human comments can still wake the assignee for triage."
-                    : "Root and descendant execution is held until resume. Human comments can still wake assignees for triage."}
+                    ? "Task execution is held until resume. Human comments can still wake the responsible for triage."
+                    : "Root and descendant execution is held until resume. Human comments can still wake responsible agents for triage."}
                 </span>
               </div>
               <div className="text-xs text-amber-900/80 dark:text-amber-100/80">
@@ -4584,8 +4584,8 @@ export function IssueDetail() {
                     <span className="block font-medium">Wake affected agents ({previewAffectedAgentCount})</span>
                     <span className="text-xs text-muted-foreground">
                       {previewAffectedAgentCount === 0
-                        ? "No assigned agents are eligible to wake from this preview."
-                        : "Wake assigned agents after this operation completes."}
+                        ? "No responsible agents are eligible to wake from this preview."
+                        : "Wake responsible agents after this operation completes."}
                     </span>
                   </span>
                 </label>

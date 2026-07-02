@@ -116,7 +116,7 @@ interface IssuePropertiesProps {
   onAddSubIssue?: () => void;
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
-  /** Whether an agent run is currently in flight on this issue, so the assignee
+  /** Whether an agent run is currently in flight on this issue, so the responsible
    * picker can warn that reassigning will interrupt it. */
   hasActiveRun?: boolean;
   externalObjects?: IssueExternalObjectGroup[];
@@ -597,8 +597,8 @@ export function IssueProperties({
     <div className="w-full space-y-2 p-2">
       <p className="text-xs text-muted-foreground">
         {assignee
-          ? "This assignee's adapter does not expose editable task overrides."
-          : "Select a compatible agent assignee to edit these overrides."}
+          ? "This responsible agent's adapter does not expose editable task overrides."
+          : "Select a compatible responsible agent to edit these overrides."}
       </p>
       <button
         type="button"
@@ -629,7 +629,7 @@ export function IssueProperties({
       ? `user:${issue.assigneeUserId}`
       : "";
 
-  // --- Interrupt-handoff clarity for the assignee picker (design surface 2) ---
+  // --- Interrupt-handoff clarity for the responsible picker (design surface 2) ---
   const handoffResolvers: HandoffChipResolvers = useMemo(
     () => ({
       agentMap: new Map((agents ?? []).map((agent) => [agent.id, { name: agent.name, icon: agent.icon }])),
@@ -1333,7 +1333,7 @@ export function IssueProperties({
   );
 
   // Grouped picker options (design surface 2): a board-users section and an
-  // agents section, plus the "No assignee" reset. Agents stay recency-sorted
+  // agents section, plus the "No responsible" reset. Agents stay recency-sorted
   // within their group via `sortedAgents`.
   const userAssigneeOptions = [
     ...(currentUserId
@@ -1419,7 +1419,7 @@ export function IssueProperties({
   const visibleAgentOptions = agentAssigneeOptions.filter((option) =>
     matchesAssigneeSearch(option.label, option.searchText),
   );
-  const showNoAssigneeOption = matchesAssigneeSearch("No assignee", "");
+  const showNoAssigneeOption = matchesAssigneeSearch("No responsible", "");
   const sectionHeader = (text: string) => (
     <div className="px-2 pb-0.5 pt-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
       {text}
@@ -1450,14 +1450,14 @@ export function IssueProperties({
       ) : null}
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search assignees..."
+        placeholder="Search responsible..."
         value={assigneeSearch}
         onChange={(e) => setAssigneeSearch(e.target.value)}
         autoFocus={!inline}
       />
       <div className="max-h-56 overflow-y-auto overscroll-contain">
         {showNoAssigneeOption
-          ? renderAssigneeOption({ kind: "none", value: "", label: "No assignee", searchText: "" })
+          ? renderAssigneeOption({ kind: "none", value: "", label: "No responsible", searchText: "" })
           : null}
         {visibleAgentOptions.length > 0 ? (
           <>
@@ -1908,7 +1908,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Assignee"
+          label="Responsible"
           open={assigneeOpen}
           onOpenChange={(open) => { setAssigneeOpen(open); if (!open) { setAssigneeSearch(""); setPendingAssignee(null); } }}
           triggerContent={assigneeTrigger}

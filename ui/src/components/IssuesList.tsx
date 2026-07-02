@@ -1580,7 +1580,7 @@ export function IssuesList({
                   {([
                     ["status", "Status"],
                     ["priority", "Priority"],
-                    ["assignee", "Assignee"],
+                    ["assignee", "Responsible"],
                     ["project", "Project"],
                     ["workspace", "Workspace"],
                     ["parent", "Parent Task"],
@@ -1929,7 +1929,7 @@ export function IssuesList({
                                   >
                                     <input
                                       className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                                      placeholder="Search assignees..."
+                                      placeholder="Search responsible..."
                                       value={assigneeSearch}
                                       onChange={(e) => setAssigneeSearch(e.target.value)}
                                       autoFocus
@@ -1946,7 +1946,7 @@ export function IssuesList({
                                           assignIssue(issue.id, null, null);
                                         }}
                                       >
-                                        No assignee
+                                        No responsible
                                       </button>
                                       {currentUserId && (
                                         <button

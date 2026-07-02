@@ -475,7 +475,7 @@ describe("IssueProperties", () => {
     await flush();
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Assignee");
+      expect(container.textContent).toContain("Responsible");
       expect(container.textContent).toContain("CodexCoder");
       expect(container.textContent).toContain("Kicked off by");
       expect(container.textContent).toContain("Riley Board");
@@ -535,7 +535,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("groups the assignee picker and gates a live-run reassign behind an interrupt confirm", async () => {
+  it("groups the responsible picker and gates a live-run reassign behind an interrupt confirm", async () => {
     const minimalAgent = (id: string, name: string) =>
       ({
         id,
@@ -622,7 +622,7 @@ describe("IssueProperties", () => {
     await flush();
 
     const searchInput = container.querySelector(
-      'input[placeholder="Search assignees..."]',
+      'input[placeholder="Search responsible..."]',
     ) as HTMLInputElement | null;
     expect(searchInput).not.toBeNull();
 
@@ -633,7 +633,7 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    expect(container.textContent).toContain("No assignee");
+    expect(container.textContent).toContain("No responsible");
     expect(container.textContent).not.toContain("No matches.");
 
     await act(async () => {
@@ -643,7 +643,7 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    expect(container.textContent).not.toContain("No assignee");
+    expect(container.textContent).not.toContain("No responsible");
     expect(container.textContent).toContain("No matches.");
 
     act(() => root.unmount());
@@ -1511,7 +1511,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("hides model options when the issue uses the assignee default", async () => {
+  it("hides model options when the issue uses the responsible default", async () => {
     mockAgentsApi.list.mockResolvedValue([
       {
         id: "agent-1",

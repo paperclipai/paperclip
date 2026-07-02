@@ -25,7 +25,7 @@ export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "kickedOffB
 const issueColumnLabels: Record<InboxIssueColumn, string> = {
   status: "Status",
   id: "ID",
-  assignee: "Assignee",
+  assignee: "Responsible",
   kickedOffBy: "Kicked off by",
   project: "Project",
   workspace: "Workspace",
@@ -37,7 +37,7 @@ const issueColumnLabels: Record<InboxIssueColumn, string> = {
 const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
   status: "Task state chip on the left edge.",
   id: "Ticket identifier like PAP-1009.",
-  assignee: "Assigned agent or board user.",
+  assignee: "Responsible agent or board user.",
   kickedOffBy: "Board user or agent who created the task.",
   project: "Linked project pill with its color.",
   workspace: "Execution or project workspace used for the task.",

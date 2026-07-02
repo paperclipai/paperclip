@@ -273,7 +273,7 @@ function createExpiredRequestConfirmationInteraction(
     resolvedAt: new Date("2026-04-06T12:05:00.000Z"),
     payload: {
       version: 1,
-      prompt: "Approve the plan and let the assignee start implementation?",
+      prompt: "Approve the plan and let the responsible start implementation?",
       acceptLabel: "Approve plan",
       rejectLabel: "Request revisions",
     },
@@ -2004,7 +2004,7 @@ describe("IssueChatThread", () => {
     });
 
     expect(container.textContent).toContain("Work on this task is blocked by the linked task");
-    expect(container.textContent).toContain("Comments still wake the assignee for questions or triage");
+    expect(container.textContent).toContain("Comments still wake the responsible for questions or triage");
     expect(container.textContent).toContain("PAP-1723");
     expect(container.textContent).toContain("QA the install flow");
     expect(container.querySelector('[data-issue-path-id="PAP-1723"]')).not.toBeNull();
@@ -2067,7 +2067,7 @@ describe("IssueChatThread", () => {
     });
   });
 
-  it("shows paused assigned agent context above the composer", () => {
+  it("shows paused responsible agent context above the composer", () => {
     const root = createRoot(container);
     const pausedAgent = {
       id: "agent-1",
@@ -3002,7 +3002,7 @@ describe("IssueChatThread", () => {
             onAdd={async () => {}}
             enableReassign
             reassignOptions={[
-              { id: "", label: "No assignee" },
+              { id: "", label: "No responsible" },
               { id: "agent:agent-1", label: "Agent 1" },
             ]}
             currentAssigneeValue=""
@@ -3036,7 +3036,7 @@ describe("IssueChatThread", () => {
     expect(appendMock).not.toHaveBeenCalled();
     const dialog = document.querySelector('[data-testid="issue-chat-no-assignee-dialog"]');
     expect(dialog).not.toBeNull();
-    expect(dialog?.textContent).toContain("No assignee selected");
+    expect(dialog?.textContent).toContain("No responsible selected");
     expect(dialog?.textContent).toContain("no agent will be woken");
 
     const sendAnyway = document.querySelector(
@@ -3075,7 +3075,7 @@ describe("IssueChatThread", () => {
             onAdd={async () => {}}
             enableReassign
             reassignOptions={[
-              { id: "", label: "No assignee" },
+              { id: "", label: "No responsible" },
               { id: "agent:agent-1", label: "Agent 1" },
             ]}
             currentAssigneeValue=""
@@ -3117,7 +3117,7 @@ describe("IssueChatThread", () => {
 
     expect(appendMock).not.toHaveBeenCalled();
     expect(document.querySelector('[data-testid="issue-chat-no-assignee-dialog"]')).toBeNull();
-    // The composer keeps the draft so the user can pick an assignee and resend.
+    // The composer keeps the draft so the user can pick a responsible and resend.
     const editorAfter = container.querySelector('textarea[aria-label="Issue chat editor"]') as HTMLTextAreaElement | null;
     expect(editorAfter?.value).toBe("Reply without assignee");
 
@@ -3140,7 +3140,7 @@ describe("IssueChatThread", () => {
             onAdd={async () => {}}
             enableReassign
             reassignOptions={[
-              { id: "", label: "No assignee" },
+              { id: "", label: "No responsible" },
               { id: "agent:agent-1", label: "Agent 1" },
             ]}
             currentAssigneeValue="agent:agent-1"
@@ -3170,7 +3170,7 @@ describe("IssueChatThread", () => {
     });
 
     expect(appendMock).toHaveBeenCalledTimes(1);
-    expect(document.body.textContent).not.toContain("No assignee selected");
+    expect(document.body.textContent).not.toContain("No responsible selected");
 
     act(() => {
       root.unmount();

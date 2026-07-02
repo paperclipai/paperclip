@@ -227,13 +227,13 @@ function buildStatusOptions(): ReadonlyArray<{ value: string; label: string; col
       value: "backlog",
       label: "Backlog",
       color: palette.backlog ?? issueStatusTextDefault,
-      description: "Parked — assignee will not be woken",
+      description: "Parked — responsible will not be woken",
     },
     {
       value: "todo",
       label: "Todo",
       color: palette.todo ?? issueStatusTextDefault,
-      description: "Executable — assignee will be woken",
+      description: "Executable — responsible will be woken",
     },
     { value: "in_progress", label: "In Progress", color: palette.in_progress ?? issueStatusTextDefault },
     { value: "in_review", label: "In Review", color: palette.in_review ?? issueStatusTextDefault },
@@ -1370,11 +1370,11 @@ export function NewIssueDialog() {
                 value={assigneeValue}
                 options={assigneeOptions}
                 recentOptionIds={recentAssigneeOptionIds}
-                placeholder="Assignee"
+                placeholder="Responsible"
                 disablePortal
-                noneLabel="No assignee"
-                searchPlaceholder="Search assignees..."
-                emptyMessage="No assignees found."
+                noneLabel="No responsible"
+                searchPlaceholder="Search responsible..."
+                emptyMessage="No responsible found."
                 onChange={(value) => {
                   const nextAssignee = parseAssigneeValue(value);
                   if (nextAssignee.assigneeAgentId) {
@@ -1404,7 +1404,7 @@ export function NewIssueDialog() {
                       <span className="truncate">{option.label}</span>
                     )
                   ) : (
-                    <span className="text-muted-foreground">Assignee</span>
+                    <span className="text-muted-foreground">Responsible</span>
                   )
                 }
                 renderOption={(option) => {
@@ -2168,7 +2168,7 @@ export function NewIssueDialog() {
           >
             <Flag className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" />
             <span className="leading-snug">
-              Assigning implies executable intent — leave status as <span className="font-medium">Backlog</span> only to deliberately park this. The assignee will not be woken until status moves to <span className="font-medium">Todo</span> or <span className="font-medium">In Progress</span>.
+              Assigning implies executable intent — leave status as <span className="font-medium">Backlog</span> only to deliberately park this. The responsible will not be woken until status moves to <span className="font-medium">Todo</span> or <span className="font-medium">In Progress</span>.
             </span>
           </div>
         ) : null}
