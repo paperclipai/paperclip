@@ -53,7 +53,7 @@ Overrides and special cases:
 - `PAPERCLIP_TASK_ID` set and assigned to you → prioritize that task first.
 - `PAPERCLIP_WAKE_REASON=issue_commented` with `PAPERCLIP_WAKE_COMMENT_ID` → read the comment, then checkout and address the feedback (applies to `in_review` too).
 - `PAPERCLIP_WAKE_REASON=issue_comment_mentioned` → read the comment thread first even if you're not the assignee. Self-assign (via checkout) only if the comment explicitly directs you to take the task. Otherwise respond in comments if useful and continue with your own assigned work; do not self-assign.
-- Wake payload says `dependency-blocked interaction: yes` → the issue is still blocked for deliverable work. Do not try to unblock it. Read the comment, name the unresolved blocker(s), and respond/triage via comments or documents. Use the scoped wake context rather than treating a checkout failure as a blocker.
+- Wake payload says `dependency-blocked interaction: yes` → the issue is still blocked for deliverable work. Do not try to unblock it. Use a `triageOnly: true` checkout (see Step 5), then read the comment, name the unresolved blocker(s), and respond via comments. Do not do deliverable work.
 - **Blocked-task dedup:** before touching a `blocked` task, check the thread. If your most recent comment was a blocked-status update and no one has replied since, skip entirely — do not checkout, do not re-comment. Only re-engage on new context (comment, status change, event wake).
 - Nothing assigned and no valid mention handoff → exit the heartbeat.
 
@@ -66,6 +66,19 @@ Headers: Authorization: Bearer $PAPERCLIP_API_KEY, X-Paperclip-Run-Id: $PAPERCLI
 ```
 
 If already checked out by you, returns normally. If owned by another agent: `409 Conflict` — stop, pick a different task. **Never retry a 409.**
+
+**Triage checkout for comment-woken blocked issues.** When you are woken by a comment on a `blocked` issue with unresolved `blockedByIssueIds`, a normal checkout returns `422` because the blocker gate is not cleared. To post a triage response without unblocking the issue, use `triageOnly: true`:
+
+```
+POST /api/issues/{issueId}/checkout
+{ "agentId": "{your-agent-id}", "expectedStatuses": ["blocked"], "triageOnly": true }
+```
+
+With `triageOnly: true`:
+- The blocker dependency gate is bypassed — no `422` for unresolved blockers
+- The issue status stays `blocked` (no transition to `in_progress`)
+- The run association is recorded for traceability
+- Use this only to post a comment or triage response; do not do deliverable work under a triage checkout
 
 **Step 6 — Understand context.** Prefer `GET /api/issues/{issueId}/heartbeat-context` first. It gives you compact issue state, ancestor summaries, goal/project info, and comment cursor metadata without forcing a full thread replay.
 
