@@ -103,6 +103,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const goalId = randomUUID();
     const issueId = randomUUID();
     const assigneeAgentId = randomUUID();
+    const responsibleUserId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -138,6 +139,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       status: "in_progress",
       priority: "medium",
       requestDepth: 2,
+      responsibleUserId,
     });
 
     const created = await interactionsSvc.create({
@@ -200,6 +202,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       .select({
         title: issues.title,
         workMode: issues.workMode,
+        responsibleUserId: issues.responsibleUserId,
       })
       .from(issues)
       .where(eq(issues.companyId, companyId));
@@ -207,6 +210,12 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       expect.arrayContaining([
         expect.objectContaining({ title: "Create the root follow-up", workMode: "planning" }),
         expect.objectContaining({ title: "Create the nested follow-up", workMode: "standard" }),
+      ]),
+    );
+    expect(createdIssueRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ title: "Create the root follow-up", responsibleUserId }),
+        expect.objectContaining({ title: "Create the nested follow-up", responsibleUserId }),
       ]),
     );
 

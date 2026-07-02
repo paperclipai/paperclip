@@ -1617,6 +1617,7 @@ export function routineService(
             createdByAgentId: input.source === "manual" ? input.actor?.agentId ?? null : null,
             createdByUserId: manualRunnerUserId,
             responsibleUserId,
+            trustExplicitResponsibleUserId: true,
             originKind: issueOriginKind,
             originId: issueOriginId,
             originRunId: createdRun.id,

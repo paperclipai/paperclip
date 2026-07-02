@@ -155,10 +155,12 @@ async function resolveResponsibleUserIdForIssueCreate(
     originKind?: string | null;
     originRunId?: string | null;
     actorRunId?: string | null;
+    actorResponsibleUserId?: string | null;
+    trustExplicitResponsibleUserId?: boolean;
   },
 ) {
   const explicitResponsibleUserId = readStringFromRecord(input, "explicitResponsibleUserId");
-  if (explicitResponsibleUserId) return explicitResponsibleUserId;
+  if (explicitResponsibleUserId && input.trustExplicitResponsibleUserId === true) return explicitResponsibleUserId;
 
   if (input.originKind === "routine_execution" && input.originRunId) {
     const routineRun = await reader
@@ -168,6 +170,9 @@ async function resolveResponsibleUserIdForIssueCreate(
       .then((rows) => rows[0] ?? null);
     if (routineRun?.responsibleUserId) return routineRun.responsibleUserId;
   }
+
+  const actorResponsibleUserId = readStringFromRecord(input, "actorResponsibleUserId");
+  if (actorResponsibleUserId) return actorResponsibleUserId;
 
   if (input.actorRunId) {
     const actorRun = await reader
@@ -464,6 +469,8 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   watchdog?: { agentId: string; instructions?: string | null } | null;
   watchdogActorRunId?: string | null;
   actorRunId?: string | null;
+  actorResponsibleUserId?: string | null;
+  trustExplicitResponsibleUserId?: boolean;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -5034,6 +5041,8 @@ export function issueService(db: Db) {
         parentId: parent.id,
         projectId: issueData.projectId ?? parent.projectId,
         goalId: issueData.goalId ?? parent.goalId,
+        actorResponsibleUserId: issueData.actorResponsibleUserId ?? null,
+        trustExplicitResponsibleUserId: issueData.trustExplicitResponsibleUserId === true,
         requestDepth: clampIssueRequestDepth(
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
@@ -5344,6 +5353,8 @@ export function issueService(db: Db) {
         watchdog,
         watchdogActorRunId,
         actorRunId,
+        actorResponsibleUserId,
+        trustExplicitResponsibleUserId,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -5496,6 +5507,8 @@ export function issueService(db: Db) {
           originKind: issueData.originKind ?? "manual",
           originRunId: issueData.originRunId ?? null,
           actorRunId: actorRunId ?? null,
+          actorResponsibleUserId: actorResponsibleUserId ?? null,
+          trustExplicitResponsibleUserId: trustExplicitResponsibleUserId === true,
         });
 
         const values = {
