@@ -5,8 +5,13 @@ import { WorkTimelineChart, type ZoomLevel } from "@/components/timeline/WorkTim
 import { issueColor, type ColorMode } from "@/lib/timeline/layout";
 import { cn } from "@/lib/utils";
 import sampleJson from "../fixtures/workTimeline.sample.json";
+import humanSampleJson from "../fixtures/workTimeline.human.sample.json";
 
 const sample = sampleJson as unknown as WorkTimelineResult;
+// A second real slice (2026-07-02 14:00–16:00Z) captured straight from the live
+// `/timeline` endpoint that DOES carry human events — Dotta's created / commented /
+// approved / delegated actions render as instant diamond markers on her own row.
+const humanSample = humanSampleJson as unknown as WorkTimelineResult;
 // The fixture is a real slice of PAP company activity (2026-07-02 14:00–15:50Z);
 // pin "now" to the window end so in-progress runs fade correctly.
 const NOW = new Date("2026-07-02T15:45:00.000Z").getTime();
@@ -41,11 +46,21 @@ function Segmented<T extends string>({
   );
 }
 
-function TimelineHarness({ initialZoom = "day" as ZoomLevel, initialColor = "issue" as ColorMode }) {
+function TimelineHarness({
+  initialZoom = "day" as ZoomLevel,
+  initialColor = "issue" as ColorMode,
+  data = sample,
+  now = NOW,
+}: {
+  initialZoom?: ZoomLevel;
+  initialColor?: ColorMode;
+  data?: WorkTimelineResult;
+  now?: number;
+}) {
   const [zoom, setZoom] = useState<ZoomLevel>(initialZoom);
   const [colorMode, setColorMode] = useState<ColorMode>(initialColor);
   const issues = Array.from(
-    new Map(sample.spans.map((s) => [s.issueId, s.issueIdentifier ?? s.issueTitle ?? "task"])).entries(),
+    new Map(data.spans.map((s) => [s.issueId, s.issueIdentifier ?? s.issueTitle ?? "task"])).entries(),
   );
   return (
     <div className="min-h-screen bg-background p-6 text-foreground">
@@ -113,10 +128,11 @@ function TimelineHarness({ initialZoom = "day" as ZoomLevel, initialColor = "iss
               )}
           </div>
           <div className="rounded-lg border border-border bg-card">
-            <WorkTimelineChart data={sample} zoom={zoom} colorMode={colorMode} nowMs={NOW} />
+            <WorkTimelineChart data={data} zoom={zoom} colorMode={colorMode} nowMs={now} />
           </div>
           <p className="text-xs text-muted-foreground">
-            {sample.spans.length} runs · {sample.actors.length} actors · real company data
+            {data.spans.length} runs · {data.actors.length} actors · {data.events.length} human/instant events · real
+            company data
           </p>
         </div>
       </div>
@@ -136,3 +152,13 @@ type Story = StoryObj<typeof TimelineHarness>;
 export const HourByTask: Story = { args: { initialZoom: "hour", initialColor: "issue" } };
 export const DayZoom: Story = { args: { initialZoom: "day", initialColor: "issue" } };
 export const ByStatus: Story = { args: { initialZoom: "hour", initialColor: "status" } };
+// Live slice that carries human events — Dotta gets a row with diamond markers
+// for her created / commented / approved / delegated actions (PAP-12444).
+export const WithHumanMarkers: Story = {
+  args: {
+    initialZoom: "hour",
+    initialColor: "issue",
+    data: humanSample,
+    now: new Date("2026-07-02T16:00:00.000Z").getTime(),
+  },
+};

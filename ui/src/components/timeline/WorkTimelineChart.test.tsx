@@ -107,4 +107,22 @@ describe("WorkTimelineChart", () => {
 
     expect(container.querySelector("[data-testid='work-timeline-actor-gutter']")?.textContent).toContain("CodexCoder");
   });
+
+  it("renders a human row with diamond event markers when the payload carries events", () => {
+    const data = timelineSample();
+    data.actors.push({ id: "user:dotta", type: "user", name: "Dotta" });
+    data.events = [
+      { actorId: "user:dotta", kind: "created", issueId: "issue-1", at: "2026-07-02T08:30:00.000Z" },
+      { actorId: "user:dotta", kind: "commented", issueId: "issue-2", at: "2026-07-02T09:15:00.000Z" },
+      { actorId: "user:dotta", kind: "approved", issueId: "issue-1", at: "2026-07-02T10:05:00.000Z" },
+    ];
+    renderChart(data);
+
+    // Dotta gets a row in the gutter…
+    const gutter = container.querySelector<SVGSVGElement>("[data-testid='work-timeline-actor-gutter']");
+    expect(gutter?.textContent).toContain("Dotta");
+    // …and her three instant events render as clickable diamond marker paths.
+    const markers = container.querySelectorAll("svg.absolute path.cursor-pointer");
+    expect(markers).toHaveLength(3);
+  });
 });

@@ -9,7 +9,11 @@
  */
 import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "@/lib/router";
-import type { WorkTimelineActor, WorkTimelineResult } from "@paperclipai/shared";
+import type {
+  TimelineEventKind,
+  WorkTimelineActor,
+  WorkTimelineResult,
+} from "@paperclipai/shared";
 import {
   AXIS_H,
   actorType,
@@ -21,6 +25,7 @@ import {
   type ColorMode,
   type LayoutOptions,
   type PositionedBar,
+  type PositionedMarker,
 } from "@/lib/timeline/layout";
 
 export type ZoomLevel = "hour" | "day" | "week";
@@ -47,11 +52,33 @@ const GEOM: Omit<LayoutOptions, "pxPerMinute" | "nowMs"> = {
 };
 const AVATAR_R = 11;
 const CHIP_R = 9;
+const MARKER_R = 5.5;
+
+/**
+ * Per-kind styling for instant event markers (diamonds). Each kind gets a
+ * distinct fill + verb so created / commented / approved / delegated / assigned
+ * read apart at a glance; the hues sit mid-lightness so they hold on light+dark.
+ */
+const EVENT_STYLE: Record<TimelineEventKind, { fill: string; verb: string }> = {
+  created: { fill: "hsl(145 55% 42%)", verb: "created" },
+  commented: { fill: "hsl(212 62% 54%)", verb: "commented on" },
+  approved: { fill: "hsl(265 52% 60%)", verb: "approved" },
+  delegated: { fill: "hsl(28 78% 52%)", verb: "delegated" },
+  assigned: { fill: "hsl(190 58% 44%)", verb: "assigned" },
+};
 
 interface TooltipState {
   x: number;
   y: number;
   bar: PositionedBar;
+}
+
+interface MarkerTooltipState {
+  x: number;
+  y: number;
+  marker: PositionedMarker;
+  /** resolved issue label (identifier/title) or the raw id as a fallback. */
+  issueLabel: string;
 }
 
 function fmtClock(ms: number): string {
@@ -121,6 +148,7 @@ export function WorkTimelineChart({ data, zoom, colorMode, nowMs }: WorkTimeline
   const navigate = useNavigate();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+  const [markerTooltip, setMarkerTooltip] = useState<MarkerTooltipState | null>(null);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [viewportW, setViewportW] = useState(0);
 
@@ -128,6 +156,13 @@ export function WorkTimelineChart({ data, zoom, colorMode, nowMs }: WorkTimeline
   const layout = useMemo(
     () => computeLayout(data, { ...GEOM, pxPerMinute: ZOOM_PX_PER_MIN[zoom], nowMs: now }),
     [data, zoom, now],
+  );
+
+  // Resolve an event's issue to its human label (identifier/title) via the legend
+  // hue map, falling back to the raw id for issues that have no run in-window.
+  const issueLabelById = useMemo(
+    () => new Map(layout.issues.map((i) => [i.key, i.label])),
+    [layout.issues],
   );
 
   const stepMs = chooseTickStepMs(layout.pxPerMinute);
@@ -149,6 +184,11 @@ export function WorkTimelineChart({ data, zoom, colorMode, nowMs }: WorkTimeline
 
   const showTooltip = (evt: React.MouseEvent, bar: PositionedBar) => {
     setTooltip({ x: evt.clientX, y: evt.clientY, bar });
+  };
+
+  const showMarkerTooltip = (evt: React.MouseEvent, marker: PositionedMarker) => {
+    const issueLabel = issueLabelById.get(marker.event.issueId) ?? marker.event.issueId;
+    setMarkerTooltip({ x: evt.clientX, y: evt.clientY, marker, issueLabel });
   };
 
   return (
@@ -327,6 +367,25 @@ export function WorkTimelineChart({ data, zoom, colorMode, nowMs }: WorkTimeline
                     </g>
                   );
                 })}
+
+                {/* instant event markers — diamonds at x(event.at) on this row */}
+                {row.markers.map((marker) => {
+                  const style = EVENT_STYLE[marker.event.kind];
+                  const mx = marker.x;
+                  const my = marker.yc + AXIS_H;
+                  return (
+                    <path
+                      key={`ev-${row.actor.id}-${marker.event.kind}-${marker.event.issueId}-${marker.event.at}`}
+                      className="cursor-pointer"
+                      d={`M ${mx} ${my - MARKER_R} L ${mx + MARKER_R} ${my} L ${mx} ${my + MARKER_R} L ${mx - MARKER_R} ${my} Z`}
+                      fill={style?.fill ?? "var(--color-primary)"}
+                      stroke="var(--color-foreground)"
+                      strokeWidth={1.2}
+                      onMouseMove={(e) => showMarkerTooltip(e, marker)}
+                      onMouseLeave={() => setMarkerTooltip(null)}
+                    />
+                  );
+                })}
               </g>
             );
           })}
@@ -337,6 +396,30 @@ export function WorkTimelineChart({ data, zoom, colorMode, nowMs }: WorkTimeline
       <MiniMap layout={layout} scrollRef={scrollRef} viewportW={viewportW} scrollLeft={scrollLeft} />
 
       {tooltip && <Tooltip tooltip={tooltip} now={now} />}
+      {markerTooltip && <MarkerTooltip tooltip={markerTooltip} />}
+    </div>
+  );
+}
+
+function MarkerTooltip({ tooltip }: { tooltip: MarkerTooltipState }) {
+  const { marker, issueLabel } = tooltip;
+  const style = EVENT_STYLE[marker.event.kind];
+  const atMs = new Date(marker.event.at).getTime();
+  const left = Math.min(tooltip.x + 14, (typeof window !== "undefined" ? window.innerWidth : 1200) - 300);
+  return (
+    <div
+      className="pointer-events-none fixed z-50 max-w-[280px] rounded-md border border-foreground bg-card px-2.5 py-2 text-xs shadow-md"
+      style={{ left, top: tooltip.y + 14 }}
+    >
+      <div className="flex items-center gap-1.5 text-[13px] font-medium text-foreground">
+        <span
+          className="inline-block h-2.5 w-2.5 rotate-45 border border-foreground"
+          style={{ backgroundColor: style?.fill ?? "var(--color-primary)" }}
+        />
+        <span className="capitalize">{style?.verb ?? marker.event.kind}</span>
+        <span className="font-normal text-muted-foreground">{truncate(issueLabel, 28)}</span>
+      </div>
+      <div className="mt-0.5 text-muted-foreground">{fmtClock(atMs)}</div>
     </div>
   );
 }

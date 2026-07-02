@@ -14,6 +14,7 @@
 import type {
   WorkTimelineActor,
   WorkTimelineEdge,
+  WorkTimelineEvent,
   WorkTimelineResult,
   WorkTimelineSpan,
 } from "@paperclipai/shared";
@@ -51,6 +52,19 @@ export interface PositionedBar {
   kickoff: WorkTimelineActor | null;
 }
 
+/**
+ * An instant human/actor action (issue created, comment, approval, delegation,
+ * assignment) — plotted as a diamond marker at its timestamp on the actor's row.
+ * Humans have no "runs", so these markers are their only presence on the chart.
+ */
+export interface PositionedMarker {
+  event: WorkTimelineEvent;
+  /** x position (px) of the marker centre = x(event.at). */
+  x: number;
+  /** vertical centre of the marker in px (row-relative, excludes axis offset). */
+  yc: number;
+}
+
 export interface ActorRow {
   actor: WorkTimelineActor;
   /** top of the row (excluding axis offset) in px. */
@@ -59,6 +73,8 @@ export interface ActorRow {
   h: number;
   laneCount: number;
   bars: PositionedBar[];
+  /** instant event markers (issue created / comment / approval / …) on this row. */
+  markers: PositionedMarker[];
 }
 
 export interface Connector {
@@ -157,17 +173,28 @@ export function computeLayout(result: WorkTimelineResult, opts: LayoutOptions): 
 
   const x = (ms: number) => gutter + ((ms - fromMs) / 60000) * pxPerMinute;
 
-  // Rows: agent/system/plugin actors only — humans (type "user") never get a row.
-  // Order by first activity so the eye follows the delegation chain top-to-bottom.
+  // Rows: any actor with in-window activity gets a row — agents/system via their
+  // runs (spans), and humans (type "user") via their instant events, since humans
+  // have no "runs" and would otherwise never appear. Order by first activity so the
+  // eye follows the delegation chain top-to-bottom.
   const firstActivity = new Map<string, number>();
-  for (const s of result.spans) {
-    const t = spanStartMs(s);
-    const cur = firstActivity.get(s.actorId);
-    if (cur === undefined || t < cur) firstActivity.set(s.actorId, t);
+  const noteActivity = (actorId: string, t: number) => {
+    const cur = firstActivity.get(actorId);
+    if (cur === undefined || t < cur) firstActivity.set(actorId, t);
+  };
+  for (const s of result.spans) noteActivity(s.actorId, spanStartMs(s));
+  for (const e of result.events) noteActivity(e.actorId, new Date(e.at).getTime());
+
+  // Instant events grouped by the actor who performed them.
+  const eventsByActor = new Map<string, WorkTimelineEvent[]>();
+  for (const e of result.events) {
+    const arr = eventsByActor.get(e.actorId);
+    if (arr) arr.push(e);
+    else eventsByActor.set(e.actorId, [e]);
   }
+
   const rowActors = result.actors
-    .filter((a) => a.type !== "user")
-    .filter((a) => firstActivity.has(a.id)) // drop idle actors with no run in-window
+    .filter((a) => firstActivity.has(a.id)) // drop idle actors with no run/event in-window
     .sort((a, b) => (firstActivity.get(a.id)! - firstActivity.get(b.id)!));
 
   // Issue hue map (ordered by first appearance) for the "by issue" color mode + legend.
@@ -234,7 +261,17 @@ export function computeLayout(result: WorkTimelineResult, opts: LayoutOptions): 
       return bar;
     });
 
-    rows.push({ actor, y, h, laneCount, bars });
+    // Instant markers for this actor, positioned at their timestamp on this row.
+    const markers: PositionedMarker[] = (eventsByActor.get(actor.id) ?? [])
+      .slice()
+      .sort((p, q) => new Date(p.at).getTime() - new Date(q.at).getTime())
+      .map((event) => ({
+        event,
+        x: x(new Date(event.at).getTime()),
+        yc: y + h / 2,
+      }));
+
+    rows.push({ actor, y, h, laneCount, bars, markers });
     y += h;
   }
 

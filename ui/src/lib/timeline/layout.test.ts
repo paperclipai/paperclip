@@ -145,6 +145,46 @@ describe("computeLayout", () => {
   });
 });
 
+describe("human activity markers", () => {
+  const withUserEvents = (): WorkTimelineResult => ({
+    ...sample(),
+    events: [
+      { actorId: "user:dotta", kind: "created", issueId: "i-405", at: t("09:00") },
+      { actorId: "user:dotta", kind: "commented", issueId: "i-422", at: t("11:00") },
+      { actorId: "user:dotta", kind: "approved", issueId: "i-423", at: t("12:15") },
+    ],
+  });
+
+  it("gives a human actor a row driven purely by their in-window events", () => {
+    const layout = computeLayout(withUserEvents(), OPTS);
+    const dotta = layout.rows.find((r) => r.actor.id === "user:dotta");
+    expect(dotta).toBeDefined();
+    expect(dotta!.actor.type).toBe("user");
+    expect(dotta!.bars).toHaveLength(0); // humans have no runs
+  });
+
+  it("positions instant markers at x(event.at) on the owning row, time-ordered", () => {
+    const layout = computeLayout(withUserEvents(), OPTS);
+    const dotta = layout.rows.find((r) => r.actor.id === "user:dotta")!;
+    expect(dotta.markers).toHaveLength(3);
+    expect(dotta.markers.map((m) => m.event.kind)).toEqual(["created", "commented", "approved"]);
+    const xs = dotta.markers.map((m) => m.x);
+    expect(xs).toEqual([...xs].sort((a, b) => a - b)); // monotonic in time
+    for (const m of dotta.markers) expect(m.yc).toBeCloseTo(dotta.y + dotta.h / 2);
+  });
+
+  it("keeps humans marker-only: no run bars, no connectors target them", () => {
+    const layout = computeLayout(withUserEvents(), OPTS);
+    // dotta→ceo human kickoff still draws no line; agent→agent count unchanged.
+    expect(layout.connectors.length).toBe(6);
+  });
+
+  it("still excludes a human with no in-window events", () => {
+    const layout = computeLayout(sample(), OPTS); // events: []
+    expect(layout.rows.map((r) => r.actor.type)).not.toContain("user");
+  });
+});
+
 describe("helpers", () => {
   it("shortLabel builds 2-char initials", () => {
     expect(shortLabel("CodexCoder")).toBe("CO");
