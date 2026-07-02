@@ -79,6 +79,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(),
   cancelRun: vi.fn(),
   cancelInvocationsForAgents: vi.fn(),
+  wakeup: vi.fn(),
 }));
 
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -337,6 +338,7 @@ describe.sequential("agent permission routes", () => {
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
     mockHeartbeatService.cancelInvocationsForAgents.mockReset();
+    mockHeartbeatService.wakeup.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
     mockSecretService.normalizeAdapterConfigForPersistence.mockReset();
@@ -559,6 +561,69 @@ describe.sequential("agent permission routes", () => {
       .send({}));
 
     expect(res.status).toBe(403);
+  });
+
+  it("wakes an agent immediately when scheduled heartbeat is re-enabled", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      runtimeConfig: { heartbeat: { enabled: false } },
+    });
+    mockAgentService.update.mockResolvedValue({
+      ...baseAgent,
+      runtimeConfig: { heartbeat: { enabled: true } },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        runtimeConfig: { heartbeat: { enabled: true } },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(agentId, {
+      source: "on_demand",
+      triggerDetail: "system",
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      reason: "heartbeat re-enabled",
+      contextSnapshot: { trigger: "heartbeat_reenabled", triggeredBy: "board" },
+    });
+  });
+
+  it("does not wake an agent when scheduled heartbeat stays enabled", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      runtimeConfig: { heartbeat: { enabled: true } },
+    });
+    mockAgentService.update.mockResolvedValue({
+      ...baseAgent,
+      runtimeConfig: { heartbeat: { enabled: true } },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        runtimeConfig: { heartbeat: { enabled: true } },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("blocks agent-authenticated self-updates that set host-executed workspace commands", async () => {

@@ -3029,6 +3029,31 @@ export function agentRoutes(
         .where(eq(agentRuntimeState.agentId, agent.id));
     }
 
+    // Auto-wakeup when heartbeat.enabled flips false → true (BLO-13048).
+    // K8s-Job adapters (opencode_k8s, claude_k8s) read heartbeat.enabled at
+    // pod boot time; re-enabling via a plain PATCH leaves any stale pod dead
+    // until the ~90-min stall guard fires. Triggering an immediate wakeup
+    // here forces the control plane to recycle the stale Job and boot a fresh
+    // pod with the flag enabled. This is safe for all adapter types — a
+    // heartbeat.wakeup on an already-running agent is a no-op (skipped).
+    const wasHeartbeatEnabled = parseSchedulerHeartbeatPolicy(existing.runtimeConfig).enabled;
+    const isHeartbeatEnabled = parseSchedulerHeartbeatPolicy(agent.runtimeConfig).enabled;
+    if (!wasHeartbeatEnabled && isHeartbeatEnabled) {
+      try {
+        await heartbeat.wakeup(id, {
+          source: "on_demand",
+          triggerDetail: "system",
+          requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
+          requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+          reason: "heartbeat re-enabled",
+          contextSnapshot: { trigger: "heartbeat_reenabled", triggeredBy: req.actor.type },
+        });
+      } catch {
+        // Non-fatal: wakeup failure does not roll back the config update.
+        // The agent will be picked up on its next scheduled heartbeat cycle.
+      }
+    }
+
     await logActivity(db, {
       companyId: agent.companyId,
       actorType: actor.actorType,
