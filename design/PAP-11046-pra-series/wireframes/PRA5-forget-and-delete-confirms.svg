@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="880" viewBox="0 0 1280 880" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="880" />
+  <rect x="0" y="0" width="1280" height="56" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <line x1="0" y1="56" x2="1280" y2="56" stroke="#000" stroke-width="1.5" />
+  <text x="32" y="35" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Paperclip</text>
+  <text x="1248" y="35" font-size="12" stroke="none" fill="#666" text-anchor="end">Dotta</text>
+  <rect x="0" y="56" width="200" height="824" rx="0" fill="#fafaf8" stroke="#000" stroke-width="1.5" />
+  <line x1="200" y1="56" x2="200" y2="880" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="96" font-size="14" stroke="none" fill="#666" text-anchor="start">Inbox</text>
+  <text x="28" y="132" font-size="14" stroke="none" fill="#666" text-anchor="start">Tasks</text>
+  <text x="28" y="168" font-size="14" stroke="none" fill="#666" text-anchor="start">Documents</text>
+  <rect x="12" y="186" width="176" height="32" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="204" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Apps</text>
+  <text x="28" y="240" font-size="14" stroke="none" fill="#666" text-anchor="start">Settings</text>
+  <text x="232" y="92" font-size="12" stroke="none" fill="#666" text-anchor="start">Apps · Advanced</text>
+  <text x="232" y="124" font-size="28" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Rules</text>
+  <text x="232" y="148" font-size="14" stroke="none" fill="#666" text-anchor="start">Checked top to bottom — the first one that matches decides</text>
+  <line x1="232" y1="204" x2="293" y2="204" stroke="#000" stroke-width="2.5" />
+  <text x="262.5" y="188" font-size="14" stroke="none" fill="#000" text-anchor="middle" font-weight="bold">Rules</text>
+  <text x="352.0" y="188" font-size="14" stroke="none" fill="#666" text-anchor="middle">Health</text>
+  <text x="455.0" y="188" font-size="14" stroke="none" fill="#666" text-anchor="middle">Activity</text>
+  <line x1="232" y1="204" x2="1248" y2="204" stroke="#ccc" stroke-width="1" />
+  <text x="232" y="240" font-size="14" stroke="none" fill="#666" text-anchor="start">5 rules</text>
+  <rect x="1128" y="224" width="120" height="36" rx="6" fill="#000" stroke="#000" stroke-width="1.5" />
+  <text x="1188.0" y="247.0" font-size="14" stroke="none" fill="#fff" text-anchor="middle">+ New rule</text>
+  <rect x="980" y="224" width="132" height="36" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="1046.0" y="247.0" font-size="14" stroke="none" fill="#000" text-anchor="middle">Test a rule</text>
+  <rect x="232" y="304" width="1016" height="48" rx="0" fill="#fafaf8" stroke="#000" stroke-width="1.5" />
+  <text x="280" y="334" font-size="13" stroke="none" fill="#bbb" text-anchor="start">— rule row —</text>
+  <rect x="232" y="352" width="1016" height="48" rx="0" fill="#fafaf8" stroke="#000" stroke-width="1.5" />
+  <text x="280" y="382" font-size="13" stroke="none" fill="#bbb" text-anchor="start">— rule row —</text>
+  <rect x="232" y="400" width="1016" height="48" rx="0" fill="#fafaf8" stroke="#000" stroke-width="1.5" />
+  <text x="280" y="430" font-size="13" stroke="none" fill="#bbb" text-anchor="start">— rule row —</text>
+  <rect x="232" y="448" width="1016" height="48" rx="0" fill="#fafaf8" stroke="#000" stroke-width="1.5" />
+  <text x="280" y="478" font-size="13" stroke="none" fill="#bbb" text-anchor="start">— rule row —</text>
+  <rect x="0" y="0" width="1280" height="880" fill="rgba(0,0,0,0.4)" stroke="none" />
+  <rect x="160" y="320.0" width="400" height="240" rx="12" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="184" y="356.0" font-size="18" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Forget this approval?</text>
+  <text x="184" y="396.0" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Gmail · Send email</text>
+  <text x="184" y="418.0" font-size="12" stroke="none" fill="#666" text-anchor="start">Remembered for Fable · approved by Dotta on Jun 3</text>
+  <rect x="184" y="436.0" width="352" height="56" rx="6" fill="#fafaf8" stroke="#000" stroke-width="1.5" />
+  <text x="196" y="458.0" font-size="13" stroke="none" fill="#000" text-anchor="start">Next time Fable tries Send email, Paperclip will</text>
+  <text x="196" y="476.0" font-size="13" stroke="none" fill="#000" text-anchor="start">ask you again instead of letting it through.</text>
+  <rect x="440" y="504.0" width="96" height="36" rx="6" fill="#000" stroke="#000" stroke-width="1.5" />
+  <text x="488.0" y="527.0" font-size="14" stroke="none" fill="#fff" text-anchor="middle">Forget</text>
+  <rect x="340" y="504.0" width="88" height="36" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="384.0" y="527.0" font-size="14" stroke="none" fill="#000" text-anchor="middle">Cancel</text>
+  <rect x="720" y="320.0" width="400" height="240" rx="12" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="744" y="356.0" font-size="18" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Delete this rule?</text>
+  <text x="744" y="390.0" font-size="13" stroke="none" fill="#000" text-anchor="start">When any agent uses destructive Gmail</text>
+  <text x="744" y="408.0" font-size="13" stroke="none" fill="#000" text-anchor="start">actions → Ask first</text>
+  <rect x="744" y="428.0" width="352" height="56" rx="6" fill="#fafaf8" stroke="#000" stroke-width="1.5" />
+  <text x="756" y="450.0" font-size="13" stroke="none" fill="#000" text-anchor="start">Heads up — this rule fired 3 times in the last</text>
+  <text x="756" y="468.0" font-size="13" stroke="none" fill="#000" text-anchor="start">24 hours. Deleting it will let those through next time.</text>
+  <rect x="988" y="504.0" width="108" height="36" rx="6" fill="#000" stroke="#000" stroke-width="1.5" />
+  <text x="1042.0" y="527.0" font-size="14" stroke="none" fill="#fff" text-anchor="middle">Delete rule</text>
+  <rect x="888" y="504.0" width="88" height="36" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="932.0" y="527.0" font-size="14" stroke="none" fill="#000" text-anchor="middle">Cancel</text>
+</svg>

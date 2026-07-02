@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <!-- App header -->
+  <g transform="translate(48,40)">
+    <rect width="56" height="56" rx="8" fill="#e6e6e6" />
+    <text x="68" y="22" font-size="20" stroke="none" fill="#000">Google Sheets</text>
+    <text x="68" y="44" font-size="12" stroke="none" fill="#666">Needs attention · No actions loaded yet</text>
+  </g>
+
+  <!-- Tab bar -->
+  <g transform="translate(48,120)">
+    <line x1="0" y1="40" x2="1184" y2="40" />
+    <g font-size="14" stroke="none" fill="#666">
+      <text x="0" y="28">Setup</text>
+      <text x="80" y="28">Review</text>
+      <text x="168" y="28">Permissions</text>
+      <text x="280" y="28">Activity</text>
+      <text x="360" y="28">Advanced</text>
+      <text x="448" y="28" fill="#000" font-weight="600">Test</text>
+    </g>
+    <line x1="444" y1="40" x2="496" y2="40" stroke-width="3" />
+  </g>
+
+  <!-- Empty state card -->
+  <g transform="translate(320,272)">
+    <rect width="640" height="320" rx="12" />
+    <!-- icon placeholder -->
+    <g transform="translate(280,40)">
+      <rect width="80" height="80" rx="12" fill="#e6e6e6" />
+    </g>
+    <text x="320" y="160" font-size="20" stroke="none" fill="#000" text-anchor="middle">Nothing to test yet</text>
+    <text x="320" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Once Google Sheets is connected, the actions it offers</text>
+    <text x="320" y="212" font-size="14" stroke="none" fill="#666" text-anchor="middle">will show up here so you can try them out.</text>
+    <!-- primary CTA -->
+    <g transform="translate(244,248)">
+      <rect width="152" height="40" rx="8" fill="#000" />
+      <text x="76" y="25" font-size="14" stroke="none" fill="#fff" text-anchor="middle">Go to Setup</text>
+    </g>
+  </g>
+
+  <!-- Annotation -->
+  <g stroke="#d33" stroke-dasharray="4 4" fill="#fff">
+    <circle cx="320" cy="288" r="12" />
+  </g>
+  <g font-size="12" stroke="none" fill="#d33">
+    <text x="320" y="292" text-anchor="middle">1</text>
+  </g>
+</svg>

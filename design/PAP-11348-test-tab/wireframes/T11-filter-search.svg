@@ -1,0 +1,149 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <!-- App header -->
+  <g transform="translate(48,40)">
+    <rect width="56" height="56" rx="8" fill="#e6e6e6" />
+    <text x="68" y="22" font-size="20" stroke="none" fill="#000">Google Sheets</text>
+    <text x="68" y="44" font-size="12" stroke="none" fill="#666">Connected · 48 actions available</text>
+  </g>
+
+  <!-- Tab bar -->
+  <g transform="translate(48,120)">
+    <line x1="0" y1="40" x2="1184" y2="40" />
+    <g font-size="14" stroke="none" fill="#666">
+      <text x="0" y="28">Setup</text>
+      <text x="80" y="28">Review</text>
+      <text x="168" y="28">Permissions</text>
+      <text x="280" y="28">Activity</text>
+      <text x="360" y="28">Advanced</text>
+      <text x="448" y="28" fill="#000" font-weight="600">Test</text>
+    </g>
+    <line x1="444" y1="40" x2="496" y2="40" stroke-width="3" />
+  </g>
+
+  <!-- Test-as -->
+  <g transform="translate(48,184)">
+    <text x="0" y="14" font-size="12" stroke="none" fill="#666">TEST AS</text>
+    <rect x="0" y="24" width="280" height="48" rx="8" />
+    <rect x="12" y="36" width="24" height="24" rx="12" fill="#e6e6e6" />
+    <text x="48" y="46" font-size="14" stroke="none" fill="#000" font-weight="600">ClaudeCoder</text>
+    <text x="48" y="62" font-size="12" stroke="none" fill="#666">Allowed for 22 · Ask first for 5 · Off for 21</text>
+    <path d="M256 44 l8 8 l8 -8" stroke="#000" fill="none" />
+    <text x="304" y="54" font-size="12" stroke="none" fill="#666">Runs real actions in Google Sheets, exactly as this agent would.</text>
+  </g>
+
+  <!-- Filter row with active search -->
+  <g transform="translate(48,288)">
+    <rect width="360" height="40" rx="8" />
+    <circle cx="20" cy="20" r="6" fill="none" />
+    <line x1="24" y1="24" x2="30" y2="30" />
+    <text x="40" y="25" font-size="14" stroke="none" fill="#000">row</text>
+    <line x1="64" y1="14" x2="64" y2="32" />
+    <text x="332" y="25" font-size="12" stroke="none" fill="#666" text-anchor="end">Clear</text>
+
+    <g transform="translate(400,0)">
+      <rect width="280" height="40" rx="8" />
+      <line x1="93" y1="0" x2="93" y2="40" />
+      <line x1="186" y1="0" x2="186" y2="40" />
+      <text x="46" y="25" font-size="14" stroke="none" fill="#666" text-anchor="middle">All 48</text>
+      <text x="139" y="25" font-size="14" stroke="none" fill="#666" text-anchor="middle">Read 27</text>
+      <rect x="186" y="0" width="94" height="40" rx="8" fill="#e6e6e6" />
+      <text x="233" y="25" font-size="14" stroke="none" fill="#000" font-weight="600" text-anchor="middle">Write 21</text>
+    </g>
+
+    <text x="1184" y="25" font-size="12" stroke="none" fill="#666" text-anchor="end">9 matches · sorted A–Z</text>
+  </g>
+
+  <!-- Group header: Write -->
+  <g transform="translate(48,352)">
+    <text x="0" y="14" font-size="12" stroke="none" fill="#666" font-weight="600">WRITE — 9 of 21 match "row"</text>
+
+    <!-- Row 1: Append a row -->
+    <g transform="translate(0,28)">
+      <rect width="1184" height="56" rx="8" />
+      <path d="M16 28 l8 -8 l8 8" stroke="#000" fill="none" />
+      <text x="48" y="24" font-size="14" stroke="none" fill="#000" font-weight="600">Append a row</text>
+      <text x="48" y="44" font-size="12" stroke="none" fill="#666">Add a new row to the bottom of a sheet.</text>
+      <g transform="translate(1040,16)">
+        <rect width="128" height="24" rx="12" />
+        <path d="M11 9 l6 6 M11 15 l6 -6" stroke="#000" />
+        <text x="32" y="16" font-size="12" stroke="none" fill="#000">Ask first</text>
+      </g>
+    </g>
+
+    <!-- Row 2 -->
+    <g transform="translate(0,92)">
+      <rect width="1184" height="56" rx="8" />
+      <path d="M16 28 l8 -8 l8 8" stroke="#000" fill="none" />
+      <text x="48" y="24" font-size="14" stroke="none" fill="#000" font-weight="600">Insert a row</text>
+      <text x="48" y="44" font-size="12" stroke="none" fill="#666">Add a row at a specific position.</text>
+      <g transform="translate(1056,16)">
+        <rect width="112" height="24" rx="12" fill="#e6e6e6" />
+        <line x1="14" y1="12" x2="22" y2="12" stroke="#000" />
+        <text x="36" y="16" font-size="12" stroke="none" fill="#000">Off</text>
+      </g>
+    </g>
+
+    <!-- Row 3 -->
+    <g transform="translate(0,156)">
+      <rect width="1184" height="56" rx="8" />
+      <path d="M16 28 l8 -8 l8 8" stroke="#000" fill="none" />
+      <text x="48" y="24" font-size="14" stroke="none" fill="#000" font-weight="600">Update row by index</text>
+      <text x="48" y="44" font-size="12" stroke="none" fill="#666">Change values in a specific row.</text>
+      <g transform="translate(1040,16)">
+        <rect width="128" height="24" rx="12" />
+        <path d="M11 9 l6 6 M11 15 l6 -6" stroke="#000" />
+        <text x="32" y="16" font-size="12" stroke="none" fill="#000">Ask first</text>
+      </g>
+    </g>
+
+    <!-- Row 4 -->
+    <g transform="translate(0,220)">
+      <rect width="1184" height="56" rx="8" />
+      <path d="M16 28 l8 -8 l8 8" stroke="#000" fill="none" />
+      <text x="48" y="24" font-size="14" stroke="none" fill="#000" font-weight="600">Delete a row</text>
+      <text x="48" y="44" font-size="12" stroke="none" fill="#666">Remove a row from a sheet permanently.</text>
+      <g transform="translate(1056,16)">
+        <rect width="112" height="24" rx="12" fill="#e6e6e6" />
+        <line x1="14" y1="12" x2="22" y2="12" stroke="#000" />
+        <text x="36" y="16" font-size="12" stroke="none" fill="#000">Off</text>
+      </g>
+    </g>
+
+    <!-- Row 5 -->
+    <g transform="translate(0,284)">
+      <rect width="1184" height="56" rx="8" />
+      <path d="M16 28 l8 -8 l8 8" stroke="#000" fill="none" />
+      <text x="48" y="24" font-size="14" stroke="none" fill="#000" font-weight="600">Move a row</text>
+      <text x="48" y="44" font-size="12" stroke="none" fill="#666">Reorder a row within a sheet.</text>
+      <g transform="translate(1056,16)">
+        <rect width="112" height="24" rx="12" />
+        <circle cx="14" cy="12" r="4" fill="#000" />
+        <text x="28" y="16" font-size="12" stroke="none" fill="#000">Allowed</text>
+      </g>
+    </g>
+
+    <!-- Row 6 (truncated marker) -->
+    <g transform="translate(0,348)">
+      <text x="0" y="14" font-size="12" stroke="none" fill="#666">+ 4 more matches</text>
+    </g>
+  </g>
+
+  <!-- Annotations -->
+  <g stroke="#d33" stroke-dasharray="4 4" fill="#fff">
+    <circle cx="64" cy="288" r="12" />
+    <circle cx="688" cy="288" r="12" />
+    <circle cx="1112" cy="288" r="12" />
+    <circle cx="1112" cy="396" r="12" />
+    <circle cx="1112" cy="460" r="12" />
+  </g>
+  <g font-size="12" stroke="none" fill="#d33">
+    <text x="64" y="292" text-anchor="middle">1</text>
+    <text x="688" y="292" text-anchor="middle">2</text>
+    <text x="1112" y="292" text-anchor="middle">3</text>
+    <text x="1112" y="400" text-anchor="middle">4</text>
+    <text x="1112" y="464" text-anchor="middle">5</text>
+  </g>
+</svg>

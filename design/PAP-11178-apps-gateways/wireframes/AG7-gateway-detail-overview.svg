@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1100" viewBox="0 0 1280 1100" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="1100" />
+  <rect x="0" y="0" width="1280" height="56" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <line x1="0" y1="56" x2="1280" y2="56" stroke="#000" stroke-width="1.5" />
+  <text x="32" y="35" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Paperclip</text>
+  <text x="1248" y="35" font-size="12" stroke="none" fill="#666" text-anchor="end">Dotta</text>
+  <rect x="0" y="56" width="200" height="1044" rx="0" fill="#f4f4f1" stroke="#000" stroke-width="1.5" />
+  <line x1="200" y1="56" x2="200" y2="1100" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="96" font-size="14" stroke="none" fill="#666" text-anchor="start">Inbox</text>
+  <text x="28" y="132" font-size="14" stroke="none" fill="#666" text-anchor="start">Tasks</text>
+  <text x="28" y="168" font-size="14" stroke="none" fill="#666" text-anchor="start">Documents</text>
+  <rect x="12" y="186" width="176" height="32" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="204" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Apps</text>
+  <text x="28" y="240" font-size="14" stroke="none" fill="#666" text-anchor="start">Settings</text>
+  <text x="232" y="92" font-size="12" stroke="none" fill="#666" text-anchor="start">Apps · Gateways</text>
+  <text x="232" y="124" font-size="26" stroke="none" fill="#000" text-anchor="start" font-weight="bold">CTO agents</text>
+  <text x="232" y="150" font-size="13" stroke="none" fill="#666" text-anchor="start">mcp.paperclip.dev/g/cto-agents · Company · Created Jun 12 by Dotta</text>
+  <line x1="232" y1="208" x2="316.0" y2="208" stroke="#000" stroke-width="2.5" />
+  <text x="274.0" y="192" font-size="14" stroke="none" fill="#000" text-anchor="middle" font-weight="bold">Overview</text>
+  <text x="399.0" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Apps &amp; tools</text>
+  <text x="515.5" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Tokens</text>
+  <text x="615.0" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Activity</text>
+  <text x="723.0" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Advanced</text>
+  <line x1="232" y1="208" x2="1248" y2="208" stroke="#ccc" stroke-width="1" />
+  <rect x="1088" y="134" width="160" height="34" rx="6" fill="#000" stroke="#000" stroke-width="1.5" />
+  <text x="1168.0" y="156.0" font-size="13" stroke="none" fill="#fff" text-anchor="middle">Show snippet</text>
+  <rect x="960" y="138" width="120" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1020.0" y="155.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Test gateway</text>
+  <rect x="856" y="138" width="96" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="904.0" y="155.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Edit</text>
+  <rect x="232" y="252" width="245.0" height="88" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="248" y="276" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">On</text>
+  <rect x="248" y="290" width="36" height="18" rx="9" fill="#000" stroke="#000" stroke-width="1.5" />
+  <circle cx="275" cy="299" r="5.5" fill="#fff" stroke="none" />
+  <text x="248" y="330" font-size="11" stroke="none" fill="#666" text-anchor="start">Toggle the whole gateway off here.</text>
+  <rect x="489.0" y="252" width="245.0" height="88" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="505.0" y="276" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Apps</text>
+  <text x="505.0" y="300" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">6 apps · 23 tools</text>
+  <rect x="746.0" y="252" width="245.0" height="88" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="762.0" y="276" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Tokens</text>
+  <text x="762.0" y="300" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">2 active · 1 expiring</text>
+  <rect x="1003.0" y="252" width="245.0" height="88" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="1019.0" y="276" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Health</text>
+  <text x="1019.0" y="300" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">All green · checked 4s ago</text>
+  <rect x="232" y="364" width="1016" height="152" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="248" y="388" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Who can use it</text>
+  <text x="248" y="408" font-size="12" stroke="none" fill="#666" text-anchor="start">Anyone holding an active token below, restricted by the rules in your Default profile.</text>
+  <rect x="248" y="426" width="148" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="322.0" y="441.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Scope · CTO agents</text>
+  <rect x="404" y="426" width="128" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="468.0" y="441.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Profile · Default</text>
+  <rect x="540" y="426" width="120" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="600.0" y="441.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Rules · 5 active</text>
+  <rect x="668" y="426" width="216" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="776.0" y="441.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Ask-first queue · in your Inbox</text>
+  <rect x="1100" y="384" width="132" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1166.0" y="401.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Change scope</text>
+  <rect x="960" y="384" width="132" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1026.0" y="401.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Open profile</text>
+  <rect x="232" y="532" width="1016" height="240" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="248" y="556" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Apps in this gateway</text>
+  <rect x="1112" y="552" width="120" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1172.0" y="569.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">+ Add app</text>
+  <line x1="248" y1="580" x2="1232" y2="580" stroke="#eee" stroke-width="1" />
+  <line x1="248" y1="626" x2="1232" y2="626" stroke="#f3f3f3" stroke-width="1" />
+  <rect x="264" y="600" width="22" height="22" rx="4" fill="#e6e6e6" stroke="#ccc" stroke-width="1" />
+  <text x="296" y="616" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">GitHub</text>
+  <text x="376" y="616" font-size="12" stroke="none" fill="#666" text-anchor="start">7 tools · 0 ask first</text>
+  <rect x="1108" y="602" width="108" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1162.0" y="617.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Healthy</text>
+  <line x1="248" y1="658" x2="1232" y2="658" stroke="#f3f3f3" stroke-width="1" />
+  <rect x="264" y="632" width="22" height="22" rx="4" fill="#e6e6e6" stroke="#ccc" stroke-width="1" />
+  <text x="296" y="648" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Sheets</text>
+  <text x="376" y="648" font-size="12" stroke="none" fill="#666" text-anchor="start">5 tools · 1 ask first</text>
+  <rect x="1108" y="634" width="108" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1162.0" y="649.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Healthy</text>
+  <line x1="248" y1="690" x2="1232" y2="690" stroke="#f3f3f3" stroke-width="1" />
+  <rect x="264" y="664" width="22" height="22" rx="4" fill="#e6e6e6" stroke="#ccc" stroke-width="1" />
+  <text x="296" y="680" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Linear</text>
+  <text x="376" y="680" font-size="12" stroke="none" fill="#666" text-anchor="start">6 tools · 3 ask first</text>
+  <rect x="1108" y="666" width="108" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1162.0" y="681.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Healthy</text>
+  <line x1="248" y1="722" x2="1232" y2="722" stroke="#f3f3f3" stroke-width="1" />
+  <rect x="264" y="696" width="22" height="22" rx="4" fill="#e6e6e6" stroke="#ccc" stroke-width="1" />
+  <text x="296" y="712" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Slack</text>
+  <text x="376" y="712" font-size="12" stroke="none" fill="#666" text-anchor="start">4 tools · 0 ask first</text>
+  <rect x="1108" y="698" width="108" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1162.0" y="713.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Healthy</text>
+  <line x1="248" y1="754" x2="1232" y2="754" stroke="#f3f3f3" stroke-width="1" />
+  <rect x="264" y="728" width="22" height="22" rx="4" fill="#e6e6e6" stroke="#ccc" stroke-width="1" />
+  <text x="296" y="744" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">KV demo</text>
+  <text x="376" y="744" font-size="12" stroke="none" fill="#666" text-anchor="start">1 tool · 0 ask first</text>
+  <rect x="1108" y="730" width="108" height="22" rx="11" fill="#000" stroke="#000" stroke-width="1.2" />
+  <text x="1162.0" y="745.0" font-size="11" stroke="none" fill="#fff" text-anchor="middle">Needs attention</text>
+  <rect x="232" y="788" width="1016" height="220" rx="10" fill="#f4f4f1" stroke="#ccc" stroke-width="1" />
+  <text x="248" y="812" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">How clients connect</text>
+  <rect x="1122" y="802" width="110" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1177.0" y="819.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Copy</text>
+  <rect x="248" y="832" width="984" height="156" rx="8" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="264" y="856" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">{</text>
+  <text x="264" y="872" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">  "mcpServers": {</text>
+  <text x="264" y="888" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">    "paperclip-cto-agents": {</text>
+  <text x="264" y="904" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">      "url": "https://mcp.paperclip.dev/g/cto-agents/mcp",</text>
+  <text x="264" y="920" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">      "headers": { "Authorization": "Bearer pcgk_•••_REVEAL" }</text>
+  <text x="264" y="936" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">    }</text>
+  <text x="264" y="952" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">  }</text>
+  <text x="264" y="968" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">}</text>
+</svg>

@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="960" viewBox="0 0 1280 960" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="960" />
+  <rect x="0" y="0" width="1280" height="56" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <line x1="0" y1="56" x2="1280" y2="56" stroke="#000" stroke-width="1.5" />
+  <text x="32" y="35" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Paperclip</text>
+  <text x="1248" y="35" font-size="12" stroke="none" fill="#666" text-anchor="end">Dotta</text>
+  <rect x="0" y="56" width="200" height="904" rx="0" fill="#f4f4f1" stroke="#000" stroke-width="1.5" />
+  <line x1="200" y1="56" x2="200" y2="960" stroke="#000" stroke-width="1.5" />
+  <rect x="12" y="78" width="176" height="32" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="96" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Inbox</text>
+  <text x="28" y="132" font-size="14" stroke="none" fill="#666" text-anchor="start">Tasks</text>
+  <text x="28" y="168" font-size="14" stroke="none" fill="#666" text-anchor="start">Documents</text>
+  <text x="28" y="204" font-size="14" stroke="none" fill="#666" text-anchor="start">Apps</text>
+  <text x="28" y="240" font-size="14" stroke="none" fill="#666" text-anchor="start">Settings</text>
+  <text x="232" y="92" font-size="12" stroke="none" fill="#666" text-anchor="start">Inbox</text>
+  <text x="232" y="124" font-size="26" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Inbox · Approvals</text>
+  <text x="232" y="150" font-size="13" stroke="none" fill="#666" text-anchor="start">12 agents and clients are waiting on you. Most are routine, a few are destructive — keep an eye on those.</text>
+  <text x="252.75" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">All</text>
+  <line x1="297.5" y1="208" x2="390.0" y2="208" stroke="#000" stroke-width="2.5" />
+  <text x="343.75" y="192" font-size="14" stroke="none" fill="#000" text-anchor="middle" font-weight="bold">Approvals</text>
+  <text x="451.75" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Replies</text>
+  <text x="555.5" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Mentions</text>
+  <text x="659.25" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Snoozed</text>
+  <line x1="232" y1="208" x2="1248" y2="208" stroke="#ccc" stroke-width="1" />
+  <rect x="232" y="226" width="1016" height="44" rx="8" fill="#fff" stroke="#ccc" stroke-width="1" />
+  <rect x="248" y="234" width="93.19999999999999" height="22" rx="11" fill="#000" stroke="#000" stroke-width="1.2" />
+  <text x="294.6" y="249.0" font-size="11" stroke="none" fill="#fff" text-anchor="middle">All gateways</text>
+  <rect x="356" y="234" width="50" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="381.0" y="249.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Read</text>
+  <rect x="436" y="234" width="50" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="461.0" y="249.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Write</text>
+  <rect x="516" y="234" width="86.6" height="22" rx="11" fill="#000" stroke="#000" stroke-width="1.2" />
+  <text x="559.3" y="249.0" font-size="11" stroke="none" fill="#fff" text-anchor="middle">Destructive</text>
+  <rect x="617" y="234" width="119.6" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="676.8" y="249.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">External clients</text>
+  <rect x="1100" y="232" width="132" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1166.0" y="249.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Approve all safe</text>
+  <text x="232" y="294" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Waiting · oldest first</text>
+  <line x1="232" y1="302" x2="1248" y2="302" stroke="#000" stroke-width="1.5" />
+  <rect x="232" y="318" width="1016" height="112" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <rect x="248" y="334" width="32" height="32" rx="16" fill="#e6e6e6" stroke="#ccc" stroke-width="1" />
+  <text x="292" y="350" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Fable</text>
+  <text x="292" y="368" font-size="13" stroke="none" fill="#000" text-anchor="start">GitHub · create_branch</text>
+  <text x="292" y="388" font-size="12" stroke="none" fill="#666" text-anchor="start">PAP-11178 · Apps/Gateways design</text>
+  <text x="292" y="408" font-size="11" stroke="none" fill="#666" text-anchor="start">4 min ago · via gateway CTO agents</text>
+  <rect x="1120" y="334" width="96" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1168.0" y="349.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Write</text>
+  <rect x="1136" y="368" width="96" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1184.0" y="385.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Approve</text>
+  <rect x="1048" y="368" width="80" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1088.0" y="385.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Deny</text>
+  <rect x="1136" y="400" width="96" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1184.0" y="417.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Always allow</text>
+  <rect x="232" y="442" width="1016" height="112" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <rect x="248" y="458" width="32" height="32" rx="16" fill="#e6e6e6" stroke="#ccc" stroke-width="1" />
+  <text x="292" y="474" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Cursor · client-x</text>
+  <text x="292" y="492" font-size="13" stroke="none" fill="#000" text-anchor="start">Linear · update_issue</text>
+  <text x="292" y="512" font-size="12" stroke="none" fill="#666" text-anchor="start">name=“Fix nav”, state=“done”</text>
+  <text x="292" y="532" font-size="11" stroke="none" fill="#666" text-anchor="start">2 min ago · via gateway CTO agents</text>
+  <rect x="1120" y="458" width="96" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1168.0" y="473.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Write</text>
+  <rect x="1136" y="492" width="96" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1184.0" y="509.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Approve</text>
+  <rect x="1048" y="492" width="80" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1088.0" y="509.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Deny</text>
+  <rect x="1136" y="524" width="96" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1184.0" y="541.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Always allow</text>
+  <rect x="232" y="566" width="1016" height="112" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <rect x="248" y="582" width="32" height="32" rx="16" fill="#e6e6e6" stroke="#ccc" stroke-width="1" />
+  <text x="292" y="598" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Claude Desktop · Dotta</text>
+  <text x="292" y="616" font-size="13" stroke="none" fill="#000" text-anchor="start">Sheets · clear_range</text>
+  <text x="292" y="636" font-size="12" stroke="none" fill="#666" text-anchor="start">spreadsheet=Q3 OKRs, range=A1:Z200</text>
+  <text x="292" y="656" font-size="11" stroke="none" fill="#666" text-anchor="start">12 min ago · via gateway CTO agents</text>
+  <rect x="1120" y="582" width="96" height="22" rx="11" fill="#000" stroke="#000" stroke-width="1.2" />
+  <text x="1168.0" y="597.0" font-size="11" stroke="none" fill="#fff" text-anchor="middle">Destructive</text>
+  <rect x="1136" y="616" width="96" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1184.0" y="633.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Approve</text>
+  <rect x="1048" y="616" width="80" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1088.0" y="633.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Deny</text>
+  <rect x="1136" y="648" width="96" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1184.0" y="665.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Always allow</text>
+  <rect x="232" y="690" width="1016" height="112" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <rect x="248" y="706" width="32" height="32" rx="16" fill="#e6e6e6" stroke="#ccc" stroke-width="1" />
+  <text x="292" y="722" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">CodexCoder</text>
+  <text x="292" y="740" font-size="13" stroke="none" fill="#000" text-anchor="start">Slack · post_message</text>
+  <text x="292" y="760" font-size="12" stroke="none" fill="#666" text-anchor="start">channel=#eng-leads, text=“Merge plan…”</text>
+  <text x="292" y="780" font-size="11" stroke="none" fill="#666" text-anchor="start">Just now ago · via gateway CTO agents</text>
+  <rect x="1120" y="706" width="96" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1168.0" y="721.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Write</text>
+  <rect x="1136" y="740" width="96" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1184.0" y="757.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Approve</text>
+  <rect x="1048" y="740" width="80" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1088.0" y="757.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Deny</text>
+  <rect x="1136" y="772" width="96" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1184.0" y="789.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Always allow</text>
+</svg>

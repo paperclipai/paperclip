@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="880" viewBox="0 0 1280 880" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="880" />
+  <rect x="0" y="0" width="1280" height="56" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <line x1="0" y1="56" x2="1280" y2="56" stroke="#000" stroke-width="1.5" />
+  <text x="32" y="35" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Paperclip</text>
+  <text x="1248" y="35" font-size="12" stroke="none" fill="#666" text-anchor="end">Dotta</text>
+  <rect x="0" y="56" width="200" height="824" rx="0" fill="#f4f4f1" stroke="#000" stroke-width="1.5" />
+  <line x1="200" y1="56" x2="200" y2="880" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="96" font-size="14" stroke="none" fill="#666" text-anchor="start">Inbox</text>
+  <text x="28" y="132" font-size="14" stroke="none" fill="#666" text-anchor="start">Tasks</text>
+  <text x="28" y="168" font-size="14" stroke="none" fill="#666" text-anchor="start">Documents</text>
+  <rect x="12" y="186" width="176" height="32" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="204" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Apps</text>
+  <text x="28" y="240" font-size="14" stroke="none" fill="#666" text-anchor="start">Settings</text>
+  <text x="232" y="92" font-size="12" stroke="none" fill="#666" text-anchor="start">Apps</text>
+  <text x="232" y="124" font-size="26" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Apps</text>
+  <line x1="232" y1="208" x2="324.5" y2="208" stroke="#000" stroke-width="2.5" />
+  <text x="278.25" y="192" font-size="14" stroke="none" fill="#000" text-anchor="middle" font-weight="bold">Connected</text>
+  <text x="386.25" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Gallery</text>
+  <text x="490.0" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Gateways</text>
+  <text x="598.0" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Activity</text>
+  <line x1="232" y1="208" x2="1248" y2="208" stroke="#ccc" stroke-width="1" />
+  <rect x="200" y="56" width="1080" height="824" rx="0" fill="#000" stroke="none" stroke-width="1.5" />
+  <rect x="200" y="56" width="1080" height="824" fill="#000" opacity="0.35" stroke="none" />
+  <rect x="280" y="132" width="720" height="660" rx="14" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="304" y="168" font-size="20" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Paste a config</text>
+  <text x="304" y="192" font-size="13" stroke="none" fill="#666" text-anchor="start">Drop your mcp.json or copy one from Cursor / Claude Desktop / VS Code.</text>
+  <text x="964" y="168" font-size="18" stroke="none" fill="#666" text-anchor="end">✕</text>
+  <line x1="304" y1="246" x2="976" y2="246" stroke="#ddd" stroke-width="1" />
+  <text x="354" y="230" font-size="13" stroke="none" fill="#000" text-anchor="middle" font-weight="bold">Paste JSON</text>
+  <line x1="304" y1="246" x2="404" y2="246" stroke="#000" stroke-width="2.5" />
+  <text x="464" y="230" font-size="13" stroke="none" fill="#666" text-anchor="middle">Upload file</text>
+  <rect x="304" y="266" width="672" height="280" rx="8" fill="#f4f4f1" stroke="#ccc" stroke-width="1" />
+  <text x="320" y="288" font-size="12" stroke="none" fill="#444" font-family="ui-monospace, Menlo, monospace">{</text>
+  <text x="320" y="306" font-size="12" stroke="none" fill="#444" font-family="ui-monospace, Menlo, monospace">  "mcpServers": {</text>
+  <text x="320" y="324" font-size="12" stroke="none" fill="#444" font-family="ui-monospace, Menlo, monospace">    "github": {</text>
+  <text x="320" y="342" font-size="12" stroke="none" fill="#444" font-family="ui-monospace, Menlo, monospace">      "command": "npx -y @modelcontextprotocol/server-github",</text>
+  <text x="320" y="360" font-size="12" stroke="none" fill="#444" font-family="ui-monospace, Menlo, monospace">      "env": { "GITHUB_TOKEN": "ghp_..." }</text>
+  <text x="320" y="378" font-size="12" stroke="none" fill="#444" font-family="ui-monospace, Menlo, monospace">    },</text>
+  <text x="320" y="396" font-size="12" stroke="none" fill="#444" font-family="ui-monospace, Menlo, monospace">    "linear": {</text>
+  <text x="320" y="414" font-size="12" stroke="none" fill="#444" font-family="ui-monospace, Menlo, monospace">      "url": "https://mcp.linear.app/v1/sse",</text>
+  <text x="320" y="432" font-size="12" stroke="none" fill="#444" font-family="ui-monospace, Menlo, monospace">      "headers": { "Authorization": "Bearer lin_api_..." }</text>
+  <text x="320" y="450" font-size="12" stroke="none" fill="#444" font-family="ui-monospace, Menlo, monospace">    }</text>
+  <text x="320" y="468" font-size="12" stroke="none" fill="#444" font-family="ui-monospace, Menlo, monospace">  }</text>
+  <text x="320" y="486" font-size="12" stroke="none" fill="#444" font-family="ui-monospace, Menlo, monospace">}</text>
+  <text x="304" y="570" font-size="12" stroke="none" fill="#666" xml:space="preserve">Sensitive values stay in your secret service. <tspan font-weight="bold">Paperclip never stores raw secrets in this draft.</tspan></text>
+  <text x="304" y="592" font-size="12" stroke="none" fill="#666" xml:space="preserve">Stdio entries must map to an <tspan font-weight="bold">approved template</tspan> before they can be activated.</text>
+  <line x1="280" y1="728" x2="1000" y2="728" stroke="#e6e6e6" stroke-width="1" />
+  <rect x="304" y="744" width="110" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="359.0" y="761.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Use sample</text>
+  <rect x="846" y="742" width="130" height="34" rx="6" fill="#000" stroke="#000" stroke-width="1.5" />
+  <text x="911.0" y="764.0" font-size="13" stroke="none" fill="#fff" text-anchor="middle">Preview</text>
+  <rect x="724" y="742" width="110" height="34" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="779.0" y="764.0" font-size="13" stroke="none" fill="#000" text-anchor="middle">Cancel</text>
+</svg>

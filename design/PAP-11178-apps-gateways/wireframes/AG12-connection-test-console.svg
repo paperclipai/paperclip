@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1000" viewBox="0 0 1280 1000" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="1000" />
+  <rect x="0" y="0" width="1280" height="56" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <line x1="0" y1="56" x2="1280" y2="56" stroke="#000" stroke-width="1.5" />
+  <text x="32" y="35" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Paperclip</text>
+  <text x="1248" y="35" font-size="12" stroke="none" fill="#666" text-anchor="end">Dotta</text>
+  <rect x="0" y="56" width="200" height="944" rx="0" fill="#f4f4f1" stroke="#000" stroke-width="1.5" />
+  <line x1="200" y1="56" x2="200" y2="1000" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="96" font-size="14" stroke="none" fill="#666" text-anchor="start">Inbox</text>
+  <text x="28" y="132" font-size="14" stroke="none" fill="#666" text-anchor="start">Tasks</text>
+  <text x="28" y="168" font-size="14" stroke="none" fill="#666" text-anchor="start">Documents</text>
+  <rect x="12" y="186" width="176" height="32" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="204" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Apps</text>
+  <text x="28" y="240" font-size="14" stroke="none" fill="#666" text-anchor="start">Settings</text>
+  <text x="232" y="92" font-size="12" stroke="none" fill="#666" text-anchor="start">Apps · Gateways · CTO agents</text>
+  <text x="232" y="124" font-size="26" stroke="none" fill="#000" text-anchor="start" font-weight="bold">CTO agents · Test</text>
+  <text x="232" y="150" font-size="13" stroke="none" fill="#666" text-anchor="start">Run a tool against this gateway from the board. No agent is involved.</text>
+  <text x="274.0" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Overview</text>
+  <line x1="340.0" y1="208" x2="458.0" y2="208" stroke="#000" stroke-width="2.5" />
+  <text x="399.0" y="192" font-size="14" stroke="none" fill="#000" text-anchor="middle" font-weight="bold">Apps &amp; tools</text>
+  <text x="515.5" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Tokens</text>
+  <text x="615.0" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Activity</text>
+  <text x="723.0" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Advanced</text>
+  <line x1="232" y1="208" x2="1248" y2="208" stroke="#ccc" stroke-width="1" />
+  <rect x="232" y="232" width="360" height="728" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="248" y="260" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Pick a tool</text>
+  <rect x="248" y="280" width="328" height="32" rx="6" fill="#f4f4f1" stroke="#ccc" stroke-width="1" />
+  <text x="264" y="302" font-size="12" stroke="none" fill="#666" text-anchor="start">⌕  Search tools</text>
+  <text x="248" y="328" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">GitHub</text>
+  <text x="256" y="360" font-size="13" stroke="none" fill="#000" text-anchor="start">list_issues</text>
+  <text x="256" y="390" font-size="13" stroke="none" fill="#000" text-anchor="start">create_branch</text>
+  <text x="256" y="420" font-size="13" stroke="none" fill="#000" text-anchor="start">merge_pr</text>
+  <text x="248" y="438" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Sheets</text>
+  <text x="256" y="470" font-size="13" stroke="none" fill="#000" text-anchor="start">read_range</text>
+  <rect x="244" y="482" width="336" height="26" rx="6" fill="#f4f4f1" stroke="#000" stroke-width="1" />
+  <text x="256" y="500" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">append_row</text>
+  <text x="256" y="530" font-size="13" stroke="none" fill="#000" text-anchor="start">clear_range</text>
+  <text x="248" y="548" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Linear</text>
+  <text x="256" y="580" font-size="13" stroke="none" fill="#000" text-anchor="start">search_issues</text>
+  <text x="256" y="610" font-size="13" stroke="none" fill="#000" text-anchor="start">create_issue</text>
+  <text x="256" y="640" font-size="13" stroke="none" fill="#000" text-anchor="start">update_issue</text>
+  <rect x="608" y="232" width="640" height="728" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="628" y="264" font-size="18" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Sheets · append_row</text>
+  <text x="628" y="288" font-size="12" stroke="none" fill="#666" text-anchor="start">Acts as a board test actor. Goes through rules and approvals like a real client.</text>
+  <text x="628" y="332" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Arguments</text>
+  <rect x="628" y="342" width="600" height="140" rx="8" fill="#f4f4f1" stroke="#ccc" stroke-width="1" />
+  <text x="644" y="366" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">{</text>
+  <text x="644" y="386" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">  "spreadsheet": "Sandbox · Hello world",</text>
+  <text x="644" y="406" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">  "row": ["Hello from Test console", "2026-06-16"]</text>
+  <text x="644" y="426" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">}</text>
+  <rect x="628" y="496" width="160" height="34" rx="6" fill="#000" stroke="#000" stroke-width="1.5" />
+  <text x="708.0" y="518.0" font-size="13" stroke="none" fill="#fff" text-anchor="middle">Run as board</text>
+  <rect x="796" y="500" width="120" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="856.0" y="517.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Run dry</text>
+  <rect x="924" y="500" width="140" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="994.0" y="517.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Copy as curl</text>
+  <rect x="628" y="552" width="600" height="320" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="644" y="580" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Result · Allowed</text>
+  <text x="644" y="600" font-size="12" stroke="none" fill="#666" text-anchor="start">204 OK · 212 ms · profile Default · 0 ask-first triggered</text>
+  <line x1="628" y1="616" x2="1228" y2="616" stroke="#eee" stroke-width="1" />
+  <text x="644" y="640" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">{</text>
+  <text x="644" y="658" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">  "ok": true,</text>
+  <text x="644" y="676" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">  "appended": {</text>
+  <text x="644" y="694" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">    "row": 47,</text>
+  <text x="644" y="712" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">    "valuesPreview": ["Hello from Test console", "2026-06-16"]</text>
+  <text x="644" y="730" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">  },</text>
+  <text x="644" y="748" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">  "auditId": "evt_01HX9V7XJK…",</text>
+  <text x="644" y="766" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">  "policyExplanation": "Rule Sheets · safe → Allowed"</text>
+  <text x="644" y="784" font-size="12" stroke="none" fill="#222" font-family="ui-monospace, Menlo, monospace">}</text>
+</svg>

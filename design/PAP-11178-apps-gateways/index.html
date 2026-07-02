@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PAP-11178 — Apps / Gateways wireframes</title>
+<style>
+  :root {
+    --bg: #fafaf8;
+    --panel: #ffffff;
+    --ink: #111111;
+    --muted: #666666;
+    --line: #e5e5e0;
+    --maxw: 1200px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 15px/1.55 -apple-system, system-ui, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+  .shell { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+  .toc {
+    position: sticky; top: 0; align-self: start;
+    height: 100vh; overflow: auto;
+    padding: 24px 16px 24px 24px;
+    border-right: 1px solid var(--line);
+    background: var(--panel);
+    font-size: 13px;
+    z-index: 20;
+  }
+  .toc h1 { font-size: 14px; margin: 0 0 4px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+  .toc h2 { font-size: 12px; margin: 24px 0 6px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+  .toc a { display: block; text-decoration: none; padding: 6px 8px; margin-left: -8px; border-radius: 4px; color: var(--ink); }
+  .toc a:hover { background: var(--bg); }
+  .toc .num { display: inline-block; width: 40px; color: var(--muted); }
+  .toc .toc-summary { display: none; }
+  .toc .toc-body { display: block; }
+  main { padding: 48px 56px 96px; max-width: 1320px; min-width: 0; }
+  header.hero { max-width: var(--maxw); margin-bottom: 48px; }
+  header.hero .crumb { color: var(--muted); font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; }
+  header.hero h1 { font-size: 36px; line-height: 1.15; margin: 8px 0 16px; }
+  header.hero p { color: var(--muted); max-width: 760px; font-size: 16px; }
+  header.hero .pills { margin-top: 20px; display: flex; gap: 8px; flex-wrap: wrap; }
+  header.hero .pill { font-size: 12px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); }
+  section { scroll-margin-top: 24px; max-width: var(--maxw); margin-bottom: 72px; }
+  section h2 { font-size: 24px; line-height: 1.2; margin: 0 0 8px; }
+  section h2 .step-num { display: inline-block; min-width: 80px; color: var(--muted); font-weight: 400; }
+  section .desc { color: var(--muted); margin: 0 0 16px; max-width: 760px; }
+  .grid { display: grid; gap: 24px; grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.9fr); align-items: start; }
+  @media (max-width: 1080px) { .grid { grid-template-columns: 1fr; } }
+  @media (max-width: 900px) {
+    .shell { grid-template-columns: 1fr; }
+    .toc {
+      position: sticky; top: 0;
+      height: auto; max-height: 60vh;
+      padding: 12px 16px;
+      border-right: none;
+      border-bottom: 1px solid var(--line);
+    }
+    .toc .toc-summary { display: flex; justify-content: space-between; align-items: center; cursor: pointer; list-style: none; padding: 4px 0; }
+    .toc .toc-summary::-webkit-details-marker { display: none; }
+    .toc .toc-summary .title { font-size: 13px; font-weight: 600; }
+    .toc .toc-summary .crumb { font-size: 11px; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+    .toc .toc-body { display: none; padding-top: 8px; border-top: 1px solid var(--line); margin-top: 8px; }
+    .toc[open] .toc-body { display: block; }
+    main { padding: 24px 20px 64px; }
+    header.hero { margin-bottom: 40px; }
+    header.hero h1 { font-size: 28px; }
+    section { margin-bottom: 56px; scroll-margin-top: 80px; }
+    section h2 { font-size: 20px; }
+  }
+  .wire {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: zoom-in;
+    transition: transform 80ms ease, box-shadow 80ms ease;
+  }
+  .wire:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.08); }
+  .wire .label { padding: 10px 14px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+  .wire img { display: block; width: 100%; height: auto; background: #fff; }
+  .notes ul { padding-left: 20px; margin: 8px 0; }
+  .notes li { margin-bottom: 6px; color: #333; }
+  .notes .why { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--ink); padding: 14px 18px; border-radius: 4px; margin-top: 12px; font-size: 14px; }
+  .notes h3 { font-size: 13px; margin: 16px 0 6px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+  .vocab-pill { display: inline-block; padding: 2px 8px; margin: 2px 4px 2px 0; font-size: 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg); color: var(--ink); }
+  .vocab-old { color: var(--muted); text-decoration: line-through; }
+  .vocab-arrow { color: var(--muted); margin: 0 6px; }
+  .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.86); display: none; align-items: center; justify-content: center; z-index: 100; cursor: zoom-out; padding: 32px; }
+  .lightbox.open { display: flex; }
+  .lightbox img { max-width: 100%; max-height: 100%; background: #fff; box-shadow: 0 30px 80px rgba(0,0,0,0.4); border-radius: 4px; }
+  .lightbox .close { position: absolute; top: 16px; right: 24px; font-size: 28px; color: #fff; cursor: pointer; }
+  .lightbox .caption { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); color: #fff; font-size: 13px; opacity: 0.9; }
+  @media (max-width: 560px) {
+    .lightbox { padding: 12px; overflow: auto; touch-action: pinch-zoom; }
+    .lightbox.open { display: block; }
+    .lightbox img { display: block; width: 100%; max-width: none; max-height: none; height: auto; margin: 40px auto 56px; box-shadow: none; }
+    .lightbox .close { position: fixed; top: 8px; right: 12px; font-size: 32px; }
+    .lightbox .caption { position: fixed; left: 50%; transform: translateX(-50%); font-size: 12px; bottom: 12px; text-align: center; background: rgba(0,0,0,0.7); border-radius: 4px; padding: 6px 12px; }
+  }
+  .footer { color: var(--muted); font-size: 12px; max-width: var(--maxw); border-top: 1px solid var(--line); padding-top: 24px; margin-top: 64px; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <details class="toc" open>
+    <summary class="toc-summary">
+      <span><span class="crumb">PAP-11178</span><br><span class="title">Jump to a screen</span></span>
+      <span class="chevron" aria-hidden="true"></span>
+    </summary>
+    <nav class="toc-body" aria-label="Section navigation">
+      <h1>PAP-11178</h1>
+      <div style="font-size: 13px; color: var(--muted); margin-bottom: 16px;">Apps · Gateways · Setup · Debug</div>
+
+      <h2>Setup</h2>
+      <a href="#ag1"><span class="num">AG1</span>Apps shell + Gateways tab</a>
+      <a href="#ag2"><span class="num">AG2</span>Paste config modal</a>
+      <a href="#ag3"><span class="num">AG3</span>Import preview + secrets</a>
+      <a href="#ag4"><span class="num">AG4</span>Activation review</a>
+      <a href="#ag5"><span class="num">AG5</span>Bulk new-tool review</a>
+
+      <h2>Named gateways</h2>
+      <a href="#ag6"><span class="num">AG6</span>Gateways list</a>
+      <a href="#ag7"><span class="num">AG7</span>Gateway detail</a>
+      <a href="#ag8"><span class="num">AG8</span>Client snippets</a>
+      <a href="#ag9"><span class="num">AG9</span>Tokens · mint · revoke</a>
+
+      <h2>Operate &amp; debug</h2>
+      <a href="#ag10"><span class="num">AG10</span>Pending approvals queue</a>
+      <a href="#ag11"><span class="num">AG11</span>Audit + policy explanation</a>
+      <a href="#ag12"><span class="num">AG12</span>Test console</a>
+
+      <h2>Error / interactive states</h2>
+      <a href="#ag13"><span class="num">AG13</span>Missing credential / reconnect</a>
+      <a href="#ag14"><span class="num">AG14</span>Elicitation passthrough</a>
+      <a href="#ag15"><span class="num">AG15</span>Responsive + empty/loading/error</a>
+
+      <h2>Reference</h2>
+      <a href="#vocab"><span class="num">·</span>Vocabulary map</a>
+      <a href="#scope"><span class="num">·</span>Reuse vs new components</a>
+      <a href="#open"><span class="num">?</span>For reviewer</a>
+    </nav>
+  </details>
+
+  <main>
+    <header class="hero">
+      <div class="crumb">PAP-11178 · Wireframes</div>
+      <h1>Apps · Gateways · Setup · Debug</h1>
+      <p>Design surface for the gaps called out in the accepted <a href="https://paperclip-dev:3100/PAP/issues/PAP-11150">PAP-11150 plan</a>: paste-and-activate <code>mcp.json</code>, named gateways with bearer tokens, copyable client snippets, a board-readable approvals queue, audit with policy explanations, a connection test console, missing-credential reconnect, and MCP elicitation passthrough. Board-readable defaults first, raw protocol/log detail under Advanced.</p>
+      <div class="pills">
+        <span class="pill">15 screens</span>
+        <span class="pill">Desktop · 1280px</span>
+        <span class="pill">Lo-fi · monochrome</span>
+        <span class="pill">Click any wireframe to zoom</span>
+      </div>
+    </header>
+
+    <!-- AG1 -->
+    <section id="ag1">
+      <h2><span class="step-num">AG1</span>Apps shell with Gateways tab</h2>
+      <p class="desc">Top-level Apps surface adds a <strong>Gateways</strong> tab between Gallery and Activity. Summary strip surfaces the four numbers a prosumer cares about at a glance — Connected · Needs attention · Gateways · Approvals today.</p>
+      <div class="grid">
+        <div class="wire" data-zoom data-caption="AG1 — Apps shell with Gateways tab">
+          <div class="label"><span>AG1 · /apps</span><span>1280 × 960</span></div>
+          <img src="wireframes/AG1-apps-shell-with-gateways-tab.svg" alt="AG1 Apps shell">
+        </div>
+        <div class="notes">
+          <h3>Pixels show</h3>
+          <ul>
+            <li>Tabs: Connected · Gallery · Gateways · Activity. Profiles / Rules / Runtime move under a single <em>Advanced</em> link in the footer.</li>
+            <li>Summary strip is the single source of triage truth — every count is a clickable filter.</li>
+            <li>"In gateways" column tells you immediately which apps a client can already use; a "—" reads as "this app isn't in any gateway yet."</li>
+            <li>Two primaries: <strong>+ Connect an app</strong> (gallery wizard) and <strong>Paste config</strong> (existing PasteConfigTab, now lifted into a modal).</li>
+          </ul>
+          <div class="why"><strong>Why this changes:</strong> Apps was a list of connections only. Adding Gateways as a peer tab makes the named-gateway concept first-class without forcing users to learn it before they're ready.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AG2 -->
+    <section id="ag2">
+      <h2><span class="step-num">AG2</span>Paste config modal</h2>
+      <p class="desc">The mcp.json paste experience as a focused modal launched from the Apps header. Two tabs: <em>Paste JSON</em> (default) and <em>Upload file</em>. Sample-config helper and explicit security copy.</p>
+      <div class="grid">
+        <div class="wire" data-zoom data-caption="AG2 — Paste config modal">
+          <div class="label"><span>AG2 · /apps  ·  paste-config modal</span><span>1280 × 880</span></div>
+          <img src="wireframes/AG2-paste-config-modal.svg" alt="AG2 paste config">
+        </div>
+        <div class="notes">
+          <h3>Pixels show</h3>
+          <ul>
+            <li>Textarea uses monospace and accepts the exact JSON shape from Cursor/Claude Desktop/VS Code.</li>
+            <li>"Sensitive values stay in your secret service" copy keeps trust front-of-mind during paste.</li>
+            <li>Stdio-restriction copy: explicit that stdio entries must map to an approved template — preserving the safety boundary in <code>PAP-11088</code>.</li>
+            <li>One dominant action: <strong>Preview</strong>. Cancel + Use sample are secondary.</li>
+          </ul>
+          <div class="why"><strong>Why this changes:</strong> the current PasteConfigTab lives inside Advanced where prosumers rarely look. Lifting it to a modal on the Apps shell shortens the path from "Cursor showed me this JSON" to "active connection".</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AG3 -->
+    <section id="ag3">
+      <h2><span class="step-num">AG3</span>Import preview &amp; secret replacement</h2>
+      <p class="desc">After Preview: one card per server, each labeled <em>Needs review</em> or <em>Ready</em>. Required keys render as labeled fields with <em>Save as secret</em> or <em>Use existing…</em> affordances. Remote servers that advertise OAuth surface a <em>Sign in instead</em> nudge.</p>
+      <div class="grid">
+        <div class="wire" data-zoom data-caption="AG3 — Import preview with secret replacement">
+          <div class="label"><span>AG3 · /apps/import/preview</span><span>1280 × 1100</span></div>
+          <img src="wireframes/AG3-import-preview-secret-replacement.svg" alt="AG3 import preview">
+        </div>
+        <div class="notes">
+          <h3>Pixels show</h3>
+          <ul>
+            <li>Per-server state chip — <em>Ready</em> vs <em>Needs review</em>. Status counts in the page header.</li>
+            <li>Stdio card: hard block banner ("Stdio imports must map to an approved Paperclip template") + <em>Request template</em> shortcut.</li>
+            <li>Remote card: each detected secret has its own labeled field, masked. Two paths per field: <em>Save as secret</em> (one-tap mint into Paperclip's secret service) or <em>Use existing…</em> (pick a Paperclip secret already on file).</li>
+            <li>OAuth nudge appears when the upstream advertises auth metadata (Phase 3 of the plan): "Sign in with Linear" replaces the bearer token entirely.</li>
+            <li>Footer makes the partial-import explicit: <strong>Activate ready (1)</strong> vs <strong>Save drafts</strong>.</li>
+          </ul>
+          <div class="why"><strong>Why this changes:</strong> today imports either succeed entirely or block at the first missing secret. The card-per-server breakdown lets prosumers ship the ready ones while fixing the rest, and surfaces the OAuth option that's safer for human-shared clients.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AG4 -->
+    <section id="ag4">
+      <h2><span class="step-num">AG4</span>Activation review — catalog &amp; risk</h2>
+      <p class="desc">After Activate: a 4-step stepper (Health · Catalog · Review tools · Activate). Health summary above a tools table with risk chips and default-access picker. Destructive tools default to <em>Off</em>; write tools default to <em>Ask first</em>.</p>
+      <div class="grid">
+        <div class="wire" data-zoom data-caption="AG4 — Activation review with catalog + risk classification">
+          <div class="label"><span>AG4 · /apps/&lt;app&gt;/activate</span><span>1280 × 960</span></div>
+          <img src="wireframes/AG4-activation-review-catalog-risk.svg" alt="AG4 activation review">
+        </div>
+        <div class="notes">
+          <h3>Pixels show</h3>
+          <ul>
+            <li>Health summary: reachable + auth status, response time, last-checked timestamp, and <em>Re-run checks</em> affordance.</li>
+            <li>Risk chips: Read · Write · Destructive (filled). Read defaults to <em>Allowed</em>; Write to <em>Ask first</em>; Destructive to <em>Off</em>.</li>
+            <li>Default access dropdown per row uses the same Off · Allowed · Ask first vocabulary as Profiles (PAP-10978) and AppDetail (PAP-10859).</li>
+            <li>4-step stepper anchors progress; previous steps are checkmarked so re-entry from notifications is intuitive.</li>
+          </ul>
+          <div class="why"><strong>Why this changes:</strong> activating today silently exposes every discovered tool. This review step makes risk a one-glance read and protects against "I imported Linear and now Fable can delete issues."</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AG5 -->
+    <section id="ag5">
+      <h2><span class="step-num">AG5</span>Bulk new-tool review</h2>
+      <p class="desc">When a connection's schema hash changes, the new tools surface here. Quarantined (destructive) tools default Off; write tools default Ask first. Bulk approve with one click.</p>
+      <div class="grid">
+        <div class="wire" data-zoom data-caption="AG5 — Bulk new-tool review">
+          <div class="label"><span>AG5 · /apps/&lt;app&gt;/catalog?new</span><span>1280 × 880</span></div>
+          <img src="wireframes/AG5-bulk-new-tool-review.svg" alt="AG5 bulk new-tool">
+        </div>
+        <div class="notes">
+          <h3>Pixels show</h3>
+          <ul>
+            <li>Top action bar shows when the change was detected and a one-click <strong>Approve all (4)</strong> for low-risk bulk acceptance.</li>
+            <li>Schema-diff hint ("Changes detected: schema hash differs from last activation") explains why a review is needed.</li>
+            <li>Per-row checkbox honors selection state; <strong>Approve selected</strong> is the dominant footer action.</li>
+            <li>Quarantine status carries the safety message: "cannot run until you decide" — covered by the bottom helper text.</li>
+          </ul>
+          <div class="why"><strong>Why this changes:</strong> the existing ReviewQueueCard lives per-app and per-call; this surface batches by app for the moment a remote-MCP server adds a half-dozen tools at once (the Linear / Slack / GitHub upgrade flow).</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AG6 -->
+    <section id="ag6">
+      <h2><span class="step-num">AG6</span>Gateways list</h2>
+      <p class="desc">List of named gateways. Each row exposes scope, app count, token health, and an on/off toggle. The bottom helper card teaches the mental model: "a gateway is one safe MCP endpoint…"</p>
+      <div class="grid">
+        <div class="wire" data-zoom data-caption="AG6 — Gateways list (new product object)">
+          <div class="label"><span>AG6 · /apps/gateways</span><span>1280 × 880</span></div>
+          <img src="wireframes/AG6-gateways-list.svg" alt="AG6 gateways list">
+        </div>
+        <div class="notes">
+          <h3>Pixels show</h3>
+          <ul>
+            <li>Gateway row pattern: bold name on top, muted MCP endpoint URL below — same hierarchy as the existing Apps list.</li>
+            <li>Scope column maps to the Paperclip context (Company / Project / External · scoped) called out in the plan.</li>
+            <li>Tokens column is a sentence summary: "2 active · 1 expiring" — the detail lives on the Tokens tab.</li>
+            <li>Off toggle disables the whole gateway in one place — the kill switch a prosumer needs in an incident.</li>
+            <li>Bottom helper card defines the concept on first sight, addressing the Paradox of the Active User.</li>
+          </ul>
+          <div class="why"><strong>Why this changes:</strong> the plan adds a new product object; this is the surface that gives it a home. Reuses Apps list patterns so nothing feels invented.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AG7 -->
+    <section id="ag7">
+      <h2><span class="step-num">AG7</span>Gateway detail — overview</h2>
+      <p class="desc">Four summary cards (On · Apps · Tokens · Health), a <em>Who can use it</em> panel binding scope + profile + rules + the inbox approval target, then assigned apps and a preview of the client snippet.</p>
+      <div class="grid">
+        <div class="wire" data-zoom data-caption="AG7 — Gateway detail (overview tab)">
+          <div class="label"><span>AG7 · /apps/gateways/&lt;id&gt;</span><span>1280 × 1100</span></div>
+          <img src="wireframes/AG7-gateway-detail-overview.svg" alt="AG7 gateway detail">
+        </div>
+        <div class="notes">
+          <h3>Pixels show</h3>
+          <ul>
+            <li><strong>Show snippet</strong> is the primary action — copying the snippet is the most common task on this page.</li>
+            <li><em>Who can use it</em> chips translate scope/profile/rules into one readable row; each chip is a pivot link.</li>
+            <li>Inline app list reuses the Apps list pattern with the same status chip vocabulary.</li>
+            <li>Client snippet preview is a single read-only code block; full picker lives in AG8.</li>
+          </ul>
+          <div class="why"><strong>Why this changes:</strong> a Gateway is a binding point — it doesn't own permissions itself, it points at existing profiles and rules. The chips make that relationship visible instead of hidden in a settings panel.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AG8 -->
+    <section id="ag8">
+      <h2><span class="step-num">AG8</span>Client snippets dialog</h2>
+      <p class="desc">Modal with left-rail tabs: Cursor · Claude Desktop · VS Code · OpenCode / Claude Code · Raw URL. Each renders the exact JSON or URL for that client. Token reveals once on copy with a clear "treat this like a password" reminder.</p>
+      <div class="grid">
+        <div class="wire" data-zoom data-caption="AG8 — Client snippets dialog">
+          <div class="label"><span>AG8 · /apps/gateways/&lt;id&gt;/connect</span><span>1280 × 880</span></div>
+          <img src="wireframes/AG8-client-snippets-dialog.svg" alt="AG8 client snippets">
+        </div>
+        <div class="notes">
+          <h3>Pixels show</h3>
+          <ul>
+            <li>Per-client tab + file-path hint ("macOS · ~/Library/Application Support/Claude/…") so the user knows where the snippet goes.</li>
+            <li>Code block uses the same monospaced treatment as PasteConfigTab. <strong>Copy</strong> is colocated with the snippet, not under it.</li>
+            <li>Token sub-block makes minting+expiry+revocation explicit. "Mints a new token on copy" prevents the "where do I get a token?" loop.</li>
+            <li>Test hint at the bottom gives the user one-sentence verification.</li>
+            <li><strong>Send to teammate</strong> creates a one-time secret-sharing link (out of scope for V1 if needed).</li>
+          </ul>
+          <div class="why"><strong>Why this changes:</strong> shipping copyable client snippets is the single fastest path to "external MCP client can connect through Paperclip" — phase 4 of the plan. This pattern is reusable for any future client.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AG9 -->
+    <section id="ag9">
+      <h2><span class="step-num">AG9</span>Tokens — mint, reveal-once, revoke</h2>
+      <p class="desc">Per-gateway token list. New tokens reveal-once at the top with explicit "you won't see this again" copy. Each row shows owner / created / last used / expires / status with a triple-dot menu for rotate &amp; revoke.</p>
+      <div class="grid">
+        <div class="wire" data-zoom data-caption="AG9 — Tokens tab">
+          <div class="label"><span>AG9 · /apps/gateways/&lt;id&gt;/tokens</span><span>1280 × 980</span></div>
+          <img src="wireframes/AG9-tokens-tab.svg" alt="AG9 tokens">
+        </div>
+        <div class="notes">
+          <h3>Pixels show</h3>
+          <ul>
+            <li>Reveal-once banner — single source of truth for "I just minted; copy now". Replaces the typical "we'll email it to you" anti-pattern.</li>
+            <li>Owner column distinguishes board-owned, agent-owned, and external client tokens — directly supports the credential-resolution ownership table in the plan.</li>
+            <li>Expiring/Revoked status chips are filled (high-contrast) so they read as the exception, not the rule.</li>
+            <li>Triple-dot row menu: Rotate · Revoke · Rename · Copy fingerprint.</li>
+            <li>Bottom strip closes the audit loop: every mint/reveal/copy/revoke is recorded in Activity.</li>
+          </ul>
+          <div class="why"><strong>Why this changes:</strong> the plan's V1 auth model is scoped bearer tokens. Tokens deserve their own lifecycle surface — separate from the profile or app — because revoking a token is the safest one-click incident response.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AG10 -->
+    <section id="ag10">
+      <h2><span class="step-num">AG10</span>Pending approvals / Ask-first queue</h2>
+      <p class="desc">Consolidated approvals inbox. Filter chips for gateway, risk, and external clients. Each card is a sentence: <em>Who · App · Tool · Args · Time · Via gateway</em>. Primary action <strong>Approve</strong>, secondary <strong>Deny</strong>, soft <strong>Always allow</strong>.</p>
+      <div class="grid">
+        <div class="wire" data-zoom data-caption="AG10 — Pending approvals queue">
+          <div class="label"><span>AG10 · /inbox/approvals</span><span>1280 × 960</span></div>
+          <img src="wireframes/AG10-pending-approvals-queue.svg" alt="AG10 pending approvals">
+        </div>
+        <div class="notes">
+          <h3>Pixels show</h3>
+          <ul>
+            <li>Inbox tab — approvals live in the same surface as agent replies / mentions, so they get the same attention as a human ping.</li>
+            <li>Filter chips: All gateways · Read · Write · Destructive (filled) · External clients. "Destructive" is filled by default so destructive items pull the eye first (Von Restorff).</li>
+            <li>Each card is one sentence with cardinality, not a JSON dump. Truncated arg preview is enough to triage.</li>
+            <li><em>Approve all safe</em> in the top right covers the everyday case for low-risk batches.</li>
+            <li>Always allow → opens the rule builder pre-filled with the matching argument shape (linking back to PRA3).</li>
+          </ul>
+          <div class="why"><strong>Why this changes:</strong> approvals are scattered today — per-app cards plus PRA-era policy modals plus issue-thread interactions. This unifies the queue so an operator never misses an external client waiting on them.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AG11 -->
+    <section id="ag11">
+      <h2><span class="step-num">AG11</span>Audit timeline + policy explanation</h2>
+      <p class="desc">Two-pane debug view. Left: filtered event list. Right: selected event with a <em>Why it was blocked</em> card that names the matched rules in order, plus arg-by-arg detail. Follow-up actions become one-click.</p>
+      <div class="grid">
+        <div class="wire" data-zoom data-caption="AG11 — Audit timeline with policy-explanation card">
+          <div class="label"><span>AG11 · /apps/activity</span><span>1280 × 1020</span></div>
+          <img src="wireframes/AG11-audit-timeline-policy-explanation.svg" alt="AG11 audit explanation">
+        </div>
+        <div class="notes">
+          <h3>Pixels show</h3>
+          <ul>
+            <li>Selected row is highlighted with the SOFT background — same focus treatment as the Inbox list.</li>
+            <li><em>Why it was blocked</em> card uses the same sentence pattern as Rules (PRA1): "Rule X → Ask first. Then Y → Off. First match wins." This is the policy explanation payload the plan calls for.</li>
+            <li>Arguments shown one per line in mono, not buried in raw JSON. Power users can click <strong>Show as JSON</strong>.</li>
+            <li>Three follow-up actions: <em>Approve this once</em> · <em>Always allow this</em> · <em>Show as JSON</em> — covering the common debug → fix loop in one place.</li>
+          </ul>
+          <div class="why"><strong>Why this changes:</strong> PRA10–12 redesigned the Activity feed for routine ops. This adds the explanation step that operators need when something <em>didn't</em> work — the gap the plan flagged in Section 7 (Policy Expressiveness).</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AG12 -->
+    <section id="ag12">
+      <h2><span class="step-num">AG12</span>Connection / Gateway test console</h2>
+      <p class="desc">Run a tool against this gateway as a board test actor. Goes through every rule, approval, and audit path a real client would — so the operator can prove the policy works without spinning up Cursor.</p>
+      <div class="grid">
+        <div class="wire" data-zoom data-caption="AG12 — Test console">
+          <div class="label"><span>AG12 · /apps/gateways/&lt;id&gt;/test</span><span>1280 × 1000</span></div>
+          <img src="wireframes/AG12-connection-test-console.svg" alt="AG12 test console">
+        </div>
+        <div class="notes">
+          <h3>Pixels show</h3>
+          <ul>
+            <li>Tool picker grouped by app (matches AppDetail), search at the top.</li>
+            <li>Arg editor is a single JSON textarea — the test console is for power users; sentence builders would be overkill here.</li>
+            <li>Three run modes: <strong>Run as board</strong> (primary, real audit row), <em>Run dry</em> (policy decision only, no upstream call), <em>Copy as curl</em> (paste into terminal).</li>
+            <li>Result block surfaces both the upstream response and a <em>policyExplanation</em> string — same vocabulary as AG11.</li>
+            <li>Goes through the same rules and approvals as a real client — proven by the audit ID in the response.</li>
+          </ul>
+          <div class="why"><strong>Why this changes:</strong> today operators iterate on rules by waiting for a real agent to retry. The console closes that loop in seconds and gives the QA team a deterministic test surface.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AG13 -->
+    <section id="ag13">
+      <h2><span class="step-num">AG13</span>Missing credential — reconnect path</h2>
+      <p class="desc">When a credential expires or fails, the app surface flips to a reconnect-first layout. Paused calls show what's queued — they auto-resume after reconnect.</p>
+      <div class="grid">
+        <div class="wire" data-zoom data-caption="AG13 — Missing credential, reconnect path">
+          <div class="label"><span>AG13 · /apps/&lt;app&gt; (needs attention)</span><span>1280 × 880</span></div>
+          <img src="wireframes/AG13-missing-credential-reconnect.svg" alt="AG13 reconnect">
+        </div>
+        <div class="notes">
+          <h3>Pixels show</h3>
+          <ul>
+            <li>Top banner: one clear sentence — <em>Sign-in expired</em>. Primary action is reconnect; secondary is paste-token fallback.</li>
+            <li>"3 agents tried to use this since then; their calls were paused, not lost" — turns an outage into a controlled wait.</li>
+            <li>Paused list previews <em>Will retry</em> vs <em>Will ask first</em> outcomes after reconnect, so the operator knows what happens next.</li>
+            <li>"Clients pointing here" surfaces gateway impact — answers "do I need to tell anyone?"</li>
+          </ul>
+          <div class="why"><strong>Why this changes:</strong> the plan's missing-credential UX (Section 3) says the gateway should tell the agent/client what to do. This is the human side of that — the operator surface that ends the incident.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AG14 -->
+    <section id="ag14">
+      <h2><span class="step-num">AG14</span>Elicitation passthrough card</h2>
+      <p class="desc">When an MCP server returns an elicitation, Paperclip lifts it into a structured ask in the issue thread. Operator answers a typed field; the agent's call resumes with the answer attached.</p>
+      <div class="grid">
+        <div class="wire" data-zoom data-caption="AG14 — Elicitation passthrough">
+          <div class="label"><span>AG14 · issue thread / interaction</span><span>1280 × 820</span></div>
+          <img src="wireframes/AG14-elicitation-passthrough.svg" alt="AG14 elicitation">
+        </div>
+        <div class="notes">
+          <h3>Pixels show</h3>
+          <ul>
+            <li>"Ask user" chip distinguishes this from a normal approval interaction (PAP-11118).</li>
+            <li>Typed field (dropdown / text / number depending on MCP elicitation schema) — not a free-text chat reply.</li>
+            <li>Explanation block names the upstream and the reason, so the operator isn't filling a blank prompt.</li>
+            <li>Two terminal states: <strong>Send answer</strong> (continues the call) and <strong>Skip &amp; block</strong> (returns an elicitation_declined error to the agent).</li>
+          </ul>
+          <div class="why"><strong>Why this changes:</strong> elicitation is the protocol pattern that lets MCP tools ask for help mid-call. Mapping it to a Paperclip interaction means a stuck call becomes a tracked, resumable approval — never a silent hang.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AG15 -->
+    <section id="ag15">
+      <h2><span class="step-num">AG15</span>Responsive + empty/loading/error states</h2>
+      <p class="desc">Four phone-width tiles showing empty (Gateways), loading (Gateway detail), error (Reachability), and mobile approval card. Below: an explicit spec checklist of cross-cutting state rules.</p>
+      <div class="grid">
+        <div class="wire" data-zoom data-caption="AG15 — Responsive + state checklist">
+          <div class="label"><span>AG15 · responsive + states</span><span>1280 × 1000</span></div>
+          <img src="wireframes/AG15-responsive-and-states.svg" alt="AG15 responsive">
+        </div>
+        <div class="notes">
+          <h3>Pixels show</h3>
+          <ul>
+            <li>Mobile stacks to a single column &lt; 720px; sidebar collapses to a Menu sheet.</li>
+            <li>Skeleton loaders match real row heights — no layout shift on data arrival.</li>
+            <li>Reachability errors get a banner with a single fix action, not a toast.</li>
+            <li>Reveal-once tokens stay masked on re-view; no full value lingers in DOM after the initial reveal.</li>
+            <li>Destructive copy ("Revoke token", "Delete gateway") requires a typed-confirm input matching the resource name.</li>
+          </ul>
+          <div class="why"><strong>Why this changes:</strong> the acceptance criteria call out responsive + empty / error / loading. This page is the single artifact engineering can cite when building those states for any AG surface.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- vocab -->
+    <section id="vocab">
+      <h2><span class="step-num">·</span>Vocabulary map</h2>
+      <p class="desc">Words the user reads, mapped from the internal model. Engineering keeps the right-hand terms in code; product keeps the left-hand terms in UI and docs.</p>
+      <table style="border-collapse: collapse; width: 100%; max-width: 760px; font-size: 14px;">
+        <thead><tr><th style="text-align:left; padding: 8px; border-bottom: 1px solid var(--line);">UI says</th><th style="text-align:left; padding: 8px; border-bottom: 1px solid var(--line);">Code says</th><th style="text-align:left; padding: 8px; border-bottom: 1px solid var(--line);">Notes</th></tr></thead>
+        <tbody>
+          <tr><td style="padding:8px;">App</td><td style="padding:8px; color: var(--muted);">tool_application</td><td style="padding:8px; color: var(--muted);">Already shipped in PAP-10856.</td></tr>
+          <tr><td style="padding:8px;">Gateway</td><td style="padding:8px; color: var(--muted);">mcp_gateway</td><td style="padding:8px; color: var(--muted);">New product object.</td></tr>
+          <tr><td style="padding:8px;">Token</td><td style="padding:8px; color: var(--muted);">gateway_bearer_token</td><td style="padding:8px; color: var(--muted);">Distinct from agent-run pcgt_ tokens.</td></tr>
+          <tr><td style="padding:8px;">Off / Allowed / Ask first</td><td style="padding:8px; color: var(--muted);">policy_effect</td><td style="padding:8px; color: var(--muted);">Same vocab as Profiles + Rules.</td></tr>
+          <tr><td style="padding:8px;">Read / Write / Destructive</td><td style="padding:8px; color: var(--muted);">risk_class</td><td style="padding:8px; color: var(--muted);">Inferred at catalog time; editable per tool.</td></tr>
+          <tr><td style="padding:8px;">Connect with a link</td><td style="padding:8px; color: var(--muted);">remote_http connection wizard</td><td style="padding:8px; color: var(--muted);">Reused; see PAP-11088.</td></tr>
+          <tr><td style="padding:8px;">Paste config</td><td style="padding:8px; color: var(--muted);">mcp_json_import</td><td style="padding:8px; color: var(--muted);">Lifted from Advanced to Apps shell.</td></tr>
+          <tr><td style="padding:8px;">Ask user / Elicitation</td><td style="padding:8px; color: var(--muted);">mcp_elicitation_interaction</td><td style="padding:8px; color: var(--muted);">Maps to issue interaction.</td></tr>
+          <tr><td style="padding:8px;">Reconnect</td><td style="padding:8px; color: var(--muted);">credential_renewal_required</td><td style="padding:8px; color: var(--muted);">Includes OAuth refresh + bearer rotation.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- reuse -->
+    <section id="scope">
+      <h2><span class="step-num">·</span>What's reused vs new</h2>
+      <p class="desc">To keep visual coherence, most of the AG surface composes existing components. Only six things are genuinely new.</p>
+      <h3 style="font-size:13px; margin: 16px 0 6px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted);">Reused as-is</h3>
+      <ul>
+        <li>Apps list pattern (PAP-10856), Apps Detail tabs + status chip (PAP-10859), Profiles language (PAP-10978).</li>
+        <li>Rules / Policies sentence rows + outcome chips (PRA1–PRA6), Activity row pattern (PRA10–PRA11), Health card (PRA7–PRA9).</li>
+        <li>Connect-an-app wizard (PAP-10839) and Connect-with-a-link entry point (PAP-11088).</li>
+        <li>Issue-thread interaction card pattern (PAP-11118) for the elicitation card.</li>
+      </ul>
+      <h3 style="font-size:13px; margin: 16px 0 6px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted);">New components</h3>
+      <ul>
+        <li><code>GatewayList</code> + <code>GatewayRow</code> (AG6) — new top-level concept.</li>
+        <li><code>GatewayDetailOverview</code> with the <em>Who can use it</em> binding chips (AG7).</li>
+        <li><code>ClientSnippetsDialog</code> tab-set per MCP client (AG8) — reusable for any future client.</li>
+        <li><code>TokenTable</code> with reveal-once banner + triple-dot row menu (AG9).</li>
+        <li><code>PolicyExplanationCard</code> (AG11) — slot in the right-pane detail of any audit row.</li>
+        <li><code>GatewayTestConsole</code> (AG12) — pickable from any gateway page.</li>
+      </ul>
+      <h3 style="font-size:13px; margin: 16px 0 6px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted);">Tokens used (proposed)</h3>
+      <ul>
+        <li>Spacing: existing <code>space-2</code>/<code>space-4</code>/<code>space-6</code>; no new sizes.</li>
+        <li>Colors: existing ink / muted / soft / panel; no new palette.</li>
+        <li>Status chip variants: reuse <em>healthy</em>, <em>attention</em>, <em>paused</em>, <em>not_connected</em> from Apps.</li>
+        <li>One proposed addition: <em>chip · destructive</em> (filled-ink) for risk chips and the <em>Destructive</em> filter.</li>
+      </ul>
+    </section>
+
+    <!-- open -->
+    <section id="open">
+      <h2><span class="step-num">?</span>Open questions for reviewer</h2>
+      <p class="desc">Things I'd like the board to weigh in on before implementation issues are written.</p>
+      <ul>
+        <li><strong>"Gateway" naming.</strong> The plan uses "MCP Gateway." Internally and in docs the word "gateway" is loaded — already used for <em>gateway_sessions</em> for agent runs. UI here uses just <em>Gateway</em>. If we want a distinct word ("Endpoint", "Surface", "Client app"), now's the time. Recommendation: keep "Gateway" for the prosumer and qualify in code (<em>mcp_gateway</em>, <em>gateway_session</em>).</li>
+        <li><strong>Approvals queue placement.</strong> AG10 puts approvals in Inbox. Alternative: a separate /apps/approvals page. Recommendation: Inbox first — meets users where they already triage; deep-link from Apps.</li>
+        <li><strong>Token reveal model.</strong> AG9 reveals once with a banner. Alternative: never reveal full value; download as a `.json` snippet. Recommendation: reveal-once with explicit "copy now" language — matches Cursor/Anthropic console conventions.</li>
+        <li><strong>Risk classification editability.</strong> AG4/AG5 show inferred risk chips. Should operators be able to change <em>Destructive → Write</em>? Recommendation: yes via the row menu, with an audit event — but never <em>Destructive → Read</em>.</li>
+        <li><strong>Test console scope.</strong> AG12 runs as the board. Should it support running as a specific agent ("test as Fable")? Recommendation: V1.5 — board first to ship the debugging value; per-agent next.</li>
+        <li><strong>External client tokens.</strong> AG9 has an <em>Owner</em> column. Are external client tokens minted via a different flow (e.g., shared link)? Recommendation: same Mint flow + a <em>Send to teammate</em> action in AG8.</li>
+      </ul>
+    </section>
+
+    <p class="footer">PAP-11178 · UXDesigner · Lo-fi monochrome SVGs · Click any wireframe to zoom. Drafted 2026-06-16 — feedback in the issue thread.</p>
+  </main>
+</div>
+<div class="lightbox" id="lb" role="dialog" aria-modal="true">
+  <span class="close" id="lbclose">×</span>
+  <img id="lbimg" alt="" />
+  <div class="caption" id="lbcap"></div>
+</div>
+<script>
+  const lb = document.getElementById('lb');
+  const lbimg = document.getElementById('lbimg');
+  const lbcap = document.getElementById('lbcap');
+  document.querySelectorAll('[data-zoom]').forEach((w) => {
+    w.addEventListener('click', () => {
+      const img = w.querySelector('img');
+      lbimg.src = img.src;
+      lbcap.textContent = w.dataset.caption || '';
+      lb.classList.add('open');
+    });
+  });
+  function close() { lb.classList.remove('open'); lbimg.src = ''; }
+  lb.addEventListener('click', close);
+  document.getElementById('lbclose').addEventListener('click', (e) => { e.stopPropagation(); close(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+</script>
+</body>
+</html>

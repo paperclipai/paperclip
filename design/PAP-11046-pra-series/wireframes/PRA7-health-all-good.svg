@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="880" viewBox="0 0 1280 880" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="880" />
+  <rect x="0" y="0" width="1280" height="56" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <line x1="0" y1="56" x2="1280" y2="56" stroke="#000" stroke-width="1.5" />
+  <text x="32" y="35" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Paperclip</text>
+  <text x="1248" y="35" font-size="12" stroke="none" fill="#666" text-anchor="end">Dotta</text>
+  <rect x="0" y="56" width="200" height="824" rx="0" fill="#fafaf8" stroke="#000" stroke-width="1.5" />
+  <line x1="200" y1="56" x2="200" y2="880" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="96" font-size="14" stroke="none" fill="#666" text-anchor="start">Inbox</text>
+  <text x="28" y="132" font-size="14" stroke="none" fill="#666" text-anchor="start">Tasks</text>
+  <text x="28" y="168" font-size="14" stroke="none" fill="#666" text-anchor="start">Documents</text>
+  <rect x="12" y="186" width="176" height="32" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="204" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Apps</text>
+  <text x="28" y="240" font-size="14" stroke="none" fill="#666" text-anchor="start">Settings</text>
+  <text x="232" y="92" font-size="12" stroke="none" fill="#666" text-anchor="start">Apps · Advanced</text>
+  <text x="232" y="124" font-size="28" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Health</text>
+  <text x="232" y="148" font-size="14" stroke="none" fill="#666" text-anchor="start">How your apps are doing right now</text>
+  <text x="262.5" y="188" font-size="14" stroke="none" fill="#666" text-anchor="middle">Rules</text>
+  <line x1="317" y1="204" x2="387" y2="204" stroke="#000" stroke-width="2.5" />
+  <text x="352.0" y="188" font-size="14" stroke="none" fill="#000" text-anchor="middle" font-weight="bold">Health</text>
+  <text x="455.0" y="188" font-size="14" stroke="none" fill="#666" text-anchor="middle">Activity</text>
+  <line x1="232" y1="204" x2="1248" y2="204" stroke="#ccc" stroke-width="1" />
+  <rect x="1168" y="224" width="80" height="28" rx="14" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <circle cx="1184" cy="238" r="4" fill="#000" stroke="none" />
+  <text x="1196" y="242" font-size="12" stroke="none" fill="#000" text-anchor="start">Live</text>
+  <text x="1156" y="242" font-size="11" stroke="none" fill="#666" text-anchor="end">updates every 15s</text>
+  <rect x="232.0" y="280" width="328.0" height="112" rx="8" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="252.0" y="308" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Apps running</text>
+  <text x="252.0" y="344" font-size="28" stroke="none" fill="#000" text-anchor="start" font-weight="bold">8 of 8</text>
+  <text x="252.0" y="372" font-size="12" stroke="none" fill="#666" text-anchor="start">All connected</text>
+  <rect x="576.0" y="280" width="328.0" height="112" rx="8" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="596.0" y="308" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Typical response time</text>
+  <text x="596.0" y="344" font-size="28" stroke="none" fill="#000" text-anchor="start" font-weight="bold">about 1.2s</text>
+  <text x="596.0" y="372" font-size="12" stroke="none" fill="#666" text-anchor="start">across the last hour</text>
+  <rect x="920.0" y="280" width="328.0" height="112" rx="8" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="940.0" y="308" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Errors in the last hour</text>
+  <text x="940.0" y="344" font-size="28" stroke="none" fill="#000" text-anchor="start" font-weight="bold">0</text>
+  <text x="940.0" y="372" font-size="12" stroke="none" fill="#666" text-anchor="start">last error: yesterday 3:14 PM</text>
+  <text x="232" y="432" font-size="18" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Running apps</text>
+  <text x="232" y="454" font-size="12" stroke="none" fill="#666" text-anchor="start">One row per running app — click any row to see details.</text>
+  <text x="256" y="488" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">App</text>
+  <text x="560" y="488" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Status</text>
+  <text x="800" y="488" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Last used</text>
+  <text x="1148" y="488" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Actions</text>
+  <line x1="232" y1="500" x2="1248" y2="500" stroke="#000" stroke-width="1.5" />
+  <rect x="232" y="512" width="1016" height="40" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <circle cx="248" cy="532" r="5" fill="#000" stroke="none" />
+  <text x="266" y="537" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Gmail</text>
+  <text x="560" y="537" font-size="13" stroke="none" fill="#000" text-anchor="start">Working</text>
+  <text x="800" y="537" font-size="13" stroke="none" fill="#666" text-anchor="start">5 minutes ago</text>
+  <rect x="1160" y="518" width="80" height="28" rx="4" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="1200.0" y="536.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Restart</text>
+  <rect x="232" y="552" width="1016" height="40" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <circle cx="248" cy="572" r="5" fill="#000" stroke="none" />
+  <text x="266" y="577" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Google Sheets</text>
+  <text x="560" y="577" font-size="13" stroke="none" fill="#000" text-anchor="start">Working</text>
+  <text x="800" y="577" font-size="13" stroke="none" fill="#666" text-anchor="start">12 minutes ago</text>
+  <rect x="1160" y="558" width="80" height="28" rx="4" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="1200.0" y="576.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Restart</text>
+  <rect x="232" y="592" width="1016" height="40" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <circle cx="248" cy="612" r="5" fill="#000" stroke="none" />
+  <text x="266" y="617" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Slack</text>
+  <text x="560" y="617" font-size="13" stroke="none" fill="#000" text-anchor="start">Working</text>
+  <text x="800" y="617" font-size="13" stroke="none" fill="#666" text-anchor="start">1 hour ago</text>
+  <rect x="1160" y="598" width="80" height="28" rx="4" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="1200.0" y="616.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Restart</text>
+  <rect x="232" y="632" width="1016" height="40" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <circle cx="248" cy="652" r="5" fill="#000" stroke="none" />
+  <text x="266" y="657" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Notion</text>
+  <text x="560" y="657" font-size="13" stroke="none" fill="#000" text-anchor="start">Working</text>
+  <text x="800" y="657" font-size="13" stroke="none" fill="#666" text-anchor="start">8 minutes ago</text>
+  <rect x="1160" y="638" width="80" height="28" rx="4" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="1200.0" y="656.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Restart</text>
+  <rect x="232" y="672" width="1016" height="40" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <circle cx="248" cy="692" r="5" fill="#000" stroke="none" />
+  <text x="266" y="697" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Linear</text>
+  <text x="560" y="697" font-size="13" stroke="none" fill="#000" text-anchor="start">Working</text>
+  <text x="800" y="697" font-size="13" stroke="none" fill="#666" text-anchor="start">22 minutes ago</text>
+  <rect x="1160" y="678" width="80" height="28" rx="4" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="1200.0" y="696.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Restart</text>
+  <rect x="232" y="712" width="1016" height="40" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <circle cx="248" cy="732" r="5" fill="#000" stroke="none" />
+  <text x="266" y="737" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">GitHub</text>
+  <text x="560" y="737" font-size="13" stroke="none" fill="#000" text-anchor="start">Working</text>
+  <text x="800" y="737" font-size="13" stroke="none" fill="#666" text-anchor="start">3 minutes ago</text>
+  <rect x="1160" y="718" width="80" height="28" rx="4" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="1200.0" y="736.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Restart</text>
+</svg>

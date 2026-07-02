@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="980" viewBox="0 0 1280 980" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="980" />
+  <rect x="0" y="0" width="1280" height="56" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <line x1="0" y1="56" x2="1280" y2="56" stroke="#000" stroke-width="1.5" />
+  <text x="32" y="35" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Paperclip</text>
+  <text x="1248" y="35" font-size="12" stroke="none" fill="#666" text-anchor="end">Dotta</text>
+  <rect x="0" y="56" width="200" height="924" rx="0" fill="#f4f4f1" stroke="#000" stroke-width="1.5" />
+  <line x1="200" y1="56" x2="200" y2="980" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="96" font-size="14" stroke="none" fill="#666" text-anchor="start">Inbox</text>
+  <text x="28" y="132" font-size="14" stroke="none" fill="#666" text-anchor="start">Tasks</text>
+  <text x="28" y="168" font-size="14" stroke="none" fill="#666" text-anchor="start">Documents</text>
+  <rect x="12" y="186" width="176" height="32" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="204" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Apps</text>
+  <text x="28" y="240" font-size="14" stroke="none" fill="#666" text-anchor="start">Settings</text>
+  <text x="232" y="92" font-size="12" stroke="none" fill="#666" text-anchor="start">Apps · Gateways · CTO agents</text>
+  <text x="232" y="124" font-size="26" stroke="none" fill="#000" text-anchor="start" font-weight="bold">CTO agents · Tokens</text>
+  <text x="232" y="150" font-size="13" stroke="none" fill="#666" text-anchor="start">Each token is a separate way in. Revoke any one without breaking the others.</text>
+  <text x="274.0" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Overview</text>
+  <text x="399.0" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Apps &amp; tools</text>
+  <line x1="482.0" y1="208" x2="549.0" y2="208" stroke="#000" stroke-width="2.5" />
+  <text x="515.5" y="192" font-size="14" stroke="none" fill="#000" text-anchor="middle" font-weight="bold">Tokens</text>
+  <text x="615.0" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Activity</text>
+  <text x="723.0" y="192" font-size="14" stroke="none" fill="#666" text-anchor="middle">Advanced</text>
+  <line x1="232" y1="208" x2="1248" y2="208" stroke="#ccc" stroke-width="1" />
+  <rect x="1088" y="226" width="160" height="34" rx="6" fill="#000" stroke="#000" stroke-width="1.5" />
+  <text x="1168.0" y="248.0" font-size="13" stroke="none" fill="#fff" text-anchor="middle">+ Mint token</text>
+  <rect x="232" y="270" width="1016" height="100" rx="10" fill="#f4f4f1" stroke="#000" stroke-width="1.2" />
+  <text x="252" y="296" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">New token — copy now</text>
+  <text x="252" y="316" font-size="12" stroke="none" fill="#666" text-anchor="start">You won’t see the full value again. Store it in your client’s config or your secret manager.</text>
+  <rect x="252" y="328" width="756" height="30" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="264" y="348" font-size="12" stroke="none" fill="#000" text-anchor="start">pcgk_live_8x4Pa_fSlRPDmnYqU3oVdK5BzAh9TbN4LiHvKtZjEgWfMcQxRAg</text>
+  <rect x="1008" y="330" width="104" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1060.0" y="347.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Copy</text>
+  <rect x="1120" y="330" width="108" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1174.0" y="347.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Send to client</text>
+  <text x="248" y="416" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Token</text>
+  <text x="592" y="416" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Owner</text>
+  <text x="752" y="416" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Created</text>
+  <text x="872" y="416" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Last used</text>
+  <text x="992" y="416" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Expires</text>
+  <text x="1108" y="416" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Status</text>
+  <line x1="232" y1="428" x2="1248" y2="428" stroke="#000" stroke-width="1.5" />
+  <line x1="232" y1="498" x2="1248" y2="498" stroke="#eee" stroke-width="1" />
+  <text x="248" y="466" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">cto-cursor</text>
+  <text x="248" y="484" font-size="12" stroke="none" fill="#666" text-anchor="start">pcgk_live_•••RAg</text>
+  <text x="592" y="474" font-size="13" stroke="none" fill="#000" text-anchor="start">Dotta</text>
+  <text x="752" y="474" font-size="13" stroke="none" fill="#666" text-anchor="start">Jun 16, 11:04 AM</text>
+  <text x="872" y="474" font-size="13" stroke="none" fill="#666" text-anchor="start">12s ago</text>
+  <text x="992" y="474" font-size="13" stroke="none" fill="#666" text-anchor="start">in 90d</text>
+  <rect x="1108" y="464" width="86" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1151.0" y="479.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Active</text>
+  <text x="1224" y="470" font-size="18" stroke="none" fill="#000" text-anchor="end">⋯</text>
+  <line x1="232" y1="554" x2="1248" y2="554" stroke="#eee" stroke-width="1" />
+  <text x="248" y="522" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">cto-claude-desktop</text>
+  <text x="248" y="540" font-size="12" stroke="none" fill="#666" text-anchor="start">pcgk_live_•••H7n</text>
+  <text x="592" y="530" font-size="13" stroke="none" fill="#000" text-anchor="start">Dotta</text>
+  <text x="752" y="530" font-size="13" stroke="none" fill="#666" text-anchor="start">Jun 14</text>
+  <text x="872" y="530" font-size="13" stroke="none" fill="#666" text-anchor="start">4h ago</text>
+  <text x="992" y="530" font-size="13" stroke="none" fill="#666" text-anchor="start">in 88d</text>
+  <rect x="1108" y="520" width="86" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1151.0" y="535.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Active</text>
+  <text x="1224" y="526" font-size="18" stroke="none" fill="#000" text-anchor="end">⋯</text>
+  <line x1="232" y1="610" x2="1248" y2="610" stroke="#eee" stroke-width="1" />
+  <text x="248" y="578" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">client-x sandbox</text>
+  <text x="248" y="596" font-size="12" stroke="none" fill="#666" text-anchor="start">pcgk_live_•••Xa1</text>
+  <text x="592" y="586" font-size="13" stroke="none" fill="#000" text-anchor="start">External · ClientX</text>
+  <text x="752" y="586" font-size="13" stroke="none" fill="#666" text-anchor="start">May 20</text>
+  <text x="872" y="586" font-size="13" stroke="none" fill="#666" text-anchor="start">2d ago</text>
+  <text x="992" y="586" font-size="13" stroke="none" fill="#666" text-anchor="start">in 14d</text>
+  <rect x="1108" y="576" width="86" height="22" rx="11" fill="#000" stroke="#000" stroke-width="1.2" />
+  <text x="1151.0" y="591.0" font-size="11" stroke="none" fill="#fff" text-anchor="middle">Expiring</text>
+  <text x="1224" y="582" font-size="18" stroke="none" fill="#000" text-anchor="end">⋯</text>
+  <line x1="232" y1="666" x2="1248" y2="666" stroke="#eee" stroke-width="1" />
+  <text x="248" y="634" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">legacy-fable</text>
+  <text x="248" y="652" font-size="12" stroke="none" fill="#666" text-anchor="start">pcgk_live_•••0aZ</text>
+  <text x="592" y="642" font-size="13" stroke="none" fill="#000" text-anchor="start">Fable</text>
+  <text x="752" y="642" font-size="13" stroke="none" fill="#666" text-anchor="start">Apr 02</text>
+  <text x="872" y="642" font-size="13" stroke="none" fill="#666" text-anchor="start">—</text>
+  <text x="992" y="642" font-size="13" stroke="none" fill="#666" text-anchor="start">Apr 02</text>
+  <rect x="1108" y="632" width="86" height="22" rx="11" fill="#000" stroke="#000" stroke-width="1.2" />
+  <text x="1151.0" y="647.0" font-size="11" stroke="none" fill="#fff" text-anchor="middle">Revoked</text>
+  <text x="1224" y="638" font-size="18" stroke="none" fill="#000" text-anchor="end">⋯</text>
+  <rect x="232" y="856" width="1016" height="64" rx="10" fill="#f4f4f1" stroke="#ccc" stroke-width="1" />
+  <text x="252" y="880" font-size="13" stroke="none" fill="#000" text-anchor="start">Every mint, reveal, copy, and revoke is recorded in Activity → Audit.</text>
+  <rect x="1060" y="870" width="168" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="1144.0" y="887.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Open audit</text>
+</svg>

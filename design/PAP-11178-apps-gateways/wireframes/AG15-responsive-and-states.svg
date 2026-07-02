@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1000" viewBox="0 0 1280 1000" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="1000" />
+  <rect x="0" y="0" width="1280" height="56" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <line x1="0" y1="56" x2="1280" y2="56" stroke="#000" stroke-width="1.5" />
+  <text x="32" y="35" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Paperclip · Responsive &amp; state checklist</text>
+  <text x="1248" y="35" font-size="12" stroke="none" fill="#666" text-anchor="end">AG15</text>
+  <rect x="64" y="96" width="240" height="460" rx="22" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <rect x="74" y="112" width="220" height="28" rx="6" fill="#f4f4f1" stroke="#ccc" stroke-width="1" />
+  <text x="184.0" y="130" font-size="12" stroke="none" fill="#000" text-anchor="middle" font-weight="bold">Empty · Gateways</text>
+  <rect x="80" y="160" width="208" height="364" rx="10" fill="#fff" stroke="#ccc" stroke-width="1" />
+  <text x="184.0" y="296" font-size="13" stroke="none" fill="#000" text-anchor="middle" font-weight="bold">No gateways yet</text>
+  <text x="184.0" y="318" font-size="11" stroke="none" fill="#666" text-anchor="middle">Group your connected apps</text>
+  <text x="184.0" y="334" font-size="11" stroke="none" fill="#666" text-anchor="middle">into one safe endpoint.</text>
+  <rect x="96" y="396" width="176" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="184.0" y="413.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">+ New gateway</text>
+  <text x="80" y="580" font-size="11" stroke="none" fill="#666" text-anchor="start">No gateways yet. Connect an app first, then group it.</text>
+  <rect x="328" y="96" width="240" height="460" rx="22" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <rect x="338" y="112" width="220" height="28" rx="6" fill="#f4f4f1" stroke="#ccc" stroke-width="1" />
+  <text x="448.0" y="130" font-size="12" stroke="none" fill="#000" text-anchor="middle" font-weight="bold">Loading · Gateway detail</text>
+  <rect x="344" y="160" width="208" height="50" rx="8" fill="#e6e6e6" stroke="none" stroke-width="1.5" />
+  <rect x="344" y="216" width="208" height="50" rx="8" fill="#e6e6e6" stroke="none" stroke-width="1.5" />
+  <rect x="344" y="272" width="208" height="50" rx="8" fill="#e6e6e6" stroke="none" stroke-width="1.5" />
+  <rect x="344" y="328" width="208" height="50" rx="8" fill="#e6e6e6" stroke="none" stroke-width="1.5" />
+  <rect x="344" y="384" width="208" height="50" rx="8" fill="#e6e6e6" stroke="none" stroke-width="1.5" />
+  <text x="344" y="480" font-size="11" stroke="none" fill="#666" text-anchor="start">Loading apps &amp; tokens…</text>
+  <text x="344" y="580" font-size="11" stroke="none" fill="#666" text-anchor="start">Skeleton rows for apps + tokens.</text>
+  <rect x="592" y="96" width="240" height="460" rx="22" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <rect x="602" y="112" width="220" height="28" rx="6" fill="#f4f4f1" stroke="#ccc" stroke-width="1" />
+  <text x="712.0" y="130" font-size="12" stroke="none" fill="#000" text-anchor="middle" font-weight="bold">Error · Reachability</text>
+  <rect x="608" y="160" width="208" height="110" rx="10" fill="#f4f4f1" stroke="#000" stroke-width="1" />
+  <text x="620" y="182" font-size="12" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Linear is unreachable</text>
+  <text x="620" y="200" font-size="11" stroke="none" fill="#666" text-anchor="start">6 failed pings in 2 min.</text>
+  <text x="620" y="216" font-size="11" stroke="none" fill="#666" text-anchor="start">Agents see service paused.</text>
+  <rect x="620" y="234" width="160" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="700.0" y="251.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Run health check</text>
+  <text x="608" y="296" font-size="11" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Last successful call</text>
+  <text x="608" y="314" font-size="12" stroke="none" fill="#000" text-anchor="start">11:01 AM · list_issues</text>
+  <text x="608" y="580" font-size="11" stroke="none" fill="#666" text-anchor="start">We can’t reach mcp.linear.app. Your agents will get “service paused”.</text>
+  <rect x="856" y="96" width="240" height="460" rx="22" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <rect x="866" y="112" width="220" height="28" rx="6" fill="#f4f4f1" stroke="#ccc" stroke-width="1" />
+  <text x="976.0" y="130" font-size="12" stroke="none" fill="#000" text-anchor="middle" font-weight="bold">Mobile · Approvals</text>
+  <rect x="872" y="160" width="208" height="96" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="884" y="182" font-size="11" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Fable · 4m ago</text>
+  <text x="884" y="200" font-size="11" stroke="none" fill="#000" text-anchor="start">GitHub · create_branch</text>
+  <rect x="884" y="210" width="64" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="916.0" y="225.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Write</text>
+  <rect x="884" y="232" width="184" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="976.0" y="249.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Approve</text>
+  <rect x="872" y="268" width="208" height="96" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="884" y="290" font-size="11" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Fable · 4m ago</text>
+  <text x="884" y="308" font-size="11" stroke="none" fill="#000" text-anchor="start">GitHub · create_branch</text>
+  <rect x="884" y="318" width="64" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="916.0" y="333.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Write</text>
+  <rect x="884" y="340" width="184" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="976.0" y="357.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Approve</text>
+  <rect x="872" y="376" width="208" height="96" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="884" y="398" font-size="11" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Fable · 4m ago</text>
+  <text x="884" y="416" font-size="11" stroke="none" fill="#000" text-anchor="start">GitHub · create_branch</text>
+  <rect x="884" y="426" width="64" height="22" rx="11" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="916.0" y="441.0" font-size="11" stroke="none" fill="#000" text-anchor="middle">Write</text>
+  <rect x="884" y="448" width="184" height="26" rx="4" fill="#fff" stroke="#000" stroke-width="1.2" />
+  <text x="976.0" y="465.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Approve</text>
+  <text x="872" y="580" font-size="11" stroke="none" fill="#666" text-anchor="start">Inbox approvals stacked, single-action default.</text>
+  <text x="64" y="652" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Spec checklist</text>
+  <line x1="64" y1="660" x2="1216" y2="660" stroke="#000" stroke-width="1.5" />
+  <text x="80" y="684" font-size="12" stroke="none" fill="#000" text-anchor="start">· Mobile: stack to a single column &lt; 720px. Sidebar collapses to a sheet under a Menu button.</text>
+  <text x="80" y="706" font-size="12" stroke="none" fill="#000" text-anchor="start">· Empty: every list view ships with an explicit empty state explaining what the surface is for and one primary action.</text>
+  <text x="80" y="728" font-size="12" stroke="none" fill="#000" text-anchor="start">· Loading: never blank — prefer skeleton rows; spinner only on inline buttons / mutations.</text>
+  <text x="80" y="750" font-size="12" stroke="none" fill="#000" text-anchor="start">· Error: reachability/reconnect errors get a banner with one fix action, not a toast.</text>
+  <text x="80" y="772" font-size="12" stroke="none" fill="#000" text-anchor="start">· Permission errors: read-only viewers see the same surface with all destructive actions hidden, not disabled.</text>
+  <text x="80" y="794" font-size="12" stroke="none" fill="#000" text-anchor="start">· Tokens: reveal-once banner replaces the secret with masked dots on next view. No copy of the full value persists in DOM.</text>
+  <text x="80" y="816" font-size="12" stroke="none" fill="#000" text-anchor="start">· Destructive copy: “Revoke token”, “Forget rule”, “Delete gateway” need a typed confirm input matching the resource name.</text>
+</svg>

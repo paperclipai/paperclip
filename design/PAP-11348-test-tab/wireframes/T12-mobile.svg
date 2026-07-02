@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="390" height="844" viewBox="0 0 390 844"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="390" height="844" />
+
+  <!-- top bar -->
+  <g transform="translate(16,16)">
+    <text x="0" y="14" font-size="12" stroke="none" fill="#666">‹ Apps</text>
+    <rect x="0" y="32" width="40" height="40" rx="8" fill="#e6e6e6" />
+    <text x="56" y="50" font-size="20" stroke="none" fill="#000">Google Sheets</text>
+    <text x="56" y="68" font-size="12" stroke="none" fill="#666">Connected</text>
+  </g>
+
+  <!-- scrollable tab strip -->
+  <g transform="translate(0,112)">
+    <line x1="0" y1="40" x2="390" y2="40" />
+    <g font-size="14" stroke="none" fill="#666">
+      <text x="16" y="28">Setup</text>
+      <text x="72" y="28">Review</text>
+      <text x="144" y="28">Permissions</text>
+      <text x="240" y="28">Activity</text>
+      <text x="312" y="28" fill="#000" font-weight="600">Test</text>
+    </g>
+    <line x1="308" y1="40" x2="344" y2="40" stroke-width="3" />
+  </g>
+
+  <!-- Test as -->
+  <g transform="translate(16,176)">
+    <text x="0" y="14" font-size="12" stroke="none" fill="#666">TEST AS</text>
+    <rect x="0" y="24" width="358" height="48" rx="8" />
+    <rect x="12" y="36" width="24" height="24" rx="12" fill="#e6e6e6" />
+    <text x="48" y="46" font-size="14" stroke="none" fill="#000" font-weight="600">ClaudeCoder</text>
+    <text x="48" y="62" font-size="12" stroke="none" fill="#666">Allowed 9 · Ask first 2 · Off 1</text>
+    <path d="M334 44 l8 8 l8 -8" stroke="#000" fill="none" />
+    <text x="0" y="96" font-size="12" stroke="none" fill="#666">Runs real actions in Google Sheets, exactly</text>
+    <text x="0" y="112" font-size="12" stroke="none" fill="#666">as this agent would.</text>
+  </g>
+
+  <!-- Filter -->
+  <g transform="translate(16,312)">
+    <rect width="358" height="40" rx="8" />
+    <circle cx="20" cy="20" r="6" fill="none" />
+    <line x1="24" y1="24" x2="30" y2="30" />
+    <text x="40" y="25" font-size="14" stroke="none" fill="#666">Find an action…</text>
+
+    <g transform="translate(0,56)">
+      <rect width="358" height="40" rx="8" />
+      <line x1="119" y1="0" x2="119" y2="40" />
+      <line x1="239" y1="0" x2="239" y2="40" />
+      <rect width="119" height="40" rx="8" fill="#e6e6e6" />
+      <text x="59" y="25" font-size="14" stroke="none" fill="#000" font-weight="600" text-anchor="middle">All 12</text>
+      <text x="179" y="25" font-size="14" stroke="none" fill="#666" text-anchor="middle">Read 7</text>
+      <text x="299" y="25" font-size="14" stroke="none" fill="#666" text-anchor="middle">Write 5</text>
+    </g>
+  </g>
+
+  <!-- Group: Read -->
+  <g transform="translate(16,464)">
+    <text x="0" y="14" font-size="12" stroke="none" fill="#666" font-weight="600">READ (7)</text>
+
+    <!-- Row 1 -->
+    <g transform="translate(0,24)">
+      <rect width="358" height="80" rx="8" />
+      <path d="M16 28 l8 -8 l8 8" stroke="#000" fill="none" />
+      <text x="48" y="24" font-size="14" stroke="none" fill="#000" font-weight="600">List spreadsheets</text>
+      <text x="48" y="44" font-size="12" stroke="none" fill="#666">See the spreadsheets in this</text>
+      <text x="48" y="60" font-size="12" stroke="none" fill="#666">account.</text>
+      <g transform="translate(232,56)">
+        <rect width="112" height="24" rx="12" />
+        <circle cx="14" cy="12" r="4" fill="#000" />
+        <text x="28" y="16" font-size="12" stroke="none" fill="#000">Allowed</text>
+      </g>
+    </g>
+
+    <!-- Row 2 -->
+    <g transform="translate(0,120)">
+      <rect width="358" height="80" rx="8" />
+      <path d="M16 28 l8 -8 l8 8" stroke="#000" fill="none" />
+      <text x="48" y="24" font-size="14" stroke="none" fill="#000" font-weight="600">Read a sheet</text>
+      <text x="48" y="44" font-size="12" stroke="none" fill="#666">Get rows and cell values from</text>
+      <text x="48" y="60" font-size="12" stroke="none" fill="#666">a sheet.</text>
+      <g transform="translate(232,56)">
+        <rect width="112" height="24" rx="12" />
+        <circle cx="14" cy="12" r="4" fill="#000" />
+        <text x="28" y="16" font-size="12" stroke="none" fill="#000">Allowed</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- annotations -->
+  <g stroke="#d33" stroke-dasharray="4 4" fill="#fff">
+    <circle cx="32" cy="312" r="10" />
+    <circle cx="32" cy="368" r="10" />
+    <circle cx="32" cy="464" r="10" />
+  </g>
+  <g font-size="12" stroke="none" fill="#d33">
+    <text x="32" y="316" text-anchor="middle">1</text>
+    <text x="32" y="372" text-anchor="middle">2</text>
+    <text x="32" y="468" text-anchor="middle">3</text>
+  </g>
+</svg>

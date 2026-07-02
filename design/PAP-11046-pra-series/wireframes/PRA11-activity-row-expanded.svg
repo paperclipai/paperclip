@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="960" viewBox="0 0 1280 960" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="960" />
+  <rect x="0" y="0" width="1280" height="56" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <line x1="0" y1="56" x2="1280" y2="56" stroke="#000" stroke-width="1.5" />
+  <text x="32" y="35" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Paperclip</text>
+  <text x="1248" y="35" font-size="12" stroke="none" fill="#666" text-anchor="end">Dotta</text>
+  <rect x="0" y="56" width="200" height="904" rx="0" fill="#fafaf8" stroke="#000" stroke-width="1.5" />
+  <line x1="200" y1="56" x2="200" y2="960" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="96" font-size="14" stroke="none" fill="#666" text-anchor="start">Inbox</text>
+  <text x="28" y="132" font-size="14" stroke="none" fill="#666" text-anchor="start">Tasks</text>
+  <text x="28" y="168" font-size="14" stroke="none" fill="#666" text-anchor="start">Documents</text>
+  <rect x="12" y="186" width="176" height="32" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="204" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Apps</text>
+  <text x="28" y="240" font-size="14" stroke="none" fill="#666" text-anchor="start">Settings</text>
+  <text x="232" y="92" font-size="12" stroke="none" fill="#666" text-anchor="start">Apps · Advanced</text>
+  <text x="232" y="124" font-size="28" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Activity</text>
+  <text x="232" y="148" font-size="14" stroke="none" fill="#666" text-anchor="start">What agents actually did with your apps</text>
+  <text x="262.5" y="188" font-size="14" stroke="none" fill="#666" text-anchor="middle">Rules</text>
+  <text x="352.0" y="188" font-size="14" stroke="none" fill="#666" text-anchor="middle">Health</text>
+  <line x1="411" y1="204" x2="499" y2="204" stroke="#000" stroke-width="2.5" />
+  <text x="455.0" y="188" font-size="14" stroke="none" fill="#000" text-anchor="middle" font-weight="bold">Activity</text>
+  <line x1="232" y1="204" x2="1248" y2="204" stroke="#ccc" stroke-width="1" />
+  <rect x="232" y="224" width="320" height="36" rx="18" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="252" y="247" font-size="13" stroke="none" fill="#666" text-anchor="start">🔍   Search</text>
+  <rect x="568" y="224" width="106" height="36" rx="18" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="582" y="247" font-size="12" stroke="none" fill="#666" text-anchor="start">App: </text>
+  <text x="615" y="247" font-size="12" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Gmail</text>
+  <text x="658" y="247" font-size="11" stroke="none" fill="#666" text-anchor="start">▾</text>
+  <rect x="682" y="224" width="120" height="36" rx="18" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="696" y="247" font-size="12" stroke="none" fill="#666" text-anchor="start">Agent: </text>
+  <text x="743" y="247" font-size="12" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Codex</text>
+  <text x="786" y="247" font-size="11" stroke="none" fill="#666" text-anchor="start">▾</text>
+  <rect x="810" y="224" width="148" height="36" rx="18" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="824" y="247" font-size="12" stroke="none" fill="#666" text-anchor="start">Outcome: </text>
+  <text x="885" y="247" font-size="12" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Blocked</text>
+  <text x="942" y="247" font-size="11" stroke="none" fill="#666" text-anchor="start">▾</text>
+  <rect x="966" y="224" width="134" height="36" rx="18" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="980" y="247" font-size="12" stroke="none" fill="#666" text-anchor="start">Time: </text>
+  <text x="1020" y="247" font-size="12" stroke="none" fill="#000" text-anchor="start" font-weight="bold">24 hours</text>
+  <text x="1084" y="247" font-size="11" stroke="none" fill="#666" text-anchor="start">▾</text>
+  <text x="232" y="296" font-size="12" stroke="none" fill="#666" text-anchor="start">3 results</text>
+  <rect x="232" y="320" width="1016" height="44" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="248" y="347" font-size="12" stroke="none" fill="#666" text-anchor="start">▸</text>
+  <text x="268" y="347" font-size="13" stroke="none" fill="#000" xml:space="preserve"><tspan font-weight="bold">Codex</tspan> used <tspan font-weight="bold">Delete inbox</tspan> in <tspan font-weight="bold">Gmail</tspan></text>
+  <rect x="1028" y="332" width="65" height="24" rx="12" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="1060.5" y="348.0" font-size="12" stroke="none" fill="#000" text-anchor="middle" font-weight="normal">Blocked</text>
+  <text x="1240" y="347" font-size="12" stroke="none" fill="#666" text-anchor="end">8m ago</text>
+  <rect x="232" y="364" width="1016" height="44" rx="0" fill="#fafaf8" stroke="#000" stroke-width="1.5" />
+  <text x="248" y="391" font-size="12" stroke="none" fill="#000" text-anchor="start">▾</text>
+  <text x="268" y="391" font-size="13" stroke="none" fill="#000" xml:space="preserve"><tspan font-weight="bold">Codex</tspan> used <tspan font-weight="bold">Delete email</tspan> in <tspan font-weight="bold">Gmail</tspan></text>
+  <rect x="1028" y="376" width="65" height="24" rx="12" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="1060.5" y="392.0" font-size="12" stroke="none" fill="#000" text-anchor="middle" font-weight="normal">Blocked</text>
+  <text x="1240" y="391" font-size="12" stroke="none" fill="#666" text-anchor="end">12m ago</text>
+  <rect x="232" y="408" width="1016" height="280" rx="0" fill="#fafaf8" stroke="#000" stroke-width="1.5" />
+  <text x="280" y="432" font-size="11" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Why</text>
+  <rect x="280" y="444" width="920" height="48" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="296" y="462" font-size="13" stroke="none" fill="#666" text-anchor="start">Blocked by rule:</text>
+  <text x="410" y="462" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">destructive Gmail actions → Block</text>
+  <text x="296" y="482" font-size="12" stroke="none" fill="#666" text-anchor="start">Open this rule →</text>
+  <text x="280" y="520" font-size="11" stroke="none" fill="#666" text-anchor="start" font-weight="bold">What it was doing</text>
+  <text x="280" y="540" font-size="12" stroke="none" fill="#666" text-anchor="start">Task:</text>
+  <text x="320" y="540" font-size="12" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Clean up promotions folder</text>
+  <text x="520" y="540" font-size="11" stroke="none" fill="#666" text-anchor="start">→ PAP-9921</text>
+  <text x="280" y="562" font-size="12" stroke="none" fill="#666" text-anchor="start">Run:</text>
+  <text x="320" y="562" font-size="12" stroke="none" fill="#000" text-anchor="start" font-weight="bold">r-2c4e1f</text>
+  <text x="420" y="562" font-size="11" stroke="none" fill="#666" text-anchor="start">→ open run</text>
+  <rect x="280" y="600" width="920" height="40" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="296" y="625" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">▸ Details</text>
+  <text x="390" y="625" font-size="12" stroke="none" fill="#666" text-anchor="start">reason: policy_block · actor: agent · run UUID · raw action: gmail.delete_message</text>
+  <rect x="232" y="688" width="1016" height="44" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="248" y="715" font-size="12" stroke="none" fill="#666" text-anchor="start">▸</text>
+  <text x="268" y="715" font-size="13" stroke="none" fill="#000" xml:space="preserve"><tspan font-weight="bold">Claude</tspan> used <tspan font-weight="bold">Send email</tspan> in <tspan font-weight="bold">Gmail</tspan></text>
+  <rect x="1028" y="700" width="65" height="24" rx="12" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="1060.5" y="716.0" font-size="12" stroke="none" fill="#000" text-anchor="middle" font-weight="normal">Blocked</text>
+  <text x="1240" y="715" font-size="12" stroke="none" fill="#666" text-anchor="end">3h ago</text>
+  <text x="232" y="928" font-size="11" stroke="none" fill="#666" text-anchor="start">Recorded by Paperclip — entries can't be edited. Sensitive values are never stored.</text>
+</svg>

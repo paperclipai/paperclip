@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="960" viewBox="0 0 1280 960" font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="960" />
+  <rect x="0" y="0" width="1280" height="56" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <line x1="0" y1="56" x2="1280" y2="56" stroke="#000" stroke-width="1.5" />
+  <text x="32" y="35" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Paperclip</text>
+  <text x="1248" y="35" font-size="12" stroke="none" fill="#666" text-anchor="end">Dotta</text>
+  <rect x="0" y="56" width="200" height="904" rx="0" fill="#fafaf8" stroke="#000" stroke-width="1.5" />
+  <line x1="200" y1="56" x2="200" y2="960" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="96" font-size="14" stroke="none" fill="#666" text-anchor="start">Inbox</text>
+  <text x="28" y="132" font-size="14" stroke="none" fill="#666" text-anchor="start">Tasks</text>
+  <text x="28" y="168" font-size="14" stroke="none" fill="#666" text-anchor="start">Documents</text>
+  <rect x="12" y="186" width="176" height="32" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="28" y="204" font-size="14" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Apps</text>
+  <text x="28" y="240" font-size="14" stroke="none" fill="#666" text-anchor="start">Settings</text>
+  <text x="232" y="92" font-size="12" stroke="none" fill="#666" text-anchor="start">Apps · Advanced</text>
+  <text x="232" y="124" font-size="28" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Rules</text>
+  <text x="232" y="148" font-size="14" stroke="none" fill="#666" text-anchor="start">Checked top to bottom — the first one that matches decides</text>
+  <line x1="232" y1="204" x2="293" y2="204" stroke="#000" stroke-width="2.5" />
+  <text x="262.5" y="188" font-size="14" stroke="none" fill="#000" text-anchor="middle" font-weight="bold">Rules</text>
+  <text x="352.0" y="188" font-size="14" stroke="none" fill="#666" text-anchor="middle">Health</text>
+  <text x="455.0" y="188" font-size="14" stroke="none" fill="#666" text-anchor="middle">Activity</text>
+  <line x1="232" y1="204" x2="1248" y2="204" stroke="#ccc" stroke-width="1" />
+  <text x="232" y="240" font-size="14" stroke="none" fill="#666" text-anchor="start">5 rules</text>
+  <rect x="1128" y="224" width="120" height="36" rx="6" fill="#000" stroke="#000" stroke-width="1.5" />
+  <text x="1188.0" y="247.0" font-size="14" stroke="none" fill="#fff" text-anchor="middle">+ New rule</text>
+  <rect x="980" y="224" width="132" height="36" rx="6" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="1046.0" y="247.0" font-size="14" stroke="none" fill="#000" text-anchor="middle">Test a rule</text>
+  <text x="268" y="280" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Rule</text>
+  <text x="696" y="280" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Outcome</text>
+  <text x="1028" y="280" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">Last 24h</text>
+  <text x="1148" y="280" font-size="12" stroke="none" fill="#666" text-anchor="start" font-weight="bold">On</text>
+  <line x1="232" y1="296" x2="1248" y2="296" stroke="#000" stroke-width="1.5" />
+  <rect x="232" y="304" width="1016" height="48" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <circle cx="248" cy="322" r="1.4" fill="#666" stroke="none" />
+  <circle cx="248" cy="328" r="1.4" fill="#666" stroke="none" />
+  <circle cx="248" cy="334" r="1.4" fill="#666" stroke="none" />
+  <circle cx="252" cy="322" r="1.4" fill="#666" stroke="none" />
+  <circle cx="252" cy="328" r="1.4" fill="#666" stroke="none" />
+  <circle cx="252" cy="334" r="1.4" fill="#666" stroke="none" />
+  <text x="280" y="334" font-size="13" stroke="none" fill="#000" xml:space="preserve">When <tspan font-weight="bold">any agent</tspan> uses <tspan font-weight="bold">destructive Gmail actions</tspan>  →</text>
+  <rect x="696" y="318" width="79" height="24" rx="12" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="735.5" y="334.0" font-size="12" stroke="none" fill="#000" text-anchor="middle" font-weight="normal">Ask first</text>
+  <text x="1028" y="334" font-size="13" stroke="none" fill="#666" text-anchor="start">3 times</text>
+  <rect x="1148" y="318" width="40" height="20" rx="10" fill="#000" stroke="#000" stroke-width="1.5" />
+  <circle cx="1178" cy="328" r="6.5" fill="#fff" stroke="none" />
+  <circle cx="1216" cy="328" r="1.6" fill="#000" stroke="none" />
+  <circle cx="1221" cy="328" r="1.6" fill="#000" stroke="none" />
+  <circle cx="1226" cy="328" r="1.6" fill="#000" stroke="none" />
+  <rect x="232" y="352" width="1016" height="48" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <circle cx="248" cy="370" r="1.4" fill="#666" stroke="none" />
+  <circle cx="248" cy="376" r="1.4" fill="#666" stroke="none" />
+  <circle cx="248" cy="382" r="1.4" fill="#666" stroke="none" />
+  <circle cx="252" cy="370" r="1.4" fill="#666" stroke="none" />
+  <circle cx="252" cy="376" r="1.4" fill="#666" stroke="none" />
+  <circle cx="252" cy="382" r="1.4" fill="#666" stroke="none" />
+  <text x="280" y="382" font-size="13" stroke="none" fill="#000" xml:space="preserve">When <tspan font-weight="bold">Fable</tspan> uses <tspan font-weight="bold">web search</tspan>  →</text>
+  <rect x="696" y="366" width="128" height="24" rx="12" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="760.0" y="382.0" font-size="12" stroke="none" fill="#000" text-anchor="middle" font-weight="normal">Limit to 50/hour</text>
+  <text x="1028" y="382" font-size="13" stroke="none" fill="#666" text-anchor="start">12 times</text>
+  <rect x="1148" y="366" width="40" height="20" rx="10" fill="#000" stroke="#000" stroke-width="1.5" />
+  <circle cx="1178" cy="376" r="6.5" fill="#fff" stroke="none" />
+  <circle cx="1216" cy="376" r="1.6" fill="#000" stroke="none" />
+  <circle cx="1221" cy="376" r="1.6" fill="#000" stroke="none" />
+  <circle cx="1226" cy="376" r="1.6" fill="#000" stroke="none" />
+  <rect x="232" y="400" width="1016" height="48" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <circle cx="248" cy="418" r="1.4" fill="#666" stroke="none" />
+  <circle cx="248" cy="424" r="1.4" fill="#666" stroke="none" />
+  <circle cx="248" cy="430" r="1.4" fill="#666" stroke="none" />
+  <circle cx="252" cy="418" r="1.4" fill="#666" stroke="none" />
+  <circle cx="252" cy="424" r="1.4" fill="#666" stroke="none" />
+  <circle cx="252" cy="430" r="1.4" fill="#666" stroke="none" />
+  <text x="280" y="430" font-size="13" stroke="none" fill="#000" xml:space="preserve">When <tspan font-weight="bold">everyone</tspan> uses <tspan font-weight="bold">Sheets actions that change data</tspan>  →</text>
+  <rect x="696" y="414" width="79" height="24" rx="12" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="735.5" y="430.0" font-size="12" stroke="none" fill="#000" text-anchor="middle" font-weight="normal">Ask first</text>
+  <text x="1028" y="430" font-size="13" stroke="none" fill="#666" text-anchor="start">1 time</text>
+  <rect x="1148" y="414" width="40" height="20" rx="10" fill="#000" stroke="#000" stroke-width="1.5" />
+  <circle cx="1178" cy="424" r="6.5" fill="#fff" stroke="none" />
+  <circle cx="1216" cy="424" r="1.6" fill="#000" stroke="none" />
+  <circle cx="1221" cy="424" r="1.6" fill="#000" stroke="none" />
+  <circle cx="1226" cy="424" r="1.6" fill="#000" stroke="none" />
+  <rect x="232" y="448" width="1016" height="48" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <circle cx="248" cy="466" r="1.4" fill="#666" stroke="none" />
+  <circle cx="248" cy="472" r="1.4" fill="#666" stroke="none" />
+  <circle cx="248" cy="478" r="1.4" fill="#666" stroke="none" />
+  <circle cx="252" cy="466" r="1.4" fill="#666" stroke="none" />
+  <circle cx="252" cy="472" r="1.4" fill="#666" stroke="none" />
+  <circle cx="252" cy="478" r="1.4" fill="#666" stroke="none" />
+  <text x="280" y="478" font-size="13" stroke="none" fill="#000" xml:space="preserve">When <tspan font-weight="bold">CodexCoder</tspan> uses <tspan font-weight="bold">any action</tspan>  →</text>
+  <rect x="696" y="462" width="56" height="24" rx="12" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="724.0" y="478.0" font-size="12" stroke="none" fill="#000" text-anchor="middle" font-weight="normal">Allow</text>
+  <text x="1028" y="478" font-size="13" stroke="none" fill="#666" text-anchor="start">47 times</text>
+  <rect x="1148" y="462" width="40" height="20" rx="10" fill="#000" stroke="#000" stroke-width="1.5" />
+  <circle cx="1178" cy="472" r="6.5" fill="#fff" stroke="none" />
+  <circle cx="1216" cy="472" r="1.6" fill="#000" stroke="none" />
+  <circle cx="1221" cy="472" r="1.6" fill="#000" stroke="none" />
+  <circle cx="1226" cy="472" r="1.6" fill="#000" stroke="none" />
+  <rect x="232" y="496" width="1016" height="48" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <circle cx="248" cy="514" r="1.4" fill="#666" stroke="none" />
+  <circle cx="248" cy="520" r="1.4" fill="#666" stroke="none" />
+  <circle cx="248" cy="526" r="1.4" fill="#666" stroke="none" />
+  <circle cx="252" cy="514" r="1.4" fill="#666" stroke="none" />
+  <circle cx="252" cy="520" r="1.4" fill="#666" stroke="none" />
+  <circle cx="252" cy="526" r="1.4" fill="#666" stroke="none" />
+  <text x="280" y="526" font-size="13" stroke="none" fill="#000" xml:space="preserve">When <tspan font-weight="bold">everyone</tspan> uses <tspan font-weight="bold">Send email</tspan>  →</text>
+  <rect x="696" y="510" width="170" height="24" rx="12" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="781.0" y="526.0" font-size="12" stroke="none" fill="#000" text-anchor="middle" font-weight="normal">Hide sensitive details</text>
+  <text x="1028" y="526" font-size="13" stroke="none" fill="#666" text-anchor="start">0 times</text>
+  <rect x="1148" y="510" width="40" height="20" rx="10" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <circle cx="1158" cy="520" r="6.5" fill="#000" stroke="none" />
+  <circle cx="1216" cy="520" r="1.6" fill="#000" stroke="none" />
+  <circle cx="1221" cy="520" r="1.6" fill="#000" stroke="none" />
+  <circle cx="1226" cy="520" r="1.6" fill="#000" stroke="none" />
+  <text x="232" y="576" font-size="18" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Remembered approvals</text>
+  <text x="232" y="598" font-size="13" stroke="none" fill="#666" text-anchor="start">When you approve an Ask-first request, Paperclip can remember the decision.</text>
+  <rect x="232" y="624" width="1016" height="48" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="252" y="646" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Gmail · Send email</text>
+  <text x="252" y="662" font-size="12" stroke="none" fill="#666" text-anchor="start">remembered for Fable · approved by Dotta · Jun 3</text>
+  <rect x="1168" y="634" width="72" height="28" rx="4" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="1204.0" y="652.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Forget</text>
+  <rect x="232" y="672" width="1016" height="48" rx="0" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="252" y="694" font-size="13" stroke="none" fill="#000" text-anchor="start" font-weight="bold">Google Sheets · Edit cell</text>
+  <text x="252" y="710" font-size="12" stroke="none" fill="#666" text-anchor="start">remembered for Fable · approved by Dotta · Jun 8</text>
+  <rect x="1168" y="682" width="72" height="28" rx="4" fill="#fff" stroke="#000" stroke-width="1.5" />
+  <text x="1204.0" y="700.0" font-size="12" stroke="none" fill="#000" text-anchor="middle">Forget</text>
+</svg>
