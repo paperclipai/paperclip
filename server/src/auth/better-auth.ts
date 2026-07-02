@@ -122,6 +122,23 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
   return Array.from(trustedOrigins);
 }
 
+const WELL_KNOWN_DEV_AUTH_SECRET = "paperclip-dev-secret";
+
+export function assertAuthSecretAllowedForDeployment(
+  secret: string,
+  deploymentMode: Config["deploymentMode"],
+): void {
+  if (deploymentMode !== "authenticated") return;
+  if (secret.trim() === WELL_KNOWN_DEV_AUTH_SECRET) {
+    throw new Error(
+      `BETTER_AUTH_SECRET is set to the well-known development value "${WELL_KNOWN_DEV_AUTH_SECRET}", ` +
+      "which is published in this repository and signs both auth sessions and agent JWTs. " +
+      "Set a unique, high-entropy BETTER_AUTH_SECRET before running in authenticated mode " +
+      '(for example: openssl rand -base64 32).',
+    );
+  }
+}
+
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() || baseUrl;
@@ -132,6 +149,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       "For local development, set BETTER_AUTH_SECRET=paperclip-dev-secret in your .env file.",
     );
   }
+  assertAuthSecretAllowedForDeployment(secret, config.deploymentMode);
   const disableSecureCookies = shouldDisableSecureAuthCookies({
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
