@@ -71,7 +71,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
-      if (runIdHeader) {
+      if (runIdHeader && opts.deploymentMode === "local_trusted") {
         const runActor = await resolveLocalRunActor(runIdHeader);
         if (runActor) {
           req.actor = runActor;
