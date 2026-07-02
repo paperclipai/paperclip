@@ -173,6 +173,12 @@ pod:
     runAsUser: 1000
     runAsGroup: 1000
     runAsNonRoot: true
+  # -- Seconds the kubelet waits between SIGTERM and SIGKILL. Must cover the
+  # preStop sleep (5s) plus the server's full graceful-drain sequence: SSE
+  # drain (bounded 25s), server.close, telemetry/OTel flushes, and Linear
+  # tunnel teardown. The k8s default of 30s truncated that drain on every
+  # rollout (BLO-12563).
+  terminationGracePeriodSeconds: 120
   # -- Extra annotations on the pod template.
   annotations: {}
   # -- Extra labels on the pod template.

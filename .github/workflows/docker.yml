@@ -1,12 +1,21 @@
 name: Docker
 
 on:
+  # Urgent path: manual dispatch deploys master tip immediately, bypassing
+  # the 6h debounce below. Commit messages containing "[deploy]" do the
+  # same on push.
   workflow_dispatch:
   push:
     branches:
       - "master"
     tags:
       - "v*"
+  # Batched deploy window (BLO-12563): per-merge pushes only BUILD; the
+  # deploy job debounces rollouts to at most one per 6h so the worker STS
+  # stops churning and stranding in-flight agent runs (process_lost).
+  # This cron is the catch-up that rolls out whatever master accumulated.
+  schedule:
+    - cron: "37 */6 * * *"
 
 permissions:
   contents: read
@@ -21,6 +30,10 @@ env:
 
 jobs:
   build-and-push:
+    # Push-only: schedule/workflow_dispatch runs deploy the per-commit tag a
+    # prior push build already put in Harbor (the deploy job verifies it
+    # exists before rolling).
+    if: ${{ github.event_name == 'push' }}
     runs-on: arc-deploy
     timeout-minutes: 90
     concurrency:
@@ -142,7 +155,10 @@ jobs:
   deploy:
     needs: build-and-push
     runs-on: arc-deploy
-    if: ${{ vars.PAPERCLIP_CI_DEPLOY == 'true' && github.ref == 'refs/heads/master' }}
+    # !cancelled() lets this run when build-and-push was SKIPPED
+    # (schedule/workflow_dispatch); the result check still blocks deploys
+    # after a FAILED build.
+    if: ${{ !cancelled() && vars.PAPERCLIP_CI_DEPLOY == 'true' && github.ref == 'refs/heads/master' && (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') }}
     # Must exceed helm upgrade's --timeout 30m below, plus checkout/cleanup margin.
     timeout-minutes: 40
     concurrency:
@@ -178,6 +194,72 @@ jobs:
           kubectl auth whoami -o yaml
           kubectl -n "$NS" get statefulset paperclip -o jsonpath='{.spec.replicas}{"\n"}'
 
+      # Debounce (BLO-12563): on plain push events, skip the rollout while
+      # paperclip-0 is younger than 6h — per-merge deploys were recreating
+      # the worker ~hourly and every roll strands whatever agent run is
+      # mid-setup (process_lost). Scheduled/dispatch windows (and "[deploy]"
+      # in the head commit message) bypass the debounce; debounced commits
+      # are picked up by the next 6h window since deploy always targets tip.
+      - name: Deploy gate (6h debounce on push)
+        id: gate
+        env:
+          NS: ${{ vars.PAPERCLIP_NAMESPACE || 'paperclip' }}
+        run: |
+          set -e
+          if [ "${{ github.event_name }}" != "push" ]; then
+            echo "batch window / manual dispatch — deploying"
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git log -1 --pretty=%B | grep -qF "[deploy]"; then
+            echo "head commit requests immediate deploy via [deploy]"
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CREATED=$(kubectl -n "$NS" get pod paperclip-0 -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null || true)
+          if [ -z "$CREATED" ]; then
+            echo "paperclip-0 not found — deploying"
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          AGE=$(( $(date +%s) - $(date -d "$CREATED" +%s) ))
+          if [ "$AGE" -ge 21600 ]; then
+            echo "paperclip-0 is ${AGE}s old (>=6h) — deploying"
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "paperclip-0 is ${AGE}s old (<6h) — debounced; the next 6h window deploys this commit"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Schedule/dispatch runs deploy a tag built by an earlier push run.
+      # Verify it actually exists in Harbor before helm rolls the STS —
+      # protects against a window firing between a merge and its build
+      # finishing.
+      - name: Login to Harbor (tag check)
+        if: ${{ steps.gate.outputs.proceed == 'true' && github.event_name != 'push' }}
+        uses: docker/login-action@v4
+        with:
+          registry: harbor.blockcast.net
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Verify image tag exists
+        if: ${{ steps.gate.outputs.proceed == 'true' && github.event_name != 'push' }}
+        env:
+          TAG: sha-${{ steps.sha.outputs.short }}-k8s-vendored
+        run: |
+          set -e
+          for i in 1 2 3; do
+            if docker manifest inspect "harbor.blockcast.net/paperclip/paperclip:${TAG}" >/dev/null 2>&1; then
+              echo "tag ${TAG} present"
+              exit 0
+            fi
+            echo "tag ${TAG} not found (attempt $i) — retrying in 60s (a push build may still be running)"
+            sleep 60
+          done
+          echo "tag ${TAG} missing after retries; failing this window — the next one retries" >&2
+          exit 1
+
       # Use --set image.tag so the deployed tag tracks the just-built image
       # without committing to values.blockcast.yaml. The committed values
       # file remains the source of truth for non-CI deploys; CI runs are
@@ -185,6 +267,7 @@ jobs:
       # override). Adjust by editing values.blockcast.yaml when you want
       # the file to reflect the live tag.
       - name: helm upgrade
+        if: ${{ steps.gate.outputs.proceed == 'true' }}
         env:
           NS: ${{ vars.PAPERCLIP_NAMESPACE || 'paperclip' }}
           RELEASE: ${{ vars.PAPERCLIP_HELM_RELEASE || 'paperclip' }}

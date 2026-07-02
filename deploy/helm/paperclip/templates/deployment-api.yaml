@@ -52,6 +52,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       shareProcessNamespace: {{ .Values.pod.shareProcessNamespace }}
+      # Same graceful-drain headroom as the worker StatefulSet (BLO-12563):
+      # the k8s default of 30s minus the 5s preStop sleep truncated the Node
+      # SIGTERM handler's SSE drain (bounded 25s) + close/flush sequence.
+      terminationGracePeriodSeconds: {{ .Values.pod.terminationGracePeriodSeconds }}
       securityContext:
         {{- toYaml .Values.pod.securityContext | nindent 8 }}
       {{- with .Values.priorityClassName }}
@@ -186,8 +190,9 @@ spec:
               exec:
                 # Sleep so the Service endpoint removal propagates to kube-proxy /
                 # Cilium before SIGTERM hits the process. The Node SIGTERM handler
-                # then has the full terminationGracePeriodSeconds (default 30s) to
-                # drain SSE connections via sseRegistry.drain(timeoutMs: 25_000).
+                # then has the remaining terminationGracePeriodSeconds (pod-level,
+                # default 120s) to drain SSE connections via
+                # sseRegistry.drain(timeoutMs: 25_000).
                 # Symmetric with the worker StatefulSet — required so api-tier
                 # rolling restarts don't drop worker-tier-proxy reverse-proxied
                 # fetches held in flight (BLO-4136).

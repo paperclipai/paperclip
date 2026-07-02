@@ -36,6 +36,12 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       shareProcessNamespace: {{ .Values.pod.shareProcessNamespace }}
+      # Room for the Node SIGTERM handler's full graceful drain (BLO-12563):
+      # sseRegistry.drain is bounded at 25s on its own, then server.close,
+      # telemetry flush, Linear tunnel teardown, and log/OTel flushes follow.
+      # The k8s default of 30s minus the 5s preStop sleep truncated that
+      # sequence with SIGKILL on nearly every rollout.
+      terminationGracePeriodSeconds: {{ .Values.pod.terminationGracePeriodSeconds }}
       securityContext:
         {{- toYaml .Values.pod.securityContext | nindent 8 }}
       {{- with .Values.priorityClassName }}
@@ -694,8 +700,9 @@ spec:
               exec:
                 # Sleep so the Service endpoint removal propagates to kube-proxy /
                 # Cilium before SIGTERM hits the process. The Node SIGTERM handler
-                # then has the full terminationGracePeriodSeconds (default 30s) to
-                # drain SSE connections via sseRegistry.drain(timeoutMs: 25_000).
+                # then has the remaining terminationGracePeriodSeconds (pod-level,
+                # default 120s) to run its full graceful drain, starting with
+                # sseRegistry.drain(timeoutMs: 25_000).
                 command: ["sh", "-c", "sleep 5"]
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
