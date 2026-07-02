@@ -1444,13 +1444,16 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   }
 
   /* Left-column wrapper: stacks all non-document children vertically */
-  .paperclip-issue-left-col {
+  /* Left-column wrapper: stacks all non-document children vertically */
+  .paperclip-issue-outer:has([data-paperclip-docs="1"]) .paperclip-issue-left-col {
     display: flex;
     flex-direction: column;
     gap: 1.5rem;
     flex: 0 0 45%;
     min-width: 0;
   }
+
+  /* Documents column: right side, sticky, independently scrollable */
 
   /* Documents column: right side, sticky, independently scrollable */
   .paperclip-issue-outer:has([data-paperclip-docs="1"]) > [data-paperclip-docs="1"] {
