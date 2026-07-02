@@ -342,6 +342,26 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(revisions[1]?.snapshot.routine.description).toBe("Run the frog routine");
   });
 
+  it("persists explicit variables on PATCH even when not referenced in the title/description template", async () => {
+    const { routine, svc } = await seedFixture();
+    // The fixture routine title ("ascii frog") has no {{variable}} placeholders.
+    // Previously, syncRoutineVariablesWithTemplate would silently drop all variables
+    // because none were referenced in the template.
+    const updated = await svc.update(
+      routine.id,
+      {
+        variables: [
+          { name: "shadow", type: "text", label: null, defaultValue: "true", required: false, options: [] },
+          { name: "shadow_issue_id", type: "text", label: null, defaultValue: "abc-123", required: false, options: [] },
+        ],
+      },
+      {},
+    );
+    expect(updated?.variables).toHaveLength(2);
+    expect(updated?.variables.map((v) => v.name)).toEqual(["shadow", "shadow_issue_id"]);
+    expect(updated?.variables.find((v) => v.name === "shadow")?.defaultValue).toBe("true");
+  });
+
   it("stores routine env in revisions, syncs routine secret bindings, and stamps runs with the dispatch revision", async () => {
     const { agentId, companyId, projectId, svc } = await seedFixture();
     const secrets = secretService(db);
