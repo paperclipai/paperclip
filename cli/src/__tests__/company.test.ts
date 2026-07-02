@@ -83,7 +83,6 @@ describe("company CLI commands", () => {
     delete process.env.PAPERCLIP_API_URL;
     delete process.env.PAPERCLIP_API_KEY;
     delete process.env.PAPERCLIP_COMPANY_ID;
-    process.env.PAPERCLIP_CONTEXT = "/nonexistent/paperclip-test-context.json";
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
