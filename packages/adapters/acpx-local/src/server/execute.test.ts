@@ -121,9 +121,11 @@ describe("acpx_local runtime skill isolation", () => {
     expect(prompt).toContain("PAPERCLIP_API_KEY");
     expect(prompt).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
     expect(prompt).toContain("Paperclip API access note:");
-    expect(prompt).toContain("$PAPERCLIP_API_URL/api/agents/me");
-    expect(prompt).toContain("$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID");
+    expect(prompt).toContain('PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"');
+    expect(prompt).toContain("$PAPERCLIP_API_BASE/api/agents/me");
+    expect(prompt).toContain("$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID");
     expect(prompt).toContain("X-Paperclip-Run-Id");
+    expect(prompt).not.toContain("$PAPERCLIP_API_URL/api/");
     expect(prompt).not.toContain("/api/issues/{id}");
     expect(prompt).not.toContain("-d '{...}'");
     expect(prompt).not.toContain("runtime-secret-token");
