@@ -841,6 +841,13 @@
       "when": 1781903000003,
       "tag": "0119_webhook_intake_dedupe",
       "breakpoints": true
+    },
+    {
+      "idx": 120,
+      "version": "7",
+      "when": 1781903000004,
+      "tag": "0120_issue_required_work_product",
+      "breakpoints": true
     }
   ]
 }

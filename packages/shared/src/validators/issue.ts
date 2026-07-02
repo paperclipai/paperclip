@@ -29,6 +29,7 @@ import {
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
+import { requiredWorkProductTypeSchema } from "./work-product.js";
 import { lowTrustReviewPresetPolicySchema, trustAuthorizationPolicySchema } from "./trust-policy.js";
 
 export const issueBlockedInboxStateSchema = z.enum([
@@ -390,6 +391,8 @@ const createIssueBaseSchema = z.object({
   requestDepth: issueRequestDepthInputSchema.optional().default(0),
   billingCode: z.string().optional().nullable(),
   maxCostCents: z.number().int().positive().optional().nullable(),
+  requiredWorkProductType: requiredWorkProductTypeSchema.optional().nullable(),
+  requiredWorkProductDescription: z.string().trim().max(2000).optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
   executionWorkspaceId: z.string().uuid().optional().nullable(),

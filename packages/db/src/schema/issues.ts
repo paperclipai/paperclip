@@ -50,6 +50,8 @@ export const issues = pgTable(
     requestDepth: integer("request_depth").notNull().default(0),
     billingCode: text("billing_code"),
     maxCostCents: integer("max_cost_cents"),
+    requiredWorkProductType: text("required_work_product_type"),
+    requiredWorkProductDescription: text("required_work_product_description"),
     assigneeAdapterOverrides: jsonb("assignee_adapter_overrides").$type<Record<string, unknown>>(),
     executionPolicy: jsonb("execution_policy").$type<Record<string, unknown>>(),
     executionState: jsonb("execution_state").$type<Record<string, unknown>>(),

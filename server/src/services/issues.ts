@@ -27,6 +27,7 @@ import {
   issueDocuments,
   issueReadStates,
   issueThreadInteractions,
+  issueWorkProducts,
   issues,
   labels,
   projectWorkspaces,
@@ -111,6 +112,27 @@ function assertTransition(from: string, to: string) {
   if (!ALL_ISSUE_STATUSES.includes(to)) {
     throw conflict(`Unknown issue status: ${to}`);
   }
+}
+
+// Accepted = explicitly board-approved, or a terminal accepted status (merged PR).
+const ACCEPTED_WORK_PRODUCT_STATUSES = new Set(["approved", "merged"]);
+
+export function requiredWorkProductBlockReason(
+  requiredType: string | null | undefined,
+  workProducts: Array<{ type: string; status: string; reviewState: string }>,
+): string | null {
+  if (!requiredType) return null;
+  const satisfied = workProducts.some(
+    (wp) =>
+      wp.type === requiredType &&
+      (wp.reviewState === "approved" || ACCEPTED_WORK_PRODUCT_STATUSES.has(wp.status)),
+  );
+  if (satisfied) return null;
+  return (
+    `Issue requires an accepted '${requiredType}' work product before it can be marked done. ` +
+    "Attach a matching work product with an approved review state (or merged status), " +
+    "or have a human waive the requirement by clearing requiredWorkProductType with a comment explaining why."
+  );
 }
 
 function applyStatusSideEffects(
@@ -2100,6 +2122,8 @@ const issueListSelect = {
   requestDepth: issues.requestDepth,
   billingCode: issues.billingCode,
   maxCostCents: issues.maxCostCents,
+  requiredWorkProductType: issues.requiredWorkProductType,
+  requiredWorkProductDescription: issues.requiredWorkProductDescription,
   assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
   executionPolicy: sql<null>`null`,
   executionState: sql<null>`null`,
@@ -5034,6 +5058,10 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      if (data.status === "done" && data.requiredWorkProductType) {
+        // A brand-new issue has no work products, so a required deliverable can never be satisfied at creation.
+        throw unprocessable("Cannot create an issue as done with requiredWorkProductType set");
+      }
       return db.transaction(async (tx) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -5262,6 +5290,26 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+        if (issueData.status === "done") {
+          // Waive = a human clears requiredWorkProductType (optionally in the same
+          // request as the close), leaving the reason in a comment.
+          const requiredType =
+            issueData.requiredWorkProductType !== undefined
+              ? issueData.requiredWorkProductType
+              : existing.requiredWorkProductType;
+          if (requiredType) {
+            const products = await dbOrTx
+              .select({
+                type: issueWorkProducts.type,
+                status: issueWorkProducts.status,
+                reviewState: issueWorkProducts.reviewState,
+              })
+              .from(issueWorkProducts)
+              .where(eq(issueWorkProducts.issueId, id));
+            const blockReason = requiredWorkProductBlockReason(requiredType, products);
+            if (blockReason) throw unprocessable(blockReason);
+          }
+        }
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {

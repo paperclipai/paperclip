@@ -13,7 +13,24 @@ export const issueWorkProductTypeSchema = z.enum([
   "commit",
   "artifact",
   "document",
+  "test_report",
+  "deployment_url",
+  "research_report",
+  "customer_reply",
+  "filing_receipt",
 ]);
+
+// Deliverable types an issue can require before it may be marked done.
+export const REQUIRED_WORK_PRODUCT_TYPES = [
+  "pull_request",
+  "test_report",
+  "deployment_url",
+  "document",
+  "research_report",
+  "customer_reply",
+  "filing_receipt",
+] as const;
+export const requiredWorkProductTypeSchema = z.enum(REQUIRED_WORK_PRODUCT_TYPES);
 
 export const issueWorkProductStatusSchema = z.enum([
   "active",
