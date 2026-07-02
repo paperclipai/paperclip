@@ -22,6 +22,7 @@ const SENSITIVE_KEYS = new Set<string>([
   "confirmpassword",
   "confirm_password",
   "secret",
+  "token",
   "client_secret",
   "clientsecret",
   "access_token",
