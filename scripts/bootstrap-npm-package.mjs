@@ -17,7 +17,7 @@ function usage() {
   process.stderr.write(
     [
       "Usage:",
-      "  node scripts/bootstrap-npm-package.mjs <package-name-or-dir> [--publish --otp <code>] [--skip-build]",
+      "  node scripts/bootstrap-npm-package.mjs <package-name-or-dir> [--publish [--otp <code>]] [--skip-build]",
       "",
       "Examples:",
       "  node scripts/bootstrap-npm-package.mjs @paperclipai/adapter-acpx-local",
@@ -127,7 +127,7 @@ function ensureNpmAuth() {
       [
         "npm auth check failed.",
         "This usually means the machine is either not logged into npm yet or has a stale token in ~/.npmrc.",
-        "Run `npm logout --registry=https://registry.npmjs.org/` and then `npm login` or `npm adduser` on this maintainer machine with an npm account that can publish to the @paperclipai scope, then rerun with --publish.",
+        "Run `npm logout --registry=https://registry.npmjs.org/` and then `npm login` or `npm adduser` on this maintainer machine with an npm account that can publish to the @paperclipai scope, then rerun with --publish. Add --otp only for authenticator-app TOTP accounts; security-key/passkey accounts can use npm's interactive publish prompt.",
         "Do not use this auth flow in CI; it is only for the one-time human bootstrap publish.",
       ].join(" "),
     );
@@ -201,10 +201,18 @@ function buildPublishArgs(pkg, { dryRun = false, otp = null } = {}) {
   return args;
 }
 
+function buildBootstrapPublishCommand(pkg, { otp = null } = {}) {
+  const args = ["scripts/bootstrap-npm-package.mjs", pkg.name, "--publish"];
+  if (otp) {
+    args.push("--otp", otp);
+  }
+  return formatCommand("node", args);
+}
+
 function publishPackage(pkg, otp) {
   const publishArgs = buildPublishArgs(pkg, { otp });
 
-  const result = runCommand("pnpm", publishArgs);
+  const result = runCommand("pnpm", publishArgs, otp ? {} : { stdio: "inherit" });
   const stdout = result.stdout ?? "";
   const stderr = result.stderr ?? "";
   const output = `${stdout}\n${stderr}`.trim();
@@ -220,7 +228,7 @@ function publishPackage(pkg, otp) {
     throw new Error(
       [
         "npm publish reached the publish-time 2FA check.",
-        "Complete the browser auth URL printed by npm and rerun the helper, or rerun with `--otp <code>` if your npm account uses authenticator-app codes.",
+        "If npm printed a browser/security-key URL, complete that flow and rerun the helper with `--publish`. If your npm account uses authenticator-app codes, rerun with `--otp <code>`.",
       ].join(" "),
     );
   }
@@ -243,10 +251,6 @@ function main(argv) {
 
   const pkg = resolveTargetPackage(selector);
   process.stdout.write(`Selected ${pkg.name} (${pkg.dir})\n`);
-
-  if (publish && !otp) {
-    throw new Error("`--publish` requires `--otp <code>`. Generate a fresh npm one-time password and rerun.");
-  }
 
   const npmState = inspectNpmPackage(pkg.name);
   if (npmState.exists) {
@@ -273,7 +277,9 @@ function main(argv) {
       [
         "",
         "Dry run complete. To perform the first publish from an authenticated maintainer machine, run:",
-        `node scripts/bootstrap-npm-package.mjs ${pkg.name} --publish --otp <code>`,
+        buildBootstrapPublishCommand(pkg),
+        "",
+        "If your npm account uses authenticator-app TOTP codes instead of a security key/passkey, append `--otp <code>`.",
         "",
       ].join("\n"),
     );
@@ -298,6 +304,7 @@ if (isDirectRun) {
 
 export {
   buildPublishArgs,
+  buildBootstrapPublishCommand,
   ensureNpmAuth,
   inspectNpmPackage,
   parseArgs,
