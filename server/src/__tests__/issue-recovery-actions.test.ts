@@ -304,7 +304,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       previousOwnerAgentId: coderId,
       returnOwnerAgentId: coderId,
       cause: "stranded_assigned_issue",
-      attemptCount: 2,
+      attemptCount: 1,
     });
 
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
@@ -316,7 +316,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
     expect(recoveryIssues).toHaveLength(0);
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
     expect(enqueueWakeup.mock.calls[0]?.[1]?.payload).toMatchObject({
       issueId: sourceIssue.id,
       sourceIssueId: sourceIssue.id,
@@ -367,14 +367,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       previousOwnerAgentId: coderId,
       returnOwnerAgentId: coderId,
       cause: "stranded_assigned_issue",
-      attemptCount: 2,
+      attemptCount: 1,
     });
     expect(actionRows[0]?.evidence).toMatchObject({ latestRunId: secondLatestRun.id });
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
-    expect(enqueueWakeup.mock.calls[1]?.[1]?.payload).toMatchObject({
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(enqueueWakeup.mock.calls[0]?.[1]?.payload).toMatchObject({
       issueId: sourceIssue.id,
       sourceIssueId: sourceIssue.id,
-      strandedRunId: secondLatestRun.id,
+      strandedRunId: firstLatestRun.id,
       recoveryCause: "stranded_assigned_issue",
     });
   });
@@ -447,7 +447,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       kind: "workspace_validation",
       cause: "workspace_validation_failed",
       status: "active",
-      attemptCount: 2,
+      attemptCount: 1,
       fingerprint: expect.stringContaining(workspaceFingerprint),
       evidence: expect.objectContaining({
         latestRunId: secondLatestRun.id,
@@ -529,7 +529,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       previousOwnerAgentId: coderId,
       returnOwnerAgentId: coderId,
       cause: "stranded_assigned_issue",
-      attemptCount: 2,
+      // Fixed behavior: second escalation is a no-op because the guard in service.ts returns
+      // early when an active source-scoped recovery action already exists. Previously this was
+      // 2, which caused an infinite re-escalation loop on every agent checkout.
+      attemptCount: 1,
     });
     const [afterSecond] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
     expect(afterSecond?.status).toBe("blocked");
