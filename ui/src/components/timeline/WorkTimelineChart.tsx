@@ -156,17 +156,21 @@ export function WorkTimelineChart({ data, zoom, colorMode, nowMs }: WorkTimeline
       <div
         ref={scrollRef}
         className="overflow-x-auto overflow-y-hidden"
+        data-testid="work-timeline-scroll"
         onScroll={(e) => setScrollLeft(e.currentTarget.scrollLeft)}
       >
-        <svg
-          width={layout.width}
-          height={layout.height}
-          viewBox={`0 0 ${layout.width} ${layout.height}`}
-          className="block select-none"
-          ref={(el) => {
-            if (el && viewportW === 0 && scrollRef.current) setViewportW(scrollRef.current.clientWidth);
-          }}
-        >
+        <div className="relative" style={{ width: layout.width, height: layout.height }}>
+          <ActorGutter rows={layout.rows} height={layout.height} />
+
+          <svg
+            width={layout.width}
+            height={layout.height}
+            viewBox={`0 0 ${layout.width} ${layout.height}`}
+            className="absolute inset-0 block select-none"
+            ref={(el) => {
+              if (el && viewportW === 0 && scrollRef.current) setViewportW(scrollRef.current.clientWidth);
+            }}
+          >
           <defs>
             <pattern id="tl-hatchV" width={5} height={6} patternUnits="userSpaceOnUse">
               <rect width={5} height={6} fill="var(--color-card)" />
@@ -326,13 +330,53 @@ export function WorkTimelineChart({ data, zoom, colorMode, nowMs }: WorkTimeline
               </g>
             );
           })}
-        </svg>
+          </svg>
+        </div>
       </div>
 
       <MiniMap layout={layout} scrollRef={scrollRef} viewportW={viewportW} scrollLeft={scrollLeft} />
 
       {tooltip && <Tooltip tooltip={tooltip} now={now} />}
     </div>
+  );
+}
+
+function ActorGutter({ rows, height }: { rows: ReturnType<typeof computeLayout>["rows"]; height: number }) {
+  return (
+    <svg
+      aria-hidden="true"
+      data-testid="work-timeline-actor-gutter"
+      width={GEOM.gutter}
+      height={height}
+      viewBox={`0 0 ${GEOM.gutter} ${height}`}
+      className="sticky left-0 top-0 z-20 block bg-card"
+    >
+      <rect x={0} y={0} width={GEOM.gutter} height={height} fill="var(--color-card)" />
+      {rows.map((row, i) => {
+        const cy = row.y + AXIS_H + row.h / 2;
+        return (
+          <g key={`gutter-${row.actor.id}`}>
+            <rect
+              x={0}
+              y={row.y + AXIS_H}
+              width={GEOM.gutter}
+              height={row.h}
+              fill={i % 2 ? "var(--color-muted)" : "var(--color-card)"}
+              opacity={i % 2 ? 0.35 : 1}
+            />
+            <AvatarGlyph cx={26} cy={cy} r={AVATAR_R} label={shortLabel(row.actor.name)} type={row.actor.type} />
+            <text x={26 + AVATAR_R + 10} y={cy - 2} fontSize={13} fill="var(--color-foreground)">
+              {truncate(row.actor.name, 18)}
+            </text>
+            <text x={26 + AVATAR_R + 10} y={cy + 12} fontSize={11} fill="var(--color-muted-foreground)">
+              {row.actor.type}
+            </text>
+          </g>
+        );
+      })}
+      <line x1={GEOM.gutter} y1={0} x2={GEOM.gutter} y2={height} stroke="var(--color-foreground)" strokeWidth={1.5} />
+      <line x1={0} y1={AXIS_H} x2={GEOM.gutter} y2={AXIS_H} stroke="var(--color-foreground)" strokeWidth={1.5} />
+    </svg>
   );
 }
 
