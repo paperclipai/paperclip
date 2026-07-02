@@ -100,6 +100,9 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     originId?: string | null;
     originFingerprint?: string | null;
     executionState?: Record<string, unknown> | null;
+    executionPolicy?: Record<string, unknown> | null;
+    monitorNextCheckAt?: Date | null;
+    monitorAttemptCount?: number;
     description?: string | null;
   }) {
     const id = input.id ?? randomUUID();
@@ -117,6 +120,9 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       originId: input.originId ?? null,
       originFingerprint: input.originFingerprint ?? "default",
       executionState: input.executionState ?? null,
+      executionPolicy: input.executionPolicy ?? null,
+      monitorNextCheckAt: input.monitorNextCheckAt ?? null,
+      ...(input.monitorAttemptCount !== undefined ? { monitorAttemptCount: input.monitorAttemptCount } : {}),
       description: input.description ?? null,
     });
     return id;
@@ -420,6 +426,53 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
       stalledBlockerCount: 0,
+    });
+  });
+
+  it("does not flag an in_review blocker as stalled when it has a healthy scheduled monitor", async () => {
+    const { companyId, agentId } = await createCompany("PBM2");
+    const parentId = await insertIssue({ companyId, identifier: "PBM2-1", title: "Parent", status: "blocked" });
+    const reviewLeafId = await insertIssue({
+      companyId,
+      identifier: "PBM2-2",
+      title: "Monitored review leaf",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      stalledBlockerCount: 0,
+      coveredBlockerCount: 1,
+      sampleStalledBlockerIdentifier: null,
+    });
+  });
+
+  it("still flags an in_review blocker whose scheduled monitor has already elapsed", async () => {
+    const { companyId, agentId } = await createCompany("PBM3");
+    const parentId = await insertIssue({ companyId, identifier: "PBM3-1", title: "Parent", status: "blocked" });
+    const reviewLeafId = await insertIssue({
+      companyId,
+      identifier: "PBM3-2",
+      title: "Elapsed monitor review leaf",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "stalled",
+      reason: "stalled_review",
+      stalledBlockerCount: 1,
+      sampleStalledBlockerIdentifier: "PBM3-2",
     });
   });
 

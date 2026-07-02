@@ -2556,6 +2556,19 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/claude-accounts/usage",
+  tags: ["instance"],
+  summary: "Get Claude account usage snapshots",
+  request: {
+    query: z.object({
+      refresh: z.union([z.literal("1"), z.literal("true")]).optional(),
+    }),
+  },
+  responses: { 200: r.ok(z.unknown()), 401: r.unauthorized, 403: r.forbidden },
+});
+
 // ─── Board chat (Conference Room Chat, experimental) ──────────────────────────
 
 registry.registerPath({

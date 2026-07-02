@@ -91,7 +91,11 @@ import {
   parseIssueGraphLivenessIncidentKey,
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
-import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
+import {
+  classifyIssueGraphLiveness,
+  hasScheduledMonitor,
+  type IssueLivenessFinding,
+} from "./recovery/issue-graph-liveness.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -1965,6 +1969,40 @@ async function listIssueBlockerAttentionMap(
     for (const row of recoveryActionRows) explicitWaitingIssueIds.add(row.sourceIssueId);
   }
 
+  // Parity with graph-liveness: an in_review blocker that carries a healthy
+  // scheduled issue-monitor is a valid waiting path, not a stalled review. We
+  // reuse graph-liveness' `hasScheduledMonitor` predicate against the same
+  // monitor signals (monitorNextCheckAt + execution policy/state monitor) so the
+  // two engines never diverge (TWB-3032).
+  const scheduledMonitorIssueIds = new Set<string>();
+  const monitorCandidateIds = [...nodesById.values()]
+    .filter((node) => node.status === "in_review")
+    .map((node) => node.id);
+  if (monitorCandidateIds.length > 0) {
+    const nowMs = Date.now();
+    for (const chunk of chunkList(monitorCandidateIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+      const monitorRows: Array<{
+        id: string;
+        executionPolicy: Record<string, unknown> | null;
+        executionState: Record<string, unknown> | null;
+        monitorNextCheckAt: Date | null;
+        monitorAttemptCount: number | null;
+      }> = await dbOrTx
+        .select({
+          id: issues.id,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), inArray(issues.id, chunk)));
+      for (const row of monitorRows) {
+        if (hasScheduledMonitor(row, nowMs)) scheduledMonitorIssueIds.add(row.id);
+      }
+    }
+  }
+
   const agentRows: IssueBlockerAttentionAgentRow[] = agentIds.size > 0
     ? await dbOrTx
         .select({
@@ -2006,7 +2044,10 @@ async function listIssueBlockerAttentionMap(
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (node.status === "in_review") {
-      const hasWaitingPath = activeIssueIds.has(node.id) || Boolean(node.assigneeUserId);
+      const hasWaitingPath =
+        activeIssueIds.has(node.id) ||
+        Boolean(node.assigneeUserId) ||
+        scheduledMonitorIssueIds.has(node.id);
       if (hasWaitingPath) {
         return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
       }
