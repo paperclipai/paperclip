@@ -317,6 +317,7 @@ async function seedLowTrustFixture(db: Db) {
   const [company] = await db.insert(companies).values({
     name: `Low trust ${nonce}`,
     issuePrefix: `LT${nonce.slice(0, 4).toUpperCase()}`,
+    defaultResponsibleUserId: "board-user",
   }).returning();
   const [allowedProject] = await db.insert(projects).values({
     companyId: company!.id,
@@ -1033,6 +1034,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     const [otherCompany] = await db.insert(companies).values({
       name: "Foreign low-trust source",
       issuePrefix: `FGN${randomUUID().slice(0, 4).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
     }).returning();
     const [foreignIssue] = await db.insert(issues).values({
       companyId: otherCompany!.id,

@@ -82,6 +82,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       name: "Paperclip",
       issuePrefix: `T${input.companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values({
@@ -152,6 +153,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values({
@@ -227,6 +229,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values({
@@ -734,6 +737,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values([
@@ -887,6 +891,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values([
@@ -1004,6 +1009,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values({
@@ -1112,6 +1118,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values({
@@ -1210,6 +1217,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values({

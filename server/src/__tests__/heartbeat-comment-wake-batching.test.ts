@@ -192,6 +192,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values({
@@ -307,6 +308,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values({
@@ -506,6 +508,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values({
@@ -652,6 +655,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values({
@@ -845,6 +849,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values([
@@ -1044,6 +1049,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values({
@@ -1210,6 +1216,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values({
@@ -1421,6 +1428,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values({
@@ -1571,6 +1579,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values([
@@ -1772,6 +1781,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values([
@@ -1919,6 +1929,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         name: "Paperclip",
         issuePrefix,
         requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
       });
 
       await db.insert(agents).values({

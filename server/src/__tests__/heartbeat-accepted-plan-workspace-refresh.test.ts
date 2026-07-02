@@ -216,6 +216,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       name: "Acme",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       status: "active",
+      defaultResponsibleUserId: "responsible-user",
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -389,6 +390,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       name: "Acme",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       status: "active",
+      defaultResponsibleUserId: "responsible-user",
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -545,6 +547,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       name: "Acme",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       status: "active",
+      defaultResponsibleUserId: "responsible-user",
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -702,6 +705,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       name: "Acme",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       status: "active",
+      defaultResponsibleUserId: "responsible-user",
       createdAt: new Date(),
       updatedAt: new Date(),
     });
