@@ -233,6 +233,8 @@ export {
   agentMineInboxQuerySchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
+  agentSessionResetSchema,
+  type AgentSessionReset,
   testAdapterEnvironmentSchema,
   agentPermissionsSchema,
   updateAgentPermissionsSchema,

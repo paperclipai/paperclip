@@ -15,6 +15,7 @@ import {
   isUuidLike,
   normalizeIssueIdentifier,
   resetAgentSessionSchema,
+  agentSessionResetSchema,
   testAdapterEnvironmentSchema,
   type AgentDesiredSkillEntry,
   type AgentSkillSnapshot,
@@ -52,7 +53,7 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardOrAgent, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectAgentAdapterWorkspaceCommandPaths,
@@ -2194,6 +2195,171 @@ export function agentRoutes(
     });
 
     res.json(state);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Team-scoped session reset (OUT-51945)
+  // POST /agents/:id/sessions/reset
+  //
+  // Same-team agents (peers sharing reportsTo, or a manager calling down) can
+  // invalidate a stuck session without CEO/board relay.  Board callers are also
+  // accepted so existing tooling still works.
+  // ---------------------------------------------------------------------------
+  const _sessionResetRateLimiter = (() => {
+    const WINDOW_MS = 60_000;
+    const MAX_PER_WINDOW = 20;
+    const hitsByKey = new Map<string, number[]>();
+    return {
+      consume(callerKey: string): { allowed: boolean; retryAfterSeconds: number } {
+        const now = Date.now();
+        const cutoff = now - WINDOW_MS;
+        const recent = (hitsByKey.get(callerKey) ?? []).filter((t) => t > cutoff);
+        if (recent.length >= MAX_PER_WINDOW) {
+          const oldest = recent[0] ?? now;
+          hitsByKey.set(callerKey, recent);
+          return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((oldest + WINDOW_MS - now) / 1000)) };
+        }
+        recent.push(now);
+        hitsByKey.set(callerKey, recent);
+        return { allowed: true, retryAfterSeconds: 0 };
+      },
+    };
+  })();
+
+  router.post("/agents/:id/sessions/reset", validate(agentSessionResetSchema), async (req, res) => {
+    assertBoardOrAgent(req);
+
+    const id = req.params.id as string;
+    const agent = await svc.getById(id);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    assertCompanyAccess(req, agent.companyId);
+
+    // ---- Authorization: same-team scope for agent callers ----
+    if (req.actor.type === "agent") {
+      const callerAgentId = req.actor.agentId ?? null;
+      if (!callerAgentId) {
+        res.status(403).json({ error: "Unable to identify caller agent" });
+        return;
+      }
+
+      if (callerAgentId !== id) {
+        // Caller must be in the same team: share the same reportsTo (peers),
+        // or caller is the direct manager of the target.
+        const caller = await svc.getById(callerAgentId);
+        if (!caller) {
+          res.status(403).json({ error: "Caller agent not found" });
+          return;
+        }
+        const isManager = agent.reportsTo === callerAgentId;
+        const isPeer = !isManager && agent.reportsTo !== null && agent.reportsTo === caller.reportsTo;
+        if (!isManager && !isPeer) {
+          res.status(403).json({
+            error: "Forbidden: caller and target agent are not in the same team scope. " +
+              "Caller must be a peer (same reportsTo) or the direct manager of the target agent.",
+          });
+          return;
+        }
+      }
+
+      // Rate limit: 20 resets per minute per calling agent
+      const rlKey = `${agent.companyId}:${callerAgentId}`;
+      const rl = _sessionResetRateLimiter.consume(rlKey);
+      if (!rl.allowed) {
+        res.status(429).json({
+          error: "Rate limit exceeded",
+          retryAfterSeconds: rl.retryAfterSeconds,
+        });
+        return;
+      }
+    }
+
+    const { reason, clearIssueLock, issueId } = req.body as {
+      reason: string;
+      sessionId?: string | null;
+      clearIssueLock?: boolean;
+      issueId?: string | null;
+    };
+
+    // ---- Idempotency: if no session exists, return no-op ----
+    const existingSessions = await heartbeat.listTaskSessions(id);
+    if (existingSessions.length === 0) {
+      res.json({ status: "no_session" });
+      return;
+    }
+
+    // ---- Invalidate persisted session rows ----
+    const state = await heartbeat.resetRuntimeSession(id, {});
+
+    // ---- Optionally clear issue execution lock ----
+    let issueLockCleared = false;
+    if (clearIssueLock && issueId) {
+      const issueRow = await db
+        .select({
+          id: issuesTable.id,
+          companyId: issuesTable.companyId,
+          assigneeAgentId: issuesTable.assigneeAgentId,
+        })
+        .from(issuesTable)
+        .where(and(eq(issuesTable.id, issueId), eq(issuesTable.companyId, agent.companyId)))
+        .then((rows) => rows[0] ?? null);
+
+      if (!issueRow) {
+        res.status(404).json({ error: "issueId not found in this company" });
+        return;
+      }
+
+      // For agent callers: the issue must be assigned to the target agent or
+      // the caller must be the manager/peer of the target agent (already verified above).
+      if (req.actor.type === "agent" && issueRow.assigneeAgentId !== id) {
+        res.status(403).json({
+          error: "clearIssueLock: issueId must be assigned to the target agent",
+        });
+        return;
+      }
+
+      await db
+        .update(issuesTable)
+        .set({
+          executionRunId: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(issuesTable.id, issueId), eq(issuesTable.companyId, agent.companyId)));
+
+      issueLockCleared = true;
+    }
+
+    // ---- Emit audit event ----
+    const actorInfo = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actorInfo.actorType,
+      actorId: actorInfo.actorId,
+      action: "agent.session.reset",
+      entityType: "agent",
+      entityId: id,
+      agentId: actorInfo.agentId,
+      runId: actorInfo.runId,
+      details: {
+        targetAgentId: id,
+        actorAgentId: actorInfo.agentId,
+        teamId: agent.reportsTo ?? null,
+        reason,
+        issueLockCleared,
+        issueId: issueId ?? null,
+      },
+    });
+
+    res.json({
+      status: "reset",
+      agentId: id,
+      issueLockCleared,
+      issueId: issueId ?? null,
+      sessionState: state,
+    });
   });
 
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
