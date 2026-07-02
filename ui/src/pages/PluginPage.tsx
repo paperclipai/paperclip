@@ -98,10 +98,10 @@ export function PluginPage() {
   );
 
   // Plugins encode sub-screens in the query string or the route splat (e.g.
-  // `/FUS/nodeview?kind=request&id=…`). From such a deep link, Back must
-  // return to the plugin page's own root — jumping to the dashboard would
-  // skip every screen the plugin manages. Only from the plugin root itself
-  // does Back leave the plugin toward the dashboard.
+  // a detail view at `/PREFIX/myplugin?kind=request&id=123`). From such a
+  // deep link, Back must return to the plugin page's own root; jumping to
+  // the dashboard would skip every screen the plugin manages. Only from the
+  // plugin root itself does Back leave the plugin toward the dashboard.
   const backTo = useMemo(() => {
     const dashboardPath = companyPrefix ? `/${companyPrefix}/dashboard` : "/dashboard";
     const hasPluginSubScreen = Boolean(location.search) || Boolean(pluginRouteSplat);
