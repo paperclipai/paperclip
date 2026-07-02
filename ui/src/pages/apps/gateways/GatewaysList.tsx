@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search } from "lucide-react";
 import type { ToolMcpGatewayWithTokens } from "@paperclipai/shared";
@@ -14,7 +14,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
-import { cn } from "@/lib/utils";
 import { ErrorState, RelativeTime } from "@/pages/tools/shared";
 import { AppsSubNav } from "./AppsSubNav";
 import { NewGatewayDialog, gatewaysQueryKey } from "./NewGatewayDialog";
@@ -172,80 +171,129 @@ export function GatewaysList() {
             </Button>
           </div>
 
-          <div className="overflow-hidden rounded-lg border border-border">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border bg-muted/40 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  <th className="px-4 py-2.5">Gateway</th>
-                  <th className="px-4 py-2.5">Scope</th>
-                  <th className="px-4 py-2.5">Apps</th>
-                  <th className="px-4 py-2.5">Tokens</th>
-                  <th className="px-4 py-2.5">Last used</th>
-                  <th className="px-4 py-2.5 text-right">On</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((gateway) => {
-                  const profile = profileById.get(gateway.profileId);
-                  const apps = deriveGatewayApps(
-                    profile,
-                    applicationsQuery.data?.applications ?? [],
-                    connectionsQuery.data?.connections ?? [],
-                  );
-                  const active = activeTokenCount(gateway);
-                  const expiring = expiringTokenCount(gateway);
-                  const lastUsed = latestTokenActivity(gateway);
-                  const href = gatewayTabHref(gateway.id, "overview");
-                  return (
-                    <tr
+          {(() => {
+            const rows = filtered.map((gateway) => {
+              const profile = profileById.get(gateway.profileId);
+              const apps = deriveGatewayApps(
+                profile,
+                applicationsQuery.data?.applications ?? [],
+                connectionsQuery.data?.connections ?? [],
+              );
+              return {
+                gateway,
+                profile,
+                scope: formatScope(gateway, projectNames, agentNames),
+                appsLabel: `${apps.length} ${apps.length === 1 ? "app" : "apps"}${
+                  profile ? ` · ${allowedToolsLabel(profile)}` : ""
+                }`,
+                active: activeTokenCount(gateway),
+                expiring: expiringTokenCount(gateway),
+                lastUsed: latestTokenActivity(gateway),
+                href: gatewayTabHref(gateway.id, "overview"),
+              };
+            });
+            const toggle = (gateway: ToolMcpGatewayWithTokens) => (
+              <ToggleSwitch
+                checked={isGatewayOn(gateway)}
+                disabled={toggleMutation.isPending}
+                onClick={(event) => event.stopPropagation()}
+                onCheckedChange={() => toggleMutation.mutate({ gateway })}
+                aria-label={`Turn ${gateway.name} ${isGatewayOn(gateway) ? "off" : "on"}`}
+              />
+            );
+            const empty = (
+              <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+                No gateways match “{search.trim()}”.
+              </div>
+            );
+            return (
+              <>
+                {/* Desktop / tablet: full table. */}
+                <div className="hidden overflow-x-auto rounded-lg border border-border sm:block">
+                  <table className="w-full min-w-[40rem] text-sm">
+                    <thead>
+                      <tr className="border-b border-border bg-muted/40 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                        <th className="px-4 py-2.5">Gateway</th>
+                        <th className="px-4 py-2.5">Scope</th>
+                        <th className="px-4 py-2.5">Apps</th>
+                        <th className="px-4 py-2.5">Tokens</th>
+                        <th className="px-4 py-2.5">Last used</th>
+                        <th className="px-4 py-2.5 text-right">On</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map(({ gateway, scope, appsLabel, active, expiring, lastUsed, href }) => (
+                        <tr
+                          key={gateway.id}
+                          onClick={() => navigate(href)}
+                          className="cursor-pointer border-b border-border transition-colors last:border-0 hover:bg-muted/30"
+                        >
+                          <td className="px-4 py-3">
+                            <div className="font-medium text-foreground">{gateway.name}</div>
+                            <div className="truncate font-mono text-xs text-muted-foreground">
+                              {endpointHost(gateway.endpointPath, gateway.displaySlug)}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-muted-foreground">{scope}</td>
+                          <td className="px-4 py-3 text-muted-foreground">{appsLabel}</td>
+                          <td className="px-4 py-3 text-muted-foreground">
+                            {active} active{expiring > 0 ? ` · ${expiring} expiring` : ""}
+                          </td>
+                          <td className="px-4 py-3 text-muted-foreground">
+                            {lastUsed ? <RelativeTime value={lastUsed} /> : "—"}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex justify-end">{toggle(gateway)}</div>
+                          </td>
+                        </tr>
+                      ))}
+                      {rows.length === 0 ? (
+                        <tr>
+                          <td colSpan={6}>{empty}</td>
+                        </tr>
+                      ) : null}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Mobile: stacked cards so the On toggle stays reachable and thumb-sized. */}
+                <div className="space-y-3 sm:hidden">
+                  {rows.map(({ gateway, scope, appsLabel, active, expiring, lastUsed, href }) => (
+                    <div
                       key={gateway.id}
                       onClick={() => navigate(href)}
-                      className="cursor-pointer border-b border-border transition-colors last:border-0 hover:bg-muted/30"
+                      className="cursor-pointer rounded-lg border border-border p-4 transition-colors hover:bg-muted/30"
                     >
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-foreground">{gateway.name}</div>
-                        <div className="truncate font-mono text-xs text-muted-foreground">
-                          {endpointHost(gateway.endpointPath, gateway.displaySlug)}
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="font-medium text-foreground">{gateway.name}</div>
+                          <div className="truncate font-mono text-xs text-muted-foreground">
+                            {endpointHost(gateway.endpointPath, gateway.displaySlug)}
+                          </div>
                         </div>
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {formatScope(gateway, projectNames, agentNames)}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {apps.length} {apps.length === 1 ? "app" : "apps"}
-                        {profile ? ` · ${allowedToolsLabel(profile)}` : ""}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {active} active
-                        {expiring > 0 ? ` · ${expiring} expiring` : ""}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground">
-                        {lastUsed ? <RelativeTime value={lastUsed} /> : "—"}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex justify-end">
-                          <ToggleSwitch
-                            checked={isGatewayOn(gateway)}
-                            disabled={toggleMutation.isPending}
-                            onClick={(event) => event.stopPropagation()}
-                            onCheckedChange={() => toggleMutation.mutate({ gateway })}
-                            aria-label={`Turn ${gateway.name} ${isGatewayOn(gateway) ? "off" : "on"}`}
-                          />
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {filtered.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                      No gateways match “{search.trim()}”.
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
+                        <div className="shrink-0">{toggle(gateway)}</div>
+                      </div>
+                      <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                        <MobileField label="Scope" value={scope} />
+                        <MobileField label="Apps" value={appsLabel} />
+                        <MobileField
+                          label="Tokens"
+                          value={`${active} active${expiring > 0 ? ` · ${expiring} expiring` : ""}`}
+                        />
+                        <MobileField
+                          label="Last used"
+                          value={lastUsed ? <RelativeTime value={lastUsed} /> : "—"}
+                        />
+                      </dl>
+                    </div>
+                  ))}
+                  {rows.length === 0 ? (
+                    <div className="rounded-lg border border-border">{empty}</div>
+                  ) : null}
+                </div>
+              </>
+            );
+          })()}
 
           <div className="rounded-lg border border-border bg-muted/30 px-4 py-3">
             <div className="text-sm font-semibold text-foreground">Why a gateway?</div>
@@ -278,6 +326,16 @@ function endpointHost(endpointPath: string, slug: string): string {
     }
   }
   return endpointPath || `/g/${slug}`;
+}
+
+/** One label:value pair inside a mobile stacked card. */
+function MobileField({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 truncate text-foreground">{value}</dd>
+    </div>
+  );
 }
 
 function EmptyGateways({ onCreate }: { onCreate: () => void }) {

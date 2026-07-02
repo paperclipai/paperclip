@@ -1,4 +1,4 @@
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, type ReactNode, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, KeyRound, Plus } from "lucide-react";
 import type {
@@ -27,6 +27,30 @@ const STATUS_CLASS: Record<TokenStatus, string> = {
   expired: "border-border bg-muted text-muted-foreground",
   revoked: "border-foreground bg-foreground text-background",
 };
+
+/** Token status pill, shared by the desktop table and mobile cards. */
+function StatusBadge({ status }: { status: TokenStatus }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-xs font-medium",
+        STATUS_CLASS[status],
+      )}
+    >
+      {TOKEN_STATUS_LABEL[status]}
+    </span>
+  );
+}
+
+/** One label:value pair inside a mobile stacked card. */
+function TokenField({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</dt>
+      <dd className="mt-0.5 truncate text-foreground">{value}</dd>
+    </div>
+  );
+}
 
 export function TokensPanel({
   companyId,
@@ -215,68 +239,110 @@ export function TokensPanel({
           No tokens yet. Mint one for the client that will connect to this gateway.
         </div>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-border">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border bg-muted/40 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                <th className="px-4 py-2.5">Token</th>
-                <th className="px-4 py-2.5">Owner</th>
-                <th className="px-4 py-2.5">Created</th>
-                <th className="px-4 py-2.5">Last used</th>
-                <th className="px-4 py-2.5">Expires</th>
-                <th className="px-4 py-2.5">Status</th>
-                <th className="px-4 py-2.5 text-right" />
-              </tr>
-            </thead>
-            <tbody>
-              {tokens.map((token) => {
-                const status = tokenStatus(token);
-                const canRevoke = status !== "revoked";
-                return (
-                  <tr key={token.id} className="border-b border-border last:border-0">
-                    <td className="px-4 py-3">
+        <>
+          {/* Desktop / tablet: full table. */}
+          <div className="hidden overflow-x-auto rounded-lg border border-border sm:block">
+            <table className="w-full min-w-[44rem] text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/40 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <th className="px-4 py-2.5">Token</th>
+                  <th className="px-4 py-2.5">Owner</th>
+                  <th className="px-4 py-2.5">Created</th>
+                  <th className="px-4 py-2.5">Last used</th>
+                  <th className="px-4 py-2.5">Expires</th>
+                  <th className="px-4 py-2.5">Status</th>
+                  <th className="px-4 py-2.5 text-right" />
+                </tr>
+              </thead>
+              <tbody>
+                {tokens.map((token) => {
+                  const status = tokenStatus(token);
+                  const canRevoke = status !== "revoked";
+                  return (
+                    <tr key={token.id} className="border-b border-border last:border-0">
+                      <td className="px-4 py-3">
+                        <div className="font-medium text-foreground">{token.name}</div>
+                        <div className="font-mono text-xs text-muted-foreground">{maskedTokenLabel(token)}</div>
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">{token.clientLabel || token.ownerNote || "—"}</td>
+                      <td className="px-4 py-3 text-muted-foreground"><RelativeTime value={token.createdAt} /></td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {token.lastUsedAt ? <RelativeTime value={token.lastUsedAt} /> : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {token.revokedAt ? "—" : token.expiresAt ? <RelativeTime value={token.expiresAt} /> : "no expiry"}
+                      </td>
+                      <td className="px-4 py-3">
+                        <StatusBadge status={status} />
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {canRevoke ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+                            onClick={() => {
+                              setConfirmToken({ id: token.id, name: token.name });
+                              setRevokeName("");
+                            }}
+                          >
+                            Revoke
+                          </Button>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile: stacked cards so status + Revoke stay reachable. */}
+          <div className="space-y-3 sm:hidden">
+            {tokens.map((token) => {
+              const status = tokenStatus(token);
+              const canRevoke = status !== "revoked";
+              return (
+                <div key={token.id} className="rounded-lg border border-border p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
                       <div className="font-medium text-foreground">{token.name}</div>
                       <div className="font-mono text-xs text-muted-foreground">{maskedTokenLabel(token)}</div>
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">{token.clientLabel || token.ownerNote || "—"}</td>
-                    <td className="px-4 py-3 text-muted-foreground"><RelativeTime value={token.createdAt} /></td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {token.lastUsedAt ? <RelativeTime value={token.lastUsedAt} /> : "—"}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {token.revokedAt ? "—" : token.expiresAt ? <RelativeTime value={token.expiresAt} /> : "no expiry"}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={cn(
-                          "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
-                          STATUS_CLASS[status],
-                        )}
-                      >
-                        {TOKEN_STATUS_LABEL[status]}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      {canRevoke ? (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 px-2 text-xs text-destructive hover:text-destructive"
-                          onClick={() => {
-                            setConfirmToken({ id: token.id, name: token.name });
-                            setRevokeName("");
-                          }}
-                        >
-                          Revoke
-                        </Button>
-                      ) : null}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                    </div>
+                    <StatusBadge status={status} />
+                  </div>
+                  <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                    <TokenField label="Owner" value={token.clientLabel || token.ownerNote || "—"} />
+                    <TokenField label="Created" value={<RelativeTime value={token.createdAt} />} />
+                    <TokenField
+                      label="Last used"
+                      value={token.lastUsedAt ? <RelativeTime value={token.lastUsedAt} /> : "—"}
+                    />
+                    <TokenField
+                      label="Expires"
+                      value={
+                        token.revokedAt ? "—" : token.expiresAt ? <RelativeTime value={token.expiresAt} /> : "no expiry"
+                      }
+                    />
+                  </dl>
+                  {canRevoke ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="mt-3 w-full text-xs text-destructive hover:text-destructive"
+                      onClick={() => {
+                        setConfirmToken({ id: token.id, name: token.name });
+                        setRevokeName("");
+                      }}
+                    >
+                      Revoke
+                    </Button>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
 
       <p className="flex items-center gap-1.5 text-xs text-muted-foreground">

@@ -28,8 +28,8 @@ export function AppsToolsPanel({
           No apps are assigned to this gateway’s profile yet.
         </div>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-border">
-          <table className="w-full text-sm">
+        <div className="overflow-x-auto rounded-lg border border-border">
+          <table className="w-full min-w-[32rem] text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/40 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                 <th className="px-4 py-2.5">App</th>
