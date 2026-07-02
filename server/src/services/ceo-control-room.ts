@@ -314,6 +314,28 @@ export function classifyUnboundSecret(input: { status: string; managedMode: stri
   return { type: "secret_unbound", descriptor: "registered but not bound to any lane" };
 }
 
+export type WorkerOfflineAgentItemType = "agent_process_lost" | "agent_offline";
+
+// Matches the process-loss family emitted by the heartbeat reaper (buildProcessLossMessage in
+// heartbeat.ts) — every variant begins with "Process lost --" and carries errorCode process_lost.
+const PROCESS_LOST_REASON = /process lost/i;
+
+// Classifies an error/paused agent surfaced into the worker_offline category. When the heartbeat
+// reaper finalizes an in-flight run whose OS process has vanished (a server restart orphaning the
+// run, or an otherwise reaped run), it pins the agent to status=error with a "Process lost -- ..."
+// reason. If heartbeat is disabled nothing re-runs the agent, so the flag is a *stale recovery
+// artifact* that clears with a plain re-run / clear-error — not a worker that is genuinely offline.
+// A genuine fault is distinguishable: it carries a descriptive reason (adapter spawn failure,
+// "vault provider is not configured", exit/timeout error) or a non-error status (paused), and must
+// stay a warning. We only treat status=error + a process-lost reason as the recoverable orphan; a
+// null/other reason or any non-error status is conservatively classified as genuinely offline.
+export function classifyWorkerOfflineAgent(input: { status: string; errorReason: string | null }): WorkerOfflineAgentItemType {
+  if (input.status === "error" && input.errorReason && PROCESS_LOST_REASON.test(input.errorReason)) {
+    return "agent_process_lost";
+  }
+  return "agent_offline";
+}
+
 // A non-empty category only escalates to warning/critical when it contains a genuine problem.
 // missing_secret and proof_ledger now carry informational items (external refs, indirect proof)
 // that must not inflate the board into a false warning.
@@ -330,6 +352,11 @@ export function severityForNonEmptyCategory(
       return items.some((item) => item.type === "proof_missing") ? "warning" : "info";
     case "missing_secret":
       return items.some((item) => item.type === "issue" || item.type === "secret_missing") ? "warning" : "info";
+    case "worker_offline":
+      // Stale process-lost orphans (server-restart artifacts, recoverable via re-run/clear-error)
+      // alone are informational. Any genuinely offline/failing agent (agent_offline), stalled
+      // heartbeat run (run), or unavailable external source (source) keeps the category a warning.
+      return items.some((item) => item.type !== "agent_process_lost") ? "warning" : "info";
     case "spend_cap":
     case "operational_loop":
       return "critical";
@@ -718,7 +745,8 @@ export function ceoControlRoomService(db: Db) {
       }
 
       for (const row of errorAgentRows) {
-        categories.worker_offline.items.push({ type: "agent", summary: `${row.name} is ${row.status}`, metadata: row });
+        const agentItemType = classifyWorkerOfflineAgent({ status: row.status, errorReason: row.errorReason });
+        categories.worker_offline.items.push({ type: agentItemType, summary: `${row.name} is ${row.status}`, metadata: row });
       }
       const staleThreshold = Date.now() - STALE_RUNNING_RUN_MS;
       for (const row of staleRunRows) {
