@@ -1099,6 +1099,31 @@ export function redactEnvForLogs(env: Record<string, string>): Record<string, st
   return redacted;
 }
 
+const CURSOR_CLOUD_ENV_VALUE_MAX_BYTES = 4096;
+const CURSOR_CLOUD_ENV_TRUNCATION_SUFFIX = "[truncated: cursor_cloud envVars limit]";
+
+export function clampEnvVarsForCloud(
+  env: Record<string, string>,
+  maxBytes = CURSOR_CLOUD_ENV_VALUE_MAX_BYTES,
+): Record<string, string> {
+  const suffixBytes = Buffer.byteLength(CURSOR_CLOUD_ENV_TRUNCATION_SUFFIX, "utf8");
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    const valueBytes = Buffer.byteLength(value, "utf8");
+    if (valueBytes <= maxBytes) {
+      out[key] = value;
+      continue;
+    }
+    const budget = Math.max(0, maxBytes - suffixBytes);
+    let truncated = value;
+    while (Buffer.byteLength(truncated, "utf8") > budget && truncated.length > 0) {
+      truncated = truncated.slice(0, Math.floor(truncated.length * 0.9));
+    }
+    out[key] = `${truncated}${CURSOR_CLOUD_ENV_TRUNCATION_SUFFIX}`;
+  }
+  return out;
+}
+
 export function redactCommandTextForLogs(command: string): string {
   return redactCommandText(command, REDACTED_LOG_VALUE);
 }

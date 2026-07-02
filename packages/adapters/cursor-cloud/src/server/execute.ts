@@ -14,14 +14,13 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   asBoolean,
   asString,
-  buildPaperclipEnv,
   joinPromptSections,
   parseObject,
-  readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
   renderTemplate,
-  stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
+import { fetchCursorRunUsage, mapUsageToAdapterResult } from "./usage.js";
+import { buildCursorCloudWakeEnv } from "./wake-env.js";
 
 type CursorCloudSession = {
   cursorAgentId: string;
@@ -98,57 +97,6 @@ function toSummary(result: RunResult): string | null {
 function formatRunError(err: unknown): string {
   if (err instanceof Error && err.message.trim().length > 0) return err.message.trim();
   return String(err);
-}
-
-function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, string>): Record<string, string> {
-  const { runId, agent, context, authToken } = ctx;
-  const env: Record<string, string> = {
-    ...configEnv,
-    ...buildPaperclipEnv(agent),
-    PAPERCLIP_RUN_ID: runId,
-  };
-
-  const wakeTaskId = trimNullable(context.taskId) ?? trimNullable(context.issueId);
-  const wakeReason = trimNullable(context.wakeReason);
-  const wakeCommentId = trimNullable(context.wakeCommentId) ?? trimNullable(context.commentId);
-  const approvalId = trimNullable(context.approvalId);
-  const approvalStatus = trimNullable(context.approvalStatus);
-  const linkedIssueIds = Array.isArray(context.issueIds)
-    ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-    : [];
-  const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
-  const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
-
-  if (wakeTaskId) env.PAPERCLIP_TASK_ID = wakeTaskId;
-  if (wakeReason) env.PAPERCLIP_WAKE_REASON = wakeReason;
-  if (wakeCommentId) env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
-  if (approvalId) env.PAPERCLIP_APPROVAL_ID = approvalId;
-  if (approvalStatus) env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
-  if (linkedIssueIds.length > 0) env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-  if (wakePayloadJson) env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
-  if (issueWorkMode) env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
-  if (!trimNullable(env.PAPERCLIP_API_KEY) && authToken) {
-    env.PAPERCLIP_API_KEY = authToken;
-  }
-
-  const workspace = parseObject(context.paperclipWorkspace);
-  const workspaceMappings: Array<[string, unknown]> = [
-    ["PAPERCLIP_WORKSPACE_CWD", workspace.cwd],
-    ["PAPERCLIP_WORKSPACE_SOURCE", workspace.source],
-    ["PAPERCLIP_WORKSPACE_ID", workspace.workspaceId],
-    ["PAPERCLIP_WORKSPACE_REPO_URL", workspace.repoUrl],
-    ["PAPERCLIP_WORKSPACE_REPO_REF", workspace.repoRef],
-    ["PAPERCLIP_WORKSPACE_BRANCH", workspace.branch],
-    ["PAPERCLIP_WORKSPACE_WORKTREE_PATH", workspace.worktreePath],
-    ["AGENT_HOME", workspace.agentHome],
-  ];
-  for (const [key, value] of workspaceMappings) {
-    const normalized = trimNullable(value);
-    if (normalized) env[key] = normalized;
-  }
-
-  delete env.CURSOR_API_KEY;
-  return env;
 }
 
 async function buildInstructionsPrefix(
@@ -368,7 +316,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ...(repoStartingRef ? { startingRef: repoStartingRef } : {}),
     ...(repoPullRequestUrl ? { prUrl: repoPullRequestUrl } : {}),
   }];
-  const remoteEnv = buildWakeEnv(ctx, envConfig);
+  const remoteEnv = buildCursorCloudWakeEnv(ctx, envConfig);
   const session = readSession(runtime.sessionParams) ?? (runtime.sessionId
     ? {
         cursorAgentId: runtime.sessionId,
@@ -538,6 +486,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       repos,
     };
     const isError = result.status !== "finished";
+    let mappedUsage: ReturnType<typeof mapUsageToAdapterResult> | undefined;
+    let cursorUsage: Awaited<ReturnType<typeof fetchCursorRunUsage>> = null;
+
+    if (result.status === "finished") {
+      cursorUsage = await fetchCursorRunUsage({
+        apiKey,
+        agentId: run.agentId,
+        runId: result.id,
+      });
+      if (cursorUsage) {
+        mappedUsage = mapUsageToAdapterResult(cursorUsage);
+      } else {
+        await onLog(
+          "stderr",
+          "[cursor_cloud] Warning: could not fetch run usage from Cursor API.\n",
+        );
+      }
+    }
+
     return {
       exitCode: isError ? 1 : 0,
       signal: null,
@@ -551,6 +518,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       billingType: "api",
       model: modelId,
       costUsd: null,
+      ...(mappedUsage ? { usage: mappedUsage } : {}),
       summary: toSummary(result),
       resultJson: {
         status: result.status,
@@ -563,6 +531,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(result.git ? { git: result.git } : {}),
         ...(typeof result.durationMs === "number" ? { durationMs: result.durationMs } : {}),
         ...(streamError ? { streamError } : {}),
+        ...(cursorUsage ? { cursorUsage } : {}),
+        ...(result.status === "finished" ? { costEstimated: false } : {}),
       },
       clearSession: false,
     };

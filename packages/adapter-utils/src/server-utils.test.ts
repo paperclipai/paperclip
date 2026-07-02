@@ -9,6 +9,7 @@ import {
   buildPersistentSkillSnapshot,
   buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
+  clampEnvVarsForCloud,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
@@ -54,6 +55,32 @@ async function waitForTextMatch(read: () => string, pattern: RegExp, timeoutMs =
   }
   return read().match(pattern);
 }
+
+describe("clampEnvVarsForCloud", () => {
+  it("passes through small values unchanged", () => {
+    const env = { FOO: "bar", PAPERCLIP_RUN_ID: "run-1" };
+    expect(clampEnvVarsForCloud(env)).toEqual(env);
+  });
+
+  it("truncates values exceeding maxBytes with marker suffix", () => {
+    const long = "x".repeat(5000);
+    const result = clampEnvVarsForCloud({ BIG: long }, 4096);
+    const bytes = Buffer.byteLength(result.BIG, "utf8");
+    expect(bytes).toBeLessThanOrEqual(4096);
+    expect(result.BIG).toContain("[truncated: cursor_cloud envVars limit]");
+  });
+
+  it("ensures every value is within limit", () => {
+    const env: Record<string, string> = {};
+    for (let i = 0; i < 10; i++) {
+      env[`KEY_${i}`] = "y".repeat(3000);
+    }
+    const result = clampEnvVarsForCloud(env, 4096);
+    for (const value of Object.values(result)) {
+      expect(Buffer.byteLength(value, "utf8")).toBeLessThanOrEqual(4096);
+    }
+  });
+});
 
 describe("buildInvocationEnvForLogs", () => {
   it("redacts inline secrets from resolved command metadata", () => {

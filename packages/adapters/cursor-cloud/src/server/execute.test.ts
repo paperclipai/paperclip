@@ -16,11 +16,20 @@ type MockAgentOptions = {
   sendRun?: ReturnType<typeof createMockRun>;
 };
 
-const { createMock, resumeMock, getRunMock } = vi.hoisted(() => ({
+const { createMock, resumeMock, getRunMock, fetchCursorRunUsageMock } = vi.hoisted(() => ({
   createMock: vi.fn(),
   resumeMock: vi.fn(),
   getRunMock: vi.fn(),
+  fetchCursorRunUsageMock: vi.fn(),
 }));
+
+vi.mock("./usage.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./usage.js")>();
+  return {
+    ...actual,
+    fetchCursorRunUsage: fetchCursorRunUsageMock,
+  };
+});
 
 vi.mock("@cursor/sdk", () => ({
   Agent: {
@@ -140,6 +149,8 @@ describe("cursor_cloud execute", () => {
     createMock.mockReset();
     resumeMock.mockReset();
     getRunMock.mockReset();
+    fetchCursorRunUsageMock.mockReset();
+    fetchCursorRunUsageMock.mockResolvedValue(null);
   });
 
   it("creates a fresh Cursor agent and injects Paperclip env without CURSOR_API_KEY", async () => {
@@ -312,6 +323,47 @@ describe("cursor_cloud execute", () => {
       cursorCloud: {
         canReuseSession: true,
         repoUrl: "https://github.com/paperclipai/paperclip.git",
+      },
+    });
+  });
+
+  it("includes token usage when fetchCursorRunUsage returns data for a finished run", async () => {
+    fetchCursorRunUsageMock.mockResolvedValue({
+      inputTokens: 1500,
+      outputTokens: 350,
+      cacheWriteTokens: 0,
+      cacheReadTokens: 200,
+      totalTokens: 2050,
+    });
+    const run = createMockRun({ agentId: "agent-usage", id: "run-usage" });
+    const sdkAgent = createMockSdkAgent({ agentId: "agent-usage", sendRun: run });
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext();
+
+    const result = await execute(ctx);
+
+    expect(fetchCursorRunUsageMock).toHaveBeenCalledWith({
+      apiKey: "cursor-secret",
+      agentId: "agent-usage",
+      runId: "run-usage",
+    });
+    expect(result).toMatchObject({
+      exitCode: 0,
+      costUsd: null,
+      usage: {
+        inputTokens: 1500,
+        outputTokens: 350,
+        cachedInputTokens: 200,
+      },
+      resultJson: {
+        cursorUsage: {
+          inputTokens: 1500,
+          outputTokens: 350,
+          cacheWriteTokens: 0,
+          cacheReadTokens: 200,
+          totalTokens: 2050,
+        },
+        costEstimated: false,
       },
     });
   });
