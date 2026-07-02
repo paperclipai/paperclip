@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNull, lte } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lte, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -3755,10 +3755,16 @@ export function createToolGatewayService(
 
   return {
     async listNamedGateways(companyId: string): Promise<ToolMcpGatewayWithTokens[]> {
+      // Archived gateways are retired — they must not appear in the list UI.
       const gateways = await db
         .select()
         .from(toolMcpGateways)
-        .where(eq(toolMcpGateways.companyId, companyId))
+        .where(
+          and(
+            eq(toolMcpGateways.companyId, companyId),
+            ne(toolMcpGateways.status, "archived"),
+          ),
+        )
         .orderBy(desc(toolMcpGateways.createdAt));
       const rows = await Promise.all(gateways.map((gateway) => getGatewayWithTokens(companyId, gateway.id)));
       return rows;

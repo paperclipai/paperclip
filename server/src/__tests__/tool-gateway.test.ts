@@ -650,6 +650,39 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it("omits archived gateways from listNamedGateways", async () => {
+    const company = await createCompany(db);
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `archived-list-${randomUUID()}`,
+      name: `Archived list ${randomUUID()}`,
+      defaultAction: "deny",
+    }).returning();
+    const gateway = createTestToolGatewayService(db);
+
+    const kept = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: { name: "Kept gateway", profileId: profile.id },
+    });
+    const retired = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: { name: "Retired gateway", profileId: profile.id },
+    });
+
+    // Both are visible while active.
+    let listed = await gateway.listNamedGateways(company.id);
+    expect(listed.map((g) => g.id).sort()).toEqual([kept.id, retired.id].sort());
+
+    // Archiving one drops it from the list (but not the active one).
+    await gateway.updateNamedGateway({
+      companyId: company.id,
+      gatewayId: retired.id,
+      body: { status: "archived" },
+    });
+    listed = await gateway.listNamedGateways(company.id);
+    expect(listed.map((g) => g.id)).toEqual([kept.id]);
+  });
+
   it("throttles named gateway bearer auth failures without leaking bearer material", async () => {
     const company = await createCompany(db);
     const [profile] = await db.insert(toolProfiles).values({
