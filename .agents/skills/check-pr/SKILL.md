@@ -194,18 +194,18 @@ GREPTILE_JOB_BLOCKING=$(echo "$GREPTILE_JOBS" \
   | jq '[.[] | select(.status != "success")] | length')
 
 # 3. If Greptile integrates via MR notes instead of a CI job, require the newest
-#    Greptile note to reference the current head sha (reject stale/missing).
+#    Greptile note to reference the current head sha and report a clean review.
 GREPTILE_NOTES=$(glab api "projects/:fullpath/merge_requests/<MR_IID>/discussions?per_page=100" \
   | jq --arg sha "$MR_SHA" '[.[].notes[]
       | select(.author.username | test("greptile"; "i"))]
       | sort_by(.updated_at // .created_at)')
-GREPTILE_NOTE_FRESH=$(echo "$GREPTILE_NOTES" \
+GREPTILE_NOTE_CLEAN=$(echo "$GREPTILE_NOTES" \
   | jq --arg sha "$MR_SHA" 'if length == 0 then 0
-      elif (last.body // "" | contains($sha)) then 1
+      elif ((last.body // "") | contains($sha) and test("Confidence Score:[[:space:]]*5/5|Confidence:[[:space:]]*5/5|\\b5/5\\b"; "i") and (test("Prompt To Fix|blocking issue|failed|action required"; "i") | not)) then 1
       else 0 end')
 
-if [ "$GREPTILE_JOB_SUCCESS" = "0" ] && [ "$GREPTILE_NOTE_FRESH" = "0" ]; then
-  echo "Blocked: no successful Greptile job or current-head Greptile note is tied to MR head $MR_SHA."
+if [ "$GREPTILE_JOB_SUCCESS" = "0" ] && [ "$GREPTILE_NOTE_CLEAN" = "0" ]; then
+  echo "Blocked: no successful Greptile job or completed-clean current-head Greptile note is tied to MR head $MR_SHA."
   exit 1
 fi
 
