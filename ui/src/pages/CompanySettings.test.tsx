@@ -77,6 +77,8 @@ vi.mock("../context/ToastContext", () => ({
   useToast: () => ({
     pushToast: mockPushToast,
   }),
+  useToastActions: () => ({ pushToast: mockPushToast }),
+  useOptionalToastActions: () => ({ pushToast: mockPushToast }),
 }));
 
 vi.mock("../context/CompanyContext", () => ({
