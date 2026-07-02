@@ -43,4 +43,4 @@ jobs:
           path: |
             tests/e2e/playwright-report/
             tests/e2e/test-results/
-          retention-days: 14
+          retention-days: 1

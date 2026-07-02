@@ -114,7 +114,7 @@ jobs:
             ${{ env.SMOKE_METADATA_FILE }}
             tests/release-smoke/playwright-report/
             tests/release-smoke/test-results/
-          retention-days: 14
+          retention-days: 1
 
       - name: Stop Docker smoke container
         if: always()
