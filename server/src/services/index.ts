@@ -44,6 +44,15 @@ export {
 } from "./external-objects.js";
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
+export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
+export type {
+  WorkTimelineActor,
+  WorkTimelineEdge,
+  WorkTimelineEvent,
+  WorkTimelineQuery,
+  WorkTimelineResult,
+  WorkTimelineSpan,
+} from "./work-timeline.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";

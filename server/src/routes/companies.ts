@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request } from "express";
 import { and, count as countFn, eq } from "drizzle-orm";
+import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable } from "@paperclipai/db";
 import {
@@ -27,6 +28,7 @@ import {
   companyService,
   feedbackService,
   logActivity,
+  workTimelineService,
 } from "../services/index.js";
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
@@ -56,6 +58,26 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     }
     return parsed;
   }
+
+  function parseIntegerQuery(value: unknown, field: string) {
+    if (value === undefined || value === null || value === "") return undefined;
+    const parsed = typeof value === "string" ? Number(value) : NaN;
+    if (!Number.isFinite(parsed)) {
+      throw badRequest(`Invalid ${field} query value`);
+    }
+    return Math.floor(parsed);
+  }
+
+  const timelineQuerySchema = z.object({
+    from: z.string().optional(),
+    to: z.string().optional(),
+    userId: z.string().min(1).optional(),
+    goalId: z.string().uuid().optional(),
+    projectId: z.string().uuid().optional(),
+    issueId: z.string().uuid().optional(),
+    limit: z.string().optional(),
+    offset: z.string().optional(),
+  }).passthrough();
 
   function assertImportTargetAccess(
     req: Request,
@@ -121,6 +143,60 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     assertCompanyAccess(req, companyId);
     const query = companyArtifactsQuerySchema.parse(req.query);
     res.json(await artifacts.list(companyId, query));
+  });
+
+  router.get("/:companyId/timeline", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+
+    const companyScopeDecision = await access.decide({
+      actor: req.actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId },
+    });
+    if (!companyScopeDecision.allowed) {
+      res.status(403).json({ error: "Timeline is outside this actor's authorization boundary" });
+      return;
+    }
+
+    const query = timelineQuerySchema.parse(req.query);
+    const timeline = workTimelineService(db);
+    const result = await timeline.getTimeline({
+      companyId,
+      from: parseDateQuery(query.from, "from"),
+      to: parseDateQuery(query.to, "to"),
+      userId: query.userId,
+      goalId: query.goalId,
+      projectId: query.projectId,
+      issueId: query.issueId,
+      limit: parseIntegerQuery(query.limit, "limit"),
+      offset: parseIntegerQuery(query.offset, "offset"),
+      canReadIssue: async (issue) => {
+        const decision = await access.decide({
+          actor: req.actor,
+          action: "issue:read",
+          resource: {
+            type: "issue",
+            companyId: issue.companyId,
+            issueId: issue.id,
+            projectId: issue.projectId,
+            parentIssueId: issue.parentId,
+            assigneeAgentId: issue.assigneeAgentId,
+            assigneeUserId: issue.assigneeUserId,
+            status: issue.status,
+          },
+          scope: {
+            issueId: issue.id,
+            projectId: issue.projectId,
+            parentIssueId: issue.parentId,
+            assigneeAgentId: issue.assigneeAgentId,
+            assigneeUserId: issue.assigneeUserId,
+          },
+        });
+        return decision.allowed;
+      },
+    });
+    res.json(result);
   });
 
   router.get("/:companyId", async (req, res) => {
