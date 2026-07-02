@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ComponentProps } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
@@ -138,6 +138,14 @@ vi.mock("@/lib/router", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
+
 // jsdom doesn't implement scrollIntoView; the inbox calls it from a passive effect.
 if (typeof Element !== "undefined" && !Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
@@ -227,6 +235,7 @@ function createJoinRequest(
 }
 
 function resetInboxApiMocks() {
+  for (const mock of Object.values(apiMocks)) mock.mockReset();
   routerMock.location.pathname = "/";
   routerMock.location.search = "";
   routerMock.location.hash = "";
@@ -327,6 +336,37 @@ describe("Inbox toolbar", () => {
     });
   });
 
+  it("requests live descendant summaries for issue rows", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+
+    await vi.waitFor(() => {
+      expect(apiMocks.issuesList).toHaveBeenCalledTimes(3);
+    });
+
+    expect(apiMocks.issuesList.mock.calls.map((call) => call[1]?.includeLiveDescendantSummary)).toEqual([
+      true,
+      true,
+      true,
+    ]);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("syncs hover with j/k selection on inbox rows", async () => {
     routerMock.location.pathname = "/inbox/mine";
     const issueA = createIssue({ id: "issue-a", identifier: "PAP-1001", title: "First inbox row" });
@@ -360,18 +400,24 @@ describe("Inbox toolbar", () => {
 
     await act(async () => {
       rows[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      rows[1]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
     });
 
     // After hovering row 1, that row is "selected" — same visual state as j/k selection.
-    expect(linkOf(rows[1]!)?.className).toContain("hover:bg-transparent");
+    await vi.waitFor(() => {
+      expect(linkOf(rows[1]!)?.className).toContain("hover:bg-transparent");
+    });
     expect(linkOf(rows[0]!)?.className).toContain("hover:bg-accent/50");
 
     await act(async () => {
       rows[0]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      rows[0]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
     });
 
     // Hovering a different row moves the selection to follow the mouse.
-    expect(linkOf(rows[0]!)?.className).toContain("hover:bg-transparent");
+    await vi.waitFor(() => {
+      expect(linkOf(rows[0]!)?.className).toContain("hover:bg-transparent");
+    });
     expect(linkOf(rows[1]!)?.className).toContain("hover:bg-accent/50");
 
     act(() => {

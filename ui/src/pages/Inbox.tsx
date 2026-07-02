@@ -49,6 +49,10 @@ import {
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
 } from "../lib/keyboardShortcuts";
+import {
+  resolveInboxIssueBlockerAttention,
+  resolveIssueLiveDescendantCount,
+} from "../lib/inbox-live-descendants";
 import { EmptyState } from "../components/EmptyState";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -798,10 +802,11 @@ export function Inbox() {
   });
 
   const { data: issues, isLoading: isIssuesLoading } = useQuery({
-    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "with-routine-executions"],
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "with-routine-executions", "live-descendant-summary"],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         includeRoutineExecutions: true,
+        includeLiveDescendantSummary: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }),
     enabled: !!selectedCompanyId,
@@ -812,13 +817,14 @@ export function Inbox() {
     data: mineIssuesRaw = [],
     isLoading: isMineIssuesLoading,
   } = useQuery({
-    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions"],
+    queryKey: [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions", "live-descendant-summary"],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         touchedByUserId: "me",
         inboxArchivedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
         includeRoutineExecutions: true,
+        includeLiveDescendantSummary: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }),
     enabled: !!selectedCompanyId,
@@ -829,12 +835,13 @@ export function Inbox() {
     data: touchedIssuesRaw = [],
     isLoading: isTouchedIssuesLoading,
   } = useQuery({
-    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions"],
+    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions", "live-descendant-summary"],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         touchedByUserId: "me",
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
         includeRoutineExecutions: true,
+        includeLiveDescendantSummary: true,
         limit: INBOX_ISSUE_LIST_LIMIT,
       }),
     enabled: !!selectedCompanyId,
@@ -881,12 +888,14 @@ export function Inbox() {
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedSearchQuery, undefined, 25),
       "inbox-supplement",
+      "live-descendant-summary",
     ],
     queryFn: () =>
       issuesApi.list(selectedCompanyId!, {
         q: normalizedSearchQuery,
         limit: 25,
         includeRoutineExecutions: true,
+        includeLiveDescendantSummary: true,
       }),
     enabled: shouldUseIssueSearchSupplement,
     placeholderData: (previousData) => previousData,
@@ -2372,6 +2381,22 @@ export function Inbox() {
                   const assigneeUserProfile = issue.assigneeUserId
                     ? companyUserProfileMap.get(issue.assigneeUserId) ?? null
                     : null;
+                  const isLive = liveIssueIds.has(issue.id);
+                  const loadedSubtreeLiveCount = subtreeLiveCounts.get(issue.id) ?? 0;
+                  const liveDescendantCount = resolveIssueLiveDescendantCount(issue, loadedSubtreeLiveCount);
+                  const blockerAttention = resolveInboxIssueBlockerAttention(issue, {
+                    isLive,
+                    loadedSubtreeLiveCount,
+                  });
+                  const showStatus = visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status");
+                  const showSubtreeLiveChip = !(
+                    showStatus
+                    && issue.status === "blocked"
+                    && blockerAttention?.state === "covered"
+                  );
+                  const rowStatusIcon = (
+                    <StatusIcon status={issue.status} blockerAttention={blockerAttention} />
+                  );
                   return (
                     <IssueRow
                       key={`issue:${issue.id}`}
@@ -2407,10 +2432,12 @@ export function Inbox() {
                           {depth > 0 ? <span className="hidden w-4 shrink-0 sm:block" /> : null}
                           <InboxIssueMetaLeading
                             issue={issue}
-                            isLive={liveIssueIds.has(issue.id)}
-                            subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
-                            showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
+                            isLive={isLive}
+                            subtreeLiveCount={liveDescendantCount}
+                            showSubtreeLiveChip={showSubtreeLiveChip}
+                            showStatus={showStatus}
                             showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
+                            statusSlot={rowStatusIcon}
                           />
                         </>
                       }
@@ -2433,7 +2460,9 @@ export function Inbox() {
                           >
                             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                           </button>
-                        ) : undefined
+                        ) : (
+                          <StatusIcon status={issue.status} blockerAttention={blockerAttention} size="lg" />
+                        )
                       }
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
                       onMarkRead={() => markReadMutation.mutate(issue.id)}
