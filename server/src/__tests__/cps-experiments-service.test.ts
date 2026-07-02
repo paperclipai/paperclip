@@ -9,6 +9,17 @@ let indexFile = "";
 
 beforeAll(async () => {
   root = await mkdtemp(path.join(os.tmpdir(), "cps-experiments-test-"));
+  const fixtureDir = path.join(root, "sp-20260701T000000Z-fixture");
+  await mkdir(fixtureDir, { recursive: true });
+  await writeFile(path.join(fixtureDir, "JUDGMENT.json"), JSON.stringify({
+    schema: "cps.experiment_judgment.v1",
+    experiment_id: "sp-20260701T000000Z-fixture",
+    result_verdict: "LOCAL_VALIDATION_KILL",
+    promotion_verdict: "do_not_promote",
+    data_fit: { status: "proxy" },
+    rules_disclosure: { status: "partial" },
+    next_action: { type: "archive", safe_to_delegate: true, prompt: "Archive with learning." },
+  }), "utf8");
   const trackerDir = path.join(root, "experiment-tracker-20260701");
   await mkdir(trackerDir, { recursive: true });
   indexFile = path.join(trackerDir, "EXPERIMENTS_INDEX.json");
@@ -27,7 +38,7 @@ beforeAll(async () => {
         id: "sp-20260701T000000Z-fixture",
         run_id: "20260701T000000Z",
         path: "sp-20260701T000000Z-fixture",
-        absolute_path: "/root/cps/var/self_practice/sp-20260701T000000Z-fixture",
+        absolute_path: fixtureDir,
         updated_utc: "2026-07-01T00:10:00.000Z",
         kind: "strategy_experiment",
         status: "ok",
@@ -68,6 +79,12 @@ describe("cpsExperimentsService.overview", () => {
     expect(out.entries[0].id).toBe("sp-20260701T000000Z-fixture");
     expect(out.entries[0].runId).toBe("20260701T000000Z");
     expect(out.entries[0].primaryJson).toBe("sp-20260701T000000Z-fixture/metrics.json");
+    expect(out.entries[0].judgment?.result_verdict).toBe("LOCAL_VALIDATION_KILL");
+    expect(out.entries[0].judgmentPath).toContain("JUDGMENT.json");
+    expect(out.counts.judgmentByResultVerdict.LOCAL_VALIDATION_KILL).toBe(1);
+    expect(out.counts.judgmentByPromotionVerdict.do_not_promote).toBe(1);
+    expect(out.counts.judgmentByDataFit.proxy).toBe(1);
+    expect(out.counts.judgmentByRulesDisclosure.partial).toBe(1);
     expect(out.recent).toHaveLength(2);
   });
 
@@ -102,17 +119,35 @@ describe("cpsExperimentsService.overview", () => {
     const runRequestsDir = path.join(root, "run-requests");
     const svc = cpsExperimentsService({ runRequestsDir });
     const request = await svc.createRunRequest("company-1", {
-      action: "investigate_near_miss",
+      action: "run_next_safe_action",
       experimentId: "sp-20260701T000000Z-fixture",
       prompt: "Investigate this near miss with local data only.",
       maxRuntimeMinutes: 30,
     });
 
     expect(request.status).toBe("queued");
+    expect(request.action).toBe("run_next_safe_action");
     expect(request.safety).toMatchObject({ brokerActions: false, signalPublishing: false, allowPaidData: false });
     const stored = JSON.parse(await readFile(request.path, "utf8"));
     expect(stored.id).toBe(request.id);
     const queue = await readFile(request.queuePath, "utf8");
     expect(queue).toContain(request.id);
+  });
+
+  it("writes append-only judgment feedback labels", async () => {
+    const svc = cpsExperimentsService({ selfPracticeDir: root });
+    const feedback = await svc.createJudgmentFeedback("company-1", {
+      experimentId: "sp-20260701T000000Z-fixture",
+      label: "too_optimistic",
+      comment: "Conservative sequencing should dominate.",
+    });
+
+    expect(feedback.schema).toBe("cps.judgment_feedback.v1");
+    expect(feedback.label).toBe("too_optimistic");
+    expect(feedback.judgmentPath).toContain("JUDGMENT.json");
+    const stored = JSON.parse(await readFile(feedback.path, "utf8"));
+    expect(stored.comment).toBe("Conservative sequencing should dominate.");
+    const queue = await readFile(feedback.queuePath, "utf8");
+    expect(queue).toContain(feedback.id);
   });
 });

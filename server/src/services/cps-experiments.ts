@@ -7,9 +7,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type {
+  CreateCpsJudgmentFeedbackInput,
   CreateCpsRunRequestInput,
   CpsExperimentEntry,
+  CpsExperimentJudgment,
   CpsExperimentOverview,
+  CpsJudgmentFeedback,
   CpsRunRequest,
   CpsRunRequestAction,
 } from "@paperclipai/shared";
@@ -61,6 +64,24 @@ const RUN_REQUEST_ACTIONS: ReadonlySet<CpsRunRequestAction> = new Set([
   "investigate_near_miss",
   "refresh_index",
   "custom_bounded_research",
+  "generate_judgment",
+  "revise_judgment_from_operator_label",
+  "delegate_quant_review",
+  "delegate_data_feasibility",
+  "run_next_safe_action",
+  "build_operator_dossier",
+  "archive_failure_with_learning",
+]);
+
+const JUDGMENT_FEEDBACK_LABELS = new Set([
+  "agree",
+  "disagree",
+  "too_optimistic",
+  "too_conservative",
+  "wrong_blocker",
+  "proceed_autonomously",
+  "archive",
+  "requires_approval",
 ]);
 
 function assertRunRequestInput(input: CreateCpsRunRequestInput) {
@@ -74,6 +95,26 @@ function assertRunRequestInput(input: CreateCpsRunRequestInput) {
   if (!Number.isFinite(maxRuntime) || maxRuntime < 1 || maxRuntime > 360) {
     throw new Error("maxRuntimeMinutes must be between 1 and 360");
   }
+}
+
+function assertJudgmentFeedbackInput(input: CreateCpsJudgmentFeedbackInput) {
+  const experimentId = input.experimentId?.trim();
+  if (!experimentId) throw new Error("experimentId is required");
+  if (experimentId.length > 160) throw new Error("experimentId is too long");
+  const label = input.label?.trim();
+  if (!label || !JUDGMENT_FEEDBACK_LABELS.has(label)) throw new Error("Unsupported judgment feedback label");
+  if (input.correctedVerdict && input.correctedVerdict.length > 160) throw new Error("correctedVerdict is too long");
+  if (input.comment && input.comment.length > 2000) throw new Error("comment is too long");
+}
+
+function increment(counter: Record<string, number>, key: string | null | undefined) {
+  if (!key) return;
+  counter[key] = (counter[key] ?? 0) + 1;
+}
+
+function nestedStatus(value: unknown): string | null {
+  const rec = asRecord(value);
+  return asString(rec?.status);
 }
 
 function safeSlug(value: string) {
@@ -110,6 +151,26 @@ function mapEntry(raw: unknown): CpsExperimentEntry | null {
     files: asStringArray(rec.files),
     summary,
   };
+}
+
+function resolveEntryDir(entry: Pick<CpsExperimentEntry, "absolutePath" | "path">, selfPracticeDir: string): string | null {
+  const raw = entry.absolutePath ?? entry.path;
+  if (!raw) return null;
+  return path.isAbsolute(raw) ? raw : path.join(selfPracticeDir, raw);
+}
+
+async function readJudgment(entry: CpsExperimentEntry, selfPracticeDir: string): Promise<CpsExperimentEntry> {
+  const entryDir = resolveEntryDir(entry, selfPracticeDir);
+  if (!entryDir) return { ...entry, judgment: null, judgmentPath: null };
+  const judgmentPath = path.join(entryDir, "JUDGMENT.json");
+  try {
+    const text = await fs.readFile(judgmentPath, "utf8");
+    const parsed = JSON.parse(text) as unknown;
+    const judgment = asRecord(parsed) as CpsExperimentJudgment | null;
+    return { ...entry, judgment, judgmentPath: judgment ? path.normalize(judgmentPath) : null };
+  } catch {
+    return { ...entry, judgment: null, judgmentPath: null };
+  }
 }
 
 async function readIndex(indexFile: string): Promise<Json | null> {
@@ -189,6 +250,38 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
       return request;
     },
 
+    async createJudgmentFeedback(companyId: string, input: CreateCpsJudgmentFeedbackInput): Promise<CpsJudgmentFeedback> {
+      assertJudgmentFeedbackInput(input);
+      const createdAt = new Date().toISOString();
+      const selfPracticeDir = options.selfPracticeDir ?? process.env.PAPERCLIP_CPS_SELF_PRACTICE_DIR ?? DEFAULT_SELF_PRACTICE_DIR;
+      const labelsDir = path.join(selfPracticeDir, "paperclip-judgment-labels");
+      await fs.mkdir(labelsDir, { recursive: true });
+      const experimentId = input.experimentId.trim();
+      const id = `${createdAt.replace(/[-:.]/g, "").slice(0, 15)}-${safeSlug(input.label)}-${safeSlug(experimentId)}`;
+      const feedbackPath = path.join(labelsDir, `${id}.json`);
+      const queuePath = path.join(labelsDir, "LABELS.jsonl");
+      const judgmentPath = path.join(selfPracticeDir, experimentId, "JUDGMENT.json");
+      const judgmentExists = await fileMtimeMs(judgmentPath);
+      const feedback: CpsJudgmentFeedback = {
+        schema: "cps.judgment_feedback.v1",
+        id,
+        companyId,
+        experimentId,
+        label: input.label.trim(),
+        correctedVerdict: input.correctedVerdict?.trim() || null,
+        comment: input.comment?.trim() || null,
+        createdAt,
+        createdBy: "board",
+        judgmentPath: judgmentExists !== null ? path.normalize(judgmentPath) : null,
+        path: path.normalize(feedbackPath),
+        queuePath: path.normalize(queuePath),
+      };
+      const line = `${JSON.stringify(feedback)}\n`;
+      await fs.writeFile(feedbackPath, `${JSON.stringify(feedback, null, 2)}\n`, { flag: "wx" });
+      await fs.appendFile(queuePath, line);
+      return feedback;
+    },
+
     async overview(companyId: string): Promise<CpsExperimentOverview> {
       const indexFile = await resolveIndexFile(options);
       const raw = await readIndex(indexFile);
@@ -198,8 +291,25 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
       const sourceGeneratedMs = parseDateMs(asString(raw?.generated_utc) ?? asString(raw?.generatedAt));
       const freshestMs = sourceGeneratedMs ?? indexMtimeMs;
       const ageSeconds = freshestMs === null ? null : Math.max(0, Math.round((now - freshestMs) / 1000));
-      const entries = Array.isArray(raw?.entries) ? raw.entries.map(mapEntry).filter((entry): entry is CpsExperimentEntry => entry !== null) : [];
+      const selfPracticeDir = options.selfPracticeDir ?? process.env.PAPERCLIP_CPS_SELF_PRACTICE_DIR ?? DEFAULT_SELF_PRACTICE_DIR;
+      const entries = await Promise.all(
+        (Array.isArray(raw?.entries) ? raw.entries.map(mapEntry).filter((entry): entry is CpsExperimentEntry => entry !== null) : [])
+          .map((entry) => readJudgment(entry, selfPracticeDir)),
+      );
       entries.sort((a, b) => b.updatedUtc.localeCompare(a.updatedUtc));
+
+      const judgmentByResultVerdict: Record<string, number> = {};
+      const judgmentByPromotionVerdict: Record<string, number> = {};
+      const judgmentByDataFit: Record<string, number> = {};
+      const judgmentByRulesDisclosure: Record<string, number> = {};
+      for (const entry of entries) {
+        const judgment = entry.judgment;
+        if (!judgment) continue;
+        increment(judgmentByResultVerdict, asString(judgment.result_verdict) ?? asString(judgment.resultVerdict));
+        increment(judgmentByPromotionVerdict, asString(judgment.promotion_verdict) ?? asString(judgment.promotionVerdict));
+        increment(judgmentByDataFit, nestedStatus(judgment.data_fit) ?? nestedStatus(judgment.dataFit));
+        increment(judgmentByRulesDisclosure, nestedStatus(judgment.rules_disclosure) ?? nestedStatus(judgment.rulesDisclosure));
+      }
 
       return {
         companyId,
@@ -219,6 +329,10 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
           byDecision: asStringNumberRecord(raw?.decision_counts),
           strategyByDecision: asStringNumberRecord(raw?.strategy_decision_counts),
           evalByVerdict: asStringNumberRecord(raw?.eval_verdict_counts),
+          judgmentByResultVerdict,
+          judgmentByPromotionVerdict,
+          judgmentByDataFit,
+          judgmentByRulesDisclosure,
         },
         recent: entries.slice(0, recentLimit),
         entries,

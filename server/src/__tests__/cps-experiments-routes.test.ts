@@ -7,6 +7,7 @@ const companyId = "22222222-2222-4222-8222-222222222222";
 const mockService = vi.hoisted(() => ({
   overview: vi.fn(),
   createRunRequest: vi.fn(),
+  createJudgmentFeedback: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -48,7 +49,7 @@ describe("CPS experiment routes", () => {
       companyId,
       generatedAt: "2026-07-01T00:00:00.000Z",
       source: { indexPath: "/tmp/EXPERIMENTS_INDEX.json", present: true, stale: false, ageSeconds: 1, schema: "cps.experiment_index.v1", root: "/tmp" },
-      counts: { total: 0, byKind: {}, byStatus: {}, byDecision: {}, strategyByDecision: {}, evalByVerdict: {} },
+      counts: { total: 0, byKind: {}, byStatus: {}, byDecision: {}, strategyByDecision: {}, evalByVerdict: {}, judgmentByResultVerdict: {}, judgmentByPromotionVerdict: {}, judgmentByDataFit: {}, judgmentByRulesDisclosure: {} },
       recent: [],
       entries: [],
       safety: { readOnly: true, brokerActions: false, paidComputeActions: false, paidDataActions: false, signalPublishing: false, note: "read-only" },
@@ -67,6 +68,20 @@ describe("CPS experiment routes", () => {
       safety: { brokerActions: false, signalPublishing: false, allowPaidData: false, allowPaidCompute: false, note: "safe" },
       path: "/tmp/req-1.json",
       queuePath: "/tmp/QUEUE.jsonl",
+    });
+    mockService.createJudgmentFeedback.mockResolvedValue({
+      schema: "cps.judgment_feedback.v1",
+      id: "label-1",
+      companyId,
+      experimentId: "exp-1",
+      label: "agree",
+      correctedVerdict: null,
+      comment: null,
+      createdAt: "2026-07-01T00:00:00.000Z",
+      createdBy: "board",
+      judgmentPath: "/tmp/exp-1/JUDGMENT.json",
+      path: "/tmp/label-1.json",
+      queuePath: "/tmp/LABELS.jsonl",
     });
     mockLogActivity.mockResolvedValue(undefined);
   });
@@ -110,5 +125,18 @@ describe("CPS experiment routes", () => {
     expect(mockService.createRunRequest).toHaveBeenCalledWith(companyId, expect.objectContaining({ action: "investigate_near_miss", experimentId: "exp-1" }));
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "cps.run_request.queued", entityId: "req-1" }));
     expect(res.body).toMatchObject({ id: "req-1", safety: { brokerActions: false, signalPublishing: false } });
+  });
+
+  it("lets board users persist judgment feedback labels and logs the mutation", async () => {
+    const app = await createApp({ type: "board", userId: "board-user", source: "session", isInstanceAdmin: true, companyIds: [companyId] });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/cps-experiments/judgment-feedback`)
+      .send({ experimentId: "exp-1", label: "agree" });
+
+    expect(res.status).toBe(201);
+    expect(mockService.createJudgmentFeedback).toHaveBeenCalledWith(companyId, expect.objectContaining({ experimentId: "exp-1", label: "agree" }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "cps.judgment_label.created", entityId: "label-1" }));
+    expect(res.body).toMatchObject({ id: "label-1", schema: "cps.judgment_feedback.v1", label: "agree" });
   });
 });

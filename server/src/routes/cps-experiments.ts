@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import type { CreateCpsRunRequestInput } from "@paperclipai/shared";
+import type { CreateCpsJudgmentFeedbackInput, CreateCpsRunRequestInput } from "@paperclipai/shared";
 import { cpsExperimentsService } from "../services/cps-experiments.js";
 import { logActivity } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -42,6 +42,34 @@ export function cpsExperimentRoutes(db: Db) {
       res.status(202).json(request);
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : "Invalid CPS run request" });
+    }
+  });
+
+  router.post("/companies/:companyId/cps-experiments/judgment-feedback", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    try {
+      const feedback = await svc.createJudgmentFeedback(companyId, req.body as CreateCpsJudgmentFeedbackInput);
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "cps.judgment_label.created",
+        entityType: "cps_judgment_feedback",
+        entityId: feedback.id,
+        details: {
+          experimentId: feedback.experimentId,
+          label: feedback.label,
+          correctedVerdict: feedback.correctedVerdict,
+          judgmentPath: feedback.judgmentPath,
+        },
+      });
+      res.status(201).json(feedback);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Invalid CPS judgment feedback" });
     }
   });
 

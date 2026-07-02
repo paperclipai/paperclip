@@ -45,6 +45,27 @@ function pickMetric(entry: CpsExperimentEntry, keys: string[]): string | null {
   return null;
 }
 
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function judgmentScalar(entry: CpsExperimentEntry, snakeKey: string, camelKey?: string): string | null {
+  const judgment = entry.judgment;
+  if (!judgment) return null;
+  return scalar(judgment[snakeKey]) ?? (camelKey ? scalar(judgment[camelKey]) : null);
+}
+
+function judgmentStatus(entry: CpsExperimentEntry, snakeKey: string, camelKey?: string): string | null {
+  const judgment = entry.judgment;
+  if (!judgment) return null;
+  return scalar(recordValue(judgment[snakeKey])?.status) ?? (camelKey ? scalar(recordValue(judgment[camelKey])?.status) : null);
+}
+
+function nextActionPrompt(entry: CpsExperimentEntry): string | null {
+  const next = recordValue(entry.judgment?.next_action) ?? recordValue(entry.judgment?.nextAction);
+  return scalar(next?.prompt);
+}
+
 function CountCard({ label, value, tone = "default" }: { label: string; value: number | string; tone?: "default" | "danger" | "warn" | "ok" }) {
   const toneClass = tone === "danger" ? "text-rose-300" : tone === "warn" ? "text-amber-200" : tone === "ok" ? "text-emerald-300" : "text-white";
   return (
@@ -59,6 +80,8 @@ function EntryCard({ entry, selected, onSelect }: { entry: CpsExperimentEntry; s
   const mechanism = scalar(entry.summary.mechanism) ?? scalar(entry.summary.source_inspiration) ?? scalar(entry.summary.sourceInspiration);
   const oosMean = pickMetric(entry, ["mean_bps_event", "active_mean_bps_day", "event_mean_bps", "mean_bps_day"]);
   const oosSharpe = pickMetric(entry, ["event_sharpe_ann_sqrt52", "ann_sharpe", "event_sharpe_sqrtN"]);
+  const resultVerdict = judgmentScalar(entry, "result_verdict", "resultVerdict");
+  const dataFit = judgmentStatus(entry, "data_fit", "dataFit");
   return (
     <button
       type="button"
@@ -82,6 +105,8 @@ function EntryCard({ entry, selected, onSelect }: { entry: CpsExperimentEntry; s
       <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
         <div className="rounded-lg bg-muted/50 px-2 py-1">Updated: <span className="font-mono text-foreground">{fmtDate(entry.updatedUtc)}</span></div>
         <div className="rounded-lg bg-muted/50 px-2 py-1">Files: <span className="font-mono text-foreground">{entry.files.length}</span></div>
+        {resultVerdict ? <div className="rounded-lg bg-muted/50 px-2 py-1">Judgment: <span className="font-mono text-foreground">{resultVerdict}</span></div> : null}
+        {dataFit ? <div className="rounded-lg bg-muted/50 px-2 py-1">Data: <span className="font-mono text-foreground">{dataFit}</span></div> : null}
         {oosMean ? <div className="rounded-lg bg-muted/50 px-2 py-1">Mean: <span className="font-mono text-foreground">{oosMean}</span></div> : null}
         {oosSharpe ? <div className="rounded-lg bg-muted/50 px-2 py-1">Sharpe: <span className="font-mono text-foreground">{oosSharpe}</span></div> : null}
       </div>
@@ -89,9 +114,34 @@ function EntryCard({ entry, selected, onSelect }: { entry: CpsExperimentEntry; s
   );
 }
 
-function EntryDetail({ entry, onQueueFollowUp, isQueueing, queuedId }: { entry: CpsExperimentEntry; onQueueFollowUp: (entry: CpsExperimentEntry) => void; isQueueing: boolean; queuedId: string | null }) {
+function EntryDetail({
+  entry,
+  onQueueFollowUp,
+  onQueueJudgmentNext,
+  onCreateFeedback,
+  isQueueing,
+  isLabeling,
+  queuedId,
+  labeledId,
+}: {
+  entry: CpsExperimentEntry;
+  onQueueFollowUp: (entry: CpsExperimentEntry) => void;
+  onQueueJudgmentNext: (entry: CpsExperimentEntry) => void;
+  onCreateFeedback: (entry: CpsExperimentEntry, label: string) => void;
+  isQueueing: boolean;
+  isLabeling: boolean;
+  queuedId: string | null;
+  labeledId: string | null;
+}) {
   const failing = Array.isArray(entry.summary.failing_gates) ? entry.summary.failing_gates.filter((x): x is string => typeof x === "string") : [];
   const safety = entry.summary.safety && typeof entry.summary.safety === "object" ? entry.summary.safety as Record<string, unknown> : null;
+  const resultVerdict = judgmentScalar(entry, "result_verdict", "resultVerdict");
+  const promotionVerdict = judgmentScalar(entry, "promotion_verdict", "promotionVerdict");
+  const rulesStatus = judgmentStatus(entry, "rules_disclosure", "rulesDisclosure");
+  const dataStatus = judgmentStatus(entry, "data_fit", "dataFit");
+  const executionStatus = judgmentStatus(entry, "execution_fit", "executionFit");
+  const nextPrompt = nextActionPrompt(entry);
+  const blockers = Array.isArray(entry.judgment?.blockers) ? entry.judgment.blockers : [];
   return (
     <div className="flex flex-col gap-4">
       <section className="rounded-2xl border border-border bg-card p-5">
@@ -114,9 +164,49 @@ function EntryDetail({ entry, onQueueFollowUp, isQueueing, queuedId }: { entry: 
           >
             {isQueueing ? "Queueing…" : "Queue bounded CPS follow-up"}
           </button>
+          <button
+            type="button"
+            onClick={() => onQueueJudgmentNext(entry)}
+            disabled={isQueueing || !nextPrompt}
+            className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-500/15 disabled:cursor-not-allowed disabled:opacity-60 dark:text-emerald-300"
+          >
+            {isQueueing ? "Queueing…" : "Run judgment next action"}
+          </button>
           {queuedId ? <span className="rounded-full bg-emerald-500/10 px-3 py-1.5 font-mono text-xs text-emerald-700 dark:text-emerald-300">queued {queuedId}</span> : null}
         </div>
       </section>
+
+      {entry.judgment ? (
+        <section className="rounded-2xl border border-border bg-card p-4">
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold"><FileJson className="h-4 w-4 text-emerald-500" /> Judgment</div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {resultVerdict ? <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs"><span className="text-muted-foreground">Result verdict</span><div className="font-mono text-foreground">{resultVerdict}</div></div> : null}
+            {promotionVerdict ? <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs"><span className="text-muted-foreground">Promotion</span><div className="font-mono text-foreground">{promotionVerdict}</div></div> : null}
+            {rulesStatus ? <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs"><span className="text-muted-foreground">Rules</span><div className="font-mono text-foreground">{rulesStatus}</div></div> : null}
+            {dataStatus ? <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs"><span className="text-muted-foreground">Data</span><div className="font-mono text-foreground">{dataStatus}</div></div> : null}
+            {executionStatus ? <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs"><span className="text-muted-foreground">Execution</span><div className="font-mono text-foreground">{executionStatus}</div></div> : null}
+            {typeof entry.judgment.confidence === "number" ? <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs"><span className="text-muted-foreground">Confidence</span><div className="font-mono text-foreground">{entry.judgment.confidence}</div></div> : null}
+          </div>
+          {blockers.length ? (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {blockers.map((blocker, index) => <span key={`${scalar(blocker.kind) ?? "blocker"}-${index}`} className="rounded-md bg-amber-500/10 px-2 py-1 font-mono text-xs text-amber-700 dark:text-amber-300">{scalar(blocker.kind) ?? "blocker"}: {scalar(blocker.description) ?? scalar(blocker.route_to_role) ?? "see JSON"}</span>)}
+            </div>
+          ) : null}
+          {nextPrompt ? <pre className="mt-3 max-h-32 overflow-auto rounded-lg bg-muted/40 p-3 text-xs leading-5 text-foreground/90">{nextPrompt}</pre> : null}
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {["agree", "disagree", "too_optimistic", "too_conservative", "wrong_blocker", "proceed_autonomously", "archive", "requires_approval"].map((label) => (
+              <button key={label} type="button" onClick={() => onCreateFeedback(entry, label)} disabled={isLabeling} className="rounded-full border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition hover:border-primary/40 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60">
+                {label.replace(/_/g, " ")}
+              </button>
+            ))}
+            {labeledId ? <span className="rounded-full bg-emerald-500/10 px-2.5 py-1 font-mono text-[11px] text-emerald-700 dark:text-emerald-300">labeled {labeledId}</span> : null}
+          </div>
+        </section>
+      ) : (
+        <section className="rounded-2xl border border-dashed border-border bg-card p-4 text-sm text-muted-foreground">
+          No `JUDGMENT.json` found yet. Queue `generate_judgment` or run a CPS judgment writer to turn this experiment into training data.
+        </section>
+      )}
 
       {failing.length ? (
         <section className="rounded-2xl border border-border bg-card p-4">
@@ -157,6 +247,7 @@ export function CpsExperiments() {
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [queuedId, setQueuedId] = useState<string | null>(null);
+  const [labeledId, setLabeledId] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard", href: "/dashboard" }, { label: "CPS Experiments" }]);
@@ -170,15 +261,28 @@ export function CpsExperiments() {
   });
 
   const queueMutation = useMutation({
-    mutationFn: (entry: CpsExperimentEntry) => cpsExperimentsApi.createRunRequest(selectedCompanyId!, {
-      action: entry.decision === "KILL_ARCHIVE" || entry.decision === "KILL" ? "investigate_near_miss" : "rerun_with_variant",
-      experimentId: entry.id,
-      prompt: `Paperclip operator requested a bounded CPS follow-up for ${entry.id}. Review the artifact, preserve the current verdict unless evidence changes, and only run safe local research/backtest steps. No broker actions, no signal publishing. If data/paid API is needed, stop and report the exact need unless already explicitly allowed by the request.`,
-      maxRuntimeMinutes: 90,
-      allowPaidData: false,
-      allowPaidCompute: false,
-    }),
+    mutationFn: ({ entry, mode }: { entry: CpsExperimentEntry; mode: "generic" | "judgment_next" }) => {
+      const prompt = mode === "judgment_next"
+        ? nextActionPrompt(entry) ?? `Generate or revise the CPS JUDGMENT.json for ${entry.id}. Preserve safety boundaries: no broker actions, no signal publishing, no paid data unless explicitly approved.`
+        : `Paperclip operator requested a bounded CPS follow-up for ${entry.id}. Review the artifact, preserve the current verdict unless evidence changes, and only run safe local research/backtest steps. No broker actions, no signal publishing. If data/paid API is needed, stop and report the exact need unless already explicitly allowed by the request.`;
+      return cpsExperimentsApi.createRunRequest(selectedCompanyId!, {
+        action: mode === "judgment_next" ? "run_next_safe_action" : (entry.decision === "KILL_ARCHIVE" || entry.decision === "KILL" ? "investigate_near_miss" : "rerun_with_variant"),
+        experimentId: entry.id,
+        prompt,
+        maxRuntimeMinutes: mode === "judgment_next" ? 120 : 90,
+        allowPaidData: false,
+        allowPaidCompute: false,
+      });
+    },
     onSuccess: (request) => setQueuedId(request.id),
+  });
+
+  const labelMutation = useMutation({
+    mutationFn: ({ entry, label }: { entry: CpsExperimentEntry; label: string }) => cpsExperimentsApi.createJudgmentFeedback(selectedCompanyId!, {
+      experimentId: entry.id,
+      label,
+    }),
+    onSuccess: (feedback) => setLabeledId(feedback.id),
   });
 
   const filtered = useMemo(() => {
@@ -188,7 +292,7 @@ export function CpsExperiments() {
       if (kindFilter !== "all" && entry.kind !== kindFilter) return false;
       if (decisionFilter !== "all" && (entry.decision ?? "UNLABELED") !== decisionFilter) return false;
       if (term) {
-        const haystack = `${entry.id} ${entry.kind} ${entry.decision ?? ""} ${entry.primaryJson ?? ""} ${JSON.stringify(entry.summary)}`.toLowerCase();
+        const haystack = `${entry.id} ${entry.kind} ${entry.decision ?? ""} ${entry.primaryJson ?? ""} ${JSON.stringify(entry.summary)} ${JSON.stringify(entry.judgment ?? {})}`.toLowerCase();
         if (!haystack.includes(term)) return false;
       }
       return true;
@@ -233,9 +337,9 @@ export function CpsExperiments() {
           </div>
           <div className="grid grid-cols-2 gap-2 text-center lg:grid-cols-4">
             <CountCard label="entries" value={data.counts.total} />
-            <CountCard label="strategy" value={data.counts.byKind.strategy_experiment ?? 0} />
-            <CountCard label="killed" value={data.counts.strategyByDecision.KILL_ARCHIVE ?? 0} tone="danger" />
-            <CountCard label="blocked" value={data.counts.strategyByDecision.BLOCKED_BY_DATA ?? 0} tone="warn" />
+            <CountCard label="judgments" value={Object.values(data.counts.judgmentByResultVerdict).reduce((sum, value) => sum + value, 0)} tone="ok" />
+            <CountCard label="killed" value={data.counts.strategyByDecision.KILL_ARCHIVE ?? data.counts.judgmentByResultVerdict.LOCAL_VALIDATION_KILL ?? 0} tone="danger" />
+            <CountCard label="blocked" value={(data.counts.judgmentByResultVerdict.DATA_BLOCKED ?? 0) + (data.counts.judgmentByResultVerdict.RULES_BLOCKED ?? 0) + (data.counts.strategyByDecision.BLOCKED_BY_DATA ?? 0)} tone="warn" />
           </div>
         </div>
       </section>
@@ -270,9 +374,13 @@ export function CpsExperiments() {
             <div className="lg:sticky lg:top-6">
               <EntryDetail
                 entry={selected}
-                onQueueFollowUp={(entry) => queueMutation.mutate(entry)}
+                onQueueFollowUp={(entry) => queueMutation.mutate({ entry, mode: "generic" })}
+                onQueueJudgmentNext={(entry) => queueMutation.mutate({ entry, mode: "judgment_next" })}
+                onCreateFeedback={(entry, label) => labelMutation.mutate({ entry, label })}
                 isQueueing={queueMutation.isPending}
+                isLabeling={labelMutation.isPending}
                 queuedId={queuedId}
+                labeledId={labeledId}
               />
             </div>
           ) : <EmptyState icon={FlaskConical} message="Select an experiment to see details." />}
