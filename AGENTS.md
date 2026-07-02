@@ -11,14 +11,19 @@ The current implementation target is V1 and is defined in `doc/SPEC-implementati
 
 Before making changes, read in this order:
 
-1. `doc/GOAL.md`
-2. `doc/PRODUCT.md`
-3. `doc/SPEC-implementation.md`
-4. `doc/DEVELOPING.md`
-5. `doc/DATABASE.md`
+1. `CLAUDE.md` — ValAdrien dev-OS overlay: the loop, the operator LANE, and skill routing
+2. `DESIGN.md` — GLASSHOUSE design system (authoritative for all UI)
+3. `doc/GOAL.md`
+4. `doc/PRODUCT.md`
+5. `doc/SPEC-implementation.md`
+6. `doc/DEVELOPING.md`
+7. `doc/DATABASE.md`
 
 `doc/SPEC.md` is long-horizon product context.
 `doc/SPEC-implementation.md` is the concrete V1 build contract.
+
+> Authority: this file governs engineering; `CLAUDE.md` governs OS framing/lane;
+> `CONTRIBUTING.md` governs PR + review. Fork sections here supersede upstream sections.
 
 ## 3. Repo Map
 
@@ -176,7 +181,14 @@ A change is done when all are true:
 4. Docs updated when behavior or commands change
 5. PR description follows the [PR template](.github/PULL_REQUEST_TEMPLATE.md) with all sections filled in (including Model Used)
 
-## 11. Fork-Specific: HenkDz/valadrien-os
+## 12. Fork-Specific: HenkDz/valadrien-os
+
+> **Not authoritative for this repo.** This section documents a *downstream*
+> fork (`HenkDz/valadrien-os`) inherited from upstream. **This repo is
+> `ValDola-stack/valadrien-os`; its authoritative coordinates (repo, working
+> branch, deploy targets) are in `CLAUDE.md`.** Agents must branch, open PRs, and
+> reason about deploys against `ValDola-stack/valadrien-os` `rebrand/valadrien-os`
+> per `CLAUDE.md` — not `HenkDz` / `feat/externalize-hermes-adapter`.
 
 This is a fork of `ValDola-stack/valadrien-os` with QoL patches and an **external-only** Hermes adapter story on branch `feat/externalize-hermes-adapter` ([tree](https://github.com/HenkDz/valadrien-os/tree/feat/externalize-hermes-adapter)).
 

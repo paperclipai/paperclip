@@ -51,6 +51,8 @@ All tests must pass before a PR can be merged. Run them locally first and verify
 
 We use [Greptile](https://greptile.com) for automated code review. Your PR must achieve a **5/5 Greptile score** with **all Greptile comments addressed** before it can be merged. If Greptile leaves comments, fix or respond to each one and request a re-review.
 
+> **Upstream only** — superseded for `ValDola-stack/valadrien-os`. On the fork, Greptile does **not** apply; the required review gate is **CodeRabbit** (non-Claude, blocking), with **Korije** advisory. See the fork section below.
+
 ## Feature Contributions
 
 We actively manage the core ValAdrien OS feature roadmap.
@@ -110,10 +112,18 @@ Happy hacking!
 
 ---
 
-## ValAdrien OS fork — internal PR workflow (Korije reviewer)
+## ValAdrien OS fork — internal PR workflow (CodeRabbit gate + Korije advisory)
 
-> This section governs the `ValDola-stack/valadrien-os` fork. It supersedes the upstream
-> **Greptile** reference above: our fork's automated reviewer is **Korije**, an in-OS agent.
+> This section governs the `ValDola-stack/valadrien-os` fork and **supersedes the upstream
+> Greptile reference above** (Greptile does not apply to the fork).
+>
+> **The review gate:**
+> - **CodeRabbit** (non-Claude) is the **required, blocking** gate — a PR is not mergeable until
+>   it passes. This is the model-diversity check: *never merge work cleared only by the same
+>   model that wrote it.*
+> - **Korije** (an in-OS Claude Sonnet agent) is the **OS-integrated advisory** reviewer — it flags
+>   findings but **never approves, merges, or gates.** Korije is Claude → integration, not diversity.
+> - **Greptile** does **not** apply here.
 
 `rebrand/valadrien-os` is the production branch (push-to-deploy via Vercel), so changes land
 through **pull requests**, not direct commits.
@@ -129,7 +139,7 @@ through **pull requests**, not direct commits.
      approves, merges, or pushes. A human decides.
 4. **Address blocking findings** (push commits — Korije re-reviews the new head) or reply why they
    don't apply.
-5. **Merge** to `rebrand/valadrien-os` when satisfied (this deploys to production); delete the branch.
+5. **Merge** to `rebrand/valadrien-os` when satisfied — **CodeRabbit must be passing** (the required, blocking gate) and any blocking Korije findings resolved. Merging deploys to production; delete the branch.
 
 **Reviews for:** correctness/bugs → security (secrets, authz, tenant-scoping) → tests →
 conventions & `DESIGN.md` (GLASSHOUSE) → scope/risk. Skips lint/format nits.
