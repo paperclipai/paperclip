@@ -342,6 +342,9 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
+export const WORK_CYCLE_STATUSES = ["planned", "active", "completed", "archived"] as const;
+export type WorkCycleStatus = (typeof WORK_CYCLE_STATUSES)[number];
+
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
 
@@ -921,6 +924,7 @@ export const PLUGIN_RESERVED_COMPANY_ROUTE_SEGMENTS = [
   "org",
   "agents",
   "projects",
+  "cycles",
   "issues",
   "goals",
   "approvals",

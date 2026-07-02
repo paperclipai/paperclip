@@ -29,6 +29,7 @@ export const issueTrailingColumns: InboxIssueColumn[] = [
   "parent",
   "storyPoints",
   "estimateHours",
+  "actualAiTime",
   "labels",
   "dueDate",
   "updated",
@@ -44,6 +45,7 @@ const issueColumnLabels: Record<InboxIssueColumn, string> = {
   parent: "Parent issue",
   storyPoints: "Story points",
   estimateHours: "Estimate",
+  actualAiTime: "AI time",
   labels: "Tags",
   dueDate: "Due",
   updated: "Last updated",
@@ -59,6 +61,7 @@ const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
   parent: "Parent issue identifier and title.",
   storyPoints: "Human planning points used for workload rollups.",
   estimateHours: "Rough hour estimate for human coordination.",
+  actualAiTime: "Actual elapsed AI run time recorded from heartbeat runs.",
   labels: "Issue labels and tags.",
   dueDate: "Due date when one is set.",
   updated: "Latest visible activity time.",
@@ -78,11 +81,24 @@ function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
       if (column === "parent") return "minmax(3.5rem, 5.5rem)";
       if (column === "storyPoints") return "minmax(3.25rem, 4rem)";
       if (column === "estimateHours") return "minmax(3.5rem, 4.25rem)";
+      if (column === "actualAiTime") return "minmax(3.75rem, 5rem)";
       if (column === "labels") return "minmax(3rem, 6rem)";
       if (column === "dueDate") return "minmax(4rem, 5rem)";
       return "minmax(3.5rem, 4.5rem)";
     })
     .join(" ");
+}
+
+function formatIssueAiTime(seconds: Issue["actualAiSeconds"]): string {
+  const totalSeconds = typeof seconds === "number" && Number.isFinite(seconds)
+    ? Math.max(0, Math.floor(seconds))
+    : 0;
+  if (totalSeconds <= 0) return "";
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.round((totalSeconds % 3600) / 60);
+  if (hours <= 0) return `${Math.max(1, minutes)}m`;
+  if (minutes <= 0) return `${hours}h`;
+  return `${hours}h ${minutes}m`;
 }
 
 function formatIssueDueDate(value: Issue["dueDate"]): {
@@ -450,6 +466,14 @@ export function InboxIssueTrailingColumns({
           return (
             <span key={column} className="min-w-0 truncate text-right text-[11px] font-semibold tabular-nums text-muted-foreground">
               {issue.estimateHours != null ? `${issue.estimateHours}h` : ""}
+            </span>
+          );
+        }
+
+        if (column === "actualAiTime") {
+          return (
+            <span key={column} className="min-w-0 truncate text-right text-[11px] font-semibold tabular-nums text-muted-foreground">
+              {formatIssueAiTime(issue.actualAiSeconds)}
             </span>
           );
         }

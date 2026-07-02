@@ -29,6 +29,7 @@ import type {
 } from "../constants.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
+import type { WorkCycle } from "./work-cycle.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
 
@@ -361,6 +362,7 @@ export interface Issue {
   id: string;
   companyId: string;
   projectId: string | null;
+  cycleId?: string | null;
   projectWorkspaceId: string | null;
   goalId: string | null;
   parentId: string | null;
@@ -422,10 +424,12 @@ export interface Issue {
   documentSummaries?: IssueDocumentSummary[];
   legacyPlanDocument?: LegacyPlanDocument | null;
   project?: Project | null;
+  cycle?: WorkCycle | null;
   goal?: Goal | null;
   currentExecutionWorkspace?: ExecutionWorkspace | null;
   workProducts?: IssueWorkProduct[];
   mentionedProjects?: Project[];
+  actualAiSeconds?: number;
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;

@@ -45,6 +45,7 @@ export const inboxIssueColumns = [
   "parent",
   "storyPoints",
   "estimateHours",
+  "actualAiTime",
   "labels",
   "dueDate",
   "updated",

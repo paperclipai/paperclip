@@ -10,6 +10,9 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g claude-p";
 // Mirrors claude_local — claude-p forwards `--model` through to the same
 // underlying `claude` binary, so the supported model ids are identical.
 export const models = [
+  { id: "claude-fable-5", label: "Claude Fable 5" },
+  { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+  { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
   { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
   { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
   { id: "claude-opus-4-5-20251101", label: "Claude Opus 4.5" },

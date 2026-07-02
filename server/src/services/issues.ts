@@ -27,6 +27,7 @@ import {
   labels,
   projectWorkspaces,
   projects,
+  workCycles,
 } from "@paperclipai/db";
 import type {
   IssueCommentAuthorType,
@@ -217,6 +218,7 @@ export interface IssueFilters {
   unreadForUserId?: string;
   awaitingDecisionForUserId?: string;
   projectId?: string;
+  cycleId?: string;
   projectScopeRestrictedTo?: string[];
   workspaceId?: string;
   executionWorkspaceId?: string;
@@ -995,6 +997,61 @@ async function activeRunMapForIssues(
   return map;
 }
 
+async function actualAiSecondsMapForIssues(
+  dbOrTx: any,
+  companyId: string,
+  issueIds: string[],
+): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
+  if (uniqueIssueIds.length === 0) return map;
+
+  const issueIdExpr = sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+  const runSecondsExpr = sql<number>`
+    CASE
+      WHEN COALESCE(${heartbeatRuns.startedAt}, ${heartbeatRuns.processStartedAt}) IS NULL THEN 0
+      ELSE GREATEST(
+        0,
+        EXTRACT(EPOCH FROM (
+          COALESCE(
+            ${heartbeatRuns.finishedAt},
+            CASE
+              WHEN ${heartbeatRuns.status} IN ('queued', 'running') THEN now()
+              ELSE ${heartbeatRuns.updatedAt}
+            END,
+            ${heartbeatRuns.updatedAt},
+            ${heartbeatRuns.createdAt}
+          )
+          - COALESCE(${heartbeatRuns.startedAt}, ${heartbeatRuns.processStartedAt})
+        ))
+      )
+    END
+  `;
+
+  for (const issueIdChunk of chunkList(uniqueIssueIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    const rows = await dbOrTx
+      .select({
+        issueId: issueIdExpr,
+        seconds: sql<number>`COALESCE(SUM(${runSecondsExpr}), 0)::int`,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(issueIdExpr, issueIdChunk),
+        ),
+      )
+      .groupBy(issueIdExpr);
+
+    for (const row of rows) {
+      if (!row.issueId) continue;
+      map.set(row.issueId, Number(row.seconds ?? 0));
+    }
+  }
+
+  return map;
+}
+
 function createIssueBlockerAttention(input: Partial<IssueBlockerAttention> = {}): IssueBlockerAttention {
   return {
     state: input.state ?? "none",
@@ -1624,6 +1681,7 @@ const issueListSelect = {
   id: issues.id,
   companyId: issues.companyId,
   projectId: issues.projectId,
+  cycleId: issues.cycleId,
   projectWorkspaceId: issues.projectWorkspaceId,
   goalId: issues.goalId,
   parentId: issues.parentId,
@@ -1675,6 +1733,8 @@ const issueListSelect = {
   visibility: issues.visibility,
   dueDate: issues.dueDate,
   workLeadDays: issues.workLeadDays,
+  storyPoints: issues.storyPoints,
+  estimateHours: issues.estimateHours,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
@@ -2185,6 +2245,31 @@ export function issueService(db: Db) {
     }
   }
 
+  async function getAssignableCycle(
+    companyId: string,
+    projectId: string | null | undefined,
+    cycleId: string,
+    dbOrTx: DbReader = db,
+  ) {
+    const cycle = await dbOrTx
+      .select({
+        id: workCycles.id,
+        companyId: workCycles.companyId,
+        projectId: workCycles.projectId,
+      })
+      .from(workCycles)
+      .where(eq(workCycles.id, cycleId))
+      .then((rows) => rows[0] ?? null);
+    if (!cycle) throw notFound("Cycle not found");
+    if (cycle.companyId !== companyId) {
+      throw unprocessable("Cycle must belong to the same company");
+    }
+    if (cycle.projectId && cycle.projectId !== projectId) {
+      throw unprocessable("Project cycle can only be assigned to issues in that project");
+    }
+    return cycle;
+  }
+
   async function assertValidExecutionWorkspace(
     companyId: string,
     projectId: string | null | undefined,
@@ -2560,6 +2645,8 @@ export function issueService(db: Db) {
 
   return {
     clearExecutionRunIfTerminal,
+    actualAiSecondsMapForIssues: (companyId: string, issueIds: string[]) =>
+      actualAiSecondsMapForIssues(db, companyId, issueIds),
 
     list: async (companyId: string, filters?: IssueFilters) => {
       const requestedWorkItemType = filters?.workItemType?.trim() ?? "";
@@ -2662,6 +2749,7 @@ export function issueService(db: Db) {
         );
       }
       if (filters?.projectId) conditions.push(eq(issues.projectId, filters.projectId));
+      if (filters?.cycleId) conditions.push(eq(issues.cycleId, filters.cycleId));
       if (filters?.projectScopeRestrictedTo) {
         const allowed = filters.projectScopeRestrictedTo;
         if (allowed.length === 0) {
@@ -2759,7 +2847,7 @@ export function issueService(db: Db) {
       }
 
       const issueIds = withRuns.map((row) => row.id);
-      const [statsRows, readRows, lastActivityRows, blockedByMap] = await Promise.all([
+      const [statsRows, readRows, lastActivityRows, blockedByMap, actualAiSecondsByIssueId] = await Promise.all([
         contextUserId
           ? userCommentStatsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
@@ -2770,6 +2858,7 @@ export function issueService(db: Db) {
         includeBlockedBy
           ? blockedByMapForIssues(db, companyId, issueIds)
           : Promise.resolve(new Map<string, IssueRelationIssueSummary[]>()),
+        actualAiSecondsMapForIssues(db, companyId, issueIds),
       ]);
       const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
       const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
@@ -2788,6 +2877,7 @@ export function issueService(db: Db) {
           ) ?? row.updatedAt;
           return {
             ...row,
+            actualAiSeconds: actualAiSecondsByIssueId.get(row.id) ?? 0,
             ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
             lastActivityAt,
             ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
@@ -2809,6 +2899,7 @@ export function issueService(db: Db) {
         ) ?? row.updatedAt;
         return {
           ...row,
+          actualAiSeconds: actualAiSecondsByIssueId.get(row.id) ?? 0,
           ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
           lastActivityAt,
           ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
@@ -3353,6 +3444,9 @@ export function issueService(db: Db) {
         if (executionWorkspaceId) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
         }
+        if (issueData.cycleId) {
+          await getAssignableCycle(companyId, issueData.projectId, issueData.cycleId, tx);
+        }
         // Self-correcting counter: use MAX(issue_number) + 1 if the counter
         // has drifted below the actual max, preventing identifier collisions.
         const [maxRow] = await tx
@@ -3520,6 +3614,19 @@ export function issueService(db: Db) {
       }
       if (nextExecutionWorkspaceId) {
         await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
+      }
+      const nextCycleId = issueData.cycleId !== undefined ? issueData.cycleId : existing.cycleId;
+      if (nextCycleId) {
+        try {
+          await getAssignableCycle(existing.companyId, nextProjectId, nextCycleId, dbOrTx);
+        } catch (err) {
+          const projectChanged =
+            issueData.projectId !== undefined &&
+            issueData.projectId !== existing.projectId &&
+            issueData.cycleId === undefined;
+          if (!projectChanged) throw err;
+          patch.cycleId = null;
+        }
       }
 
       applyStatusSideEffects(issueData.status, patch);

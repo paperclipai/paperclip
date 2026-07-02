@@ -1741,6 +1741,7 @@ export function issueRoutes(
       unreadForUserId,
       awaitingDecisionForUserId,
       projectId: req.query.projectId as string | undefined,
+      cycleId: req.query.cycleId as string | undefined,
       projectScopeRestrictedTo,
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
@@ -1986,6 +1987,7 @@ export function issueRoutes(
       successfulRunHandoffStates,
       scheduledRetry,
       activeRecoveryAction,
+      actualAiSecondsByIssueId,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -1998,6 +2000,7 @@ export function issueRoutes(
       listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
       svc.getCurrentScheduledRetry(issue.id),
       recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
+      svc.actualAiSecondsMapForIssues(issue.companyId, [issue.id]),
     ]);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
@@ -2024,6 +2027,7 @@ export function issueRoutes(
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
       scheduledRetry,
       activeRecoveryAction,
+      actualAiSeconds: actualAiSecondsByIssueId.get(issue.id) ?? 0,
       blockedBy: relationsWithRecoveryActions.blockedBy,
       blocks: relationsWithRecoveryActions.blocks,
       relatedWork: referenceSummary,

@@ -151,6 +151,7 @@ export function getModelDisplayName(credentialType: string | null | undefined, m
     return `Qwen (${modelId})`;
   }
   // Claude models - clean up display
+  if (modelId.includes("fable")) return "Claude Fable";
   if (modelId.includes("opus")) return "Claude Opus";
   if (modelId.includes("sonnet")) return "Claude Sonnet";
   if (modelId.includes("haiku")) return "Claude Haiku";

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link } from "@/lib/router";
-import type { Issue, IssueCollaborator, IssueLabel, Project, WorkspaceRuntimeService } from "@paperclipai/shared";
+import type { Issue, IssueCollaborator, IssueLabel, Project, WorkCycle, WorkspaceRuntimeService } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterModel } from "../api/agents";
 import { accessApi } from "../api/access";
@@ -9,6 +9,7 @@ import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
+import { workCyclesApi } from "../api/work-cycles";
 import { useCompany } from "../context/CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap } from "../lib/company-members";
@@ -183,6 +184,18 @@ function parseOptionalIntegerInput(value: string, max: number): number | null {
 function formatOptionalIntegerInput(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "";
   return String(Math.max(0, Math.floor(value)));
+}
+
+function formatActualAiTime(seconds: number | null | undefined): string {
+  const totalSeconds = typeof seconds === "number" && Number.isFinite(seconds)
+    ? Math.max(0, Math.floor(seconds))
+    : 0;
+  if (totalSeconds <= 0) return "0m";
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.round((totalSeconds % 3600) / 60);
+  if (hours <= 0) return `${Math.max(1, minutes)}m`;
+  if (minutes <= 0) return `${hours}h`;
+  return `${hours}h ${minutes}m`;
 }
 
 const STORY_POINTS_MAX = 1000;
@@ -586,6 +599,8 @@ export function IssueProperties({
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
+  const [cycleOpen, setCycleOpen] = useState(false);
+  const [newCycleName, setNewCycleName] = useState("");
   const [blockedByOpen, setBlockedByOpen] = useState(false);
   const [blockedBySearch, setBlockedBySearch] = useState("");
   const [parentOpen, setParentOpen] = useState(false);
@@ -663,6 +678,14 @@ export function IssueProperties({
     queryFn: () => projectsApi.list(companyId!),
     enabled: !!companyId,
   });
+  const { data: workCycles } = useQuery({
+    queryKey: queryKeys.workCycles.list(companyId!, issue.projectId),
+    queryFn: () => workCyclesApi.list(companyId!, {
+      projectId: issue.projectId,
+      includeCompanyWide: true,
+    }),
+    enabled: !!companyId,
+  });
   const activeProjects = useMemo(
     () => (projects ?? []).filter((p) => !p.archivedAt || p.id === issue.projectId),
     [projects, issue.projectId],
@@ -736,6 +759,20 @@ export function IssueProperties({
     },
   });
 
+  const createCycle = useMutation({
+    mutationFn: (data: { name: string }) => workCyclesApi.create(companyId!, {
+      name: data.name,
+      projectId: issue.projectId ?? null,
+      status: "planned",
+    }),
+    onSuccess: async (cycle) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.workCycles.list(companyId!, issue.projectId) });
+      onUpdate({ cycleId: cycle.id });
+      setNewCycleName("");
+      setCycleOpen(false);
+    },
+  });
+
   const toggleLabel = (labelId: string) => {
     const ids = issue.labelIds ?? [];
     const next = ids.includes(labelId)
@@ -782,6 +819,14 @@ export function IssueProperties({
   const currentProject = issue.projectId
     ? orderedProjects.find((project) => project.id === issue.projectId) ?? null
     : null;
+  const assignableCycles = useMemo(
+    () => (workCycles ?? []).filter((cycle) => !cycle.projectId || cycle.projectId === issue.projectId),
+    [workCycles, issue.projectId],
+  );
+  const currentCycle = useMemo(
+    () => assignableCycles.find((cycle) => cycle.id === issue.cycleId) ?? issue.cycle ?? null,
+    [assignableCycles, issue.cycle, issue.cycleId],
+  );
   const issueProject = issue.project ?? currentProject;
   const issueUsesMainWorkspace = useMemo(
     () => isMainIssueWorkspace({ issue, project: issueProject }),
@@ -1556,6 +1601,92 @@ export function IssueProperties({
     </>
   );
 
+  const formatCycleDateLabel = (cycle: WorkCycle) => {
+    if (cycle.startDate && cycle.endDate) return `${formatDate(cycle.startDate)} - ${formatDate(cycle.endDate)}`;
+    if (cycle.startDate) return `Starts ${formatDate(cycle.startDate)}`;
+    if (cycle.endDate) return `Ends ${formatDate(cycle.endDate)}`;
+    return cycle.projectId ? "Project cycle" : "Company cycle";
+  };
+
+  const cycleTrigger = currentCycle ? (
+    <>
+      <RotateCcw className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <span className="text-sm break-words min-w-0">{currentCycle.name}</span>
+    </>
+  ) : (
+    <>
+      <RotateCcw className="h-3.5 w-3.5 text-muted-foreground" />
+      <span className="text-sm text-muted-foreground">No cycle</span>
+    </>
+  );
+
+  const cycleContent = (
+    <>
+      <div className="max-h-52 overflow-y-auto overscroll-contain">
+        <button
+          className={cn(
+            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
+            !issue.cycleId && "bg-accent",
+          )}
+          onClick={() => {
+            onUpdate({ cycleId: null });
+            setCycleOpen(false);
+          }}
+        >
+          <span className="h-2 w-2 rounded-full border border-muted-foreground/60" />
+          No cycle
+        </button>
+        {assignableCycles.map((cycle) => (
+          <button
+            key={cycle.id}
+            className={cn(
+              "flex w-full items-start gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
+              issue.cycleId === cycle.id && "bg-accent",
+            )}
+            onClick={() => {
+              onUpdate({ cycleId: cycle.id });
+              setCycleOpen(false);
+            }}
+          >
+            <RotateCcw className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate font-medium text-foreground">{cycle.name}</span>
+              <span className="block truncate text-muted-foreground">{formatCycleDateLabel(cycle)}</span>
+            </span>
+            {issue.cycleId === cycle.id ? <Check className="mt-0.5 h-3.5 w-3.5 shrink-0" /> : null}
+          </button>
+        ))}
+      </div>
+      <form
+        className="mt-2 border-t border-border pt-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const name = newCycleName.trim();
+          if (!name || createCycle.isPending) return;
+          createCycle.mutate({ name });
+        }}
+      >
+        <div className="flex items-center gap-1">
+          <input
+            className="min-w-0 flex-1 rounded bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
+            placeholder={issue.projectId ? "New project cycle" : "New company cycle"}
+            value={newCycleName}
+            onChange={(event) => setNewCycleName(event.target.value)}
+          />
+          <button
+            type="submit"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded border border-border hover:bg-accent/50 disabled:opacity-50"
+            disabled={!newCycleName.trim() || createCycle.isPending}
+            aria-label="Create cycle"
+            title="Create cycle"
+          >
+            {createCycle.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+          </button>
+        </div>
+      </form>
+    </>
+  );
+
   const assigneeTrigger = assignee ? (
     <Identity name={assignee.name} size="sm" />
   ) : assigneeUserLabel ? (
@@ -1808,6 +1939,7 @@ export function IssueProperties({
                   trackRecentProject(option.project.id);
                   onUpdate({
                     projectId: option.project.id,
+                    cycleId: null,
                     projectWorkspaceId: defaultProjectWorkspaceIdForProject(option.project),
                     executionWorkspaceId: null,
                     executionWorkspacePreference: defaultMode,
@@ -1818,6 +1950,7 @@ export function IssueProperties({
                 } else {
                   onUpdate({
                     projectId: null,
+                    cycleId: null,
                     projectWorkspaceId: null,
                     executionWorkspaceId: null,
                     executionWorkspacePreference: null,
@@ -2085,6 +2218,27 @@ export function IssueProperties({
           />
           <span className="text-xs text-muted-foreground">hours</span>
         </PropertyRow>
+
+        <PropertyRow label="AI time">
+          <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="text-sm tabular-nums text-foreground">{formatActualAiTime(issue.actualAiSeconds)}</span>
+          <span className="text-xs text-muted-foreground">actual</span>
+        </PropertyRow>
+
+        <PropertyPicker
+          inline={inline}
+          label="Cycle"
+          open={cycleOpen}
+          onOpenChange={(open) => {
+            setCycleOpen(open);
+            if (!open) setNewCycleName("");
+          }}
+          triggerContent={cycleTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-64"
+        >
+          {cycleContent}
+        </PropertyPicker>
 
         <PropertyPicker
           inline={inline}

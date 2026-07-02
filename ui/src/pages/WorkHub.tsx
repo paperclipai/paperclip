@@ -55,6 +55,7 @@ const WORK_HUB_DEFAULT_COLUMNS: InboxIssueColumn[] = [
   "priority",
   "storyPoints",
   "estimateHours",
+  "actualAiTime",
   "dueDate",
   "labels",
   "updated",

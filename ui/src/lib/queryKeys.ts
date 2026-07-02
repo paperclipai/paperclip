@@ -95,6 +95,11 @@ export const queryKeys = {
     members: (projectId: string) => ["projects", "members", projectId] as const,
     agents: (projectId: string) => ["projects", "agents", projectId] as const,
   },
+  workCycles: {
+    list: (companyId: string, projectId?: string | null) =>
+      ["work-cycles", companyId, projectId ?? "__all-projects__"] as const,
+    detail: (id: string) => ["work-cycles", "detail", id] as const,
+  },
   organizations: {
     list: ["organizations"] as const,
     detail: (id: string) => ["organizations", "detail", id] as const,

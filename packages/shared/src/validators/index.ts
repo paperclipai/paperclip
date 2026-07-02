@@ -148,6 +148,13 @@ export {
 } from "./project.js";
 
 export {
+  createWorkCycleSchema,
+  updateWorkCycleSchema,
+  type CreateWorkCycle,
+  type UpdateWorkCycle,
+} from "./work-cycle.js";
+
+export {
   createIssueSchema,
   createIssueInputSchema,
   createChildIssueSchema,
