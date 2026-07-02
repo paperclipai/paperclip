@@ -212,6 +212,7 @@ async function requestApp(app: express.Express, buildRequest: (baseUrl: string) 
 
 describe.sequential("POST /agents/:id/sessions/reset", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.resetModules();
     registerModuleMocks();
     mockAgentService.getById.mockResolvedValue(targetAgent);
