@@ -68,6 +68,7 @@ import {
   type IssueChatComposerHandle,
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
+import type { IssueChatThreadOrder } from "../lib/issue-chat-messages";
 import { workModeMetaFor } from "../lib/work-mode-meta";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
@@ -110,6 +111,14 @@ import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -139,6 +148,7 @@ import {
   Activity as ActivityIcon,
   AlertTriangle,
   Archive,
+  ArrowDownUp,
   ArrowLeft,
   Check,
   ChevronRight,
@@ -221,6 +231,11 @@ const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "h
 const ISSUE_COMMENT_PAGE_SIZE = 50;
 const ISSUE_COMMENT_AUTOLOAD_LIMIT = ISSUE_COMMENT_PAGE_SIZE * 3;
 const JUMP_TO_LATEST_MAX_COMMENT_PAGES = 10;
+const ISSUE_COMMENT_THREAD_ORDER_STORAGE_KEY = "paperclip:issue-comments:thread-order";
+const ISSUE_COMMENT_THREAD_ORDER_OPTIONS: Array<{ value: IssueChatThreadOrder; label: string }> = [
+  { value: "oldest_first", label: "Oldest first" },
+  { value: "newest_first", label: "Newest first" },
+];
 const TREE_CONTROL_MODE_LABEL: Record<IssueTreeControlMode, string> = {
   pause: "Pause subtree",
   resume: "Resume subtree",
@@ -231,6 +246,27 @@ const LEAF_WORK_CONTROL_MODE_LABEL: Partial<Record<IssueTreeControlMode, string>
   pause: "Pause work",
   resume: "Resume work",
 };
+
+function readIssueCommentThreadOrderPreference(): IssueChatThreadOrder {
+  if (typeof window === "undefined") return "oldest_first";
+  try {
+    return window.localStorage.getItem(ISSUE_COMMENT_THREAD_ORDER_STORAGE_KEY) === "newest_first"
+      ? "newest_first"
+      : "oldest_first";
+  } catch {
+    return "oldest_first";
+  }
+}
+
+function writeIssueCommentThreadOrderPreference(order: IssueChatThreadOrder) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(ISSUE_COMMENT_THREAD_ORDER_STORAGE_KEY, order);
+  } catch {
+    // Ignore storage failures; the in-memory selection still applies.
+  }
+}
+
 const TREE_CONTROL_MODE_HELP_TEXT: Record<IssueTreeControlMode, string> = {
   pause: "Pause active execution in this task subtree until an explicit resume.",
   resume: "Release the active subtree pause hold so held work can continue.",
@@ -713,6 +749,8 @@ type IssueDetailChatTabProps = {
   commentsLoadingOlder: boolean;
   onLoadOlderComments: () => void;
   onRefreshLatestComments: () => Promise<unknown> | void;
+  threadOrder: IssueChatThreadOrder;
+  onThreadOrderChange: (order: IssueChatThreadOrder) => void;
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   composerRef: Ref<IssueChatComposerHandle>;
   footer?: ReactNode;
@@ -786,6 +824,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   commentsLoadingOlder,
   onLoadOlderComments,
   onRefreshLatestComments,
+  threadOrder,
+  onThreadOrderChange,
   onWorkModeChange,
   composerRef,
   footer,
@@ -960,22 +1000,59 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     () => extractIssueTimelineEvents(resolvedActivity),
     [resolvedActivity],
   );
+  const threadOrderLabel =
+    ISSUE_COMMENT_THREAD_ORDER_OPTIONS.find((option) => option.value === threadOrder)?.label
+    ?? "Oldest first";
+  const renderLoadOlderCommentsButton = () => (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      disabled={commentsLoadingOlder}
+      onClick={onLoadOlderComments}
+    >
+      {commentsLoadingOlder ? "Loading earlier comments..." : "Load earlier comments"}
+    </Button>
+  );
 
   return (
     <div className="space-y-3">
-      {hasOlderComments ? (
-        <div className="flex justify-center">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={commentsLoadingOlder}
-            onClick={onLoadOlderComments}
-          >
-            {commentsLoadingOlder ? "Loading earlier comments..." : "Load earlier comments"}
-          </Button>
-        </div>
-      ) : null}
+      <div
+        className={cn(
+          "flex flex-wrap items-center gap-2",
+          hasOlderComments && threadOrder === "oldest_first" ? "justify-between" : "justify-end",
+        )}
+      >
+        {hasOlderComments && threadOrder === "oldest_first" ? renderLoadOlderCommentsButton() : null}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              aria-label="Sort task thread"
+              title="Sort task thread"
+            >
+              <ArrowDownUp className="h-3.5 w-3.5" />
+              <span>{threadOrderLabel}</span>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-44">
+            <DropdownMenuLabel>Sort thread</DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              value={threadOrder}
+              onValueChange={(value) => onThreadOrderChange(value as IssueChatThreadOrder)}
+            >
+              {ISSUE_COMMENT_THREAD_ORDER_OPTIONS.map((option) => (
+                <DropdownMenuRadioItem key={option.value} value={option.value}>
+                  {option.label}
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
       <ThreadComponent
         composerRef={composerRef}
         comments={commentsWithRunMeta}
@@ -1031,6 +1108,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           onSubmitInteractionAnswers(interaction, answers)
         }
         onCancelInteraction={onCancelInteraction}
+        threadOrder={threadOrder}
         issueWorkMode={issueWorkMode}
         onWorkModeChange={onWorkModeChange}
         onCancelRun={runningIssueRun && onPauseWorkRun
@@ -1046,6 +1124,11 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         footer={footer}
         externalReferences={externalReferences}
       />
+      {hasOlderComments && threadOrder === "newest_first" ? (
+        <div className="flex justify-center">
+          {renderLoadOlderCommentsButton()}
+        </div>
+      ) : null}
     </div>
   );
 });
@@ -1353,6 +1436,7 @@ export function IssueDetail() {
   const [treeControlCancelConfirmed, setTreeControlCancelConfirmed] = useState(false);
   const [optimisticComments, setOptimisticComments] = useState<OptimisticIssueComment[]>([]);
   const [locallyQueuedCommentRunIds, setLocallyQueuedCommentRunIds] = useState<Map<string, string>>(() => new Map());
+  const [threadOrder, setThreadOrder] = useState<IssueChatThreadOrder>(() => readIssueCommentThreadOrderPreference());
   const [pendingCommentComposerFocusKey, setPendingCommentComposerFocusKey] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const lastMarkedReadIssueIdRef = useRef<string | null>(null);
@@ -3268,6 +3352,10 @@ export function IssueDetail() {
   const loadOlderComments = useCallback(() => {
     void fetchOlderComments();
   }, [fetchOlderComments]);
+  const handleThreadOrderChange = useCallback((order: IssueChatThreadOrder) => {
+    setThreadOrder(order);
+    writeIssueCommentThreadOrderPreference(order);
+  }, []);
   const refetchLatestComments = useCallback(async () => {
     // Refetch page 0 first so comments that arrived after initial load are
     // visible, then load every remaining older page. The chat thread is
@@ -4299,6 +4387,8 @@ export function IssueDetail() {
               commentsLoadingOlder={commentsLoadingOlder}
               onLoadOlderComments={loadOlderComments}
               onRefreshLatestComments={refetchLatestComments}
+              threadOrder={threadOrder}
+              onThreadOrderChange={handleThreadOrderChange}
               composerRef={commentComposerRef}
               footer={
                 siblingNavigation ? (

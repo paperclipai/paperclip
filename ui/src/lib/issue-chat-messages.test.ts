@@ -606,6 +606,32 @@ describe("buildIssueChatMessages", () => {
       "assistant:run-assistant:run-live-1",
     ]);
 
+    const newestFirstMessages = buildIssueChatMessages({
+      comments,
+      timelineEvents,
+      linkedRuns,
+      liveRuns,
+      transcriptsByRunId: new Map([
+        [
+          "run-live-1",
+          [{ kind: "assistant", ts: "2026-04-06T12:04:01.000Z", text: "Streaming reply" }],
+        ],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-live-1",
+      threadOrder: "newest_first",
+      companyId: "company-1",
+      projectId: "project-1",
+      agentMap,
+      currentUserId: "user-1",
+    });
+
+    expect(newestFirstMessages.map((message) => `${message.role}:${message.id}`)).toEqual([
+      "assistant:run-assistant:run-live-1",
+      "assistant:comment-2",
+      "user:comment-1",
+      "system:activity:event-1",
+    ]);
+
     const liveRunMessage = messages.at(-1);
     expect(liveRunMessage).toMatchObject({
       role: "assistant",
@@ -769,6 +795,65 @@ describe("buildIssueChatMessages", () => {
       "assistant:comment-handoff",
       "system:interaction:confirmation-1",
       "user:comment-user-reply",
+    ]);
+  });
+
+  it("keeps handoff comments before same-timestamp confirmations in newest-first order", () => {
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          id: "comment-handoff",
+          authorAgentId: "agent-1",
+          authorUserId: null,
+          body: "Ready for approval.",
+          createdAt: new Date("2026-04-06T12:03:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:03:00.000Z"),
+          runId: "run-1",
+          runAgentId: "agent-1",
+        }),
+        createComment({
+          id: "comment-user-reply",
+          body: "Approved.",
+          createdAt: new Date("2026-04-06T12:04:00.000Z"),
+          updatedAt: new Date("2026-04-06T12:04:00.000Z"),
+        }),
+      ],
+      interactions: [
+        createRequestConfirmation({
+          id: "confirmation-1",
+          sourceRunId: "run-1",
+          status: "expired",
+          result: {
+            version: 1,
+            outcome: "superseded_by_comment",
+            commentId: "comment-user-reply",
+          },
+        }),
+      ],
+      timelineEvents: [
+        {
+          id: "event-in-review",
+          actorType: "agent",
+          actorId: "agent-1",
+          createdAt: new Date("2026-04-06T12:02:00.000Z"),
+          runId: "run-1",
+          statusChange: {
+            from: "in_progress",
+            to: "in_review",
+          },
+        },
+      ],
+      linkedRuns: [],
+      liveRuns: [],
+      threadOrder: "newest_first",
+      currentUserId: "user-1",
+    });
+
+    expect(messages.map((message) => `${message.role}:${message.id}`)).toEqual([
+      "user:comment-user-reply",
+      "assistant:comment-handoff",
+      "system:interaction:confirmation-1",
+      "system:activity:event-in-review",
     ]);
   });
 
