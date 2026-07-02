@@ -238,6 +238,10 @@ function cleanResponse(raw: string): string {
       if (!t) return true; // keep blank lines for paragraph separation
       if (t.startsWith("[tool]") || t.startsWith("[hermes]") || t.startsWith("[paperclip]")) return false;
       if (t.startsWith("session_id:")) return false;
+      if (t === "Initializing agent...") return false;
+      if (t.startsWith("Resume this session with:")) return false;
+      if (/^hermes\s+--resume\b/.test(t)) return false;
+      if (/^[╭╰│├└┌─]/.test(t)) return false; // chat-frame borders and separators
       if (/^\[\d{4}-\d{2}-\d{2}T/.test(t)) return false;
       if (/^\[done\]\s*┊/.test(t)) return false;
       if (/^┊\s*[\p{Emoji_Presentation}]/u.test(t) && !/^┊\s*💬/.test(t)) return false;
@@ -258,7 +262,21 @@ function cleanResponse(raw: string): string {
 // Output parsing
 // ---------------------------------------------------------------------------
 
-function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
+/**
+ * Non-quiet chat mode opens stdout with an echo of the full prompt
+ * ("Query: <prompt>") terminated by the "Initializing agent..." banner.
+ * Drop that block so the parsed response starts at the agent's own output.
+ */
+function stripQueryEcho(stdout: string): string {
+  if (!stdout.startsWith("Query: ")) return stdout;
+  const marker = "\nInitializing agent...";
+  const idx = stdout.indexOf(marker);
+  if (idx === -1) return stdout;
+  return stdout.slice(idx + marker.length);
+}
+
+function parseHermesOutput(rawStdout: string, stderr: string): ParsedOutput {
+  const stdout = stripQueryEcho(rawStdout);
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
 
@@ -273,6 +291,10 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
     const sessionLineIdx = stdout.lastIndexOf("\nsession_id:");
     if (sessionLineIdx > 0) {
       result.response = cleanResponse(stdout.slice(0, sessionLineIdx));
+    } else {
+      // session_id line leads stdout (or is its only prefix): clean it away
+      // instead of dropping the response entirely.
+      result.response = cleanResponse(stdout.replace(/^session_id:.*$/m, ""));
     }
   } else {
     // Legacy format (non-quiet mode)
@@ -406,10 +428,16 @@ export async function execute(
   }
 
   // ── Build command args ─────────────────────────────────────────────────
-  // Use -Q (quiet) to get clean output: just response + session_id line
-  const useQuiet = cfgBoolean(config.quiet) === true; // default false
+  // Quiet by default: non-quiet chat echoes "Query: <prompt>" plus banner and
+  // frame noise into stdout, and with large wake payloads that echo alone
+  // consumes the whole 2000-char comment budget before the agent's actual
+  // answer — runs "succeed" but never land a disposition. -Q emits only the
+  // response; --pass-session-id keeps session persistence working (the
+  // session_id line goes to stderr, picked up by the legacy parser branch).
+  // Opt out with adapterConfig.quiet=false.
+  const useQuiet = cfgBoolean(config.quiet) !== false;
   const args: string[] = ["chat", "-q", prompt];
-  if (useQuiet) args.push("-Q");
+  if (useQuiet) args.push("-Q", "--pass-session-id");
 
   if (model) {
     args.push("-m", model);
