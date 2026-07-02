@@ -1514,15 +1514,16 @@ export function Secrets() {
             ) : filteredRows.length === 0 ? (
               <EmptyState icon={Search} message="No secrets match your filters." />
             ) : (
-              <div className="min-w-0 overflow-x-hidden text-sm">
+              <div className="@container min-w-0 overflow-x-hidden text-sm" data-testid="secrets-list-container">
                 <div
                   role="table"
                   aria-label="Secrets"
-                  className="hidden min-w-0 md:block"
+                  className="hidden min-w-0 @min-[40rem]:block"
+                  data-testid="secrets-table-view"
                 >
                   <div
                     role="row"
-                    className="grid grid-cols-[minmax(0,2.4fr)_minmax(5.25rem,0.75fr)_minmax(7rem,1fr)_minmax(5rem,0.7fr)_2.75rem] items-center gap-3 bg-muted/40 px-3 py-2 text-xs uppercase tracking-wide text-muted-foreground"
+                    className="grid grid-cols-[minmax(12rem,2.4fr)_minmax(5.25rem,0.75fr)_minmax(7rem,1fr)_minmax(5rem,0.7fr)_2.75rem] items-center gap-3 bg-muted/40 px-3 py-2 text-xs uppercase tracking-wide text-muted-foreground"
                   >
                     <div role="columnheader" className="font-medium">Secret</div>
                     <div role="columnheader" className="font-medium">Status</div>
@@ -1547,7 +1548,7 @@ export function Secrets() {
                           key={row.id}
                           role="row"
                           className={cn(
-                            "grid cursor-pointer grid-cols-[minmax(0,2.4fr)_minmax(5.25rem,0.75fr)_minmax(7rem,1fr)_minmax(5rem,0.7fr)_2.75rem] items-center gap-3 border-b border-border/60 px-3 py-3 hover:bg-accent/40",
+                            "grid cursor-pointer grid-cols-[minmax(12rem,2.4fr)_minmax(5.25rem,0.75fr)_minmax(7rem,1fr)_minmax(5rem,0.7fr)_2.75rem] items-center gap-3 border-b border-border/60 px-3 py-3 hover:bg-accent/40",
                             row.kind === "company" && selectedSecretId === row.secret.id && "bg-accent/60",
                             row.kind === "user" && selectedDefinitionId === row.definition.id && "bg-accent/60",
                           )}
@@ -1619,7 +1620,7 @@ export function Secrets() {
                   </div>
                 </div>
 
-                <div className="space-y-2 md:hidden">
+                <div className="space-y-2 @min-[40rem]:hidden" data-testid="secrets-card-view">
                   {filteredRows.map((row) => {
                     const status = row.kind === "company" ? row.secret.status : row.definition.status;
                     return (
@@ -1732,10 +1733,12 @@ export function Secrets() {
           {selectedSecret ? (
             <>
               <SheetHeader className="space-y-3">
-                <SheetTitle className="flex min-w-0 items-center gap-2 text-base">
+                <SheetTitle className="flex min-w-0 items-center gap-2 pr-8 text-base">
                   <KeyRound className="h-4 w-4 shrink-0" />
                   <span className="min-w-0 flex-1 truncate">{selectedSecret.name}</span>
-                  <StatusBadge status={selectedSecret.status} />
+                  <span className="shrink-0">
+                    <StatusBadge status={selectedSecret.status} />
+                  </span>
                 </SheetTitle>
                 <SheetDescription className="sr-only">
                   {providerLabel(providers, selectedSecret.provider)} secret {selectedSecret.key}
@@ -1832,7 +1835,12 @@ export function Secrets() {
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
                   <TabsContent value="details">
-                    <SecretDetailsTab secret={selectedSecret} providers={providers} providerConfigs={providerConfigs} />
+                    <SecretDetailsTab
+                      secret={selectedSecret}
+                      providers={providers}
+                      providerConfigs={providerConfigs}
+                      onViewUsage={() => setSecretDetailTab("usage")}
+                    />
                   </TabsContent>
                   <TabsContent value="usage">
                     <SecretUsageTab loading={usageQuery.isPending} bindings={usageQuery.data?.bindings ?? []} />
@@ -1850,10 +1858,12 @@ export function Secrets() {
           ) : selectedDefinition ? (
             <>
               <SheetHeader className="space-y-3">
-                <SheetTitle className="flex min-w-0 items-center gap-2 text-base">
+                <SheetTitle className="flex min-w-0 items-center gap-2 pr-8 text-base">
                   <UserRound className="h-4 w-4 shrink-0" />
                   <span className="min-w-0 flex-1 truncate">{selectedDefinition.name}</span>
-                  <StatusBadge status={selectedDefinition.status} />
+                  <span className="shrink-0">
+                    <StatusBadge status={selectedDefinition.status} />
+                  </span>
                 </SheetTitle>
                 <SheetDescription className="sr-only">
                   Each user secret definition {selectedDefinition.key}
@@ -1958,7 +1968,11 @@ export function Secrets() {
                 </div>
                 <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3">
                   <TabsContent value="details">
-                    <UserSecretDetailsTab companyId={selectedCompanyId} definition={selectedDefinition} />
+                    <UserSecretDetailsTab
+                      companyId={selectedCompanyId}
+                      definition={selectedDefinition}
+                      onViewCoverage={() => setSecretDetailTab("coverage")}
+                    />
                   </TabsContent>
                   <TabsContent value="coverage">
                     <UserSecretCoverageTab
@@ -3482,9 +3496,11 @@ function CoverageInline({
 function UserSecretDetailsTab({
   companyId,
   definition,
+  onViewCoverage,
 }: {
   companyId: string;
   definition: UserSecretDefinition;
+  onViewCoverage: () => void;
 }) {
   return (
     <dl className="divide-y divide-border/60 text-xs">
@@ -3497,7 +3513,14 @@ function UserSecretDetailsTab({
       </DetailRow>
       <DetailRow label="Status"><StatusBadge status={definition.status} /></DetailRow>
       <DetailRow label="Coverage">
-        <CoverageInline companyId={companyId} definitionId={definition.id} />
+        <button
+          type="button"
+          className="inline-flex min-w-0 items-center gap-1 text-left text-primary hover:underline"
+          onClick={onViewCoverage}
+        >
+          <CoverageInline companyId={companyId} definitionId={definition.id} />
+          <span className="shrink-0 text-muted-foreground">· View in Coverage</span>
+        </button>
       </DetailRow>
       <DetailRow label="Created">{formatRelative(definition.createdAt)}</DetailRow>
       <DetailRow label="Updated">{formatRelative(definition.updatedAt)}</DetailRow>
@@ -3594,11 +3617,17 @@ function SecretDetailsTab({
   secret,
   providers,
   providerConfigs,
+  onViewUsage,
 }: {
   secret: CompanySecret;
   providers: SecretProviderDescriptor[];
   providerConfigs: CompanySecretProviderConfig[];
+  onViewUsage: () => void;
 }) {
+  const bindingLabel = (secret.referenceCount ?? 0) === 1
+    ? "1 binding"
+    : `${secret.referenceCount ?? 0} bindings`;
+
   return (
     <dl className="divide-y divide-border/60 text-xs">
       <DetailRow label="Description">
@@ -3617,9 +3646,14 @@ function SecretDetailsTab({
       </DetailRow>
       <DetailRow label="Latest version">v{secret.latestVersion}</DetailRow>
       <DetailRow label="References">
-        {(secret.referenceCount ?? 0) === 1
-          ? "1 binding"
-          : `${secret.referenceCount ?? 0} bindings`}
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 text-left text-primary hover:underline"
+          onClick={onViewUsage}
+        >
+          {bindingLabel}
+          <span className="text-muted-foreground">· View in Usage</span>
+        </button>
       </DetailRow>
       <DetailRow label="Created">{formatRelative(secret.createdAt)}</DetailRow>
       <DetailRow label="Updated">{formatRelative(secret.updatedAt)}</DetailRow>
