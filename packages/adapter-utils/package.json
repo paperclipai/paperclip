@@ -14,6 +14,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./server-utils": "./src/server-utils.ts",
     "./*": "./src/*.ts"
   },
   "publishConfig": {
@@ -22,6 +23,10 @@
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
+      },
+      "./server-utils": {
+        "types": "./dist/server-utils.d.ts",
+        "import": "./dist/server-utils.js"
       },
       "./*": {
         "types": "./dist/*.d.ts",
