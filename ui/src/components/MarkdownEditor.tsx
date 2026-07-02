@@ -1088,7 +1088,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     const rawText = clipboard.getData("text/plain");
     if (!looksLikeMarkdownPaste(rawText)) return;
 
+    // We own this paste: insert the normalized markdown ourselves. Stop the event
+    // from also reaching the editor's own (Lexical) paste handler — preventDefault
+    // alone only blocks the browser's default action, not Lexical's JS handler, so
+    // without stopPropagation the same text gets inserted a second time (the
+    // FUS-833 duplication when pasting markdown-looking text from Claude).
     event.preventDefault();
+    event.stopPropagation();
     ref.current.insertMarkdown(normalizeMarkdown(rawText));
   }, []);
 
