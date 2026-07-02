@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import * as metricsModule from "../services/metrics.js";
 import {
   agents,
   agentWakeupRequests,
@@ -24,6 +25,11 @@ import type {
 vi.mock("../telemetry.ts", () => ({
   getTelemetryClient: () => ({ track: vi.fn() }),
 }));
+
+vi.mock("../services/metrics.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/metrics.js")>("../services/metrics.js");
+  return { ...actual, recordCcrotateCapacityDeferred: vi.fn(actual.recordCcrotateCapacityDeferred) };
+});
 
 vi.mock("@paperclipai/shared/telemetry", async () => {
   const actual = await vi.importActual<typeof import("@paperclipai/shared/telemetry")>(
@@ -171,6 +177,22 @@ describeEmbeddedPostgres("heartbeat ccrotate capacity-defer → scheduled retry"
     expect(skipped, "the capacity defer must not terminally drop the wake as skipped").toBeNull();
   });
 
+  it("increments the capacity-deferred metric when the penstock gate denies", async () => {
+    const { agentId } = await seedAgent();
+    const deferredSpy = vi.mocked(metricsModule.recordCcrotateCapacityDeferred);
+    deferredSpy.mockClear();
+
+    const heartbeat = heartbeatService(db, {
+      penstockAvailabilityGate: denyingGate(new Date("2026-04-20T03:02:00.000Z")),
+      skipQueuedRunDispatch: true,
+    });
+
+    await heartbeat.wakeup(agentId, { source: "assignment", triggerDetail: "system" });
+
+    expect(deferredSpy).toHaveBeenCalledOnce();
+    expect(deferredSpy).toHaveBeenCalledWith({ adapter: "claude_local", provider: "anthropic" });
+  });
+
   it("schedules with a bounded fallback delay when the gate returns no resumeAt", async () => {
     const { agentId } = await seedAgent();
     const before = Date.now();
@@ -282,8 +304,16 @@ describeEmbeddedPostgres("heartbeat ccrotate capacity-defer → scheduled retry"
     });
     await seeding.wakeup(agentId, { source: "assignment", triggerDetail: "system" });
 
+    const deferredSpy = vi.mocked(metricsModule.recordCcrotateCapacityDeferred);
+    deferredSpy.mockClear();
+
     const promotion = await heartbeat.promoteDueScheduledRetries(resumeAt);
     expect(promotion.promoted).toBe(0);
+
+    // Re-deferral at promotion must also increment the counter so a sustained
+    // stall (all runs re-checking on backoff) remains visible in the metric.
+    expect(deferredSpy, "counter fires on re-deferral at promotion").toHaveBeenCalledOnce();
+    expect(deferredSpy).toHaveBeenCalledWith({ adapter: "claude_local", provider: "anthropic" });
 
     const row = await db
       .select()

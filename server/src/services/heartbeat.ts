@@ -161,7 +161,7 @@ import {
   resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { normalizeIsolationMode, recordHeartbeatRunFailed } from "./metrics.js";
+import { normalizeIsolationMode, recordCcrotateCapacityDeferred, recordHeartbeatRunFailed } from "./metrics.js";
 import { runQuotaExhaustedHook } from "./quota-exhausted-hook.js";
 import { runLifecycleHook } from "./lifecycle-hook.js";
 import { mapAdapterToCcrotateTarget } from "./ccrotate-target.js";
@@ -7981,6 +7981,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           penstockModel: penstockCapacity.model,
           penstockRetryAfterSeconds: penstockCapacity.retryAfterSeconds,
         };
+        recordCcrotateCapacityDeferred({
+          adapter: agent.adapterType,
+          provider: penstockCapacity.provider,
+        });
       }
       if (capacity) {
         const nextAttempt = (dueRun.scheduledRetryAttempt ?? 0) + 1;
@@ -10611,7 +10615,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ) ||
         (externalLifecyclePreAdapter && (run.processLossRetryCount ?? 0) < 1 && prReviewRetry);
       const baseMessage = externalLifecyclePreAdapter
-        ? "Process lost before external adapter invocation -- server may have restarted"
+        ? "Process lost before external adapter invocation -- k8s job terminated or server restarted"
         : buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
@@ -14403,6 +14407,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issueId,
       });
       if (!penstockGateResult.allow) {
+        recordCcrotateCapacityDeferred({
+          adapter: agent.adapterType,
+          provider: penstockGateResult.provider,
+        });
         const resumeAtIso = penstockGateResult.resumeAt ? penstockGateResult.resumeAt.toISOString() : null;
         const scheduledRetryAt =
           penstockGateResult.resumeAt ?? new Date(Date.now() + CCROTATE_CAPACITY_DEFAULT_RETRY_DELAY_MS);

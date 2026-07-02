@@ -33,6 +33,24 @@ export const DEP_BLOCKED_WAKEUP_METRIC = "paperclip_dependency_blocked_wakeup_to
  * operator can read the isolated-start vs shared-mode-block ratio directly.
  */
 export const ISOLATED_RUN_STARTED_METRIC = "paperclip_k8s_isolated_run_started_total";
+/**
+ * ccrotate-capacity dispatch deferral counter (BLO-12953). Incremented once per
+ * heartbeat tick denied by the penstock availability gate (i.e. the gate returns
+ * `allow: false` because all model capacity is unavailable). The run outcome
+ * after the counter fires varies by call site: fresh-wakeup path persists a
+ * `scheduled_retry`; re-deferral-at-promotion path may cancel the run if the
+ * retry budget is exhausted.
+ *
+ * A sustained rate on this counter means the fleet is stalled behind quota
+ * exhaustion and no work is progressing. Alert threshold: any non-zero rate
+ * sustained over >5 min warrants operator attention.
+ *
+ * Labels: `adapter` (agent adapter type, e.g. "claude_k8s"), `provider`
+ * (penstock provider, e.g. "anthropic"). In practice only `claude_k8s` agents
+ * reach the penstock gate, so cardinality on `adapter` is effectively 1.
+ * Unknown/empty values collapse to "unknown" to guard against future changes.
+ */
+export const CCROTATE_CAPACITY_DEFERRED_METRIC = "paperclip_ccrotate_capacity_deferred_total";
 
 /**
  * Bounded `reason` allow-list (mirrors the adapter-lane reasons defined in
@@ -124,14 +142,16 @@ let registry: Registry | null = null;
 let concurrentRunBlocked: Counter<"agent_id" | "reason" | "isolation_mode"> | null = null;
 let isolatedRunStarted: Counter<"agent_id" | "isolation_mode"> | null = null;
 let heartbeatRunFailed: Counter<"adapter" | "error_code" | "invocation_source"> | null = null;
+let ccrotateCapacityDeferred: Counter<"adapter" | "provider"> | null = null;
 
 function ensureRegistry(): {
   registry: Registry;
   counter: Counter<"agent_id" | "reason" | "isolation_mode">;
   isolatedStartedCounter: Counter<"agent_id" | "isolation_mode">;
   failedCounter: Counter<"adapter" | "error_code" | "invocation_source">;
+  capacityDeferredCounter: Counter<"adapter" | "provider">;
 } {
-  if (!registry || !concurrentRunBlocked || !isolatedRunStarted || !heartbeatRunFailed) {
+  if (!registry || !concurrentRunBlocked || !isolatedRunStarted || !heartbeatRunFailed || !ccrotateCapacityDeferred) {
     registry = new Registry();
     concurrentRunBlocked = new Counter({
       name: CONCURRENT_RUN_BLOCKED_METRIC,
@@ -162,6 +182,16 @@ function ensureRegistry(): {
       labelNames: ["adapter", "error_code", "invocation_source"],
       registers: [registry],
     });
+    ccrotateCapacityDeferred = new Counter({
+      name: CCROTATE_CAPACITY_DEFERRED_METRIC,
+      help:
+        "Count of heartbeat dispatches deferred because the penstock availability gate "
+        + "returned no available capacity (BLO-12953). Incremented once per heartbeat tick "
+        + "that returned scheduled_retry with scheduledRetryReason='ccrotate_capacity'. "
+        + "A sustained non-zero rate means the fleet is quota-stalled.",
+      labelNames: ["adapter", "provider"],
+      registers: [registry],
+    });
     // Process/runtime metrics make the scrape target carry meaningful data even
     // before any refusal is reported (manual-verification check #3 on BLO-8328).
     collectDefaultMetrics({ register: registry });
@@ -171,6 +201,7 @@ function ensureRegistry(): {
     counter: concurrentRunBlocked,
     isolatedStartedCounter: isolatedRunStarted,
     failedCounter: heartbeatRunFailed,
+    capacityDeferredCounter: ccrotateCapacityDeferred,
   };
 }
 
@@ -257,6 +288,31 @@ export function recordHeartbeatRunFailed(
     invocation_source: normalizeInvocationSource(input.invocationSource),
   };
   ensureRegistry().failedCounter.inc(labels);
+  return labels;
+}
+
+export interface RecordCcrotateCapacityDeferredInput {
+  /** Agent adapter type (e.g. "claude_k8s"). */
+  adapter: string | null | undefined;
+  /** Penstock provider that was unavailable (e.g. "anthropic"). */
+  provider: string | null | undefined;
+}
+
+/**
+ * Increment {@link CCROTATE_CAPACITY_DEFERRED_METRIC}. Call once per heartbeat
+ * tick where the penstock availability gate returns `allow: false` and a
+ * `scheduled_retry` run is persisted. Returns the labels emitted.
+ */
+export function recordCcrotateCapacityDeferred(
+  input: RecordCcrotateCapacityDeferredInput,
+): { adapter: string; provider: string } {
+  const labels = {
+    adapter: typeof input.adapter === "string" && input.adapter.length > 0 ? input.adapter : "unknown",
+    provider: typeof input.provider === "string" && input.provider.length > 0
+      ? input.provider
+      : "unknown",
+  };
+  ensureRegistry().capacityDeferredCounter.inc(labels);
   return labels;
 }
 
