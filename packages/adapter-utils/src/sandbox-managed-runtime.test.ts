@@ -507,8 +507,9 @@ describe("sandbox managed runtime", () => {
     await writeFile(path.join(localWorkspaceDir, "src", "main.ts"), "x\n", "utf8");
     await writeFile(path.join(localAssetsDir, "asset.txt"), "a\n", "utf8");
 
-    // Capture every tar uploaded to the sandbox so we can inspect its members.
+    // Capture every tar uploaded/downloaded through the sandbox so we can inspect its members.
     const uploadedTars: { remotePath: string; bytes: Buffer }[] = [];
+    const downloadedTars: { remotePath: string; bytes: Buffer }[] = [];
     const client: SandboxManagedRuntimeClient = {
       makeDir: async (remotePath) => {
         await mkdir(remotePath, { recursive: true });
@@ -519,7 +520,11 @@ describe("sandbox managed runtime", () => {
         if (remotePath.endsWith("-upload.tar")) uploadedTars.push({ remotePath, bytes: buffer });
         await writeFile(remotePath, buffer);
       },
-      readFile: async (remotePath) => await readFile(remotePath),
+      readFile: async (remotePath) => {
+        const buffer = await readFile(remotePath);
+        if (remotePath.endsWith("workspace-download.tar")) downloadedTars.push({ remotePath, bytes: buffer });
+        return buffer;
+      },
       listFiles: async () => [],
       remove: async (remotePath) => {
         await rm(remotePath, { recursive: true, force: true });
@@ -529,7 +534,7 @@ describe("sandbox managed runtime", () => {
       },
     };
 
-    await prepareSandboxManagedRuntime({
+    const prepared = await prepareSandboxManagedRuntime({
       spec: {
         transport: "sandbox",
         provider: "test",
@@ -559,6 +564,12 @@ describe("sandbox managed runtime", () => {
     // And the workspace still extracts correctly into an existing target dir.
     await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("ws\n");
     await expect(readFile(path.join(remoteWorkspaceDir, "src", "main.ts"), "utf8")).resolves.toBe("x\n");
+
+    await prepared.restoreWorkspace();
+    expect(downloadedTars).toHaveLength(1);
+    const downloadMembers = await listTarMembers(rootDir, "workspace-download-list.tar", downloadedTars[0]!.bytes);
+    expect(downloadMembers).not.toContain(".");
+    expect(downloadMembers).not.toContain("./");
   });
 
   it("excludes transient symlinked home dirs from the asset tar while keeping required content", async () => {
@@ -735,13 +746,14 @@ describe("sandbox managed runtime", () => {
     expect(restoreLines.some((line) => line.includes("100%"))).toBe(true);
   });
 
-  it("creates a valid empty workspace tarball when the local workspace is empty", async () => {
+  it("creates valid empty workspace tarballs when the workspace is empty", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-empty-"));
     cleanupDirs.push(rootDir);
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
     const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
     await mkdir(localWorkspaceDir, { recursive: true });
 
+    const downloadedTars: { remotePath: string; bytes: Buffer }[] = [];
     const client: SandboxManagedRuntimeClient = {
       makeDir: async (remotePath) => {
         await mkdir(remotePath, { recursive: true });
@@ -750,7 +762,11 @@ describe("sandbox managed runtime", () => {
         await mkdir(path.dirname(remotePath), { recursive: true });
         await writeFile(remotePath, Buffer.from(bytes));
       },
-      readFile: async (remotePath) => await readFile(remotePath),
+      readFile: async (remotePath) => {
+        const buffer = await readFile(remotePath);
+        if (remotePath.endsWith("workspace-download.tar")) downloadedTars.push({ remotePath, bytes: buffer });
+        return buffer;
+      },
       listFiles: async () => [],
       remove: async (remotePath) => {
         await rm(remotePath, { recursive: true, force: true });
@@ -760,20 +776,23 @@ describe("sandbox managed runtime", () => {
       },
     };
 
-    await expect(
-      prepareSandboxManagedRuntime({
-        spec: {
-          transport: "sandbox",
-          provider: "test",
-          sandboxId: "sandbox-1",
-          remoteCwd: remoteWorkspaceDir,
-          timeoutMs: 30_000,
-          apiKey: null,
-        },
-        adapterKey: "test-adapter",
-        client,
-        workspaceLocalDir: localWorkspaceDir,
-      }),
-    ).resolves.toBeDefined();
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    await prepared.restoreWorkspace();
+    expect(downloadedTars).toHaveLength(1);
+    const members = await listTarMembers(rootDir, "empty-workspace-download.tar", downloadedTars[0]!.bytes);
+    expect(members).toEqual([]);
   });
 });

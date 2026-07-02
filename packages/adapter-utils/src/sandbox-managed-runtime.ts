@@ -323,6 +323,25 @@ function tarExcludeFlags(exclude: string[] | undefined): string {
   return ["._*", ...(exclude ?? [])].map((entry) => `--exclude ${shellQuote(entry)}`).join(" ");
 }
 
+function createRemoteTarballFromDirectoryCommand(input: {
+  remoteDir: string;
+  archivePath: string;
+  exclude?: string[];
+}): string {
+  // Match the local archive path: name top-level entries explicitly so tar
+  // does not include a "." self-entry that it later tries to chmod/utime.
+  return [
+    `mkdir -p ${shellQuote(path.posix.dirname(input.archivePath))}`,
+    `cd ${shellQuote(input.remoteDir)}`,
+    "set -- *",
+    `if [ "$#" -eq 1 ] && [ "$1" = "*" ] && [ ! -e "$1" ] && [ ! -L "$1" ]; then set --; fi`,
+    `for entry in .[!.]* ..?*; do [ -e "$entry" ] || [ -L "$entry" ] || continue; set -- "$@" "$entry"; done`,
+    `if [ "$#" -eq 0 ]; then ` +
+      `dd if=/dev/zero of=${shellQuote(input.archivePath)} bs=1024 count=1 >/dev/null 2>&1; ` +
+      `else tar -cf ${shellQuote(input.archivePath)} ${tarExcludeFlags(input.exclude)} -- "$@"; fi`,
+  ].join(" && ");
+}
+
 async function emitRuntimeStatus(
   sink: RuntimeStatusSink | undefined,
   phase: RuntimeStatusPhase,
@@ -586,11 +605,11 @@ export async function prepareSandboxManagedRuntime(input: {
           const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-download.tar");
           await emitRuntimeStatus(input.onRuntimeProgress, "restore", "Restoring workspace from sandbox");
           await input.client.run(
-            `sh -c ${shellQuote(
-              `mkdir -p ${shellQuote(runtimeRootDir)} && ` +
-                `tar -cf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} ` +
-                `${tarExcludeFlags(restoreExclude)} .`,
-            )}`,
+            `sh -c ${shellQuote(createRemoteTarballFromDirectoryCommand({
+              remoteDir: workspaceRemoteDir,
+              archivePath: remoteWorkspaceTar,
+              exclude: restoreExclude,
+            }))}`,
             { timeoutMs: input.spec.timeoutMs },
           );
           const workspaceRestore = makeTransferProgress(restoreSink, "Restoring", "from", "workspace");
