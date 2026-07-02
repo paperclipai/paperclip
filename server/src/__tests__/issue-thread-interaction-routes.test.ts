@@ -602,6 +602,16 @@ describe.sequential("issue thread interaction routes", () => {
           interactionId: "interaction-checkbox",
           interactionKind: "request_checkbox_confirmation",
           interactionStatus: "accepted",
+          checkboxSelection: {
+            selectedOptionIds: ["file-b"],
+            selectedOptions: [{ id: "file-b", label: "b.txt" }],
+          },
+        }),
+        contextSnapshot: expect.objectContaining({
+          checkboxSelection: {
+            selectedOptionIds: ["file-b"],
+            selectedOptions: [{ id: "file-b", label: "b.txt" }],
+          },
         }),
       }),
     );

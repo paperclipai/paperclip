@@ -643,6 +643,41 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("named unblock owner/action");
   });
 
+  it("renders resolved checkbox selections in scoped wake prompts", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1581",
+        title: "Delete selected files",
+        status: "in_progress",
+      },
+      interactionKind: "request_checkbox_confirmation",
+      interactionStatus: "accepted",
+      checkboxSelection: {
+        selectedOptionIds: ["file-b"],
+        selectedOptions: [{ id: "file-b", label: "b.txt" }],
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("- checkbox selection ids: file-b");
+    expect(prompt).toContain("- checkbox selection options: file-b (b.txt)");
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      checkboxSelection: {
+        selectedOptionIds: ["file-b"],
+        selectedOptions: [{ id: "file-b", label: "b.txt" }],
+      },
+    });
+  });
+
   it("preserves Chinese, Japanese, and Hindi issue and comment text in scoped wake prompts", () => {
     const title = "验证中文任务";
     const commentBody = [
