@@ -52,7 +52,7 @@ import {
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, Lock, Globe, X as XIcon, X, Calendar, Play, Clock, RotateCcw, Loader2, CheckCircle2 } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, Lock, Globe, X as XIcon, X, Calendar, Play, Clock, RotateCcw, Loader2, CheckCircle2, Target } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 
@@ -605,6 +605,7 @@ export function IssueProperties({
   const [blockedBySearch, setBlockedBySearch] = useState("");
   const [parentOpen, setParentOpen] = useState(false);
   const [parentSearch, setParentSearch] = useState("");
+  const [newInitiativeTitle, setNewInitiativeTitle] = useState("");
   const [reviewersOpen, setReviewersOpen] = useState(false);
   const [reviewerSearch, setReviewerSearch] = useState("");
   const [approversOpen, setApproversOpen] = useState(false);
@@ -707,6 +708,17 @@ export function IssueProperties({
     queryFn: () => issuesApi.list(companyId!),
     enabled: !!companyId && (blockedByOpen || parentOpen),
   });
+  const isInitiativeItem = issue.workItemType === "initiative";
+  const showInitiativePicker = !isInitiativeItem;
+  const { data: initiativeIssues } = useQuery({
+    queryKey: [...queryKeys.issues.list(companyId!), "initiative-parent-options", issue.projectId ?? "__company-wide__"],
+    queryFn: () => issuesApi.list(companyId!, {
+      workItemType: "initiative",
+      excludeRoutineExecutions: true,
+      limit: 500,
+    }),
+    enabled: !!companyId && parentOpen && showInitiativePicker,
+  });
 
   const { data: collaborators } = useQuery({
     queryKey: queryKeys.issues.collaborators(issue.id),
@@ -770,6 +782,21 @@ export function IssueProperties({
       onUpdate({ cycleId: cycle.id });
       setNewCycleName("");
       setCycleOpen(false);
+    },
+  });
+  const createInitiative = useMutation({
+    mutationFn: (data: { title: string }) => issuesApi.create(companyId!, {
+      title: data.title,
+      workItemType: "initiative",
+      projectId: issue.projectId ?? null,
+      status: "todo",
+    }),
+    onSuccess: async (created) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId!) });
+      onUpdate({ parentId: created.id });
+      setNewInitiativeTitle("");
+      setParentSearch("");
+      setParentOpen(false);
     },
   });
 
@@ -2000,13 +2027,23 @@ export function IssueProperties({
   }, [allIssues, issue.parentId]);
   const parentIdentifier = issue.ancestors?.[0]?.identifier ?? currentParentIssue?.identifier;
   const parentTitle = issue.ancestors?.[0]?.title ?? currentParentIssue?.title ?? issue.parentId?.slice(0, 8);
+  const parentPickerLabel = showInitiativePicker ? "Initiative" : "Parent";
+  const parentNoneLabel = showInitiativePicker ? "No initiative" : "No parent";
+  const parentSearchPlaceholder = showInitiativePicker ? "Search initiatives..." : "Search issues...";
+  const parentCandidateIssues = showInitiativePicker ? initiativeIssues : allIssues;
   const parentTrigger = issue.parentId ? (
-    <span className="text-sm break-words min-w-0 inline">
-      {parentIdentifier ? `${parentIdentifier} ` : ""}
-      {parentTitle}
-    </span>
+    <>
+      {showInitiativePicker ? <Target className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+      <span className="text-sm break-words min-w-0 inline">
+        {parentIdentifier ? `${parentIdentifier} ` : ""}
+        {parentTitle}
+      </span>
+    </>
   ) : (
-    <span className="text-sm text-muted-foreground">No parent</span>
+    <>
+      {showInitiativePicker ? <Target className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+      <span className="text-sm text-muted-foreground">{parentNoneLabel}</span>
+    </>
   );
   const parentLink = issue.parentId ? (
     <Link
@@ -2017,9 +2054,11 @@ export function IssueProperties({
       <ArrowUpRight className="h-3 w-3" />
     </Link>
   ) : undefined;
-  const parentOptions = (allIssues ?? [])
+  const parentOptions = (parentCandidateIssues ?? [])
     .filter((candidate) => candidate.id !== issue.id)
     .filter((candidate) => !descendantIssueIds.has(candidate.id))
+    .filter((candidate) => !showInitiativePicker || candidate.workItemType === "initiative")
+    .filter((candidate) => !showInitiativePicker || !candidate.parentId)
     .filter((candidate) => {
       if (!parentSearch.trim()) return true;
       const query = parentSearch.toLowerCase();
@@ -2037,7 +2076,7 @@ export function IssueProperties({
     <>
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search issues..."
+        placeholder={parentSearchPlaceholder}
         value={parentSearch}
         onChange={(e) => setParentSearch(e.target.value)}
         autoFocus={!inline}
@@ -2053,8 +2092,13 @@ export function IssueProperties({
             setParentOpen(false);
           }}
         >
-          No parent
+          {parentNoneLabel}
         </button>
+        {parentOptions.length === 0 ? (
+          <div className="px-2 py-2 text-xs text-muted-foreground">
+            {showInitiativePicker ? "No initiatives found." : "No parent issues found."}
+          </div>
+        ) : null}
         {parentOptions.map((candidate) => (
           <button
             key={candidate.id}
@@ -2075,6 +2119,42 @@ export function IssueProperties({
           </button>
         ))}
       </div>
+      {showInitiativePicker ? (
+        <form
+          className="mt-2 border-t border-border pt-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const title = newInitiativeTitle.trim();
+            if (!title || createInitiative.isPending) return;
+            createInitiative.mutate({ title });
+          }}
+        >
+          <div className="flex items-center gap-1">
+            <input
+              className="min-w-0 flex-1 rounded bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
+              placeholder="New initiative"
+              value={newInitiativeTitle}
+              onChange={(event) => setNewInitiativeTitle(event.target.value)}
+            />
+            <button
+              type="submit"
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded border border-border hover:bg-accent/50 disabled:opacity-50"
+              disabled={!newInitiativeTitle.trim() || createInitiative.isPending}
+              aria-label="Create initiative"
+              title="Create initiative"
+            >
+              {createInitiative.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+            </button>
+          </div>
+          <Link
+            to="/initiatives"
+            className="mt-2 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            Open initiatives
+            <ArrowUpRight className="h-3 w-3" />
+          </Link>
+        </form>
+      ) : null}
     </>
   );
   const blockingIssues = issue.blocks ?? [];
@@ -2176,69 +2256,125 @@ export function IssueProperties({
           />
         </PropertyRow>
 
-        <PropertyRow label="Points">
-          <input
-            type="number"
-            min={0}
-            max={STORY_POINTS_MAX}
-            step={1}
-            value={storyPointsInput}
-            onChange={(event) => setStoryPointsInput(event.target.value)}
-            onBlur={commitStoryPointsInput}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.currentTarget.blur();
+        <div className="mt-2 rounded-md border border-border/80 bg-muted/20 p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase text-muted-foreground">
+              <Target className="h-3.5 w-3.5" />
+              Planning
+            </div>
+            <Link
+              to="/cycles"
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              Cycles
+              <ArrowUpRight className="h-3 w-3" />
+            </Link>
+          </div>
+
+          <PropertyPicker
+            inline={inline}
+            label="Project"
+            open={projectOpen}
+            onOpenChange={(open) => { setProjectOpen(open); if (!open) setProjectSearch(""); }}
+            triggerContent={projectTrigger}
+            triggerClassName="min-w-0 max-w-full"
+            popoverClassName="w-fit min-w-[11rem]"
+            extra={issue.projectId ? (
+              <Link
+                to={projectLink(issue.projectId)!}
+                className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <ArrowUpRight className="h-3 w-3" />
+              </Link>
+            ) : undefined}
+          >
+            {projectContent}
+          </PropertyPicker>
+
+          <PropertyPicker
+            inline={inline}
+            label={parentPickerLabel}
+            open={parentOpen}
+            onOpenChange={(open) => {
+              setParentOpen(open);
+              if (!open) {
+                setParentSearch("");
+                setNewInitiativeTitle("");
               }
             }}
-            className="h-7 w-20 rounded border border-border bg-background px-2 text-sm tabular-nums text-foreground outline-none transition-colors focus:border-ring focus:ring-1 focus:ring-ring"
-            placeholder="0"
-            aria-label="Story points"
-          />
-          <span className="text-xs text-muted-foreground">story pts</span>
-        </PropertyRow>
+            triggerContent={parentTrigger}
+            triggerClassName="min-w-0 max-w-full"
+            popoverClassName="w-72"
+            extra={parentLink}
+          >
+            {parentContent}
+          </PropertyPicker>
 
-        <PropertyRow label="Estimate">
-          <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <input
-            type="number"
-            min={0}
-            max={ESTIMATE_HOURS_MAX}
-            step={1}
-            value={estimateHoursInput}
-            onChange={(event) => setEstimateHoursInput(event.target.value)}
-            onBlur={commitEstimateHoursInput}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.currentTarget.blur();
-              }
+          <PropertyPicker
+            inline={inline}
+            label="Cycle"
+            open={cycleOpen}
+            onOpenChange={(open) => {
+              setCycleOpen(open);
+              if (!open) setNewCycleName("");
             }}
-            className="h-7 w-20 rounded border border-border bg-background px-2 text-sm tabular-nums text-foreground outline-none transition-colors focus:border-ring focus:ring-1 focus:ring-ring"
-            placeholder="0"
-            aria-label="Estimate hours"
-          />
-          <span className="text-xs text-muted-foreground">hours</span>
-        </PropertyRow>
+            triggerContent={cycleTrigger}
+            triggerClassName="min-w-0 max-w-full"
+            popoverClassName="w-64"
+          >
+            {cycleContent}
+          </PropertyPicker>
 
-        <PropertyRow label="AI time">
-          <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="text-sm tabular-nums text-foreground">{formatActualAiTime(issue.actualAiSeconds)}</span>
-          <span className="text-xs text-muted-foreground">actual</span>
-        </PropertyRow>
+          <PropertyRow label="Points">
+            <input
+              type="number"
+              min={0}
+              max={STORY_POINTS_MAX}
+              step={1}
+              value={storyPointsInput}
+              onChange={(event) => setStoryPointsInput(event.target.value)}
+              onBlur={commitStoryPointsInput}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.currentTarget.blur();
+                }
+              }}
+              className="h-7 w-20 rounded border border-border bg-background px-2 text-sm tabular-nums text-foreground outline-none transition-colors focus:border-ring focus:ring-1 focus:ring-ring"
+              placeholder="0"
+              aria-label="Story points"
+            />
+            <span className="text-xs text-muted-foreground">story pts</span>
+          </PropertyRow>
 
-        <PropertyPicker
-          inline={inline}
-          label="Cycle"
-          open={cycleOpen}
-          onOpenChange={(open) => {
-            setCycleOpen(open);
-            if (!open) setNewCycleName("");
-          }}
-          triggerContent={cycleTrigger}
-          triggerClassName="min-w-0 max-w-full"
-          popoverClassName="w-64"
-        >
-          {cycleContent}
-        </PropertyPicker>
+          <PropertyRow label="Estimate">
+            <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <input
+              type="number"
+              min={0}
+              max={ESTIMATE_HOURS_MAX}
+              step={1}
+              value={estimateHoursInput}
+              onChange={(event) => setEstimateHoursInput(event.target.value)}
+              onBlur={commitEstimateHoursInput}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.currentTarget.blur();
+                }
+              }}
+              className="h-7 w-20 rounded border border-border bg-background px-2 text-sm tabular-nums text-foreground outline-none transition-colors focus:border-ring focus:ring-1 focus:ring-ring"
+              placeholder="0"
+              aria-label="Estimate hours"
+            />
+            <span className="text-xs text-muted-foreground">hours</span>
+          </PropertyRow>
+
+          <PropertyRow label="AI time">
+            <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <span className="text-sm tabular-nums text-foreground">{formatActualAiTime(issue.actualAiSeconds)}</span>
+            <span className="text-xs text-muted-foreground">actual</span>
+          </PropertyRow>
+        </div>
 
         <PropertyPicker
           inline={inline}
@@ -2297,27 +2433,6 @@ export function IssueProperties({
             {assigneeOptionsContent}
           </PropertyPicker>
         ) : null}
-
-        <PropertyPicker
-          inline={inline}
-          label="Project"
-          open={projectOpen}
-          onOpenChange={(open) => { setProjectOpen(open); if (!open) setProjectSearch(""); }}
-          triggerContent={projectTrigger}
-          triggerClassName="min-w-0 max-w-full"
-          popoverClassName="w-fit min-w-[11rem]"
-          extra={issue.projectId ? (
-            <Link
-              to={projectLink(issue.projectId)!}
-              className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <ArrowUpRight className="h-3 w-3" />
-            </Link>
-          ) : undefined}
-        >
-          {projectContent}
-        </PropertyPicker>
 
         <PropertyRow label="Due date">
           {issue.dueDate ? (
@@ -2437,22 +2552,6 @@ export function IssueProperties({
             ) : null}
           </PropertyRow>
         ) : null}
-
-        <PropertyPicker
-          inline={inline}
-          label="Parent"
-          open={parentOpen}
-          onOpenChange={(open) => {
-            setParentOpen(open);
-            if (!open) setParentSearch("");
-          }}
-          triggerContent={parentTrigger}
-          triggerClassName="min-w-0 max-w-full"
-          popoverClassName="w-72"
-          extra={parentLink}
-        >
-          {parentContent}
-        </PropertyPicker>
 
         {inline ? (
           <div>

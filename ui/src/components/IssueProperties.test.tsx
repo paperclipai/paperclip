@@ -35,6 +35,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   addCollaborator: vi.fn(),
   removeCollaborator: vi.fn(),
   updateVisibility: vi.fn(),
+  create: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -1016,14 +1017,15 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("allows setting and clearing a parent issue from the properties pane", async () => {
+  it("allows setting and clearing an initiative from the properties pane", async () => {
     const onUpdate = vi.fn();
     mockIssuesApi.list.mockResolvedValue([
-      createIssue({ id: "issue-2", identifier: "PAP-2", title: "Candidate parent", status: "in_progress" }),
+      createIssue({ id: "issue-2", identifier: "PAP-2", title: "Candidate initiative", status: "in_progress", workItemType: "initiative" }),
+      createIssue({ id: "issue-3", identifier: "PAP-3", title: "Regular ticket", status: "todo", workItemType: "human_task" }),
     ]);
 
     const root = renderProperties(container, {
-      issue: createIssue(),
+      issue: createIssue({ workItemType: "human_task" }),
       childIssues: [],
       onUpdate,
       inline: true,
@@ -1031,7 +1033,7 @@ describe("IssueProperties", () => {
     await flush();
 
     const parentTrigger = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("No parent"));
+      .find((button) => button.textContent?.includes("No initiative"));
     expect(parentTrigger).not.toBeUndefined();
 
     await act(async () => {
@@ -1040,8 +1042,9 @@ describe("IssueProperties", () => {
     await flush();
 
     const candidateButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("PAP-2 Candidate parent"));
+      .find((button) => button.textContent?.includes("PAP-2 Candidate initiative"));
     expect(candidateButton).not.toBeUndefined();
+    expect(container.textContent).not.toContain("Regular ticket");
 
     await act(async () => {
       candidateButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -1051,12 +1054,13 @@ describe("IssueProperties", () => {
 
     onUpdate.mockClear();
     const rerenderedIssue = createIssue({
+      workItemType: "human_task",
       parentId: "issue-2",
       ancestors: [
         {
           id: "issue-2",
           identifier: "PAP-2",
-          title: "Candidate parent",
+          title: "Candidate initiative",
           description: null,
           status: "in_progress",
           priority: "medium",
@@ -1081,7 +1085,7 @@ describe("IssueProperties", () => {
     await flush();
 
     const selectedParentTrigger = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("PAP-2 Candidate parent"));
+      .find((button) => button.textContent?.includes("PAP-2 Candidate initiative"));
     expect(selectedParentTrigger).not.toBeUndefined();
     const parentLink = container.querySelector('a[href="/issues/PAP-2"]');
     expect(parentLink).not.toBeNull();
@@ -1093,7 +1097,7 @@ describe("IssueProperties", () => {
     await flush();
 
     const clearParentButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("No parent"));
+      .find((button) => button.textContent?.includes("No initiative"));
     expect(clearParentButton).not.toBeUndefined();
 
     await act(async () => {
