@@ -2680,6 +2680,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
+
+    // Guard: if an active source-scoped recovery action already exists for this issue,
+    // the wakePolicy on that action already handles the wake cycle. Re-escalating would
+    // reset the issue to blocked again after each checkout, creating an infinite loop.
+    const existingRecoveryAction = await recoveryActionsSvc.getActiveForIssue(input.issue.companyId, input.issue.id);
+    if (
+      existingRecoveryAction &&
+      existingRecoveryAction.kind !== "active_run_watchdog" &&
+      existingRecoveryAction.sourceIssueId === input.issue.id
+    ) {
+      return null;
+    }
+
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
       previousStatus: input.previousStatus,
