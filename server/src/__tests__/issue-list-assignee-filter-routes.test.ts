@@ -379,4 +379,71 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       liveDescendantCount: 1,
     });
   });
+
+  it("does not recurse forever when live descendant summaries encounter a parent cycle", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const parentIssueId = randomUUID();
+    const childIssueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Assignee",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: { issueId: childIssueId },
+    });
+    await db.insert(issues).values([
+      {
+        id: parentIssueId,
+        companyId,
+        title: "Cycle parent",
+        status: "blocked",
+        priority: "medium",
+        parentId: childIssueId,
+        assigneeAgentId: agentId,
+      },
+      {
+        id: childIssueId,
+        companyId,
+        title: "Cycle live child",
+        status: "in_progress",
+        priority: "medium",
+        parentId: parentIssueId,
+        executionRunId: runId,
+        assigneeAgentId: agentId,
+      },
+    ]);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "blocked", includeLiveDescendantSummary: "true", limit: "20" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0]).toMatchObject({
+      id: parentIssueId,
+      liveDescendantCount: 1,
+    });
+  });
 });

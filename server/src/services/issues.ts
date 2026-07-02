@@ -1518,24 +1518,30 @@ async function liveDescendantCountMapForIssues(
             AND live_run.company_id = ${companyId}
             AND live_run.status IN ('queued', 'running')
         ),
-        live_ancestors(live_issue_id, ancestor_id, next_parent_id) AS (
-          SELECT live_issues.live_issue_id, parent.id, parent.parent_id
+        live_ancestors(live_issue_id, ancestor_id, next_parent_id, visited_issue_ids) AS (
+          SELECT live_issues.live_issue_id, parent.id, parent.parent_id, ARRAY[live_issues.live_issue_id, parent.id]
           FROM live_issues
           JOIN issues parent ON parent.id = live_issues.parent_id
           WHERE parent.company_id = ${companyId}
             AND parent.hidden_at IS NULL
           UNION ALL
-          SELECT live_ancestors.live_issue_id, parent.id, parent.parent_id
+          SELECT
+            live_ancestors.live_issue_id,
+            parent.id,
+            parent.parent_id,
+            live_ancestors.visited_issue_ids || parent.id
           FROM live_ancestors
           JOIN issues parent ON parent.id = live_ancestors.next_parent_id
           WHERE parent.company_id = ${companyId}
             AND parent.hidden_at IS NULL
+            AND NOT parent.id = ANY(live_ancestors.visited_issue_ids)
         )
       SELECT
         live_ancestors.ancestor_id::text AS "issueId",
         count(DISTINCT live_ancestors.live_issue_id)::int AS "liveDescendantCount"
       FROM live_ancestors
       JOIN target_issues ON target_issues.issue_id = live_ancestors.ancestor_id
+      WHERE live_ancestors.ancestor_id <> live_ancestors.live_issue_id
       GROUP BY live_ancestors.ancestor_id
     `);
 

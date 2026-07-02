@@ -35,6 +35,7 @@ interface BlockedInboxViewProps {
   issueFilters: IssueFilterState;
   currentUserId: string | null;
   liveIssueIds: ReadonlySet<string>;
+  subtreeLiveCounts: ReadonlyMap<string, number>;
   workspaceFilterContext: IssueFilterWorkspaceContext;
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
@@ -54,6 +55,7 @@ export function BlockedInboxView({
   issueFilters,
   currentUserId,
   liveIssueIds,
+  subtreeLiveCounts,
   workspaceFilterContext,
   showStatusColumn,
   showIdentifierColumn,
@@ -212,6 +214,7 @@ export function BlockedInboxView({
               agentNameById={agentNameById}
               userLabelById={userLabelById}
               liveIssueIds={liveIssueIds}
+              subtreeLiveCounts={subtreeLiveCounts}
               showStatusColumn={showStatusColumn}
               showIdentifierColumn={showIdentifierColumn}
               showUpdatedColumn={showUpdatedColumn}
@@ -240,6 +243,7 @@ export function BlockedInboxView({
                         agentNameById={agentNameById}
                         userLabelById={userLabelById}
                         liveIssueIds={liveIssueIds}
+                        subtreeLiveCounts={subtreeLiveCounts}
                         showStatusColumn={showStatusColumn}
                         showIdentifierColumn={showIdentifierColumn}
                         showUpdatedColumn={showUpdatedColumn}
@@ -262,6 +266,7 @@ interface BlockedInboxRowProps {
   agentNameById: ReadonlyMap<string, string>;
   userLabelById?: ReadonlyMap<string, string>;
   liveIssueIds: ReadonlySet<string>;
+  subtreeLiveCounts: ReadonlyMap<string, number>;
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
   showUpdatedColumn: boolean;
@@ -289,6 +294,7 @@ function BlockedInboxRow({
   agentNameById,
   userLabelById,
   liveIssueIds,
+  subtreeLiveCounts,
   showStatusColumn,
   showIdentifierColumn,
   showUpdatedColumn,
@@ -297,6 +303,7 @@ function BlockedInboxRow({
   const stoppedAge = formatStoppedAge(row.attention.stoppedSinceAt);
   const blockerAttention = resolveInboxIssueBlockerAttention(row.issue, {
     isLive: liveIssueIds.has(row.issue.id),
+    loadedSubtreeLiveCount: subtreeLiveCounts.get(row.issue.id) ?? 0,
   });
 
   const desktopTrailing = (

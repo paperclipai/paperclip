@@ -2321,6 +2321,7 @@ export function Inbox() {
           issueFilters={issueFilters}
           currentUserId={currentUserId}
           liveIssueIds={liveIssueIds}
+          subtreeLiveCounts={subtreeLiveCounts}
           workspaceFilterContext={inboxWorkspaceGrouping}
           showStatusColumn={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
           showIdentifierColumn={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}

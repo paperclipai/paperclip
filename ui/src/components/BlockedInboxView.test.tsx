@@ -129,6 +129,7 @@ const blockedViewProps = {
   issueFilters: defaultIssueFilterState,
   currentUserId: "local-board",
   liveIssueIds: new Set<string>(),
+  subtreeLiveCounts: new Map<string, number>(),
   workspaceFilterContext: {},
   showStatusColumn: true,
   showIdentifierColumn: true,
@@ -310,6 +311,35 @@ describe("BlockedInboxView", () => {
     const titles = Array.from(links).map((a) => a.textContent ?? "");
     expect(titles.some((t) => t.includes("Resume parked work"))).toBe(true);
     expect(titles.some((t) => t.includes("Other unrelated thing"))).toBe(false);
+
+    act(() => root.unmount());
+  });
+
+  it("uses loaded live descendants when blocked inbox rows do not have a server summary", async () => {
+    mockIssuesApi.list.mockResolvedValue([
+      {
+        ...makeIssue(
+          "blocked-parent",
+          "PAP-77",
+          "Blocked parent with active child",
+          attention({ reason: "blocked_chain_stalled" }),
+        ),
+        status: "blocked",
+        blockerAttention: null,
+        liveDescendantCount: undefined,
+      } as unknown as Issue,
+    ]);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView
+        {...blockedViewProps}
+        subtreeLiveCounts={new Map([["blocked-parent", 1]])}
+      />,
+      container,
+    );
+    await waitFor(() => container.querySelector("a") !== null);
+
+    expect(container.querySelector('[aria-label="Blocked · waiting on 1 active sub-task"]')).not.toBeNull();
 
     act(() => root.unmount());
   });
