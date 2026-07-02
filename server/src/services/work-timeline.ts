@@ -12,45 +12,27 @@ import {
   issueThreadInteractions,
 } from "@paperclipai/db";
 
-export type TimelineActorType = "agent" | "user" | "system" | "plugin";
-export type TimelineEventKind = "created" | "commented" | "approved" | "delegated" | "assigned";
-export type TimelineEdgeKind = "delegation" | "assignment" | "mention";
+// DTO types are shared with the UI via @paperclipai/shared so both sides consume
+// one contract. Re-exported here for back-compat with existing server imports.
+import type {
+  TimelineActorType,
+  WorkTimelineActor,
+  WorkTimelineSpan,
+  WorkTimelineEvent,
+  WorkTimelineEdge,
+  WorkTimelineResult,
+} from "@paperclipai/shared";
 
-export interface WorkTimelineActor {
-  id: string;
-  type: TimelineActorType;
-  name: string;
-  avatar?: string | null;
-}
-
-export interface WorkTimelineSpan {
-  actorId: string;
-  laneHint: string | null;
-  runId: string;
-  issueId: string;
-  issueIdentifier: string | null;
-  start: string;
-  end: string | null;
-  status: string;
-  retryOfRunId?: string | null;
-  continuationAttempt?: number;
-  invocationSource?: string | null;
-}
-
-export interface WorkTimelineEvent {
-  actorId: string;
-  kind: TimelineEventKind;
-  issueId: string;
-  at: string;
-}
-
-export interface WorkTimelineEdge {
-  fromActorId: string;
-  toActorId: string;
-  issueId: string;
-  at: string;
-  kind: TimelineEdgeKind;
-}
+export type {
+  TimelineActorType,
+  TimelineEventKind,
+  TimelineEdgeKind,
+  WorkTimelineActor,
+  WorkTimelineSpan,
+  WorkTimelineEvent,
+  WorkTimelineEdge,
+  WorkTimelineResult,
+} from "@paperclipai/shared";
 
 export interface WorkTimelineQuery {
   companyId: string;
@@ -63,24 +45,6 @@ export interface WorkTimelineQuery {
   limit?: number;
   offset?: number;
   canReadIssue?: (issue: WorkTimelineIssueAccessInput) => Promise<boolean>;
-}
-
-export interface WorkTimelineResult {
-  actors: WorkTimelineActor[];
-  spans: WorkTimelineSpan[];
-  events: WorkTimelineEvent[];
-  edges: WorkTimelineEdge[];
-  pagination: {
-    limit: number;
-    offset: number;
-    totalIssues: number;
-    hasMore: boolean;
-  };
-  window: {
-    from: string;
-    to: string;
-    capped: boolean;
-  };
 }
 
 export interface WorkTimelineIssueAccessInput {
@@ -100,6 +64,7 @@ type IssueRow = {
   goalId: string | null;
   parentId: string | null;
   identifier: string | null;
+  title: string | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   assigneeAgentId: string | null;
@@ -290,6 +255,7 @@ export function workTimelineService(db: Db) {
         goalId: issues.goalId,
         parentId: issues.parentId,
         identifier: issues.identifier,
+        title: issues.title,
         createdByAgentId: issues.createdByAgentId,
         createdByUserId: issues.createdByUserId,
         assigneeAgentId: issues.assigneeAgentId,
@@ -649,6 +615,7 @@ export function workTimelineService(db: Db) {
         runId: row.runId,
         issueId: row.issueId,
         issueIdentifier: issueById.get(row.issueId)?.identifier ?? null,
+        issueTitle: issueById.get(row.issueId)?.title ?? null,
         start: (row.startedAt ?? row.createdAt).toISOString(),
         end: dateIso(row.finishedAt),
         status: row.status,
