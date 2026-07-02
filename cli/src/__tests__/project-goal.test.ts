@@ -25,6 +25,7 @@ describe("project and goal commands", () => {
     delete process.env.PAPERCLIP_API_KEY;
     delete process.env.PAPERCLIP_API_URL;
     delete process.env.PAPERCLIP_COMPANY_ID;
+    process.env.PAPERCLIP_CONTEXT = "/nonexistent/paperclip-test-context.json";
   });
 
   afterEach(() => {
