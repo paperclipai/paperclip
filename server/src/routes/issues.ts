@@ -128,6 +128,10 @@ import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
+  enforceBtcPrefixTokens,
+  respondBtcPrefixGuardFailure,
+} from "../middleware/btc-prefix-guard.js";
+import {
   createCompanySearchRateLimiter,
   type CompanySearchRateLimiter,
 } from "../services/company-search-rate-limit.js";
@@ -5769,6 +5773,20 @@ export function issueRoutes(
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
+    if (typeof req.body?.comment === "string" && req.body.comment.length > 0) {
+      const btcGuardResult = await enforceBtcPrefixTokens({
+        text: req.body.comment,
+        companyId: existing.companyId,
+        lookup: async (candidate, cid) => {
+          const row = await svc.getByIdentifierForCompany(candidate, cid);
+          return { exists: !!row };
+        },
+      });
+      if (!btcGuardResult.ok) {
+        respondBtcPrefixGuardFailure(res, btcGuardResult);
+        return;
+      }
+    }
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
@@ -7611,6 +7629,20 @@ export function issueRoutes(
     assertCompanyAccess(req, issue.companyId);
     const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
     if (!commentAccessDecision) return;
+    if (typeof req.body?.body === "string" && req.body.body.length > 0) {
+      const btcGuardResult = await enforceBtcPrefixTokens({
+        text: req.body.body,
+        companyId: issue.companyId,
+        lookup: async (candidate, cid) => {
+          const row = await svc.getByIdentifierForCompany(candidate, cid);
+          return { exists: !!row };
+        },
+      });
+      if (!btcGuardResult.ok) {
+        respondBtcPrefixGuardFailure(res, btcGuardResult);
+        return;
+      }
+    }
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
