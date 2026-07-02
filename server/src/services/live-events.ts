@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { LiveEvent, LiveEventType } from "@paperclipai/shared";
 
+type GlobalLiveEventType = Extract<LiveEventType, "plugin.ui.updated">;
 type LiveEventPayload = Record<string, unknown>;
 type LiveEventListener = (event: LiveEvent) => void;
 
@@ -35,9 +36,11 @@ export function publishLiveEvent(input: {
 }
 
 export function publishGlobalLiveEvent(input: {
-  type: LiveEventType;
+  type: GlobalLiveEventType;
   payload?: LiveEventPayload;
 }) {
+  // The "*" channel is broadcast to board clients across tenant scopes. Keep
+  // this restricted to instance-global, tenant-free event payloads.
   const event = toLiveEvent({ companyId: "*", type: input.type, payload: input.payload });
   emitter.emit("*", event);
   return event;
