@@ -78,6 +78,7 @@ import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getRunLogStore } from "./run-log-store.js";
+import { resolveCreatedByRunId } from "./run-id.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import {
@@ -6371,6 +6372,16 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
+      // Tolerate stale/foreign run-ids. createdByRunId carries an FK to
+      // heartbeat_runs, so a malformed or non-existent run-id would otherwise
+      // surface as a raw 500 (FK violation / invalid-uuid syntax) instead of a
+      // clean result. Demote any run-id we cannot resolve to NULL so a status
+      // comment is never lost to a bad run-id — preserving the audit trail over
+      // hard rejection.
+      const createdByRunId = await resolveCreatedByRunId(dbOrTx, actor.runId, {
+        scope: "addComment",
+        issueId,
+      });
       const [comment] = await dbOrTx
         .insert(issueComments)
         .values({
@@ -6379,7 +6390,7 @@ export function issueService(db: Db) {
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
           authorType,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId,
           body: redactedBody,
           presentation,
           metadata,

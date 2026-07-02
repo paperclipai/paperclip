@@ -57,6 +57,7 @@ import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
+import { resolveCreatedByRunId } from "./run-id.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { secretService } from "./secrets.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
@@ -805,6 +806,12 @@ export function routineService(
     const snapshot = await buildRoutineRevisionSnapshot(executor, routine);
     const nextRevisionNumber = routine.latestRevisionId ? routine.latestRevisionNumber + 1 : 1;
     const now = new Date();
+    // createdByRunId carries an FK to heartbeat_runs; demote unknown/malformed
+    // run-ids to NULL so a routine revision is never lost to a raw FK 500.
+    const createdByRunId = await resolveCreatedByRunId(executor, actor.runId, {
+      scope: "routines.appendRoutineRevision",
+      routineId: routine.id,
+    });
     const [revision] = await executor
       .insert(routineRevisions)
       .values({
@@ -818,7 +825,7 @@ export function routineService(
         restoredFromRevisionId: options.restoredFromRevisionId ?? null,
         createdByAgentId: actor.agentId ?? null,
         createdByUserId: actor.userId ?? null,
-        createdByRunId: actor.runId ?? null,
+        createdByRunId,
         createdAt: now,
       })
       .returning();

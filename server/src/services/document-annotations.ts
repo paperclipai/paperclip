@@ -22,6 +22,7 @@ import {
   UpdateDocumentAnnotationThread,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { resolveCreatedByRunId } from "./run-id.js";
 
 type ActorInput = {
   actorType: "agent" | "user";
@@ -343,6 +344,12 @@ export function documentAnnotationService(db: Db) {
 
       const now = new Date();
       const linkedIssueComment = await assertLinkedIssueComment(issueId, input.issueCommentId, tx);
+      // createdByRunId carries an FK to heartbeat_runs; demote unknown/malformed
+      // run-ids to NULL so the annotation is never lost to a raw FK 500.
+      const createdByRunId = await resolveCreatedByRunId(tx, actor.runId, {
+        scope: "documentAnnotations.createThread",
+        issueId,
+      });
       const [thread] = await tx
         .insert(documentAnnotationThreads)
         .values({
@@ -383,7 +390,7 @@ export function documentAnnotationService(db: Db) {
           authorType: actor.actorType,
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId,
           issueCommentId: linkedIssueComment?.id ?? null,
           createdAt: now,
           updatedAt: now,
@@ -492,6 +499,13 @@ export function documentAnnotationService(db: Db) {
       if (!thread) throw notFound("Annotation thread not found");
       const now = new Date();
       const linkedIssueComment = await assertLinkedIssueComment(issueId, input.issueCommentId, tx);
+      // createdByRunId carries an FK to heartbeat_runs; demote unknown/malformed
+      // run-ids to NULL so the comment is never lost to a raw FK 500.
+      const createdByRunId = await resolveCreatedByRunId(tx, actor.runId, {
+        scope: "documentAnnotations.addComment",
+        issueId,
+        threadId,
+      });
       const [comment] = await tx
         .insert(documentAnnotationComments)
         .values({
@@ -503,7 +517,7 @@ export function documentAnnotationService(db: Db) {
           authorType: actor.actorType,
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId,
           issueCommentId: linkedIssueComment?.id ?? null,
           createdAt: now,
           updatedAt: now,
