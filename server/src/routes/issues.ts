@@ -6908,7 +6908,35 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const forceRelease = req.body?.force === true;
+    if (forceRelease && req.actor.type === "agent") {
+      const actorAgentId = req.actor.agentId;
+      if (!actorAgentId) {
+        res.status(403).json({ error: "Agent authentication required" });
+        return;
+      }
+      const boundaryDecision = await decideIssueAccess(req, existing, "issue:mutate");
+      if (!boundaryDecision.allowed) {
+        res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+        return;
+      }
+      if (
+        existing.assigneeAgentId &&
+        existing.assigneeAgentId !== actorAgentId &&
+        !(await hasActiveCheckoutManagementOverride(actorAgentId, existing.companyId, existing.assigneeAgentId))
+      ) {
+        res.status(403).json({
+          error: "Agent cannot force-release another agent's issue",
+          details: {
+            issueId: existing.id,
+            assigneeAgentId: existing.assigneeAgentId,
+            actorAgentId,
+            securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+          },
+        });
+        return;
+      }
+    } else if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const actorRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !actorRunId) return;
 
@@ -6916,6 +6944,7 @@ export function issueRoutes(
       id,
       req.actor.type === "agent" ? req.actor.agentId : undefined,
       actorRunId,
+      { force: forceRelease },
     );
     if (!released) {
       res.status(404).json({ error: "Issue not found" });

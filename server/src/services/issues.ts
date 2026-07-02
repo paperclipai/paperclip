@@ -461,8 +461,39 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+export const ISSUE_EXECUTION_LOCK_TTL_MS = 5 * 60 * 1000;
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
+
+function issueExecutionLockMonitorNextCheckAt(now: Date) {
+  return new Date(now.getTime() + ISSUE_EXECUTION_LOCK_TTL_MS);
+}
+
+export function executionLockAcquisitionFields(runId: string, now: Date) {
+  const nextCheckAt = issueExecutionLockMonitorNextCheckAt(now);
+  return {
+    executionRunId: runId,
+    executionLockedAt: now,
+    monitorNextCheckAt: sql<Date | null>`case
+      when ${issues.monitorNextCheckAt} is null
+        and ${issues.monitorLastTriggeredAt} is null
+        and ${issues.monitorAttemptCount} = 0
+      then ${nextCheckAt.toISOString()}::timestamptz
+      else ${issues.monitorNextCheckAt}
+    end`,
+    monitorWakeRequestedAt: null,
+  };
+}
+
+function heartbeatRunIsDead(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "status" | "updatedAt"> | null,
+  now = new Date(),
+) {
+  if (!run) return true;
+  if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+  const updatedAt = run.updatedAt instanceof Date ? run.updatedAt : new Date(run.updatedAt);
+  return Number.isFinite(updatedAt.getTime()) && updatedAt.getTime() <= now.getTime() - ISSUE_EXECUTION_LOCK_TTL_MS;
+}
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -3998,12 +4029,11 @@ export function issueService(db: Db) {
 
   async function isTerminalOrMissingHeartbeatRun(runId: string, dbOrTx: DbReader = db) {
     const run = await dbOrTx
-      .select({ status: heartbeatRuns.status })
+      .select({ status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
-    if (!run) return true;
-    return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+    return heartbeatRunIsDead(run);
   }
 
   async function adoptStaleCheckoutRun(input: {
@@ -4047,18 +4077,18 @@ export function issueService(db: Db) {
       ]);
       const [existingRun, actorRun] = await Promise.all([
         tx
-          .select({ status: heartbeatRuns.status })
+          .select({ status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.expectedCheckoutRunId))
           .then((rows) => rows[0] ?? null),
         tx
-          .select({ status: heartbeatRuns.status })
+          .select({ status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.actorRunId))
           .then((rows) => rows[0] ?? null),
       ]);
-      const stale = !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
-      const actorLive = actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
+      const stale = heartbeatRunIsDead(existingRun);
+      const actorLive = actorRun && !heartbeatRunIsDead(actorRun);
       if (!stale || !actorLive) {
         return { adopted: null, latest: lockedIssue };
       }
@@ -4068,8 +4098,7 @@ export function issueService(db: Db) {
         .update(issues)
         .set({
           checkoutRunId: input.actorRunId,
-          executionRunId: input.actorRunId,
-          executionLockedAt: now,
+          ...executionLockAcquisitionFields(input.actorRunId, now),
           updatedAt: now,
         })
         .where(
@@ -4117,19 +4146,18 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
       );
       const actorRun = await tx
-        .select({ status: heartbeatRuns.status })
+        .select({ status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, input.actorRunId))
         .then((rows) => rows[0] ?? null);
-      if (!actorRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status)) return null;
+      if (!actorRun || heartbeatRunIsDead(actorRun)) return null;
 
       const now = new Date();
       const adopted = await tx
         .update(issues)
         .set({
           checkoutRunId: input.actorRunId,
-          executionRunId: input.actorRunId,
-          executionLockedAt: now,
+          ...executionLockAcquisitionFields(input.actorRunId, now),
           updatedAt: now,
         })
         .where(
@@ -4170,11 +4198,11 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select({ status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.executionRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (!heartbeatRunIsDead(run)) return false;
 
       const updated = await tx
         .update(issues)
@@ -4218,22 +4246,22 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.checkoutRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select({ status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, issue.checkoutRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (!heartbeatRunIsDead(run)) return false;
 
       if (issue.executionRunId && issue.executionRunId !== issue.checkoutRunId) {
         await tx.execute(
           sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
         );
         const executionRun = await tx
-          .select({ status: heartbeatRuns.status })
+          .select({ status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, issue.executionRunId))
           .then((rows) => rows[0] ?? null);
-        if (executionRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)) return false;
+        if (!heartbeatRunIsDead(executionRun)) return false;
       }
 
       const updated = await tx
@@ -5745,7 +5773,7 @@ export function issueService(db: Db) {
           assigneeAgentId: agentId,
           assigneeUserId: null,
           checkoutRunId,
-          executionRunId: checkoutRunId,
+          ...(checkoutRunId ? executionLockAcquisitionFields(checkoutRunId, now) : { executionRunId: null }),
           status: "in_progress",
           startedAt: now,
           updatedAt: now,
@@ -5791,7 +5819,7 @@ export function issueService(db: Db) {
           .update(issues)
           .set({
             checkoutRunId,
-            executionRunId: checkoutRunId,
+            ...(checkoutRunId ? executionLockAcquisitionFields(checkoutRunId, now) : { executionRunId: null }),
             updatedAt: new Date(),
           })
           .where(
@@ -5844,9 +5872,8 @@ export function issueService(db: Db) {
           const adoptionSet: Record<string, unknown> = {
             assigneeAgentId: agentId,
             checkoutRunId,
-            executionRunId: checkoutRunId,
+            ...executionLockAcquisitionFields(checkoutRunId, now),
             executionAgentNameKey: null,
-            executionLockedAt: now,
             status: "in_progress",
             updatedAt: now,
           };
@@ -6038,7 +6065,12 @@ export function issueService(db: Db) {
       });
     },
 
-    release: async (id: string, actorAgentId?: string, actorRunId?: string | null) =>
+    release: async (
+      id: string,
+      actorAgentId?: string,
+      actorRunId?: string | null,
+      options: { force?: boolean } = {},
+    ) =>
       db.transaction(async (tx) => {
         await tx.execute(
           sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
@@ -6050,10 +6082,11 @@ export function issueService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!existing) return null;
-        if (actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
+        if (!options.force && actorAgentId && existing.assigneeAgentId && existing.assigneeAgentId !== actorAgentId) {
           throw conflict("Only assignee can release issue");
         }
         if (
+          !options.force &&
           actorAgentId &&
           existing.status === "in_progress" &&
           existing.assigneeAgentId === actorAgentId &&
@@ -6066,6 +6099,23 @@ export function issueService(db: Db) {
               issueId: existing.id,
               assigneeAgentId: existing.assigneeAgentId,
               checkoutRunId: existing.checkoutRunId,
+              actorRunId: actorRunId ?? null,
+            });
+          }
+        }
+        if (options.force && (existing.checkoutRunId || existing.executionRunId)) {
+          const [checkoutDead, executionDead] = await Promise.all([
+            existing.checkoutRunId ? isTerminalOrMissingHeartbeatRun(existing.checkoutRunId, tx) : Promise.resolve(true),
+            existing.executionRunId ? isTerminalOrMissingHeartbeatRun(existing.executionRunId, tx) : Promise.resolve(true),
+          ]);
+          if (!checkoutDead || !executionDead) {
+            throw conflict("Issue run ownership conflict", {
+              issueId: existing.id,
+              status: existing.status,
+              assigneeAgentId: existing.assigneeAgentId,
+              checkoutRunId: existing.checkoutRunId,
+              executionRunId: existing.executionRunId,
+              actorAgentId: actorAgentId ?? null,
               actorRunId: actorRunId ?? null,
             });
           }
