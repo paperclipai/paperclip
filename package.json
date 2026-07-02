@@ -57,7 +57,8 @@
     "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
     "trust:impact-pack": "node scripts/generate-codebase-impact-pack.mjs --project root-paperclip",
     "test:trust-impact-pack": "node --test scripts/generate-codebase-impact-pack.test.mjs",
-    "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs"
+    "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs",
+    "cps:export-judgments": "python scripts/export-cps-judgment-dataset.py"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",

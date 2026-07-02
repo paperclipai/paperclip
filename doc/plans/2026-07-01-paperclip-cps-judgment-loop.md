@@ -191,6 +191,14 @@ Paperclip should aggregate judgments into:
 /root/cps/var/evals/judgment_triage_eval.jsonl
 ```
 
+Run the local/offline exporter from the Paperclip repo with:
+
+```sh
+pnpm cps:export-judgments
+```
+
+It reads CPS self-practice artifacts and Paperclip feedback labels, writes the live training JSONL, writes a Tinker-ready prompt/response JSONL, and only freezes `judgment_triage_eval.jsonl` after the configured accepted-label threshold is met. It does not call model, broker, paid data, or network APIs.
+
 The first file is live training data. The second is a frozen eval set.
 
 A single JSONL row should include:
