@@ -1128,8 +1128,10 @@ export function pluginRoutes(
       return;
     }
 
-    // Basic security check for package name (prevent injection)
-    if (!isLocalPath && /[<>:"|?*]/.test(trimmedPackage)) {
+    // Basic security check for package name (prevent injection).
+    // Allow: A-Za-z0-9 . _ / @ : # + - (covers npm, github:, git+https:, etc.)
+    // Block: whitespace, shell-redirect chars < > " | ? * and NUL
+    if (!isLocalPath && /[\s<>"|?*\x00]/.test(trimmedPackage)) {
       res.status(400).json({ error: "packageName contains invalid characters" });
       return;
     }

@@ -237,6 +237,51 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockLifecycle.load).toHaveBeenCalledWith(pluginId);
   }, 20_000);
 
+  it.each([
+    ["github: spec with sha", "github:Neoreef/plugin-agent-channels#0c0d47f1"],
+    ["git+https: spec", "git+https://github.com/Neoreef/plugin-agent-channels#0c0d47f1"],
+    ["npm scoped package", "@paperclipai/plugin-agent-channels"],
+    ["npm package with version", "paperclip-plugin-example@1.2.3"],
+  ])("accepts valid package spec: %s", async (_label, packageName) => {
+    const pluginKey = "paperclip.example";
+    mockRegistry.getByKey.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      pluginKey,
+      packageName,
+      version: "1.0.0",
+    });
+    mockRegistry.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      pluginKey,
+      packageName,
+      version: "1.0.0",
+    });
+    mockLifecycle.load.mockResolvedValue(undefined);
+    const { app, loader } = await createApp(
+      { type: "board", userId: "admin-1", source: "session", isInstanceAdmin: true, companyIds: [] },
+      { installPlugin: vi.fn().mockResolvedValue({ manifest: { id: pluginKey } }) },
+    );
+    const res = await request(app).post("/api/plugins/install").send({ packageName });
+    expect(res.status).not.toBe(400);
+    expect(loader.installPlugin).toHaveBeenCalled();
+  }, 20_000);
+
+  it.each([
+    ["shell pipe", "pkg|rm -rf /"],
+    ["redirect", "pkg>evil"],
+    ["wildcard", "pkg*"],
+    ["double-quote injection", 'pkg"evil'],
+    ["space injection", "pkg evil"],
+  ])("rejects injection attempt in package spec: %s", async (_label, packageName) => {
+    const { app, loader } = await createApp(
+      { type: "board", userId: "admin-1", source: "session", isInstanceAdmin: true, companyIds: [] },
+    );
+    const res = await request(app).post("/api/plugins/install").send({ packageName });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/invalid characters/i);
+    expect(loader.installPlugin).not.toHaveBeenCalled();
+  }, 20_000);
+
   it("rejects plugin upgrades for non-admin board users", async () => {
     const pluginId = "11111111-1111-4111-8111-111111111111";
     const { app } = await createApp({
