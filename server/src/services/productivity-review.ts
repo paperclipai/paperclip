@@ -475,8 +475,18 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       ? Math.max(0, now.getTime() - activeStartedAt.getTime())
       : null;
 
+    // Routine-execution issues are, by design, long-running: a cron-scheduled
+    // routine repeatedly wakes the assignee for short, healthy individual runs
+    // while the linked execution issue legitimately stays `in_progress` across
+    // the routine's full active span (hours to days). Cumulative episode
+    // duration does not reflect staleness for this origin kind the way it does
+    // for a normal assigned issue, so `long_active_duration` is exempted here.
+    // The other triggers (no_comment_streak, high_churn) remain meaningful and
+    // still apply — a routine-execution issue that goes quiet or churns is
+    // still worth a productivity review.
+    const isRoutineExecution = sourceIssue.originKind === "routine_execution";
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    const longActive = !isRoutineExecution && elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
