@@ -747,6 +747,7 @@ export function environmentCustomImageService(
           : null;
         const provider = await resolveSetupProvider({
           environment,
+          storedRpcCompanyId: readSetupRpcCompanyId(session.metadata),
           requireCapture: true,
         });
         const runtimeConfigBinding = templateConfigBindingFromDriver({
