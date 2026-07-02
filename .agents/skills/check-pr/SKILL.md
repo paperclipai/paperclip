@@ -138,7 +138,8 @@ HEAD_SHA=$(gh pr view <PR_NUMBER> --json headRefOid -q .headRefOid)
 Then inspect check-runs for that commit and require a completed Greptile run:
 
 ```bash
-GREPTILE_CHECKS=$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA/check-runs?per_page=100" \
+OWNER_REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+GREPTILE_CHECKS=$(gh api "repos/$OWNER_REPO/commits/$HEAD_SHA/check-runs?per_page=100" \
   --jq '[.check_runs[] | select(.name | test("greptile"; "i"))]')
 
 # A run only counts as a valid fresh pass when it has completed AND concluded cleanly.
@@ -175,19 +176,43 @@ For GitLab installations with Greptile integration, apply the same freshness rul
 # 1. Get the MR's current head SHA
 MR_SHA=$(glab mr view <MR_IID> --output json | jq -r '.sha // .diff_refs.head_sha')
 
-# 2. Find pipeline(s) for that EXACT sha, then the Greptile job within each, and require success
+# 2. Find pipeline(s) for that EXACT sha, then the Greptile job within each.
+GREPTILE_JOBS='[]'
 for PIPELINE_ID in $(glab api "projects/:fullpath/merge_requests/<MR_IID>/pipelines" \
   | jq -r --arg sha "$MR_SHA" '.[] | select(.sha == $sha) | .id'); do
-  glab api "projects/:fullpath/pipelines/$PIPELINE_ID/jobs" \
+  PIPELINE_GREPTILE_JOBS=$(glab api "projects/:fullpath/pipelines/$PIPELINE_ID/jobs" \
     | jq --arg sha "$MR_SHA" '[.[] | select(.name | test("greptile"; "i"))
-        | {name, status, pipeline_sha: $sha}]'
+        | {name, status, pipeline_sha: $sha}]')
+  GREPTILE_JOBS=$(jq -s 'add' \
+    <(printf '%s\n' "$GREPTILE_JOBS") \
+    <(printf '%s\n' "$PIPELINE_GREPTILE_JOBS"))
 done
 
+GREPTILE_JOB_SUCCESS=$(echo "$GREPTILE_JOBS" \
+  | jq '[.[] | select(.status == "success")] | length')
+GREPTILE_JOB_BLOCKING=$(echo "$GREPTILE_JOBS" \
+  | jq '[.[] | select(.status != "success")] | length')
+
 # 3. If Greptile integrates via MR notes instead of a CI job, require the newest
-#    Greptile note to reference the current head sha (reject stale/missing):
-glab api "projects/:fullpath/merge_requests/<MR_IID>/discussions?per_page=100" \
+#    Greptile note to reference the current head sha (reject stale/missing).
+GREPTILE_NOTES=$(glab api "projects/:fullpath/merge_requests/<MR_IID>/discussions?per_page=100" \
   | jq --arg sha "$MR_SHA" '[.[].notes[]
-      | select(.author.username | test("greptile"; "i"))]'
+      | select(.author.username | test("greptile"; "i"))]
+      | sort_by(.updated_at // .created_at)')
+GREPTILE_NOTE_FRESH=$(echo "$GREPTILE_NOTES" \
+  | jq --arg sha "$MR_SHA" 'if length == 0 then 0
+      elif (last.body // "" | contains($sha)) then 1
+      else 0 end')
+
+if [ "$GREPTILE_JOB_SUCCESS" = "0" ] && [ "$GREPTILE_NOTE_FRESH" = "0" ]; then
+  echo "Blocked: no successful Greptile job or current-head Greptile note is tied to MR head $MR_SHA."
+  exit 1
+fi
+
+if [ "$GREPTILE_JOB_BLOCKING" != "0" ]; then
+  echo "Blocked: at least one Greptile job for MR head $MR_SHA did not succeed."
+  exit 1
+fi
 ```
 
 Block completion if, for `MR_SHA`, there is (a) no Greptile job or note at all (missing), (b) the newest Greptile job/note is tied to a different sha (stale), or (c) the Greptile job status is not `success`. A completed Greptile result for a different SHA is stale and must block completion.
