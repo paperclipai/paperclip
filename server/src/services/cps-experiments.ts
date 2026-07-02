@@ -9,6 +9,9 @@ import path from "node:path";
 import type {
   CreateCpsJudgmentFeedbackInput,
   CreateCpsRunRequestInput,
+  CpsBacktestQueue,
+  CpsBacktestQueueLastTick,
+  CpsBacktestQueueSummary,
   CpsExperimentEntry,
   CpsExperimentJudgment,
   CpsExperimentOverview,
@@ -28,9 +31,11 @@ export interface CpsExperimentsServiceOptions {
   recentLimit?: number;
   runRequestsDir?: string;
   evalMinLabels?: number;
+  backtestQueueDir?: string;
 }
 
 const DEFAULT_SELF_PRACTICE_DIR = "/root/cps/var/self_practice";
+const DEFAULT_BACKTEST_QUEUE_DIR = "/root/cps/var/backtest_queue";
 const DEFAULT_STALE_AFTER_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_RECENT_LIMIT = 40;
 // Mirrors the exporter default (`scripts/export-cps-judgment-dataset.py --min-eval-labels`).
@@ -312,6 +317,109 @@ function resolveEvalsDir(options: CpsExperimentsServiceOptions, selfPracticeDir:
   return options.evalsDir ?? process.env.PAPERCLIP_CPS_EVALS_DIR ?? path.join(selfPracticeDir, "..", "evals");
 }
 
+function resolveBacktestQueueDir(options: CpsExperimentsServiceOptions): string {
+  return options.backtestQueueDir ?? process.env.PAPERCLIP_CPS_BACKTEST_QUEUE_DIR ?? DEFAULT_BACKTEST_QUEUE_DIR;
+}
+
+// E1: read-only view of the shared pod backtest queue (fincli.backtest_queue.v1)
+// written by tools/backtest_queue.py + the supervised dispatcher tick. The board
+// only reads state here — submission/dispatch stay CLI/cron-side.
+async function readBacktestQueue(options: CpsExperimentsServiceOptions): Promise<CpsBacktestQueue> {
+  const queueDir = resolveBacktestQueueDir(options);
+  const queuePath = path.join(queueDir, "queue.json");
+  const tickPath = path.join(queueDir, "LAST_TICK.json");
+  const stopPath = path.join(queueDir, "STOP");
+  const empty: CpsBacktestQueueSummary = {
+    total: 0, pending: 0, leased: 0, running: 0, completed: 0, failed: 0, blocked: 0, cancelled: 0,
+  };
+
+  let present = false;
+  let updatedUtc: string | null = null;
+  let summary: CpsBacktestQueueSummary | null = null;
+  let oldestPendingAgeSeconds: number | null = null;
+  try {
+    const raw = JSON.parse(await fs.readFile(queuePath, "utf8")) as unknown;
+    const queue = asRecord(raw);
+    if (queue && queue.schema === "fincli.backtest_queue.v1") {
+      present = true;
+      updatedUtc = asString(queue.updated_utc);
+      const counts = { ...empty };
+      const now = Date.now();
+      const pendingAges: number[] = [];
+      for (const item of Array.isArray(queue.requests) ? queue.requests : []) {
+        const req = asRecord(item);
+        if (!req) continue;
+        counts.total += 1;
+        const status = (asString(req.status) ?? "").toUpperCase();
+        if (status === "PENDING") counts.pending += 1;
+        else if (status === "LEASED") counts.leased += 1;
+        else if (status === "RUNNING") counts.running += 1;
+        else if (status === "COMPLETED") counts.completed += 1;
+        else if (status === "FAILED") counts.failed += 1;
+        else if (status === "BLOCKED") counts.blocked += 1;
+        else if (status === "CANCELLED") counts.cancelled += 1;
+        if (status === "PENDING") {
+          const createdMs = parseDateMs(asString(req.created_utc));
+          if (createdMs !== null) pendingAges.push(Math.max(0, Math.round((now - createdMs) / 1000)));
+        }
+      }
+      summary = counts;
+      oldestPendingAgeSeconds = pendingAges.length ? Math.max(...pendingAges) : null;
+    }
+  } catch {
+    // queue not created yet — report as absent, not an error
+  }
+
+  let lastTick: CpsBacktestQueueLastTick | null = null;
+  try {
+    const raw = JSON.parse(await fs.readFile(tickPath, "utf8")) as unknown;
+    const tick = asRecord(raw);
+    if (tick) {
+      const probed: Record<string, string> = {};
+      const probedRaw = asRecord(tick.probed_workers) ?? {};
+      for (const [worker, state] of Object.entries(probedRaw)) {
+        if (typeof state === "string") probed[worker] = state;
+      }
+      lastTick = {
+        status: asString(tick.status),
+        atUtc: asString(tick.generated_utc),
+        probedWorkers: probed,
+        reachableWorkers: asStringArray(tick.reachable_workers),
+        leased: (Array.isArray(tick.leased) ? tick.leased : []).map((item) => {
+          const lease = asRecord(item) ?? {};
+          return {
+            requestId: asString(lease.request_id),
+            worker: asString(lease.worker),
+            pod: asString(lease.pod),
+          };
+        }),
+      };
+    }
+  } catch {
+    // no tick yet
+  }
+
+  let stopPresent = false;
+  try {
+    await fs.stat(stopPath);
+    stopPresent = true;
+  } catch {
+    stopPresent = false;
+  }
+
+  const starving = (summary?.pending ?? 0) > 0 && lastTick !== null && lastTick.reachableWorkers.length === 0;
+  return {
+    present,
+    queuePath: path.normalize(queuePath),
+    updatedUtc,
+    summary,
+    oldestPendingAgeSeconds,
+    lastTick,
+    stopPresent,
+    starving,
+  };
+}
+
 async function resolveIndexFile(options: Pick<CpsExperimentsServiceOptions, "indexFile" | "selfPracticeDir">): Promise<string> {
   if (options.indexFile) return options.indexFile;
   if (process.env.PAPERCLIP_CPS_EXPERIMENTS_INDEX) return process.env.PAPERCLIP_CPS_EXPERIMENTS_INDEX;
@@ -427,7 +535,12 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
       const trainingPath = path.join(selfPracticeDir, "EXPERIMENT_JUDGMENTS.jsonl");
       const tinkerPath = path.join(evalsDir, "judgment_tinker_prompt_response.jsonl");
       const evalPath = path.join(evalsDir, "judgment_triage_eval.jsonl");
-      const [training, tinker, evalFile] = await Promise.all([jsonlStatus(trainingPath), jsonlStatus(tinkerPath), jsonlStatus(evalPath)]);
+      const [training, tinker, evalFile, backtestQueue] = await Promise.all([
+        jsonlStatus(trainingPath),
+        jsonlStatus(tinkerPath),
+        jsonlStatus(evalPath),
+        readBacktestQueue(options),
+      ]);
 
       const judgmentByResultVerdict: Record<string, number> = {};
       const judgmentByPromotionVerdict: Record<string, number> = {};
@@ -472,6 +585,7 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
           labelsPath: path.normalize(labelsFile),
         },
         operatorActions,
+        backtestQueue,
         datasetExport: {
           trainingPath: path.normalize(trainingPath),
           trainingRows: training.rows,

@@ -227,6 +227,47 @@ export interface CpsJudgmentFeedback {
   queuePath: string;
 }
 
+// E1 backtest worker queue surface (fincli.backtest_queue.v1). Read-only view
+// of the shared pod backtest queue: pods submit via the CLI, a supervised
+// dispatcher leases FIFO to free trusted local workers. Vast.ai / paid compute
+// is never launched automatically — a starving queue becomes an operator ask.
+export interface CpsBacktestQueueSummary {
+  total: number;
+  pending: number;
+  leased: number;
+  running: number;
+  completed: number;
+  failed: number;
+  blocked: number;
+  cancelled: number;
+}
+
+export interface CpsBacktestQueueLease {
+  requestId: string | null;
+  worker: string | null;
+  pod: string | null;
+}
+
+export interface CpsBacktestQueueLastTick {
+  status: string | null;
+  atUtc: string | null;
+  probedWorkers: Record<string, string>;
+  reachableWorkers: string[];
+  leased: CpsBacktestQueueLease[];
+}
+
+export interface CpsBacktestQueue {
+  present: boolean;
+  queuePath: string;
+  updatedUtc: string | null;
+  summary: CpsBacktestQueueSummary | null;
+  oldestPendingAgeSeconds: number | null;
+  lastTick: CpsBacktestQueueLastTick | null;
+  stopPresent: boolean;
+  // pending work exists but the last dispatcher tick found no reachable worker
+  starving: boolean;
+}
+
 export interface CpsExperimentOverview {
   companyId: string;
   generatedAt: string;
@@ -257,6 +298,7 @@ export interface CpsExperimentOverview {
     labelsPath: string;
   };
   operatorActions: CpsOperatorAction[];
+  backtestQueue: CpsBacktestQueue;
   datasetExport: {
     trainingPath: string;
     trainingRows: number | null;

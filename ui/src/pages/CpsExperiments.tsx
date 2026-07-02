@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, BarChart3, Clock, Database, FileJson, FlaskConical, ListChecks, ShieldCheck, Tag } from "lucide-react";
+import { AlertTriangle, BarChart3, Clock, Database, FileJson, FlaskConical, ListChecks, ListOrdered, ShieldCheck, Tag } from "lucide-react";
 import type { CpsExperimentEntry } from "@paperclipai/shared";
 import { cpsExperimentsApi } from "../api/cps-experiments";
 import { EmptyState } from "../components/EmptyState";
@@ -570,6 +570,69 @@ export function CpsExperiments() {
                 </div>
               </div>
             ))}
+          </div>
+        </section>
+      ) : null}
+
+      {data.backtestQueue && (data.backtestQueue.present || data.backtestQueue.lastTick) ? (
+        <section className="rounded-2xl border border-border bg-card p-4">
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-sm font-semibold">
+            <ListOrdered className="h-4 w-4 text-muted-foreground" /> Backtest queue
+            {data.backtestQueue.stopPresent ? (
+              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">paused</span>
+            ) : null}
+            <span className="ml-auto text-[10px] font-normal text-muted-foreground">
+              pods request backtests · free workers pick them up · the rest wait in line · paid compute never starts on its own
+            </span>
+          </div>
+          {data.backtestQueue.starving ? (
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              Backtests are waiting but no worker is reachable. Wake a worker box (lillith / AMD-minis / finance-1) — or decide on an escalation. Nothing is rented or spent automatically.
+            </div>
+          ) : null}
+          <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+              <span className="text-muted-foreground">Waiting</span>
+              <div className="font-mono text-lg text-foreground">{data.backtestQueue.summary?.pending ?? 0}</div>
+              <div className="text-muted-foreground">
+                {data.backtestQueue.oldestPendingAgeSeconds !== null && data.backtestQueue.oldestPendingAgeSeconds !== undefined
+                  ? `oldest ${Math.round(data.backtestQueue.oldestPendingAgeSeconds / 60)}m`
+                  : "queue is clear"}
+              </div>
+            </div>
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+              <span className="text-muted-foreground">Running</span>
+              <div className="font-mono text-lg text-foreground">{(data.backtestQueue.summary?.leased ?? 0) + (data.backtestQueue.summary?.running ?? 0)}</div>
+              <div className="text-muted-foreground">
+                {data.backtestQueue.lastTick?.leased?.length
+                  ? data.backtestQueue.lastTick.leased.map((lease) => lease.worker).filter(Boolean).join(", ") || "—"
+                  : "—"}
+              </div>
+            </div>
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+              <span className="text-muted-foreground">Done</span>
+              <div className="font-mono text-lg text-foreground">{data.backtestQueue.summary?.completed ?? 0}</div>
+              <div className="text-muted-foreground">{data.backtestQueue.summary?.failed ? `${data.backtestQueue.summary.failed} failed` : "no failures"}</div>
+            </div>
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs sm:col-span-2">
+              <span className="text-muted-foreground">Workers online</span>
+              <div className="font-mono text-lg text-foreground">
+                {data.backtestQueue.lastTick ? `${data.backtestQueue.lastTick.reachableWorkers.length} / ${Object.keys(data.backtestQueue.lastTick.probedWorkers).length}` : "—"}
+              </div>
+              <div className="truncate text-muted-foreground">
+                {data.backtestQueue.lastTick
+                  ? Object.entries(data.backtestQueue.lastTick.probedWorkers)
+                      .map(([worker, state]) => `${worker} ${state === "REACHABLE" ? "✓" : "✗"}`)
+                      .join(" · ")
+                  : "no dispatcher tick recorded yet"}
+              </div>
+            </div>
+            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+              <span className="text-muted-foreground">Last tick</span>
+              <div className="truncate font-mono text-sm text-foreground">{data.backtestQueue.lastTick?.status ?? "—"}</div>
+              <div className="text-muted-foreground">{data.backtestQueue.lastTick?.atUtc ? fmtDate(data.backtestQueue.lastTick.atUtc) : ""}</div>
+            </div>
           </div>
         </section>
       ) : null}

@@ -261,4 +261,81 @@ describe("cpsExperimentsService.overview", () => {
       await rm(root2, { recursive: true, force: true });
     }
   });
+
+  it("reports the backtest queue as absent when the queue dir does not exist", async () => {
+    const svc = cpsExperimentsService({ indexFile, backtestQueueDir: path.join(root, "no-such-queue") });
+    const out = await svc.overview("company-1");
+
+    expect(out.backtestQueue.present).toBe(false);
+    expect(out.backtestQueue.summary).toBeNull();
+    expect(out.backtestQueue.lastTick).toBeNull();
+    expect(out.backtestQueue.starving).toBe(false);
+    expect(out.backtestQueue.stopPresent).toBe(false);
+  });
+
+  it("summarizes E1 backtest queue depth, last tick, and worker reachability", async () => {
+    const queueDir = path.join(root, "backtest-queue");
+    await mkdir(queueDir, { recursive: true });
+    await writeFile(path.join(queueDir, "queue.json"), JSON.stringify({
+      schema: "fincli.backtest_queue.v1",
+      updated_utc: "2026-07-02T11:00:00Z",
+      requests: [
+        { request_id: "BTQ-1", status: "PENDING", created_utc: "2026-07-02T10:00:00Z" },
+        { request_id: "BTQ-2", status: "LEASED", created_utc: "2026-07-02T10:05:00Z" },
+        { request_id: "BTQ-3", status: "COMPLETED", created_utc: "2026-07-02T09:00:00Z" },
+        { request_id: "BTQ-4", status: "FAILED", created_utc: "2026-07-02T09:10:00Z" },
+      ],
+    }), "utf8");
+    await writeFile(path.join(queueDir, "LAST_TICK.json"), JSON.stringify({
+      schema: "fincli.backtest_queue_dispatcher_tick.v1",
+      status: "COMPLETED",
+      generated_utc: "2026-07-02T11:05:00Z",
+      probed_workers: { lillith: "REACHABLE", "amd-minis": "UNREACHABLE" },
+      reachable_workers: ["lillith"],
+      leased: [{ request_id: "BTQ-2", worker: "lillith", pod: "Crypto Microstructure Pod" }],
+    }), "utf8");
+
+    const svc = cpsExperimentsService({ indexFile, backtestQueueDir: queueDir });
+    const out = await svc.overview("company-1");
+
+    expect(out.backtestQueue.present).toBe(true);
+    expect(out.backtestQueue.summary).toMatchObject({
+      total: 4, pending: 1, leased: 1, completed: 1, failed: 1,
+    });
+    expect(out.backtestQueue.oldestPendingAgeSeconds).toBeGreaterThan(0);
+    expect(out.backtestQueue.lastTick).toMatchObject({
+      status: "COMPLETED",
+      atUtc: "2026-07-02T11:05:00Z",
+      reachableWorkers: ["lillith"],
+    });
+    expect(out.backtestQueue.lastTick?.leased[0]).toMatchObject({ requestId: "BTQ-2", worker: "lillith" });
+    // a worker is reachable, so pending work is not starving
+    expect(out.backtestQueue.starving).toBe(false);
+    expect(out.backtestQueue.stopPresent).toBe(false);
+  });
+
+  it("flags a starving queue and a STOP pause for the operator", async () => {
+    const queueDir = path.join(root, "backtest-queue-starving");
+    await mkdir(queueDir, { recursive: true });
+    await writeFile(path.join(queueDir, "queue.json"), JSON.stringify({
+      schema: "fincli.backtest_queue.v1",
+      updated_utc: "2026-07-02T11:00:00Z",
+      requests: [{ request_id: "BTQ-9", status: "PENDING", created_utc: "2026-07-02T08:00:00Z" }],
+    }), "utf8");
+    await writeFile(path.join(queueDir, "LAST_TICK.json"), JSON.stringify({
+      status: "NO_REACHABLE_WORKERS",
+      generated_utc: "2026-07-02T11:05:00Z",
+      probed_workers: { lillith: "UNREACHABLE", "amd-minis": "UNREACHABLE" },
+      reachable_workers: [],
+      leased: [],
+    }), "utf8");
+    await writeFile(path.join(queueDir, "STOP"), "paused\n", "utf8");
+
+    const svc = cpsExperimentsService({ indexFile, backtestQueueDir: queueDir });
+    const out = await svc.overview("company-1");
+
+    expect(out.backtestQueue.starving).toBe(true);
+    expect(out.backtestQueue.stopPresent).toBe(true);
+    expect(out.backtestQueue.lastTick?.status).toBe("NO_REACHABLE_WORKERS");
+  });
 });

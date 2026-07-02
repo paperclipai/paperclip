@@ -508,6 +508,10 @@ export type {
 export type {
   CreateCpsJudgmentFeedbackInput,
   CreateCpsRunRequestInput,
+  CpsBacktestQueue,
+  CpsBacktestQueueLastTick,
+  CpsBacktestQueueLease,
+  CpsBacktestQueueSummary,
   CpsExperimentEntry,
   CpsExperimentJudgment,
   CpsExperimentKind,
