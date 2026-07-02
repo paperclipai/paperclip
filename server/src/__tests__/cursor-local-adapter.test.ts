@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { isCursorUnknownSessionError, parseCursorJsonl } from "@paperclipai/adapter-cursor-local/server";
+import { isCursorUnknownSessionError, isCursorEmptySuccessfulExecution, parseCursorJsonl } from "@paperclipai/adapter-cursor-local/server";
 import { parseCursorStdoutLine } from "@paperclipai/adapter-cursor-local/ui";
 import { printCursorStreamEvent } from "@paperclipai/adapter-cursor-local/cli";
 
@@ -56,6 +56,35 @@ describe("cursor parser", () => {
       outputTokens: 2,
     });
     expect(parsed.costUsd).toBeCloseTo(0.0001, 6);
+  });
+});
+
+describe("cursor empty successful execution detection", () => {
+  it("flags clean exits with no tokens and no assistant output", () => {
+    const stdout = JSON.stringify({ type: "system", subtype: "init", session_id: "chat_silent", model: "auto" });
+    const parsed = parseCursorJsonl(stdout);
+    expect(isCursorEmptySuccessfulExecution({
+      exitCode: 0,
+      errorMessage: parsed.errorMessage,
+      usage: parsed.usage,
+      summary: parsed.summary,
+    })).toBe(true);
+  });
+
+  it("allows clean exits with assistant output even when token usage is missing", () => {
+    expect(isCursorEmptySuccessfulExecution({
+      exitCode: 0,
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+      summary: "done",
+    })).toBe(false);
+  });
+
+  it("allows clean exits with token usage", () => {
+    expect(isCursorEmptySuccessfulExecution({
+      exitCode: 0,
+      usage: { inputTokens: 1, cachedInputTokens: 0, outputTokens: 0 },
+      summary: "",
+    })).toBe(false);
   });
 });
 
