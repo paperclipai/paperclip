@@ -75,6 +75,18 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   // Subtasks / delegation
   { method: "POST", path: /^\/api\/companies\/[^/]+\/issues$/ },
 
+  // Hiring (paperclip-create-agent skill): adapter/icon discovery, comparing
+  // existing agent configs, submitting the hire request, and linking the
+  // resulting approval to its source issue. Direct agent creation
+  // (POST /api/companies/:id/agents) stays denied — hires must go through the
+  // approval-gated agent-hires endpoint, which the server still permission-checks.
+  { method: "GET", path: /^\/llms\/agent-configuration\.txt$/ },
+  { method: "GET", path: /^\/llms\/agent-configuration\/[^/]+\.txt$/ },
+  { method: "GET", path: /^\/llms\/agent-icons\.txt$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/agent-configurations$/ },
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/agent-hires$/ },
+  { method: "POST", path: /^\/api\/issues\/[^/]+\/approvals$/ },
+
   // Approvals (request, read, comment)
   { method: "GET", path: /^\/api\/approvals\/[^/]+$/ },
   { method: "GET", path: /^\/api\/approvals\/[^/]+\/issues$/ },
