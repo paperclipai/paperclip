@@ -754,6 +754,7 @@ describe("sandbox managed runtime", () => {
     await mkdir(localWorkspaceDir, { recursive: true });
 
     const downloadedTars: { remotePath: string; bytes: Buffer }[] = [];
+    const runCommands: string[] = [];
     const client: SandboxManagedRuntimeClient = {
       makeDir: async (remotePath) => {
         await mkdir(remotePath, { recursive: true });
@@ -772,6 +773,7 @@ describe("sandbox managed runtime", () => {
         await rm(remotePath, { recursive: true, force: true });
       },
       run: async (command) => {
+        runCommands.push(command);
         await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
       },
     };
@@ -794,5 +796,8 @@ describe("sandbox managed runtime", () => {
     expect(downloadedTars).toHaveLength(1);
     const members = await listTarMembers(rootDir, "empty-workspace-download.tar", downloadedTars[0]!.bytes);
     expect(members).toEqual([]);
+    const emptyArchiveCommand = runCommands.find((command) => command.includes("dd if=/dev/zero"));
+    expect(emptyArchiveCommand).toBeDefined();
+    expect(emptyArchiveCommand).not.toContain("/dev/null");
   });
 });

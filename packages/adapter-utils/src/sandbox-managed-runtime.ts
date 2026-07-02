@@ -337,7 +337,7 @@ function createRemoteTarballFromDirectoryCommand(input: {
     `if [ "$#" -eq 1 ] && [ "$1" = "*" ] && [ ! -e "$1" ] && [ ! -L "$1" ]; then set --; fi`,
     `for entry in .[!.]* ..?*; do [ -e "$entry" ] || [ -L "$entry" ] || continue; set -- "$@" "$entry"; done`,
     `if [ "$#" -eq 0 ]; then ` +
-      `dd if=/dev/zero of=${shellQuote(input.archivePath)} bs=1024 count=1 >/dev/null 2>&1; ` +
+      `dd if=/dev/zero of=${shellQuote(input.archivePath)} bs=1024 count=1; ` +
       `else tar -cf ${shellQuote(input.archivePath)} ${tarExcludeFlags(input.exclude)} -- "$@"; fi`,
   ].join(" && ");
 }
