@@ -122,10 +122,11 @@ export function StatusGlyph({ status, size = "md", className, title, style, ...r
   const a11y = title
     ? ({ role: "img", "aria-label": title } as const)
     : ({ "aria-hidden": true } as const);
-  // `rest` (incl. `ref`) must land on the <svg>: StatusIcon renders the glyph
-  // as a `PopoverTrigger asChild` child, so the Radix Slot props (onClick,
-  // aria-haspopup, data-state, ref) arrive here — dropping them leaves every
-  // icon-only status picker rendered as a dead, unclickable <svg>.
+  // `rest` (incl. `ref`) must land on the <svg> so the glyph composes when a
+  // call site slots it into an interactive primitive (e.g. Radix `asChild`,
+  // which injects onClick, aria-*, data-state, ref via Slot). Silently
+  // dropping unknown props is what once left every icon-only status picker
+  // rendered as a dead, unclickable <svg>.
   return (
     <svg
       width={px}
