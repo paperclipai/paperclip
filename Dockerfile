@@ -213,7 +213,12 @@ ARG CLAUDE_K8S_REF=4e3cc3881fa8c7281568328906b5a411e69de7e8
 # kkroo/paperclip-adapter-opencode-k8s#34; local adapter verification passed
 # focused budget test, execute.test.ts (104/104), full suite 495/495,
 # typecheck, and git diff --check.
-ARG OPENCODE_K8S_REF=b405f5b52d827ded4829df6665a35b73cadcda77
+# Bumped 2026-07-01 to 50d2af9: use model-aware proactive compact thresholds
+# instead of a fixed 90k token gate, expose adapterConfig.compactThreshold for
+# operator override, and request opencode_k8s session management instead of the
+# opencode_local policy. PR kkroo/paperclip-adapter-opencode-k8s#36; local
+# adapter verification passed focused tests, typecheck, and build.
+ARG OPENCODE_K8S_REF=50d2af937a31e40de4d3093898275ac338890d07
 
 # Pack paperclip's in-tree adapter-utils so the bundled adapters consume
 # the workspace version (may include exports newer than the latest

@@ -32,8 +32,8 @@ describe("production Dockerfile k8s adapter runtime pins", () => {
     expect(dockerfile).toContain("pack-verifies");
   });
 
-  it("vendors the opencode_k8s adapter commit with crash, runtime-cache, MCP header, pod-stderr, startup-wait, opencode-db, chunkTimeout, and budget-cap fixes", () => {
-    expect(dockerfile).toContain("ARG OPENCODE_K8S_REF=b405f5b52d827ded4829df6665a35b73cadcda77");
+  it("vendors the opencode_k8s adapter commit with crash, runtime-cache, MCP header, pod-stderr, startup-wait, opencode-db, chunkTimeout, budget-cap, and compact-threshold fixes", () => {
+    expect(dockerfile).toContain("ARG OPENCODE_K8S_REF=50d2af937a31e40de4d3093898275ac338890d07");
     expect(dockerfile).toContain("type-crash");
     expect(dockerfile).toContain("5-strike adapter crashloop circuit-breaker");
     expect(dockerfile).toContain("writable home (/paperclip/.runtime-cache)");
@@ -58,6 +58,9 @@ describe("production Dockerfile k8s adapter runtime pins", () => {
     expect(dockerfile).toContain("chunkTimeout=240s");
     expect(dockerfile).toContain("Stream idle timeout - partial response");
     expect(dockerfile).toContain("errorCode=budget_exceeded");
+    expect(dockerfile).toContain("model-aware proactive compact thresholds");
+    expect(dockerfile).toContain("adapterConfig.compactThreshold");
+    expect(dockerfile).toContain("opencode_k8s session management");
   });
 
   it("routes Paperclip Docker deploy builds through the dedicated deploy runner pool", () => {
