@@ -1,4 +1,6 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
@@ -31,7 +33,7 @@ import {
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
-import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -588,6 +590,41 @@ export function projectService(db: Db) {
     return enriched ?? null;
   };
 
+  const PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
+
+  function isPathInside(parent: string, child: string) {
+    const relative = path.relative(parent, child);
+    return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
+  }
+
+  async function removeProjectFiles(input: { companyId: string; projectId: string; workspaceCwds: Array<string | null> }) {
+    if (!PATH_SEGMENT_RE.test(input.companyId) || !PATH_SEGMENT_RE.test(input.projectId)) {
+      throw new Error("Invalid project path segment for file deletion");
+    }
+
+    const projectsRoot = path.resolve(resolvePaperclipInstanceRoot(), "projects");
+    const managedProjectRoot = path.dirname(
+      resolveManagedProjectWorkspaceDir({
+        companyId: input.companyId,
+        projectId: input.projectId,
+        repoName: "_default",
+      }),
+    );
+    const targets = new Set<string>([managedProjectRoot]);
+
+    for (const cwd of input.workspaceCwds) {
+      if (!cwd) continue;
+      const resolved = path.resolve(cwd);
+      if (isPathInside(projectsRoot, resolved)) {
+        targets.add(resolved);
+      }
+    }
+
+    for (const target of targets) {
+      await fs.rm(target, { recursive: true, force: true });
+    }
+  }
+
   return {
     list: async (companyId: string): Promise<ProjectWithGoals[]> => {
       const rows = await db.select().from(projects).where(eq(projects.companyId, companyId));
@@ -856,8 +893,16 @@ export function projectService(db: Db) {
       return cleared;
     },
 
-    remove: (id: string) =>
-      db
+    remove: async (id: string, options?: { deleteFiles?: boolean }) => {
+      const workspaceCwds = options?.deleteFiles
+        ? await db
+          .select({ cwd: projectWorkspaces.cwd })
+          .from(projectWorkspaces)
+          .where(eq(projectWorkspaces.projectId, id))
+          .then((rows) => rows.map((row) => row.cwd))
+        : [];
+
+      const project = await db
         .delete(projects)
         .where(eq(projects.id, id))
         .returning()
@@ -865,7 +910,17 @@ export function projectService(db: Db) {
           const row = rows[0] ?? null;
           if (!row) return null;
           return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
-        }),
+        });
+
+      if (project && options?.deleteFiles) {
+        try {
+          await removeProjectFiles({ companyId: project.companyId, projectId: project.id, workspaceCwds });
+        } catch (err) {
+          console.error("removeProjectFiles failed after project deletion:", err);
+        }
+      }
+      return project;
+    },
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db

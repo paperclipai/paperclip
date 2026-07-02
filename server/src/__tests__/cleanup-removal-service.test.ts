@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -16,6 +17,8 @@ import {
   issueExecutionDecisions,
   issueReadStates,
   issues,
+  projects,
+  projectWorkspaces,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -23,6 +26,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.ts";
 import { companyService } from "../services/companies.ts";
+import { projectService } from "../services/projects.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -43,6 +47,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
     await db.delete(issueReadStates);
@@ -54,6 +59,8 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(agents);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     await db.delete(companies);
   });
 
@@ -257,5 +264,46 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
     await expect(db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId))).resolves.toHaveLength(0);
     await expect(db.select().from(companies).where(eq(companies.id, otherCompanyId))).resolves.toHaveLength(1);
+  });
+
+  it("keeps project deletion successful when optional file cleanup fails", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const rmSpy = vi.spyOn(fs, "rm").mockRejectedValue(new Error("permission denied"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `P${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Disposable project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: "/tmp/non-managed-paperclip-workspace",
+    });
+
+    const removed = await projectService(db).remove(projectId, { deleteFiles: true });
+
+    expect(removed?.id).toBe(projectId);
+    expect(rmSpy).toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      "removeProjectFiles failed after project deletion:",
+      expect.any(Error),
+    );
+    await expect(db.select().from(projects).where(eq(projects.id, projectId))).resolves.toHaveLength(0);
+    await expect(db.select().from(projectWorkspaces).where(eq(projectWorkspaces.projectId, projectId))).resolves.toHaveLength(0);
   });
 });

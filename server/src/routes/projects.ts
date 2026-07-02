@@ -60,6 +60,10 @@ export function projectRoutes(db: Db) {
     });
   }
 
+  function parseBooleanQuery(value: unknown) {
+    return value === true || value === "true" || value === "1";
+  }
+
   function readProjectPolicyEnvironmentId(policy: unknown): string | null | undefined {
     if (!policy || typeof policy !== "object" || !("environmentId" in policy)) {
       return undefined;
@@ -700,7 +704,8 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const project = await svc.remove(id);
+    const deleteFiles = parseBooleanQuery(req.query.deleteFiles);
+    const project = await svc.remove(id, { deleteFiles });
     if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;
@@ -715,6 +720,9 @@ export function projectRoutes(db: Db) {
       action: "project.deleted",
       entityType: "project",
       entityId: project.id,
+      details: {
+        filesDeleted: deleteFiles,
+      },
     });
 
     res.json(project);
