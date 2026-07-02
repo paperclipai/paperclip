@@ -5459,6 +5459,42 @@ export function issueService(db: Db) {
           throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
         }
       }
+      // §7.10.3 pre-close evidence guard. An agent actor may not move an issue to a
+      // terminal status (done/cancelled) while it still has unresolved first-class
+      // blockers: doing so silently discards the dependency instead of resolving,
+      // cancelling, or detaching it. The agent must first clear/detach the blocker
+      // (or set the same patch's blockedByIssueIds to an empty/resolved set).
+      // Carve-outs:
+      //  - Board/user actors keep an explicit override (operator authority).
+      //  - Blocked-inbox recovery issues (liveness-escalation, stranded-issue
+      //    recovery) are exempt because they legitimately tear down their own
+      //    blocker edge as part of closing (see the issueGraphLivenessEscalation
+      //    handling later in this transaction). Other recovery origins
+      //    (productivity-review, stale-active-run) do not hold a blocker edge they
+      //    must discard on close, so the guard applies to them normally.
+      const isTerminalClose =
+        (patch.status === "done" || patch.status === "cancelled") &&
+        existing.status !== patch.status;
+      const isAgentActor = !!actorAgentId && !actorUserId;
+      const isBlockerHoldingRecoveryIssue =
+        existing.originKind != null &&
+        BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS.includes(
+          existing.originKind as (typeof BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS)[number],
+        );
+      if (isTerminalClose && isAgentActor && !isBlockerHoldingRecoveryIssue) {
+        const unresolvedBlockerIssueIds = blockedByIssueIds !== undefined
+          ? await listUnresolvedBlockerIssueIds(dbOrTx, existing.companyId, blockedByIssueIds)
+          : (
+              await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])
+            ).get(id)?.unresolvedBlockerIssueIds ?? [];
+        if (unresolvedBlockerIssueIds.length > 0) {
+          throw conflict("PRE_CLOSE_GUARD_BLOCKED: issue has unresolved first-class blockers", {
+            code: "pre_close_guard_blocked",
+            requestedStatus: patch.status,
+            unresolvedBlockerIssueIds,
+          });
+        }
+      }
       const shouldValidateNextAssignee =
         Boolean(nextAssigneeAgentId) &&
         (issueData.assigneeAgentId !== undefined || patch.status === "in_progress");
