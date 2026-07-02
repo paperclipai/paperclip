@@ -1410,3 +1410,63 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 .status-fill {
   background-color: var(--sc);
 }
+
+/* ── Widescreen task detail layout ───────────────────────────────────────────
+ *
+ * On screens narrower than 1600px the issue detail is a single column capped
+ * at 1400px so text lines stay readable on ultra-wide monitors.
+ *
+ * On screens >= 1600px, when the issue has at least one document
+ * (data-paperclip-docs="1"), the layout switches to a two-column flexbox:
+ *   - left:  task body, comments, sub-tasks (~45%)
+ *   - right: documents column, sticky, independently scrollable (~55%)
+ *
+ * Flexbox is used instead of CSS Grid because Grid couples row heights
+ * between columns — an expanding document accordion in the right column
+ * would push content down in the left column.  flex-start alignment gives
+ * each column independent height.
+ */
+
+/* Single-column: cap width so text doesn't span full 4k/ultrawide monitors */
+.paperclip-issue-outer {
+  max-width: 1400px;
+  margin-inline: auto;
+}
+
+/* Two-column layout on wide screens when documents are present */
+@media (min-width: 1600px) {
+  .paperclip-issue-outer:has([data-paperclip-docs="1"]) {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 2rem;
+    max-width: none;
+  }
+
+  /* Left-column wrapper: stacks all non-document children vertically */
+  /* Left-column wrapper: stacks all non-document children vertically */
+  .paperclip-issue-outer:has([data-paperclip-docs="1"]) .paperclip-issue-left-col {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    flex: 0 0 45%;
+    min-width: 0;
+  }
+
+  /* Documents column: right side, sticky, independently scrollable */
+
+  /* Documents column: right side, sticky, independently scrollable */
+  .paperclip-issue-outer:has([data-paperclip-docs="1"]) > [data-paperclip-docs="1"] {
+    flex: 1 1 0;
+    min-width: 0;
+    align-self: flex-start;
+    position: sticky;
+    top: 1.5rem;
+    max-height: calc(100dvh - 3rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border-left: 1px solid var(--border);
+    padding-left: 2rem;
+    margin-block-start: 0;
+  }
+}
