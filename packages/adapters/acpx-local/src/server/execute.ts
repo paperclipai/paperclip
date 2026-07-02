@@ -1019,14 +1019,21 @@ function renderPaperclipEnvNote(env: Record<string, string>): string {
 
 function renderApiAccessNote(env: Record<string, string>): string {
   if (!env.PAPERCLIP_API_URL || !env.PAPERCLIP_API_KEY) return "";
-  return [
+  const lines = [
     "Paperclip API access note:",
     "Use terminal commands with curl to make Paperclip API requests.",
     "GET example:",
     `  curl -s -H "Authorization: Bearer $PAPERCLIP_API_KEY" "$PAPERCLIP_API_URL/api/agents/me"`,
-    "POST/PATCH example:",
-    `  curl -s -X PATCH -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Content-Type: application/json" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -d '{...}' "$PAPERCLIP_API_URL/api/issues/{id}"`,
-  ].join("\n");
+  ];
+  if (env.PAPERCLIP_TASK_ID) {
+    lines.push(
+      "Scoped issue comment example:",
+      `  curl -s -X POST -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Content-Type: application/json" -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" -d '{"body":"Status update from agent."}' "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/comments"`,
+    );
+  } else {
+    lines.push("Use a real issue id from the current context before making issue write requests.");
+  }
+  return lines.join("\n");
 }
 
 async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean, env: Record<string, string>): Promise<{
