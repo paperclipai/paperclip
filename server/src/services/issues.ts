@@ -319,6 +319,7 @@ export interface IssueFilters {
   includePluginOperations?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
+  includeLiveDescendantSummary?: boolean;
   hasPlanDocument?: boolean;
   lowTrustBoundary?: LowTrustBoundary & { companyId: string };
   q?: string;
@@ -1478,6 +1479,79 @@ async function activeRunMapForIssues(
       map.set(row.id, row);
     }
   }
+  return map;
+}
+
+async function liveDescendantCountMapForIssues(
+  dbOrTx: any,
+  companyId: string,
+  issueIds: string[],
+): Promise<Map<string, number>> {
+  const uniqueIssueIds = [...new Set(issueIds)];
+  const map = new Map<string, number>();
+  if (uniqueIssueIds.length === 0) return map;
+
+  for (const issueIdChunk of chunkList(uniqueIssueIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    const targetRows = issueIdChunk.map((issueId) => sql`(${issueId}::uuid)`);
+    const rows = await dbOrTx.execute(sql<{
+      issueId: string;
+      liveDescendantCount: number;
+    }>`
+      WITH RECURSIVE
+        target_issues(issue_id) AS (
+          VALUES ${sql.join(targetRows, sql`, `)}
+        ),
+        live_issues(live_issue_id, parent_id) AS (
+          SELECT DISTINCT live_issue.id, live_issue.parent_id
+          FROM issues live_issue
+          JOIN heartbeat_runs live_run ON live_run.id = live_issue.execution_run_id
+          WHERE live_issue.company_id = ${companyId}
+            AND live_issue.hidden_at IS NULL
+            AND live_run.company_id = ${companyId}
+            AND live_run.status IN ('queued', 'running')
+          UNION
+          SELECT DISTINCT live_issue.id, live_issue.parent_id
+          FROM heartbeat_runs live_run
+          JOIN issues live_issue ON live_issue.id::text = (live_run.context_snapshot ->> 'issueId')
+          WHERE live_issue.company_id = ${companyId}
+            AND live_issue.hidden_at IS NULL
+            AND live_run.company_id = ${companyId}
+            AND live_run.status IN ('queued', 'running')
+        ),
+        live_ancestors(live_issue_id, ancestor_id, next_parent_id) AS (
+          SELECT live_issues.live_issue_id, parent.id, parent.parent_id
+          FROM live_issues
+          JOIN issues parent ON parent.id = live_issues.parent_id
+          WHERE parent.company_id = ${companyId}
+            AND parent.hidden_at IS NULL
+          UNION ALL
+          SELECT live_ancestors.live_issue_id, parent.id, parent.parent_id
+          FROM live_ancestors
+          JOIN issues parent ON parent.id = live_ancestors.next_parent_id
+          WHERE parent.company_id = ${companyId}
+            AND parent.hidden_at IS NULL
+        )
+      SELECT
+        live_ancestors.ancestor_id::text AS "issueId",
+        count(DISTINCT live_ancestors.live_issue_id)::int AS "liveDescendantCount"
+      FROM live_ancestors
+      JOIN target_issues ON target_issues.issue_id = live_ancestors.ancestor_id
+      GROUP BY live_ancestors.ancestor_id
+    `);
+
+    const resultRows = Array.isArray(rows) ? rows : Array.from(rows as Iterable<unknown>);
+    for (const row of resultRows) {
+      if (typeof row !== "object" || row === null) continue;
+      const issueId = (row as { issueId?: unknown }).issueId;
+      const liveDescendantCount = (row as { liveDescendantCount?: unknown }).liveDescendantCount;
+      if (typeof issueId !== "string") continue;
+      const count = typeof liveDescendantCount === "number"
+        ? liveDescendantCount
+        : Number(liveDescendantCount);
+      if (Number.isFinite(count)) map.set(issueId, count);
+    }
+  }
+
   return map;
 }
 
@@ -3170,6 +3244,7 @@ async function listBlockedInboxIssues(
   blockerAttention?: IssueBlockerAttention;
   blockedInboxAttention: IssueBlockedInboxAttention;
   productivityReview?: IssueProductivityReview | null;
+  liveDescendantCount?: number;
   lastActivityAt: Date;
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;
@@ -3191,6 +3266,7 @@ async function listBlockedInboxIssues(
   if (withRuns.length === 0) return [];
 
   const issueIds = withRuns.map((row) => row.id);
+  const includeLiveDescendantSummary = filters?.includeLiveDescendantSummary === true;
   const [
     statsRows,
     readRows,
@@ -3199,6 +3275,7 @@ async function listBlockedInboxIssues(
     blockerAttentionByIssueId,
     productivityReviewByIssueId,
     blockedInboxAttentionByIssueId,
+    liveDescendantCountByIssueId,
   ] = await Promise.all([
     contextUserId ? userCommentStatsForIssues(dbOrTx, companyId, contextUserId, issueIds) : Promise.resolve([]),
     contextUserId ? userReadStatsForIssues(dbOrTx, companyId, contextUserId, issueIds) : Promise.resolve([]),
@@ -3207,6 +3284,9 @@ async function listBlockedInboxIssues(
     listIssueBlockerAttentionMap(dbOrTx, companyId, withRuns),
     listIssueProductivityReviewMap(dbOrTx, companyId, issueIds),
     listIssueBlockedInboxAttentionMap(dbOrTx, companyId, withRuns),
+    includeLiveDescendantSummary
+      ? liveDescendantCountMapForIssues(dbOrTx, companyId, issueIds)
+      : Promise.resolve(new Map<string, number>()),
   ]);
 
   const rawSearchInput = filters?.q?.trim() ?? "";
@@ -3256,6 +3336,7 @@ async function listBlockedInboxIssues(
       ...(productivityReviewByIssueId.has(row.id)
         ? { productivityReview: productivityReviewByIssueId.get(row.id) }
         : {}),
+      ...(includeLiveDescendantSummary ? { liveDescendantCount: liveDescendantCountByIssueId.get(row.id) ?? 0 } : {}),
       ...(contextUserId
         ? deriveIssueUserContext(row, contextUserId, {
             myLastCommentAt: statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
@@ -4289,6 +4370,7 @@ export function issueService(db: Db) {
       const contextUserId = unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
       const includeBlockedBy = filters?.includeBlockedBy === true;
       const includeBlockedInboxAttention = filters?.includeBlockedInboxAttention === true;
+      const includeLiveDescendantSummary = filters?.includeLiveDescendantSummary === true;
       const rawSearch = filters?.q?.trim() ?? "";
       const hasSearch = rawSearch.length > 0;
       const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
@@ -4436,7 +4518,7 @@ export function issueService(db: Db) {
       }
 
       const issueIds = withRuns.map((row) => row.id);
-      const [statsRows, readRows, lastActivityRows, blockedByMap] = await Promise.all([
+      const [statsRows, readRows, lastActivityRows, blockedByMap, liveDescendantCountByIssueId] = await Promise.all([
         contextUserId
           ? userCommentStatsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
@@ -4447,6 +4529,9 @@ export function issueService(db: Db) {
         includeBlockedBy
           ? blockedByMapForIssues(db, companyId, issueIds)
           : Promise.resolve(new Map<string, IssueRelationIssueSummary[]>()),
+        includeLiveDescendantSummary
+          ? liveDescendantCountMapForIssues(db, companyId, issueIds)
+          : Promise.resolve(new Map<string, number>()),
       ]);
       const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
       const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
@@ -4476,6 +4561,7 @@ export function issueService(db: Db) {
             lastActivityAt,
             ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
             ...(includeBlockedInboxAttention ? { blockedInboxAttention: blockedInboxAttentionByIssueId.get(row.id) ?? null } : {}),
+            ...(includeLiveDescendantSummary ? { liveDescendantCount: liveDescendantCountByIssueId.get(row.id) ?? 0 } : {}),
             ...(productivityReviewByIssueId.has(row.id)
               ? { productivityReview: productivityReviewByIssueId.get(row.id) }
               : {}),
@@ -4498,6 +4584,7 @@ export function issueService(db: Db) {
           lastActivityAt,
           ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
           ...(includeBlockedInboxAttention ? { blockedInboxAttention: blockedInboxAttentionByIssueId.get(row.id) ?? null } : {}),
+          ...(includeLiveDescendantSummary ? { liveDescendantCount: liveDescendantCountByIssueId.get(row.id) ?? 0 } : {}),
           ...(productivityReviewByIssueId.has(row.id)
             ? { productivityReview: productivityReviewByIssueId.get(row.id) }
             : {}),
