@@ -52,6 +52,67 @@ describe("redactSensitive", () => {
     expect(tokens[1].access_token).toBe("[REDACTED]");
   });
 
+  it("redacts nested plain env binding values in adapter config request bodies", () => {
+    const out = redactSensitive({
+      name: "Builder",
+      adapterType: "codex_local",
+      adapterConfig: {
+        env: {
+          OPENAI_API_KEY: { type: "plain", value: "sk-agent-secret" },
+          PAPERCLIP_API_URL: { type: "plain", value: "http://localhost:3100" },
+          SAFE_FLAG: "visible",
+          MANAGED_SECRET: {
+            type: "secret_ref",
+            secretId: "11111111-1111-4111-8111-111111111111",
+          },
+        },
+      },
+    }) as {
+      adapterConfig: {
+        env: Record<string, unknown>;
+      };
+    };
+
+    expect(out.adapterConfig.env.OPENAI_API_KEY).toEqual({ type: "plain", value: "[REDACTED]" });
+    expect(out.adapterConfig.env.PAPERCLIP_API_URL).toEqual({ type: "plain", value: "[REDACTED]" });
+    expect(out.adapterConfig.env.SAFE_FLAG).toBe("visible");
+    expect(out.adapterConfig.env.MANAGED_SECRET).toEqual({
+      type: "secret_ref",
+      secretId: "11111111-1111-4111-8111-111111111111",
+    });
+  });
+
+  it("redacts nested plain env binding values in runtime profile adapter config request bodies", () => {
+    const out = redactSensitive({
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            adapterConfig: {
+              env: {
+                DEEPSEEK_API_KEY: { type: "plain", value: "deepseek-token" },
+              },
+            },
+          },
+        },
+      },
+    }) as {
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            adapterConfig: {
+              env: Record<string, unknown>;
+            };
+          };
+        };
+      };
+    };
+
+    expect(out.runtimeConfig.modelProfiles.cheap.adapterConfig.env.DEEPSEEK_API_KEY).toEqual({
+      type: "plain",
+      value: "[REDACTED]",
+    });
+  });
+
   it("leaves primitives and non-sensitive keys untouched", () => {
     const body = { email: "a@b.c", name: "Alice", count: 7, active: true, missing: null };
 

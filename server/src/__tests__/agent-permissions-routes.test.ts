@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 
 vi.mock("acpx/runtime", () => ({
   createAcpRuntime: vi.fn(),
@@ -47,6 +48,10 @@ const mockAgentService = vi.hoisted(() => ({
   terminate: vi.fn(),
   update: vi.fn(),
   updatePermissions: vi.fn(),
+  pause: vi.fn(),
+  resume: vi.fn(),
+  clearError: vi.fn(),
+  rollbackConfigRevision: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
 }));
@@ -78,6 +83,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   resetRuntimeSession: vi.fn(),
   getRun: vi.fn(),
   cancelRun: vi.fn(),
+  cancelActiveForAgent: vi.fn(),
   cancelInvocationsForAgents: vi.fn(),
 }));
 
@@ -273,6 +279,51 @@ async function requestApp(
   }
 }
 
+function secretBearingAgent(overrides: Partial<typeof baseAgent> = {}) {
+  return {
+    ...baseAgent,
+    adapterConfig: {
+      command: "pnpm agent:run",
+      env: {
+        PAPERCLIP_API_KEY: "test-placeholder-paperclip-token",
+        SAFE_FLAG: { type: "plain", value: "test-placeholder-plain-binding" },
+      },
+    },
+    runtimeConfig: {
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          adapterConfig: {
+            env: {
+              GITHUB_TOKEN: "test-placeholder-github-token",
+              SAFE_PROFILE_FLAG: { type: "plain", value: "test-placeholder-profile-binding" },
+            },
+          },
+        },
+      },
+    },
+    ...overrides,
+  };
+}
+
+function expectAgentResponseRedacted(body: Record<string, unknown>) {
+  expect((body.adapterConfig as any).env.PAPERCLIP_API_KEY).toBe(REDACTED_EVENT_VALUE);
+  expect((body.adapterConfig as any).env.SAFE_FLAG).toEqual({
+    type: "plain",
+    value: REDACTED_EVENT_VALUE,
+  });
+  expect((body.runtimeConfig as any).modelProfiles.cheap.adapterConfig.env.GITHUB_TOKEN)
+    .toBe(REDACTED_EVENT_VALUE);
+  expect((body.runtimeConfig as any).modelProfiles.cheap.adapterConfig.env.SAFE_PROFILE_FLAG).toEqual({
+    type: "plain",
+    value: REDACTED_EVENT_VALUE,
+  });
+  expect(JSON.stringify(body)).not.toContain("test-placeholder-paperclip-token");
+  expect(JSON.stringify(body)).not.toContain("test-placeholder-plain-binding");
+  expect(JSON.stringify(body)).not.toContain("test-placeholder-github-token");
+  expect(JSON.stringify(body)).not.toContain("test-placeholder-profile-binding");
+}
+
 describe.sequential("agent permission routes", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -307,6 +358,10 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.terminate.mockReset();
     mockAgentService.update.mockReset();
     mockAgentService.updatePermissions.mockReset();
+    mockAgentService.pause.mockReset();
+    mockAgentService.resume.mockReset();
+    mockAgentService.clearError.mockReset();
+    mockAgentService.rollbackConfigRevision.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
     mockAgentService.resolveByReference.mockReset();
     mockAccessService.canUser.mockReset();
@@ -326,6 +381,7 @@ describe.sequential("agent permission routes", () => {
     mockHeartbeatService.resetRuntimeSession.mockReset();
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
+    mockHeartbeatService.cancelActiveForAgent.mockReset();
     mockHeartbeatService.cancelInvocationsForAgents.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockIssueService.list.mockReset();
@@ -354,6 +410,10 @@ describe.sequential("agent permission routes", () => {
     });
     mockAgentService.update.mockResolvedValue(baseAgent);
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
+    mockAgentService.pause.mockResolvedValue(baseAgent);
+    mockAgentService.resume.mockResolvedValue(baseAgent);
+    mockAgentService.clearError.mockResolvedValue(baseAgent);
+    mockAgentService.rollbackConfigRevision.mockResolvedValue(baseAgent);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
       const allowed = Boolean(await mockAccessService.canUser());
@@ -399,6 +459,12 @@ describe.sequential("agent permission routes", () => {
     );
     mockSecretService.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config) => config);
     mockSecretService.resolveAdapterConfigForRuntime.mockImplementation(async (_companyId, config) => ({ config }));
+    mockHeartbeatService.cancelActiveForAgent.mockResolvedValue(undefined);
+    mockHeartbeatService.cancelInvocationsForAgents.mockResolvedValue({
+      agentIds: [agentId],
+      runsCancelled: 0,
+      wakeupsCancelled: 0,
+    });
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
     });
@@ -428,7 +494,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.runtimeConfig).toEqual({});
   }, 20_000);
 
-  it("keeps board agent detail unredacted for low-trust agents", async () => {
+  it("redacts secret values in board agent detail for low-trust agents", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
       permissions: {
@@ -437,11 +503,17 @@ describe.sequential("agent permission routes", () => {
       },
       adapterConfig: {
         command: "pnpm agent:run",
-        env: { PAPERCLIP_API_KEY: "secret-test-key" },
+        env: { PAPERCLIP_API_KEY: "test-placeholder-paperclip-token" },
       },
       runtimeConfig: {
         modelProfiles: {
-          default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
+          default: {
+            enabled: true,
+            adapterConfig: {
+              model: "openai/gpt-5.4-mini",
+              env: { GITHUB_TOKEN: "test-placeholder-github-token" },
+            },
+          },
         },
       },
     });
@@ -459,14 +531,22 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.adapterConfig).toMatchObject({
       command: "pnpm agent:run",
-      env: { PAPERCLIP_API_KEY: "secret-test-key" },
+      env: { PAPERCLIP_API_KEY: "***REDACTED***" },
     });
     expect(res.body.runtimeConfig).toMatchObject({
       modelProfiles: {
-        default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
+        default: {
+          enabled: true,
+          adapterConfig: {
+            model: "openai/gpt-5.4-mini",
+            env: { GITHUB_TOKEN: "***REDACTED***" },
+          },
+        },
       },
     });
     expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-paperclip-token");
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-github-token");
   }, 20_000);
 
   it("redacts company agent list for authenticated company members without agent admin permission", async () => {
@@ -496,6 +576,208 @@ describe.sequential("agent permission routes", () => {
       }),
     ]);
   });
+
+  it("redacts secret values in company agent list for configuration readers", async () => {
+    mockAgentService.list.mockResolvedValue([{
+      ...baseAgent,
+      adapterConfig: {
+        command: "pnpm agent:run",
+        env: { PAPERCLIP_API_KEY: "test-placeholder-paperclip-token" },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: {
+              model: "openai/gpt-5.4-mini",
+              env: { GITHUB_TOKEN: "test-placeholder-github-token" },
+            },
+          },
+        },
+      },
+    }]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${companyId}/agents`));
+
+    expect(res.status).toBe(200);
+    expect(res.body[0].adapterConfig.env.PAPERCLIP_API_KEY).toBe("***REDACTED***");
+    expect(res.body[0].runtimeConfig.modelProfiles.cheap.adapterConfig.env.GITHUB_TOKEN).toBe("***REDACTED***");
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-paperclip-token");
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-github-token");
+  });
+
+  it("redacts agent self detail for agent actors", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: {
+        command: "pnpm agent:run",
+        env: { PAPERCLIP_API_KEY: "test-placeholder-paperclip-token" },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: {
+              env: { GITHUB_TOKEN: "test-placeholder-github-token" },
+            },
+          },
+        },
+      },
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/agents/me"));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig.command).toBe("pnpm agent:run");
+    expect(res.body.adapterConfig.env.PAPERCLIP_API_KEY).toBe(REDACTED_EVENT_VALUE);
+    expect(res.body.runtimeConfig.modelProfiles.cheap.adapterConfig.env.GITHUB_TOKEN).toBe(REDACTED_EVENT_VALUE);
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-paperclip-token");
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-github-token");
+  }, 20_000);
+
+  it("redacts agent detail when an agent actor reads itself by id", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: {
+        env: { PAPERCLIP_API_KEY: "test-placeholder-paperclip-token" },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            adapterConfig: {
+              env: { GITHUB_TOKEN: "test-placeholder-github-token" },
+            },
+          },
+        },
+      },
+    });
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action === "agent:read",
+      reason: input.action === "agent:read" ? "allow_test_read" : "deny_missing_grant",
+      explanation: input.action === "agent:read" ? "Allowed by test read grant." : "Missing test grant.",
+    }));
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig.env.PAPERCLIP_API_KEY).toBe(REDACTED_EVENT_VALUE);
+    expect(res.body.runtimeConfig.modelProfiles.cheap.adapterConfig.env.GITHUB_TOKEN).toBe(REDACTED_EVENT_VALUE);
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-paperclip-token");
+    expect(JSON.stringify(res.body)).not.toContain("test-placeholder-github-token");
+  }, 20_000);
+
+  it("redacts structured plain bindings in agent read responses even under non-sensitive keys", async () => {
+    const agent = secretBearingAgent();
+    mockAgentService.getById.mockResolvedValue(agent);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
+  }, 20_000);
+
+  it("redacts agent configs returned by agent mutation and lifecycle routes", async () => {
+    const agent = secretBearingAgent();
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    mockAgentService.getById.mockResolvedValue(agent);
+    mockAgentService.rollbackConfigRevision.mockResolvedValue(agent);
+    let res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/config-revisions/revision-1/rollback`)
+      .send({}));
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
+
+    mockAgentService.getById.mockResolvedValue(agent);
+    mockAgentService.update.mockResolvedValue(agent);
+    res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ title: "Updated Builder" }));
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
+
+    mockAgentService.getById.mockResolvedValue(agent);
+    mockAgentService.pause.mockResolvedValue({ ...agent, status: "paused" });
+    res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/pause`)
+      .send({}));
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
+
+    mockAgentService.getById.mockResolvedValue(agent);
+    mockAgentService.resume.mockResolvedValue({ ...agent, status: "idle" });
+    res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/resume`)
+      .send({}));
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
+
+    mockAgentService.getById.mockResolvedValue(agent);
+    mockAgentService.clearError.mockResolvedValue({ ...agent, status: "idle" });
+    res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/clear-error`)
+      .send({}));
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
+
+    mockAgentService.getById.mockResolvedValue({ ...agent, status: "pending_approval" });
+    mockApprovalService.findOpenHireApprovalForAgent.mockResolvedValue(null);
+    mockAgentService.activatePendingApproval.mockResolvedValue({
+      agent: { ...agent, status: "idle" },
+      activated: true,
+    });
+    res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/approve`)
+      .send({}));
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
+
+    mockAgentService.getById.mockResolvedValue(agent);
+    mockApprovalService.findOpenHireApprovalForAgent.mockResolvedValue(null);
+    mockAgentService.terminate.mockResolvedValue({ ...agent, status: "terminated" });
+    res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/terminate`)
+      .send({}));
+    expect(res.status).toBe(200);
+    expectAgentResponseRedacted(res.body);
+  }, 20_000);
 
   it("blocks agent updates for authenticated company members without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
@@ -868,6 +1150,77 @@ describe.sequential("agent permission routes", () => {
     );
   });
 
+  it("redacts persisted config secrets in direct agent creation responses", async () => {
+    mockAgentService.create.mockResolvedValueOnce({
+      ...baseAgent,
+      adapterConfig: {
+        command: "paperclip-worker --token ghp_direct_secret",
+        env: {
+          OPENAI_API_KEY: { type: "plain", value: "sk-direct-secret" },
+          SAFE_VALUE: "visible",
+          SECRET_REF: {
+            type: "secret_ref",
+            secretId: "33333333-3333-4333-8333-333333333333",
+          },
+        },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            adapterConfig: {
+              env: {
+                API_TOKEN: { type: "plain", value: "runtime-direct-secret" },
+                SAFE_VALUE: "runtime-visible",
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {
+          env: {
+            OPENAI_API_KEY: { type: "plain", value: "sk-direct-secret" },
+            SAFE_VALUE: "visible",
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.adapterConfig).toEqual({
+      command: `paperclip-worker --token ${REDACTED_EVENT_VALUE}`,
+      env: {
+        OPENAI_API_KEY: { type: "plain", value: REDACTED_EVENT_VALUE },
+        SAFE_VALUE: "visible",
+        SECRET_REF: {
+          type: "secret_ref",
+          secretId: "33333333-3333-4333-8333-333333333333",
+        },
+      },
+    });
+    expect(res.body.runtimeConfig.modelProfiles.cheap.adapterConfig.env).toEqual({
+      API_TOKEN: { type: "plain", value: REDACTED_EVENT_VALUE },
+      SAFE_VALUE: "runtime-visible",
+    });
+    expect(JSON.stringify(res.body)).not.toContain("sk-direct-secret");
+    expect(JSON.stringify(res.body)).not.toContain("runtime-direct-secret");
+    expect(JSON.stringify(res.body)).not.toContain("ghp_direct_secret");
+  });
+
   it("rejects direct agent creation when new agents require board approval", async () => {
     const app = await createApp(
       {
@@ -1096,6 +1449,93 @@ describe.sequential("agent permission routes", () => {
         },
       }),
     );
+  });
+
+  it("redacts persisted config secrets in agent hire creation responses without changing approval payload", async () => {
+    const approval = {
+      id: "approval-1",
+      companyId,
+      type: "hire_agent",
+      status: "pending",
+      payload: {
+        adapterConfig: {
+          env: {
+            OPENAI_API_KEY: { type: "plain", value: REDACTED_EVENT_VALUE },
+            SAFE_VALUE: "visible",
+          },
+        },
+      },
+    };
+    mockApprovalService.create.mockImplementationOnce(async (_companyId, data) => ({
+      ...approval,
+      payload: data.payload,
+    }));
+    mockAgentService.create.mockResolvedValueOnce({
+      ...baseAgent,
+      adapterConfig: {
+        env: {
+          OPENAI_API_KEY: { type: "plain", value: "sk-hire-secret" },
+          SAFE_VALUE: "visible",
+        },
+      },
+      runtimeConfig: {
+        env: {
+          API_TOKEN: { type: "plain", value: "hire-runtime-secret" },
+          SAFE_VALUE: "runtime-visible",
+        },
+      },
+    });
+
+    const app = await createApp(
+      {
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      },
+      { requireBoardApprovalForNewAgents: true },
+    );
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {
+          env: {
+            OPENAI_API_KEY: { type: "plain", value: "sk-hire-secret" },
+            SAFE_VALUE: "visible",
+          },
+        },
+        runtimeConfig: {
+          env: {
+            API_TOKEN: { type: "plain", value: "hire-runtime-secret" },
+            SAFE_VALUE: "runtime-visible",
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.agent.adapterConfig.env).toEqual({
+      OPENAI_API_KEY: { type: "plain", value: REDACTED_EVENT_VALUE },
+      SAFE_VALUE: "visible",
+    });
+    expect(res.body.agent.runtimeConfig.env).toEqual({
+      API_TOKEN: { type: "plain", value: REDACTED_EVENT_VALUE },
+      SAFE_VALUE: "runtime-visible",
+    });
+    expect(res.body.approval.payload.adapterConfig.env).toEqual({
+      OPENAI_API_KEY: { type: "plain", value: REDACTED_EVENT_VALUE },
+      SAFE_VALUE: "visible",
+    });
+    expect(res.body.approval.payload.runtimeConfig.env).toEqual({
+      API_TOKEN: { type: "plain", value: REDACTED_EVENT_VALUE },
+      SAFE_VALUE: "runtime-visible",
+    });
+    expect(JSON.stringify(res.body)).not.toContain("sk-hire-secret");
+    expect(JSON.stringify(res.body)).not.toContain("hire-runtime-secret");
   });
 
   it("allows board users to directly approve pending agents", async () => {
