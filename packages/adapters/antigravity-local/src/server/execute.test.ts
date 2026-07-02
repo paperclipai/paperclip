@@ -6,12 +6,32 @@ import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 
 const ensureRuntimeInstalledMock = vi.hoisted(() => vi.fn(async () => {}));
 const ensureCommandMock = vi.hoisted(() => vi.fn(async () => {}));
-const prepareRuntimeMock = vi.hoisted(() => vi.fn(async () => ({
-  workspaceRemoteDir: null,
-  restoreWorkspace: async () => {},
-})));
+const prepareRuntimeMock = vi.hoisted(() => vi.fn<() => Promise<{
+  workspaceRemoteDir: string | null;
+  runtimeRootDir: string | null;
+  assetDirs: Record<string, string>;
+  restoreWorkspace: () => Promise<void>;
+}>>(async () => ({
+    workspaceRemoteDir: null,
+    runtimeRootDir: null,
+    assetDirs: {},
+    restoreWorkspace: async () => {},
+  })));
 const resolveCommandForLogsMock = vi.hoisted(() => vi.fn(async () => "agy"));
 const runProcessMock = vi.hoisted(() => vi.fn());
+const runShellCommandMock = vi.hoisted(() => vi.fn(async (
+  _runId: string,
+  _target: unknown,
+  _command: string,
+  _options: unknown,
+) => ({
+  exitCode: 0,
+  signal: null,
+  timedOut: false,
+  stdout: "",
+  stderr: "",
+})));
+const readHomeDirMock = vi.hoisted(() => vi.fn(async () => "/home/agent"));
 const startBridgeMock = vi.hoisted(() => vi.fn(async () => null));
 
 vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
@@ -20,19 +40,78 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   );
   return {
     ...actual,
-    adapterExecutionTargetIsRemote: () => false,
-    adapterExecutionTargetRemoteCwd: (_target: unknown, cwd: string) => cwd,
-    overrideAdapterExecutionTargetRemoteCwd: (target: unknown, _cwd: string) => target,
-    adapterExecutionTargetSessionIdentity: () => ({ transport: "local" }),
-    adapterExecutionTargetSessionMatches: () => true,
+    adapterExecutionTargetIsRemote: (target: unknown) => (
+      typeof target === "object" && target !== null && (target as { kind?: unknown }).kind === "remote"
+    ),
+    adapterExecutionTargetRemoteCwd: (target: unknown, cwd: string) => (
+      typeof target === "object" && target !== null && typeof (target as { remoteCwd?: unknown }).remoteCwd === "string"
+        ? (target as { remoteCwd: string }).remoteCwd
+        : cwd
+    ),
+    overrideAdapterExecutionTargetRemoteCwd: (target: unknown, remoteCwd: string) => (
+      typeof target === "object" && target !== null && (target as { kind?: unknown }).kind === "remote"
+        ? {
+            ...(target as Record<string, unknown>),
+            remoteCwd,
+            spec: {
+              ...((target as { spec?: Record<string, unknown> }).spec ?? {}),
+              remoteCwd,
+            },
+          }
+        : target
+    ),
+    adapterExecutionTargetSessionIdentity: (target: unknown) => {
+      if (!target || typeof target !== "object" || (target as { kind?: unknown }).kind !== "remote") return null;
+      const parsed = target as {
+        transport?: string;
+        providerKey?: string | null;
+        environmentId?: string | null;
+        leaseId?: string | null;
+        remoteCwd?: string;
+        spec?: { host?: string; port?: number; username?: string; remoteCwd?: string };
+      };
+      if (parsed.transport === "ssh") {
+        return {
+          transport: "ssh",
+          host: parsed.spec?.host,
+          port: parsed.spec?.port,
+          username: parsed.spec?.username,
+          remoteCwd: parsed.spec?.remoteCwd,
+        };
+      }
+      return {
+        transport: "sandbox",
+        providerKey: parsed.providerKey ?? null,
+        environmentId: parsed.environmentId ?? null,
+        leaseId: parsed.leaseId ?? null,
+        remoteCwd: parsed.remoteCwd,
+      };
+    },
+    adapterExecutionTargetSessionMatches: (saved: unknown, target: unknown) => {
+      if (!target || typeof target !== "object" || (target as { kind?: unknown }).kind !== "remote") {
+        return !saved || Object.keys(saved as Record<string, unknown>).length === 0;
+      }
+      const current = (target as { transport?: string; spec?: { remoteCwd?: string }; remoteCwd?: string });
+      const parsed = saved && typeof saved === "object" ? saved as Record<string, unknown> : {};
+      return parsed.transport === current.transport &&
+        parsed.remoteCwd === (current.transport === "ssh" ? current.spec?.remoteCwd : current.remoteCwd);
+    },
+    adapterExecutionTargetUsesManagedHome: (target: unknown) => (
+      typeof target === "object" && target !== null &&
+      (target as { kind?: unknown; transport?: unknown }).kind === "remote" &&
+      (target as { transport?: unknown }).transport === "sandbox"
+    ),
+    adapterExecutionTargetUsesPaperclipBridge: () => false,
     describeAdapterExecutionTarget: () => "local",
     ensureAdapterExecutionTargetCommandResolvable: ensureCommandMock,
     ensureAdapterExecutionTargetRuntimeCommandInstalled: ensureRuntimeInstalledMock,
     prepareAdapterExecutionTargetRuntime: prepareRuntimeMock,
+    readAdapterExecutionTargetHomeDir: readHomeDirMock,
     readAdapterExecutionTarget: ({ executionTarget }: { executionTarget?: unknown }) => executionTarget ?? { kind: "local" },
     resolveAdapterExecutionTargetCommandForLogs: resolveCommandForLogsMock,
     resolveAdapterExecutionTargetTimeoutSec: (_target: unknown, timeoutSec: number) => timeoutSec,
     runAdapterExecutionTargetProcess: runProcessMock,
+    runAdapterExecutionTargetShellCommand: runShellCommandMock,
     startAdapterExecutionTargetPaperclipBridge: startBridgeMock,
   };
 });
@@ -41,6 +120,7 @@ import { execute } from "./execute.js";
 
 const tempRoots: string[] = [];
 const oldApiUrl = process.env.PAPERCLIP_API_URL;
+const oldHome = process.env.HOME;
 
 async function makeTempRoot() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-antigravity-local-"));
@@ -88,8 +168,17 @@ describe("antigravity_local execute", () => {
     process.env.PAPERCLIP_API_URL = "http://127.0.0.1:3100";
     ensureRuntimeInstalledMock.mockClear();
     ensureCommandMock.mockClear();
-    prepareRuntimeMock.mockClear();
+    prepareRuntimeMock.mockReset();
+    prepareRuntimeMock.mockResolvedValue({
+      workspaceRemoteDir: null,
+      runtimeRootDir: null,
+      assetDirs: {},
+      restoreWorkspace: async () => {},
+    });
     resolveCommandForLogsMock.mockClear();
+    runShellCommandMock.mockClear();
+    readHomeDirMock.mockReset();
+    readHomeDirMock.mockResolvedValue("/home/agent");
     startBridgeMock.mockClear();
     runProcessMock.mockReset();
   });
@@ -99,6 +188,11 @@ describe("antigravity_local execute", () => {
       delete process.env.PAPERCLIP_API_URL;
     } else {
       process.env.PAPERCLIP_API_URL = oldApiUrl;
+    }
+    if (oldHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = oldHome;
     }
     await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
   });
@@ -201,5 +295,146 @@ describe("antigravity_local execute", () => {
     expect(firstArgs).toEqual(expect.arrayContaining(["--conversation", "old-session"]));
     expect(result.sessionId).toBe(freshConversationId);
     expect(result.summary).toBe("fresh");
+  });
+
+  it("injects local skills into the same configured HOME used by agy", async () => {
+    const root = await makeTempRoot();
+    const hostHome = path.join(root, "host-home");
+    const configuredHome = path.join(root, "configured-home");
+    const skillSource = path.join(root, "runtime-skills", "paperclip");
+    await fs.mkdir(skillSource, { recursive: true });
+    await fs.writeFile(path.join(skillSource, "SKILL.md"), "paperclip skill\n", "utf8");
+    process.env.HOME = hostHome;
+
+    runProcessMock.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "done\n",
+      stderr: "",
+    });
+
+    await execute(buildContext(root, {
+      config: {
+        cwd: root,
+        env: { HOME: configuredHome },
+        paperclipRuntimeSkills: [{
+          key: "paperclip",
+          runtimeName: "paperclip",
+          source: skillSource,
+        }],
+        paperclipSkillSync: {
+          desiredSkills: ["paperclip"],
+        },
+      },
+    }));
+
+    expect((await fs.lstat(path.join(configuredHome, ".gemini", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    await expect(fs.lstat(path.join(hostHome, ".gemini", "skills", "paperclip"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("resumes remote sessions against the stable target identity, not the per-run prepared cwd", async () => {
+    const root = await makeTempRoot();
+    const preparedRemoteCwd = "/remote/workspace/.paperclip-runtime/runs/run-2/workspace";
+    const sessionId = "99999999-9999-4999-8999-999999999999";
+    prepareRuntimeMock.mockResolvedValue({
+      workspaceRemoteDir: preparedRemoteCwd,
+      runtimeRootDir: "/remote/workspace/.paperclip-runtime/runs/run-2",
+      assetDirs: { skills: "/remote/workspace/.paperclip-runtime/runs/run-2/antigravity/skills" },
+      restoreWorkspace: async () => {},
+    });
+    runProcessMock.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "resumed\n",
+      stderr: "",
+    });
+
+    const result = await execute(buildContext(root, {
+      runtime: {
+        sessionId,
+        sessionParams: {
+          sessionId,
+          cwd: "/remote/workspace",
+          remoteExecution: {
+            transport: "ssh",
+            remoteCwd: "/remote/workspace",
+          },
+        },
+        sessionDisplayId: sessionId,
+        taskKey: null,
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/remote/workspace",
+        spec: {
+          host: "127.0.0.1",
+          port: 22,
+          username: "agent",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:22 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+    } as Partial<AdapterExecutionContext>));
+
+    const args = runProcessMock.mock.calls[0]?.[3] as string[];
+    expect(args).toEqual(expect.arrayContaining(["--conversation", sessionId]));
+    expect(result.sessionParams).toMatchObject({
+      sessionId,
+      cwd: "/remote/workspace",
+      remoteExecution: {
+        transport: "ssh",
+        remoteCwd: "/remote/workspace",
+      },
+    });
+  });
+
+  it("does not replace the whole remote Antigravity skills directory while syncing Paperclip skills", async () => {
+    const root = await makeTempRoot();
+    prepareRuntimeMock.mockResolvedValue({
+      workspaceRemoteDir: "/remote/workspace/.paperclip-runtime/runs/run-3/workspace",
+      runtimeRootDir: "/remote/workspace/.paperclip-runtime/runs/run-3",
+      assetDirs: { skills: "/remote/workspace/.paperclip-runtime/runs/run-3/antigravity/skills" },
+      restoreWorkspace: async () => {},
+    });
+    runProcessMock.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "done\n",
+      stderr: "",
+    });
+
+    await execute(buildContext(root, {
+      executionTarget: {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/remote/workspace",
+        spec: {
+          host: "127.0.0.1",
+          port: 22,
+          username: "agent",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:22 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+    } as Partial<AdapterExecutionContext>));
+
+    const syncScript = runShellCommandMock.mock.calls
+      .map((call) => String(call[2]))
+      .find((script) => script.includes(".gemini/skills") && script.includes("antigravity/skills"));
+    expect(syncScript).toBeDefined();
+    expect(syncScript).not.toContain("rm -rf \"/home/agent/.gemini/skills\"");
+    expect(syncScript).toContain("for skill_dir in");
   });
 });

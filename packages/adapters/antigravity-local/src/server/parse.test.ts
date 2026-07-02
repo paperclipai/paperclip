@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   detectAntigravityAuthRequired,
+  isAntigravityTurnLimitResult,
   parseAntigravityCliLogForConversationId,
   parseAntigravityOutput,
 } from "./parse.js";
@@ -39,6 +40,16 @@ describe("antigravity_local parser", () => {
     expect(parsed.sessionId).toBe("33333333-3333-4333-8333-333333333333");
   });
 
+  it("prefers the agy CLI log session id over conversation-looking stdout", () => {
+    const parsed = parseAntigravityOutput({
+      stdout: "Tool output mentioned conversation id: 77777777-7777-4777-8777-777777777777\n",
+      stderr: "",
+      cliLog: "I0702 printmode.go:179] Print mode: conversation=88888888-8888-4888-8888-888888888888, sending message",
+    });
+
+    expect(parsed.sessionId).toBe("88888888-8888-4888-8888-888888888888");
+  });
+
   it("does not invent a session id from arbitrary UUID text in stdout", () => {
     const parsed = parseAntigravityOutput({
       stdout: "Updated issue 44444444-4444-4444-8444-444444444444\n",
@@ -53,5 +64,11 @@ describe("antigravity_local parser", () => {
     expect(detectAntigravityAuthRequired("", "error getting token source")).toBe(true);
     expect(detectAntigravityAuthRequired("", "Run agy auth login to continue")).toBe(true);
     expect(detectAntigravityAuthRequired("Task completed", "")).toBe(false);
+  });
+
+  it("does not classify ordinary text mentioning max_turns as a turn-limit failure", () => {
+    expect(isAntigravityTurnLimitResult("Documented config key max_turns in README", "", 0)).toBe(false);
+    expect(isAntigravityTurnLimitResult("", "Error: max_turns_exhausted", 1)).toBe(true);
+    expect(isAntigravityTurnLimitResult("", "", 53)).toBe(true);
   });
 });

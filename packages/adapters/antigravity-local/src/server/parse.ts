@@ -21,14 +21,17 @@ export function parseAntigravityOutput(input: {
   const messages: string[] = [];
   let errorMessage: string | null = null;
 
-  // Extract session/conversation ID only from explicit "conversation id: <uuid>" patterns
-  // to avoid misidentifying UUIDs from tool results or file content as the session ID.
-  const combinedText = `${stdout}\n${stderr}`;
-  const conversationMatch = combinedText.match(CONVERSATION_ID_RE);
-  if (conversationMatch && conversationMatch[1]) {
-    sessionId = conversationMatch[1];
+  // Prefer the CLI log because `agy --print --log-file` records the actual
+  // conversation id there. Stdout may contain tool output that merely looks
+  // like a conversation marker.
+  sessionId = parseAntigravityCliLogForConversationId(cliLog);
+  if (!sessionId) {
+    const combinedText = `${stdout}\n${stderr}`;
+    const conversationMatch = combinedText.match(CONVERSATION_ID_RE);
+    if (conversationMatch && conversationMatch[1]) {
+      sessionId = conversationMatch[1];
+    }
   }
-  sessionId ??= parseAntigravityCliLogForConversationId(cliLog);
 
   // Parse stdout lines
   for (const rawLine of stdout.split(/\r?\n/)) {
@@ -120,13 +123,8 @@ export function isAntigravityTurnLimitResult(
   exitCode?: number | null,
 ): boolean {
   if (exitCode === 53) return true;
-  const combined = `${stdout}\n${stderr}`.toLowerCase();
-  return (
-    combined.includes("turn_limit") ||
-    combined.includes("max_turns") ||
-    combined.includes("max_turns_exhausted") ||
-    combined.includes("turn_limit_exhausted")
-  );
+  const combined = `${stdout}\n${stderr}`;
+  return /(?:^|[^a-z0-9_])(?:max_turns_exhausted|turn_limit_exhausted)(?:[^a-z0-9_]|$)|(?:max(?:imum)?\s+turns?|turn\s+limit)\s+(?:exhausted|reached)/i.test(combined);
 }
 
 /**

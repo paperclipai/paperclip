@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -110,20 +111,24 @@ function antigravityLogFilePath(input: {
   return path.posix.join(root, ".paperclip-runtime", "antigravity", fileName);
 }
 
-function antigravitySkillsHome(): string {
-  return path.join(os.homedir(), ".gemini", "skills");
+function antigravitySkillsHome(homeDir?: string | null): string {
+  const home = typeof homeDir === "string" && homeDir.trim().length > 0
+    ? path.resolve(homeDir.trim())
+    : os.homedir();
+  return path.join(home, ".gemini", "skills");
 }
 
 async function ensureAntigravitySkillsInjected(
   onLog: AdapterExecutionContext["onLog"],
   skillsEntries: Array<{ key: string; runtimeName: string; source: string }>,
   desiredSkillNames?: string[],
+  homeDir?: string | null,
 ): Promise<void> {
   const desiredSet = new Set(desiredSkillNames ?? skillsEntries.map((entry) => entry.key));
   const selectedEntries = skillsEntries.filter((entry) => desiredSet.has(entry.key));
   if (selectedEntries.length === 0) return;
 
-  const skillsHome = antigravitySkillsHome();
+  const skillsHome = antigravitySkillsHome(homeDir);
   try {
     await fs.mkdir(skillsHome, { recursive: true });
   } catch (err) {
@@ -161,6 +166,27 @@ async function ensureAntigravitySkillsInjected(
       );
     }
   }
+}
+
+function buildRemoteAntigravitySkillsSyncCommand(input: {
+  sourceDir: string;
+  targetDir: string;
+}): string {
+  const sourceDir = shellQuote(input.sourceDir);
+  const targetDir = shellQuote(input.targetDir);
+  return [
+    `mkdir -p ${targetDir}`,
+    `for skill_dir in ${sourceDir}/*; do`,
+    `  [ -d "$skill_dir" ] || continue`,
+    `  skill_name=\${skill_dir##*/}`,
+    `  target=${targetDir}/"$skill_name"`,
+    `  tmp=${targetDir}/".paperclip-$skill_name.tmp-$$"`,
+    `  rm -rf "$tmp"`,
+    `  cp -a "$skill_dir" "$tmp"`,
+    `  rm -rf "$target"`,
+    `  mv "$tmp" "$target"`,
+    "done",
+  ].join("\n");
 }
 
 async function buildAntigravitySkillsDir(
@@ -210,15 +236,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const envConfig = parseObject(config.env);
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+  const sessionExecutionCwd = executionTargetIsRemote ? effectiveExecutionCwd : cwd;
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
   const antigravitySkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredAntigravitySkillNames = resolvePaperclipDesiredSkillNames(config, antigravitySkillEntries);
   if (!executionTargetIsRemote) {
-    await ensureAntigravitySkillsInjected(onLog, antigravitySkillEntries, desiredAntigravitySkillNames);
+    await ensureAntigravitySkillsInjected(
+      onLog,
+      antigravitySkillEntries,
+      desiredAntigravitySkillNames,
+      asString(envConfig.HOME, ""),
+    );
   }
 
-  const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
@@ -375,7 +407,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await runAdapterExecutionTargetShellCommand(
           runId,
           executionTarget,
-          `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSkillsDir))} && rm -rf ${JSON.stringify(remoteSkillsDir)} && cp -a ${JSON.stringify(preparedExecutionTargetRuntime.assetDirs.skills)} ${JSON.stringify(remoteSkillsDir)}`,
+          buildRemoteAntigravitySkillsSyncCommand({
+            sourceDir: preparedExecutionTargetRuntime.assetDirs.skills,
+            targetDir: remoteSkillsDir,
+          }),
           { cwd, env, timeoutSec, graceSec, onLog },
         );
       }
@@ -388,6 +423,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
   }
   const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
+  const sessionExecutionTarget = executionTargetIsRemote ? executionTarget : runtimeExecutionTarget;
   if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(executionTarget)) {
     paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
       runId,
@@ -414,8 +450,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
-    adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
+    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(sessionExecutionCwd)) &&
+    adapterExecutionTargetSessionMatches(runtimeRemoteExecution, sessionExecutionTarget);
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
     await onLog(
@@ -644,13 +680,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
-        cwd: effectiveExecutionCwd,
+        cwd: sessionExecutionCwd,
         ...(workspaceId ? { workspaceId } : {}),
         ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
         ...(executionTargetIsRemote
           ? {
-              remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
+              remoteExecution: adapterExecutionTargetSessionIdentity(sessionExecutionTarget),
             }
           : {}),
       } as Record<string, unknown>)
