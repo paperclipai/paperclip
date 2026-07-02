@@ -70,7 +70,8 @@ gh pr view <PR_NUMBER> --json title,body,state,reviews,comments,headRefName,stat
 ## Fetch inline review comments (REST)
 
 ```bash
-gh api repos/{owner}/{repo}/pulls/<PR_NUMBER>/comments
+OWNER_REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+gh api "repos/$OWNER_REPO/pulls/<PR_NUMBER>/comments"
 ```
 
 ## Fetch general PR comments edited in place (REST)
@@ -78,7 +79,8 @@ gh api repos/{owner}/{repo}/pulls/<PR_NUMBER>/comments
 General PR comments are issue comments. Greptile may update one summary comment repeatedly, so select by `updated_at` instead of `created_at`:
 
 ```bash
-gh api --paginate "repos/{owner}/{repo}/issues/<PR_NUMBER>/comments?per_page=100" \
+OWNER_REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
+gh api --paginate "repos/$OWNER_REPO/issues/<PR_NUMBER>/comments?per_page=100" \
   | jq -s 'add
     | map(select(.user.login | test("greptile"; "i")))
     | sort_by(.updated_at)
