@@ -329,6 +329,66 @@ describe("SidebarAgents", () => {
     expect(container.querySelector('button[aria-label="Agents section actions"]')).toBeNull();
   });
 
+  it("pins starred agents in a group and dedupes them from the recent list", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
+      makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
+    ]);
+    memberships = {
+      projectMemberships: {},
+      agentMemberships: {},
+      starredProjectIds: [],
+      starredAgentIds: ["agent-b"],
+      projectStarredAt: {},
+      agentStarredAt: {},
+      updatedAt: new Date(),
+    };
+
+    await renderSidebarAgents();
+
+    expect(container.textContent).toContain("Starred");
+    // Bravo is starred → shown once in the starred group, deduped from recent.
+    const labels = agentLinkLabels(container);
+    expect(labels.filter((label) => label === "Bravo")).toHaveLength(1);
+    expect(labels).toContain("Alpha");
+    // Starred order lands the starred agent first.
+    expect(labels[0]).toBe("Bravo");
+
+    // The starred row offers an explicit "Remove from starred" menu action.
+    await openAgentMenu("Open actions for Bravo");
+    expect(document.body.textContent).toContain("Remove from starred");
+  });
+
+  it("keeps the agent starred and toasts when an unstar request fails", async () => {
+    mockAgentsApi.list.mockResolvedValue([makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" })]);
+    memberships = {
+      projectMemberships: {},
+      agentMemberships: { "agent-b": "joined" },
+      starredProjectIds: [],
+      starredAgentIds: ["agent-b"],
+      projectStarredAt: {},
+      agentStarredAt: {},
+      updatedAt: new Date(),
+    };
+    mockResourceMembershipsApi.updateAgent.mockRejectedValue(new Error("nope"));
+
+    await renderSidebarAgents();
+
+    const unstar = document.body.querySelector('button[aria-label="Unstar Bravo"]');
+    expect(unstar).not.toBeNull();
+
+    await act(async () => {
+      unstar?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    // Optimistic unstar is rolled back → the row stays in the starred group.
+    expect(document.body.querySelector('button[aria-label="Unstar Bravo"]')).not.toBeNull();
+    expect(mockPushToast).toHaveBeenCalledWith(
+      expect.objectContaining({ tone: "error" }),
+    );
+  });
+
   it("keeps top mode in stored org-aware order", async () => {
     localStorage.setItem("paperclip.agentOrder:company-1:user-1", JSON.stringify(["agent-b", "agent-a", "agent-c"]));
     mockAgentsApi.list.mockResolvedValue([
