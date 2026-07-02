@@ -1644,6 +1644,75 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
   });
 
+  it("BLO-12996: force-kills a hard-stale live external-lifecycle Job (kube status snapshot active) to unblock dispatch", async () => {
+    // A live-but-silent Job past EXTERNAL_LIFECYCLE_HARD_STALE_MS (45 min) is a
+    // stuck zombie that blocks all dispatch for the agent. Reap it.
+    const hardStale = new Date(Date.now() - 50 * 60 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: hardStale,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(new Map([[runId, { phase: "active" }]]));
+
+    const result = await heartbeat.reapOrphanedRuns({ suppressDispatchAfterReap: true });
+    expect(result.reaped).toBe(1);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("external_lifecycle_stale_killed");
+    expect(mockDeleteAgentJobsForRun).toHaveBeenCalledWith(runId);
+  });
+
+  it("BLO-12996: force-kills a hard-stale live external-lifecycle Job (kube list snapshot) to unblock dispatch", async () => {
+    const hardStale = new Date(Date.now() - 50 * 60 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: hardStale,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+    mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set([runId]));
+
+    const result = await heartbeat.reapOrphanedRuns({ suppressDispatchAfterReap: true });
+    expect(result.reaped).toBe(1);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("external_lifecycle_stale_killed");
+    expect(mockDeleteAgentJobsForRun).toHaveBeenCalledWith(runId);
+  });
+
+  it("BLO-12996: does NOT force-kill a live external-lifecycle Job still within the hard-stale window (guards the 2026-05-23 live-but-quiet fix)", async () => {
+    // 30 min silent: past the 15-min soft floor (so it does not count toward the
+    // dispatch slot gate) but below the 45-min hard-kill ceiling. A healthy
+    // long-streaming agent must NOT be killed here — that is the regression the
+    // 2026-05-23 RCA fixed (~6.5/hr false process_lost).
+    const softStale = new Date(Date.now() - 30 * 60 * 1000);
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: softStale,
+    });
+    await seedAdapterInvokeEvent({ companyId, agentId, runId });
+    mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set([runId]));
+
+    const result = await heartbeat.reapOrphanedRuns({ suppressDispatchAfterReap: true });
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBeNull();
+    expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
+  });
+
   it("marks a missing external-lifecycle Job as job_missing only after the silence floor", async () => {
     const stale = new Date(Date.now() - 16 * 60 * 1000);
     const { companyId, agentId, runId } = await seedRunFixture({

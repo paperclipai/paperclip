@@ -624,6 +624,20 @@ const EXTERNAL_LIFECYCLE_PRE_ADAPTER_STALE_MS = 5 * 60 * 1000;
 // visible, do not immediately delete that live Job. The adapter process may
 // still be awaiting/synchronizing the Job and should be allowed to finish.
 const EXTERNAL_LIFECYCLE_RECENT_RUN_GRACE_MS = 5 * 60 * 1000;
+// BLO-12996: hard ceiling after which a live-but-silent external-lifecycle Job
+// is force-killed to unblock agent dispatch. This is deliberately MUCH longer
+// than EXTERNAL_LIFECYCLE_STALE_MS (15 min). The 15-min soft floor is safe for
+// *not counting* a stale run toward the slot gate (BLO-12990 Fix #1) and for
+// reaping runs whose Job is already absent/terminal, but it is NOT safe as a
+// kill trigger for a Job that is still `phase: active`: the 2026-05-23 RCA
+// (see reapOrphanedRuns) found that killing live-but-quiet Jobs at that floor
+// produced ~6.5/hr fleet-wide false `process_lost` on healthy long-streaming
+// agents. A genuinely stuck run emits no useful action for far longer — the
+// silent-active-run reviewer flags at ~1h and observed zombies ran 90-120 min
+// with zero output. 45 min keys the destructive kill well past any healthy
+// quiet gap (which bumps lastUsefulActionAt) while still reclaiming the slot
+// and node CPU long before the multi-hour manual-reap point.
+const EXTERNAL_LIFECYCLE_HARD_STALE_MS = 45 * 60 * 1000;
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 const SESSION_ISOLATION_KEY_PARAM = "paperclipIsolationKey";
 
@@ -10183,8 +10197,43 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     adapterConfig: unknown;
     jobStatus: AgentJobRunStatus | null;
     now: Date;
+    staleKill?: boolean;
   }) {
-    const terminalOutcome = externalLifecycleTerminalOutcome(input.jobStatus);
+    if (input.staleKill) {
+      // BLO-12996: the Job is still phase:active but the run has been silent
+      // past EXTERNAL_LIFECYCLE_HARD_STALE_MS. Force-terminate the live Job so
+      // the slot (and node CPU) is reclaimed and the dispatcher's
+      // hasActiveJobForAgent gate stops blocking newly-queued high-priority work.
+      try {
+        const deleted = await deleteAgentJobsForRun(input.run.id);
+        logger.warn(
+          { runId: input.run.id, adapterType: input.adapterType, deletedJobs: deleted },
+          "reapOrphanedRuns: force-killed live-but-silent external-lifecycle Job (hard-stale)",
+        );
+      } catch (error) {
+        logger.warn(
+          {
+            runId: input.run.id,
+            adapterType: input.adapterType,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "reapOrphanedRuns: failed to force-kill hard-stale external-lifecycle Job",
+        );
+      }
+    }
+    const terminalOutcome = input.staleKill
+      ? {
+          status: "failed" as const,
+          wakeupStatus: "failed" as const,
+          errorCode: "external_lifecycle_stale_killed",
+          error:
+            "External lifecycle Job force-terminated after prolonged silence (no useful action for >= EXTERNAL_LIFECYCLE_HARD_STALE_MS)",
+          recoveryReason: "external_lifecycle_stale_killed",
+          jobPhase: input.jobStatus?.phase ?? "active",
+          jobReason: input.jobStatus?.reason ?? null,
+          jobMessage: input.jobStatus?.message ?? null,
+        }
+      : externalLifecycleTerminalOutcome(input.jobStatus);
     if (!terminalOutcome) return false;
 
     const resultJson = mergeRunStopMetadataForAgent(
@@ -10476,6 +10525,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? new Date(run.startedAt).getTime()
           : 0;
         const isSilent = !lastSignalRef || now.getTime() - lastSignalRef >= EXTERNAL_LIFECYCLE_STALE_MS;
+        // BLO-12996: a much longer floor that gates the *destructive* kill of a
+        // still-active Job (vs. isSilent, which only gates non-destructive
+        // reaping of absent/terminal Jobs and slot-gate counting).
+        const isHardStale =
+          !lastSignalRef || now.getTime() - lastSignalRef >= EXTERNAL_LIFECYCLE_HARD_STALE_MS;
 
         if (jobRunStatuses !== null) {
           let jobStatus = jobRunStatuses.get(run.id) ?? null;
@@ -10524,6 +10578,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
           }
 
+          // BLO-12996: the Job is present and still phase:active, but the run
+          // has emitted no useful action past EXTERNAL_LIFECYCLE_HARD_STALE_MS.
+          // The 2026-05-23 guard (below) rightly refuses to kill a live-but-
+          // quiet Job at the 15-min soft floor, but a run silent for 45+ min is
+          // a stuck zombie that blocks all dispatch for this agent (the
+          // hasActiveJobForAgent gate in startNextQueuedRunForAgent). Force-kill
+          // it so newly-queued high-priority work can dispatch.
+          if (jobStatus && jobStatus.phase === "active" && isHardStale) {
+            const finalized = await finalizeExternalLifecycleTerminalRun({
+              run,
+              adapterType,
+              adapterConfig,
+              jobStatus,
+              now,
+              staleKill: true,
+            });
+            if (finalized) {
+              reaped.push(run.id);
+              continue;
+            }
+          }
+
           continue;
         } else if (liveJobRunIds !== null) {
           // Job-alive is the strongest liveness signal we have for external
@@ -10545,6 +10621,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           //     of silence, but a healthy long-running agent whose Job
           //     just didn't make this snapshot is no longer killed.
           if (liveJobRunIds.has(run.id)) {
+            // BLO-12996: Job is alive in the snapshot but the run has been
+            // silent past the hard ceiling — force-kill to free the slot.
+            // Below the hard floor we still honor the 2026-05-23 guard and
+            // leave a live-but-quiet Job alone.
+            if (isHardStale) {
+              const finalized = await finalizeExternalLifecycleTerminalRun({
+                run,
+                adapterType,
+                adapterConfig,
+                jobStatus: null,
+                now,
+                staleKill: true,
+              });
+              if (finalized) {
+                reaped.push(run.id);
+                continue;
+              }
+            }
             continue;
           } else {
             if (!isSilent) continue;
