@@ -160,6 +160,7 @@ export interface AcceptedPlanDecompositionChild {
   status: IssueStatus;
   workMode: IssueWorkMode;
   priority: IssuePriority;
+  complexity?: IssueComplexity | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
   requestDepth?: number;
@@ -724,6 +725,7 @@ export interface SuggestedTaskDraft {
   title: string;
   description?: string | null;
   priority?: IssuePriority | null;
+  complexity?: IssueComplexity | null;
   workMode?: IssueWorkMode | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
