@@ -112,6 +112,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
       configPath: "env.ANTHROPIC_API_KEY",
       versionSelector: "latest",
       required: true,
+      label: "ANTHROPIC_API_KEY",
     });
   });
 
@@ -223,6 +224,7 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     expect(bindings[0]).toMatchObject({
       secretId: nextSecret.id,
       configPath: "env.NEW_KEY",
+      label: "NEW_KEY",
     });
   });
 
