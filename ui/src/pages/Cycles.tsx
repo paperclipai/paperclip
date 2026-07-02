@@ -340,6 +340,124 @@ function canTransferAllOpenWork(targetCycle: WorkCycle, issues: Issue[]) {
   return issues.length > 0 && issues.every((issue) => isAssignableCycleForIssue(targetCycle, issue));
 }
 
+type CycleOverviewPanelProps = {
+  summaries: CycleSummary[];
+  backlogCount: number;
+  onSelectCycle: (cycleId: CycleSelection) => void;
+  onOpenBacklog: () => void;
+};
+
+const CYCLE_OVERVIEW_LANES: Array<{
+  status: Extract<WorkCycle["status"], "active" | "planned" | "completed">;
+  label: string;
+  empty: string;
+}> = [
+  { status: "active", label: "Active", empty: "No active cycle." },
+  { status: "planned", label: "Upcoming", empty: "No upcoming cycle." },
+  { status: "completed", label: "Completed", empty: "No completed cycles yet." },
+];
+
+function CycleOverviewCard({
+  summary,
+  onSelectCycle,
+}: {
+  summary: CycleSummary & { cycle: WorkCycle };
+  onSelectCycle: (cycleId: CycleSelection) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="block w-full rounded-md border border-border bg-background p-3 text-left shadow-sm transition-colors hover:border-foreground/30 hover:bg-accent/30"
+      onClick={() => onSelectCycle(summary.id)}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-sm font-medium text-foreground">{summary.label}</span>
+            <span className={cn("shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] capitalize", statusClassName(summary.cycle.status))}>
+              {statusLabel(summary.cycle.status)}
+            </span>
+          </div>
+          <div className="mt-1 truncate text-xs text-muted-foreground">
+            {summary.projectLabel} · {summary.dateLabel}
+          </div>
+        </div>
+        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">{summary.progressPercent}%</span>
+      </div>
+      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted">
+        <div
+          className={cn("h-full rounded-full", summary.cycle.status === "completed" ? "bg-muted-foreground" : "bg-emerald-500")}
+          style={{ width: `${summary.progressPercent}%` }}
+        />
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+        <span className="tabular-nums">{summary.openCount} open</span>
+        <span className="tabular-nums">{summary.openStoryPoints} pts</span>
+        <span className="tabular-nums">{summary.openEstimateHours}h</span>
+      </div>
+    </button>
+  );
+}
+
+function CycleOverviewPanel({
+  summaries,
+  backlogCount,
+  onSelectCycle,
+  onOpenBacklog,
+}: CycleOverviewPanelProps) {
+  const cycleSummaries = summaries.filter(
+    (summary): summary is CycleSummary & { cycle: WorkCycle } =>
+      !!summary.cycle && summary.cycle.status !== "archived",
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-muted/20 px-3 py-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-foreground">Backlog planning queue</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">
+            {backlogCount} open item{backlogCount === 1 ? "" : "s"} are not assigned to a cycle.
+          </div>
+        </div>
+        <button
+          type="button"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent disabled:opacity-50"
+          onClick={onOpenBacklog}
+          disabled={backlogCount === 0}
+        >
+          <Archive className="h-3.5 w-3.5" />
+          Plan backlog
+        </button>
+      </div>
+
+      <div className="grid gap-3 xl:grid-cols-3">
+        {CYCLE_OVERVIEW_LANES.map((lane) => {
+          const laneSummaries = cycleSummaries.filter((summary) => summary.cycle.status === lane.status);
+          return (
+            <section key={lane.status} className="min-w-0 rounded-md border border-border bg-muted/10">
+              <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+                <div className="text-sm font-semibold text-foreground">{lane.label}</div>
+                <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground">
+                  {laneSummaries.length}
+                </span>
+              </div>
+              <div className="space-y-2 p-2">
+                {laneSummaries.length === 0 ? (
+                  <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
+                    {lane.empty}
+                  </div>
+                ) : laneSummaries.map((summary) => (
+                  <CycleOverviewCard key={summary.id} summary={summary} onSelectCycle={onSelectCycle} />
+                ))}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function Cycles() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -471,16 +589,19 @@ export function Cycles() {
 
   const summaries = useMemo(() => buildCycleSummaries(cycles, issues, projects), [cycles, issues, projects]);
   const openIssues = useMemo(() => issues.filter(isOpenIssue), [issues]);
-  const completedIssues = useMemo(() => issues.filter(isCompletedIssue), [issues]);
+  const cycleAssignedIssues = useMemo(() => issues.filter((issue) => !!issue.cycleId), [issues]);
+  const cycleAssignedOpenIssues = useMemo(() => cycleAssignedIssues.filter(isOpenIssue), [cycleAssignedIssues]);
+  const cycleAssignedCompletedIssues = useMemo(() => cycleAssignedIssues.filter(isCompletedIssue), [cycleAssignedIssues]);
+  const unassignedOpenIssues = useMemo(() => openIssues.filter((issue) => !issue.cycleId), [openIssues]);
 
   const filterCounts = useMemo(() => ({
-    all: summaries.filter((summary) => summary.cycle?.status !== "archived").length,
+    all: cycles.filter((cycle) => cycle.status !== "archived").length,
     active: cycles.filter((cycle) => cycle.status === "active").length,
     planned: cycles.filter((cycle) => cycle.status === "planned").length,
     completed: cycles.filter((cycle) => cycle.status === "completed").length,
     archived: cycles.filter((cycle) => cycle.status === "archived").length,
-    unassigned: openIssues.filter((issue) => !issue.cycleId).length,
-  }), [cycles, openIssues, summaries]);
+    unassigned: unassignedOpenIssues.length,
+  }), [cycles, unassignedOpenIssues]);
 
   const filteredSummaries = useMemo(() => {
     const normalizedQuery = cycleSearch.trim().toLowerCase();
@@ -488,7 +609,7 @@ export function Cycles() {
       if (cycleStatusFilter === "unassigned") {
         if (summary.id !== "unassigned") return false;
       } else if (summary.id === "unassigned") {
-        if (cycleStatusFilter !== "all") return false;
+        return false;
       } else if (summary.cycle) {
         if (cycleStatusFilter === "all" && summary.cycle.status === "archived") return false;
         if (cycleStatusFilter !== "all" && summary.cycle.status !== cycleStatusFilter) return false;
@@ -504,22 +625,24 @@ export function Cycles() {
   }, [cycleSearch, cycleStatusFilter, summaries]);
 
   const totals = useMemo(() => {
-    const storyPoints = sumIssues(issues, pointsForIssue);
-    const completedStoryPoints = sumIssues(completedIssues, pointsForIssue);
+    const storyPoints = sumIssues(cycleAssignedIssues, pointsForIssue);
+    const completedStoryPoints = sumIssues(cycleAssignedCompletedIssues, pointsForIssue);
     return {
       cycles: cycles.filter((cycle) => cycle.status !== "archived").length,
       activeCycles: cycles.filter((cycle) => cycle.status === "active").length,
-      openIssues: openIssues.length,
-      allIssues: issues.length,
+      openIssues: cycleAssignedOpenIssues.length,
+      allIssues: cycleAssignedIssues.length,
       storyPoints,
-      openStoryPoints: sumIssues(openIssues, pointsForIssue),
+      openStoryPoints: sumIssues(cycleAssignedOpenIssues, pointsForIssue),
       completedStoryPoints,
-      estimateHours: sumIssues(issues, estimateHoursForIssue),
-      openEstimateHours: sumIssues(openIssues, estimateHoursForIssue),
-      actualAiSeconds: sumIssues(issues, actualAiSecondsForIssue),
-      progressPercent: issues.length > 0 ? clampPercent((completedIssues.length / issues.length) * 100) : 0,
+      estimateHours: sumIssues(cycleAssignedIssues, estimateHoursForIssue),
+      openEstimateHours: sumIssues(cycleAssignedOpenIssues, estimateHoursForIssue),
+      actualAiSeconds: sumIssues(cycleAssignedIssues, actualAiSecondsForIssue),
+      progressPercent: cycleAssignedIssues.length > 0
+        ? clampPercent((cycleAssignedCompletedIssues.length / cycleAssignedIssues.length) * 100)
+        : 0,
     };
-  }, [completedIssues, cycles, issues, openIssues]);
+  }, [cycleAssignedCompletedIssues, cycleAssignedIssues, cycleAssignedOpenIssues, cycles]);
 
   const velocity = useMemo(() => {
     const completedCycles = summaries.filter((summary) => summary.cycle?.status === "completed" && summary.issueCount > 0);
@@ -536,11 +659,11 @@ export function Cycles() {
     ? null
     : summaries.find((summary) => summary.id === selectedCycleId) ?? null;
   const selectedCycle = selectedSummary?.cycle ?? null;
-  const visibleIssues = selectedSummary ? selectedSummary.issues : sortIssuesForCycle(issues);
+  const visibleIssues = selectedSummary ? selectedSummary.issues : [];
   const detailMetrics = selectedSummary ?? {
     issueCount: totals.allIssues,
     openCount: totals.openIssues,
-    completedCount: completedIssues.length,
+    completedCount: cycleAssignedCompletedIssues.length,
     storyPoints: totals.storyPoints,
     openStoryPoints: totals.openStoryPoints,
     completedStoryPoints: totals.completedStoryPoints,
@@ -550,9 +673,9 @@ export function Cycles() {
     progressPercent: totals.progressPercent,
     capacityStoryPoints: null,
     capacityHours: null,
-    issues,
-    openIssues,
-    completedIssues,
+    issues: cycleAssignedIssues,
+    openIssues: cycleAssignedOpenIssues,
+    completedIssues: cycleAssignedCompletedIssues,
   };
 
   const activePeerCycle = useMemo(() => {
@@ -781,7 +904,14 @@ export function Cycles() {
                             ? "border-foreground bg-foreground text-background"
                             : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground",
                         )}
-                        onClick={() => setCycleStatusFilter(filter.value)}
+                        onClick={() => {
+                          setCycleStatusFilter(filter.value);
+                          if (filter.value === "unassigned") {
+                            setSelectedCycleId("unassigned");
+                          } else if (selectedCycleId === "unassigned") {
+                            setSelectedCycleId("all");
+                          }
+                        }}
                       >
                         {filter.label}
                         <span className="tabular-nums opacity-70">{count}</span>
@@ -804,9 +934,9 @@ export function Cycles() {
                     <RefreshCw className="h-4 w-4" />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium text-foreground">All cycle work</span>
+                    <span className="block truncate text-sm font-medium text-foreground">Cycle overview</span>
                     <span className="block truncate text-xs text-muted-foreground">
-                      {totals.openIssues} open / {totals.allIssues} loaded issues
+                      {totals.openIssues} open assigned / {totals.cycles} cycles
                     </span>
                   </span>
                   <span className="text-xs tabular-nums text-muted-foreground">{totals.progressPercent}%</span>
@@ -871,7 +1001,7 @@ export function Cycles() {
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <h2 className="truncate text-base font-semibold text-foreground">
-                        {selectedCycleId === "all" ? "All cycle work" : selectedSummary?.label ?? "Cycle work"}
+                        {selectedCycleId === "all" ? "Cycle overview" : selectedSummary?.label ?? "Cycle work"}
                       </h2>
                       {selectedCycle ? (
                         <span className={cn("rounded-full border px-2 py-0.5 text-xs capitalize", statusClassName(selectedCycle.status))}>
@@ -886,7 +1016,7 @@ export function Cycles() {
                         ? `${projectName(projects, selectedCycle.projectId)} · ${formatDateRange(selectedCycle)}`
                         : selectedCycleId === "unassigned"
                           ? "Open work that has not been planned into a cycle."
-                          : "All loaded work in the current project filter."}
+                          : "Active, upcoming, and completed cycles. Open backlog only when you are planning scope."}
                     </p>
                   </div>
 
@@ -1059,111 +1189,129 @@ export function Cycles() {
               </div>
 
               <div className="p-4">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-semibold text-foreground">Work items</h3>
-                    <p className="text-xs text-muted-foreground">
-                      Set the cycle directly here, or open the issue properties panel for deeper planning.
-                    </p>
-                  </div>
-                  <span className="text-xs text-muted-foreground">{visibleIssues.length} shown</span>
-                </div>
-
-                {visibleIssues.length === 0 ? (
-                  <div className="rounded-md border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
-                    No work items in this cycle view.
-                  </div>
+                {selectedCycleId === "all" ? (
+                  <CycleOverviewPanel
+                    summaries={summaries}
+                    backlogCount={filterCounts.unassigned}
+                    onSelectCycle={setSelectedCycleId}
+                    onOpenBacklog={() => {
+                      setCycleStatusFilter("unassigned");
+                      setSelectedCycleId("unassigned");
+                    }}
+                  />
                 ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full min-w-[980px] text-sm">
-                      <thead className="text-xs uppercase text-muted-foreground">
-                        <tr className="border-b border-border text-left">
-                          <th className="py-2 pr-3 font-medium">Issue</th>
-                          <th className="px-3 py-2 font-medium">Project</th>
-                          <th className="px-3 py-2 font-medium">Cycle</th>
-                          <th className="px-3 py-2 font-medium">Status</th>
-                          <th className="px-3 py-2 font-medium">Priority</th>
-                          <th className="px-3 py-2 font-medium">Points</th>
-                          <th className="px-3 py-2 font-medium">Estimate</th>
-                          <th className="px-3 py-2 font-medium">AI Time</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-border">
-                        {visibleIssues.map((issue) => {
-                          const project = issue.projectId ? projects?.find((item) => item.id === issue.projectId) : null;
-                          const cycleOptions = cycleOptionsForIssue(issue);
-                          return (
-                            <tr key={issue.id} className="hover:bg-muted/40">
-                              <td className="max-w-[360px] py-3 pr-3">
-                                <Link to={`/issues/${issue.identifier ?? issue.id}`} className="block min-w-0">
-                                  <span className="mr-2 font-mono text-xs text-muted-foreground">{issue.identifier ?? issue.id.slice(0, 8)}</span>
-                                  <span className="font-medium text-foreground">{issue.title}</span>
-                                </Link>
-                              </td>
-                              <td className="px-3 py-3">
-                                {project ? (
-                                  <Link to={projectUrl(project)} className="inline-flex min-w-0 items-center gap-2">
-                                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: project.color ?? "currentColor" }} />
-                                    <span className="truncate text-muted-foreground">{project.name}</span>
-                                  </Link>
-                                ) : (
-                                  <span className="text-muted-foreground">No project</span>
-                                )}
-                              </td>
-                              <td className="px-3 py-3">
-                                <select
-                                  className="h-8 w-48 rounded-md border border-border bg-background px-2 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
-                                  value={issue.cycleId ?? ""}
-                                  disabled={updateIssueCycle.isPending}
-                                  onChange={(event) => updateIssueCycle.mutate({
-                                    issueId: issue.id,
-                                    cycleId: event.target.value || null,
-                                  })}
-                                >
-                                  <option value="">No cycle</option>
-                                  {cycleOptions.map((cycle) => (
-                                    <option
-                                      key={cycle.id}
-                                      value={cycle.id}
-                                      disabled={cycle.status === "completed" && cycle.id !== issue.cycleId}
-                                    >
-                                      {cycle.name}{cycle.status === "completed" ? " (locked)" : ""}
-                                    </option>
-                                  ))}
-                                </select>
-                              </td>
-                              <td className="px-3 py-3">
-                                <span className={cn("inline-flex rounded-full border px-2 py-0.5 text-xs capitalize", issueStatusClassName(issue.status))}>
-                                  {issueStatusLabel(issue.status)}
-                                </span>
-                              </td>
-                              <td className="px-3 py-3 capitalize text-muted-foreground">{issue.priority}</td>
-                              <td className="px-3 py-3 tabular-nums text-foreground">
-                                <span className="inline-flex items-center gap-1">
-                                  <Target className="h-3.5 w-3.5 text-muted-foreground" />
-                                  {pointsForIssue(issue)}
-                                </span>
-                              </td>
-                              <td className="px-3 py-3 tabular-nums text-foreground">
-                                <span className="inline-flex items-center gap-1">
-                                  <Clock className="h-3.5 w-3.5 text-muted-foreground" />
-                                  {estimateHoursForIssue(issue)}h
-                                </span>
-                              </td>
-                              <td className="px-3 py-3 tabular-nums text-foreground">{formatActualAiTime(actualAiSecondsForIssue(issue))}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                  <>
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-foreground">
+                          {selectedCycleId === "unassigned" ? "Backlog planning queue" : "Cycle work items"}
+                        </h3>
+                        <p className="text-xs text-muted-foreground">
+                          {selectedCycleId === "unassigned"
+                            ? "Assign these items into an active or upcoming cycle when you are planning scope."
+                            : "Set the cycle directly here, or open the issue properties panel for deeper planning."}
+                        </p>
+                      </div>
+                      <span className="text-xs text-muted-foreground">{visibleIssues.length} shown</span>
+                    </div>
 
-                {issues.length >= CYCLE_PAGE_SIZE ? (
-                  <div className="mt-3 text-xs text-muted-foreground">
-                    Showing first {CYCLE_PAGE_SIZE} loaded issues.
-                  </div>
-                ) : null}
+                    {visibleIssues.length === 0 ? (
+                      <div className="rounded-md border border-dashed border-border px-3 py-8 text-center text-sm text-muted-foreground">
+                        No work items in this cycle view.
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full min-w-[980px] text-sm">
+                          <thead className="text-xs uppercase text-muted-foreground">
+                            <tr className="border-b border-border text-left">
+                              <th className="py-2 pr-3 font-medium">Issue</th>
+                              <th className="px-3 py-2 font-medium">Project</th>
+                              <th className="px-3 py-2 font-medium">Cycle</th>
+                              <th className="px-3 py-2 font-medium">Status</th>
+                              <th className="px-3 py-2 font-medium">Priority</th>
+                              <th className="px-3 py-2 font-medium">Points</th>
+                              <th className="px-3 py-2 font-medium">Estimate</th>
+                              <th className="px-3 py-2 font-medium">AI Time</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-border">
+                            {visibleIssues.map((issue) => {
+                              const project = issue.projectId ? projects?.find((item) => item.id === issue.projectId) : null;
+                              const cycleOptions = cycleOptionsForIssue(issue);
+                              return (
+                                <tr key={issue.id} className="hover:bg-muted/40">
+                                  <td className="max-w-[360px] py-3 pr-3">
+                                    <Link to={`/issues/${issue.identifier ?? issue.id}`} className="block min-w-0">
+                                      <span className="mr-2 font-mono text-xs text-muted-foreground">{issue.identifier ?? issue.id.slice(0, 8)}</span>
+                                      <span className="font-medium text-foreground">{issue.title}</span>
+                                    </Link>
+                                  </td>
+                                  <td className="px-3 py-3">
+                                    {project ? (
+                                      <Link to={projectUrl(project)} className="inline-flex min-w-0 items-center gap-2">
+                                        <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: project.color ?? "currentColor" }} />
+                                        <span className="truncate text-muted-foreground">{project.name}</span>
+                                      </Link>
+                                    ) : (
+                                      <span className="text-muted-foreground">No project</span>
+                                    )}
+                                  </td>
+                                  <td className="px-3 py-3">
+                                    <select
+                                      className="h-8 w-48 rounded-md border border-border bg-background px-2 text-xs outline-none focus:border-ring focus:ring-1 focus:ring-ring"
+                                      value={issue.cycleId ?? ""}
+                                      disabled={updateIssueCycle.isPending}
+                                      onChange={(event) => updateIssueCycle.mutate({
+                                        issueId: issue.id,
+                                        cycleId: event.target.value || null,
+                                      })}
+                                    >
+                                      <option value="">No cycle</option>
+                                      {cycleOptions.map((cycle) => (
+                                        <option
+                                          key={cycle.id}
+                                          value={cycle.id}
+                                          disabled={cycle.status === "completed" && cycle.id !== issue.cycleId}
+                                        >
+                                          {cycle.name}{cycle.status === "completed" ? " (locked)" : ""}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </td>
+                                  <td className="px-3 py-3">
+                                    <span className={cn("inline-flex rounded-full border px-2 py-0.5 text-xs capitalize", issueStatusClassName(issue.status))}>
+                                      {issueStatusLabel(issue.status)}
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-3 capitalize text-muted-foreground">{issue.priority}</td>
+                                  <td className="px-3 py-3 tabular-nums text-foreground">
+                                    <span className="inline-flex items-center gap-1">
+                                      <Target className="h-3.5 w-3.5 text-muted-foreground" />
+                                      {pointsForIssue(issue)}
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-3 tabular-nums text-foreground">
+                                    <span className="inline-flex items-center gap-1">
+                                      <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+                                      {estimateHoursForIssue(issue)}h
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-3 tabular-nums text-foreground">{formatActualAiTime(actualAiSecondsForIssue(issue))}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {issues.length >= CYCLE_PAGE_SIZE ? (
+                      <div className="mt-3 text-xs text-muted-foreground">
+                        Showing first {CYCLE_PAGE_SIZE} loaded issues.
+                      </div>
+                    ) : null}
+                  </>
+                )}
               </div>
             </section>
           </div>
