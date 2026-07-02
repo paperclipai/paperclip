@@ -12,6 +12,8 @@ import {
   createFileSystemSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
+  DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+  resolveSandboxCallbackBridgeMaxBodyBytes,
   sandboxCallbackBridgeDirectories,
   syncSandboxCallbackBridgeEntrypoint,
   startSandboxCallbackBridgeServer,
@@ -979,5 +981,43 @@ describe("sandbox callback bridge", () => {
         PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
       },
     }));
+  });
+});
+
+describe("resolveSandboxCallbackBridgeMaxBodyBytes", () => {
+  // DYS-2200/DYS-2202: the host-side bridge body limit must be overridable via
+  // PAPERCLIP_BRIDGE_MAX_BODY_BYTES without an explicit caller value, while an
+  // explicit caller value still wins. The compiled default stays 256 KiB (the
+  // producer-side page-size fix in DYS-2203 keeps responses under the cap; the
+  // env override is a host-side safety valve).
+  it("uses an explicit positive finite caller value as-is", () => {
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(1024, "512")).toBe(1024);
+  });
+
+  it("truncates a fractional explicit value to an integer", () => {
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(1024.9, null)).toBe(1024);
+  });
+
+  it("falls back to the env value when no valid explicit value is given", () => {
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(null, "512")).toBe(512);
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(undefined, "512")).toBe(512);
+  });
+
+  it("ignores a non-positive explicit value and uses the env value", () => {
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(-1, "512")).toBe(512);
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(0, "512")).toBe(512);
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(Number.NaN, "512")).toBe(512);
+  });
+
+  it("falls back to the compiled default when neither explicit nor env is usable", () => {
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(undefined, "")).toBe(DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES);
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(null, "not-a-number")).toBe(DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES);
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(null, "0")).toBe(DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES);
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(null, "-8")).toBe(DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES);
+    expect(resolveSandboxCallbackBridgeMaxBodyBytes(null, null)).toBe(DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES);
+  });
+
+  it("regression guard: the compiled default is 256 KiB", () => {
+    expect(DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES).toBe(256 * 1024);
   });
 });

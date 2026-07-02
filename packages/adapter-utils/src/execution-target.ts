@@ -14,6 +14,7 @@ import {
   createCommandManagedSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
+  resolveSandboxCallbackBridgeMaxBodyBytes,
   DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
@@ -1091,10 +1092,15 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   const queueDir = path.posix.join(bridgeRuntimeDir, "queue");
   const assetRemoteDir = path.posix.join(bridgeRuntimeDir, "server");
   const bridgeToken = createSandboxCallbackBridgeToken();
-  const maxBodyBytes =
-    typeof input.maxBodyBytes === "number" && Number.isFinite(input.maxBodyBytes) && input.maxBodyBytes > 0
-      ? Math.trunc(input.maxBodyBytes)
-      : DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES;
+  // Precedence: explicit caller override (`input.maxBodyBytes`) > host env
+  // (`PAPERCLIP_BRIDGE_MAX_BODY_BYTES`, parsed integer > 0) > compiled default.
+  // The host is the only place this env var can raise the limit; the sandbox
+  // entrypoint reads a separate copy via `buildSandboxCallbackBridgeEnv` and
+  // sandboxes do not inherit host env.
+  const maxBodyBytes = resolveSandboxCallbackBridgeMaxBodyBytes(
+    input.maxBodyBytes,
+    process.env.PAPERCLIP_BRIDGE_MAX_BODY_BYTES,
+  );
   const hostApiUrl =
     input.hostApiUrl?.trim() ||
     process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ||

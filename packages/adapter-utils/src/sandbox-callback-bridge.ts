@@ -20,6 +20,31 @@ const SANDBOX_EXEC_CHANNEL_BRIDGE = "bridge";
 
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES = DEFAULT_BRIDGE_MAX_BODY_BYTES;
 
+/**
+ * Resolves the sandbox callback bridge response body limit (bytes).
+ *
+ * Precedence: an explicit positive-finite caller value wins, then the
+ * `PAPERCLIP_BRIDGE_MAX_BODY_BYTES` host env var (parsed positive integer),
+ * then the compiled {@link DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES}.
+ *
+ * The host process is the only place the env var can raise the limit: the
+ * in-sandbox entrypoint reads a *separate* copy baked into its env by
+ * `buildSandboxCallbackBridgeEnv`, and sandboxes do not inherit host env.
+ */
+export function resolveSandboxCallbackBridgeMaxBodyBytes(
+  explicit: number | null | undefined,
+  envValue: string | null | undefined,
+): number {
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit > 0) {
+    return Math.trunc(explicit);
+  }
+  const parsed = Number.parseInt(envValue ?? "", 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return Math.trunc(parsed);
+  }
+  return DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES;
+}
+
 export interface SandboxCallbackBridgeRouteRule {
   method: string;
   path: RegExp;
