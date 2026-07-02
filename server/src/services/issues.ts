@@ -3991,6 +3991,23 @@ export function issueService(db: Db) {
     return empty;
   }
 
+  async function withIssueRelationSummaries<T extends { id: string }>(
+    companyId: string,
+    rows: T[],
+    dbOrTx: DbReader = db,
+  ): Promise<Array<T & IssueRelationSummaryMap>> {
+    if (rows.length === 0) return [];
+    const relationMap = await getIssueRelationSummaryMap(
+      companyId,
+      rows.map((row) => row.id),
+      dbOrTx,
+    );
+    return rows.map((row) => ({
+      ...row,
+      ...(relationMap.get(row.id) ?? { blockedBy: [], blocks: [] }),
+    }));
+  }
+
   async function assertNoBlockingCycles(
     companyId: string,
     issueId: string,
@@ -4960,7 +4977,7 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
-      const child = await issueService(db).create(parent.companyId, {
+      let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
         projectId: issueData.projectId ?? parent.projectId,
@@ -4983,6 +5000,7 @@ export function issueService(db: Db) {
           [...new Set([...existingBlockers.map((row) => row.blockerIssueId), child.id])],
           { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
         );
+        [child] = await withIssueRelationSummaries(parent.companyId, [child], db);
       }
 
       return {
@@ -5484,7 +5502,8 @@ export function issueService(db: Db) {
           );
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
-        return enriched;
+        const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
+        return withRelations;
       });
     },
 
