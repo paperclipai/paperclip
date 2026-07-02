@@ -9669,20 +9669,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
-          const message = outerErr instanceof Error ? outerErr.message : "Unknown setup failure";
+          const message = redactCurrentUserText(
+            outerErr instanceof Error ? outerErr.message : "Unknown setup failure",
+            await getCurrentUserRedactionOptions(),
+          );
+          const workspaceValidationSetupFailure = isWorkspaceValidationFailure(outerErr) ? outerErr : null;
+          const setupFailureErrorCode = workspaceValidationSetupFailure?.code
+            ?? (isBillingLimitErrorMessage(message) ? BILLING_LIMIT_ERROR_CODE : "setup_failed");
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
-          const setupFailureErrorCode = isBillingLimitErrorMessage(message)
-            ? BILLING_LIMIT_ERROR_CODE
-            : "adapter_failed";
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           await setRunStatus(runId, "failed", {
             error: message,
-            errorCode: "setup_failed",
+            errorCode: setupFailureErrorCode,
             finishedAt: new Date(),
             ...(setupFailureAgent ? {
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
-                errorCode: "setup_failed",
+                errorCode: setupFailureErrorCode,
                 errorMessage: message,
+                resultJson: workspaceValidationSetupFailure?.resultJson ?? null,
               }),
             } : {}),
           }).catch(() => undefined);
