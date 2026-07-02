@@ -917,6 +917,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     retryReason?: "assignment_recovery" | "issue_continuation_needed" | "execution_review_participant_recovery" | null;
     cause?: string;
     kind?: string;
+    previousOwnerAgentId?: string | null;
+    returnOwnerAgentId?: string | null;
   }) {
     const action = await waitForValue(async () =>
       db.select().from(issueRecoveryActions).where(
@@ -936,8 +938,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "active",
       ownerType: "agent",
       ownerAgentId: input.agentId,
-      previousOwnerAgentId: input.agentId,
-      returnOwnerAgentId: input.agentId,
+      previousOwnerAgentId: input.previousOwnerAgentId ?? input.agentId,
+      returnOwnerAgentId: input.returnOwnerAgentId ?? input.agentId,
       cause: input.cause ?? "stranded_assigned_issue",
       attemptCount: 1,
       maxAttempts: null,
@@ -3007,6 +3009,104 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       (event.details as Record<string, unknown> | null)?.source ===
         "recovery.reconcile_execution_review_participant",
     )).toBe(true);
+  });
+
+  it("blocks failed execution-review recovery under the reviewer when the source assignee differs", async () => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId, stageId } =
+      await seedInReviewParticipantRunFixture({
+        wakeReason: "execution_review_participant_recovery",
+        retryReason: "execution_review_participant_recovery",
+      });
+    const sourceAssigneeAgentId = randomUUID();
+    const finishedAt = new Date("2026-03-19T00:05:00.000Z");
+
+    await db.insert(agents).values({
+      id: sourceAssigneeAgentId,
+      companyId,
+      name: "CodexImplementor",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db
+      .update(issues)
+      .set({
+        assigneeAgentId: sourceAssigneeAgentId,
+        executionState: {
+          status: "pending",
+          currentStageId: stageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId, userId: null },
+          returnAssignee: { type: "agent", agentId: sourceAssigneeAgentId, userId: null },
+          reviewRequest: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      })
+      .where(eq(issues.id, issueId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "failed",
+        startedAt: new Date("2026-03-19T00:00:00.000Z"),
+        finishedAt,
+        updatedAt: finishedAt,
+        errorCode: "adapter_failed",
+        error: "review recovery failed before submitting a decision",
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        status: "failed",
+        claimedAt: new Date("2026-03-19T00:00:00.000Z"),
+        finishedAt,
+        updatedAt: finishedAt,
+        error: "review recovery failed before submitting a decision",
+      })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.reviewParticipantRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const sourceIssue = await waitForValue(async () => {
+      const row = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      return row?.status === "blocked" ? row : null;
+    });
+    expect(sourceIssue).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+
+    const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_review",
+      retryReason: "execution_review_participant_recovery",
+      cause: "execution_review_participant_recovery",
+      previousOwnerAgentId: sourceAssigneeAgentId,
+      returnOwnerAgentId: sourceAssigneeAgentId,
+    });
+    expect(recoveryAction.evidence).toMatchObject({
+      latestRunId: runId,
+      latestRunStatus: "failed",
+      latestRunErrorCode: "adapter_failed",
+      recoveryCause: "execution_review_participant_recovery",
+    });
   });
 
   it.each([

@@ -11945,6 +11945,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             previousStatus: issue.status,
             comment: buildExecutionReviewParticipantRecoveryComment({ latestRun: run }),
             recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
+            recoveryOwnerAgentId: currentParticipant.agentId,
           };
         }
 
@@ -12171,6 +12172,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               : promotionResult.recoveryCause === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
                 ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
               : undefined,
+        recoveryOwnerAgentId: promotionResult.recoveryOwnerAgentId,
       });
       return;
     }
