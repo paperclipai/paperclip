@@ -1,4 +1,7 @@
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
+import { isCursorCloudAgentId } from "./cursor-run-events.js";
+
+export { isCursorCloudAgentId };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -26,6 +29,38 @@ function readRepos(value: unknown): Array<{ url: string; startingRef?: string; p
     });
   }
   return repos;
+}
+
+function normalizeEnvType(raw: string | null | undefined): "cloud" | "pool" | "machine" {
+  const value = (raw ?? "cloud").trim().toLowerCase();
+  if (value === "pool" || value === "machine") return value;
+  return "cloud";
+}
+
+export function sessionIdentityMatches(
+  session: Record<string, unknown> | null,
+  identity: {
+    envType: "cloud" | "pool" | "machine";
+    envName: string | null;
+    repos: Array<{ url: string; startingRef?: string; prUrl?: string }>;
+  },
+): boolean {
+  const normalized = normalize(session);
+  if (!normalized) return false;
+  const sessionEnvType = normalizeEnvType(readString(normalized.envType));
+  const sessionEnvName = readString(normalized.envName);
+  const sessionRepos = readRepos(normalized.repos);
+  if (sessionEnvType !== identity.envType) return false;
+  if ((sessionEnvName ?? null) !== identity.envName) return false;
+  if (sessionRepos.length !== identity.repos.length) return false;
+  return sessionRepos.every((repo, index) => {
+    const next = identity.repos[index];
+    return (
+      repo.url === next.url
+      && (repo.startingRef ?? null) === (next.startingRef ?? null)
+      && (repo.prUrl ?? null) === (next.prUrl ?? null)
+    );
+  });
 }
 
 function normalize(raw: unknown): Record<string, unknown> | null {

@@ -375,7 +375,7 @@ describe("cursor_cloud execute", () => {
     });
     expect(result).toMatchObject({
       exitCode: 0,
-      costUsd: null,
+      costUsd: 0.0073,
       usage: {
         inputTokens: 1500,
         outputTokens: 350,
@@ -389,7 +389,8 @@ describe("cursor_cloud execute", () => {
           cacheReadTokens: 200,
           totalTokens: 2050,
         },
-        costEstimated: false,
+        costEstimated: true,
+        costSource: "paperclip_pricing_fallback",
       },
     });
   });

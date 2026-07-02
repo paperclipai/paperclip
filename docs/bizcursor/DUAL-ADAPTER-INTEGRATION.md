@@ -33,9 +33,14 @@ This document tracks BizCursor-specific Paperclip improvements for environments 
 
 See [UPSTREAM-CHERRY-PICK-BACKLOG.md](./UPSTREAM-CHERRY-PICK-BACKLOG.md) for wave 2 items.
 
+| RF-P2-03 pricing fallback (`costEstimated: true`) | `bizcursor/cursor-cloud-integration` | Implemented |
+| Chat-mode `paperclipChatWake` for `cursor_cloud` | `bizcursor/cursor-cloud-integration` | Implemented |
+| Run Observer + internal webhook bridge | `bizcursor/cursor-cloud-integration` | Implemented |
+| Structured cursor run events (`git.pr_opened`) | `bizcursor/cursor-cloud-integration` | Implemented |
+
 ## Smoke tests after deploy
 
-See BizCursor spec: `docs/superpowers/specs/2026-07-01-paperclip-cursor-cloud-fixes-spec.md` §7 (ST-CC-01–07).
+See BizCursor spec: `docs/superpowers/specs/2026-07-01-paperclip-cursor-cloud-fixes-spec.md` §7 (ST-CC-01–08). Run via Paperclip Board API — not BizCursor app.
 
 ## References
 

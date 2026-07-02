@@ -44,6 +44,7 @@ import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
+import { cursorWebhookRoutes } from "./routes/cursor-webhook.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
@@ -321,6 +322,7 @@ export async function createApp(
     ),
   );
   api.use(adapterRoutes());
+  api.use("/internal", cursorWebhookRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

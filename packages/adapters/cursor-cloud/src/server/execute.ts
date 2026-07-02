@@ -7,18 +7,29 @@ import {
   type Run,
   type RunResult,
   type SDKAgent,
-  type SDKMessage,
 } from "@cursor/sdk";
 import type { AdapterExecutionContext, AdapterExecutionResult, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
-  asBoolean,
   asString,
   joinPromptSections,
+  normalizePaperclipChatWakePayload,
   parseObject,
+  renderPaperclipChatWakePrompt,
   renderPaperclipWakePrompt,
   renderTemplate,
 } from "@paperclipai/adapter-utils/server-utils";
+import { classifyCursorApiError } from "./cursor-api-retry.js";
+import { eventLine, flattenPrUrl, type CursorCloudEvent } from "./cursor-run-events.js";
+import { resolveCursorCloudMcpServers } from "./mcp-servers.js";
+import { estimateCursorCloudCostUsd } from "./pricing-fallback.js";
+import {
+  parseCursorCloudAdapterConfig,
+  resolveCursorCloudRepos,
+  resolveExecutionTarget,
+} from "./repos.js";
+import { sessionIdentityMatches } from "./session.js";
+import { observeRunStream } from "./sse-stream.js";
 import { fetchCursorRunUsage, mapUsageToAdapterResult } from "./usage.js";
 import { buildCursorCloudWakeEnv } from "./wake-env.js";
 
@@ -30,20 +41,6 @@ type CursorCloudSession = {
   envName?: string;
   repos: Array<{ url: string; startingRef?: string; prUrl?: string }>;
 };
-
-type CursorCloudEvent =
-  | { type: "cursor_cloud.init"; sessionId: string; agentId: string; runId?: string; model?: string }
-  | { type: "cursor_cloud.status"; status: string; message?: string }
-  | { type: "cursor_cloud.message"; message: SDKMessage }
-  | {
-      type: "cursor_cloud.result";
-      status: string;
-      result?: string;
-      model?: string;
-      durationMs?: number;
-      git?: unknown;
-      error?: string;
-    };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -62,12 +59,6 @@ function asStringEnvMap(value: unknown): Record<string, string> {
     }
   }
   return env;
-}
-
-function normalizeEnvType(raw: string): "cloud" | "pool" | "machine" {
-  const value = raw.trim().toLowerCase();
-  if (value === "pool" || value === "machine") return value;
-  return "cloud";
 }
 
 function trimNullable(value: unknown): string | null {
@@ -100,10 +91,9 @@ function formatRunError(err: unknown): string {
 }
 
 async function buildInstructionsPrefix(
-  config: Record<string, unknown>,
+  instructionsFilePath: string | undefined,
   onLog: AdapterExecutionContext["onLog"],
 ): Promise<{ prefix: string; notes: string[]; chars: number }> {
-  const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   if (!instructionsFilePath) {
     return { prefix: "", notes: [], chars: 0 };
   }
@@ -158,8 +148,8 @@ function readSession(params: Record<string, unknown> | null): CursorCloudSession
     trimNullable(record.sessionId);
   if (!cursorAgentId) return null;
   const latestRunId = trimNullable(record.latestRunId) ?? trimNullable(record.runId) ?? undefined;
-  const envType = trimNullable(record.envType);
-  const envName = trimNullable(record.envName);
+  const envType = trimNullable(record.envType) as CursorCloudSession["envType"];
+  const envName = trimNullable(record.envName) ?? undefined;
   const reposValue = Array.isArray(record.repos) ? record.repos : [];
   const repos = reposValue
     .map((entry) => asRecord(entry))
@@ -174,28 +164,10 @@ function readSession(params: Record<string, unknown> | null): CursorCloudSession
     cursorAgentId,
     ...(latestRunId ? { latestRunId } : {}),
     runtime: "cloud",
-    ...(envType ? { envType: normalizeEnvType(envType) } : {}),
+    ...(envType ? { envType } : {}),
     ...(envName ? { envName } : {}),
     repos,
   };
-}
-
-function sessionMatches(
-  session: CursorCloudSession | null,
-  envType: "cloud" | "pool" | "machine",
-  envName: string | null,
-  repos: Array<{ url: string; startingRef?: string; prUrl?: string }>,
-): boolean {
-  if (!session) return false;
-  if ((session.envType ?? "cloud") !== envType) return false;
-  if ((session.envName ?? null) !== envName) return false;
-  if (session.repos.length !== repos.length) return false;
-  return session.repos.every((repo, index) => {
-    const next = repos[index];
-    return repo.url === next.url
-      && (repo.startingRef ?? null) === (next.startingRef ?? null)
-      && (repo.prUrl ?? null) === (next.prUrl ?? null);
-  });
 }
 
 function buildAgentOptions(input: {
@@ -209,11 +181,17 @@ function buildAgentOptions(input: {
   autoCreatePR: boolean;
   skipReviewerRequest: boolean;
   envVars: Record<string, string>;
+  mcpServers?: AgentOptions["mcpServers"];
+  mode?: AgentOptions["mode"];
 }): AgentOptions {
   return {
     apiKey: input.apiKey,
     name: input.name,
     ...(input.model ? { model: input.model } : {}),
+    ...(input.mode ? { mode: input.mode } : {}),
+    ...(input.mcpServers && Object.keys(input.mcpServers).length > 0
+      ? { mcpServers: input.mcpServers }
+      : {}),
     cloud: {
       env: {
         type: input.envType,
@@ -228,23 +206,28 @@ function buildAgentOptions(input: {
   };
 }
 
-function eventLine(event: CursorCloudEvent): string {
-  return `${JSON.stringify(event)}\n`;
-}
-
-async function emitMessage(onLog: AdapterExecutionContext["onLog"], message: SDKMessage) {
-  await onLog("stdout", eventLine({ type: "cursor_cloud.message", message }));
-}
-
 async function emitStatus(onLog: AdapterExecutionContext["onLog"], status: string, message?: string) {
   await onLog("stdout", eventLine({ type: "cursor_cloud.status", status, ...(message ? { message } : {}) }));
 }
 
-async function streamRun(run: Run, onLog: AdapterExecutionContext["onLog"]) {
+async function streamRun(run: Run, agentId: string, apiKey: string, onLog: AdapterExecutionContext["onLog"]) {
   if (!run.supports("stream")) return;
-  for await (const message of run.stream()) {
-    await emitMessage(onLog, message);
-  }
+  await observeRunStream({
+    run,
+    agentId,
+    onLog,
+    getRunFallback: async () => {
+      const snapshot = await Agent.getRun(run.id, {
+        runtime: "cloud",
+        agentId,
+        apiKey,
+      });
+      return {
+        status: snapshot.status,
+        git: snapshot.git as { branches: Array<{ repoUrl: string; branch?: string; prUrl?: string }> } | undefined,
+      };
+    },
+  });
 }
 
 async function getAttachedRun(input: {
@@ -268,7 +251,8 @@ async function getAttachedRun(input: {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta } = ctx;
-  const envConfig = asStringEnvMap(config.env);
+  const adapterConfig = parseCursorCloudAdapterConfig(config);
+  const envConfig = asStringEnvMap(adapterConfig.env ?? config.env);
   const apiKey = asString(envConfig.CURSOR_API_KEY, "").trim();
   if (!apiKey) {
     return {
@@ -284,10 +268,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   const workspace = parseObject(context.paperclipWorkspace);
-  const repoUrl =
-    asString(config.repoUrl, "").trim() ||
-    asString(workspace.repoUrl, "").trim();
-  if (!repoUrl) {
+  const repos = resolveCursorCloudRepos(adapterConfig, workspace);
+  const primaryRepo = repos[0];
+  if (!primaryRepo?.url) {
     return {
       exitCode: 1,
       signal: null,
@@ -300,22 +283,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  const repoStartingRef =
-    trimNullable(config.repoStartingRef) ??
-    trimNullable(workspace.repoRef) ??
-    undefined;
-  const repoPullRequestUrl = trimNullable(config.repoPullRequestUrl) ?? undefined;
-  const envType = normalizeEnvType(asString(config.runtimeEnvType, "cloud"));
-  const envName = trimNullable(config.runtimeEnvName);
-  const workOnCurrentBranch = asBoolean(config.workOnCurrentBranch, false);
-  const autoCreatePR = asBoolean(config.autoCreatePR, false);
-  const skipReviewerRequest = asBoolean(config.skipReviewerRequest, false);
-  const model = toModelSelection(asString(config.model, ""));
-  const repos = [{
-    url: repoUrl,
-    ...(repoStartingRef ? { startingRef: repoStartingRef } : {}),
-    ...(repoPullRequestUrl ? { prUrl: repoPullRequestUrl } : {}),
-  }];
+  const { envType, envName } = resolveExecutionTarget(adapterConfig);
+  const workOnCurrentBranch = adapterConfig.workOnCurrentBranch ?? false;
+  const autoCreatePR = adapterConfig.autoCreatePR ?? false;
+  const skipReviewerRequest = adapterConfig.skipReviewerRequest ?? false;
+  const model = toModelSelection(adapterConfig.model ?? asString(config.model, ""));
+  const sendMode = adapterConfig.mode;
+  const mcpServers = resolveCursorCloudMcpServers({
+    config: adapterConfig,
+    resolvedSecrets: envConfig,
+  });
   const remoteEnv = buildCursorCloudWakeEnv(ctx, envConfig);
   const session = readSession(runtime.sessionParams) ?? (runtime.sessionId
     ? {
@@ -324,9 +301,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         repos,
       }
     : null);
-  const canReuseSession = sessionMatches(session, envType, envName, repos);
-  const promptTemplate = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
-  const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
+  const canReuseSession = Boolean(session) && sessionIdentityMatches(
+    {
+      cursorAgentId: session!.cursorAgentId,
+      envType: session!.envType ?? "cloud",
+      envName: session!.envName ?? null,
+      repos: session!.repos.length > 0 ? session!.repos : repos,
+    },
+    { envType, envName, repos },
+  );
+  const chatWake = normalizePaperclipChatWakePayload(context.paperclipChatWake);
+  const promptTemplate = adapterConfig.promptTemplate ?? asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
+  const bootstrapPromptTemplate = adapterConfig.bootstrapPromptTemplate ?? asString(config.bootstrapPromptTemplate, "");
   const templateData = {
     agentId: agent.id,
     companyId: agent.companyId,
@@ -336,8 +322,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   };
-  const instructions = await buildInstructionsPrefix(config, onLog);
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canReuseSession });
+  const instructions = await buildInstructionsPrefix(adapterConfig.instructionsFilePath, onLog);
+  const wakePrompt = chatWake
+    ? renderPaperclipChatWakePrompt(chatWake, { resumedSession: canReuseSession })
+    : renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: canReuseSession });
   const renderedBootstrapPrompt =
     !canReuseSession && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
@@ -368,15 +356,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     autoCreatePR,
     skipReviewerRequest,
     envVars: remoteEnv,
+    mcpServers,
+    mode: sendMode,
   });
+
+  const sendOptions = {
+    ...(model ? { model } : {}),
+    ...(sendMode ? { mode: sendMode } : {}),
+    ...(Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+  };
 
   const commandNotes = [
     ...instructions.notes,
     canReuseSession
       ? `Reusing Cursor cloud agent session ${session?.cursorAgentId ?? "unknown"}`
       : "Creating a new Cursor cloud agent session",
-    `Repository: ${repoUrl}${repoStartingRef ? ` @ ${repoStartingRef}` : ""}`,
+    `Repository: ${primaryRepo.url}${primaryRepo.startingRef ? ` @ ${primaryRepo.startingRef}` : ""}`,
     `Runtime target: ${envType}${envName ? ` (${envName})` : ""}`,
+    ...(chatWake ? ["Chat-mode wake (paperclipChatWake)"] : []),
+    ...(Object.keys(mcpServers).length > 0
+      ? [`MCP servers: ${Object.keys(mcpServers).join(", ")}`]
+      : []),
   ];
 
   if (onMeta) {
@@ -396,10 +396,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         cursorCloud: {
           envType,
           envName,
-          repoUrl,
-          repoStartingRef,
-          repoPullRequestUrl,
+          repoUrl: primaryRepo.url,
+          repoStartingRef: primaryRepo.startingRef,
+          repoPullRequestUrl: primaryRepo.prUrl,
           canReuseSession,
+          chatMode: Boolean(chatWake),
+          mcpServerNames: Object.keys(mcpServers),
         },
       },
     };
@@ -422,8 +424,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         agentId: attachedRun.agentId,
         runId: attachedRun.id,
         ...(model?.id ? { model: model.id } : {}),
-      }));
-      const priorStreamPromise = streamRun(attachedRun, onLog).catch((err) => {
+      } satisfies CursorCloudEvent));
+      const priorStreamPromise = streamRun(attachedRun, attachedRun.agentId, apiKey, onLog).catch((err) => {
         streamError = formatRunError(err);
       });
       if (attachedRun.supports("wait")) await attachedRun.wait();
@@ -439,19 +441,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     sdkAgent = canReuseSession && session
       ? await Agent.resume(session.cursorAgentId, agentOptions)
       : await Agent.create(agentOptions);
-    run = await sdkAgent.send(finalPrompt, {
-      ...(model ? { model } : {}),
-    });
+    run = await sdkAgent.send(finalPrompt, sendOptions);
     await onLog("stdout", eventLine({
       type: "cursor_cloud.init",
       sessionId: sdkAgent.agentId,
       agentId: sdkAgent.agentId,
       runId: run.id,
       ...(model?.id ? { model: model.id } : {}),
-    }));
+    } satisfies CursorCloudEvent));
     await emitStatus(onLog, "running", `Started Cursor run ${run.id}.`);
 
-    const streamPromise = streamRun(run, onLog).catch((err) => {
+    const streamPromise = streamRun(run, run.agentId, apiKey, onLog).catch((err) => {
       streamError = formatRunError(err);
     });
     const result = run.supports("wait")
@@ -467,10 +467,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await streamPromise;
 
     const hasGitEvidence = !!(result.git?.branches?.length);
-    const isPhantomSuccess = result.status === "finished" && !hasGitEvidence;
+    const isPhantomSuccess = result.status === "finished" && !hasGitEvidence && !chatWake;
     const phantomDiagnostic = isPhantomSuccess
       ? `Phantom success detected: Cursor run finished without evidence of code execution (no git branches/PRs). Result text: ${trimNullable(result.result)?.slice(0, 200) ?? "(empty)"}`
       : null;
+    const prUrl = flattenPrUrl(result.git);
 
     const modelId = result.model?.id ?? model?.id ?? null;
     await onLog("stdout", eventLine({
@@ -482,7 +483,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(result.git ? { git: result.git } : {}),
       ...(streamError ? { error: streamError } : {}),
       ...(isPhantomSuccess ? { phantomSuccess: true } : {}),
-    }));
+    } satisfies CursorCloudEvent));
 
     const nextSession: CursorCloudSession = {
       cursorAgentId: run.agentId,
@@ -495,6 +496,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const isError = result.status !== "finished" || isPhantomSuccess;
     let mappedUsage: ReturnType<typeof mapUsageToAdapterResult> | undefined;
     let cursorUsage: Awaited<ReturnType<typeof fetchCursorRunUsage>> = null;
+    let costUsd: number | null = null;
+    let costEstimated = false;
 
     if (result.status === "finished") {
       cursorUsage = await fetchCursorRunUsage({
@@ -504,6 +507,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
       if (cursorUsage) {
         mappedUsage = mapUsageToAdapterResult(cursorUsage);
+        const estimated = estimateCursorCloudCostUsd({ modelId, usage: cursorUsage });
+        if (estimated != null) {
+          costUsd = estimated;
+          costEstimated = true;
+        }
       } else {
         await onLog(
           "stderr",
@@ -524,7 +532,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       biller: "cursor",
       billingType: "api",
       model: modelId,
-      costUsd: null,
+      costUsd,
       ...(mappedUsage ? { usage: mappedUsage } : {}),
       summary: toSummary(result),
       resultJson: {
@@ -534,24 +542,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         envType,
         envName,
         repos,
+        ...(prUrl ? { prUrl } : {}),
         ...(result.result ? { result: result.result } : {}),
         ...(result.git ? { git: result.git } : {}),
         ...(typeof result.durationMs === "number" ? { durationMs: result.durationMs } : {}),
         ...(streamError ? { streamError } : {}),
         ...(cursorUsage ? { cursorUsage } : {}),
-        ...(result.status === "finished" ? { costEstimated: false } : {}),
+        ...(result.status === "finished"
+          ? {
+              costEstimated,
+              costSource: costEstimated ? "paperclip_pricing_fallback" : cursorUsage ? "cursor_usage_api" : "unknown",
+            }
+          : {}),
         ...(isPhantomSuccess ? { phantomSuccess: true, hasGitEvidence: false } : {}),
+        ...(chatWake ? { chatMode: true, threadId: chatWake.threadId } : {}),
       },
       clearSession: false,
     };
   } catch (err) {
+    const classified = classifyCursorApiError(err);
     const reason = formatRunError(err);
+    const isAgentBusy = classified.kind === "agent_busy";
     if (run) {
       await onLog("stdout", eventLine({
         type: "cursor_cloud.result",
         status: "error",
         error: reason,
-      }));
+      } satisfies CursorCloudEvent));
     }
     return {
       exitCode: 1,
@@ -571,6 +588,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(run ? { cursorRunId: run.id } : {}),
         ...(session?.cursorAgentId ? { cursorAgentId: session.cursorAgentId } : {}),
         error: reason,
+        ...(isAgentBusy ? { cursorAgentBusy: true, errorFamily: "cursor_agent_busy" } : {}),
       },
     };
   } finally {

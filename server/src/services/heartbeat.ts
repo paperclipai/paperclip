@@ -67,6 +67,11 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
+import { buildCursorCostMetadata, mergeCursorCostIntoResultJson } from "./cost-metadata.js";
+import {
+  cursorRunLogEventToRunEvent,
+  parseCursorCloudLogChunk,
+} from "./cursor-run-log-parser.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
@@ -9056,6 +9061,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             truncated: payloadChunk.length !== sanitizedChunk.length,
           },
         });
+
+        if (agent.adapterType === "cursor_cloud" && stream === "stdout") {
+          const parsedEvents = parseCursorCloudLogChunk(sanitizedChunk);
+          for (const parsed of parsedEvents) {
+            if (parsed.kind === "init") {
+              await db
+                .update(heartbeatRuns)
+                .set({
+                  externalRunId: parsed.runId,
+                  sessionIdAfter: parsed.sessionId,
+                  updatedAt: new Date(),
+                })
+                .where(eq(heartbeatRuns.id, run.id));
+            }
+            const runEvent = cursorRunLogEventToRunEvent(parsed);
+            if (runEvent) {
+              await appendRunEvent(currentRun, seq++, runEvent);
+            }
+          }
+        }
       };
       if (runScopedMentionedSkillKeys.length > 0) {
         await onLog(
@@ -9385,21 +9410,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             } as Record<string, unknown>)
           : null;
 
+      const cursorCostMetadata =
+        agent.adapterType === "cursor_cloud" ? buildCursorCostMetadata(adapterResult) : null;
       const persistedResultJson = mergeHeartbeatRunResultJson(
         mergeRunStopMetadataForAgent(agent, outcome, {
-          resultJson: mergeModelProfileRunMetadata(
-            mergeAdapterRecoveryMetadata({
-              resultJson: adapterResult.resultJson ?? null,
-              errorFamily: adapterResult.errorFamily ?? null,
-              retryNotBefore: adapterResult.retryNotBefore ?? null,
-            }),
-            modelProfileApplication,
+          resultJson: mergeCursorCostIntoResultJson(
+            mergeModelProfileRunMetadata(
+              mergeAdapterRecoveryMetadata({
+                resultJson: adapterResult.resultJson ?? null,
+                errorFamily: adapterResult.errorFamily ?? null,
+                retryNotBefore: adapterResult.retryNotBefore ?? null,
+              }),
+              modelProfileApplication,
+            ),
+            cursorCostMetadata,
           ),
           errorCode: runErrorCode,
           errorMessage: runErrorMessage,
         }),
         adapterResult.summary ?? null,
       );
+
+      const externalRunId =
+        agent.adapterType === "cursor_cloud"
+          ? (typeof adapterResult.resultJson?.cursorRunId === "string"
+            ? adapterResult.resultJson.cursorRunId
+            : undefined)
+          : undefined;
 
       let persistedRun = await setRunStatus(run.id, status, {
         finishedAt: new Date(),
@@ -9410,6 +9447,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         usageJson,
         resultJson: persistedResultJson,
         sessionIdAfter: nextSessionState.displayId ?? nextSessionState.legacySessionId,
+        ...(externalRunId ? { externalRunId } : {}),
         stdoutExcerpt,
         stderrExcerpt,
         logBytes: logSummary?.bytes,
@@ -9493,6 +9531,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
+        } else if (
+          outcome === "failed"
+          && parseObject(livenessRun.resultJson).cursorAgentBusy === true
+        ) {
+          await scheduleBoundedRetryForRun(livenessRun, agent, {
+            retryReason: "cursor_agent_busy",
+            wakeReason: "cursor_agent_busy_retry",
+            maxAttempts: 3,
+            delayMs: 30_000,
+          });
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }

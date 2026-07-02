@@ -41,11 +41,26 @@ GET /v1/agents/{agentId}/usage?runId={runId}
 
 Usage fields are mapped into `AdapterExecutionResult.usage` and recorded in Paperclip **cost-events** when token counts are present.
 
-**`costUsd` may be `null`** until the Paperclip pricing catalog has a matching Cursor model entry. Token usage is still persisted.
+**`costUsd`** is populated when token usage is available:
+
+1. **Primary:** Cursor usage API token counts (no USD from Cursor).
+2. **Fallback (RF-P2-03):** Paperclip heuristic pricing via `estimateCursorCloudCostUsd()` — sets `costEstimated: true` and `costSource: "paperclip_pricing_fallback"` in `resultJson`.
+
+Token usage is always persisted in cost-events when present. Estimated USD is **not** authoritative Cursor billing.
 
 Costs on the Cursor account are **separate** from Paperclip budget controls.
 
-## Session strategy
+## Chat-mode (paperclipChatWake)
+
+When heartbeat context has `wakeMode: "chat"`, the server injects `paperclipChatWake` into adapter context. This adapter renders it via `renderPaperclipChatWakePrompt()` (same contract as `opencode_local`). Chat runs skip phantom-success git checks because they may legitimately produce no PR.
+
+## MCP servers
+
+Configure `mcpServers` in adapter config (HTTP or stdio). SSE and `mcp-remote` transports are rejected. MCP config is **re-passed on every `send()`** because Cursor does not persist MCP across resume.
+
+## Structured run logs
+
+Stdout emits JSON lines: `cursor_cloud.init`, `.git`, `.tool`, `.result`. Paperclip heartbeat parses these into `run_events` (`git.pr_opened`, `cursor.tool`, etc.).
 
 Paperclip reuses the durable Cursor agent across heartbeats when the repo/runtime identity still matches. Each heartbeat creates a new Cursor run on that agent.
 
