@@ -66,6 +66,10 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
+import {
+  runBedrockCredentialPreflight,
+  DEFAULT_BEDROCK_PREFLIGHT_TIMEOUT_SEC,
+} from "./bedrock-credentials.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -1008,7 +1012,74 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
+  // Pre-flight Bedrock credential gate (MAS-348). When Bedrock auth is active,
+  // probe credential validity BEFORE spawning the CLI. An expired token would
+  // otherwise yield a zero-work spawn that exits `403 ... security token ...
+  // expired`, burning the heartbeat. On a positive expiry detection we skip the
+  // spawn and return a transient_upstream defer so the recovery rails snooze the
+  // run. The probe fails open: any non-expiry outcome proceeds to spawn.
+  const buildBedrockExpiredDeferResult = (detail: string | undefined): AdapterExecutionResult => {
+    const backoffSec = Math.max(1, asNumber(config.bedrockPreflightBackoffSec, 180));
+    const retryNotBeforeIso = new Date(Date.now() + backoffSec * 1000).toISOString();
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorMessage: "Bedrock credential expired - deferring run",
+      errorCode: "claude_transient_upstream",
+      errorFamily: "transient_upstream",
+      retryNotBefore: retryNotBeforeIso,
+      billingType,
+      biller: "aws_bedrock",
+      provider: "anthropic",
+      resultJson: {
+        errorFamily: "transient_upstream",
+        errorCode: "claude_transient_upstream",
+        retryNotBefore: retryNotBeforeIso,
+        transientRetryNotBefore: retryNotBeforeIso,
+        bedrockCredentialExpired: true,
+        detail: detail ?? "expired security token",
+      },
+    };
+  };
+
   try {
+    if (isBedrockAuth(effectiveEnv)) {
+      const preflight = await runBedrockCredentialPreflight({
+        runId,
+        target: runtimeExecutionTarget,
+        cwd,
+        env,
+        timeoutSec: asNumber(config.bedrockPreflightTimeoutSec, DEFAULT_BEDROCK_PREFLIGHT_TIMEOUT_SEC),
+      });
+      if (preflight.status === "expired") {
+        const deferResult = buildBedrockExpiredDeferResult(preflight.detail);
+        const retryNotBeforeIso = deferResult.retryNotBefore ?? "";
+        // At-most-one-alert-per-lapse: deferred runs no longer spawn, so a single
+        // clear, greppable marker per deferred heartbeat is the whole alert.
+        await onLog(
+          "stderr",
+          `[paperclip] BEDROCK_CREDENTIAL_EXPIRED: pre-flight STS probe detected an expired Bedrock/AWS security token; deferring run until ${retryNotBeforeIso} without spawning the Claude CLI. Detail: ${preflight.detail ?? "expired security token"}\n`,
+        );
+        if (onMeta) {
+          await onMeta({
+            adapterType: "claude_local",
+            command: resolvedCommand,
+            cwd: effectiveExecutionCwd,
+            commandArgs: [],
+            commandNotes: [
+              `Skipped Claude CLI spawn: pre-flight detected expired Bedrock credentials. Deferring until ${retryNotBeforeIso}.`,
+            ],
+            env: loggedEnv,
+            prompt,
+            promptMetrics,
+            context,
+          });
+        }
+        return deferResult;
+      }
+    }
+
     const initial = await runAttempt(sessionId ?? null);
     const sessionErrorKind =
       sessionId &&
