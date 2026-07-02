@@ -9,6 +9,7 @@ import type {
 } from "@assistant-ui/react";
 import type { Agent, IssueComment } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
+import { resolveCursorAgentIdForRun } from "./cursor-cloud-session";
 import { formatAssigneeUserLabel } from "./assignees";
 import { isOperatorInterruptedRun } from "./interrupt-handoff";
 import {
@@ -329,6 +330,22 @@ function compactIssueChatTranscript(
   return compactedEntries;
 }
 
+function cursorRunSessionMetadata(input: {
+  adapterType?: string | null;
+  resultJson?: Record<string, unknown> | null;
+  transcript?: readonly IssueChatTranscriptEntry[];
+}): Record<string, string> {
+  const cursorAgentId = resolveCursorAgentIdForRun(input);
+  const metadata: Record<string, string> = {};
+  if (typeof input.adapterType === "string" && input.adapterType.length > 0) {
+    metadata.adapterType = input.adapterType;
+  }
+  if (cursorAgentId) {
+    metadata.cursorAgentId = cursorAgentId;
+  }
+  return metadata;
+}
+
 function createAssistantMetadata(custom: Record<string, unknown>) {
   return {
     unstable_state: null,
@@ -646,6 +663,10 @@ function createHistoricalRunMessage(run: IssueChatLinkedRun, agentMap?: Map<stri
         runAgentName: agentName,
         runStatus: run.status,
         runOperatorInterrupted: isOperatorInterruptedRun(run.resultJson, run.errorCode),
+        ...cursorRunSessionMetadata({
+          adapterType: run.adapterType,
+          resultJson: run.resultJson,
+        }),
       },
     },
   };
@@ -687,6 +708,11 @@ function createHistoricalTranscriptMessage(args: {
       waitingText,
       chainOfThoughtLabel: runDurationLabel(run),
       chainOfThoughtSegments: segments,
+      ...cursorRunSessionMetadata({
+        adapterType: run.adapterType,
+        resultJson: run.resultJson,
+        transcript,
+      }),
     }),
   };
   return message;
@@ -884,6 +910,10 @@ function createLiveRunMessage(args: {
       waitingText,
       chainOfThoughtLabel: runDurationLabel(run),
       chainOfThoughtSegments: segments,
+      ...cursorRunSessionMetadata({
+        adapterType: run.adapterType,
+        transcript,
+      }),
     }),
   };
   return message;

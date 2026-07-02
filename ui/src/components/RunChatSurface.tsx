@@ -39,6 +39,7 @@ export const RunChatSurface = memo(function RunChatSurface({
             runId: run.id,
             status: run.status,
             agentId: run.agentId,
+            adapterType: run.adapterType,
             agentName: run.agentName,
             createdAt: run.createdAt,
             startedAt: run.startedAt,
