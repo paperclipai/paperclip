@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { BetterAuthOptions } from "better-auth";
 import { getCookies } from "better-auth/cookies";
 import {
+  assertAuthSecretAllowedForDeployment,
   buildBetterAuthAdvancedOptions,
   deriveAuthCookiePrefix,
   deriveAuthTrustedOrigins,
@@ -165,6 +166,18 @@ describe("Better Auth cookie scoping", () => {
       "https://board.example.test:3101",
       "http://board.example.test:3101",
     ]));
+  });
+
+  it("rejects the well-known development secret in authenticated mode", () => {
+    expect(() => assertAuthSecretAllowedForDeployment("paperclip-dev-secret", "authenticated"))
+      .toThrow(/well-known development value/);
+    expect(() => assertAuthSecretAllowedForDeployment("  paperclip-dev-secret  ", "authenticated"))
+      .toThrow(/well-known development value/);
+  });
+
+  it("allows the development secret outside authenticated mode and unique secrets everywhere", () => {
+    expect(() => assertAuthSecretAllowedForDeployment("paperclip-dev-secret", "local_trusted")).not.toThrow();
+    expect(() => assertAuthSecretAllowedForDeployment("k3Fh9tW2mQx7ZpVbN4rL8sJdA6cYeGuH", "authenticated")).not.toThrow();
   });
 
   it("prefers an explicit resolved listen port over the configured port", () => {
