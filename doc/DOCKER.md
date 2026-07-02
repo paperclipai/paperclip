@@ -117,6 +117,16 @@ services:
 - bootstrap invite URL defaults
 - hostname allowlist defaults (hostname extracted from URL)
 
+For fresh `authenticated/private` Docker or appliance-style installs, the first
+admin can now be claimed entirely from the browser after sign-in. Open the
+Paperclip URL, sign in or create an account, then choose `Claim this instance`
+on the setup screen. This browser claim is disabled for `authenticated/public`;
+public deployments should run the high-entropy CLI invite fallback instead:
+
+```sh
+pnpm paperclipai auth bootstrap-ceo
+```
+
 Granular overrides remain available if needed (`PAPERCLIP_AUTH_PUBLIC_BASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_TRUSTED_ORIGINS`, `PAPERCLIP_ALLOWED_HOSTNAMES`).
 
 Set `PAPERCLIP_ALLOWED_HOSTNAMES` explicitly only when you need additional hostnames beyond the public URL host (for example Tailscale/LAN aliases or multiple private hostnames).

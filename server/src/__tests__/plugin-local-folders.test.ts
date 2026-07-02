@@ -219,6 +219,14 @@ describe("plugin local folders", () => {
     expect(leftovers.filter((name) => name.includes(".paperclip-"))).toEqual([]);
   });
 
+  it("creates missing nested parent directories for atomic writes", async () => {
+    const root = await makeRoot();
+
+    await writePluginLocalFolderTextAtomic(root, "cases/active/smoke/README.md", "hello");
+
+    await expect(readPluginLocalFolderText(root, "cases/active/smoke/README.md")).resolves.toBe("hello");
+  });
+
   it("returns the real folder key after deleting a file", async () => {
     const root = await makeRoot();
     await fs.writeFile(path.join(root, "stale.md"), "delete me", "utf8");

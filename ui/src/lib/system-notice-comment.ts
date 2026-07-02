@@ -37,11 +37,11 @@ function mapMetadataRow(
     case "issue_link": {
       const identifier = row.identifier ?? null;
       if (!identifier) {
-        return { kind: "text", label: metadataRowText(row, "Issue"), value: row.title ?? "unknown" };
+        return { kind: "text", label: metadataRowText(row, "Task"), value: row.title ?? "unknown" };
       }
       return {
         kind: "issue",
-        label: metadataRowText(row, "Issue"),
+        label: metadataRowText(row, "Task"),
         identifier,
         href: `/issues/${identifier}`,
         title: row.title ?? undefined,

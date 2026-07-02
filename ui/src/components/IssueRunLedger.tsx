@@ -16,6 +16,8 @@ import { cn, relativeTime } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data";
 import { describeRunRetryState } from "../lib/runRetryState";
+import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
+import { SourceResolvedFoldBadge } from "./SourceResolvedFoldBadge";
 
 type IssueRunLedgerProps = {
   issueId: string;
@@ -73,7 +75,7 @@ const LIVENESS_COPY: Record<RunLivenessState, LivenessCopy> = {
   completed: {
     label: "Completed",
     tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-    description: "Issue reached a terminal state.",
+    description: "Task reached a terminal state.",
   },
   advanced: {
     label: "Advanced",
@@ -93,7 +95,7 @@ const LIVENESS_COPY: Record<RunLivenessState, LivenessCopy> = {
   blocked: {
     label: "Blocked",
     tone: "border-yellow-500/30 bg-yellow-500/10 text-yellow-700 dark:text-yellow-300",
-    description: "Run or issue declared a blocker.",
+    description: "Run or task declared a blocker.",
   },
   failed: {
     label: "Failed",
@@ -533,7 +535,7 @@ export function IssueRunLedgerContent({
   }, [activityEvents, canRenderActivityEvents, ledgerRuns]);
 
   return (
-    <section className="space-y-3" aria-label="Issue run ledger">
+    <section className="space-y-3" aria-label="Task run ledger">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <h3 className="text-sm font-medium text-muted-foreground">Run ledger</h3>
@@ -676,8 +678,8 @@ export function IssueRunLedgerContent({
       {feedItems.length === 0 ? (
         <div className="rounded-md border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
           {renderActivityEvent
-            ? "Runs and activity will appear here once this issue has history."
-            : "Historical runs without liveness metadata will appear here once linked to this issue."}
+            ? "Runs and activity will appear here once this task has history."
+            : "Historical runs without liveness metadata will appear here once linked to this task."}
         </div>
       ) : (
         <div className="space-y-1.5">
@@ -693,6 +695,7 @@ export function IssueRunLedgerContent({
             const continuation = continuationLabel(run);
             const retryState = describeRunRetryState(run);
             const agentName = compactAgentName(run, agentMap);
+            const sourceResolvedFold = readSourceResolvedWatchdogFold(run.resultJson);
             return (
               <article
                 key={`run:${run.runId}`}
@@ -773,6 +776,7 @@ export function IssueRunLedgerContent({
                       </span>
                     );
                   })()}
+                  {sourceResolvedFold ? <SourceResolvedFoldBadge /> : null}
                   <span className="ml-auto shrink-0">{relativeTime(item.timestamp)}</span>
                 </div>
 

@@ -1,10 +1,15 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import {
   asBoolean,
+  asNumber,
   asString,
   asStringArray,
   parseObject,
@@ -17,6 +22,8 @@ import {
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
+  prepareAdapterExecutionTargetRuntime,
+  overrideAdapterExecutionTargetRemoteCwd,
 } from "@paperclipai/adapter-utils/execution-target";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 import { parseOpenCodeJsonl } from "./parse.js";
@@ -66,6 +73,7 @@ export async function testEnvironment(
   const command = asString(config.command, "opencode");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
@@ -118,7 +126,9 @@ export async function testEnvironment(
 
   // Prevent OpenCode from writing an opencode.json into the working directory.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config, targetIsRemote });
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  const localRuntimeConfigHome =
+    preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   if (asBoolean(config.dangerouslySkipPermissions, true)) {
     checks.push({
       code: "opencode_headless_permissions_enabled",
@@ -126,7 +136,43 @@ export async function testEnvironment(
       message: "Headless OpenCode external-directory permissions are auto-approved for unattended runs.",
     });
   }
+  let restoreWorkspace: (() => Promise<void>) | null = null;
+  // Declared outside `try` so a failure inside `prepareAdapterExecutionTargetRuntime`
+  // still has the path available for cleanup in `finally` — otherwise the
+  // `fs.mkdtemp` directory leaks on the early-throw path.
+  let preparedRuntimeWorkspaceLocalDir: string | null = null;
   try {
+    let runtimeTarget: AdapterExecutionTarget | null = target ?? null;
+    let runtimeCwd = cwd;
+    if (targetIsRemote) {
+      preparedRuntimeWorkspaceLocalDir = await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-opencode-envtest-${runId}-`));
+      const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
+        runId,
+        target,
+        adapterKey: "opencode",
+        workspaceLocalDir: preparedRuntimeWorkspaceLocalDir,
+        workspaceRemoteDir: cwd,
+        installCommand: SANDBOX_INSTALL_COMMAND,
+        detectCommand: command,
+        assets: localRuntimeConfigHome
+          ? [{
+            key: "xdgConfig",
+            localDir: localRuntimeConfigHome,
+          }]
+          : [],
+      });
+      restoreWorkspace = async () => {
+        await preparedExecutionTargetRuntime.restoreWorkspace().catch(() => {});
+        if (preparedRuntimeWorkspaceLocalDir) {
+          await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
+        }
+      };
+      runtimeCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? runtimeCwd;
+      runtimeTarget = overrideAdapterExecutionTargetRemoteCwd(target ?? null, runtimeCwd) ?? null;
+      if (localRuntimeConfigHome && preparedExecutionTargetRuntime.assetDirs.xdgConfig) {
+        preparedRuntimeConfig.env.XDG_CONFIG_HOME = preparedExecutionTargetRuntime.assetDirs.xdgConfig;
+      }
+    }
     const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env }));
 
     const cwdInvalid = checks.some((check) => check.code === "opencode_cwd_invalid");
@@ -143,12 +189,12 @@ export async function testEnvironment(
         target,
         adapterKey: "opencode",
         installCommand: SANDBOX_INSTALL_COMMAND,
-    detectCommand: command,
+        detectCommand: command,
         env,
       });
       if (installCheck) checks.push(installCheck);
       try {
-        await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
+        await ensureAdapterExecutionTargetCommandResolvable(command, runtimeTarget, runtimeCwd, runtimeEnv);
         checks.push({
           code: "opencode_command_resolvable",
           level: "info",
@@ -290,16 +336,24 @@ export async function testEnvironment(
       if (variant) args.push("--variant", variant);
       if (extraArgs.length > 0) args.push(...extraArgs);
 
+      // Sandbox bridges still add cold-start and transport overhead, but the
+      // standard-2 Cloudflare tier now probes quickly enough that 90s keeps
+      // useful headroom without letting slow hangs linger.
+      const helloProbeTimeoutSec = Math.max(
+        1,
+        asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 60),
+      );
+
       try {
         const probe = await runAdapterExecutionTargetProcess(
           runId,
-          target,
+          runtimeTarget,
           command,
           args,
           {
-            cwd,
+            cwd: runtimeCwd,
             env: runtimeEnv,
-            timeoutSec: 60,
+            timeoutSec: helloProbeTimeoutSec,
             graceSec: 5,
             stdin: "Respond with hello.",
             onLog: async () => {},
@@ -369,6 +423,12 @@ export async function testEnvironment(
       }
     }
   } finally {
+    await restoreWorkspace?.();
+    if (!restoreWorkspace && preparedRuntimeWorkspaceLocalDir) {
+      // Reached when `prepareAdapterExecutionTargetRuntime` threw before
+      // assigning `restoreWorkspace`: clean up the temp dir directly.
+      await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
+    }
     await preparedRuntimeConfig.cleanup();
   }
 

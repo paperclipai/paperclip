@@ -3,6 +3,8 @@ import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
   createIssueSchema,
+  issueBlockedInboxAttentionSchema,
+  resolveIssueRecoveryActionSchema,
   respondIssueThreadInteractionSchema,
   suggestedTaskDraftSchema,
   updateIssueSchema,
@@ -44,6 +46,89 @@ describe("issue validators", () => {
     });
 
     expect(parsed.comment).toBe("Done\n\n- Verified the route");
+  });
+
+  it("allows false-positive recovery resolutions to atomically restore the source issue status", () => {
+    expect(
+      resolveIssueRecoveryActionSchema.parse({
+        outcome: "false_positive",
+        sourceIssueStatus: "in_review",
+      }),
+    ).toMatchObject({
+      outcome: "false_positive",
+      sourceIssueStatus: "in_review",
+    });
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "false_positive",
+        sourceIssueStatus: "blocked",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "false_positive",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("allows restored recovery resolutions to return the source issue to todo", () => {
+    expect(
+      resolveIssueRecoveryActionSchema.parse({
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+      }),
+    ).toMatchObject({
+      outcome: "restored",
+      sourceIssueStatus: "todo",
+    });
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "false_positive",
+        sourceIssueStatus: "todo",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("allows cancelled recovery resolutions to atomically restore the source issue status", () => {
+    expect(
+      resolveIssueRecoveryActionSchema.parse({
+        outcome: "cancelled",
+        sourceIssueStatus: "in_review",
+      }),
+    ).toMatchObject({
+      outcome: "cancelled",
+      sourceIssueStatus: "in_review",
+    });
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "cancelled",
+        sourceIssueStatus: "blocked",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "cancelled",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects recovery outcomes that are not supported by the source-scoped resolution endpoint", () => {
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "delegated",
+      }).success,
+    ).toBe(false);
+
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "escalated",
+      }).success,
+    ).toBe(false);
   });
 
   it("normalizes escaped line breaks in issue comment bodies", () => {
@@ -142,15 +227,66 @@ describe("issue validators", () => {
     }).status).toBe("backlog");
   });
 
-  it("defaults issue work mode to standard and accepts planning", () => {
+  it("defaults issue work mode to standard and accepts ask and planning", () => {
     expect(createIssueSchema.parse({ title: "Plan first" }).workMode).toBe("standard");
+    expect(createIssueSchema.parse({ title: "Ask first", workMode: "ask" }).workMode).toBe("ask");
     expect(createIssueSchema.parse({ title: "Plan first", workMode: "planning" }).workMode).toBe("planning");
+    expect(updateIssueSchema.parse({ workMode: "ask" }).workMode).toBe("ask");
     expect(updateIssueSchema.parse({ workMode: "planning" }).workMode).toBe("planning");
+    expect(suggestedTaskDraftSchema.parse({
+      clientKey: "ask-child",
+      title: "Ask child",
+      workMode: "ask",
+    }).workMode).toBe("ask");
     expect(suggestedTaskDraftSchema.parse({
       clientKey: "planning-child",
       title: "Plan child",
       workMode: "planning",
     }).workMode).toBe("planning");
+  });
+
+  it("validates blocked inbox attention payloads and requires redacted secret fields", () => {
+    const parsed = issueBlockedInboxAttentionSchema.parse({
+      kind: "blocked",
+      state: "needs_attention",
+      reason: "blocked_by_unassigned_issue",
+      severity: "critical",
+      stoppedSinceAt: "2026-05-09T12:00:00.000Z",
+      owner: { type: "unknown", agentId: null, userId: null, label: null },
+      action: { label: "Assign blocker", detail: "Assign the leaf blocker." },
+      sourceIssue: {
+        id: "11111111-1111-4111-8111-111111111111",
+        identifier: "PAP-1",
+        title: "Blocked source",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      },
+      leafIssue: {
+        id: "22222222-2222-4222-8222-222222222222",
+        identifier: "PAP-2",
+        title: "Unassigned leaf",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      },
+      recoveryIssue: null,
+      approvalId: null,
+      interactionId: null,
+      sampleIssueIdentifier: "PAP-2",
+      redaction: {
+        externalDetailsRedacted: false,
+        secretFieldsOmitted: true,
+      },
+    });
+
+    expect(parsed.redaction.secretFieldsOmitted).toBe(true);
+    expect(issueBlockedInboxAttentionSchema.safeParse({
+      ...parsed,
+      redaction: { externalDetailsRedacted: false, secretFieldsOmitted: false },
+    }).success).toBe(false);
   });
 
   it("rejects unknown issue work modes", () => {

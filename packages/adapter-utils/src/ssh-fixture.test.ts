@@ -11,6 +11,7 @@ import {
   readSshEnvLabFixtureStatus,
   restoreWorkspaceFromSshExecution,
   runSshCommand,
+  syncDirectoryFromSsh,
   syncDirectoryToSsh,
   startSshEnvLabFixture,
   stopSshEnvLabFixture,
@@ -52,6 +53,31 @@ async function startSshEnvLabFixtureOrSkip(statePath: string, label: string) {
     console.warn(`Skipping ${label}: ${sshEnvLabUnsupportedReason}`);
     return null;
   }
+}
+
+interface ParsedProgressLine {
+  raw: string;
+  percent: number | null;
+  doneMb: number | null;
+  totalMb: number | null;
+}
+
+function parseProgressLine(line: string): ParsedProgressLine {
+  const trimmed = line.trimEnd();
+  const percentMatch = trimmed.match(/:\s*(\d+)%\s*\(([\d.]+)\/([\d.]+) MB\)$/);
+  if (percentMatch) {
+    return {
+      raw: trimmed,
+      percent: Number.parseInt(percentMatch[1]!, 10),
+      doneMb: Number.parseFloat(percentMatch[2]!),
+      totalMb: Number.parseFloat(percentMatch[3]!),
+    };
+  }
+  const mbMatch = trimmed.match(/:\s*([\d.]+) MB$/);
+  if (mbMatch) {
+    return { raw: trimmed, percent: null, doneMb: Number.parseFloat(mbMatch[1]!), totalMb: null };
+  }
+  return { raw: trimmed, percent: null, doneMb: null, totalMb: null };
 }
 
 describe("ssh env-lab fixture", () => {
@@ -197,6 +223,142 @@ describe("ssh env-lab fixture", () => {
 
     expect(result.stdout).toContain("hello from paperclip");
     expect(result.stdout).not.toContain("appledouble-present");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("reports throttled upload progress with a clamped percent and terminal 100% line", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const localDir = path.join(rootDir, "local-overlay");
+
+    await mkdir(localDir, { recursive: true });
+    // Multiple files large enough that tar emits several pipe chunks, so the
+    // byte counter crosses several step boundaries before the stream closes.
+    for (let index = 0; index < 4; index += 1) {
+      await writeFile(path.join(localDir, `blob-${index}.bin`), Buffer.alloc(256 * 1024, index + 1));
+    }
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH upload progress test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const remoteDir = path.posix.join(started.workspaceDir, "overlay-progress");
+
+    const lines: ParsedProgressLine[] = [];
+    await syncDirectoryToSsh({
+      spec: { ...config, remoteCwd: started.workspaceDir },
+      localDir,
+      remoteDir,
+      onProgress: (line) => {
+        lines.push(parseProgressLine(line));
+      },
+      progressLabel: "workspace",
+    });
+
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      expect(line.raw).toContain("Syncing workspace to ssh");
+    }
+    // Monotonically increasing byte counts.
+    const doneSeries = lines.map((line) => line.doneMb ?? 0);
+    for (let index = 1; index < doneSeries.length; index += 1) {
+      expect(doneSeries[index]!).toBeGreaterThanOrEqual(doneSeries[index - 1]!);
+    }
+    // Percent clamped to <= 99% on every line emitted before the stream closed.
+    for (const line of lines.slice(0, -1)) {
+      if (line.percent != null) expect(line.percent).toBeLessThanOrEqual(99);
+    }
+    // Terminal completion line is 100% with matching done/total.
+    const last = lines.at(-1)!;
+    expect(last.percent).toBe(100);
+    expect(last.doneMb).toBe(last.totalMb);
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("reports restore progress with a terminal completion line", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const localDir = path.join(rootDir, "local-overlay");
+    const restoreDir = path.join(rootDir, "restore-target");
+
+    await mkdir(localDir, { recursive: true });
+    await mkdir(restoreDir, { recursive: true });
+    for (let index = 0; index < 4; index += 1) {
+      await writeFile(path.join(localDir, `blob-${index}.bin`), Buffer.alloc(256 * 1024, index + 1));
+    }
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH restore progress test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+    const remoteDir = path.posix.join(started.workspaceDir, "restore-source");
+
+    await syncDirectoryToSsh({ spec, localDir, remoteDir });
+
+    const lines: ParsedProgressLine[] = [];
+    await syncDirectoryFromSsh({
+      spec,
+      remoteDir,
+      localDir: restoreDir,
+      onProgress: (line) => {
+        lines.push(parseProgressLine(line));
+      },
+      progressLabel: "workspace",
+    });
+
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      expect(line.raw).toContain("Restoring workspace from ssh");
+    }
+    // Terminal completion line: either an exact 100% (probe succeeded) or a
+    // final MB-received line (probe unavailable). Either is a valid terminal.
+    const last = lines.at(-1)!;
+    expect(last.percent === 100 || (last.percent === null && last.doneMb !== null)).toBe(true);
+    // The restored files round-tripped through the byte-counting transport.
+    await expect(readFile(path.join(restoreDir, "blob-0.bin"))).resolves.toEqual(
+      Buffer.alloc(256 * 1024, 1),
+    );
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("reports exact git-history import percentage from the known bundle size", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const localRepo = path.join(rootDir, "local-workspace");
+
+    await mkdir(localRepo, { recursive: true });
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["checkout", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, "tracked.bin"), Buffer.alloc(256 * 1024, 7));
+    await git(localRepo, ["add", "tracked.bin"]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH git import progress test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+
+    const lines: ParsedProgressLine[] = [];
+    await prepareWorkspaceForSshExecution({
+      spec,
+      localDir: localRepo,
+      remoteDir: started.workspaceDir,
+      onProgress: (line) => {
+        lines.push(parseProgressLine(line));
+      },
+    });
+
+    const importLines = lines.filter((line) => line.raw.includes("Importing git history to ssh"));
+    expect(importLines.length).toBeGreaterThan(0);
+    // Known bundle size -> exact percentage with no "workspace" label.
+    for (const line of importLines) {
+      expect(line.raw).not.toContain("workspace");
+      expect(line.percent).not.toBeNull();
+    }
+    const lastImport = importLines.at(-1)!;
+    expect(lastImport.percent).toBe(100);
+    expect(lastImport.doneMb).toBe(lastImport.totalMb);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("can dereference local symlinks while syncing to the remote fixture", async () => {
@@ -449,6 +611,68 @@ describe("ssh env-lab fixture", () => {
 
     expect(await git(localRepo, ["log", "-1", "--pretty=%s"])).toBe("remote update");
     await expect(readFile(path.join(localRepo, "tracked.txt"), "utf8")).resolves.toBe("dirty remote\n");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("propagates remote commits to the local worktree with no git remote configured (no-remote-git contract)", async () => {
+    // Locks in the architectural contract documented in
+    // packages/adapter-utils/README.md and packages/adapters/AUTHORING.md:
+    // the local execution-workspace cwd is the only persistence boundary
+    // across runs. No adapter may depend on a git remote for cross-run state.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const localRepo = path.join(rootDir, "local-workspace");
+
+    await mkdir(localRepo, { recursive: true });
+    await git(localRepo, ["init"]);
+    await git(localRepo, ["checkout", "-b", "main"]);
+    await git(localRepo, ["config", "user.name", "Paperclip Test"]);
+    await git(localRepo, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(localRepo, "tracked.txt"), "base\n", "utf8");
+    await git(localRepo, ["add", "tracked.txt"]);
+    await git(localRepo, ["commit", "-m", "initial"]);
+
+    // Assert there is no git remote configured before we begin, and verify
+    // that no point in the round-trip introduces one. `git remote` returns an
+    // empty string when no remotes exist (and exit code 0).
+    expect(await git(localRepo, ["remote"])).toBe("");
+
+    const started = await startSshEnvLabFixtureOrSkip(
+      statePath,
+      "no-remote-git contract test",
+    );
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = {
+      ...config,
+      remoteCwd: started.workspaceDir,
+    } as const;
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec,
+      runId: "run-no-remote",
+      adapterKey: "test-adapter",
+      workspaceLocalDir: localRepo,
+    });
+
+    // Remote commit lands a deliverable that must show up locally via
+    // sync-back alone — no `git push`, no fetch from any origin.
+    await runSshCommand(
+      config,
+      `cd ${JSON.stringify(prepared.workspaceRemoteDir)} && git config user.name "Paperclip SSH" && git config user.email "ssh@paperclip.dev" && printf "deliverable\\n" > tracked.txt && git add tracked.txt && git commit -m "remote-only commit" >/dev/null`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    await prepared.restoreWorkspace();
+
+    expect(await git(localRepo, ["log", "-1", "--pretty=%s"])).toBe(
+      "remote-only commit",
+    );
+    expect(await readFile(path.join(localRepo, "tracked.txt"), "utf8")).toBe(
+      "deliverable\n",
+    );
+    // Final assertion: still no git remote — restore did not silently add one.
+    expect(await git(localRepo, ["remote"])).toBe("");
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("merges concurrent remote commits through the managed runtime restore path", async () => {

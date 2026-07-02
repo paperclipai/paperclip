@@ -72,14 +72,14 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     return app;
   }
 
-  function boardActor(companyId: string): Express.Request["actor"] {
+  function boardActor(companyId: string, source: "session" | "local_implicit" = "session"): Express.Request["actor"] {
     return {
       type: "board",
       userId: "board-user",
       companyIds: [companyId],
       memberships: [{ companyId, membershipRole: "admin", status: "active" }],
       isInstanceAdmin: false,
-      source: "session",
+      source,
     };
   }
 
@@ -208,7 +208,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
   it("surfaces the current scheduled retry in the issue read model", async () => {
     const { companyId, issueId, agentId, sourceRunId, retryRunId, scheduledRetryAt } = await seedIssueWithRetry();
 
-    const res = await request(createApp(boardActor(companyId))).get(`/api/issues/${issueId}`);
+    const res = await request(createApp(boardActor(companyId, "local_implicit"))).get(`/api/issues/${issueId}`);
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.scheduledRetry).toMatchObject({

@@ -15,6 +15,8 @@ const mockIssuesApi = vi.hoisted(() => ({
   listDocumentRevisions: vi.fn(),
   restoreDocumentRevision: vi.fn(),
   upsertDocument: vi.fn(),
+  lockDocument: vi.fn(),
+  unlockDocument: vi.fn(),
   deleteDocument: vi.fn(),
   getDocument: vi.fn(),
 }));
@@ -41,8 +43,22 @@ vi.mock("@/lib/router", () => ({
 }));
 
 vi.mock("./MarkdownBody", () => ({
-  MarkdownBody: ({ children, className }: { children: string; className?: string }) => (
-    <div className={className}>{children}</div>
+  MarkdownBody: ({
+    children,
+    className,
+    externalReferences,
+  }: {
+    children: string;
+    className?: string;
+    externalReferences?: Record<string, unknown>;
+  }) => (
+    <div
+      className={className}
+      data-testid="markdown-body"
+      data-external-reference-keys={externalReferences ? Object.keys(externalReferences).join(",") : ""}
+    >
+      {children}
+    </div>
   ),
 }));
 
@@ -178,6 +194,9 @@ function createIssueDocument(overrides: Partial<IssueDocument> = {}): IssueDocum
     createdByUserId: "user-1",
     updatedByAgentId: null,
     updatedByUserId: "user-1",
+    lockedAt: null,
+    lockedByAgentId: null,
+    lockedByUserId: null,
     createdAt: new Date("2026-03-31T12:00:00.000Z"),
     updatedAt: new Date("2026-03-31T12:05:00.000Z"),
     ...overrides,
@@ -299,6 +318,105 @@ describe("IssueDocumentsSection", () => {
     expect(container.textContent).toContain("# Plan");
     expect(container.textContent).not.toContain("# Handoff");
     expect(container.querySelector(`#document-${ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY}`)).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("locks documents from the document header action", async () => {
+    const unlockedDocument = createIssueDocument({
+      body: "Draftable plan body",
+      lockedAt: null,
+    });
+    const lockedDocument = createIssueDocument({
+      body: "Draftable plan body",
+      lockedAt: new Date("2026-03-31T12:06:00.000Z"),
+      lockedByUserId: "user-1",
+      updatedAt: new Date("2026-03-31T12:06:00.000Z"),
+    });
+    const issue = createIssue();
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+        mutations: {
+          retry: false,
+        },
+      },
+    });
+
+    mockIssuesApi.listDocuments
+      .mockResolvedValueOnce([unlockedDocument])
+      .mockResolvedValue([lockedDocument]);
+    mockIssuesApi.lockDocument.mockResolvedValue(lockedDocument);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection issue={issue} canDeleteDocuments={false} canManageDocumentLocks />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const lockButton = container.querySelector('button[title="Lock document"]');
+    expect(lockButton).toBeTruthy();
+
+    await act(async () => {
+      lockButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.lockDocument).toHaveBeenCalledWith("issue-1", "plan");
+    expect(container.querySelector('button[title="Unlock document"]')).toBeTruthy();
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("hides direct edit and delete actions for locked documents", async () => {
+    const issue = createIssue();
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+        mutations: {
+          retry: false,
+        },
+      },
+    });
+
+    mockIssuesApi.listDocuments.mockResolvedValue([
+      createIssueDocument({
+        body: "Locked plan body",
+        lockedAt: new Date("2026-03-31T12:06:00.000Z"),
+        lockedByUserId: "user-1",
+      }),
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection issue={issue} canDeleteDocuments canManageDocumentLocks />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    expect(container.textContent).toContain("Locked plan body");
+    expect(container.textContent).not.toContain("Edit document");
+    expect(container.textContent).not.toContain("Delete document");
+    expect(container.querySelector('button[title="Unlock document"]')).toBeTruthy();
 
     await act(async () => {
       root.unmount();
@@ -573,6 +691,61 @@ describe("IssueDocumentsSection", () => {
 
     expect(container.textContent).toContain("Loaded plan body");
     expect(container.textContent).not.toContain("Markdown body");
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("forwards externalReferences to the rendered document body so URL decoration applies", async () => {
+    const issue = createIssue();
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    mockIssuesApi.listDocuments.mockResolvedValue([
+      createIssueDocument({
+        body: "Linked work: https://github.com/example/repo/pull/99",
+      }),
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection
+            issue={issue}
+            canDeleteDocuments={false}
+            externalReferences={{
+              "https://github.com/example/repo/pull/99": {
+                providerKey: "github",
+                objectType: "pull_request",
+                statusCategory: "open",
+                liveness: "fresh",
+                statusLabel: "Open",
+                displayTitle: "PR #99",
+              },
+            }}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const markdownBodies = Array.from(
+      container.querySelectorAll('[data-testid="markdown-body"]'),
+    ) as HTMLElement[];
+    expect(markdownBodies.length).toBeGreaterThan(0);
+    const rendered = markdownBodies.find((element) =>
+      (element.textContent ?? "").includes("Linked work"),
+    );
+    expect(rendered?.getAttribute("data-external-reference-keys"))
+      .toContain("https://github.com/example/repo/pull/99");
 
     await act(async () => {
       root.unmount();

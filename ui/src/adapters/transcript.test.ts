@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildTranscript, type RunLogChunk } from "./transcript";
+import { grokLocalUIAdapter } from "./grok-local";
 import type { UIAdapterModule } from "./types";
 
 describe("buildTranscript", () => {
@@ -180,6 +181,22 @@ describe("buildTranscript", () => {
         isError: true,
         errors: [],
       },
+    ]);
+  });
+
+  it("coalesces grok_local streaming text fragments into one assistant entry", () => {
+    const entries = buildTranscript(
+      [
+        { ts, stream: "stdout", chunk: `${JSON.stringify({ type: "text", data: "Hello " })}\n` },
+        { ts, stream: "stdout", chunk: `${JSON.stringify({ type: "text", data: "world" })}\n` },
+        { ts, stream: "stdout", chunk: `${JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-1" })}\n` },
+      ],
+      grokLocalUIAdapter,
+    );
+
+    expect(entries).toEqual([
+      { kind: "assistant", ts, text: "Hello world", delta: true },
+      { kind: "system", ts, text: "stop_reason=EndTurn session=sess-1" },
     ]);
   });
 });

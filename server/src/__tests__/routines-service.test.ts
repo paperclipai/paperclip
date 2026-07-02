@@ -5,9 +5,12 @@ import {
   activityLog,
   agents,
   companies,
+  companySecretBindings,
   companySecrets,
   companySecretVersions,
   createDb,
+  documentRevisions,
+  documents,
   executionWorkspaces,
   heartbeatRuns,
   instanceSettings,
@@ -16,9 +19,11 @@ import {
   issues,
   projectWorkspaces,
   projects,
+  routineDocuments,
   routineRuns,
   routines,
   routineTriggers,
+  secretAccessEvents,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -28,6 +33,7 @@ import { issueService } from "../services/issues.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import * as providerRegistry from "../secrets/provider-registry.ts";
 import { routineService } from "../services/routines.ts";
+import { secretService } from "../services/secrets.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -57,9 +63,14 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(activityLog);
     await db.delete(issueInboxArchives);
     await db.delete(issueReadStates);
+    await db.delete(secretAccessEvents);
+    await db.delete(companySecretBindings);
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(routines);
+    await db.delete(routineDocuments);
+    await db.delete(documents);
+    await db.delete(documentRevisions);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(heartbeatRuns);
@@ -331,6 +342,109 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(revisions[1]?.snapshot.routine.description).toBe("Run the frog routine");
   });
 
+  it("persists explicit variables on PATCH even when not referenced in the title/description template", async () => {
+    const { routine, svc } = await seedFixture();
+    // The fixture routine title ("ascii frog") has no {{variable}} placeholders.
+    // Previously, syncRoutineVariablesWithTemplate would silently drop all variables
+    // because none were referenced in the template.
+    const updated = await svc.update(
+      routine.id,
+      {
+        variables: [
+          { name: "shadow", type: "text", label: null, defaultValue: "true", required: false, options: [] },
+          { name: "shadow_issue_id", type: "text", label: null, defaultValue: "abc-123", required: false, options: [] },
+        ],
+      },
+      {},
+    );
+    expect(updated?.variables).toHaveLength(2);
+    expect(updated?.variables.map((v) => v.name)).toEqual(["shadow", "shadow_issue_id"]);
+    expect(updated?.variables.find((v) => v.name === "shadow")?.defaultValue).toBe("true");
+  });
+
+  it("stores routine env in revisions, syncs routine secret bindings, and stamps runs with the dispatch revision", async () => {
+    const { agentId, companyId, projectId, svc } = await seedFixture();
+    const secrets = secretService(db);
+    const secret = await secrets.create(companyId, {
+      name: `routine-api-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "secret-value",
+    });
+
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "secret routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "always_enqueue",
+        catchUpPolicy: "skip_missed",
+        env: {
+          ROUTINE_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+          ROUTINE_PLAIN: { type: "plain", value: "plain-value" },
+        },
+      },
+      {},
+    );
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, routine.id));
+    expect(bindings).toMatchObject([
+      {
+        companyId,
+        secretId: secret.id,
+        targetType: "routine",
+        configPath: "env.ROUTINE_API_KEY",
+      },
+    ]);
+
+    const [initialRevision] = await svc.listRevisions(routine.id);
+    expect(initialRevision?.snapshot.routine.env).toEqual(routine.env);
+
+    await db.delete(companySecretBindings).where(eq(companySecretBindings.targetId, routine.id));
+    const repaired = await svc.update(routine.id, { env: routine.env }, {});
+    expect(repaired).not.toBeNull();
+    const repairedBindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(eq(companySecretBindings.targetId, routine.id));
+    expect(repairedBindings).toMatchObject([
+      {
+        companyId,
+        secretId: secret.id,
+        targetType: "routine",
+        configPath: "env.ROUTINE_API_KEY",
+      },
+    ]);
+
+    const currentRoutine = repaired ?? routine;
+    const runBefore = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(runBefore.routineRevisionId).toBe(currentRoutine.latestRevisionId);
+
+    const updated = await svc.update(
+      routine.id,
+      {
+        env: {
+          ROUTINE_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+          ROUTINE_PLAIN: { type: "plain", value: "changed" },
+        },
+      },
+      {},
+    );
+    expect(updated?.latestRevisionNumber).toBe(currentRoutine.latestRevisionNumber + 1);
+
+    const runAfter = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(runAfter.routineRevisionId).toBe(updated?.latestRevisionId);
+    expect(runAfter.dispatchFingerprint).not.toBe(runBefore.dispatchFingerprint);
+  });
+
   it("rejects stale routine baseRevisionId updates", async () => {
     const { routine, svc } = await seedFixture();
     const updated = await svc.update(routine.id, { description: "new description" }, {});
@@ -389,6 +503,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       replayWindowSec: 300,
     }, {});
     await svc.deleteTrigger(created.trigger.id, {});
+    await expect(db.select().from(companySecrets).where(eq(companySecrets.id, created.trigger.secretId!))).resolves.toHaveLength(0);
+    await expect(db.select().from(companySecretBindings).where(eq(companySecretBindings.secretId, created.trigger.secretId!))).resolves.toHaveLength(0);
 
     const restored = await svc.restoreRevision(routine.id, created.revision.id, {});
 
@@ -403,6 +519,26 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(restoredTrigger?.secretId).toBeTruthy();
     expect(restoredTrigger?.publicId).toBeTruthy();
     expect(restoredTrigger?.publicId).not.toBe(created.trigger.publicId);
+  });
+
+  it("persists custom schedule cron expressions exactly", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const cronExpression = "0 8-18/2 * * 1-5";
+
+    const created = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "Business hours",
+      cronExpression,
+      timezone: "UTC",
+    }, {});
+
+    expect(created.trigger.cronExpression).toBe(cronExpression);
+
+    const storedTrigger = await svc.getTrigger(created.trigger.id);
+    expect(storedTrigger?.cronExpression).toBe(cronExpression);
+
+    const [listed] = await svc.list(companyId);
+    expect(listed?.triggers[0]?.cronExpression).toBe(cronExpression);
   });
 
   it("blocks agents from restoring routine revisions assigned to another agent", async () => {
@@ -449,10 +585,83 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ).rejects.toMatchObject({
       status: 409,
       message: "Cannot assign routines to terminated agents",
+      details: {
+        code: "agent_not_assignable",
+        reason: "assignee_terminated",
+        assigneeAgentId: agentId,
+      },
     });
     await expect(svc.get(routine.id)).resolves.toMatchObject({
       description: "revision 2",
       latestRevisionNumber: 2,
+    });
+  });
+
+  it("blocks routine reassignment to agents under terminated managers", async () => {
+    const { agentId, companyId, routine, svc } = await seedFixture();
+    const terminatedManagerId = randomUUID();
+    const blockedAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: terminatedManagerId,
+        companyId,
+        name: "TerminatedManager",
+        role: "manager",
+        status: "terminated",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: blockedAgentId,
+        companyId,
+        name: "BlockedRoutineCoder",
+        role: "engineer",
+        status: "active",
+        reportsTo: terminatedManagerId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await expect(svc.update(routine.id, {
+      assigneeAgentId: blockedAgentId,
+    }, { userId: "board-user" })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "agent_not_assignable",
+        reason: "ancestor_terminated",
+        assigneeAgentId: blockedAgentId,
+        invalidAncestorAgentId: terminatedManagerId,
+      },
+    });
+
+    await expect(svc.get(routine.id)).resolves.toMatchObject({
+      assigneeAgentId: agentId,
+    });
+  });
+
+  it("blocks manual routine runs when the persisted assignee is no longer assignable", async () => {
+    const { agentId, routine, svc } = await seedFixture();
+    await db
+      .update(agents)
+      .set({ status: "terminated" })
+      .where(eq(agents.id, agentId));
+
+    await expect(svc.runRoutine(routine.id, {
+      source: "manual",
+      payload: null,
+      variables: null,
+    }, { userId: "board-user" })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "agent_not_assignable",
+        reason: "assignee_terminated",
+        assigneeAgentId: agentId,
+      },
     });
   });
 
@@ -475,6 +684,8 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     const deleted = await svc.deleteTrigger(created.trigger.id, {});
     expect(deleted.revision?.revisionNumber).toBe(5);
+    await expect(db.select().from(companySecrets).where(eq(companySecrets.id, created.trigger.secretId!))).resolves.toHaveLength(0);
+    await expect(db.select().from(companySecretBindings).where(eq(companySecretBindings.secretId, created.trigger.secretId!))).resolves.toHaveLength(0);
 
     const revisions = await svc.listRevisions(routine.id);
     const serialized = JSON.stringify(revisions.map((revision) => revision.snapshot));
@@ -882,6 +1093,63 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
   });
 
+  it("infers capital-Date variables, preserves builtin date, and validates submitted date values", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const dateRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "date check {{startDate}} on {{date}}",
+        description: "Range {{startDate}} to {{endDate}}",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    expect(dateRoutine.variables).toEqual([
+      { name: "startDate", label: null, type: "date", defaultValue: null, required: true, options: [] },
+      { name: "endDate", label: null, type: "date", defaultValue: null, required: true, options: [] },
+    ]);
+
+    await expect(
+      svc.runRoutine(dateRoutine.id, {
+        source: "manual",
+        variables: { startDate: "2024-02-30", endDate: "2024-03-01" },
+      }),
+    ).rejects.toThrow(/valid YYYY-MM-DD date/i);
+
+    const run = await svc.runRoutine(dateRoutine.id, {
+      source: "manual",
+      variables: { startDate: "2024-02-29", endDate: "2024-03-01" },
+    });
+
+    const storedIssue = await db
+      .select({ title: issues.title, description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    const storedRun = await db
+      .select({ triggerPayload: routineRuns.triggerPayload })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, run.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(storedIssue?.title).toMatch(/^date check 2024-02-29 on \d{4}-\d{2}-\d{2}$/);
+    expect(storedIssue?.description).toBe("Range 2024-02-29 to 2024-03-01");
+    expect(storedRun?.triggerPayload).toEqual({
+      variables: {
+        startDate: "2024-02-29",
+        endDate: "2024-03-01",
+      },
+    });
+  });
+
   it("attaches the selected execution workspace to manually triggered routine issues", async () => {
     const { companyId, projectId, routine, svc } = await seedFixture();
     const projectWorkspaceId = randomUUID();
@@ -1175,6 +1443,32 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ).rejects.toThrow(/require defaults for required variables/i);
   });
 
+  it("rejects invalid date defaults before persisting routine variables", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+
+    await expect(
+      svc.create(
+        companyId,
+        {
+          projectId,
+          goalId: null,
+          parentIssueId: null,
+          title: "date check {{startDate}}",
+          description: null,
+          assigneeAgentId: agentId,
+          priority: "medium",
+          status: "active",
+          concurrencyPolicy: "coalesce_if_active",
+          catchUpPolicy: "skip_missed",
+          variables: [
+            { name: "startDate", label: null, type: "date", defaultValue: "2024-02-30", required: true, options: [] },
+          ],
+        },
+        {},
+      ),
+    ).rejects.toThrow(/valid YYYY-MM-DD date/i);
+  });
+
   it("serializes concurrent dispatches until the first execution issue is linked to a queued run", async () => {
     const { routine, svc } = await seedFixture({
       wakeup: async (wakeupAgentId, wakeupOpts) => {
@@ -1421,5 +1715,89 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
+  });
+
+  it("suppresses scheduled ticks while the routine project is paused, then resumes when unpaused", async () => {
+    const { companyId, projectId, routine, svc } = await seedFixture();
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        label: "daily",
+        cronExpression: "0 0 * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+
+    const pastDue = new Date("2020-01-01T00:00:00.000Z");
+
+    // Pause the project and make the schedule trigger due.
+    await db
+      .update(projects)
+      .set({ pausedAt: new Date(), pauseReason: "manual pause" })
+      .where(eq(projects.id, projectId));
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: pastDue })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const pausedResult = await svc.tickScheduledTriggers(new Date());
+    expect(pausedResult.triggered).toBe(0);
+
+    // No execution issue should be created while paused.
+    const issuesWhilePaused = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    expect(issuesWhilePaused).toHaveLength(0);
+
+    // One skipped routine run with pause-specific reason and no linked issue.
+    const skippedRuns = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id));
+    expect(skippedRuns).toHaveLength(1);
+    expect(skippedRuns[0]?.status).toBe("skipped");
+    expect(skippedRuns[0]?.source).toBe("schedule");
+    expect(skippedRuns[0]?.failureReason).toBe("paused");
+    expect(skippedRuns[0]?.linkedIssueId).toBeNull();
+    expect(skippedRuns[0]?.completedAt).not.toBeNull();
+
+    // Trigger advanced past the paused firing and audit reflects the pause skip.
+    const pausedTrigger = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, trigger.id))
+      .then((rows) => rows[0]);
+    expect(pausedTrigger?.nextRunAt).not.toBeNull();
+    expect(pausedTrigger!.nextRunAt!.getTime()).toBeGreaterThan(pastDue.getTime());
+    expect(pausedTrigger?.lastResult).toMatch(/paused/i);
+
+    // Unpause and make the trigger due again; a normal tick now creates an issue.
+    await db
+      .update(projects)
+      .set({ pausedAt: null, pauseReason: null })
+      .where(eq(projects.id, projectId));
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: pastDue })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const resumedResult = await svc.tickScheduledTriggers(new Date());
+    expect(resumedResult.triggered).toBe(1);
+
+    const issuesAfterResume = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    expect(issuesAfterResume).toHaveLength(1);
+
+    const runsAfterResume = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id));
+    expect(runsAfterResume).toHaveLength(2);
+    expect(runsAfterResume.some((run) => run.status === "issue_created")).toBe(true);
   });
 });

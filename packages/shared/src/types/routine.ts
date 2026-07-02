@@ -8,6 +8,26 @@ import type {
   RoutineTriggerSigningMode,
   RoutineVariableType,
 } from "../constants.js";
+import type { EnvBinding } from "./secrets.js";
+import type { ExecutionWorkspaceMode, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
+
+export interface RoutineDescriptionDocument {
+  id: string;
+  companyId: string;
+  routineId: string;
+  key: "description";
+  title: string | null;
+  format: "markdown";
+  body: string;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  updatedByAgentId: string | null;
+  updatedByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
 
 export interface RoutineProjectSummary {
   id: string;
@@ -45,6 +65,8 @@ export interface RoutineVariable {
   options: string[];
 }
 
+export type RoutineEnvConfig = Record<string, EnvBinding>;
+
 export interface Routine {
   id: string;
   companyId: string;
@@ -58,7 +80,10 @@ export interface Routine {
   status: string;
   concurrencyPolicy: string;
   catchUpPolicy: string;
+  originKind?: string;
+  originId?: string | null;
   variables: RoutineVariable[];
+  env?: RoutineEnvConfig | null;
   latestRevisionId: string | null;
   latestRevisionNumber: number;
   createdByAgentId: string | null;
@@ -97,7 +122,10 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   status: RoutineStatus;
   concurrencyPolicy: RoutineConcurrencyPolicy;
   catchUpPolicy: RoutineCatchUpPolicy;
+  originKind?: string;
+  originId?: string | null;
   variables: RoutineVariable[];
+  env: RoutineEnvConfig | null;
 }
 
 export interface RoutineRevisionSnapshotTriggerV1 {
@@ -169,6 +197,7 @@ export interface RoutineRun {
   source: string;
   status: string;
   triggeredAt: Date;
+  routineRevisionId?: string | null;
   idempotencyKey: string | null;
   triggerPayload: Record<string, unknown> | null;
   dispatchFingerprint: string | null;
@@ -189,6 +218,7 @@ export interface RoutineDetail extends Routine {
   project: RoutineProjectSummary | null;
   assignee: RoutineAgentSummary | null;
   parentIssue: RoutineIssueSummary | null;
+  descriptionDocument?: RoutineDescriptionDocument | null;
   triggers: RoutineTrigger[];
   recentRuns: RoutineRunSummary[];
   activeIssue: RoutineIssueSummary | null;
@@ -203,6 +233,14 @@ export interface RoutineExecutionIssueOrigin {
   kind: Extract<IssueOriginKind, "routine_execution">;
   routineId: string;
   runId: string | null;
+}
+
+export interface RoutineRunWorkspaceContext {
+  projectId?: string | null;
+  projectWorkspaceId?: string | null;
+  executionWorkspaceId?: string | null;
+  executionWorkspacePreference?: ExecutionWorkspaceMode | null;
+  executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
 }
 
 export interface RoutineListItem extends Routine {
