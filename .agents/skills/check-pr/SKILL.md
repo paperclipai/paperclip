@@ -141,7 +141,16 @@ Then inspect check-runs for that commit and require a completed Greptile run:
 GREPTILE_CHECKS=$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA/check-runs?per_page=100" \
   --jq '[.check_runs[] | select(.name | test("greptile"; "i"))]')
 
-FRESH_GREPTILE_COMPLETED=$(echo "$GREPTILE_CHECKS" | jq '[.[] | select(.status == "completed")] | length')
+# A run only counts as a valid fresh pass when it has completed AND concluded cleanly.
+# GitHub check-run conclusions: success, neutral, skipped, failure, timed_out,
+# cancelled, action_required, stale. Treat success/neutral/skipped as clean;
+# everything else (especially failure and action_required) must block.
+FRESH_GREPTILE_COMPLETED=$(echo "$GREPTILE_CHECKS" \
+  | jq '[.[] | select(.status == "completed")] | length')
+FRESH_GREPTILE_CLEAN=$(echo "$GREPTILE_CHECKS" \
+  | jq '[.[] | select(.status == "completed" and (.conclusion | IN("success","neutral","skipped")))] | length')
+FRESH_GREPTILE_BLOCKING=$(echo "$GREPTILE_CHECKS" \
+  | jq '[.[] | select(.status == "completed" and ((.conclusion | IN("success","neutral","skipped")) | not))] | length')
 
 if [ "$FRESH_GREPTILE_COMPLETED" = "0" ]; then
   echo "Blocked: no completed Greptile review/check is tied to current PR head $HEAD_SHA."
@@ -149,11 +158,41 @@ if [ "$FRESH_GREPTILE_COMPLETED" = "0" ]; then
   echo "Suggested trigger: gh pr comment <PR_NUMBER> --body \"@greptile review\""
   exit 1
 fi
+
+if [ "$FRESH_GREPTILE_BLOCKING" != "0" ] || [ "$FRESH_GREPTILE_CLEAN" = "0" ]; then
+  echo "Blocked: Greptile completed on head $HEAD_SHA but did not conclude clean"
+  echo "(conclusion was failure/action_required/timed_out/cancelled/stale, or no clean run exists)."
+  echo "Address the findings, push, and re-run Greptile until it concludes success/clean on the new head."
+  exit 1
+fi
 ```
 
 If a Greptile check exists for the current head but is still pending or in progress, wait for it with the same polling pattern used by `greploop` rather than proceeding from older review material. If no Greptile check appears for the current head after a reasonable wait, report the PR as blocked on a fresh Greptile review for `HEAD_SHA` and stop. Do not mark the check complete from PR comments, PR reviews, or Greptile summaries that cannot be associated with the current head SHA.
 
-For GitLab or Perforce installations with Greptile integration, apply the same rule using the platform's current MR/CL SHA and Greptile pipeline/job/webhook artifact. A completed Greptile result for a different SHA is stale and must block completion.
+For GitLab installations with Greptile integration, apply the same freshness rule against the MR's current head SHA:
+
+```bash
+# 1. Get the MR's current head SHA
+MR_SHA=$(glab mr view <MR_IID> --output json | jq -r '.sha // .diff_refs.head_sha')
+
+# 2. Find pipeline(s) for that EXACT sha, then the Greptile job within each, and require success
+for PIPELINE_ID in $(glab api "projects/:fullpath/merge_requests/<MR_IID>/pipelines" \
+  | jq -r --arg sha "$MR_SHA" '.[] | select(.sha == $sha) | .id'); do
+  glab api "projects/:fullpath/pipelines/$PIPELINE_ID/jobs" \
+    | jq --arg sha "$MR_SHA" '[.[] | select(.name | test("greptile"; "i"))
+        | {name, status, pipeline_sha: $sha}]'
+done
+
+# 3. If Greptile integrates via MR notes instead of a CI job, require the newest
+#    Greptile note to reference the current head sha (reject stale/missing):
+glab api "projects/:fullpath/merge_requests/<MR_IID>/discussions?per_page=100" \
+  | jq --arg sha "$MR_SHA" '[.[].notes[]
+      | select(.author.username | test("greptile"; "i"))]'
+```
+
+Block completion if, for `MR_SHA`, there is (a) no Greptile job or note at all (missing), (b) the newest Greptile job/note is tied to a different sha (stale), or (c) the Greptile job status is not `success`. A completed Greptile result for a different SHA is stale and must block completion.
+
+For Perforce installations with Greptile integration, apply the same rule using the CL's current shelved-revision identity and the Greptile webhook/review artifact tied to it; a Greptile result for an earlier shelf is stale and must block completion.
 
 ### 5. Analyze the PR/MR
 
