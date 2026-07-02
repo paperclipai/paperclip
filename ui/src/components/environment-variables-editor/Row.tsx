@@ -443,7 +443,20 @@ export function EnvironmentVariableRow({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={openStoreAsSecret}>Store as secret…</DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => {
+                  // Defer to the next macrotask so this menu fully closes (and
+                  // Radix returns focus to the ⋯ trigger, which sits outside the
+                  // row's Popover) before we open the anchored store-as-secret
+                  // popover. Opening synchronously lets the menu's focus-return
+                  // land as a `focusOutside` on the just-opened popover, which
+                  // Radix would immediately dismiss — the same nested open-while-
+                  // closing race as the picker's + Create item (PAP-12476/12477).
+                  window.setTimeout(openStoreAsSecret, 0);
+                }}
+              >
+                Store as secret…
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         ) : null}

@@ -64,6 +64,14 @@ async function flush() {
   flushSync(() => {});
 }
 
+// Radix DropdownMenu opens/selects on the pointerdown→pointerup sequence, not a
+// bare click; drive both so jsdom exercises the real dismissal-layer path.
+function pointerClick(el: Element) {
+  el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 }));
+  el.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true, button: 0 }));
+  (el as HTMLElement).click();
+}
+
 describe("EnvironmentVariablesEditor", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
@@ -229,6 +237,44 @@ describe("EnvironmentVariablesEditor", () => {
     expect(
       document.querySelector('input[aria-label="Secret name"]'),
       "create-secret name field should render",
+    ).toBeTruthy();
+  });
+
+  it("opens the store-as-secret popover from the ⋯ overflow menu (PAP-12477)", async () => {
+    // Regression: the ⋯ overflow → "Store as secret…" item is the same nested
+    // shape as the picker's + Create item — a DropdownMenu whose onSelect opens
+    // the row's anchored Popover. The menu closing returns focus to its trigger
+    // (which lives outside the Popover), which must not land as a focusOutside
+    // that dismisses the just-opened popover. A non-sensitive text row surfaces
+    // the ⋯ menu (the sensitive-value inline button is a separate path).
+    render(
+      <EnvironmentVariablesEditor
+        value={{ API_BASE_URL: { type: "plain", value: "https://example.com" } }}
+        secrets={secrets}
+        onChange={() => {}}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    // The value is non-sensitive, so no inline Store-as-secret button — only ⋯.
+    expect(container.querySelector('button[title^="This value looks sensitive"]')).toBeNull();
+    const overflow = container.querySelector<HTMLButtonElement>('button[aria-label="More actions"]');
+    expect(overflow, "⋯ overflow menu should render for a non-sensitive text row").toBeTruthy();
+    pointerClick(overflow!);
+    await flush();
+    const storeItem = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((el) =>
+      el.textContent?.includes("Store as secret"),
+    );
+    expect(storeItem, "Store as secret… menu item should be present").toBeTruthy();
+    pointerClick(storeItem!);
+    await flush();
+    // The store popover is open (heading rendered) and stays open — it must not
+    // be dismissed by the menu's focus-return.
+    expect(document.body.textContent, "store-as-secret popover should open").toContain(
+      "Store value as secret",
+    );
+    expect(
+      document.querySelector('input[aria-label="Secret value"]'),
+      "store-as-secret value field should render",
     ).toBeTruthy();
   });
 
