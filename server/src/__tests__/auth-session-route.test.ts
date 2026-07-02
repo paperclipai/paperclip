@@ -33,6 +33,50 @@ describe("actorMiddleware authenticated session profile", () => {
     else process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = originalCloudTenantToken;
   });
 
+  it("keeps a request run id only after its heartbeat run row is visible", async () => {
+    const app = express();
+    const db = {
+      select: vi.fn(() => createSelectChain([{ id: "run-visible" }])),
+    } as any;
+    app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
+    app.get("/actor", (req, res) => {
+      res.json(req.actor);
+    });
+
+    const res = await request(app)
+      .get("/actor")
+      .set("x-paperclip-run-id", "run-visible");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "board",
+      source: "local_implicit",
+      runId: "run-visible",
+    });
+  });
+
+  it("drops a request run id when no committed heartbeat run row becomes visible", async () => {
+    const app = express();
+    const db = {
+      select: vi.fn(() => createSelectChain([])),
+    } as any;
+    app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
+    app.get("/actor", (req, res) => {
+      res.json(req.actor);
+    });
+
+    const res = await request(app)
+      .get("/actor")
+      .set("x-paperclip-run-id", "missing-run");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "board",
+      source: "local_implicit",
+    });
+    expect(res.body.runId).toBeUndefined();
+  });
+
   it("preserves the signed-in user name and email on the board actor", async () => {
     const app = express();
     app.use(
