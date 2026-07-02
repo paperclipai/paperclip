@@ -3019,9 +3019,12 @@ export function issueRoutes(
   async function resolveIssueRefListFilter(
     companyId: string,
     paramName: "parentId" | "descendantOf",
-    raw: string | undefined,
+    raw: unknown,
   ): Promise<IssueRefListFilterResolution> {
     if (raw === undefined) return { ok: true };
+    if (typeof raw !== "string") {
+      return { ok: false, error: `${paramName} must be an issue UUID or identifier` };
+    }
     const trimmed = raw.trim();
     if (trimmed.length === 0) return { ok: true };
     if (isUuidLike(trimmed)) return { ok: true, id: trimmed };
@@ -3146,7 +3149,7 @@ export function issueRoutes(
     const parentRef = await resolveIssueRefListFilter(
       companyId,
       "parentId",
-      req.query.parentId as string | undefined,
+      req.query.parentId,
     );
     if (!parentRef.ok) {
       res.status(422).json({ error: parentRef.error });
@@ -3155,7 +3158,7 @@ export function issueRoutes(
     const descendantOfRef = await resolveIssueRefListFilter(
       companyId,
       "descendantOf",
-      req.query.descendantOf as string | undefined,
+      req.query.descendantOf,
     );
     if (!descendantOfRef.ok) {
       res.status(422).json({ error: descendantOfRef.error });
@@ -3275,7 +3278,7 @@ export function issueRoutes(
     const parentRef = await resolveIssueRefListFilter(
       companyId,
       "parentId",
-      req.query.parentId as string | undefined,
+      req.query.parentId,
     );
     if (!parentRef.ok) {
       res.status(422).json({ error: parentRef.error });
@@ -3284,7 +3287,7 @@ export function issueRoutes(
     const descendantOfRef = await resolveIssueRefListFilter(
       companyId,
       "descendantOf",
-      req.query.descendantOf as string | undefined,
+      req.query.descendantOf,
     );
     if (!descendantOfRef.ok) {
       res.status(422).json({ error: descendantOfRef.error });

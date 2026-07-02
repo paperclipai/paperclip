@@ -176,6 +176,60 @@ describeEmbeddedPostgres("issue list routes parentId/descendantOf filters", () =
     });
   });
 
+  it("resolves an issue identifier descendantOf filter to that issue's descendants", async () => {
+    const { companyId, prefix } = await seedCompany();
+    const { parentId, childId } = await seedParentWithChild(companyId, prefix);
+    const grandchildId = randomUUID();
+    await db.insert(issues).values({
+      id: grandchildId,
+      companyId,
+      identifier: `${prefix}-4`,
+      title: "Grandchild issue",
+      status: "todo",
+      priority: "medium",
+      parentId: childId,
+    });
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ descendantOf: `${prefix}-1`, limit: "20" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const ids = res.body.map((issue: { id: string }) => issue.id).sort();
+    expect(ids).toEqual([childId, grandchildId].sort());
+    expect(ids).not.toContain(parentId);
+  });
+
+  it("returns 422 for repeated parentId query params instead of crashing", async () => {
+    const { companyId, prefix } = await seedCompany();
+    const { parentId } = await seedParentWithChild(companyId, prefix);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query(`parentId=${parentId}&parentId=${prefix}-1&limit=20`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body).toMatchObject({
+      error: "parentId must be an issue UUID or identifier",
+    });
+  });
+
+  it("does not leak another company's issues through an identifier parentId filter", async () => {
+    const { companyId, prefix } = await seedCompany();
+    await seedParentWithChild(companyId, prefix);
+    const { companyId: otherCompanyId } = await seedCompany();
+
+    const app = createApp(otherCompanyId);
+    const res = await request(app)
+      .get(`/api/companies/${otherCompanyId}/issues`)
+      .query({ parentId: `${prefix}-1`, limit: "20" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual([]);
+  });
+
   it("returns 422 for a malformed descendantOf filter", async () => {
     const { companyId } = await seedCompany();
 
