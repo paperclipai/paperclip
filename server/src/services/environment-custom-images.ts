@@ -313,6 +313,7 @@ export function environmentCustomImageService(
   async function resolveSetupProvider(input: {
     secretContextCompanyId?: string | null;
     storedRpcCompanyId?: string | null;
+    storedProvider?: string | null;
     environment: Environment;
     requireCapture?: boolean;
     requireDelete?: boolean;
@@ -337,6 +338,12 @@ export function environmentCustomImageService(
       throw unprocessable("Environment customImage setup is only supported for sandbox environments.");
     }
     const provider = parsed.config.provider;
+    const storedProvider = readString(input.storedProvider);
+    if (storedProvider && provider !== storedProvider) {
+      throw conflict(
+        `Environment customImage provider changed from "${storedProvider}" to "${provider}". Switch the environment back before continuing this customImage lifecycle operation.`,
+      );
+    }
     const resolved = await resolvePluginSandboxProviderDriverByKey({
       db,
       driverKey: provider,
@@ -401,6 +408,7 @@ export function environmentCustomImageService(
     const environment = await requireEnvironment(input.session.environmentId);
     const provider = await resolveSetupProvider({
       environment,
+      storedProvider: input.session.provider,
       storedRpcCompanyId: readSetupRpcCompanyId(input.session.metadata),
     });
     return await options.pluginWorkerManager!.call(provider.pluginId, "environmentGetInteractiveSetup", {
@@ -426,6 +434,7 @@ export function environmentCustomImageService(
     const environment = await requireEnvironment(input.session.environmentId);
     const provider = await resolveSetupProvider({
       environment,
+      storedProvider: input.session.provider,
       storedRpcCompanyId: readSetupRpcCompanyId(input.session.metadata),
       requireCapture: true,
     });
@@ -454,6 +463,7 @@ export function environmentCustomImageService(
     const environment = await requireEnvironment(input.session.environmentId);
     const provider = await resolveSetupProvider({
       environment,
+      storedProvider: input.session.provider,
       storedRpcCompanyId: readSetupRpcCompanyId(input.session.metadata),
     });
     return await options.pluginWorkerManager!.call(provider.pluginId, "environmentCancelInteractiveSetup", {
@@ -471,26 +481,37 @@ export function environmentCustomImageService(
     }));
   }
 
+  async function resolveTemplateDeleteProvider(template: EnvironmentCustomImageTemplate) {
+    if (!template.templateRef) {
+      throw unprocessable("Cannot delete an environment customImage template without a provider template ref.");
+    }
+    const environment = await requireEnvironment(template.environmentId);
+    return await resolveSetupProvider({
+      environment,
+      storedProvider: template.provider,
+      storedRpcCompanyId: readSetupRpcCompanyId(template.metadata),
+      requireDelete: true,
+    });
+  }
+
   async function callProviderDeleteTemplate(input: {
     template: EnvironmentCustomImageTemplate;
+    provider: Awaited<ReturnType<typeof resolveTemplateDeleteProvider>>;
     reason: string | null;
   }) {
-    if (!input.template.templateRef) {
+    const templateRef = input.template.templateRef;
+    if (!templateRef) {
       throw unprocessable("Cannot delete an environment customImage template without a provider template ref.");
     }
     const environment = await requireEnvironment(input.template.environmentId);
-    const provider = await resolveSetupProvider({
-      environment,
-      storedRpcCompanyId: readSetupRpcCompanyId(input.template.metadata),
-      requireDelete: true,
-    });
+    const provider = input.provider;
     return await options.pluginWorkerManager!.call(provider.pluginId, "environmentDeleteTemplate", {
       driverKey: provider.provider,
       companyId: provider.rpcCompanyId,
       environmentId: environment.id,
       issueId: null,
       config: provider.driverConfig,
-      templateRef: input.template.templateRef,
+      templateRef,
       templateKind: input.template.templateKind as PluginEnvironmentTemplateRefKind,
       metadata: input.template.metadata ?? undefined,
       reason: input.reason,
@@ -747,6 +768,7 @@ export function environmentCustomImageService(
           : null;
         const provider = await resolveSetupProvider({
           environment,
+          storedProvider: session.provider,
           storedRpcCompanyId: readSetupRpcCompanyId(session.metadata),
           requireCapture: true,
         });
@@ -913,6 +935,9 @@ export function environmentCustomImageService(
       await requireEnvironment(input.environmentId);
       const active = await resolveActiveTemplate(db, input);
       if (!active) throw notFound("Active environment customImage template not found");
+      const deleteProvider = input.deleteProviderTemplate
+        ? await resolveTemplateDeleteProvider(active)
+        : null;
       const now = input.now ?? new Date();
       const row = await db
         .update(environmentCustomImageTemplates)
@@ -922,8 +947,8 @@ export function environmentCustomImageService(
         .then((rows) => rows[0] ?? null);
       if (!row) throw notFound("Active environment customImage template not found");
       const template = environmentCustomImageTemplateFromRow(row);
-      if (input.deleteProviderTemplate) {
-        await callProviderDeleteTemplate({ template, reason: "disabled" });
+      if (deleteProvider) {
+        await callProviderDeleteTemplate({ template, provider: deleteProvider, reason: "disabled" });
       }
       return template;
     },

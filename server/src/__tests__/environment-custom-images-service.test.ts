@@ -316,6 +316,47 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     );
   });
 
+  it("does not send provider template refs to a different current provider", async () => {
+    const { environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+    });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+    const deleteCallsBefore = workerManager.call.mock.calls
+      .filter(([, method]) => method === "environmentDeleteTemplate")
+      .length;
+
+    await db.update(environments)
+      .set({
+        config: {
+          provider: "other-plugin",
+          image: "other:base",
+          reuseLease: false,
+        },
+      })
+      .where(eq(environments.id, environmentId));
+
+    await expect(service.disableTemplate({
+      environmentId,
+      deleteProviderTemplate: true,
+    })).rejects.toThrow("Environment customImage provider changed");
+
+    const deleteCallsAfter = workerManager.call.mock.calls
+      .filter(([, method]) => method === "environmentDeleteTemplate")
+      .length;
+    const [templateRow] = await db
+      .select({ status: environmentCustomImageTemplates.status })
+      .from(environmentCustomImageTemplates)
+      .where(eq(environmentCustomImageTemplates.id, promoted.template.id));
+
+    expect(deleteCallsAfter).toBe(deleteCallsBefore);
+    expect(templateRow?.status).toBe("active");
+  });
+
   it("cancels and times out setup sessions without changing the active template", async () => {
     const { environmentId } = await seed();
     const workerManager = createWorkerManager();
