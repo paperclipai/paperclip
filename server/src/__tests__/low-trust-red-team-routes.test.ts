@@ -631,6 +631,64 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     expect(unmentionedComment.body.error).toBe("Issue is outside this actor's authorization boundary");
   });
 
+  it("allows same-company CEO comments without widening officer or company boundaries", async () => {
+    const fixture = await seedLowTrustFixture(db);
+    const ceo = await db.insert(agents).values({
+      companyId: fixture.company.id,
+      name: "Company CEO",
+      role: "ceo",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning().then((rows) => rows[0]!);
+    const unrelatedOfficer = await db.insert(agents).values({
+      companyId: fixture.company.id,
+      name: "Unrelated Officer",
+      role: "cfo",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning().then((rows) => rows[0]!);
+    const [otherCompany] = await db.insert(companies).values({
+      name: `Other Company ${randomUUID()}`,
+      issuePrefix: `OC${randomUUID().slice(0, 6).toUpperCase()}`,
+    }).returning();
+    const targetIssue = await db.insert(issues).values({
+      companyId: fixture.company.id,
+      projectId: fixture.projects.allowed.id,
+      title: "Officer-owned decision gate",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId: fixture.agents.standard.id,
+    }).returning().then((rows) => rows[0]!);
+
+    const actor = (agentId: string, companyId: string): Express.Request["actor"] => ({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: null,
+      source: "agent_jwt",
+    });
+
+    const ceoComment = await request(createApp(db, actor(ceo.id, fixture.company.id)))
+      .post(`/api/issues/${targetIssue.id}/comments`)
+      .send({ body: "CEO decision recorded." });
+    expect(ceoComment.status, JSON.stringify(ceoComment.body)).toBe(201);
+    expect(ceoComment.body.authorAgentId).toBe(ceo.id);
+
+    const officerComment = await request(createApp(db, actor(unrelatedOfficer.id, fixture.company.id)))
+      .post(`/api/issues/${targetIssue.id}/comments`)
+      .send({ body: "Unrelated officer comment." });
+    expect(officerComment.status, JSON.stringify(officerComment.body)).toBe(403);
+    expect(officerComment.body.error).toBe("Issue is outside this actor's authorization boundary");
+
+    const crossCompanyComment = await request(createApp(db, actor(ceo.id, otherCompany!.id)))
+      .post(`/api/issues/${targetIssue.id}/comments`)
+      .send({ body: "Cross-company comment." });
+    expect(crossCompanyComment.status, JSON.stringify(crossCompanyComment.body)).toBe(403);
+    expect(crossCompanyComment.body.error).toContain("company");
+  });
+
   it("propagates denied low-trust policy conflicts on control-plane guards", async () => {
     const fixture = await seedLowTrustFixture(db);
     const conflictingExecutionPolicy = {

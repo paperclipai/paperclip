@@ -1416,6 +1416,13 @@ export function authorizationService(db: Db) {
 
     if (input.action === "issue:comment" || input.action === "issue:mutate") {
       const resource = input.resource.type === "issue" ? input.resource : null;
+      if (input.action === "issue:comment" && actorAgent.role === "ceo") {
+        return allow({
+          action: input.action,
+          reason: "allow_company_ceo",
+          explanation: "Allowed because the actor is the CEO of the issue's company.",
+        });
+      }
       if (resource?.assigneeAgentId === actorAgentId) {
         return allow({
           action: input.action,
