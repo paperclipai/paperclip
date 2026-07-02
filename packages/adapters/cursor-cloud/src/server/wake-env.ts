@@ -1,10 +1,10 @@
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import {
   buildPaperclipEnv,
-  clampEnvVarsForCloud,
   parseObject,
   readPaperclipIssueWorkModeFromContext,
 } from "@paperclipai/adapter-utils/server-utils";
+import { allocateEnvVarsBudget } from "./env-budget.js";
 
 function trimNullable(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -67,5 +67,5 @@ export function buildCursorCloudWakeEnv(
   }
 
   delete env.CURSOR_API_KEY;
-  return clampEnvVarsForCloud(env);
+  return allocateEnvVarsBudget(env).env;
 }

@@ -65,6 +65,33 @@ export function getConfigSchema(): AdapterConfigSchema {
         default: false,
         hint: "Suppress reviewer requests on auto-created pull requests.",
       },
+      {
+        key: "model",
+        label: "Model",
+        type: "text",
+        hint: "Optional Cursor model id (e.g. gpt-5.4, composer-2.5).",
+      },
+      {
+        key: "mode",
+        label: "Conversation mode",
+        type: "select",
+        options: [
+          { value: "agent", label: "Agent" },
+          { value: "plan", label: "Plan" },
+        ],
+        hint: "Optional initial Cursor conversation mode.",
+      },
+      {
+        key: "executionTarget",
+        label: "Execution target (alias)",
+        type: "select",
+        options: [
+          { value: "cloud", label: "Cursor hosted" },
+          { value: "pool", label: "Self-hosted pool" },
+          { value: "machine", label: "Named machine" },
+        ],
+        hint: "Alias for runtimeEnvType — pool/machine for Enterprise self-hosted.",
+      },
     ],
   };
 }

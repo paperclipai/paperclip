@@ -34,6 +34,7 @@ import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
+import { observeOrphanCursorCloudRuns } from "./services/cursor-run-observer.js";
 import {
   feedbackService,
   backfillPrincipalAccessCompatibility,
@@ -855,6 +856,10 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "routine scheduler tick failed");
         });
+
+      void observeOrphanCursorCloudRuns(db as any).catch((err) => {
+        logger.error({ err }, "cursor run observer tick failed");
+      });
   
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
