@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   CustomDashboardBuilder,
   DEFAULT_WORK_HUB_WIDGETS,
+  type DashboardWidgetConfig,
 } from "./CustomDashboardBuilder";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -124,5 +125,41 @@ describe("CustomDashboardBuilder", () => {
     });
 
     expect(window.localStorage.getItem(storageKey)).toContain("actual_ai_hours");
+  });
+
+  it("rolls child issue runtime into scoped AI hours", () => {
+    const aiHoursWidget: DashboardWidgetConfig = {
+      id: "human-ai-hours",
+      metric: "actual_ai_hours",
+      scope: "human",
+      statusScope: "all",
+      size: "compact",
+    };
+
+    act(() => {
+      root = createRoot(host);
+      root.render(
+        <CustomDashboardBuilder
+          storageKey="paperclip:test-dashboard-rollup"
+          title="Dashboard widgets"
+          subtitle="Customize project metrics."
+          issues={[
+            issue({ id: "parent-1", actualAiSeconds: 3600 }),
+            issue({
+              id: "child-ai-1",
+              parentId: "parent-1",
+              workItemType: "ai_task",
+              assigneeUserId: null,
+              assigneeAgentId: "agent-1",
+              actualAiSeconds: 7200,
+            }),
+          ]}
+          defaultWidgets={[aiHoursWidget]}
+        />,
+      );
+    });
+
+    expect(host.textContent).toContain("3h");
+    expect(host.textContent).toContain("including sub-issues");
   });
 });

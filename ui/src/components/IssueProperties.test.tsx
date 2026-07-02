@@ -458,6 +458,38 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("uses a visible due date input and clears it", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({ dueDate: new Date("2026-04-12T23:59:59.999Z") }),
+      childIssues: [],
+      onUpdate,
+    });
+    await flush();
+
+    const dueDateInput = container.querySelector('input[aria-label="Due date"]') as HTMLInputElement | null;
+    expect(dueDateInput).toBeTruthy();
+    expect(dueDateInput?.value).toBe("2026-04-12");
+
+    await act(async () => {
+      dueDateInput!.value = "2026-04-20";
+      dueDateInput!.dispatchEvent(new Event("input", { bubbles: true }));
+      dueDateInput!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ dueDate: "2026-04-20T23:59:59.999Z" });
+
+    const clear = container.querySelector('button[aria-label="Remove due date"]') as HTMLButtonElement | null;
+    expect(clear).toBeTruthy();
+    await act(async () => {
+      clear!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ dueDate: null });
+
+    act(() => root.unmount());
+  });
+
   it("does not offer agent assignees for human-control issues", async () => {
     mockAgentsApi.list.mockResolvedValue([createAgent()]);
     const root = renderProperties(container, {

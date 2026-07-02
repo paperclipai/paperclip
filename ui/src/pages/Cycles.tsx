@@ -10,6 +10,7 @@ import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { cn, projectUrl } from "../lib/utils";
+import { buildIssueValueWithDescendantsMap, sumIssueValuesWithDescendants } from "../lib/issue-rollups";
 import {
   Archive,
   CalendarClock,
@@ -245,6 +246,7 @@ function summarizeCycle(
   dateLabel: string,
   projectLabel: string,
   cycleIssues: Issue[],
+  allIssues: Issue[],
 ): CycleSummary {
   const issues = sortIssuesForCycle(cycleIssues);
   const openIssues = issues.filter(isOpenIssue);
@@ -273,7 +275,7 @@ function summarizeCycle(
     completedStoryPoints,
     estimateHours,
     openEstimateHours,
-    actualAiSeconds: sumIssues(issues, actualAiSecondsForIssue),
+    actualAiSeconds: sumIssueValuesWithDescendants(issues, allIssues, actualAiSecondsForIssue),
     progressPercent,
     capacityStoryPoints: cycle?.capacityStoryPoints ?? null,
     capacityHours: cycle?.capacityHours ?? null,
@@ -292,6 +294,7 @@ function buildCycleSummaries(
     formatDateRange(cycle),
     projectName(projects, cycle.projectId),
     issues.filter((issue) => issue.cycleId === cycle.id),
+    issues,
   ));
 
   return summaries.sort((a, b) => {
@@ -544,6 +547,10 @@ export function Cycles() {
   });
 
   const summaries = useMemo(() => buildCycleSummaries(cycles, issues, projects), [cycles, issues, projects]);
+  const actualAiSecondsByIssueWithDescendants = useMemo(
+    () => buildIssueValueWithDescendantsMap(issues, actualAiSecondsForIssue),
+    [issues],
+  );
   const openIssues = useMemo(() => issues.filter(isOpenIssue), [issues]);
   const cycleAssignedIssues = useMemo(() => issues.filter((issue) => !!issue.cycleId), [issues]);
   const cycleAssignedOpenIssues = useMemo(() => cycleAssignedIssues.filter(isOpenIssue), [cycleAssignedIssues]);
@@ -588,12 +595,12 @@ export function Cycles() {
       completedStoryPoints,
       estimateHours: sumIssues(cycleAssignedIssues, estimateHoursForIssue),
       openEstimateHours: sumIssues(cycleAssignedOpenIssues, estimateHoursForIssue),
-      actualAiSeconds: sumIssues(cycleAssignedIssues, actualAiSecondsForIssue),
+      actualAiSeconds: sumIssueValuesWithDescendants(cycleAssignedIssues, issues, actualAiSecondsForIssue),
       progressPercent: cycleAssignedIssues.length > 0
         ? clampPercent((cycleAssignedCompletedIssues.length / cycleAssignedIssues.length) * 100)
         : 0,
     };
-  }, [cycleAssignedCompletedIssues, cycleAssignedIssues, cycleAssignedOpenIssues, cycles]);
+  }, [cycleAssignedCompletedIssues, cycleAssignedIssues, cycleAssignedOpenIssues, cycles, issues]);
 
   const velocity = useMemo(() => {
     const completedCycles = summaries.filter((summary) => summary.cycle?.status === "completed" && summary.issueCount > 0);
@@ -1305,7 +1312,9 @@ export function Cycles() {
                                       {estimateHoursForIssue(issue)}h
                                     </span>
                                   </td>
-                                  <td className="px-3 py-3 tabular-nums text-foreground">{formatActualAiTime(actualAiSecondsForIssue(issue))}</td>
+                                  <td className="px-3 py-3 tabular-nums text-foreground">
+                                    {formatActualAiTime(actualAiSecondsByIssueWithDescendants.get(issue.id) ?? actualAiSecondsForIssue(issue))}
+                                  </td>
                                 </tr>
                               );
                             })}

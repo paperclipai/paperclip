@@ -337,6 +337,7 @@ type WikiPageRow = {
   path: string;
   title: string | null;
   pageType: string | null;
+  links?: string[];
   backlinkCount: number;
   sourceCount: number;
   contentHash: string | null;
@@ -1648,6 +1649,7 @@ type WikiGraphNode = {
 type WikiGraphEdge = {
   from: string;
   to: string;
+  kind: "group" | "link" | "source";
 };
 
 function wikiGraphGroupForPath(path: string) {
@@ -1667,27 +1669,33 @@ function wikiGraphNodeColor(group: string, kind: WikiGraphNode["kind"]) {
   return "oklch(0.78 0.05 0)";
 }
 
+function normalizeWikiGraphLinkTarget(target: string): string | null {
+  const parsed = normalizeWikiLinkPagePath(target);
+  return parsed?.path ?? null;
+}
+
 function buildWikiGraph(data: PagesData | null | undefined): { nodes: WikiGraphNode[]; edges: WikiGraphEdge[] } {
-  const pages = (data?.pages ?? []).slice(0, 180);
-  const sources = (data?.sources ?? []).slice(0, 80);
+  const pages = (data?.pages ?? []).slice(0, 360);
+  const sources = (data?.sources ?? []).slice(0, 140);
   const groups = [...new Set([
     ...pages.map((page) => wikiGraphGroupForPath(page.path)),
     ...sources.map((source) => wikiGraphGroupForPath(source.rawPath)),
   ])].sort();
   const groupIndex = new Map(groups.map((group, index) => [group, index]));
   const groupCounts = new Map<string, number>();
+  const pagePaths = new Set(pages.map((page) => page.path));
   const nodes: WikiGraphNode[] = [{
     id: "root",
     label: "Wiki",
     kind: "root",
     x: 50,
     y: 50,
-    size: 11,
+    size: 5.4,
     color: tokens.primary,
   }];
   const edges: WikiGraphEdge[] = [];
-  const groupRadius = 27;
-  const itemBaseRadius = 39;
+  const groupRadius = groups.length > 7 ? 17 : 15;
+  const itemBaseRadius = 24;
 
   groups.forEach((group, index) => {
     const angle = (Math.PI * 2 * index) / Math.max(1, groups.length) - Math.PI / 2;
@@ -1699,10 +1707,10 @@ function buildWikiGraph(data: PagesData | null | undefined): { nodes: WikiGraphN
       kind: "group",
       x,
       y,
-      size: 7,
+      size: 3.4,
       color: wikiGraphNodeColor(group, "group"),
     });
-    edges.push({ from: "root", to: `group:${group}` });
+    edges.push({ from: "root", to: `group:${group}`, kind: "group" });
   });
 
   const addItemNode = (path: string, label: string, kind: "page" | "source", weight: number) => {
@@ -1710,21 +1718,21 @@ function buildWikiGraph(data: PagesData | null | undefined): { nodes: WikiGraphN
     const index = groupCounts.get(group) ?? 0;
     groupCounts.set(group, index + 1);
     const groupAngle = (Math.PI * 2 * (groupIndex.get(group) ?? 0)) / Math.max(1, groups.length) - Math.PI / 2;
-    const spread = ((index % 17) - 8) * 0.035;
-    const ring = itemBaseRadius + Math.floor(index / 17) * 5;
-    const angle = groupAngle + spread;
+    const goldenAngle = 2.399963229728653;
+    const localRing = itemBaseRadius + Math.sqrt(index) * 1.9;
+    const angle = groupAngle + ((index % 29) - 14) * 0.055 + index * goldenAngle * 0.035;
     const nodeId = `${kind}:${path}`;
     nodes.push({
       id: nodeId,
       label,
       kind,
       path,
-      x: 50 + Math.cos(angle) * ring,
-      y: 50 + Math.sin(angle) * ring,
-      size: Math.min(9, Math.max(3.4, 3.4 + weight * 0.75)),
+      x: 50 + Math.cos(angle) * localRing,
+      y: 50 + Math.sin(angle) * localRing,
+      size: Math.min(3.4, Math.max(kind === "source" ? 0.85 : 1.05, 1.05 + weight * 0.18)),
       color: wikiGraphNodeColor(group, kind),
     });
-    edges.push({ from: `group:${group}`, to: nodeId });
+    edges.push({ from: `group:${group}`, to: nodeId, kind: kind === "source" ? "source" : "group" });
   };
 
   for (const page of pages) {
@@ -1732,6 +1740,18 @@ function buildWikiGraph(data: PagesData | null | undefined): { nodes: WikiGraphN
   }
   for (const source of sources) {
     addItemNode(source.rawPath, source.title ?? basename(source.rawPath), "source", 1);
+  }
+
+  const linkEdgeKeys = new Set<string>();
+  for (const page of pages) {
+    for (const link of page.links ?? []) {
+      const target = normalizeWikiGraphLinkTarget(link);
+      if (!target || !pagePaths.has(target) || target === page.path) continue;
+      const key = `${page.path}->${target}`;
+      if (linkEdgeKeys.has(key)) continue;
+      linkEdgeKeys.add(key);
+      edges.push({ from: `page:${page.path}`, to: `page:${target}`, kind: "link" });
+    }
   }
 
   return { nodes, edges };
@@ -1759,82 +1779,106 @@ function WikiGraphView({
   }
 
   return (
-    <div style={{ padding: 24, display: "grid", gap: 14, minWidth: 0 }}>
+    <div style={{ padding: 18, display: "grid", gap: 12, minWidth: 0 }}>
       <Card style={{ background: "oklch(0.16 0.01 260)" }}>
         <CardHeader
           title="Graph View"
           badges={<Badge>{graph.nodes.length - 1} nodes</Badge>}
-          right={<Tiny>Pages and sources are grouped by wiki folder.</Tiny>}
+          right={<Tiny>Flowing page links with folder clusters.</Tiny>}
         />
         <CardBody padding={0}>
           <svg
             viewBox="0 0 100 100"
             role="img"
             aria-label="Wiki graph view"
-            style={{ width: "100%", minHeight: 520, display: "block", background: "radial-gradient(circle at 50% 50%, oklch(0.2 0.03 260), oklch(0.13 0.01 260))" }}
+            style={{ width: "100%", minHeight: 430, display: "block", background: "radial-gradient(circle at 50% 48%, oklch(0.21 0.035 260), oklch(0.13 0.012 260) 62%, oklch(0.1 0.01 260))" }}
           >
-            <circle cx="50" cy="50" r="45" fill="none" stroke="oklch(0.55 0 0 / 0.25)" strokeDasharray="0.2 1.1" />
-            {graph.edges.map((edge) => {
-              const from = nodeById.get(edge.from);
-              const to = nodeById.get(edge.to);
-              if (!from || !to) return null;
-              return (
-                <line
-                  key={`${edge.from}->${edge.to}`}
-                  x1={from.x}
-                  y1={from.y}
-                  x2={to.x}
-                  y2={to.y}
-                  stroke={to.kind === "source" ? "oklch(0.66 0.11 185 / 0.45)" : "oklch(0.75 0.08 260 / 0.28)"}
-                  strokeWidth={to.kind === "group" ? 0.28 : 0.16}
-                />
-              );
-            })}
-            {graph.nodes.map((node) => {
-              const clickable = node.kind === "page" && node.path;
-              return (
-                <g
-                  key={node.id}
-                  role={clickable ? "button" : undefined}
-                  tabIndex={clickable ? 0 : undefined}
-                  onClick={clickable ? () => onOpenPage(node.path!) : undefined}
-                  onKeyDown={clickable ? (event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onOpenPage(node.path!);
-                    }
-                  } : undefined}
-                  style={{ cursor: clickable ? "pointer" : "default" }}
-                >
-                  <title>{node.path ?? node.label}</title>
-                  <circle
-                    cx={node.x}
-                    cy={node.y}
-                    r={node.size}
-                    fill={node.kind === "root" ? "transparent" : node.color}
-                    stroke={node.color}
-                    strokeWidth={node.kind === "root" ? 1.2 : node.kind === "group" ? 0.6 : 0.28}
-                    opacity={node.kind === "source" ? 0.75 : 0.94}
+            <style>{`
+              .pc-wiki-graph-edge { vector-effect: non-scaling-stroke; }
+              .pc-wiki-graph-link { stroke-dasharray: 0.55 1.05; }
+              @media (prefers-reduced-motion: no-preference) {
+                .pc-wiki-graph-drift { animation: pcWikiGraphDrift 18s ease-in-out infinite alternate; transform-box: fill-box; transform-origin: center; }
+                .pc-wiki-graph-link { animation: pcWikiGraphFlow 11s linear infinite; }
+                .pc-wiki-graph-node { animation: pcWikiGraphGlow 5.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+              }
+              @keyframes pcWikiGraphDrift { from { transform: rotate(-1.1deg) scale(0.985); } to { transform: rotate(1.1deg) scale(1.01); } }
+              @keyframes pcWikiGraphFlow { to { stroke-dashoffset: -14; } }
+              @keyframes pcWikiGraphGlow { 0%,100% { opacity: 0.76; } 50% { opacity: 1; } }
+            `}</style>
+            <circle cx="50" cy="50" r="39" fill="none" stroke="oklch(0.62 0 0 / 0.18)" strokeDasharray="0.16 1.2" />
+            <circle cx="50" cy="50" r="27" fill="none" stroke="oklch(0.75 0.08 260 / 0.08)" />
+            <g className="pc-wiki-graph-drift">
+              {graph.edges.map((edge) => {
+                const from = nodeById.get(edge.from);
+                const to = nodeById.get(edge.to);
+                if (!from || !to) return null;
+                const stroke = edge.kind === "link"
+                  ? "oklch(0.82 0.14 260 / 0.44)"
+                  : edge.kind === "source"
+                    ? "oklch(0.66 0.11 185 / 0.3)"
+                    : "oklch(0.72 0.08 260 / 0.18)";
+                const strokeWidth = edge.kind === "link" ? 0.13 : edge.to.startsWith("group:") ? 0.18 : 0.08;
+                return (
+                  <line
+                    key={`${edge.from}->${edge.to}`}
+                    className={`pc-wiki-graph-edge${edge.kind === "link" ? " pc-wiki-graph-link" : ""}`}
+                    x1={from.x}
+                    y1={from.y}
+                    x2={to.x}
+                    y2={to.y}
+                    stroke={stroke}
+                    strokeWidth={strokeWidth}
                   />
-                  {node.kind === "root" || node.kind === "group" ? (
-                    <text
-                      x={node.x}
-                      y={node.y + node.size + 3.2}
-                      textAnchor="middle"
-                      fill="oklch(0.92 0 0)"
-                      fontSize={node.kind === "root" ? 3.2 : 2.35}
-                      fontFamily={fontStack}
-                    >
-                      {node.label.length > 12 ? `${node.label.slice(0, 11)}...` : node.label}
-                    </text>
-                  ) : null}
-                </g>
-              );
-            })}
+                );
+              })}
+              {graph.nodes.map((node, index) => {
+                const clickable = node.kind === "page" && node.path;
+                return (
+                  <g
+                    key={node.id}
+                    role={clickable ? "button" : undefined}
+                    tabIndex={clickable ? 0 : undefined}
+                    onClick={clickable ? () => onOpenPage(node.path!) : undefined}
+                    onKeyDown={clickable ? (event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onOpenPage(node.path!);
+                      }
+                    } : undefined}
+                    style={{ cursor: clickable ? "pointer" : "default" }}
+                  >
+                    <title>{node.path ?? node.label}</title>
+                    <circle
+                      className="pc-wiki-graph-node"
+                      cx={node.x}
+                      cy={node.y}
+                      r={node.size}
+                      fill={node.kind === "root" ? "transparent" : node.color}
+                      stroke={node.color}
+                      strokeWidth={node.kind === "root" ? 0.9 : node.kind === "group" ? 0.45 : 0.2}
+                      opacity={node.kind === "source" ? 0.58 : 0.88}
+                      style={{ animationDelay: `${(index % 17) * -0.22}s` }}
+                    />
+                    {node.kind === "root" || node.kind === "group" ? (
+                      <text
+                        x={node.x}
+                        y={node.y + node.size + 2.5}
+                        textAnchor="middle"
+                        fill="oklch(0.92 0 0 / 0.82)"
+                        fontSize={node.kind === "root" ? 2.35 : 1.65}
+                        fontFamily={fontStack}
+                      >
+                        {node.label.length > 11 ? `${node.label.slice(0, 10)}...` : node.label}
+                      </text>
+                    ) : null}
+                  </g>
+                );
+              })}
+            </g>
           </svg>
         </CardBody>
       </Card>
-      <Tiny>Click a page node to open it. Source nodes are shown for context.</Tiny>
+      <Tiny>Click a page node to open it. Animated links come from indexed Markdown links; folder and source edges keep orphan notes visible.</Tiny>
     </div>
   );
 }

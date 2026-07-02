@@ -1733,6 +1733,7 @@ function mergeLocalPageRows(pages: WikiPageRow[], entries: PluginLocalFolderEntr
       path: entry.path,
       title: null,
       pageType: inferPageType(entry.path),
+      links: [],
       backlinkCount: 0,
       sourceCount: 0,
       contentHash: null,
@@ -4312,6 +4313,7 @@ export type WikiPageRow = {
   path: string;
   title: string | null;
   pageType: string | null;
+  links: string[];
   backlinkCount: number;
   sourceCount: number;
   contentHash: string | null;
@@ -4387,6 +4389,7 @@ export async function listPages(ctx: PluginContext, input: {
     path: row.path,
     title: row.title,
     pageType: row.page_type,
+    links: Array.isArray(row.backlinks) ? row.backlinks.filter((link): link is string => typeof link === "string") : [],
     backlinkCount: Array.isArray(row.backlinks) ? row.backlinks.length : 0,
     sourceCount: Array.isArray(row.source_refs) ? row.source_refs.length : 0,
     contentHash: row.content_hash,

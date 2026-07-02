@@ -20,6 +20,7 @@ import {
 import type { Issue, IssueStatus, Project } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { cn } from "../lib/utils";
+import { sumIssueValuesWithDescendants } from "../lib/issue-rollups";
 
 type MetricTone = "neutral" | "blue" | "green" | "amber" | "red" | "violet";
 type DashboardMetricKey =
@@ -305,8 +306,8 @@ function metricResult(widget: DashboardWidgetConfig, issues: Issue[]): MetricRes
     return { value: formatHours(total), detail: `${scopeDetail} with rough hour estimates`, tone, progress: null };
   }
   if (widget.metric === "actual_ai_hours") {
-    const total = scoped.reduce((sum, issue) => sum + actualAiHours(issue), 0);
-    return { value: formatHours(total), detail: "Recorded agent execution time", tone, progress: null };
+    const total = sumIssueValuesWithDescendants(scoped, issues, actualAiHours);
+    return { value: formatHours(total), detail: "Recorded agent execution time, including sub-issues", tone, progress: null };
   }
   if (widget.metric === "completion_rate") {
     const base = allInWidgetScope.filter((issue) => widget.statusScope === "all" || statusMatches(issue, widget.statusScope));

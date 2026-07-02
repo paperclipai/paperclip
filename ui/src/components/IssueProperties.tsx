@@ -33,6 +33,7 @@ import { formatRetryReason } from "../lib/runRetryState";
 import { useRetryNowMutation } from "../hooks/useRetryNowMutation";
 import { RetryErrorBand } from "./IssueScheduledRetryCard";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
+import { sumIssueValuesWithDescendants } from "../lib/issue-rollups";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { Identity } from "./Identity";
@@ -169,8 +170,17 @@ function formatDueDateRelative(date: Date | string): string {
   return formatDate(due);
 }
 
-function dueDateInputValue(date: Date | string): string {
-  return new Date(date).toISOString().split("T")[0]!;
+function dueDateInputValue(date: Date | string | null | undefined): string {
+  if (!date) return "";
+  const parsed = new Date(date);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toISOString().split("T")[0]!;
+}
+
+function dueDateInputToIsoDate(value: string): string | null {
+  if (!value) return null;
+  const parsed = new Date(`${value}T23:59:59.999Z`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
 function parseOptionalIntegerInput(value: string, max: number): number | null {
@@ -196,6 +206,11 @@ function formatActualAiTime(seconds: number | null | undefined): string {
   if (hours <= 0) return `${Math.max(1, minutes)}m`;
   if (minutes <= 0) return `${hours}h`;
   return `${hours}h ${minutes}m`;
+}
+
+function actualAiSecondsForIssue(issue: Issue): number {
+  if (typeof issue.actualAiSeconds !== "number" || !Number.isFinite(issue.actualAiSeconds)) return 0;
+  return Math.max(0, issue.actualAiSeconds);
 }
 
 const STORY_POINTS_MAX = 1000;
@@ -626,6 +641,7 @@ export function IssueProperties({
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
   const [storyPointsInput, setStoryPointsInput] = useState(() => formatOptionalIntegerInput(issue.storyPoints));
   const [estimateHoursInput, setEstimateHoursInput] = useState(() => formatOptionalIntegerInput(issue.estimateHours));
+  const [dueDateInput, setDueDateInput] = useState(() => dueDateInputValue(issue.dueDate));
   const pendingPlanningValuesRef = useRef<{
     issueId: string;
     storyPoints?: number | null;
@@ -657,6 +673,10 @@ export function IssueProperties({
       setEstimateHoursInput(formatOptionalIntegerInput(issue.estimateHours));
     }
   }, [issue.id, issue.storyPoints, issue.estimateHours]);
+
+  useEffect(() => {
+    setDueDateInput(dueDateInputValue(issue.dueDate));
+  }, [issue.dueDate, issue.id]);
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -831,6 +851,16 @@ export function IssueProperties({
     };
     onUpdate({ estimateHours: next });
   }, [estimateHoursInput, issue.estimateHours, issue.id, onUpdate]);
+
+  const commitDueDateInput = useCallback((value: string) => {
+    setDueDateInput(value);
+    onUpdate({ dueDate: dueDateInputToIsoDate(value) });
+  }, [onUpdate]);
+
+  const issueActualAiSecondsWithChildren = useMemo(
+    () => sumIssueValuesWithDescendants([issue], [issue, ...(childIssues ?? [])], actualAiSecondsForIssue),
+    [childIssues, issue],
+  );
 
   const agentName = (id: string | null) => {
     if (!id || !agents) return null;
@@ -2371,8 +2401,10 @@ export function IssueProperties({
 
           <PropertyRow label="AI time">
             <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            <span className="text-sm tabular-nums text-foreground">{formatActualAiTime(issue.actualAiSeconds)}</span>
-            <span className="text-xs text-muted-foreground">actual</span>
+            <span className="text-sm tabular-nums text-foreground">{formatActualAiTime(issueActualAiSecondsWithChildren)}</span>
+            <span className="text-xs text-muted-foreground">
+              {childIssues && childIssues.length > 0 ? "actual incl. sub-issues" : "actual"}
+            </span>
           </PropertyRow>
         </div>
 
@@ -2435,67 +2467,46 @@ export function IssueProperties({
         ) : null}
 
         <PropertyRow label="Due date">
+          <Calendar
+            className={cn(
+              "h-3.5 w-3.5 shrink-0",
+              issue.dueDate && issue.status !== "done" && issue.status !== "cancelled" && new Date(issue.dueDate) < new Date()
+                ? "text-red-500"
+                : "text-muted-foreground",
+            )}
+          />
+          <input
+            type="date"
+            value={dueDateInput}
+            onInput={(event) => commitDueDateInput(event.currentTarget.value)}
+            className="h-7 rounded border border-border bg-background px-2 text-sm text-foreground outline-none transition-colors focus:border-ring focus:ring-1 focus:ring-ring"
+            aria-label="Due date"
+          />
           {issue.dueDate ? (
-            <>
-              {(() => {
-                const isClosed = issue.status === "done" || issue.status === "cancelled";
-                const isOverdue = !isClosed && new Date(issue.dueDate) < new Date();
-                return (
-                  <span
-                    className={cn(
-                      "relative inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors",
-                      isOverdue && "text-red-500 font-medium",
-                    )}
-                    title="Change due date"
-                  >
-                    <Calendar
-                      className={cn(
-                        "h-3.5 w-3.5 shrink-0",
-                        isOverdue ? "text-red-500" : "text-muted-foreground",
-                      )}
-                    />
-                    <span className="text-sm">{formatDueDateRelative(issue.dueDate)}</span>
-                    <input
-                      type="date"
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                      value={dueDateInputValue(issue.dueDate)}
-                      onChange={(e) => {
-                        if (e.target.value) {
-                          onUpdate({
-                            dueDate: new Date(e.target.value + "T23:59:59.999Z").toISOString(),
-                          });
-                        }
-                      }}
-                    />
-                  </span>
-                );
-              })()}
-              <button
-                type="button"
-                onClick={() => onUpdate({ dueDate: null })}
-                className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-accent/50 transition-colors text-muted-foreground hover:text-foreground"
-                title="Remove due date"
-              >
-                <XIcon className="h-3 w-3" />
-              </button>
-            </>
-          ) : (
-            <span className="relative inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
-              <Calendar className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className="text-sm text-muted-foreground">No due date</span>
-              <input
-                type="date"
-                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                onChange={(e) => {
-                  if (e.target.value) {
-                    onUpdate({
-                      dueDate: new Date(e.target.value + "T23:59:59.999Z").toISOString(),
-                    });
-                  }
-                }}
-              />
+            <span
+              className={cn(
+                "text-xs",
+                issue.status !== "done" && issue.status !== "cancelled" && new Date(issue.dueDate) < new Date()
+                  ? "font-medium text-red-500"
+                  : "text-muted-foreground",
+              )}
+            >
+              {formatDueDateRelative(issue.dueDate)}
             </span>
+          ) : (
+            <span className="text-xs text-muted-foreground">No due date</span>
           )}
+          {issue.dueDate || dueDateInput ? (
+            <button
+              type="button"
+              onClick={() => commitDueDateInput("")}
+              className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+              title="Remove due date"
+              aria-label="Remove due date"
+            >
+              <XIcon className="h-3 w-3" />
+            </button>
+          ) : null}
         </PropertyRow>
 
         {issue.dueDate ? (

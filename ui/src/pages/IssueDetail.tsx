@@ -108,6 +108,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { formatIssueActivityAction } from "@/lib/activity-format";
 import { buildIssuePropertiesPanelKey } from "../lib/issue-properties-panel-key";
 import { shouldRenderRichSubIssuesSection } from "../lib/issue-detail-subissues";
+import { sumIssueValuesWithDescendants } from "../lib/issue-rollups";
 import { filterIssueDescendants } from "../lib/issue-tree";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import {
@@ -227,6 +228,11 @@ function formatIssueAiHours(seconds: number | null | undefined): string {
   return Number.isInteger(hours) ? `${hours}h` : `${hours.toFixed(1)}h`;
 }
 
+function actualAiSecondsForIssue(issue: Issue): number {
+  if (typeof issue.actualAiSeconds !== "number" || !Number.isFinite(issue.actualAiSeconds)) return 0;
+  return Math.max(0, issue.actualAiSeconds);
+}
+
 function formatIssueDueDate(issue: Issue): string {
   if (!issue.dueDate) return "No due date";
   return new Date(issue.dueDate).toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -255,7 +261,12 @@ function IssuePlanningStat({
   );
 }
 
-function IssuePlanningStrip({ issue }: { issue: Issue }) {
+function IssuePlanningStrip({ issue, childIssues }: { issue: Issue; childIssues: Issue[] }) {
+  const actualAiSecondsWithChildren = useMemo(
+    () => sumIssueValuesWithDescendants([issue], [issue, ...childIssues], actualAiSecondsForIssue),
+    [childIssues, issue],
+  );
+
   return (
     <div className="grid gap-2 border-t border-border pt-3 sm:grid-cols-2 xl:grid-cols-4">
       <IssuePlanningStat
@@ -273,8 +284,8 @@ function IssuePlanningStrip({ issue }: { issue: Issue }) {
       <IssuePlanningStat
         icon={Bot}
         label="AI time"
-        value={formatIssueAiHours(issue.actualAiSeconds)}
-        detail="Recorded execution"
+        value={formatIssueAiHours(actualAiSecondsWithChildren)}
+        detail={childIssues.length > 0 ? "Including sub-issues" : "Recorded execution"}
       />
       <IssuePlanningStat
         icon={CalendarClock}
@@ -3971,7 +3982,7 @@ export function IssueDetail() {
           }}
         />
 
-        <IssuePlanningStrip issue={issue} />
+        <IssuePlanningStrip issue={issue} childIssues={childIssues} />
       </div>
 
       <PluginSlotOutlet
