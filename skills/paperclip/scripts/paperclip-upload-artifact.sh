@@ -2,6 +2,18 @@
 
 set -euo pipefail
 
+# All temp files (auth configs that carry the bearer token, plus curl response
+# bodies) live under a single workspace dir owned by the main shell. A main-shell
+# trap removes them on normal exit and on catchable interruption (INT/TERM),
+# closing the window where an interrupted run could leave a mode-600 auth config
+# behind. A per-function trap can't cover this: request_json/upload_file run
+# inside command substitutions, so a signal delivered to this script's process
+# never reaches those subshells. (SIGKILL is uncatchable, so a kill -9 in the
+# gap can still orphan the dir — that residue is inherent to SIGKILL.)
+_WORKDIR="$(mktemp -d)"
+cleanup_workdir() { rm -rf "$_WORKDIR"; }
+trap cleanup_workdir EXIT INT TERM
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -87,7 +99,7 @@ write_auth_config() {
   # Writes auth headers to a mode-600 temp file so they never appear in curl argv
   # (process args are world-readable via /proc/*/cmdline on Linux).
   local cfg
-  cfg="$(mktemp)"
+  cfg="$(mktemp -p "$_WORKDIR")"
   chmod 600 "$cfg"
   printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$cfg"
   printf 'header = "X-Paperclip-Run-Id: %s"\n' "$PAPERCLIP_RUN_ID" >> "$cfg"
@@ -103,7 +115,7 @@ request_json() {
   local auth_cfg
 
   auth_cfg="$(write_auth_config)"
-  response_file="$(mktemp)"
+  response_file="$(mktemp -p "$_WORKDIR")"
   if [[ -n "$body" ]]; then
     status_code="$(
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
@@ -145,7 +157,7 @@ upload_file() {
   escaped_path="${path//\\/\\\\}"
   escaped_path="${escaped_path//\"/\\\"}"
   auth_cfg="$(write_auth_config)"
-  response_file="$(mktemp)"
+  response_file="$(mktemp -p "$_WORKDIR")"
   status_code="$(
     curl -sS -X POST -w '%{http_code}' -o "$response_file" \
       --config "$auth_cfg" \
