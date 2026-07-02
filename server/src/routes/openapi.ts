@@ -491,6 +491,63 @@ const environmentCustomImageTemplateRollbackResultSchema = z.object({
   supersededTemplate: environmentCustomImageTemplateSchema,
 }).strict();
 
+const workTimelineQuerySchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
+  userId: z.string().optional(),
+  goalId: z.string().uuid().optional(),
+  projectId: z.string().uuid().optional(),
+  issueId: z.string().uuid().optional(),
+  limit: z.string().optional(),
+  offset: z.string().optional(),
+}).strict();
+
+const workTimelineResponseSchema = z.object({
+  actors: z.array(z.object({
+    id: z.string(),
+    type: z.enum(["agent", "user", "system", "plugin"]),
+    name: z.string(),
+    avatar: z.string().nullable().optional(),
+  }).strict()),
+  spans: z.array(z.object({
+    actorId: z.string(),
+    laneHint: z.string().nullable(),
+    runId: z.string(),
+    issueId: z.string(),
+    issueIdentifier: z.string().nullable(),
+    start: z.string(),
+    end: z.string().nullable(),
+    status: z.string(),
+    retryOfRunId: z.string().nullable().optional(),
+    continuationAttempt: z.number().optional(),
+    invocationSource: z.string().nullable().optional(),
+  }).strict()),
+  events: z.array(z.object({
+    actorId: z.string(),
+    kind: z.enum(["created", "commented", "approved", "delegated", "assigned"]),
+    issueId: z.string(),
+    at: z.string(),
+  }).strict()),
+  edges: z.array(z.object({
+    fromActorId: z.string(),
+    toActorId: z.string(),
+    issueId: z.string(),
+    at: z.string(),
+    kind: z.enum(["delegation", "assignment", "mention"]),
+  }).strict()),
+  pagination: z.object({
+    limit: z.number().int().positive(),
+    offset: z.number().int().nonnegative(),
+    totalIssues: z.number().int().nonnegative(),
+    hasMore: z.boolean(),
+  }).strict(),
+  window: z.object({
+    from: z.string(),
+    to: z.string(),
+    capped: z.boolean(),
+  }).strict(),
+}).strict();
+
 function paramsSchemaFromPath(routePath: string): z.ZodObject<z.ZodRawShape> | undefined {
   const names = [...routePath.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((match) => match[1]);
   if (names.length === 0) return undefined;
@@ -901,6 +958,23 @@ registry.registerPath({
       },
     },
     401: r.unauthorized,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/timeline",
+  tags: ["companies"],
+  summary: "Get company work timeline",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: workTimelineQuerySchema,
+  },
+  responses: {
+    200: r.ok(workTimelineResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
   },
 });
 
