@@ -143,14 +143,14 @@ GREPTILE_CHECKS=$(gh api "repos/{owner}/{repo}/commits/$HEAD_SHA/check-runs?per_
 
 # A run only counts as a valid fresh pass when it has completed AND concluded cleanly.
 # GitHub check-run conclusions: success, neutral, skipped, failure, timed_out,
-# cancelled, action_required, stale. Treat success/neutral/skipped as clean;
+# cancelled, action_required, stale. Treat success/neutral as clean;
 # everything else (especially failure and action_required) must block.
 FRESH_GREPTILE_COMPLETED=$(echo "$GREPTILE_CHECKS" \
   | jq '[.[] | select(.status == "completed")] | length')
 FRESH_GREPTILE_CLEAN=$(echo "$GREPTILE_CHECKS" \
-  | jq '[.[] | select(.status == "completed" and (.conclusion | IN("success","neutral","skipped")))] | length')
+  | jq '[.[] | select(.status == "completed" and (.conclusion | IN("success","neutral")))] | length')
 FRESH_GREPTILE_BLOCKING=$(echo "$GREPTILE_CHECKS" \
-  | jq '[.[] | select(.status == "completed" and ((.conclusion | IN("success","neutral","skipped")) | not))] | length')
+  | jq '[.[] | select(.status == "completed" and ((.conclusion | IN("success","neutral")) | not))] | length')
 
 if [ "$FRESH_GREPTILE_COMPLETED" = "0" ]; then
   echo "Blocked: no completed Greptile review/check is tied to current PR head $HEAD_SHA."
