@@ -43,7 +43,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, ExternalLink, Clock, RotateCcw, Loader2, CheckCircle2 } from "lucide-react";
+import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2 } from "lucide-react";
 import { AgentIcon } from "../AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../InlineEntitySelector";
 import {
@@ -531,7 +531,7 @@ export function IssueProperties({
           ))}
         </div>
         {assigneeOverrideLane === "cheap" ? (
-          <p className="text-[11px] text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             Sends <code>modelProfile: "cheap"</code>{" "}
             {assigneeCheapProfile?.adapterConfig && typeof (assigneeCheapProfile.adapterConfig as Record<string, unknown>).model === "string"
               ? <>· adapter default <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
@@ -835,7 +835,7 @@ export function IssueProperties({
             const agent = (agents ?? []).find((candidate) => candidate.id === option.id);
             return (
               <>
-                {agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                {agent ? <AgentIcon icon={agent.icon} className="h-3 w-3 shrink-0 text-muted-foreground" /> : null}
                 <span className="truncate">{option.label}</span>
               </>
             );
@@ -844,7 +844,7 @@ export function IssueProperties({
             const agent = (agents ?? []).find((candidate) => candidate.id === option.id);
             return (
               <>
-                {agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                {agent ? <AgentIcon icon={agent.icon} className="h-3 w-3 shrink-0 text-muted-foreground" /> : null}
                 <span className="truncate">{option.label}</span>
               </>
             );
@@ -1013,7 +1013,7 @@ export function IssueProperties({
   const scheduledRetryRetryNowSuccess = retryNow.isSuccess
     && (retryNow.data?.outcome === "promoted" || retryNow.data?.outcome === "already_promoted");
   const scheduledRetryAttemptBadge = scheduledRetryAttempt !== null ? (
-    <span className="text-xs text-muted-foreground">Attempt {scheduledRetryAttempt}</span>
+    <span className="whitespace-nowrap shrink-0 text-xs text-muted-foreground">Attempt {scheduledRetryAttempt}</span>
   ) : null;
   const scheduledRetryTrigger = (
     <span className="inline-flex min-w-0 items-center gap-1.5">
@@ -1038,7 +1038,7 @@ export function IssueProperties({
           {scheduledRetryIsContinuation ? "Scheduled continuation" : "Scheduled retry"}
         </span>
         {scheduledRetryAttempt !== null ? (
-          <span className="rounded-full border border-border bg-muted/30 px-2 py-0.5 text-xs text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             Attempt {scheduledRetryAttempt}
           </span>
         ) : null}
@@ -1218,7 +1218,9 @@ export function IssueProperties({
         </PropertyChip>
       ))}
       {selectedIssueLabels.length > 3 && (
-        <span className="text-xs text-muted-foreground">+{selectedIssueLabels.length - 3} more</span>
+        <span className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+          +{selectedIssueLabels.length - 3} more
+        </span>
       )}
     </div>
   ) : (
@@ -1402,7 +1404,7 @@ export function IssueProperties({
   );
   const showNoAssigneeOption = matchesAssigneeSearch("No assignee", "");
   const sectionHeader = (text: string) => (
-    <div className="px-2 pb-0.5 pt-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+    <div className="px-2 pb-0.5 pt-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
       {text}
     </div>
   );
@@ -2164,7 +2166,7 @@ export function IssueProperties({
               >
                 <HardDrive className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 View workspace
-                <ExternalLink className="h-3 w-3 shrink-0" />
+                <ArrowUpRight className="h-3 w-3 shrink-0" />
               </Link>
             </PropertyRow>
           )}
