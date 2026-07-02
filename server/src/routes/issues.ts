@@ -818,6 +818,10 @@ async function assertCanManageIssueMonitor(
   throw forbidden("Only the assignee agent or a board user can manage issue monitors");
 }
 
+function citesSealedGradePath(body: unknown) {
+  return typeof body === "string" && /(^|[\s`'"])[A-Za-z0-9_./-]*GRADE\.md(?=$|[\s`'").,;:])/.test(body);
+}
+
 function summarizeIssueMonitor(
   issue: {
     monitorNextCheckAt?: Date | null;
@@ -1198,6 +1202,68 @@ export function issueRoutes(
       ? heartbeat.wakeup
       : opts.taskWatchdogEnqueueWakeup ?? undefined,
   }) ?? noopTaskWatchdogService();
+
+  async function getCeoReconcileGrant(req: Request, companyId: string) {
+    if (req.actor.type !== "agent" || !req.actor.agentId) return null;
+    const actorAgent = await agentsSvc.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== companyId || actorAgent.role !== "ceo") return null;
+    if (!(await access.hasPermission(companyId, "agent", actorAgent.id, "issues:reconcile"))) return null;
+    return { actorAgentId: actorAgent.id };
+  }
+
+  function assertCeoReconcilePatchAllowed(req: Request, res: Response) {
+    const allowedKeys = new Set(["status", "comment"]);
+    const keys = Object.keys(req.body ?? {});
+    const disallowedKeys = keys.filter((key) => !allowedKeys.has(key));
+    if (disallowedKeys.length > 0) {
+      res.status(403).json({
+        error: "CEO reconcile grant only permits status transitions and comments",
+        details: {
+          disallowedKeys,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return false;
+    }
+    if (typeof req.body.status !== "string") {
+      res.status(403).json({
+        error: "CEO reconcile grant status updates require a status field",
+        details: {
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return false;
+    }
+    if (req.body.status === "done" && !citesSealedGradePath(req.body.comment)) {
+      res.status(422).json({
+        error: "CEO reconcile done transitions require a sealed GRADE.md path citation in the comment",
+        details: {
+          requiredCitation: "GRADE.md",
+          securityPrinciples: ["Complete Mediation", "Accountability"],
+        },
+      });
+      return false;
+    }
+    return true;
+  }
+
+  function assertCeoReconcileCommentAllowed(req: Request, res: Response) {
+    const allowedKeys = new Set(["body"]);
+    const keys = Object.keys(req.body ?? {});
+    const disallowedKeys = keys.filter((key) => !allowedKeys.has(key));
+    if (disallowedKeys.length > 0) {
+      res.status(403).json({
+        error: "CEO reconcile grant only permits plain comments",
+        details: {
+          disallowedKeys,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return false;
+    }
+    return true;
+  }
+
   const externalObjectsSvc = externalObjectService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
     enabled: async () => (await instanceSettings.getExperimental()).enableExternalObjects === true,
@@ -2008,12 +2074,16 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    options: { allowCeoReconcileGrant?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
       return false;
+    }
+    if (options.allowCeoReconcileGrant && await getCeoReconcileGrant(req, issue.companyId)) {
+      return true;
     }
     const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
     if (watchdogScope.kind !== "none") {
@@ -2089,12 +2159,16 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    options: { allowCeoReconcileGrant?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
       return false;
+    }
+    if (options.allowCeoReconcileGrant && await getCeoReconcileGrant(req, issue.companyId)) {
+      return true;
     }
     // Task-watchdog runs receive a scoped *grant* to mutate issues inside the
     // watched subtree. This must be evaluated before the base assignee-ownership
@@ -5767,7 +5841,11 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const ceoReconcileGrant = await getCeoReconcileGrant(req, existing.companyId);
+    if (ceoReconcileGrant && !assertCeoReconcilePatchAllowed(req, res)) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, {
+      allowCeoReconcileGrant: Boolean(ceoReconcileGrant),
+    }))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -7609,7 +7687,11 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
+    const ceoReconcileGrant = await getCeoReconcileGrant(req, issue.companyId);
+    if (ceoReconcileGrant && !assertCeoReconcileCommentAllowed(req, res)) return;
+    const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue, {
+      allowCeoReconcileGrant: Boolean(ceoReconcileGrant),
+    });
     if (!commentAccessDecision) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
