@@ -253,6 +253,16 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS = 8_000;
+
+function truncateDescriptionForWakePayload(description: string | null): string | null {
+  if (!description) return null;
+  const trimmed = description.trim();
+  if (!trimmed) return null;
+  return trimmed.length > MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS
+    ? trimmed.slice(0, MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS)
+    : trimmed;
+}
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -3668,6 +3678,7 @@ export async function buildPaperclipWakePayload(input: {
         id: string;
         identifier: string | null;
         title: string;
+        description?: string | null;
         status: string;
         priority: string;
         workMode: string;
@@ -3690,6 +3701,7 @@ export async function buildPaperclipWakePayload(input: {
             id: issues.id,
             identifier: issues.identifier,
             title: issues.title,
+            description: issues.description,
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
@@ -3864,6 +3876,7 @@ export async function buildPaperclipWakePayload(input: {
           id: issueSummary.id,
           identifier: issueSummary.identifier,
           title: issueSummary.title,
+          description: truncateDescriptionForWakePayload(issueSummary.description ?? null),
           status: issueSummary.status,
           priority: issueSummary.priority,
           workMode: issueSummary.workMode,
@@ -9588,6 +9601,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             id: issueRef.id,
             identifier: issueRef.identifier,
             title: issueRef.title,
+            description: issueRef.description,
             status: issueRef.status,
             priority: issueRef.priority,
             workMode: issueRef.workMode,

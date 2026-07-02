@@ -26,6 +26,7 @@ import {
 import {
   asString,
   asNumber,
+  asBoolean,
   asStringArray,
   parseObject,
   buildPaperclipEnv,
@@ -306,6 +307,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // selection is already handled via the --model CLI flag.  Set after the
   // envConfig loop so user overrides cannot disable this guard.
   env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
+  // Force UTF-8 output for any Python sub-processes spawned by opencode so
+  // that German umlauts and other multibyte characters are not garbled when
+  // the Windows system code page (CP1252) would otherwise be applied.
+  if (!env.PYTHONUTF8) env.PYTHONUTF8 = "1";
+  if (!env.PYTHONIOENCODING) env.PYTHONIOENCODING = "utf-8";
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
@@ -547,12 +553,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+    const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
+    // Repost-guard: local agents (especially small local LLMs) sometimes omit the
+    // mandatory final PATCH to set a terminal status.  Paperclip then re-invokes
+    // the agent, which posts another identical comment, producing a loop of 100+
+    // duplicate posts (see POE-9539, POE-9555).  Append a plain-language stop-rule
+    // so that even simple models understand they MUST disposition before exiting.
+    // Enabled by default; can be disabled via config.dispositionReminder=false.
+    const addDispositionReminder = asBoolean(config.dispositionReminder, true);
+    const dispositionReminder =
+      addDispositionReminder && wakeTaskId
+        ? [
+            "## STOP — Mandatory final step",
+            `You MUST call \`PATCH /api/issues/${wakeTaskId}\` with a final status before you exit:`,
+            "- Work complete → `{ \"status\": \"done\", \"comment\": \"...\" }`",
+            "- Needs review → `{ \"status\": \"in_review\", \"comment\": \"...\" }`",
+            "- Blocked → `{ \"status\": \"blocked\", \"comment\": \"...blocker...\" }`",
+            "",
+            "**If you skip this step, you will be re-invoked and post a duplicate comment.**",
+            "Make ONE PATCH call and then stop. Do not post a comment and then also PATCH — the PATCH comment field replaces a separate POST.",
+          ].join("\n")
+        : "";
     const prompt = joinPromptSections([
       instructionsPrefix,
       renderedBootstrapPrompt,
       wakePrompt,
       sessionHandoffNote,
+      taskContextNote,
       renderedPrompt,
+      dispositionReminder,
     ]);
     const promptMetrics = {
       promptChars: prompt.length,
@@ -560,7 +589,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       bootstrapPromptChars: renderedBootstrapPrompt.length,
       wakePromptChars: wakePrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
+      taskContextChars: taskContextNote.length,
       heartbeatPromptChars: renderedPrompt.length,
+      dispositionReminderChars: dispositionReminder.length,
     };
 
     // Optional diagnostic: surface OpenCode's own logs on stderr (captured into the
@@ -691,17 +722,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const initial = await runAttempt(sessionId);
       const initialFailed =
         !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
-      if (
-        sessionId &&
-        initialFailed &&
-        isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
-      ) {
-        await onLog(
-          "stdout",
-          `[paperclip] OpenCode session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-        );
-        const retry = await runAttempt(null);
-        return toResult(retry, true);
+
+      if (initialFailed) {
+        const isSessionError =
+          Boolean(sessionId) &&
+          isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr);
+        const autoRetry = asBoolean(config.autoRetry, !executionTargetIsRemote);
+        if (autoRetry) {
+          const reason = isSessionError
+            ? `session "${sessionId}" is unavailable`
+            : `exit ${initial.proc.exitCode ?? "?"} — ${(initial.parsed.errorMessage ?? firstNonEmptyLine(initial.rawStderr)) || "no detail"}`;
+          await onLog(
+            "stdout",
+            `[paperclip] OpenCode run failed (${reason}); retrying once with a fresh session.\n`,
+          );
+          const retry = await runAttempt(null);
+          return toResult(retry, true);
+        }
+        // autoRetry disabled — fall through to return the original failure
       }
 
       return toResult(initial);
