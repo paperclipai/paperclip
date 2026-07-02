@@ -18,7 +18,7 @@ import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { assigneeValueFromSelection, suggestedCommentAssigneeValue } from "../lib/assignees";
+import { assigneeValueFromSelection, formatAssigneeUserLabel, suggestedCommentAssigneeValue } from "../lib/assignees";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
@@ -162,6 +162,7 @@ import {
   XCircle,
 } from "lucide-react";
 import {
+  deriveResponsibleUser,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
@@ -457,6 +458,120 @@ function ActorIdentity({ evt, agentMap, userProfileMap }: { evt: ActivityEvent; 
     return <Identity name={profile?.label ?? "Board"} avatarUrl={profile?.image} size="sm" />;
   }
   return <Identity name={id || "Unknown"} size="sm" />;
+}
+
+type AttributionActor = {
+  kind: "agent" | "user";
+  id: string;
+  name: string;
+  avatarUrl?: string | null;
+};
+
+function sameAttributionActor(left: AttributionActor | null, right: AttributionActor | null): boolean {
+  return Boolean(left && right && left.kind === right.kind && left.id === right.id);
+}
+
+function AttributionIdentity({ actor }: { actor: AttributionActor }) {
+  return (
+    <Identity
+      name={actor.name}
+      avatarUrl={actor.avatarUrl}
+      size="xs"
+      shape={actor.kind === "agent" ? "square" : "circle"}
+      className="min-w-0 [&>span:last-child]:text-xs"
+    />
+  );
+}
+
+function IssueAttributionByline({
+  issue,
+  agentMap,
+  userProfileMap,
+  userLabelMap,
+  currentUserId,
+}: {
+  issue: Issue;
+  agentMap: Map<string, Agent>;
+  userProfileMap: ReadonlyMap<string, import("../lib/company-members").CompanyUserProfile>;
+  userLabelMap: ReadonlyMap<string, string>;
+  currentUserId: string | null;
+}) {
+  const creator: AttributionActor | null = issue.createdByAgentId
+    ? {
+        kind: "agent",
+        id: issue.createdByAgentId,
+        name: agentMap.get(issue.createdByAgentId)?.name ?? issue.createdByAgentId.slice(0, 8),
+      }
+    : issue.createdByUserId
+      ? {
+          kind: "user",
+          id: issue.createdByUserId,
+          name: formatAssigneeUserLabel(issue.createdByUserId, currentUserId, userLabelMap)
+            ?? userProfileMap.get(issue.createdByUserId)?.label
+            ?? "User",
+          avatarUrl: userProfileMap.get(issue.createdByUserId)?.image ?? null,
+        }
+      : null;
+  const assignee: AttributionActor | null = issue.assigneeAgentId
+    ? {
+        kind: "agent",
+        id: issue.assigneeAgentId,
+        name: agentMap.get(issue.assigneeAgentId)?.name ?? issue.assigneeAgentId.slice(0, 8),
+      }
+    : issue.assigneeUserId
+      ? {
+          kind: "user",
+          id: issue.assigneeUserId,
+          name: formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, userLabelMap)
+            ?? userProfileMap.get(issue.assigneeUserId)?.label
+            ?? "User",
+          avatarUrl: userProfileMap.get(issue.assigneeUserId)?.image ?? null,
+        }
+      : null;
+  const responsible = deriveResponsibleUser(issue);
+  const responsibleActor: AttributionActor | null = responsible.userId
+    ? {
+        kind: "user",
+        id: responsible.userId,
+        name: formatAssigneeUserLabel(responsible.userId, currentUserId, userLabelMap)
+          ?? userProfileMap.get(responsible.userId)?.label
+          ?? "User",
+        avatarUrl: userProfileMap.get(responsible.userId)?.image ?? null,
+      }
+    : null;
+  const showAssignee = Boolean(assignee && !sameAttributionActor(creator, assignee));
+  const showResponsible = !sameAttributionActor(creator, responsibleActor);
+
+  if (!creator && !showAssignee && !showResponsible) return null;
+
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+      {creator ? (
+        <>
+          <AttributionIdentity actor={creator} />
+          <span>kicked this off</span>
+        </>
+      ) : null}
+      {showAssignee && assignee ? (
+        <>
+          <span aria-hidden="true">-&gt;</span>
+          <AttributionIdentity actor={assignee} />
+          <span>is on it</span>
+        </>
+      ) : null}
+      {showResponsible ? (
+        <>
+          {(creator || showAssignee) ? <span aria-hidden="true">·</span> : null}
+          {responsibleActor ? (
+            <AttributionIdentity actor={responsibleActor} />
+          ) : (
+            <span className="text-muted-foreground">Unassigned</span>
+          )}
+          <span>responsible</span>
+        </>
+      ) : null}
+    </div>
+  );
 }
 
 function IssueSectionSkeleton({
@@ -4032,6 +4147,14 @@ export function IssueDetail() {
           onSave={(title) => updateIssue.mutateAsync({ title })}
           as="h2"
           className="text-xl font-bold"
+        />
+
+        <IssueAttributionByline
+          issue={issue}
+          agentMap={agentMap}
+          userProfileMap={userProfileMap}
+          userLabelMap={userLabelMap}
+          currentUserId={currentUserId}
         />
 
         <InlineEditor

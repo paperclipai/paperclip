@@ -33,6 +33,11 @@ export {
   deriveCaseType,
   type CaseTypePipelineRef,
 } from "./pipeline-case-type.js";
+export {
+  deriveResponsibleUser,
+  type ResponsibleUserAttribution,
+  type ResponsibleUserSource,
+} from "./issue-attribution.js";
 export type {
   PipelineAutomationRetryBlocker,
   PipelineAutomationRetryCleanupOptions,

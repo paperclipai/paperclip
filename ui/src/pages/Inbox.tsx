@@ -2488,6 +2488,9 @@ export function Inbox() {
                               ?? null
                             }
                             assigneeUserAvatarUrl={assigneeUserProfile?.image ?? null}
+                            creatorAgentName={agentName(issue.createdByAgentId)}
+                            creatorUserName={issue.createdByUserId ? (companyUserProfileMap.get(issue.createdByUserId)?.label ?? null) : null}
+                            creatorUserAvatarUrl={issue.createdByUserId ? (companyUserProfileMap.get(issue.createdByUserId)?.image ?? null) : null}
                             currentUserId={currentUserId}
                             parentIdentifier={issue.parentId ? (issueById.get(issue.parentId)?.identifier ?? null) : null}
                             parentTitle={issue.parentId ? (issueById.get(issue.parentId)?.title ?? null) : null}

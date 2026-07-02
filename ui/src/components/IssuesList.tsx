@@ -1883,6 +1883,9 @@ export function IssuesList({
                               assigneeName={agentName(issue.assigneeAgentId)}
                               assigneeUserName={assigneeUserLabel}
                               assigneeUserAvatarUrl={assigneeUserProfile?.image ?? null}
+                              creatorAgentName={agentName(issue.createdByAgentId)}
+                              creatorUserName={issue.createdByUserId ? (companyUserProfileMap.get(issue.createdByUserId)?.label ?? null) : null}
+                              creatorUserAvatarUrl={issue.createdByUserId ? (companyUserProfileMap.get(issue.createdByUserId)?.image ?? null) : null}
                               currentUserId={currentUserId}
                               parentIdentifier={parentIssue?.identifier ?? null}
                               parentTitle={parentIssue?.title ?? null}
@@ -1900,7 +1903,7 @@ export function IssuesList({
                                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
                                     >
                                       {issue.assigneeAgentId && agentName(issue.assigneeAgentId) ? (
-                                        <Identity name={agentName(issue.assigneeAgentId)!} size="sm" className="min-w-0" />
+                                        <Identity name={agentName(issue.assigneeAgentId)!} size="sm" shape="square" className="min-w-0" />
                                       ) : issue.assigneeUserId ? (
                                         <Identity
                                           name={assigneeUserLabel ?? "User"}
