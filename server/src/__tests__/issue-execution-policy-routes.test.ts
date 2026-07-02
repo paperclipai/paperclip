@@ -348,6 +348,130 @@ describe("issue execution policy routes", () => {
     );
   });
 
+  it("allows an agent-authored routine issue patch with a standard review execution policy", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1008",
+      title: "Routine issue needing review policy",
+      originKind: "routine_execution",
+      originRunId: "77777777-7777-4777-8777-777777777777",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({
+        status: "in_review",
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [
+            {
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [{ type: "agent", agentId: "44444444-4444-4444-8444-444444444444" }],
+            },
+          ],
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        actorAgentId: "33333333-3333-4333-8333-333333333333",
+        executionPolicy: expect.objectContaining({
+          mode: "normal",
+          commentRequired: true,
+          stages: [
+            expect.objectContaining({
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [
+                expect.objectContaining({
+                  type: "agent",
+                  agentId: "44444444-4444-4444-8444-444444444444",
+                }),
+              ],
+            }),
+          ],
+        }),
+        executionState: expect.objectContaining({
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: expect.objectContaining({
+            type: "agent",
+            agentId: "44444444-4444-4444-8444-444444444444",
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("returns a validation error for invalid routine issue execution policy participants", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1009",
+      title: "Routine issue with invalid policy",
+      originKind: "routine_execution",
+      originRunId: "77777777-7777-4777-8777-777777777777",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .set("X-Paperclip-Run-Id", "run-1")
+      .send({
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [
+            {
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [{ type: "agent" }],
+            },
+          ],
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: "Validation error" });
+    expect(JSON.stringify(res.body.details)).toContain("Agent participants require agentId");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("allows an agent-authored in_review transition with a scheduled monitor", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
