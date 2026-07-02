@@ -139,7 +139,7 @@ export const CreateSecret: Story = {
 /** Frame 5 — store-as-secret popover (interactive: click the ShieldAlert on the sensitive row). */
 export const StoreAsSecret: Story = {
   render: () => (
-    <Surface title="Store value as secret" hint="The sensitive-looking row shows a ShieldAlert “Store as secret” — click it to open the store popover (value preserved, masked).">
+    <Surface title="Store value as secret" hint="The sensitive-looking row shows a ShieldAlert “Store as secret” — click it to open the store popover (value preserved, masked). The adjacent “×” dismisses the hint and unmasks the value, keeping it as plain text.">
       <Editor initial={{ AWS_SECRET_ACCESS_KEY: { type: "plain", value: "wJalrXUtnFEMI0K7MDENGbPxRfiCYEXAMPLEKEY" } }} />
     </Surface>
   ),

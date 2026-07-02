@@ -201,4 +201,43 @@ describe("EnvironmentVariablesEditor", () => {
     const secretValueField = document.querySelector<HTMLInputElement>('input[aria-label="Secret value"]');
     expect(secretValueField?.value).toBe("supersecretvalue");
   });
+
+  it("lets the user dismiss the sensitive-value hint, unmasking the value and keeping it plain (§6.6)", async () => {
+    const onChange = vi.fn();
+    render(
+      <EnvironmentVariablesEditor
+        value={{ STRIPE_API_KEY: { type: "plain", value: "supersecretvalue" } }}
+        secrets={secrets}
+        onChange={onChange}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    const valueInput = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    expect(valueInput.type).toBe("password"); // auto-masked while the hint shows
+
+    const dismissButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Dismiss sensitive-value suggestion"]',
+    );
+    expect(dismissButton, "dismiss affordance should render alongside the hint").toBeTruthy();
+    dismissButton!.click();
+    await flush();
+
+    // Hint + its dismiss control are gone, and the value is no longer masked.
+    expect(
+      container.querySelector('button[title^="This value looks sensitive"]'),
+      "store-as-secret hint should be dismissed",
+    ).toBeNull();
+    expect(
+      container.querySelector('button[aria-label="Dismiss sensitive-value suggestion"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!.type,
+    ).toBe("text");
+
+    // Dismissal is a local UI concern — the emitted plain value is unchanged.
+    const lastEmit = onChange.mock.calls.at(-1)?.[0];
+    if (lastEmit) {
+      expect(lastEmit).toEqual({ STRIPE_API_KEY: { type: "plain", value: "supersecretvalue" } });
+    }
+  });
 });

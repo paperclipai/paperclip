@@ -271,16 +271,28 @@ export function EnvironmentVariableRow({
                     }}
                   />
                   {sensitive ? (
-                    <button
-                      type="button"
-                      onClick={openStoreAsSecret}
-                      disabled={disabled}
-                      className="flex shrink-0 items-center gap-1 border-l border-border px-2 text-[11px] text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
-                      title="This value looks sensitive — store it as a secret"
-                    >
-                      <ShieldAlert className="size-3.5" />
-                      <span className="hidden @[30rem]/env:inline">Store as secret</span>
-                    </button>
+                    <div className="flex shrink-0 items-stretch border-l border-border">
+                      <button
+                        type="button"
+                        onClick={openStoreAsSecret}
+                        disabled={disabled}
+                        className="flex items-center gap-1 px-2 text-[11px] text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
+                        title="This value looks sensitive — store it as a secret"
+                      >
+                        <ShieldAlert className="size-3.5" />
+                        <span className="hidden @[30rem]/env:inline">Store as secret</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onPatch({ sensitiveDismissed: true })}
+                        disabled={disabled}
+                        aria-label="Dismiss sensitive-value suggestion"
+                        title="Dismiss — keep this value as plain text"
+                        className="flex items-center px-1.5 text-amber-700/60 hover:bg-amber-500/10 hover:text-amber-700 dark:text-amber-400/60 dark:hover:text-amber-400"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </div>
                   ) : null}
                 </>
               ) : (
