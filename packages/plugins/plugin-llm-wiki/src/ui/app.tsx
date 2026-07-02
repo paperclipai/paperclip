@@ -105,6 +105,20 @@ function errorMessage(err: unknown): string {
   return String(err);
 }
 
+function bootstrapResultSummary(result: unknown): string {
+  const record = result && typeof result === "object"
+    ? result as { writtenFiles?: unknown; preservedFiles?: unknown }
+    : {};
+  const writtenFiles = Array.isArray(record.writtenFiles) ? record.writtenFiles : [];
+  const preservedFiles = Array.isArray(record.preservedFiles) ? record.preservedFiles : [];
+  if (writtenFiles.length > 0 && preservedFiles.length > 0) {
+    return `Created ${writtenFiles.length} baseline file(s); preserved ${preservedFiles.length}.`;
+  }
+  if (writtenFiles.length > 0) return `Created ${writtenFiles.length} baseline file(s).`;
+  if (preservedFiles.length > 0) return `Baseline already complete; preserved ${preservedFiles.length} file(s).`;
+  return "Folder checked and bootstrap completed.";
+}
+
 // ---------------------------------------------------------------------------
 // Shared types coming back from the worker.
 // ---------------------------------------------------------------------------
@@ -3225,8 +3239,7 @@ function UnconfiguredFolder({ context, folder, refresh }: { context: { companyId
     setErrorMsg(null);
     try {
       const result = await bootstrap({ companyId: context.companyId, path: path.trim() });
-      const written = (result as { writtenFiles?: string[] }).writtenFiles ?? [];
-      toast({ tone: "success", title: "Wiki root configured", body: written.length ? `Created ${written.length} bootstrap file(s).` : "Existing files preserved." });
+      toast({ tone: "success", title: "Wiki root configured", body: bootstrapResultSummary(result) });
       refresh();
     } catch (err) {
       const message = errorMessage(err);
@@ -6200,8 +6213,8 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
     if (!context.companyId || !folderPath.trim()) return;
     setFolderBusy(true);
     try {
-      await bootstrap({ companyId: context.companyId, path: folderPath.trim() });
-      toast({ tone: "success", title: "Folder updated" });
+      const result = await bootstrap({ companyId: context.companyId, path: folderPath.trim() });
+      toast({ tone: "success", title: "Wiki root repaired", body: bootstrapResultSummary(result) });
       settings.refresh();
     } catch (err) {
       toast({ tone: "error", title: "Folder update failed", body: errorMessage(err) });
@@ -6498,7 +6511,7 @@ function SettingsBody({ context, initialSection = "root" }: { context: { company
                   value={folderPath}
                   onChange={setFolderPath}
                   onApply={changeFolder}
-                  applyLabel="Apply path"
+                  applyLabel="Repair & bootstrap"
                   busy={folderBusy}
                   disabled={!folderPath.trim()}
                   onRefresh={() => settings.refresh()}

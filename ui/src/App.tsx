@@ -106,6 +106,9 @@ function boardRoutes() {
       <Route path="work" element={<WorkHub />} />
       <Route path="cycles" element={<Cycles />} />
       <Route path="issues" element={<Issues />} />
+      <Route path="initiatives" element={<Issues view="initiatives" />} />
+      <Route path="tickets" element={<Issues view="tickets" />} />
+      <Route path="ai-issues" element={<Issues view="ai" />} />
       <Route path="search" element={<Search />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />
       <Route path="issues/active" element={<Navigate to="/issues" replace />} />

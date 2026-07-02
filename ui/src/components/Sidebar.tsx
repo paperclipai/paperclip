@@ -120,8 +120,10 @@ export function Sidebar() {
         </div>
 
         <SidebarSection label="Work">
-          <SidebarNavItem to="/issues" label="Issues" icon={CircleDot} />
-          <SidebarNavItem to="/work" label="Work Hub" icon={BriefcaseBusiness} />
+          <SidebarNavItem to="/initiatives" label="Initiatives" icon={Target} />
+          <SidebarNavItem to="/tickets" label="Tickets" icon={BriefcaseBusiness} />
+          <SidebarNavItem to="/ai-issues" label="AI Issues" icon={CircleDot} />
+          <SidebarNavItem to="/work" label="Work Overview" icon={LayoutDashboard} />
           <SidebarNavItem to="/cycles" label="Cycles" icon={RefreshCw} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           <SidebarNavItem to="/goals" label="Goals" icon={Target} />

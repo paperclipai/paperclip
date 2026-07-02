@@ -177,19 +177,32 @@ function DesktopPropertiesPane() {
 
   return (
     <aside
-      className="hidden lg:flex border-l border-border bg-card flex-col shrink-0 overflow-hidden transition-[width,opacity] duration-200 ease-in-out h-full"
-      style={{ width: panelVisible ? 320 : 0, opacity: panelVisible ? 1 : 0 }}
+      className="hidden h-full shrink-0 overflow-hidden border-l border-border/60 bg-background/80 transition-[width,opacity] duration-200 ease-in-out lg:flex"
+      style={{ width: panelVisible ? 360 : 0, opacity: panelVisible ? 1 : 0 }}
     >
-      <div className="w-80 flex-1 flex flex-col min-w-[320px] min-h-0">
-        <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-          <span className="text-sm font-medium">Properties</span>
-          <Button variant="ghost" size="icon-xs" onClick={() => setPanelVisible(false)}>
-            <X className="h-4 w-4" />
-          </Button>
+      <div className="flex min-h-0 min-w-[360px] flex-1 p-3">
+        <div className="flex min-h-0 w-full flex-col overflow-hidden rounded-2xl border border-border/70 bg-card shadow-sm">
+          <div className="relative overflow-hidden border-b border-border/70">
+            <div
+              aria-hidden="true"
+              className="absolute inset-0 opacity-[0.07]"
+              style={{
+                backgroundImage:
+                  "radial-gradient(circle at 1px 1px, currentColor 1px, transparent 0)",
+                backgroundSize: "14px 14px",
+              }}
+            />
+            <div className="relative flex items-center justify-between px-4 py-3">
+              <span className="text-sm font-medium text-foreground">Properties</span>
+              <Button variant="ghost" size="icon-xs" onClick={() => setPanelVisible(false)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+          <ScrollArea className="flex-1">
+            <div className="p-4">{panelContent}</div>
+          </ScrollArea>
         </div>
-        <ScrollArea className="flex-1">
-          <div className="p-4">{panelContent}</div>
-        </ScrollArea>
       </div>
     </aside>
   );

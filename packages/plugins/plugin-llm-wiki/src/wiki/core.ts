@@ -2228,7 +2228,8 @@ export async function bootstrapWikiRoot(ctx: PluginContext, input: BootstrapInpu
     writtenFiles.push(path);
   }
 
-  await upsertWikiInstance(ctx, { companyId: input.companyId, wikiId, rootPath: folder.path });
+  const finalFolder = await ctx.localFolders.status(input.companyId, WIKI_ROOT_FOLDER_KEY);
+  await upsertWikiInstance(ctx, { companyId: input.companyId, wikiId, rootPath: finalFolder.path ?? folder.path });
   const managedSkills = await reconcileWikiSkillResources(ctx, input.companyId);
   const [managedAgent, managedProject] = await Promise.all([
     reconcileWikiAgentResource(ctx, input.companyId),
@@ -2246,7 +2247,7 @@ export async function bootstrapWikiRoot(ctx: PluginContext, input: BootstrapInpu
 
   return {
     status: "ok",
-    folder,
+    folder: finalFolder,
     wikiId,
     space: defaultSpace,
     managedAgent,

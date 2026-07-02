@@ -14,10 +14,69 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { CircleDot } from "lucide-react";
-import type { Issue } from "@paperclipai/shared";
+import type { Issue, IssueWorkItemType } from "@paperclipai/shared";
 
 const WORKSPACE_FILTER_ISSUE_LIMIT = 1000;
 const ISSUES_PAGE_SIZE = 500;
+
+type IssuesView = "all" | "initiatives" | "tickets" | "ai";
+
+type IssuesViewConfig = {
+  title: string;
+  description: string;
+  breadcrumb: string;
+  linkSource: string;
+  storageKey: string;
+  workItemType?: IssueWorkItemType;
+  createIssueLabel?: string;
+  createDefaults?: Record<string, unknown>;
+  includeRoutineExecutions?: boolean;
+  excludeRoutineExecutions?: boolean;
+};
+
+const ISSUE_VIEW_CONFIG: Record<IssuesView, IssuesViewConfig> = {
+  all: {
+    title: "Issues",
+    description: "All tracked work across human coordination and AI execution.",
+    breadcrumb: "Issues",
+    linkSource: "issues",
+    storageKey: "paperclip:issues-view",
+    includeRoutineExecutions: true,
+  },
+  initiatives: {
+    title: "Initiatives",
+    description: "Bigger scopes of work that collect human tickets and AI execution issues.",
+    breadcrumb: "Initiatives",
+    linkSource: "initiatives",
+    storageKey: "paperclip:initiatives-view",
+    workItemType: "initiative",
+    createIssueLabel: "Initiative",
+    createDefaults: { workItemType: "initiative" },
+    excludeRoutineExecutions: true,
+  },
+  tickets: {
+    title: "Tickets",
+    description: "Human-owned tasks for coordination, follow-up, and delivery accountability.",
+    breadcrumb: "Tickets",
+    linkSource: "tickets",
+    storageKey: "paperclip:tickets-view",
+    workItemType: "human_task",
+    createIssueLabel: "Ticket",
+    createDefaults: { workItemType: "human_task" },
+    excludeRoutineExecutions: true,
+  },
+  ai: {
+    title: "AI Issues",
+    description: "Execution work delegated to agents, kept separate from human workload.",
+    breadcrumb: "AI Issues",
+    linkSource: "ai-issues",
+    storageKey: "paperclip:ai-issues-view",
+    workItemType: "ai_task",
+    createIssueLabel: "AI Issue",
+    createDefaults: { workItemType: "ai_task" },
+    excludeRoutineExecutions: true,
+  },
+};
 
 export function getNextIssuesPageOffset(
   loadedPageSize: number,
@@ -56,7 +115,7 @@ export function buildIssuesSearchUrl(currentHref: string, search: string): strin
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
-export function Issues() {
+export function Issues({ view = "all" }: { view?: IssuesView }) {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const location = useLocation();
@@ -64,6 +123,7 @@ export function Issues() {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const fetchNextPageInFlightRef = useRef(false);
+  const viewConfig = ISSUE_VIEW_CONFIG[view];
 
   const urlSearch = searchParams.get("q") ?? "";
   const [searchOverride, setSearchOverride] = useState<{ search: string; locationSearch: string } | null>(null);
@@ -110,18 +170,29 @@ export function Issues() {
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Issues",
+        viewConfig.title,
         `${location.pathname}${location.search}${location.hash}`,
-        "issues",
+        viewConfig.linkSource,
       ),
-    [location.pathname, location.search, location.hash],
+    [location.pathname, location.search, location.hash, viewConfig.linkSource, viewConfig.title],
   );
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Issues" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: viewConfig.breadcrumb }]);
+  }, [setBreadcrumbs, viewConfig.breadcrumb]);
 
   const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
+  const workItemType = viewConfig.workItemType;
+  const searchFilters = useMemo(
+    () => ({
+      ...(participantAgentId ? { participantAgentId } : {}),
+      ...(workspaceIdFilter ? { workspaceId: workspaceIdFilter } : {}),
+      ...(workItemType ? { workItemType } : {}),
+      ...(viewConfig.excludeRoutineExecutions ? { excludeRoutineExecutions: true } : {}),
+    }),
+    [participantAgentId, viewConfig.excludeRoutineExecutions, workItemType, workspaceIdFilter],
+  );
+  const hasSearchFilters = Object.keys(searchFilters).length > 0;
 
   const {
     data: issuePages,
@@ -137,14 +208,19 @@ export function Issues() {
       participantAgentId ?? "__all__",
       "workspace",
       workspaceIdFilter ?? "__all__",
-      "with-routine-executions",
+      "work-item-type",
+      workItemType ?? "__all__",
+      viewConfig.includeRoutineExecutions ? "with-routine-executions" : "without-routine-executions",
+      viewConfig.excludeRoutineExecutions ? "exclude-routine-executions" : "include-routine-executions",
       "infinite",
       issuePageSize,
     ],
     queryFn: ({ pageParam }) => issuesApi.list(selectedCompanyId!, {
       participantAgentId,
       workspaceId: workspaceIdFilter,
-      includeRoutineExecutions: true,
+      ...(workItemType ? { workItemType } : {}),
+      ...(viewConfig.includeRoutineExecutions ? { includeRoutineExecutions: true } : {}),
+      ...(viewConfig.excludeRoutineExecutions ? { excludeRoutineExecutions: true } : {}),
       limit: issuePageSize,
       offset: pageParam,
     }),
@@ -186,25 +262,33 @@ export function Issues() {
   }
 
   return (
-    <IssuesList
-      issues={issues ?? []}
-      isLoading={isLoading}
-      isLoadingMoreIssues={isFetchingNextPage}
-      error={error as Error | null}
-      agents={agents}
-      projects={projects}
-      liveIssueIds={liveIssueIds}
-      viewStateKey="paperclip:issues-view"
-      issueLinkState={issueLinkState}
-      initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
-      initialWorkspaces={initialWorkspaces.length > 0 ? initialWorkspaces : undefined}
-      initialSearch={syncedSearch}
-      onSearchChange={handleSearchChange}
-      enableRoutineVisibilityFilter
-      hasMoreIssues={hasMoreServerIssues}
-      onLoadMoreIssues={loadMoreServerIssues}
-      onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId || workspaceIdFilter ? { participantAgentId, workspaceId: workspaceIdFilter } : undefined}
-    />
+    <div className="space-y-4">
+      <header className="flex flex-col gap-1 border-b border-border/70 pb-3">
+        <h1 className="text-lg font-semibold tracking-normal text-foreground">{viewConfig.title}</h1>
+        <p className="max-w-3xl text-sm text-muted-foreground">{viewConfig.description}</p>
+      </header>
+      <IssuesList
+        issues={issues ?? []}
+        isLoading={isLoading}
+        isLoadingMoreIssues={isFetchingNextPage}
+        error={error as Error | null}
+        agents={agents}
+        projects={projects}
+        liveIssueIds={liveIssueIds}
+        viewStateKey={viewConfig.storageKey}
+        issueLinkState={issueLinkState}
+        initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
+        initialWorkspaces={initialWorkspaces.length > 0 ? initialWorkspaces : undefined}
+        initialSearch={syncedSearch}
+        onSearchChange={handleSearchChange}
+        enableRoutineVisibilityFilter={view === "all"}
+        hasMoreIssues={hasMoreServerIssues}
+        onLoadMoreIssues={loadMoreServerIssues}
+        onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+        searchFilters={hasSearchFilters ? searchFilters : undefined}
+        baseCreateIssueDefaults={viewConfig.createDefaults}
+        createIssueLabel={viewConfig.createIssueLabel}
+      />
+    </div>
   );
 }
