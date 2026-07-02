@@ -19,6 +19,18 @@ In Paperclip, **task** and **issue** refer to the same work item. The UI may use
 
 Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For sandbox-backed local adapters, the Bash/tool environment may receive `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` for a run-scoped bridge instead of the host API directly; use those exact env vars from Bash/curl and do not assume the host port is reachable from browser or web tools. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints under `/api`, all JSON. Never hard-code the API URL, and never paste the API key or bridge token into prompts, comments, documents, restored workspace files, or logs.
 
+**Safe curl pattern (required):** Never pass `$PAPERCLIP_API_KEY` as a literal `-H "Authorization: Bearer $PAPERCLIP_API_KEY"` curl argument — process args are world-readable via `/proc/*/cmdline` on Linux. Always write auth headers to a mode-600 temp file and pass it with `--config`:
+
+```bash
+_AUTH=$(mktemp); chmod 600 "$_AUTH"
+printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+printf 'header = "X-Paperclip-Run-Id: %s"\n' "$PAPERCLIP_RUN_ID" >> "$_AUTH"
+curl -sS --config "$_AUTH" [other curl args]
+rm -f "$_AUTH"
+```
+
+The bundled helper `scripts/paperclip-upload-artifact.sh` applies this pattern automatically — prefer it over raw curl for uploads.
+
 Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes. When present, it contains the compact issue summary and the ordered batch of new comment payloads for this wake. Use it first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.

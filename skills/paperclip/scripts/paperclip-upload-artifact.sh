@@ -83,31 +83,43 @@ detect_content_type() {
   esac
 }
 
+write_auth_config() {
+  # Writes auth headers to a mode-600 temp file so they never appear in curl argv
+  # (process args are world-readable via /proc/*/cmdline on Linux).
+  local cfg
+  cfg="$(mktemp)"
+  chmod 600 "$cfg"
+  printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$cfg"
+  printf 'header = "X-Paperclip-Run-Id: %s"\n' "$PAPERCLIP_RUN_ID" >> "$cfg"
+  printf '%s' "$cfg"
+}
+
 request_json() {
   local method="$1"
   local url="$2"
   local body="${3:-}"
   local response_file
   local status_code
+  local auth_cfg
 
+  auth_cfg="$(write_auth_config)"
   response_file="$(mktemp)"
   if [[ -n "$body" ]]; then
     status_code="$(
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
+        --config "$auth_cfg" \
         "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
         -H 'Content-Type: application/json' \
         --data-binary "$body"
     )"
   else
     status_code="$(
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
-        "$url" \
-        -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"
+        --config "$auth_cfg" \
+        "$url"
     )"
   fi
+  rm -f "$auth_cfg"
 
   if [[ "$status_code" -lt 200 || "$status_code" -ge 300 ]]; then
     printf 'Request failed (%s): %s\n' "$status_code" "$url" >&2
@@ -128,17 +140,19 @@ upload_file() {
   local escaped_path
   local response_file
   local status_code
+  local auth_cfg
 
   escaped_path="${path//\\/\\\\}"
   escaped_path="${escaped_path//\"/\\\"}"
+  auth_cfg="$(write_auth_config)"
   response_file="$(mktemp)"
   status_code="$(
     curl -sS -X POST -w '%{http_code}' -o "$response_file" \
+      --config "$auth_cfg" \
       "$url" \
-      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-      -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
       -F "file=@\"${escaped_path}\";type=${content_type}"
   )"
+  rm -f "$auth_cfg"
 
   if [[ "$status_code" -lt 200 || "$status_code" -ge 300 ]]; then
     printf 'Upload failed (%s): %s\n' "$status_code" "$url" >&2
