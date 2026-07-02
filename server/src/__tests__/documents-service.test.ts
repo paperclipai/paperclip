@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   companies,
@@ -155,6 +156,28 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
 
     expect(updated.created).toBe(false);
     expect(updated.document.body).toBe("# Updated plan");
+  });
+
+  it("stores document revisions when the actor run id is not present in heartbeat_runs", async () => {
+    const { issueId } = await createIssueWithDocuments();
+
+    const updated = await svc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "# Detached run update",
+      baseRevisionId: (await svc.getIssueDocumentByKey(issueId, "plan"))?.latestRevisionId,
+      createdByRunId: randomUUID(),
+    });
+
+    expect(updated.created).toBe(false);
+    const revision = await db
+      .select({ createdByRunId: documentRevisions.createdByRunId })
+      .from(documentRevisions)
+      .where(eq(documentRevisions.id, updated.document.latestRevisionId))
+      .then((rows) => rows[0] ?? null);
+    expect(revision?.createdByRunId).toBeNull();
   });
 
   it("creates a new document instead of updating a locked document when requested", async () => {
