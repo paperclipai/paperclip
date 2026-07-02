@@ -149,7 +149,43 @@ export type CpsRunRequestAction =
   | "delegate_data_feasibility"
   | "run_next_safe_action"
   | "build_operator_dossier"
-  | "archive_failure_with_learning";
+  | "archive_failure_with_learning"
+  | "decompose_idea";
+
+// E3 idea intake: the operator pastes an X post / article / paper on the board.
+// The pasted text is the guaranteed snapshot (pages die); a URL fetch is
+// best-effort extra. Decomposition + routing happen in the bounded CPS consumer
+// via a decompose_idea run request — the board never runs research inline.
+export type CpsIdeaSourceType = "x_post" | "article" | "paper" | "other";
+
+export interface CreateCpsIdeaInput {
+  sourceType: CpsIdeaSourceType;
+  pastedText: string;
+  url?: string | null;
+  title?: string | null;
+  notes?: string | null;
+}
+
+export interface CpsIdeaIntake {
+  schema: "cps.idea_intake.v1";
+  id: string;
+  companyId: string;
+  sourceType: CpsIdeaSourceType;
+  title: string | null;
+  url: string | null;
+  notes: string | null;
+  createdAt: string;
+  createdBy: "board";
+  dir: string;
+  snapshot: {
+    pastedTextPath: string;
+    htmlPath: string | null;
+    fetchStatus: "ok" | "failed" | "skipped";
+    fetchError: string | null;
+  };
+  runRequestId: string;
+  progressPath: string;
+}
 
 export interface CreateCpsRunRequestInput {
   action: CpsRunRequestAction;

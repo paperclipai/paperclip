@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, BarChart3, Clock, Database, FileJson, FlaskConical, ListChecks, ListOrdered, ShieldCheck, Tag } from "lucide-react";
+import { AlertTriangle, BarChart3, Clock, Database, FileJson, FlaskConical, Lightbulb, ListChecks, ListOrdered, ShieldCheck, Tag } from "lucide-react";
 import type { CpsExperimentEntry } from "@paperclipai/shared";
 import { cpsExperimentsApi } from "../api/cps-experiments";
 import { EmptyState } from "../components/EmptyState";
@@ -491,6 +491,28 @@ export function CpsExperiments() {
     },
   });
 
+  const [ideaText, setIdeaText] = useState("");
+  const [ideaUrl, setIdeaUrl] = useState("");
+  const [ideaTitle, setIdeaTitle] = useState("");
+  const [ideaSourceType, setIdeaSourceType] = useState<"x_post" | "article" | "paper" | "other">("x_post");
+  const [ideaResult, setIdeaResult] = useState<string | null>(null);
+  const ideaMutation = useMutation({
+    mutationFn: () => cpsExperimentsApi.createIdea(selectedCompanyId!, {
+      sourceType: ideaSourceType,
+      pastedText: ideaText,
+      url: ideaUrl.trim() || null,
+      title: ideaTitle.trim() || null,
+    }),
+    onSuccess: (idea) => {
+      setIdeaResult(`Idea ${idea.id} captured — snapshot ${idea.snapshot.fetchStatus}, decomposition queued (${idea.runRequestId}). It appears below as an experiment card within the next consumer cycle (~15 min).`);
+      setIdeaText("");
+      setIdeaUrl("");
+      setIdeaTitle("");
+      void queryClient.invalidateQueries({ queryKey: ["cps-experiments", selectedCompanyId] });
+    },
+    onError: (err) => setIdeaResult(`Could not capture the idea: ${err instanceof Error ? err.message : String(err)}`),
+  });
+
   const filtered = useMemo(() => {
     if (!data) return [];
     const term = search.trim().toLowerCase();
@@ -548,6 +570,59 @@ export function CpsExperiments() {
             <CountCard label="blocked" value={(data.counts.judgmentByResultVerdict.DATA_BLOCKED ?? 0) + (data.counts.judgmentByResultVerdict.RULES_BLOCKED ?? 0) + (data.counts.strategyByDecision.BLOCKED_BY_DATA ?? 0)} tone="warn" />
           </div>
         </div>
+      </section>
+
+      <section className="rounded-2xl border border-border bg-card p-4">
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold">
+          <Lightbulb className="h-4 w-4 text-muted-foreground" /> Paste an idea
+          <span className="ml-auto text-[10px] font-normal text-muted-foreground">
+            X post · article · paper — your paste is the snapshot; the CEO decomposes and routes it to a pod
+          </span>
+        </div>
+        <div className="grid gap-2 lg:grid-cols-[1fr_16rem]">
+          <textarea
+            value={ideaText}
+            onChange={(event) => setIdeaText(event.target.value)}
+            rows={4}
+            placeholder="Paste the idea content here (the strategy claim, thread text, abstract…). This text is what survives if the page disappears — paste the substance, not just a link."
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground outline-none focus:border-primary"
+          />
+          <div className="flex flex-col gap-2">
+            <select
+              value={ideaSourceType}
+              onChange={(event) => setIdeaSourceType(event.target.value as "x_post" | "article" | "paper" | "other")}
+              className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus:border-primary"
+            >
+              <option value="x_post">X post</option>
+              <option value="article">Article</option>
+              <option value="paper">Paper / PDF</option>
+              <option value="other">Other</option>
+            </select>
+            <input
+              value={ideaUrl}
+              onChange={(event) => setIdeaUrl(event.target.value)}
+              placeholder="Source URL (optional, snapshotted now)"
+              className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus:border-primary"
+            />
+            <input
+              value={ideaTitle}
+              onChange={(event) => setIdeaTitle(event.target.value)}
+              placeholder="Short title (optional)"
+              className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus:border-primary"
+            />
+            <button
+              type="button"
+              disabled={ideaMutation.isPending || ideaText.trim().length < 20}
+              onClick={() => { setIdeaResult(null); ideaMutation.mutate(); }}
+              className="rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+            >
+              {ideaMutation.isPending ? "Capturing…" : "Send to the team"}
+            </button>
+          </div>
+        </div>
+        {ideaResult ? (
+          <div className="mt-2 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">{ideaResult}</div>
+        ) : null}
       </section>
 
       {data.operatorActions?.length ? (

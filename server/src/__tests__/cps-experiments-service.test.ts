@@ -262,6 +262,67 @@ describe("cpsExperimentsService.overview", () => {
     }
   });
 
+  it("captures an idea intake: dir, snapshot files, progress sidecar, and queued decomposition", async () => {
+    const root3 = await mkdtemp(path.join(os.tmpdir(), "cps-experiments-ideas-"));
+    try {
+      const runRequestsDir = path.join(root3, "paperclip-run-requests");
+      const svc = cpsExperimentsService({ selfPracticeDir: root3, runRequestsDir });
+      const idea = await svc.createIdeaIntake("company-1", {
+        sourceType: "x_post",
+        pastedText: "When $VIX spikes above 30 intraday, buying SPY at the close and selling at the next open wins 78% of the time since 2020.",
+        title: "VIX spike fade",
+      });
+
+      expect(idea.schema).toBe("cps.idea_intake.v1");
+      expect(idea.id).toMatch(/^idea-\d{8}T\d{6}-/);
+      expect(idea.snapshot.fetchStatus).toBe("skipped");
+      const source = await readFile(idea.snapshot.pastedTextPath, "utf8");
+      expect(source).toContain("$VIX spikes above 30");
+      const progress = JSON.parse(await readFile(idea.progressPath, "utf8"));
+      expect(progress.schema).toBe("cps.paper_progress.v1");
+      const stageStatus = Object.fromEntries(progress.stages.map((s: { stage: string; status: string }) => [s.stage, s.status]));
+      expect(stageStatus.intake).toBe("done");
+      expect(stageStatus.decomposed).toBe("in_progress");
+      expect(stageStatus.replication).toBe("pending");
+      const ideaJson = JSON.parse(await readFile(path.join(idea.dir, "IDEA.json"), "utf8"));
+      expect(ideaJson.id).toBe(idea.id);
+      // decomposition run request queued for the CPS consumer
+      const queue = await readFile(path.join(runRequestsDir, "QUEUE.jsonl"), "utf8");
+      const queued = queue.trim().split("\n").map((line) => JSON.parse(line));
+      const decompose = queued.find((row) => row.id === idea.runRequestId);
+      expect(decompose?.action).toBe("decompose_idea");
+      expect(decompose?.experimentId).toBe(idea.id);
+      expect(decompose?.safety).toMatchObject({ brokerActions: false, signalPublishing: false, allowPaidData: false, allowPaidCompute: false });
+    } finally {
+      await rm(root3, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects idea intakes without a real pasted snapshot or with unsafe URLs", async () => {
+    const root3 = await mkdtemp(path.join(os.tmpdir(), "cps-experiments-ideas-bad-"));
+    try {
+      const svc = cpsExperimentsService({ selfPracticeDir: root3, runRequestsDir: path.join(root3, "rr") });
+      await expect(svc.createIdeaIntake("company-1", { sourceType: "x_post", pastedText: "too short" }))
+        .rejects.toThrow(/pastedText/);
+      await expect(svc.createIdeaIntake("company-1", {
+        sourceType: "article",
+        pastedText: "A perfectly long enough pasted idea body for validation.",
+        url: "ftp://example.com/x",
+      })).rejects.toThrow(/http/);
+      await expect(svc.createIdeaIntake("company-1", {
+        sourceType: "article",
+        pastedText: "A perfectly long enough pasted idea body for validation.",
+        url: "http://127.0.0.1/admin",
+      })).rejects.toThrow(/public/);
+      await expect(svc.createIdeaIntake("company-1", {
+        sourceType: "bad_type" as never,
+        pastedText: "A perfectly long enough pasted idea body for validation.",
+      })).rejects.toThrow(/sourceType/);
+    } finally {
+      await rm(root3, { recursive: true, force: true });
+    }
+  });
+
   it("reports the backtest queue as absent when the queue dir does not exist", async () => {
     const svc = cpsExperimentsService({ indexFile, backtestQueueDir: path.join(root, "no-such-queue") });
     const out = await svc.overview("company-1");

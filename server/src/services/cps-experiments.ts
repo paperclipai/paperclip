@@ -7,6 +7,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type {
+  CreateCpsIdeaInput,
   CreateCpsJudgmentFeedbackInput,
   CreateCpsRunRequestInput,
   CpsBacktestQueue,
@@ -15,6 +16,8 @@ import type {
   CpsExperimentEntry,
   CpsExperimentJudgment,
   CpsExperimentOverview,
+  CpsIdeaIntake,
+  CpsIdeaSourceType,
   CpsJudgmentFeedback,
   CpsOperatorAction,
   CpsOperatorLabelSummary,
@@ -83,7 +86,78 @@ const RUN_REQUEST_ACTIONS: ReadonlySet<CpsRunRequestAction> = new Set([
   "run_next_safe_action",
   "build_operator_dossier",
   "archive_failure_with_learning",
+  "decompose_idea",
 ]);
+
+const IDEA_SOURCE_TYPES: ReadonlySet<CpsIdeaSourceType> = new Set(["x_post", "article", "paper", "other"]);
+const IDEA_FETCH_TIMEOUT_MS = 10_000;
+const IDEA_SNAPSHOT_MAX_BYTES = 2 * 1024 * 1024;
+
+function assertIdeaInput(input: CreateCpsIdeaInput) {
+  if (!IDEA_SOURCE_TYPES.has(input.sourceType)) {
+    throw new Error(`Unsupported idea sourceType: ${String(input.sourceType)}`);
+  }
+  const pasted = input.pastedText?.trim();
+  if (!pasted || pasted.length < 20) {
+    throw new Error("pastedText is required (paste the idea content — at least 20 characters); it is the snapshot that survives when the page dies");
+  }
+  if (pasted.length > 200_000) throw new Error("pastedText is too long");
+  if (input.url) {
+    let parsed: URL;
+    try {
+      parsed = new URL(input.url);
+    } catch {
+      throw new Error("url must be a valid absolute URL");
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("url must use http or https");
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (host === "localhost" || host.startsWith("127.") || host.startsWith("10.") || host.startsWith("192.168.") || host.endsWith(".local")) {
+      throw new Error("url must be a public address");
+    }
+  }
+  if (input.title && input.title.length > 200) throw new Error("title is too long");
+  if (input.notes && input.notes.length > 4000) throw new Error("notes are too long");
+}
+
+// Best-effort source snapshot at intake time — pages disappear, so we grab the
+// URL body immediately. Failure never blocks intake: the operator's pasted text
+// (already written) is the canonical snapshot.
+async function snapshotIdeaUrl(url: string, dir: string): Promise<{ htmlPath: string | null; fetchStatus: "ok" | "failed"; fetchError: string | null }> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), IDEA_FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        redirect: "follow",
+        headers: { "user-agent": "Mozilla/5.0 (compatible; PaperclipIdeaIntake/1.0)" },
+      });
+      const body = (await response.text()).slice(0, IDEA_SNAPSHOT_MAX_BYTES);
+      const htmlPath = path.join(dir, "SNAPSHOT.html");
+      await fs.writeFile(htmlPath, body, "utf8");
+      await fs.writeFile(path.join(dir, "SNAPSHOT.meta.json"), `${JSON.stringify({
+        schema: "cps.idea_snapshot_meta.v1",
+        url,
+        fetchedAt: new Date().toISOString(),
+        httpStatus: response.status,
+        contentType: response.headers.get("content-type"),
+        bytes: body.length,
+      }, null, 2)}\n`, "utf8");
+      if (!response.ok) {
+        return { htmlPath: path.normalize(htmlPath), fetchStatus: "failed", fetchError: `HTTP ${response.status}` };
+      }
+      return { htmlPath: path.normalize(htmlPath), fetchStatus: "ok", fetchError: null };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (err) {
+    return { htmlPath: null, fetchStatus: "failed", fetchError: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+const IDEA_PROGRESS_STAGES = ["intake", "decomposed", "inventory", "data_check", "replication", "oos_validation", "shadow", "dossier"] as const;
 
 const JUDGMENT_FEEDBACK_LABELS = new Set([
   "agree",
@@ -477,6 +551,74 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
       await fs.writeFile(requestPath, `${JSON.stringify(request, null, 2)}\n`, { flag: "wx" });
       await fs.appendFile(queuePath, line);
       return request;
+    },
+
+    // E3: idea intake. Writes the idea dir under self_practice (so it is indexed
+    // and rendered like any experiment), snapshots the source, seeds PROGRESS.json
+    // (intake done), and queues a bounded decompose_idea run request for the
+    // */15 CPS consumer. No research, no network beyond the one snapshot fetch.
+    async createIdeaIntake(companyId: string, input: CreateCpsIdeaInput): Promise<CpsIdeaIntake> {
+      assertIdeaInput(input);
+      const createdAt = new Date().toISOString();
+      const selfPracticeDir = options.selfPracticeDir ?? process.env.PAPERCLIP_CPS_SELF_PRACTICE_DIR ?? DEFAULT_SELF_PRACTICE_DIR;
+      const title = input.title?.trim() || null;
+      const pastedText = input.pastedText.trim();
+      const slugBasis = title ?? pastedText.split(/\s+/).slice(0, 6).join(" ");
+      const id = `idea-${createdAt.replace(/[-:.]/g, "").slice(0, 15)}-${safeSlug(slugBasis).slice(0, 60)}`;
+      const dir = path.join(selfPracticeDir, id);
+      await fs.mkdir(dir, { recursive: false });
+
+      const pastedTextPath = path.join(dir, "SOURCE.txt");
+      await fs.writeFile(pastedTextPath, `${pastedText}\n`, { flag: "wx" });
+
+      let snapshot: CpsIdeaIntake["snapshot"] = {
+        pastedTextPath: path.normalize(pastedTextPath),
+        htmlPath: null,
+        fetchStatus: "skipped",
+        fetchError: null,
+      };
+      if (input.url) {
+        const fetched = await snapshotIdeaUrl(input.url, dir);
+        snapshot = { ...snapshot, ...fetched };
+      }
+
+      const progressPath = path.join(dir, "PROGRESS.json");
+      await fs.writeFile(progressPath, `${JSON.stringify({
+        schema: "cps.paper_progress.v1",
+        paper_id: id,
+        updated_utc: createdAt,
+        generated_by: "board-idea-intake.v1",
+        stages: IDEA_PROGRESS_STAGES.map((stage) => ({
+          stage,
+          status: stage === "intake" ? "done" : stage === "decomposed" ? "in_progress" : "pending",
+          ...(stage === "intake" ? { at: createdAt } : {}),
+        })),
+      }, null, 2)}\n`, { flag: "wx" });
+
+      const runRequest = await this.createRunRequest(companyId, {
+        action: "decompose_idea",
+        experimentId: id,
+        prompt: `Decompose the board idea in ${id}: extract the verbatim claim, instruments, timeframe, and data needs from SOURCE.txt; route to the right pod; register in the don't-test-twice ledger. Mark anything not literally present as UNKNOWN — never invent rules.`,
+        maxRuntimeMinutes: 15,
+      });
+
+      const idea: CpsIdeaIntake = {
+        schema: "cps.idea_intake.v1",
+        id,
+        companyId,
+        sourceType: input.sourceType,
+        title,
+        url: input.url?.trim() || null,
+        notes: input.notes?.trim() || null,
+        createdAt,
+        createdBy: "board",
+        dir: path.normalize(dir),
+        snapshot,
+        runRequestId: runRequest.id,
+        progressPath: path.normalize(progressPath),
+      };
+      await fs.writeFile(path.join(dir, "IDEA.json"), `${JSON.stringify(idea, null, 2)}\n`, { flag: "wx" });
+      return idea;
     },
 
     async createJudgmentFeedback(companyId: string, input: CreateCpsJudgmentFeedbackInput): Promise<CpsJudgmentFeedback> {

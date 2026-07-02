@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import type { CreateCpsJudgmentFeedbackInput, CreateCpsRunRequestInput } from "@paperclipai/shared";
+import type { CreateCpsIdeaInput, CreateCpsJudgmentFeedbackInput, CreateCpsRunRequestInput } from "@paperclipai/shared";
 import { cpsExperimentsService } from "../services/cps-experiments.js";
 import { logActivity } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -42,6 +42,36 @@ export function cpsExperimentRoutes(db: Db) {
       res.status(202).json(request);
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : "Invalid CPS run request" });
+    }
+  });
+
+  // E3 idea intake: paste an X post / article / paper. Snapshot happens at
+  // intake; decomposition runs in the bounded CPS consumer, never inline here.
+  router.post("/companies/:companyId/cps-experiments/ideas", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    try {
+      const idea = await svc.createIdeaIntake(companyId, req.body as CreateCpsIdeaInput);
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "cps.idea_intake.created",
+        entityType: "cps_idea_intake",
+        entityId: idea.id,
+        details: {
+          sourceType: idea.sourceType,
+          url: idea.url,
+          snapshotFetchStatus: idea.snapshot.fetchStatus,
+          runRequestId: idea.runRequestId,
+        },
+      });
+      res.status(201).json(idea);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : "Invalid idea intake" });
     }
   });
 

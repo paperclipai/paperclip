@@ -506,6 +506,7 @@ export type {
   ResearchToolbeltStatus,
 } from "./research-papers.js";
 export type {
+  CreateCpsIdeaInput,
   CreateCpsJudgmentFeedbackInput,
   CreateCpsRunRequestInput,
   CpsBacktestQueue,
@@ -517,6 +518,8 @@ export type {
   CpsExperimentKind,
   CpsExperimentOverview,
   CpsExperimentStatus,
+  CpsIdeaIntake,
+  CpsIdeaSourceType,
   CpsJudgmentFeedback,
   CpsJudgmentFeedbackLabel,
   CpsJudgmentRouteRole,
