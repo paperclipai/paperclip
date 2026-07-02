@@ -213,6 +213,27 @@ describe("sanitizeModelText", () => {
     expect(sanitizeModelText(leaked)).toBeNull();
   });
 
+  // SAG-5692 fixture: qwen2.5-coder (opencode_local monitor adapter) leaked raw
+  // {"name","arguments"} tool-call JSON verbatim into a run comment on run
+  // 101264ff-40f9-456d-b284-f49c5a9844ea. Both the `read`/`filePath` and
+  // `get`/`url` bare forms below are the literal leaked payload lines.
+  it("returns null for the SAG-5692 read/filePath leak (single-line pure JSON)", () => {
+    const leaked = '{"name": "read", "arguments": {"filePath": ".../qwen2.5-coder.md"}}';
+    expect(sanitizeModelText(leaked)).toBeNull();
+  });
+
+  it("returns null for the SAG-5692 get/url leak (single-line pure JSON)", () => {
+    const leaked = '{"name": "get", "arguments": {"url": "https://opencode.ai/docs"}}';
+    expect(sanitizeModelText(leaked)).toBeNull();
+  });
+
+  it("returns null for the SAG-5692 leak as originally posted (both lines in one comment)", () => {
+    const leaked =
+      '{"name": "read", "arguments": {"filePath": ".../qwen2.5-coder.md"}}\n' +
+      '{"name": "get", "arguments": {"url": "https://opencode.ai/docs"}}';
+    expect(sanitizeModelText(leaked)).toBeNull();
+  });
+
   it("returns null when model leaks {tool,args} bridge dialect", () => {
     const leaked = 'Running command.\n{"tool": "bash", "args": ["ls", "-la"]}';
     expect(sanitizeModelText(leaked)).toBeNull();
