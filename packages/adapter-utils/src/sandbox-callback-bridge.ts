@@ -51,6 +51,13 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/companies\/[^/]+\/approvals$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/routines$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/skills$/ },
+  // ARC-263 / ADR-GOV-0002: agent-executable company-skill import. This is a TRANSPORT
+  // gate only; the handler enforces an explicit gov-matrix `skills:create` grant that is
+  // DEFAULT-DENY for agents. The allowlist entry and the capability check MUST ship in the
+  // same change (CSO condition C1) — never allow-list this route without the handler grant,
+  // that would be a privilege hole. Import only (create stays out): import introduces new
+  // code into the resident-fleet supply chain and is strictly more sensitive.
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/skills\/import$/ },
   { method: "GET", path: /^\/api\/projects\/[^/]+$/ },
   { method: "GET", path: /^\/api\/goals\/[^/]+$/ },
 

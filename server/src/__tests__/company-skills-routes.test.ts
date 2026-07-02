@@ -871,7 +871,12 @@ describe("company skill mutation permissions", () => {
     });
   });
 
-  it("allows agents with canCreateSkills to mutate company skills", async () => {
+  // ARC-263 / ADR-GOV-0002 (C3): the permissive canCreateSkills default still governs the
+  // non-import mutation routes (create/install/update/…). These two cases were previously
+  // asserted against the import route; they are repointed to `create` because import is now
+  // default-DENY (its dedicated coverage is below). The general default-ALLOW behavior for
+  // agents is unchanged for every route except import.
+  it("allows agents with canCreateSkills to create company skills", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
@@ -884,17 +889,14 @@ describe("company skill mutation permissions", () => {
       companyId: "company-1",
       runId: "run-1",
     }))
-      .post("/api/companies/company-1/skills/import")
-      .send({ source: "https://github.com/vercel-labs/agent-browser" });
+      .post("/api/companies/company-1/skills")
+      .send({ name: "Review", slug: "review", markdown: "# Review" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockCompanySkillService.importFromSource).toHaveBeenCalledWith(
-      "company-1",
-      "https://github.com/vercel-labs/agent-browser",
-    );
+    expect(mockCompanySkillService.createLocalSkill).toHaveBeenCalled();
   });
 
-  it("allows same-company agents with missing skill creation permission to mutate company skills", async () => {
+  it("allows same-company agents with missing skill creation permission to create company skills", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
@@ -907,13 +909,89 @@ describe("company skill mutation permissions", () => {
       companyId: "company-1",
       runId: "run-1",
     }))
+      .post("/api/companies/company-1/skills")
+      .send({ name: "Review", slug: "review", markdown: "# Review" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockCompanySkillService.createLocalSkill).toHaveBeenCalled();
+  });
+
+  // ARC-263 / ADR-GOV-0002: import is DEFAULT-DENY for agents. An agent whose canCreateSkills
+  // is not explicitly false (the permissive default that DOES allow create above) is still
+  // denied import without an explicit skills:create grant (C3).
+  it("denies agents without an explicit skills:create grant from importing, even with the permissive canCreateSkills default", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: { canCreateSkills: true },
+    });
+    mockAccessService.hasPermission.mockResolvedValue(false);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
       .post("/api/companies/company-1/skills/import")
       .send({ source: "https://github.com/vercel-labs/agent-browser" });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
-    expect(mockCompanySkillService.importFromSource).toHaveBeenCalledWith(
-      "company-1",
-      "https://github.com/vercel-labs/agent-browser",
+    // C2 anti-regression: the deny is an AUTHZ 403 that reached the handler, NOT the bridge's
+    // transport-level "Route not allowed". If a future allowlist drift skipped the capability
+    // layer, the error shape would change and this assertion would catch it in CI.
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Missing permission: skills:create");
+    expect(res.body.error).not.toMatch(/Route not allowed/);
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith("company-1", "agent", "agent-1", "skills:create");
+    expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
+  });
+
+  it("allows agents with an explicit skills:create grant to import company skills, and records provenance", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: { canCreateSkills: false },
+    });
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockCompanySkillService.importFromSource.mockResolvedValue({
+      imported: [
+        {
+          slug: "recall",
+          sourceType: "local_path",
+          sourceLocator: "/tmp/arc/skills/recall",
+          sourceRef: "sha256:deadbeef",
+        },
+      ],
+      warnings: [],
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "/tmp/arc/skills/recall" });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith("company-1", "agent", "agent-1", "skills:create");
+    expect(mockCompanySkillService.importFromSource).toHaveBeenCalledWith("company-1", "/tmp/arc/skills/recall");
+    // C4: per-operation content-pinning + provenance recorded in the activity log.
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "company.skills_imported",
+        details: expect.objectContaining({
+          imported: [
+            expect.objectContaining({
+              slug: "recall",
+              sourceLocator: "/tmp/arc/skills/recall",
+              contentHash: "sha256:deadbeef",
+            }),
+          ],
+        }),
+      }),
     );
   });
 
