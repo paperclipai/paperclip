@@ -33,6 +33,7 @@ import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
+  ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
   issueService,
 } from "../services/issues.ts";
@@ -56,6 +57,17 @@ describe("issue list limit helpers", () => {
     expect(clampIssueListLimit(0)).toBe(1);
     expect(clampIssueListLimit(25.9)).toBe(25);
     expect(clampIssueListLimit(ISSUE_LIST_MAX_LIMIT + 10)).toBe(ISSUE_LIST_MAX_LIMIT);
+  });
+
+  // Regression guard for DYS-2203: the default issue-list page size must stay
+  // small enough that a default-weight response body stays well under the
+  // sandbox callback bridge response body limit (256 KiB). At ~2.5 KiB per
+  // serialized issue, 50 issues serialize to ~125 KiB, leaving ~2x headroom.
+  // Raising this default back to a value that can exceed the bridge cap (e.g.
+  // the historical 500) re-introduces dropped sandbox callbacks.
+  it("keeps the default issue-list page size under the sandbox callback bridge body budget", () => {
+    expect(ISSUE_LIST_DEFAULT_LIMIT).toBe(50);
+    expect(ISSUE_LIST_DEFAULT_LIMIT).toBeLessThanOrEqual(80);
   });
 });
 

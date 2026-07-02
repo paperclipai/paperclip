@@ -706,4 +706,71 @@ describe("sandbox adapter execution targets", () => {
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));
     }
   });
+
+  // DYS-2200/DYS-2203: PAPERCLIP_BRIDGE_MAX_BODY_BYTES on the *host* process
+  // overrides the compiled default when no explicit `maxBodyBytes` is passed.
+  // The sandbox entrypoint reads a separate baked-in copy, so only the host env
+  // can move the limit that the host worker enforces.
+  it("honors the PAPERCLIP_BRIDGE_MAX_BODY_BYTES host env override when no explicit limit is passed", async () => {
+    vi.stubEnv("PAPERCLIP_BRIDGE_MAX_BODY_BYTES", "64");
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-env-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "codex");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    // 80 bytes is under the compiled 256 KiB default but over the env override
+    // of 64, so a 502 (not 200) proves the env value is the active limit.
+    const bodyOverEnv = "y".repeat(80);
+    const apiServer = createServer((_req, res) => {
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "content-length": String(Buffer.byteLength(bodyOverEnv, "utf8")),
+      });
+      res.end(bodyOverEnv);
+    });
+    await new Promise<void>((resolve, reject) => {
+      apiServer.once("error", reject);
+      apiServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const address = apiServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected the bridge env-override test API server to listen on a TCP port.");
+    }
+
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-env",
+      target,
+      runtimeRootDir,
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: `http://127.0.0.1:${address.port}`,
+    });
+    try {
+      const response = await fetch(`${bridge!.env.PAPERCLIP_API_URL}/api/agents/me`, {
+        headers: {
+          authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}`,
+          accept: "application/json",
+        },
+      });
+      expect(response.status).toBe(502);
+      await expect(response.json()).resolves.toEqual({
+        error: "Bridge response body exceeded the configured size limit of 64 bytes.",
+      });
+    } finally {
+      await bridge?.stop();
+      await new Promise<void>((resolve) => apiServer.close(() => resolve()));
+    }
+  });
 });

@@ -97,7 +97,13 @@ import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recover
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
-export const ISSUE_LIST_DEFAULT_LIMIT = 500;
+// Default page size for issue list endpoints. Capped at 50 (not 500) so that a
+// default-weight list response stays well under the sandbox callback bridge
+// response body limit (DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES, 256 KiB).
+// At ~2.5 KiB per serialized issue, 50 issues serialize to ~125 KiB, leaving
+// ~2x headroom under the 256 KiB bridge cap. Callers that need more rows must
+// paginate explicitly with `limit`/`offset`. See DYS-2203.
+export const ISSUE_LIST_DEFAULT_LIMIT = 50;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
