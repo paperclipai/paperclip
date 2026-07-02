@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -229,6 +230,27 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(documentRevisions).where(eq(documentRevisions.id, revisionId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueReadStates).where(eq(issueReadStates.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+  });
+
+  it("keeps company deletion successful when requested file cleanup fails", async () => {
+    const { companyId } = await seedFixture();
+    const rmSpy = vi.spyOn(fs, "rm").mockRejectedValueOnce(new Error("permission denied"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const removed = await companyService(db).remove(companyId, { deleteFiles: true });
+
+      expect(removed?.id).toBe(companyId);
+      expect(rmSpy).toHaveBeenCalled();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "removeCompanyFiles failed after company deletion:",
+        expect.any(Error),
+      );
+      await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
+    } finally {
+      rmSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 
   it("removes heartbeat events by run id before deleting company-owned runs", async () => {

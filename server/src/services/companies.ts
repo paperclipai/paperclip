@@ -1,4 +1,6 @@
 import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import {
   companies,
@@ -30,6 +32,8 @@ import {
   documents,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import { loadConfig } from "../config.js";
+import { resolvePaperclipConfigPath } from "../paths.js";
 import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
@@ -50,6 +54,7 @@ const SYSTEM_COMPANY_ACTOR: CompanyActivityActor = {
 
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
+  const COMPANY_ID_PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
   const environmentsSvc = environmentService(db);
   const heartbeat = heartbeatService(db);
 
@@ -243,6 +248,24 @@ export function companyService(db: Db) {
     throw new Error("Unable to allocate unique issue prefix");
   }
 
+  async function removeCompanyFiles(companyId: string) {
+    if (!COMPANY_ID_PATH_SEGMENT_RE.test(companyId)) {
+      throw unprocessable("Invalid company id for file deletion");
+    }
+
+    const config = loadConfig();
+    const instanceRoot = path.dirname(resolvePaperclipConfigPath());
+    const paths = [path.join(instanceRoot, "companies", companyId)];
+
+    if (config.storageProvider === "local_disk") {
+      paths.push(path.join(config.storageLocalDiskBaseDir, companyId));
+    }
+
+    for (const target of paths) {
+      await fs.rm(target, { recursive: true, force: true });
+    }
+  }
+
   return {
     list: async () => {
       const rows = await getCompanyQuery(db);
@@ -421,7 +444,7 @@ export function companyService(db: Db) {
       return result.company;
     },
 
-    remove: (id: string) =>
+    remove: (id: string, options?: { deleteFiles?: boolean }) =>
       db.transaction(async (tx) => {
         // Delete from child tables in dependency order
         const companyRunIds = await tx
@@ -465,6 +488,15 @@ export function companyService(db: Db) {
           .where(eq(companies.id, id))
           .returning();
         return rows[0] ?? null;
+      }).then(async (company) => {
+        if (company && options?.deleteFiles) {
+          try {
+            await removeCompanyFiles(id);
+          } catch (err) {
+            console.error("removeCompanyFiles failed after company deletion:", err);
+          }
+        }
+        return company;
       }),
 
     stats: () =>
