@@ -67,6 +67,7 @@ export function buildAntigravityLocalConfig(v: CreateConfigValues): Record<strin
   }
   if (Object.keys(env).length > 0) ac.env = env;
   ac.sandbox = !v.dangerouslyBypassSandbox;
+  ac.dangerouslySkipPermissions = v.dangerouslySkipPermissions === true;
 
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);

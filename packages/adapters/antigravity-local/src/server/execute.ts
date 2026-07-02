@@ -221,6 +221,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const command = asString(config.command, "agy");
   const model = asString(config.model, DEFAULT_ANTIGRAVITY_LOCAL_MODEL).trim();
   const sandbox = asBoolean(config.sandbox, false);
+  const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, false);
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -450,10 +451,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
   const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
   const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+  const sessionTargetMatches = adapterExecutionTargetSessionMatches(runtimeRemoteExecution, sessionExecutionTarget);
+  const sessionCwdMatches =
+    runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(sessionExecutionCwd);
   const canResumeSession =
     runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(sessionExecutionCwd)) &&
-    adapterExecutionTargetSessionMatches(runtimeRemoteExecution, sessionExecutionTarget);
+    sessionTargetMatches &&
+    (executionTargetIsRemote || sessionCwdMatches);
   const sessionId = canResumeSession ? runtimeSessionId : null;
   if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
     await onLog(
@@ -487,7 +491,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
   const commandNotes = (() => {
     const notes: string[] = ["Prompt is passed to Antigravity CLI via --print."];
-    notes.push("Added --dangerously-skip-permissions for unattended execution.");
+    if (dangerouslySkipPermissions) {
+      notes.push("Added --dangerously-skip-permissions for unattended execution.");
+    }
     if (!instructionsFilePath) return notes;
     if (instructionsPrefix.length > 0) {
       notes.push(
@@ -549,7 +555,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (model && model !== DEFAULT_ANTIGRAVITY_LOCAL_MODEL) {
       args.push("--model", model);
     }
-    args.push("--dangerously-skip-permissions");
+    if (dangerouslySkipPermissions) {
+      args.push("--dangerously-skip-permissions");
+    }
     if (sandbox) {
       args.push("--sandbox");
     }

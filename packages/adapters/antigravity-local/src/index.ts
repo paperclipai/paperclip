@@ -58,6 +58,7 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): model id. Defaults to auto.
 - sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox)
+- dangerouslySkipPermissions (boolean, optional): explicitly pass --dangerously-skip-permissions for unattended runs (default: false)
 - command (string, optional): defaults to "agy"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
@@ -68,6 +69,6 @@ Operational fields:
 
 Notes:
 - Runs use positional prompt arguments, not stdin (or stdin if command is invoked with --print -).
-- Sessions resume with --conversation when stored session cwd matches the current cwd.
+- Sessions resume with --conversation when the stored target identity matches; local sessions also require a matching cwd.
 - Authentication uses local Antigravity CLI credentials in ~/.gemini/.
 `;

@@ -2,6 +2,8 @@ import type { AdapterConfigFieldsProps } from "../types";
 import {
   DraftInput,
   Field,
+  ToggleField,
+  help,
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
 
@@ -19,33 +21,52 @@ export function AntigravityLocalConfigFields({
   mark,
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
-  if (hideInstructionsFile) return null;
   return (
     <>
-      <Field label="Agent instructions file" hint={instructionsFileHint}>
-        <div className="flex items-center gap-2">
-          <DraftInput
-            value={
-              isCreate
-                ? values!.instructionsFilePath ?? ""
-                : eff(
-                    "adapterConfig",
-                    "instructionsFilePath",
-                    String(config.instructionsFilePath ?? ""),
-                  )
-            }
-            onCommit={(v) =>
-              isCreate
-                ? set!({ instructionsFilePath: v })
-                : mark("adapterConfig", "instructionsFilePath", v || undefined)
-            }
-            immediate
-            className={inputClass}
-            placeholder="/absolute/path/to/AGENTS.md"
-          />
-          <ChoosePathButton />
-        </div>
-      </Field>
+      {!hideInstructionsFile && (
+        <Field label="Agent instructions file" hint={instructionsFileHint}>
+          <div className="flex items-center gap-2">
+            <DraftInput
+              value={
+                isCreate
+                  ? values!.instructionsFilePath ?? ""
+                  : eff(
+                      "adapterConfig",
+                      "instructionsFilePath",
+                      String(config.instructionsFilePath ?? ""),
+                    )
+              }
+              onCommit={(v) =>
+                isCreate
+                  ? set!({ instructionsFilePath: v })
+                  : mark("adapterConfig", "instructionsFilePath", v || undefined)
+              }
+              immediate
+              className={inputClass}
+              placeholder="/absolute/path/to/AGENTS.md"
+            />
+            <ChoosePathButton />
+          </div>
+        </Field>
+      )}
+      <ToggleField
+        label="Skip permissions"
+        hint={help.dangerouslySkipPermissions}
+        checked={
+          isCreate
+            ? values!.dangerouslySkipPermissions === true
+            : eff(
+                "adapterConfig",
+                "dangerouslySkipPermissions",
+                config.dangerouslySkipPermissions === true,
+              )
+        }
+        onChange={(v) =>
+          isCreate
+            ? set!({ dangerouslySkipPermissions: v })
+            : mark("adapterConfig", "dangerouslySkipPermissions", v)
+        }
+      />
     </>
   );
 }

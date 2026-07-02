@@ -1093,6 +1093,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
                       nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+                    } else if (t === "antigravity_local") {
+                      nextValues.dangerouslySkipPermissions = false;
                     }
                     set!(nextValues);
                   } else {
@@ -1119,6 +1121,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                           ? {
                               dangerouslyBypassApprovalsAndSandbox:
                                 DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
+                            }
+                          : {}),
+                        ...(t === "antigravity_local"
+                          ? {
+                              dangerouslySkipPermissions: false,
                             }
                           : {}),
                       },

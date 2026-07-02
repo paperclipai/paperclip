@@ -210,8 +210,8 @@ describe("antigravity_local execute", () => {
       expect(prompt).toContain("Paperclip API access note:");
       expect(prompt).toContain("PAPERCLIP_API_BASE");
       expect(prompt).toContain("$PAPERCLIP_API_BASE/api/issues/$PAPERCLIP_TASK_ID/comments");
+      expect(args).not.toContain("--dangerously-skip-permissions");
       expect(args).toEqual(expect.arrayContaining([
-        "--dangerously-skip-permissions",
         "--model",
         "Gemini 3.5 Flash (Low)",
         "--log-file",
@@ -335,6 +335,28 @@ describe("antigravity_local execute", () => {
     });
   });
 
+  it("passes the permission-bypass flag only when explicitly enabled", async () => {
+    const root = await makeTempRoot();
+
+    runProcessMock.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "done\n",
+      stderr: "",
+    });
+
+    await execute(buildContext(root, {
+      config: {
+        cwd: root,
+        dangerouslySkipPermissions: true,
+      },
+    }));
+
+    const args = runProcessMock.mock.calls[0]?.[3] as string[];
+    expect(args).toContain("--dangerously-skip-permissions");
+  });
+
   it("resumes remote sessions against the stable target identity, not the per-run prepared cwd", async () => {
     const root = await makeTempRoot();
     const preparedRemoteCwd = "/remote/workspace/.paperclip-runtime/runs/run-2/workspace";
@@ -394,6 +416,63 @@ describe("antigravity_local execute", () => {
         remoteCwd: "/remote/workspace",
       },
     });
+  });
+
+  it("resumes remote sessions even when an older session stored a volatile prepared cwd", async () => {
+    const root = await makeTempRoot();
+    const oldPreparedRemoteCwd = "/remote/workspace/.paperclip-runtime/runs/run-1/workspace";
+    const newPreparedRemoteCwd = "/remote/workspace/.paperclip-runtime/runs/run-2/workspace";
+    const sessionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    prepareRuntimeMock.mockResolvedValue({
+      workspaceRemoteDir: newPreparedRemoteCwd,
+      runtimeRootDir: "/remote/workspace/.paperclip-runtime/runs/run-2",
+      assetDirs: { skills: "/remote/workspace/.paperclip-runtime/runs/run-2/antigravity/skills" },
+      restoreWorkspace: async () => {},
+    });
+    runProcessMock.mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "resumed\n",
+      stderr: "",
+    });
+
+    await execute(buildContext(root, {
+      runtime: {
+        sessionId,
+        sessionParams: {
+          sessionId,
+          cwd: oldPreparedRemoteCwd,
+          remoteExecution: {
+            transport: "ssh",
+            host: "127.0.0.1",
+            port: 22,
+            username: "agent",
+            remoteCwd: "/remote/workspace",
+          },
+        },
+        sessionDisplayId: sessionId,
+        taskKey: null,
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "ssh",
+        remoteCwd: "/remote/workspace",
+        spec: {
+          host: "127.0.0.1",
+          port: 22,
+          username: "agent",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:22 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+    } as Partial<AdapterExecutionContext>));
+
+    const args = runProcessMock.mock.calls[0]?.[3] as string[];
+    expect(args).toEqual(expect.arrayContaining(["--conversation", sessionId]));
   });
 
   it("does not replace the whole remote Antigravity skills directory while syncing Paperclip skills", async () => {

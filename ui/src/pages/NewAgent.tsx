@@ -52,6 +52,8 @@ function createValuesForAdapterType(
     nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
   } else if (adapterType === "opencode_local") {
     nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+  } else if (adapterType === "antigravity_local") {
+    nextValues.dangerouslySkipPermissions = false;
   }
   return nextValues;
 }
