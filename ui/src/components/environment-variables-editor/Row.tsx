@@ -385,7 +385,31 @@ export function EnvironmentVariableRow({
               )}
             </div>
           </PopoverAnchor>
-          <PopoverContent align="start" className="w-auto p-3">
+          <PopoverContent
+            align="start"
+            className="w-auto p-3"
+            onInteractOutside={(event) => {
+              // Keep the create/store popover open when the dismissal
+              // originates from inside the value cell — i.e. the picker's
+              // combobox trigger or the source-switch dropdown trigger, both
+              // anchored here. Those controls close by returning focus to
+              // themselves; because the value cell is this popover's *anchor*
+              // (outside its content), Radix reads that focus-return as a
+              // `focusOutside` and would dismiss the just-opened popover.
+              //
+              // The picker's close animation can delay its focus-return past
+              // any single macrotask, so the `setTimeout(0)` open-defers
+              // (SearchableSelect / switchSource) cannot reliably win the race
+              // (PAP-12492). Guarding the interaction here makes the create /
+              // store popover survive that focus-return deterministically,
+              // independent of timing. Dismissals from anywhere *outside* the
+              // value cell (real outside clicks, Escape) are untouched.
+              const target = event.detail.originalEvent.target as Node | null;
+              if (target && valueCellRef.current?.contains(target)) {
+                event.preventDefault();
+              }
+            }}
+          >
             {secretPopover?.mode === "store" ? (
               <ConvertToSecretPopover
                 initialName={secretPopover.name}

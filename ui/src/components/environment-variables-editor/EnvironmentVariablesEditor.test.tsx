@@ -264,6 +264,60 @@ describe("EnvironmentVariablesEditor", () => {
     ).toBeTruthy();
   });
 
+  it("keeps the create-secret popover open when focus returns to a control inside the value cell (§6.4, PAP-12492)", async () => {
+    // Regression for the *fragile* part of the picker → create transition.
+    // The picker's combobox and the anchored create popover share the value
+    // cell as their anchor. When the picker tears down, Radix returns focus to
+    // the combobox trigger *inside* that anchor — and because the anchor sits
+    // outside the create popover's content, Radix reads that focus-return as a
+    // `focusOutside` and dismisses the just-opened create popover. The picker's
+    // close animation can delay that focus-return past the `setTimeout(0)` open
+    // defer, so a timing-based fix is not enough; the popover must survive an
+    // in-anchor focus-return whenever it lands. jsdom does not reproduce the
+    // animation-delayed focus-return on its own, so we drive it explicitly:
+    // open the create popover, then fire a late `focusin` on an in-anchor
+    // control and assert the popover is still open.
+    render(
+      <EnvironmentVariablesEditor
+        value={{ GH: { type: "secret_ref", secretId: "s1", version: 2 } }}
+        secrets={secrets}
+        onChange={() => {}}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    const combobox = container.querySelector<HTMLElement>('[role="combobox"]')!;
+    combobox.focus();
+    await flush();
+    const createItem = [...document.querySelectorAll<HTMLElement>("[cmdk-item]")].find((el) =>
+      el.textContent?.includes("Create"),
+    );
+    expect(createItem, "create item should be present in the open picker").toBeTruthy();
+    createItem!.click();
+    await flush();
+    expect(document.body.textContent, "create-secret popover should open").toContain("Create secret");
+
+    // Simulate the picker's animation-delayed focus-return landing on a control
+    // that lives inside the value cell (the source-switch trigger is a stable
+    // in-anchor target that doesn't reopen the picker). Moving focus fires a
+    // blur off the create popover's content (flipping Radix's "focus inside"
+    // flag) and then a focusin on the in-anchor control — exactly the sequence
+    // Radix reads as a `focusOutside`. Without the guard this dismisses the
+    // create popover; with it, the popover survives.
+    const sourceButton = container.querySelector<HTMLElement>('button[aria-label="Value source"]')!;
+    expect(sourceButton, "in-anchor Value source control should exist").toBeTruthy();
+    sourceButton.focus();
+    await flush();
+
+    expect(
+      document.body.textContent,
+      "create-secret popover must survive the in-anchor focus-return",
+    ).toContain("Create secret");
+    expect(
+      document.querySelector('input[aria-label="Secret name"]'),
+      "create-secret name field should still render",
+    ).toBeTruthy();
+  });
+
   it("opens the store-as-secret popover from the ⋯ overflow menu (PAP-12477)", async () => {
     // Regression: the ⋯ overflow → "Store as secret…" item is the same nested
     // shape as the picker's + Create item — a DropdownMenu whose onSelect opens
