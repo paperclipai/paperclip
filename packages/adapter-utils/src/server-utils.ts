@@ -582,10 +582,12 @@ type PaperclipWakeTreeHoldSummary = {
 };
 
 type PaperclipWakeCheckboxSelection = {
+  prompt: string | null;
   selectedOptionIds: string[];
   selectedOptions: Array<{
     id: string;
     label: string;
+    description: string | null;
   }>;
 };
 
@@ -940,6 +942,11 @@ function normalizePaperclipWakeTreeHoldSummary(value: unknown): PaperclipWakeTre
 
 function normalizePaperclipWakeCheckboxSelection(value: unknown): PaperclipWakeCheckboxSelection | null {
   const selection = parseObject(value);
+  const hasExplicitSelection =
+    Object.prototype.hasOwnProperty.call(selection, "prompt") ||
+    Object.prototype.hasOwnProperty.call(selection, "selectedOptionIds") ||
+    Object.prototype.hasOwnProperty.call(selection, "selectedOptions");
+  const prompt = asString(selection.prompt, "").trim() || null;
   const selectedOptionIds = Array.isArray(selection.selectedOptionIds)
     ? selection.selectedOptionIds
         .map((entry) => asString(entry, "").trim())
@@ -954,16 +961,18 @@ function normalizePaperclipWakeCheckboxSelection(value: unknown): PaperclipWakeC
           return {
             id,
             label: asString(option.label, id).trim() || id,
+            description: asString(option.description, "").trim() || null,
           };
         })
-        .filter((entry): entry is { id: string; label: string } => Boolean(entry))
+        .filter((entry): entry is { id: string; label: string; description: string | null } => Boolean(entry))
     : [];
 
-  if (selectedOptionIds.length === 0 && selectedOptions.length === 0) return null;
+  if (!hasExplicitSelection && selectedOptionIds.length === 0 && selectedOptions.length === 0 && !prompt) return null;
   const optionById = new Map(selectedOptions.map((option) => [option.id, option]));
   return {
+    prompt,
     selectedOptionIds,
-    selectedOptions: selectedOptionIds.map((id) => optionById.get(id) ?? { id, label: id }),
+    selectedOptions: selectedOptionIds.map((id) => optionById.get(id) ?? { id, label: id, description: null }),
   };
 }
 
@@ -1280,9 +1289,16 @@ export function renderPaperclipWakePrompt(
     lines.push(`- issue priority: ${normalized.issue.priority}`);
   }
   if (normalized.checkboxSelection) {
+    if (normalized.checkboxSelection.prompt) {
+      lines.push(`- checkbox prompt: ${normalized.checkboxSelection.prompt}`);
+    }
     const selectedOptionIds = normalized.checkboxSelection.selectedOptionIds.join(", ") || "(none)";
     const selectedOptions = normalized.checkboxSelection.selectedOptions
-      .map((option) => `${option.id}${option.label && option.label !== option.id ? ` (${option.label})` : ""}`)
+      .map((option) => {
+        const label = option.label && option.label !== option.id ? ` (${option.label})` : "";
+        const description = option.description ? ` - ${option.description}` : "";
+        return `${option.id}${label}${description}`;
+      })
       .join(", ") || "(none)";
     lines.push(`- checkbox selection ids: ${selectedOptionIds}`);
     lines.push(`- checkbox selection options: ${selectedOptions}`);

@@ -1041,15 +1041,17 @@ function readCheckboxSelectionForWake(input: {
           return {
             id,
             label: readNonEmptyString(option.label) ?? id,
+            description: readNonEmptyString(option.description),
           };
         })
-        .filter((value): value is { id: string; label: string } => Boolean(value))
+        .filter((value): value is { id: string; label: string; description: string | null } => Boolean(value))
     : [];
   const optionById = new Map(options.map((option) => [option.id, option]));
 
   return {
+    prompt: readNonEmptyString(payload.prompt),
     selectedOptionIds,
-    selectedOptions: selectedOptionIds.map((id) => optionById.get(id) ?? { id, label: id }),
+    selectedOptions: selectedOptionIds.map((id) => optionById.get(id) ?? { id, label: id, description: null }),
   };
 }
 

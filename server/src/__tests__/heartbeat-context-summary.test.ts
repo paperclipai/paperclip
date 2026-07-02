@@ -124,8 +124,9 @@ describe("mergeCoalescedContextSnapshot", () => {
         interactionStatus: "accepted",
         continuationPolicy: "wake_assignee_on_accept",
         checkboxSelection: {
+          prompt: "Delete selected files?",
           selectedOptionIds: ["file-b"],
-          selectedOptions: [{ id: "file-b", label: "b.txt" }],
+          selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
         },
         wakeReason: "issue_commented",
       },
@@ -158,8 +159,9 @@ describe("mergeCoalescedContextSnapshot", () => {
         interactionStatus: "accepted",
         continuationPolicy: "wake_assignee_on_accept",
         checkboxSelection: {
+          prompt: "Delete selected files?",
           selectedOptionIds: ["file-b"],
-          selectedOptions: [{ id: "file-b", label: "b.txt" }],
+          selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
         },
         wakeReason: "issue_commented",
       },
@@ -170,8 +172,9 @@ describe("mergeCoalescedContextSnapshot", () => {
     expect(merged.interactionStatus).toBe("accepted");
     expect(merged.continuationPolicy).toBe("wake_assignee_on_accept");
     expect(merged.checkboxSelection).toEqual({
+      prompt: "Delete selected files?",
       selectedOptionIds: ["file-b"],
-      selectedOptions: [{ id: "file-b", label: "b.txt" }],
+      selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
     });
   });
 });

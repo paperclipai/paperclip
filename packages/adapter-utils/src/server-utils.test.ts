@@ -655,8 +655,9 @@ describe("renderPaperclipWakePrompt", () => {
       interactionKind: "request_checkbox_confirmation",
       interactionStatus: "accepted",
       checkboxSelection: {
+        prompt: "Delete selected files?",
         selectedOptionIds: ["file-b"],
-        selectedOptions: [{ id: "file-b", label: "b.txt" }],
+        selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
       },
       commentWindow: {
         requestedCount: 0,
@@ -668,12 +669,52 @@ describe("renderPaperclipWakePrompt", () => {
     };
 
     const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("- checkbox prompt: Delete selected files?");
     expect(prompt).toContain("- checkbox selection ids: file-b");
-    expect(prompt).toContain("- checkbox selection options: file-b (b.txt)");
+    expect(prompt).toContain("- checkbox selection options: file-b (b.txt) - Generated build output");
     expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
       checkboxSelection: {
+        prompt: "Delete selected files?",
         selectedOptionIds: ["file-b"],
-        selectedOptions: [{ id: "file-b", label: "b.txt" }],
+        selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
+      },
+    });
+  });
+
+  it("renders accepted empty checkbox selections explicitly", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1581",
+        title: "Delete selected files",
+        status: "in_progress",
+      },
+      interactionKind: "request_checkbox_confirmation",
+      interactionStatus: "accepted",
+      checkboxSelection: {
+        prompt: "Delete selected files?",
+        selectedOptionIds: [],
+        selectedOptions: [],
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("- checkbox prompt: Delete selected files?");
+    expect(prompt).toContain("- checkbox selection ids: (none)");
+    expect(prompt).toContain("- checkbox selection options: (none)");
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      checkboxSelection: {
+        prompt: "Delete selected files?",
+        selectedOptionIds: [],
+        selectedOptions: [],
       },
     });
   });
