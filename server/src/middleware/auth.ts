@@ -47,6 +47,36 @@ async function resolveLegacyRunResponsibleUserId(
   return normalizeOptionalString(run?.responsibleUserId);
 }
 
+async function loadResponsibleUserMemberships(
+  db: Db,
+  input: { companyId: string; userId: string | null },
+) {
+  if (!input.userId) return [];
+  const [user, memberships] = await Promise.all([
+    db
+      .select({ id: authUsers.id })
+      .from(authUsers)
+      .where(eq(authUsers.id, input.userId))
+      .then((rows) => rows[0] ?? null),
+    db
+      .select({
+        companyId: companyMemberships.companyId,
+        membershipRole: companyMemberships.membershipRole,
+        status: companyMemberships.status,
+      })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, input.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, input.userId),
+          eq(companyMemberships.status, "active"),
+        ),
+      ),
+  ]);
+  return user ? memberships : [];
+}
+
 async function auditAgentJwtRunHeaderMismatch(
   db: Db,
   input: { companyId: string; agentId: string; claimRunId: string; headerRunId: string; method: string; url: string },
@@ -248,6 +278,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             agentId: claims.sub,
             runId: claims.run_id,
           });
+      const onBehalfOfMemberships = await loadResponsibleUserMemberships(db, {
+        companyId: claims.company_id,
+        userId: onBehalfOfUserId,
+      });
 
       req.actor = {
         type: "agent",
@@ -256,6 +290,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         keyId: undefined,
         runId: claims.run_id,
         onBehalfOfUserId,
+        onBehalfOfMemberships,
         source: "agent_jwt",
       };
       next();
@@ -285,6 +320,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       keyId: key.id,
       keyScope: normalizeAgentApiKeyScope(key.scopeConfig),
       onBehalfOfUserId: normalizeOptionalString(key.responsibleUserId),
+      onBehalfOfMemberships: await loadResponsibleUserMemberships(db, {
+        companyId: key.companyId,
+        userId: normalizeOptionalString(key.responsibleUserId),
+      }),
       runId: runIdHeader || undefined,
       source: "agent_key",
     };
