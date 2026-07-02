@@ -1,14 +1,16 @@
 import os from "node:os";
 import path from "node:path";
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, ne, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents } from "@paperclipai/db";
 
 // Subscription-scoped auth homes for local CLI adapters. Two active agents
 // resolving the same home means two agents share one provider login, which
 // risks cross-account/credential mixing when the homes belong to different
-// employees (see PAU-263/PAU-281).
+// employees.
 export const SUBSCRIPTION_HOME_ENV_KEYS = ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "HOME"] as const;
+const NON_RUNNABLE_SUBSCRIPTION_HOME_AGENT_STATUSES = ["paused", "pending_approval", "terminated"] as const;
+const nonRunnableSubscriptionHomeAgentStatuses = new Set<string>(NON_RUNNABLE_SUBSCRIPTION_HOME_AGENT_STATUSES);
 
 export type SubscriptionHomeEnvKey = (typeof SUBSCRIPTION_HOME_ENV_KEYS)[number];
 
@@ -63,6 +65,14 @@ export function normalizeSubscriptionHomePath(value: string): string {
   return path.resolve(expanded);
 }
 
+function subscriptionHomeComparisonKey(homePath: string): string {
+  return homePath.toLowerCase();
+}
+
+export function isRunnableSubscriptionHomeAgentStatus(status: string | null | undefined): boolean {
+  return !nonRunnableSubscriptionHomeAgentStatuses.has(status ?? "");
+}
+
 export function allowsSharedSubscriptionHome(adapterConfig: unknown): boolean {
   const config = asRecord(adapterConfig);
   return config?.allowSharedSubscriptionHome === true;
@@ -94,12 +104,15 @@ export function findSubscriptionHomeConflicts(input: {
   if (input.candidateBindings.length === 0) return [];
   const conflicts: SubscriptionHomeConflict[] = [];
   for (const other of input.otherAgents) {
+    if (!isRunnableSubscriptionHomeAgentStatus(other.status)) continue;
     if (allowsSharedSubscriptionHome(other.adapterConfig)) continue;
     const otherBindings = listSubscriptionHomeBindings(other.adapterConfig);
     if (otherBindings.length === 0) continue;
     for (const candidate of input.candidateBindings) {
       for (const otherBinding of otherBindings) {
-        if (candidate.homePath !== otherBinding.homePath) continue;
+        if (subscriptionHomeComparisonKey(candidate.homePath) !== subscriptionHomeComparisonKey(otherBinding.homePath)) {
+          continue;
+        }
         conflicts.push({
           envKey: candidate.envKey,
           otherEnvKey: otherBinding.envKey,
@@ -131,7 +144,7 @@ export async function listOtherActiveAgentsForSubscriptionHomeCheck(
       and(
         eq(agents.companyId, companyId),
         ne(agents.id, excludeAgentId),
-        ne(agents.status, "terminated"),
+        notInArray(agents.status, [...NON_RUNNABLE_SUBSCRIPTION_HOME_AGENT_STATUSES]),
       ),
     );
 }

@@ -1194,10 +1194,10 @@ export function agentRoutes(
     };
   }
 
-  // Runtime hardening (PAU-281): two active agents of one company must not
-  // resolve the same subscription home (CODEX_HOME / CLAUDE_CONFIG_DIR / HOME)
-  // through their adapter env, because that silently shares one provider login
-  // across employees. Intentional sharing (same employee, several agents) is
+  // Runtime hardening: two active agents of one company must not resolve the
+  // same subscription home (CODEX_HOME / CLAUDE_CONFIG_DIR / HOME) through
+  // their adapter env, because that silently shares one provider login across
+  // employees. Intentional sharing (same employee, several agents) is
   // acknowledged via adapterConfig.allowSharedSubscriptionHome=true.
   async function assertNoCrossAgentSubscriptionHomeConflict(
     companyId: string,

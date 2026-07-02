@@ -103,6 +103,50 @@ describe("findSubscriptionHomeConflicts", () => {
     expect(conflicts[0]).toMatchObject({ envKey: "CLAUDE_CONFIG_DIR", otherEnvKey: "HOME" });
   });
 
+  it("flags case-only differences as the same subscription home", () => {
+    const conflicts = findSubscriptionHomeConflicts({
+      candidateBindings: listSubscriptionHomeBindings({
+        env: { CODEX_HOME: "/Users/Alice/.codex" },
+      }),
+      otherAgents: [
+        {
+          id: "agent-case",
+          adapterConfig: { env: { CODEX_HOME: "/Users/alice/.codex" } },
+        },
+      ],
+    });
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toMatchObject({
+      envKey: "CODEX_HOME",
+      otherEnvKey: "CODEX_HOME",
+      homePath: "/Users/Alice/.codex",
+    });
+  });
+
+  it("ignores agents that are not currently runnable", () => {
+    const conflicts = findSubscriptionHomeConflicts({
+      candidateBindings,
+      otherAgents: [
+        {
+          id: "agent-paused",
+          status: "paused",
+          adapterConfig: { env: { CLAUDE_CONFIG_DIR: "/auth-homes/claude-aleks" } },
+        },
+        {
+          id: "agent-pending",
+          status: "pending_approval",
+          adapterConfig: { env: { CLAUDE_CONFIG_DIR: "/auth-homes/claude-aleks" } },
+        },
+        {
+          id: "agent-terminated",
+          status: "terminated",
+          adapterConfig: { env: { CLAUDE_CONFIG_DIR: "/auth-homes/claude-aleks" } },
+        },
+      ],
+    });
+    expect(conflicts).toEqual([]);
+  });
+
   it("does not flag distinct homes or agents without explicit subscription env", () => {
     const conflicts = findSubscriptionHomeConflicts({
       candidateBindings,

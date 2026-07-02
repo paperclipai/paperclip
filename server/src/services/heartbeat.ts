@@ -9837,11 +9837,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
-    // Runtime hardening (PAU-281): warn (never abort) when this run resolves a
-    // subscription home (CODEX_HOME / CLAUDE_CONFIG_DIR / HOME) that another
-    // active agent of the same company also binds — that means two agents share
-    // one provider login, which risks cross-employee account mixing. Env keys
-    // resolved from secrets are skipped so secret-derived values never reach logs.
+    // Runtime hardening: warn (never abort) when this run resolves a subscription
+    // home (CODEX_HOME / CLAUDE_CONFIG_DIR / HOME) that another active agent of
+    // the same company also binds. Env keys resolved from secrets are skipped so
+    // secret-derived values never reach logs.
     try {
       const subscriptionHomeBindings = listSubscriptionHomeBindings(effectiveResolvedConfig, {
         skipEnvKeys: secretKeys,
