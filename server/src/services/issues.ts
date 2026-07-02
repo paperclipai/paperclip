@@ -1130,6 +1130,14 @@ const LEGACY_PLUGIN_OPERATION_ORIGIN_KINDS = [
   "plugin:paperclipai.content-machine:evaluation",
   "plugin:paperclipai.content-machine:source-sync",
 ] as const;
+const AUTO_HIDE_SYSTEM_ORIGIN_KINDS = new Set([
+  "routine_execution",
+  "task_watchdog",
+]);
+const AUTO_HIDE_SYSTEM_TERMINAL_STATUSES = new Set([
+  "done",
+  "cancelled",
+]);
 
 function nonPluginOperationIssueCondition() {
   return sql<boolean>`NOT (
@@ -1146,6 +1154,15 @@ function shouldIncludePluginOperationIssues(filters: IssueFilters | undefined) {
     filters?.originKindPrefix ||
     filters?.originId ||
     filters?.projectId,
+  );
+}
+
+function shouldAutoHideSystemIssue(originKind: string | null | undefined, status: string | null | undefined) {
+  return Boolean(
+    originKind &&
+    status &&
+    AUTO_HIDE_SYSTEM_ORIGIN_KINDS.has(originKind) &&
+    AUTO_HIDE_SYSTEM_TERMINAL_STATUSES.has(status),
   );
 }
 
@@ -5186,6 +5203,9 @@ export function issueService(db: Db) {
         if (values.status === "cancelled") {
           values.cancelledAt = new Date();
         }
+        if (values.hiddenAt === undefined && shouldAutoHideSystemIssue(values.originKind, values.status)) {
+          values.hiddenAt = new Date();
+        }
         Object.assign(
           values,
           buildInitialIssueMonitorFields({
@@ -5366,6 +5386,13 @@ export function issueService(db: Db) {
         patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
       }
+      if (issueData.hiddenAt === undefined && issueData.status) {
+        if (shouldAutoHideSystemIssue(existing.originKind, issueData.status)) {
+          patch.hiddenAt = existing.hiddenAt ?? new Date();
+        } else if (AUTO_HIDE_SYSTEM_ORIGIN_KINDS.has(existing.originKind) && existing.hiddenAt) {
+          patch.hiddenAt = null;
+        }
+      }
 
       const runUpdate = async (tx: any) => {
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
@@ -5506,6 +5533,10 @@ export function issueService(db: Db) {
           .select({ documentId: issueDocuments.documentId })
           .from(issueDocuments)
           .where(eq(issueDocuments.issueId, id));
+
+        await tx
+          .delete(issueInboxArchives)
+          .where(eq(issueInboxArchives.issueId, id));
 
         const removedIssue = await tx
           .delete(issues)

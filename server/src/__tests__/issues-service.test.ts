@@ -1674,6 +1674,112 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(afterUpdate.map((i) => i.id)).toContain(issueId);
   });
 
+  it("auto-hides terminal system-generated issues from the default visible list", async () => {
+    const companyId = randomUUID();
+    const routineIssueId = randomUUID();
+    const watchdogIssueId = randomUUID();
+    const manualIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: routineIssueId,
+        companyId,
+        title: "Merge closeout / issue resolution (core-product v1)",
+        status: "todo",
+        priority: "medium",
+        originKind: "routine_execution",
+      },
+      {
+        id: watchdogIssueId,
+        companyId,
+        title: "Reusable watchdog issue",
+        status: "todo",
+        priority: "medium",
+        originKind: "task_watchdog",
+      },
+      {
+        id: manualIssueId,
+        companyId,
+        title: "Manual completed lane",
+        status: "todo",
+        priority: "medium",
+        originKind: "manual",
+      },
+    ]);
+
+    expect(new Set((await svc.list(companyId)).map((issue) => issue.id))).toEqual(new Set([
+      routineIssueId,
+      watchdogIssueId,
+      manualIssueId,
+    ]));
+
+    await svc.update(routineIssueId, { status: "done" });
+    await svc.update(watchdogIssueId, { status: "cancelled" });
+    await svc.update(manualIssueId, { status: "done" });
+
+    const visibleIssueIds = new Set((await svc.list(companyId)).map((issue) => issue.id));
+    expect(visibleIssueIds.has(routineIssueId)).toBe(false);
+    expect(visibleIssueIds.has(watchdogIssueId)).toBe(false);
+    expect(visibleIssueIds.has(manualIssueId)).toBe(true);
+
+    const hiddenFields = await db
+      .select({ id: issues.id, hiddenAt: issues.hiddenAt })
+      .from(issues)
+      .where(sql`${issues.id} in (${routineIssueId}, ${watchdogIssueId}, ${manualIssueId})`)
+      .orderBy(asc(issues.id));
+    const hiddenAtByIssueId = new Map(hiddenFields.map((row) => [row.id, row.hiddenAt]));
+
+    expect(hiddenAtByIssueId.get(manualIssueId)).toBeNull();
+    expect(hiddenAtByIssueId.get(routineIssueId)).toBeInstanceOf(Date);
+    expect(hiddenAtByIssueId.get(watchdogIssueId)).toBeInstanceOf(Date);
+  });
+
+  it("restores visibility when an auto-hidden watchdog issue becomes live again", async () => {
+    const companyId = randomUUID();
+    const watchdogIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: watchdogIssueId,
+      companyId,
+      title: "Reusable watchdog issue",
+      status: "todo",
+      priority: "medium",
+      originKind: "task_watchdog",
+    });
+
+    await svc.update(watchdogIssueId, { status: "done" });
+    expect((await svc.list(companyId)).map((issue) => issue.id)).not.toContain(watchdogIssueId);
+
+    await svc.update(watchdogIssueId, { status: "todo" });
+
+    const visibleIssueIds = (await svc.list(companyId)).map((issue) => issue.id);
+    expect(visibleIssueIds).toContain(watchdogIssueId);
+
+    const watchdogRow = await db
+      .select({ hiddenAt: issues.hiddenAt, status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, watchdogIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(watchdogRow).toMatchObject({
+      status: "todo",
+      hiddenAt: null,
+    });
+  });
+
   it("sorts and exposes last activity from comments and non-local issue activity logs", async () => {
     const companyId = randomUUID();
     const olderIssueId = randomUUID();
