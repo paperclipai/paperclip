@@ -10199,28 +10199,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     now: Date;
     staleKill?: boolean;
   }) {
-    if (input.staleKill) {
-      // BLO-12996: the Job is still phase:active but the run has been silent
-      // past EXTERNAL_LIFECYCLE_HARD_STALE_MS. Force-terminate the live Job so
-      // the slot (and node CPU) is reclaimed and the dispatcher's
-      // hasActiveJobForAgent gate stops blocking newly-queued high-priority work.
-      try {
-        const deleted = await deleteAgentJobsForRun(input.run.id);
-        logger.warn(
-          { runId: input.run.id, adapterType: input.adapterType, deletedJobs: deleted },
-          "reapOrphanedRuns: force-killed live-but-silent external-lifecycle Job (hard-stale)",
-        );
-      } catch (error) {
-        logger.warn(
-          {
-            runId: input.run.id,
-            adapterType: input.adapterType,
-            error: error instanceof Error ? error.message : String(error),
-          },
-          "reapOrphanedRuns: failed to force-kill hard-stale external-lifecycle Job",
-        );
-      }
-    }
     const terminalOutcome = input.staleKill
       ? {
           status: "failed" as const,
@@ -10254,12 +10232,53 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     );
 
-    let finalizedRun = await setRunStatus(input.run.id, terminalOutcome.status, {
-      error: terminalOutcome.error,
-      errorCode: terminalOutcome.errorCode,
-      finishedAt: input.now,
-      resultJson,
-    });
+    let finalizedRun: Awaited<ReturnType<typeof setRunStatus>>;
+    if (input.staleKill) {
+      // BLO-13176: claim the run terminally BEFORE the destructive Job delete.
+      // The force-kill deleted the Job first and only then set status, so two
+      // overlapping reaper passes (or the startup + periodic reapers racing)
+      // could both select the still-`running` row and both force-kill it — the
+      // `deletedJobs:0` thrash: repeated "force-killed live-but-silent" warns for
+      // a runId whose Job was already deleted on the first pass. A compare-and-
+      // swap on status=running means only one pass wins the transition; the
+      // losers no-op. If the Job delete then fails, the run is already terminal
+      // and cleanupTerminalExternalLifecycleJobs reaps its lingering Job next pass.
+      const claim = await setRunStatusIfRunning(input.run.id, terminalOutcome.status, {
+        error: terminalOutcome.error,
+        errorCode: terminalOutcome.errorCode,
+        finishedAt: input.now,
+        resultJson,
+      });
+      if (!claim.updated) return false;
+      finalizedRun = claim.run;
+      // BLO-12996: the Job is still phase:active but the run has been silent
+      // past EXTERNAL_LIFECYCLE_HARD_STALE_MS. Force-terminate the live Job so
+      // the slot (and node CPU) is reclaimed and the dispatcher's
+      // hasActiveJobForAgent gate stops blocking newly-queued high-priority work.
+      try {
+        const deleted = await deleteAgentJobsForRun(input.run.id);
+        logger.warn(
+          { runId: input.run.id, adapterType: input.adapterType, deletedJobs: deleted },
+          "reapOrphanedRuns: force-killed live-but-silent external-lifecycle Job (hard-stale)",
+        );
+      } catch (error) {
+        logger.warn(
+          {
+            runId: input.run.id,
+            adapterType: input.adapterType,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "reapOrphanedRuns: failed to force-kill hard-stale external-lifecycle Job",
+        );
+      }
+    } else {
+      finalizedRun = await setRunStatus(input.run.id, terminalOutcome.status, {
+        error: terminalOutcome.error,
+        errorCode: terminalOutcome.errorCode,
+        finishedAt: input.now,
+        resultJson,
+      });
+    }
     await setWakeupStatus(input.run.wakeupRequestId, terminalOutcome.wakeupStatus, {
       finishedAt: input.now,
       error: terminalOutcome.error,
@@ -10362,6 +10381,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   ): boolean {
     const refTime = externalLifecycleRecentRefTime(run);
     return refTime > 0 && now.getTime() - refTime < graceMs;
+  }
+
+  // BLO-13176: classify whether an external-lifecycle run's backing k8s Job is
+  // still alive, using the kube signal the reaper already gathered this pass.
+  // Returns "alive" only on positive evidence of an active Job, "dead" only on
+  // positive evidence the Job is gone/terminal, and "unknown" when the signal is
+  // missing or a snapshot miss can't be disambiguated. Callers must treat
+  // "unknown" conservatively (apply a silence floor) rather than kill a
+  // possibly-live pod — the whole point of the ticket is that a slow-provisioning
+  // pre-adapter run looks silent but is not orphaned.
+  async function resolveExternalLifecycleJobLiveness(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "externalRunId">,
+    jobRunStatuses: Map<string, AgentJobRunStatus> | null,
+    liveJobRunIds: Set<string> | null,
+  ): Promise<"alive" | "dead" | "unknown"> {
+    const persistedJobName = run.externalRunId?.trim() || null;
+    if (jobRunStatuses !== null) {
+      const snap = jobRunStatuses.get(run.id) ?? null;
+      if (snap) return snap.phase === "active" ? "alive" : "dead";
+      // Absent from the rich snapshot: could be a false negative (kube list
+      // timeout / eventual consistency / Job not yet visible). Confirm via the
+      // exact persisted Job name before concluding anything.
+      if (persistedJobName) {
+        const exact = await readAgentJobRunStatusByName(persistedJobName);
+        if (exact) return exact.phase === "active" ? "alive" : "dead";
+      }
+      return "unknown";
+    }
+    if (liveJobRunIds !== null) {
+      if (liveJobRunIds.has(run.id)) return "alive";
+      // Absent from the list snapshot is NOT proof of death (2026-05-23 RCA:
+      // partial snapshots produced ~6.5/hr false process_lost). Confirm by name.
+      if (persistedJobName) {
+        const exact = await readAgentJobRunStatusByName(persistedJobName);
+        if (exact) return exact.phase === "active" ? "alive" : "dead";
+      }
+      return "unknown";
+    }
+    return "unknown";
   }
 
   async function cleanupTerminalExternalLifecycleJobs(
@@ -10509,11 +10567,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? await hasAdapterInvocationEvent(run.id)
         : false;
       const externalLifecyclePreAdapter = externalLifecycleRun && !externalLifecycleStarted;
-      if (
-        externalLifecyclePreAdapter &&
-        isExternalLifecycleRunInRecentGrace(run, now, EXTERNAL_LIFECYCLE_PRE_ADAPTER_STALE_MS)
-      ) {
-        continue;
+      if (externalLifecyclePreAdapter) {
+        // Within the short pre-adapter grace, always skip: the run just created
+        // its DB row + k8s Job and has not had time to reach adapter.invoke.
+        if (isExternalLifecycleRunInRecentGrace(run, now, EXTERNAL_LIFECYCLE_PRE_ADAPTER_STALE_MS)) {
+          continue;
+        }
+        // BLO-13176: past the grace, DO NOT blindly declare the run orphaned.
+        // Workspace provisioning (image pull, repo clone, opencode/claude cold
+        // boot) can exceed 5 min while the k8s Job is perfectly alive and simply
+        // has not emitted adapter.invoke yet. The old code fell straight through
+        // to the `process_lost` finalize here, force-killing live `2/2 Running`
+        // pods — the fleet-wide "Process lost before external adapter invocation"
+        // seen 2026-07-02 (BLO-12825 run 6d4843b2 reaped at ~5 min with a live
+        // pod, which starved a critical issue for days). Only POSITIVE evidence
+        // of a live Job protects the run; "dead"/"unknown" keep the pre-existing
+        // fall-through so genuinely-orphaned pre-adapter runs and the
+        // kube-unavailable degraded path still reap exactly as before. This
+        // mirrors the 2026-05-23 guard that already protects live-but-quiet
+        // STARTED runs below.
+        const preAdapterLiveness = await resolveExternalLifecycleJobLiveness(
+          run,
+          jobRunStatuses,
+          liveJobRunIds,
+        );
+        if (preAdapterLiveness === "alive") {
+          // Job is alive: leave a still-provisioning run alone. The one
+          // exception is a run wedged pre-adapter past the hard ceiling (45 min)
+          // — no longer "slow setup" but a stuck Job holding the agent's only
+          // dispatch slot. Force-kill it (same treatment as a hard-stale STARTED
+          // run) so newly-queued work can dispatch.
+          const preAdapterRefTime = externalLifecycleRecentRefTime(run);
+          const preAdapterHardStale =
+            !preAdapterRefTime ||
+            now.getTime() - preAdapterRefTime >= EXTERNAL_LIFECYCLE_HARD_STALE_MS;
+          if (preAdapterHardStale) {
+            const finalized = await finalizeExternalLifecycleTerminalRun({
+              run,
+              adapterType,
+              adapterConfig,
+              jobStatus: null,
+              now,
+              staleKill: true,
+            });
+            if (finalized) {
+              reaped.push(run.id);
+              continue;
+            }
+          }
+          continue;
+        }
+        // preAdapterLiveness === "dead" (Job confirmed absent/terminal) or
+        // "unknown" (kube status unavailable / unconfirmable snapshot miss):
+        // fall through to the pre-existing process_lost reap below.
       }
       let confirmedMissingExternalJob = false;
       if (externalLifecycleRun && externalLifecycleStarted) {

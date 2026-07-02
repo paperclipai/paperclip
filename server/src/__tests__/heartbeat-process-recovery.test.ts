@@ -1713,6 +1713,123 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
   });
 
+  it("BLO-13176: does NOT reap a PRE-ADAPTER run whose k8s Job is still active (kube status snapshot)", async () => {
+    // The regression: a pre-adapter run (no adapter.invoke yet) past the 5-min
+    // grace was force-killed with "Process lost before external adapter
+    // invocation" even though its pod was `2/2 Running`, still provisioning
+    // (image pull / repo clone / opencode cold boot). This starved BLO-12825 for
+    // days (run 6d4843b2 reaped at ~5 min). Same 6-min timing as the
+    // "retries stale external-lifecycle runs claimed before adapter invocation"
+    // test above — but a LIVE Job must now protect the run.
+    const past = new Date(Date.now() - 6 * 60 * 1000);
+    const { runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: past,
+    });
+    // No seedAdapterInvokeEvent -> pre-adapter.
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(new Map([[runId, { phase: "active" }]]));
+
+    const result = await heartbeat.reapOrphanedRuns({ suppressDispatchAfterReap: true });
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBeNull();
+    expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
+  });
+
+  it("BLO-13176: does NOT reap a PRE-ADAPTER run whose k8s Job is alive in the list snapshot", async () => {
+    const past = new Date(Date.now() - 6 * 60 * 1000);
+    const { runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: past,
+    });
+    // No adapter.invoke -> pre-adapter. Status snapshot unavailable (null); the
+    // reaper falls back to the live-run-id list, which shows the Job alive.
+    mockListLiveAgentJobRunIds.mockResolvedValueOnce(new Set([runId]));
+
+    const result = await heartbeat.reapOrphanedRuns({ suppressDispatchAfterReap: true });
+    expect(result.reaped).toBe(0);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(run?.errorCode).toBeNull();
+    expect(mockDeleteAgentJobsForRun).not.toHaveBeenCalled();
+  });
+
+  it("BLO-13176: STILL reaps a pre-adapter run whose Job is confirmed gone by name (genuine orphan, not over-protected)", async () => {
+    // The fix must protect only positively-live pods. A pre-adapter run whose
+    // backing Job is confirmed absent is a genuine orphan and must still reap —
+    // otherwise the BLO-8827 immortal-orphan class returns.
+    const past = new Date(Date.now() - 6 * 60 * 1000);
+    const { runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: past,
+      externalRunId: "agent-opencode-gone-1",
+    });
+    // Snapshot present but this run is absent from it; the exact-name lookup
+    // confirms the Job is missing -> liveness "dead".
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(new Map());
+    mockReadAgentJobRunStatusByName.mockResolvedValueOnce({
+      phase: "missing",
+      reason: "NotFound",
+      name: "agent-opencode-gone-1",
+    });
+
+    const result = await heartbeat.reapOrphanedRuns({ suppressDispatchAfterReap: true });
+    expect(result.reaped).toBe(1);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_lost");
+    expect(run?.error).toContain("before external adapter invocation");
+  });
+
+  it("BLO-13176: force-kills a PRE-ADAPTER run wedged past the hard-stale ceiling even with a live Job, and does not re-fire once terminal", async () => {
+    // A pre-adapter run that stays alive but never reaches adapter.invoke for 45+
+    // min is no longer "slow setup" — it is a wedged Job holding the agent's only
+    // dispatch slot. Force-kill it (same escape hatch as a hard-stale STARTED
+    // run). The CAS-first finalize must also make this idempotent: a second
+    // reaper pass must not re-delete the Job (the `deletedJobs:0` thrash).
+    const hardStale = new Date(Date.now() - 50 * 60 * 1000);
+    const { runId } = await seedRunFixture({
+      adapterType: "opencode_k8s",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+      lastOutputAt: hardStale,
+    });
+    // No adapter.invoke -> pre-adapter. Job is alive but wedged. Use Once so the
+    // stub does not leak a non-null status snapshot into later tests (the second
+    // pass below sees the default null, which is fine — the run is already
+    // terminal and no longer selected).
+    mockListAgentJobRunStatuses.mockResolvedValueOnce(new Map([[runId, { phase: "active" }]]));
+
+    const result = await heartbeat.reapOrphanedRuns({ suppressDispatchAfterReap: true });
+    expect(result.reaped).toBe(1);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("external_lifecycle_stale_killed");
+    expect(mockDeleteAgentJobsForRun).toHaveBeenCalledTimes(1);
+    expect(mockDeleteAgentJobsForRun).toHaveBeenCalledWith(runId);
+
+    // Second pass: run is already terminal, so it is not re-selected and the
+    // force-kill does not re-fire.
+    const secondPass = await heartbeat.reapOrphanedRuns({ suppressDispatchAfterReap: true });
+    expect(secondPass.reaped).toBe(0);
+    expect(mockDeleteAgentJobsForRun).toHaveBeenCalledTimes(1);
+  });
+
   it("marks a missing external-lifecycle Job as job_missing only after the silence floor", async () => {
     const stale = new Date(Date.now() - 16 * 60 * 1000);
     const { companyId, agentId, runId } = await seedRunFixture({
