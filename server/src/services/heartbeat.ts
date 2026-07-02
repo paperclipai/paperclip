@@ -2063,6 +2063,19 @@ function isExecutionReviewParticipantRecoveryRun(
   return readNonEmptyString(context.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON;
 }
 
+function isExecutionReviewParticipantRecoveryEligibleRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot"> | null,
+) {
+  if (!run) return false;
+  const context = parseObject(run.contextSnapshot);
+  const wakeReason = readNonEmptyString(context.wakeReason);
+  return (
+    wakeReason === "execution_review_requested" ||
+    wakeReason === "execution_approval_requested" ||
+    isExecutionReviewParticipantRecoveryRun(run)
+  );
+}
+
 function normalizeLedgerBillingType(value: unknown): BillingType {
   const raw = readNonEmptyString(value);
   switch (raw) {
@@ -11869,19 +11882,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
-      const existingExecutionPath = await tx
-        .select({ id: heartbeatRuns.id })
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, issue.companyId),
-            inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-            sql`${heartbeatRuns.id} <> ${run.id}`,
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
+      const findExistingExecutionPath = (agentId?: string | null) =>
+        tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+              sql`${heartbeatRuns.id} <> ${run.id}`,
+              agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
 
       const issueHasScheduledMonitor =
         issue.monitorNextCheckAt instanceof Date &&
@@ -11895,14 +11910,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         !issue.assigneeUserId &&
         currentParticipant?.type === "agent" &&
         currentParticipant.agentId === run.agentId &&
+        isExecutionReviewParticipantRecoveryEligibleRun(run) &&
         HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
           run.status as (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
         );
 
       if (issueNeedsReviewParticipantRecovery) {
+        const existingReviewParticipantExecutionPath = await findExistingExecutionPath(currentParticipant.agentId);
         if (
           options.suppressImmediateRecovery ||
-          existingExecutionPath ||
+          existingReviewParticipantExecutionPath ||
           issueHasScheduledMonitor ||
           await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)
         ) {
@@ -12020,6 +12037,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "released" as const };
       }
 
+      const existingExecutionPath = await findExistingExecutionPath();
       if (existingExecutionPath) {
         return { kind: "released" as const };
       }
