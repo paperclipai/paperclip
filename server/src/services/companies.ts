@@ -32,6 +32,29 @@ import {
 import { notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
 
+const ISSUE_PREFIX_UNIQUE_CONSTRAINT = "companies_issue_prefix_idx";
+
+function errorField(error: unknown, field: "code" | "constraint" | "constraint_name") {
+  if (typeof error !== "object" || error === null || !(field in error)) return undefined;
+  const value = (error as Record<typeof field, unknown>)[field];
+  return typeof value === "string" ? value : undefined;
+}
+
+export function isIssuePrefixConflict(error: unknown) {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const code = errorField(current, "code");
+    const constraint = errorField(current, "constraint") ?? errorField(current, "constraint_name");
+    if (code === "23505" && constraint === ISSUE_PREFIX_UNIQUE_CONSTRAINT) return true;
+    current = "cause" in current ? (current as { cause?: unknown }).cause : undefined;
+  }
+
+  return false;
+}
+
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
   const environmentsSvc = environmentService(db);
@@ -123,19 +146,6 @@ export function companyService(db: Db) {
   function suffixForAttempt(attempt: number) {
     if (attempt <= 1) return "";
     return "A".repeat(attempt - 1);
-  }
-
-  function isIssuePrefixConflict(error: unknown) {
-    const constraint = typeof error === "object" && error !== null && "constraint" in error
-      ? (error as { constraint?: string }).constraint
-      : typeof error === "object" && error !== null && "constraint_name" in error
-        ? (error as { constraint_name?: string }).constraint_name
-        : undefined;
-    return typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as { code?: string }).code === "23505"
-      && constraint === "companies_issue_prefix_idx";
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
