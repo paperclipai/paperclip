@@ -72,6 +72,7 @@ const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
 const FALLBACK_ADAPTER_SCHEMA_SECRET_FIELDS: Readonly<Record<string, readonly string[]>> = {
   hermes_gateway: ["apiKey"],
 };
+const USER_SECRET_DEFINITION_KEY_UNIQUE_CONSTRAINT = "user_secret_definitions_company_key_uq";
 const USER_SECRET_VALUE_UNIQUE_CONSTRAINT = "company_secrets_user_definition_owner_uq";
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type SecretBindingDb = Pick<Db | DbTransaction, "select" | "delete" | "insert">;
@@ -1980,26 +1981,33 @@ export function secretService(db: Db) {
       const duplicate = await getUserSecretDefinitionByKey(companyId, key);
       if (duplicate) throw conflict(`User secret definition already exists: ${key}`);
       await assertProviderConfigForSecret(companyId, input.provider, input.providerConfigId);
-      return db
-        .insert(userSecretDefinitions)
-        .values({
-          companyId,
-          key,
-          name: input.name.trim(),
-          description: input.description ?? null,
-          status: input.status ?? "active",
-          provider: input.provider,
-          providerConfigId: input.providerConfigId ?? null,
-          managedMode: input.managedMode ?? "paperclip_managed",
-          providerMetadata: input.providerMetadata ?? null,
-          usageGuidance: input.usageGuidance ?? null,
-          createdByAgentId: actor?.agentId ?? null,
-          createdByUserId: actor?.userId ?? null,
-          updatedByAgentId: actor?.agentId ?? null,
-          updatedByUserId: actor?.userId ?? null,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+      try {
+        return await db
+          .insert(userSecretDefinitions)
+          .values({
+            companyId,
+            key,
+            name: input.name.trim(),
+            description: input.description ?? null,
+            status: input.status ?? "active",
+            provider: input.provider,
+            providerConfigId: input.providerConfigId ?? null,
+            managedMode: input.managedMode ?? "paperclip_managed",
+            providerMetadata: input.providerMetadata ?? null,
+            usageGuidance: input.usageGuidance ?? null,
+            createdByAgentId: actor?.agentId ?? null,
+            createdByUserId: actor?.userId ?? null,
+            updatedByAgentId: actor?.agentId ?? null,
+            updatedByUserId: actor?.userId ?? null,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+      } catch (error) {
+        if (isUniqueConstraintViolation(error, USER_SECRET_DEFINITION_KEY_UNIQUE_CONSTRAINT)) {
+          throw conflict(`User secret definition already exists: ${key}`);
+        }
+        throw error;
+      }
     },
 
     updateUserSecretDefinition: async (

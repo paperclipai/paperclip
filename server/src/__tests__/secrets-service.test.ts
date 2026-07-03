@@ -654,6 +654,40 @@ describeEmbeddedPostgres("secretService", () => {
     expect(rows.filter((row) => row.ownerUserId === "user-1" && row.status === "active")).toHaveLength(1);
   });
 
+  it("returns conflict when concurrent user secret definition creation races the unique index", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+
+    const results = await Promise.allSettled([
+      svc.createUserSecretDefinition(companyId, {
+        key: "github_token",
+        name: "GitHub token",
+        provider: "local_encrypted",
+      }),
+      svc.createUserSecretDefinition(companyId, {
+        key: "github_token",
+        name: "GitHub token duplicate",
+        provider: "local_encrypted",
+      }),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((result) => result.status === "rejected");
+    expect(rejected).toBeTruthy();
+    if (rejected?.status === "rejected") {
+      expect(rejected.reason).toMatchObject({
+        status: 409,
+        message: "User secret definition already exists: github_token",
+      });
+    }
+
+    const rows = await db
+      .select()
+      .from(userSecretDefinitions)
+      .where(eq(userSecretDefinitions.companyId, companyId));
+    expect(rows.filter((row) => row.key === "github_token" && row.deletedAt === null)).toHaveLength(1);
+  });
+
   it("treats nullable user-secret value patches as non-rotation updates", async () => {
     const companyId = await seedCompany();
     await seedCompanyMember(companyId, "user-1", "owner");
