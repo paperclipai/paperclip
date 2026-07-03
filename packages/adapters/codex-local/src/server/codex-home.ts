@@ -17,15 +17,33 @@ export async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
 
-function hasUsableAuthPayload(authPayload: unknown): boolean {
+const MAX_AUTH_PAYLOAD_SCAN_DEPTH = 4;
+
+/**
+ * True when `authPayload` contains a non-empty string value under a
+ * credential-shaped key, anywhere in the object (not just the top level).
+ * The Codex CLI's current auth.json format nests OAuth credentials under a
+ * `tokens` object (`{ tokens: { access_token, refresh_token, ... } }`)
+ * rather than storing them at the top level, so a shallow scan misses valid
+ * ChatGPT-subscription auth and misreports it as absent.
+ */
+function hasUsableAuthPayload(authPayload: unknown, depth = 0): boolean {
+  if (depth > MAX_AUTH_PAYLOAD_SCAN_DEPTH) return false;
   if (authPayload === null || typeof authPayload !== "object" || Array.isArray(authPayload)) {
     return false;
   }
 
   for (const [key, value] of Object.entries(authPayload as Record<string, unknown>)) {
-    if (!AUTH_CREDENTIAL_KEYS.test(key)) continue;
-    if (key.toLowerCase() === "token_type") continue;
-    if (typeof value === "string" && value.trim().length > 0) return true;
+    if (typeof value === "string") {
+      if (!AUTH_CREDENTIAL_KEYS.test(key)) continue;
+      if (key.toLowerCase() === "token_type") continue;
+      if (value.trim().length > 0) return true;
+      continue;
+    }
+
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      if (hasUsableAuthPayload(value, depth + 1)) return true;
+    }
   }
 
   return false;

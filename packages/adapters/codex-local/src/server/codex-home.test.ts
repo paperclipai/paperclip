@@ -270,6 +270,29 @@ describe("codexHomeHasUsableAuth", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("is true for the current Codex CLI auth.json format, which nests OAuth credentials under `tokens` (FAX-307)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-auth-nested-"));
+    try {
+      await fs.writeFile(
+        path.join(root, "auth.json"),
+        JSON.stringify({
+          OPENAI_API_KEY: null,
+          tokens: {
+            id_token: "id-token-value",
+            access_token: "access-token-value",
+            refresh_token: "refresh-token-value",
+            account_id: "11111111-1111-1111-1111-111111111111",
+          },
+          last_refresh: "2026-07-02T00:00:00.000Z",
+        }),
+        "utf8",
+      );
+      expect(await codexHomeHasUsableAuth(root)).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("seedManagedCodexHome", () => {
