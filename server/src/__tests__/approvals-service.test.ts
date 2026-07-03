@@ -52,6 +52,7 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
     db: { select, update },
     selectWhere,
     returning,
+    set,
   };
 }
 
@@ -133,6 +134,35 @@ describe("approvalService resolution idempotency", () => {
         adapterConfig: approved.payload.adapterConfig,
       }),
     );
+  });
+
+  it("stamps verifiedAt when a hire_agent approval's execution side effect completes", async () => {
+    const approved = createApproval("approved");
+    const dbStub = createDbStub([[createApproval("pending")]], [approved]);
+
+    const svc = approvalService(dbStub.db as any);
+    await svc.approve("approval-1", "board", "ship it");
+
+    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
+    expect(dbStub.db.update).toHaveBeenCalledTimes(2);
+    const verifiedAtStampArgs = dbStub.set.mock.calls[1][0];
+    expect(verifiedAtStampArgs.verifiedAt).toBeInstanceOf(Date);
+  });
+
+  it("leaves verifiedAt null when approving a type with no execution side effect", async () => {
+    const pending = { ...createApproval("pending"), type: "request_board_approval" };
+    const approved = { ...createApproval("approved"), type: "request_board_approval" };
+    const dbStub = createDbStub([[pending]], [approved]);
+
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "board", "ship it");
+
+    expect(result.applied).toBe(true);
+    expect(result.approval.status).toBe("approved");
+    expect((result.approval as { verifiedAt?: unknown }).verifiedAt ?? null).toBeNull();
+    expect(mockAgentService.activatePendingApproval).not.toHaveBeenCalled();
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(dbStub.db.update).toHaveBeenCalledTimes(1);
   });
 });
 
