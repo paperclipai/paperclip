@@ -82,6 +82,14 @@ const mockIssueChatThreadRender = vi.hoisted(() => vi.fn());
 const mockImageGalleryRender = vi.hoisted(() => vi.fn());
 const mockIssueWorkspaceCardRender = vi.hoisted(() => vi.fn());
 
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+(globalThis as any).ResizeObserver = (globalThis as any).ResizeObserver ?? ResizeObserverStub;
+
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
 }));
@@ -1044,12 +1052,36 @@ describe("IssueDetail", () => {
 
       expect(container.textContent).toContain("Core Product");
       expect(avatarStack).toBeTruthy();
-      expect(assigneeAvatar?.getAttribute("title")).toBe("Assignee: CodexCoder");
-      expect(originatingAvatar?.getAttribute("title")).toBe("Originating: Dotta");
+      expect(assigneeAvatar?.getAttribute("aria-label")).toBe("Assignee: CodexCoder");
+      expect(originatingAvatar?.getAttribute("aria-label")).toBe("Originating: Dotta");
+      expect(assigneeAvatar?.getAttribute("title")).toBeNull();
+      expect(originatingAvatar?.getAttribute("title")).toBeNull();
       expect(avatarStack?.textContent).not.toContain("Assignee");
       expect(avatarStack?.textContent).not.toContain("Originating");
       expect(avatarStack?.textContent).not.toContain("CodexCoder");
       expect(avatarStack?.textContent).not.toContain("Dotta");
+    });
+
+    const pointerEvent = window.PointerEvent ?? MouseEvent;
+    const assigneeAvatar = container.querySelector('[data-testid="issue-assignee-avatar"]');
+    const originatingAvatar = container.querySelector('[data-testid="issue-originating-avatar"]');
+
+    await act(async () => {
+      assigneeAvatar?.dispatchEvent(new pointerEvent("pointermove", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      const tooltip = document.body.querySelector('[data-testid="issue-assignee-tooltip"]');
+      expect(tooltip?.textContent).toContain("Assignee");
+      expect(tooltip?.textContent).toContain("CodexCoder");
+    });
+
+    await act(async () => {
+      originatingAvatar?.dispatchEvent(new pointerEvent("pointermove", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      const tooltip = document.body.querySelector('[data-testid="issue-originating-tooltip"]');
+      expect(tooltip?.textContent).toContain("Originating");
+      expect(tooltip?.textContent).toContain("Dotta");
     });
   });
 

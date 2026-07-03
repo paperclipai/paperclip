@@ -113,6 +113,7 @@ import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Avatar, AvatarFallback, AvatarGroup, AvatarImage } from "@/components/ui/avatar";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -474,20 +475,42 @@ function attributionInitials(name: string): string {
 }
 
 function AttributionAvatar({ label, actor }: { label: "Assignee" | "Originating"; actor: AttributionActor }) {
-  const tooltip = `${label}: ${actor.name}`;
+  const accessibleLabel = `${label}: ${actor.name}`;
+  const testIdLabel = label.toLowerCase();
 
   return (
-    <Avatar
-      size="xs"
-      shape={actor.kind === "agent" ? "square" : "circle"}
-      title={tooltip}
-      aria-label={tooltip}
-      data-testid={`issue-${label.toLowerCase()}-avatar`}
-      className="ring-2 ring-background"
-    >
-      {actor.avatarUrl ? <AvatarImage src={actor.avatarUrl} alt="" /> : null}
-      <AvatarFallback>{attributionInitials(actor.name)}</AvatarFallback>
-    </Avatar>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Avatar
+          size="xs"
+          shape={actor.kind === "agent" ? "square" : "circle"}
+          aria-label={accessibleLabel}
+          data-testid={`issue-${testIdLabel}-avatar`}
+          className="ring-2 ring-background"
+        >
+          {actor.avatarUrl ? <AvatarImage src={actor.avatarUrl} alt="" /> : null}
+          <AvatarFallback>{attributionInitials(actor.name)}</AvatarFallback>
+        </Avatar>
+      </TooltipTrigger>
+      <TooltipContent side="top" sideOffset={6} className="px-2 py-1.5">
+        <div className="flex items-center gap-2" data-testid={`issue-${testIdLabel}-tooltip`}>
+          <Avatar
+            size="sm"
+            shape={actor.kind === "agent" ? "square" : "circle"}
+            className="ring-1 ring-background/30"
+          >
+            {actor.avatarUrl ? <AvatarImage src={actor.avatarUrl} alt="" /> : null}
+            <AvatarFallback className="bg-background/20 text-background">
+              {attributionInitials(actor.name)}
+            </AvatarFallback>
+          </Avatar>
+          <div className="min-w-0">
+            <div className="text-[10px] font-medium uppercase leading-none text-background/70">{label}</div>
+            <div className="max-w-48 truncate text-xs font-medium leading-4 text-background">{actor.name}</div>
+          </div>
+        </div>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -537,10 +560,12 @@ function IssueAttributionByline({
   if (!assignee && !originator) return null;
 
   return (
-    <AvatarGroup className="-space-x-1.5" aria-label="Task people" data-testid="issue-attribution-avatar-stack">
-      {assignee ? <AttributionAvatar label="Assignee" actor={assignee} /> : null}
-      {originator ? <AttributionAvatar label="Originating" actor={originator} /> : null}
-    </AvatarGroup>
+    <TooltipProvider>
+      <AvatarGroup className="-space-x-1.5" aria-label="Task people" data-testid="issue-attribution-avatar-stack">
+        {assignee ? <AttributionAvatar label="Assignee" actor={assignee} /> : null}
+        {originator ? <AttributionAvatar label="Originating" actor={originator} /> : null}
+      </AvatarGroup>
+    </TooltipProvider>
   );
 }
 
