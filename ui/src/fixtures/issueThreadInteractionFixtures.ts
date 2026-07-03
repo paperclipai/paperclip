@@ -370,6 +370,21 @@ export const answeredAskUserQuestionsInteraction = createAskUserQuestionsInterac
   },
 });
 
+export const commentExpiredAskUserQuestionsInteraction = createAskUserQuestionsInteraction({
+  id: "interaction-questions-expired-comment",
+  status: "expired",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T14:25:00.000Z"),
+  updatedAt: new Date("2026-04-20T14:25:00.000Z"),
+  result: {
+    version: 1,
+    answers: [],
+    expirationReason: "superseded_by_comment",
+    commentId: "22222222-2222-4222-8222-222222222222",
+    summaryMarkdown: null,
+  },
+});
+
 export const pendingRequestConfirmationInteraction = createRequestConfirmationInteraction({});
 
 export const genericPendingRequestConfirmationInteraction = createRequestConfirmationInteraction({

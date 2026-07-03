@@ -28,12 +28,16 @@ export interface FakeSandboxEnvironmentConfig {
   provider: "fake";
   image: string;
   reuseLease: boolean;
+  /** Stream agent CLI stdout/stderr during sandbox runs (bridge log-tail loop). */
+  streamRunLogs?: boolean;
 }
 
 export interface PluginSandboxEnvironmentConfig {
   provider: SandboxEnvironmentProvider;
   reuseLease: boolean;
   timeoutMs?: number;
+  /** Stream agent CLI stdout/stderr during sandbox runs (bridge log-tail loop). */
+  streamRunLogs?: boolean;
   [key: string]: unknown;
 }
 

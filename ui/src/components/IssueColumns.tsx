@@ -137,6 +137,7 @@ export function InboxIssueMetaLeading({
   issue,
   isLive,
   subtreeLiveCount = 0,
+  showSubtreeLiveChip = true,
   showStatus = true,
   showIdentifier = true,
   statusSlot,
@@ -145,6 +146,7 @@ export function InboxIssueMetaLeading({
   issue: Issue;
   isLive: boolean;
   subtreeLiveCount?: number;
+  showSubtreeLiveChip?: boolean;
   showStatus?: boolean;
   showIdentifier?: boolean;
   statusSlot?: ReactNode;
@@ -193,7 +195,7 @@ export function InboxIssueMetaLeading({
           </span>
         </span>
       )}
-      {!isLive && subtreeLiveCount > 0 && (
+      {showSubtreeLiveChip && !isLive && subtreeLiveCount > 0 && (
         <span
           className={cn(
             "inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 sm:gap-1.5 sm:px-2",

@@ -120,6 +120,20 @@ describe("writeFileViewerStateToSearch", () => {
     expect(params.get("keep")).toBe("yes");
   });
 
+  it("clears browse-origin viewer params when closing a selected file", () => {
+    const next = writeFileViewerStateToSearch(
+      "?tab=thread&browse=1&q=FileViewer&folder=ui/src&file=ui/src/FileViewer.tsx&line=4",
+      null,
+    );
+    const params = new URLSearchParams(next);
+    expect(params.get("file")).toBeNull();
+    expect(params.get("line")).toBeNull();
+    expect(params.get("browse")).toBeNull();
+    expect(params.get("q")).toBeNull();
+    expect(params.get("folder")).toBeNull();
+    expect(params.get("tab")).toBe("thread");
+  });
+
   it("returns empty string when no params remain", () => {
     const next = writeFileViewerStateToSearch("?file=a.ts", null);
     expect(next).toBe("");

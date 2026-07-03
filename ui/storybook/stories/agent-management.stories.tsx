@@ -298,7 +298,7 @@ const storybookSecrets: CompanySecret[] = [
 const adapterFixtures: AdapterInfo[] = [
   {
     type: "codex_local",
-    label: "Codex Local",
+    label: "Codex",
     source: "builtin",
     modelsCount: 3,
     loaded: true,
@@ -313,7 +313,7 @@ const adapterFixtures: AdapterInfo[] = [
   },
   {
     type: "claude_local",
-    label: "Claude Local",
+    label: "Claude Code",
     source: "builtin",
     modelsCount: 2,
     loaded: true,

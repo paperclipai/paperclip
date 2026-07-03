@@ -121,7 +121,7 @@ const adapterSchema: JsonSchemaNode = {
       title: "Adapter name",
       description: "Human-readable name shown in the adapter manager.",
       minLength: 3,
-      default: "Codex local",
+      default: "Codex",
     },
     mode: {
       type: "string",
@@ -175,7 +175,7 @@ const adapterSchema: JsonSchemaNode = {
 
 const validAdapterValues = {
   ...getDefaultValues(adapterSchema),
-  adapterName: "Codex local",
+  adapterName: "Codex",
   mode: "implementation",
   apiKey: "secret:openai-api-key",
   concurrency: 2,

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -15,6 +15,7 @@ import {
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
+  type HeartbeatRunStatusPhase,
   type IssueExecutionMonitorClearReason,
   type IssueExecutionMonitorPolicy,
   type IssueExecutionMonitorRecoveryPolicy,
@@ -25,6 +26,7 @@ import {
 } from "@paperclipai/shared";
 import {
   agents,
+  agentConfigRevisions,
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
@@ -94,8 +96,11 @@ import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
+  ensureGitWorktreeBranchCoherent,
   ensurePersistedExecutionWorkspaceAvailable,
   ensureRuntimeServicesForRun,
+  formatManagedGitWorktreeBranchInspection,
+  inspectManagedGitWorktreeBranch,
   persistAdapterManagedRuntimeServices,
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
@@ -120,8 +125,9 @@ import {
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
+import { buildPlanReviewContext } from "./plan-review-context.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { workspaceOperationService } from "./workspace-operations.js";
+import { workspaceOperationService, type WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
@@ -181,6 +187,7 @@ import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
+  type RuntimeStatusUpdate,
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
 import {
@@ -195,10 +202,26 @@ import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import {
+  clearHeartbeatRunRuntimeStatus,
+  getHeartbeatRunRuntimeStatus,
+  MAX_HEARTBEAT_RUN_RUNTIME_ASSISTANT_SNIPPET_CHARS,
+  MAX_HEARTBEAT_RUN_RUNTIME_TOOL_NAME_CHARS,
+  setHeartbeatRunRuntimeStatus,
+  sweepExpiredHeartbeatRunRuntimeStatuses,
+  touchHeartbeatRunRuntimeStatus,
+} from "./heartbeat-run-runtime-status.js";
+import {
   assertLowTrustRuntimeServicesAllowed,
   assertLowTrustWorkspaceIsolation,
 } from "./low-trust-runtime-containment.js";
 import { resolveCoreTrustPreset, type TrustPresetResolution } from "./trust-preset-resolver.js";
+import {
+  createEffectiveRunConfigFingerprints,
+  createEffectiveRunConfigSubcategoryFingerprints,
+  EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION,
+  type EffectiveRunConfigFingerprints,
+  type EffectiveRunConfigSecretManifestEntry,
+} from "./effective-run-config-fingerprints.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -246,6 +269,7 @@ export {
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
 } from "./recovery/service.js";
 export const ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS = 60 * 1000;
+export const ACTIVE_RUN_LOG_RUNTIME_STATUS_REFRESH_INTERVAL_MS = 5 * 1000;
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
   2 * 60 * 1000,
   10 * 60 * 1000,
@@ -260,6 +284,9 @@ const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
 const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
+const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
+const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON = "execution_review_participant_recovery";
+const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE = "execution_review_participant_recovery";
 const GITHUB_PR_WORKFLOW_SKILL_KEY = "paperclipai/bundled/software-development/github-pr-workflow";
 const GITHUB_PR_WORKFLOW_SKILL_SLUG = "github-pr-workflow";
 const PUSH_CAPABILITY_ENV_KEYS = ["GH_TOKEN", "GITHUB_TOKEN"] as const;
@@ -400,11 +427,17 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "opencode_local",
   "pi_local",
 ]);
+// Routes and the scheduler construct separate heartbeatService instances, but
+// they must agree on in-process adapter executions when reaping stale runs.
+const activeRunExecutions = new Set<string>();
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
-  "resolveAdapterConfigForRuntime" | "resolveEnvBindings" | "collectMissingRuntimeBindings"
+  | "resolveAdapterConfigForRuntime"
+  | "resolveEnvBindings"
+  | "collectMissingRuntimeBindings"
+  | "collectMissingAdapterConfigRuntimeBindings"
 >;
 
 function formatMissingBindingForOperator(missing: MissingRuntimeBinding): string {
@@ -486,6 +519,7 @@ function assertLowTrustEnvConfigAllowed(envValue: unknown, source: string) {
 export async function resolveExecutionRunAdapterConfig(input: {
   companyId: string;
   agentId?: string | null;
+  adapterType?: string | null;
   issueId?: string | null;
   heartbeatRunId?: string | null;
   environmentId?: string | null;
@@ -566,6 +600,16 @@ export async function resolveExecutionRunAdapterConfig(input: {
           { consumerType: "agent", consumerId: input.agentId },
         )),
       );
+      if (typeof input.secretsSvc.collectMissingAdapterConfigRuntimeBindings === "function") {
+        missingBindings.push(
+          ...(await input.secretsSvc.collectMissingAdapterConfigRuntimeBindings(
+            input.companyId,
+            executionRunConfig,
+            input.adapterType ?? null,
+            { consumerType: "agent", consumerId: input.agentId },
+          )),
+        );
+      }
     }
     if (projectEnv && input.projectId) {
       missingBindings.push(
@@ -658,6 +702,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
           ...(lowTrustAllowedBindingIds !== undefined ? { allowedBindingIds: lowTrustAllowedBindingIds } : {}),
         }
       : undefined,
+    { adapterType: input.adapterType ?? null },
   );
   if (Object.keys(environmentEnvResolution.env).length > 0) {
     resolvedConfig.env = {
@@ -841,6 +886,7 @@ async function resolveRunScopedMentionedSkillKeys(input: {
 function leaseReleaseStatusForRunStatus(
   status: string | null | undefined,
 ): Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed"> {
+  if (status === "cancelled") return "expired";
   return status === "failed" || status === "timed_out" ? "failed" : "released";
 }
 
@@ -887,6 +933,8 @@ export function mergeExecutionWorkspaceMetadataForPersistence(input: {
   createdByRuntime: boolean;
   configSnapshot: Record<string, unknown> | null;
   shouldReuseExisting: boolean;
+  shouldRefreshConfigSnapshot?: boolean;
+  workspaceConfigMetadata?: EffectiveRunWorkspaceConfigMetadata | null;
   baseRef: string | null | undefined;
   baseRefSha: string | null | undefined;
 }) {
@@ -907,7 +955,17 @@ export function mergeExecutionWorkspaceMetadataForPersistence(input: {
     };
   }
 
-  if (input.shouldReuseExisting || !input.configSnapshot) {
+  if (input.workspaceConfigMetadata) {
+    base[WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY] = {
+      version: input.workspaceConfigMetadata.version,
+      workspaceHash: input.workspaceConfigMetadata.fingerprint,
+      categories: input.workspaceConfigMetadata.categories,
+      categoryFingerprints: input.workspaceConfigMetadata.categoryFingerprints,
+      lastEvaluatedAt: input.workspaceConfigMetadata.evaluatedAt,
+    };
+  }
+
+  if ((input.shouldReuseExisting && !input.shouldRefreshConfigSnapshot) || !input.configSnapshot) {
     return base;
   }
 
@@ -918,35 +976,6 @@ export function stripWorkspaceRuntimeFromExecutionRunConfig(config: Record<strin
   const nextConfig = { ...config };
   delete nextConfig.workspaceRuntime;
   return nextConfig;
-}
-
-export function buildRealizedExecutionWorkspaceFromPersisted(input: {
-  base: ExecutionWorkspaceInput;
-  workspace: ExecutionWorkspace;
-}): RealizedExecutionWorkspace | null {
-  const cwd = readNonEmptyString(input.workspace.cwd) ?? readNonEmptyString(input.workspace.providerRef);
-  if (!cwd) {
-    return null;
-  }
-
-  const strategy = input.workspace.strategyType === "git_worktree" ? "git_worktree" : "project_primary";
-  const baseRefSnapshot = parseObject(input.workspace.metadata?.baseRefSnapshot);
-  const baseRefSha = typeof baseRefSnapshot.resolvedSha === "string" ? baseRefSnapshot.resolvedSha : null;
-  return {
-    baseCwd: input.base.baseCwd,
-    source: input.workspace.mode === "shared_workspace" ? "project_primary" : "task_session",
-    projectId: input.workspace.projectId ?? input.base.projectId,
-    workspaceId: input.workspace.projectWorkspaceId ?? input.base.workspaceId,
-    repoUrl: input.workspace.repoUrl ?? input.base.repoUrl,
-    repoRef: input.workspace.baseRef ?? input.base.repoRef,
-    strategy,
-    cwd,
-    branchName: input.workspace.branchName ?? null,
-    worktreePath: strategy === "git_worktree" ? (readNonEmptyString(input.workspace.providerRef) ?? cwd) : null,
-    warnings: [],
-    created: false,
-    baseRefSha,
-  };
 }
 
 function buildExecutionWorkspaceConfigSnapshot(
@@ -1134,14 +1163,59 @@ async function ensureManagedProjectWorkspace(input: {
   }
 }
 
-function isWorkspaceValidationFailure(error: unknown): error is WorkspaceValidationFailure {
-  return error instanceof WorkspaceValidationFailure;
+type WorkspaceValidationFailureLike = WorkspaceValidationFailure | {
+  code: typeof WORKSPACE_VALIDATION_FAILURE_CODE;
+  resultJson: Record<string, unknown>;
+};
+
+function isWorkspaceValidationFailure(error: unknown): error is WorkspaceValidationFailureLike {
+  if (error instanceof WorkspaceValidationFailure) return true;
+  const maybe = error as { code?: unknown; resultJson?: unknown } | null;
+  return Boolean(
+    maybe &&
+      maybe.code === WORKSPACE_VALIDATION_FAILURE_CODE &&
+      maybe.resultJson &&
+      typeof maybe.resultJson === "object" &&
+      !Array.isArray(maybe.resultJson),
+  );
 }
 
 function isWorkspaceValidationFailedRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
 ) {
   return run?.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
+}
+
+function stableStringifyForFingerprint(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringifyForFingerprint(entry)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const rec = value as Record<string, unknown>;
+    return `{${Object.keys(rec).sort().map((key) => `${JSON.stringify(key)}:${stableStringifyForFingerprint(rec[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function fingerprintFinalizeWorkspaceBranchValidation(input: {
+  issueId: string | null;
+  executionWorkspaceId: string;
+  inspection: ReturnType<typeof formatManagedGitWorktreeBranchInspection>;
+}) {
+  const digest = createHash("sha256")
+    .update(stableStringifyForFingerprint({
+      version: 1,
+      reason: "git_worktree_branch_incoherence",
+      issueId: input.issueId,
+      executionWorkspaceId: input.executionWorkspaceId,
+      worktreePath: input.inspection.worktreePath ? path.resolve(input.inspection.worktreePath) : null,
+      repoRoot: input.inspection.repoRoot ? path.resolve(input.inspection.repoRoot) : null,
+      expectedBranchName: input.inspection.expectedBranchName,
+      actualBranchName: input.inspection.actualBranchName,
+      reasonCode: input.inspection.reasonCode,
+    }))
+    .digest("hex");
+  return `workspace_finalize_branch_mismatch:v1:sha256:${digest}`;
 }
 
 function isConfigurationIncompleteFailure(error: unknown): error is ConfigurationIncompleteFailure {
@@ -1366,6 +1440,27 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
       `Issue ${issue.identifier ?? issue.id} expected a git worktree for ${input.adapterType}, but "${effectiveCwd}" is not inside a git worktree.`,
     );
   }
+
+  const expectedManagedBranchName =
+    readNonEmptyString(input.persistedExecutionWorkspace?.branchName) ??
+    readNonEmptyString(input.executionWorkspace.branchName);
+  if (
+    input.persistedExecutionWorkspace?.strategyType === "git_worktree" &&
+    effectiveCwd &&
+    expectedManagedBranchName
+  ) {
+    const inspection = await inspectManagedGitWorktreeBranch({
+      worktreePath: effectiveCwd,
+      expectedBranchName: expectedManagedBranchName,
+    });
+    if (!inspection.valid) {
+      fail(
+        "git_worktree_branch_mismatch",
+        `Issue ${issue.identifier ?? issue.id} expected git worktree branch "${expectedManagedBranchName}" at "${effectiveCwd}", but ${inspection.reason ?? "the checked-out branch could not be verified"}.`,
+        { managedGitWorktreeBranch: formatManagedGitWorktreeBranchInspection(inspection) },
+      );
+    }
+  }
 }
 
 const heartbeatRunProcessGroupIdColumn =
@@ -1415,6 +1510,20 @@ const heartbeatRunListColumns = {
   nextAction: heartbeatRuns.nextAction,
   createdAt: heartbeatRuns.createdAt,
   updatedAt: heartbeatRuns.updatedAt,
+} as const;
+
+const heartbeatRunSummaryListColumns = {
+  ...heartbeatRunListColumns,
+  usageJson: sql<Record<string, unknown> | null>`NULL`.as("usageJson"),
+  sessionIdBefore: sql<string | null>`NULL`.as("sessionIdBefore"),
+  sessionIdAfter: sql<string | null>`NULL`.as("sessionIdAfter"),
+  logStore: sql<string | null>`NULL`.as("logStore"),
+  logRef: sql<string | null>`NULL`.as("logRef"),
+  logSha256: sql<string | null>`NULL`.as("logSha256"),
+  externalRunId: sql<string | null>`NULL`.as("externalRunId"),
+  processPid: sql<number | null>`NULL`.as("processPid"),
+  processGroupId: sql<number | null>`NULL`.as("processGroupId"),
+  resultJson: sql<Record<string, unknown> | null>`NULL`.as("resultJson"),
 } as const;
 
 const heartbeatRunListContextColumns = {
@@ -1933,7 +2042,10 @@ function summarizeRunFailureForIssueComment(
 
 function didAutomaticRecoveryFail(
   latestRun: Pick<typeof heartbeatRuns.$inferSelect, "status" | "contextSnapshot"> | null,
-  expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
+  expectedRetryReason:
+    | "assignment_recovery"
+    | "issue_continuation_needed"
+    | typeof EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
 ) {
   if (!latestRun) return false;
 
@@ -1944,6 +2056,27 @@ function didAutomaticRecoveryFail(
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
     )
+  );
+}
+
+function isExecutionReviewParticipantRecoveryRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot"> | null,
+) {
+  if (!run) return false;
+  const context = parseObject(run.contextSnapshot);
+  return readNonEmptyString(context.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON;
+}
+
+function isExecutionReviewParticipantRecoveryEligibleRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot"> | null,
+) {
+  if (!run) return false;
+  const context = parseObject(run.contextSnapshot);
+  const wakeReason = readNonEmptyString(context.wakeReason);
+  return (
+    wakeReason === "execution_review_requested" ||
+    wakeReason === "execution_approval_requested" ||
+    isExecutionReviewParticipantRecoveryRun(run)
   );
 }
 
@@ -2295,6 +2428,7 @@ export function shouldResetTaskSessionForWake(
   if (
     wakeReason === "issue_assigned" ||
     wakeReason === "execution_review_requested" ||
+    wakeReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON ||
     wakeReason === "execution_approval_requested" ||
     wakeReason === "execution_changes_requested" ||
     // PF-4: timer-driven wakes are exploratory ("any new work?"). They do not
@@ -2407,6 +2541,9 @@ export function describeSessionResetReason(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned") return "wake reason is issue_assigned";
   if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
+  if (wakeReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON) {
+    return `wake reason is ${EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON}`;
+  }
   if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
   if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
   // PF-4: paired with shouldResetTaskSessionForWake — keep the reason wording
@@ -2430,6 +2567,704 @@ export function shouldDeferFollowupWakeForSameIssue(input: {
 }
 
 const SESSION_CONFIGURED_MODEL_KEY = "__paperclipConfiguredModel";
+const SESSION_CONFIG_FINGERPRINT_KEY = "__paperclipConfigFingerprint";
+const SESSION_CONFIG_FINGERPRINT_VERSION_KEY = "__paperclipConfigFingerprintVersion";
+const SESSION_CONFIG_CATEGORIES_KEY = "__paperclipConfigCategories";
+const SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY = "__paperclipConfigCategoryFingerprints";
+const PAPERCLIP_SESSION_METADATA_KEYS = new Set([
+  SESSION_CONFIGURED_MODEL_KEY,
+  SESSION_CONFIG_FINGERPRINT_KEY,
+  SESSION_CONFIG_FINGERPRINT_VERSION_KEY,
+  SESSION_CONFIG_CATEGORIES_KEY,
+  SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY,
+]);
+const WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY = "configFingerprint";
+const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES = [
+  "adapter",
+  "adapterConfig",
+  "agentRuntimeConfig",
+  "modelProfile",
+  "instructions",
+  "issueOverrides",
+  "workspaceConfig",
+  "environment",
+  "envBindings",
+  "secrets",
+  "runtimeSkills",
+] as const;
+const EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES = [
+  "mode",
+  "projectWorkspace",
+  "strategy",
+  "repo",
+  "lifecycleCommands",
+  "runtimeServices",
+  "environment",
+  "realization",
+] as const;
+
+type EffectiveRunSessionConfigCategory = (typeof EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES)[number];
+type EffectiveRunWorkspaceConfigCategory = (typeof EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES)[number];
+
+type EffectiveRunSessionConfigMetadata = {
+  version: typeof EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION;
+  fingerprint: string;
+  categories: EffectiveRunSessionConfigCategory[];
+  categoryFingerprints: Record<EffectiveRunSessionConfigCategory, string>;
+  fingerprints: EffectiveRunConfigFingerprints;
+};
+
+type TaskSessionConfigFreshnessDecision = {
+  reset: boolean;
+  reasons: string[];
+  changedCategories: EffectiveRunSessionConfigCategory[];
+  storedFingerprint: string | null;
+  nextFingerprint: string | null;
+};
+
+export type EffectiveRunWorkspaceConfigMetadata = {
+  version: typeof EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION;
+  fingerprint: string;
+  categories: EffectiveRunWorkspaceConfigCategory[];
+  categoryFingerprints: Record<EffectiveRunWorkspaceConfigCategory, string>;
+  fingerprints: EffectiveRunConfigFingerprints;
+  evaluatedAt: string;
+};
+
+type WorkspaceConfigFreshnessDecisionAction = "create" | "reuse" | "refresh" | "replace";
+
+type ExecutionWorkspaceConfigFreshnessDecision = {
+  action: WorkspaceConfigFreshnessDecisionAction;
+  shouldReuseExisting: boolean;
+  shouldRefreshConfigSnapshot: boolean;
+  reasons: string[];
+  changedCategories: EffectiveRunWorkspaceConfigCategory[];
+  storedFingerprint: string | null;
+  inferredFingerprint: string | null;
+  nextFingerprint: string | null;
+  storedFingerprintPresent: boolean;
+};
+
+type WorkspaceConfigFreshnessOperationInput = {
+  decision: ExecutionWorkspaceConfigFreshnessDecision;
+  hasExistingWorkspace: boolean;
+  reuseRequested: boolean;
+  workspaceReused: boolean;
+  configSnapshotRefreshed: boolean;
+  previousWorkspaceId: string | null;
+  activeWorkspaceId: string | null;
+};
+
+const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORY_LABELS: Record<EffectiveRunSessionConfigCategory, string> = {
+  adapter: "adapter",
+  adapterConfig: "adapter config",
+  agentRuntimeConfig: "agent runtime config",
+  modelProfile: "model profile",
+  instructions: "instructions",
+  issueOverrides: "issue overrides",
+  workspaceConfig: "workspace config",
+  environment: "environment",
+  envBindings: "env bindings",
+  secrets: "secrets",
+  runtimeSkills: "runtime skills",
+};
+const EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORY_LABELS: Record<EffectiveRunWorkspaceConfigCategory, string> = {
+  mode: "workspace mode",
+  projectWorkspace: "project workspace",
+  strategy: "workspace strategy",
+  repo: "repo/base ref",
+  lifecycleCommands: "workspace lifecycle commands",
+  runtimeServices: "runtime services",
+  environment: "environment",
+  realization: "workspace realization",
+};
+const WORKSPACE_REPLACEMENT_CONFIG_CATEGORIES = new Set<EffectiveRunWorkspaceConfigCategory>([
+  "mode",
+  "projectWorkspace",
+  "strategy",
+  "repo",
+  "environment",
+  "realization",
+]);
+
+function parseStoredConfigCategoryFingerprints(value: unknown) {
+  const parsed = parseObject(value);
+  const out: Partial<Record<EffectiveRunSessionConfigCategory, string>> = {};
+  for (const category of EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES) {
+    const fingerprint = readNonEmptyString(parsed[category]);
+    if (fingerprint) out[category] = fingerprint;
+  }
+  return out;
+}
+
+function readConfigCategoriesFromSessionParams(
+  sessionParams: Record<string, unknown> | null | undefined,
+) {
+  const rawCategories = Array.isArray(sessionParams?.[SESSION_CONFIG_CATEGORIES_KEY])
+    ? sessionParams?.[SESSION_CONFIG_CATEGORIES_KEY]
+    : [];
+  return rawCategories.filter(
+    (category): category is EffectiveRunSessionConfigCategory =>
+      typeof category === "string" &&
+      (EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES as readonly string[]).includes(category),
+  );
+}
+
+function readConfigFingerprintFromSessionParams(
+  sessionParams: Record<string, unknown> | null | undefined,
+) {
+  if (!sessionParams) return null;
+  const fingerprint = readNonEmptyString(sessionParams[SESSION_CONFIG_FINGERPRINT_KEY]);
+  const version = asNumber(sessionParams[SESSION_CONFIG_FINGERPRINT_VERSION_KEY], 0);
+  if (!fingerprint || version <= 0) return null;
+  return {
+    fingerprint,
+    version,
+    categories: readConfigCategoriesFromSessionParams(sessionParams),
+    categoryFingerprints: parseStoredConfigCategoryFingerprints(
+      sessionParams[SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY],
+    ),
+  };
+}
+
+function describeEffectiveRunConfigCategories(categories: readonly EffectiveRunSessionConfigCategory[]) {
+  return categories.map((category) => EFFECTIVE_RUN_SESSION_CONFIG_CATEGORY_LABELS[category]).join(", ");
+}
+
+function changedEffectiveRunSessionConfigCategories(input: {
+  previous: Partial<Record<EffectiveRunSessionConfigCategory, string>>;
+  next: Record<EffectiveRunSessionConfigCategory, string>;
+}) {
+  const changed = EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES.filter(
+    (category) => input.previous[category] !== input.next[category],
+  );
+  return changed.length > 0 ? changed : [...EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES];
+}
+
+function parseStoredWorkspaceConfigCategoryFingerprints(value: unknown) {
+  const parsed = parseObject(value);
+  const out: Partial<Record<EffectiveRunWorkspaceConfigCategory, string>> = {};
+  for (const category of EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES) {
+    const fingerprint = readNonEmptyString(parsed[category]);
+    if (fingerprint) out[category] = fingerprint;
+  }
+  return out;
+}
+
+function readWorkspaceConfigCategoriesFromMetadata(value: unknown) {
+  const rawCategories = Array.isArray(value) ? value : [];
+  return rawCategories.filter(
+    (category): category is EffectiveRunWorkspaceConfigCategory =>
+      typeof category === "string" &&
+      (EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES as readonly string[]).includes(category),
+  );
+}
+
+function readWorkspaceConfigFingerprintFromMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+) {
+  const raw = parseObject(metadata?.[WORKSPACE_CONFIG_FINGERPRINT_METADATA_KEY]);
+  const fingerprint = readNonEmptyString(raw.workspaceHash) ?? readNonEmptyString(raw.fingerprint);
+  const version = asNumber(raw.version, 0);
+  if (!fingerprint || version <= 0) return null;
+  return {
+    fingerprint,
+    version,
+    categories: readWorkspaceConfigCategoriesFromMetadata(raw.categories),
+    categoryFingerprints: parseStoredWorkspaceConfigCategoryFingerprints(raw.categoryFingerprints),
+  };
+}
+
+function describeEffectiveRunWorkspaceConfigCategories(
+  categories: readonly EffectiveRunWorkspaceConfigCategory[],
+) {
+  return categories.map((category) => EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORY_LABELS[category]).join(", ");
+}
+
+function changedEffectiveRunWorkspaceConfigCategories(input: {
+  previous: Partial<Record<EffectiveRunWorkspaceConfigCategory, string>>;
+  next: Record<EffectiveRunWorkspaceConfigCategory, string>;
+}) {
+  const changed = EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES.filter(
+    (category) => input.previous[category] !== input.next[category],
+  );
+  return changed.length > 0 ? changed : [...EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES];
+}
+
+function workspaceConfigFreshnessActionLabel(action: WorkspaceConfigFreshnessDecisionAction) {
+  switch (action) {
+    case "refresh":
+      return "refreshed execution workspace config";
+    case "replace":
+      return "replaced execution workspace";
+    case "reuse":
+      return "updated execution workspace freshness metadata";
+    case "create":
+      return "created execution workspace";
+  }
+}
+
+export function buildWorkspaceConfigFreshnessOperation(input: WorkspaceConfigFreshnessOperationInput) {
+  if (!input.reuseRequested || !input.hasExistingWorkspace || input.decision.reasons.length === 0) {
+    return null;
+  }
+
+  const changedCategoryLabels = input.decision.changedCategories.map(
+    (category) => EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORY_LABELS[category],
+  );
+  const categorySummary =
+    changedCategoryLabels.length > 0 ? ` (${changedCategoryLabels.join(", ")})` : "";
+  const reasonSummary = input.decision.reasons.join("; ");
+
+  return {
+    metadata: {
+      kind: "config_freshness",
+      action: input.decision.action,
+      changedCategories: input.decision.changedCategories,
+      changedCategoryLabels,
+      reasons: input.decision.reasons,
+      reuseRequested: input.reuseRequested,
+      workspaceReused: input.workspaceReused,
+      configSnapshotRefreshed: input.configSnapshotRefreshed,
+      storedFingerprintPresent: input.decision.storedFingerprintPresent,
+      previousWorkspaceId: input.previousWorkspaceId,
+      activeWorkspaceId: input.activeWorkspaceId,
+    },
+    system:
+      `[paperclip] ${workspaceConfigFreshnessActionLabel(input.decision.action)} after config freshness check${categorySummary}: ${reasonSummary}\n`,
+  };
+}
+
+async function recordWorkspaceConfigFreshnessOperation(input: WorkspaceConfigFreshnessOperationInput & {
+  recorder: WorkspaceOperationRecorder;
+  runId: string;
+}) {
+  const operation = buildWorkspaceConfigFreshnessOperation(input);
+  if (!operation) return;
+
+  try {
+    await input.recorder.recordOperation({
+      phase: "workspace_config_freshness",
+      metadata: operation.metadata,
+      run: async () => ({
+        status: "succeeded",
+        system: operation.system,
+      }),
+    });
+  } catch (error) {
+    logger.warn(
+      {
+        err: error instanceof Error ? error.message : String(error),
+        runId: input.runId,
+        previousWorkspaceId: input.previousWorkspaceId,
+        activeWorkspaceId: input.activeWorkspaceId,
+        action: input.decision.action,
+      },
+      "failed to record workspace config freshness operation",
+    );
+  }
+}
+
+function sanitizeSecretManifestForConfigFingerprint(
+  manifest: readonly EffectiveRunConfigSecretManifestEntry[],
+) {
+  return manifest.map((entry) => {
+    const record = entry as Record<string, unknown>;
+    return {
+      configPath: readNonEmptyString(record.configPath) ?? "",
+      envKey: readNonEmptyString(record.envKey),
+      secretId: readNonEmptyString(record.secretId) ?? "",
+      bindingId: readNonEmptyString(record.bindingId),
+      version: typeof record.version === "number" && Number.isFinite(record.version)
+        ? record.version
+        : readNonEmptyString(record.version),
+      provider: readNonEmptyString(record.provider),
+      providerVersionRef: readNonEmptyString(record.providerVersionRef),
+      outcome: record.outcome === "success" || record.outcome === "failure" ? record.outcome : null,
+    };
+  });
+}
+
+async function hashFileContentsForConfigFingerprint(filePath: string) {
+  const contents = await fs.readFile(filePath);
+  return `sha256:${createHash("sha256").update(contents).digest("hex")}`;
+}
+
+function isPathInsideRoot(input: { rootPath: string; filePath: string }) {
+  const relative = path.relative(input.rootPath, input.filePath);
+  return relative === "" || (
+    relative.length > 0
+    && !relative.startsWith("..")
+    && !path.isAbsolute(relative)
+  );
+}
+
+function resolveRootBoundInstructionsFingerprintPath(input: {
+  instructionsFilePath: string | null;
+  instructionsRootPath: string | null;
+  instructionsEntryFile: string | null;
+}): { filePath: string; skippedReason: null } | { filePath: null; skippedReason: string | null } {
+  if (!input.instructionsRootPath || !path.isAbsolute(input.instructionsRootPath)) {
+    return {
+      filePath: null,
+      skippedReason: input.instructionsFilePath ? "missing_absolute_root" : null,
+    };
+  }
+
+  const rootPath = path.resolve(input.instructionsRootPath);
+  const candidatePath = input.instructionsEntryFile ?? input.instructionsFilePath;
+  if (!candidatePath) return { filePath: null, skippedReason: "missing_entry_file" };
+
+  const resolvedPath = path.isAbsolute(candidatePath)
+    ? path.resolve(candidatePath)
+    : path.resolve(rootPath, candidatePath);
+
+  if (!isPathInsideRoot({ rootPath, filePath: resolvedPath })) {
+    return { filePath: null, skippedReason: "outside_root" };
+  }
+
+  return { filePath: resolvedPath, skippedReason: null };
+}
+
+async function resolveInstructionsConfigFingerprintMetadata(config: Record<string, unknown>) {
+  const instructionsFilePath = readNonEmptyString(config.instructionsFilePath);
+  const instructionsRootPath = readNonEmptyString(config.instructionsRootPath);
+  const instructionsEntryFile = readNonEmptyString(config.instructionsEntryFile);
+  const resolved = resolveRootBoundInstructionsFingerprintPath({
+    instructionsFilePath,
+    instructionsRootPath,
+    instructionsEntryFile,
+  });
+  const configuredPath = resolved.filePath ?? instructionsFilePath ?? (
+    instructionsRootPath && instructionsEntryFile
+      ? path.resolve(instructionsRootPath, instructionsEntryFile)
+      : null
+  );
+  if (!configuredPath && !instructionsRootPath && !instructionsEntryFile) return null;
+
+  const metadata: Record<string, unknown> = {
+    configured: true,
+    bundleMode: readNonEmptyString(config.instructionsBundleMode),
+    entryFile: instructionsEntryFile,
+    pathKind: configuredPath ? (path.isAbsolute(configuredPath) ? "absolute" : "relative") : null,
+    readPolicy: "root_bound",
+  };
+  if (resolved.skippedReason) metadata.readSkippedReason = resolved.skippedReason;
+  if (resolved.filePath) {
+    try {
+      metadata.contentHash = await hashFileContentsForConfigFingerprint(resolved.filePath);
+      metadata.readable = true;
+    } catch {
+      metadata.readable = false;
+    }
+  }
+  return metadata;
+}
+
+function buildSessionConfigCategoryValues(input: {
+  adapterType: string;
+  effectiveAdapterConfig: Record<string, unknown>;
+  agentRuntimeConfig: unknown;
+  modelProfile: unknown;
+  instructions: unknown;
+  issueOverrides: unknown;
+  workspaceConfig: unknown;
+  environment: unknown;
+  environmentEnv: unknown;
+  projectEnv: unknown;
+  routineEnv: unknown;
+  secretManifest: readonly EffectiveRunConfigSecretManifestEntry[];
+  runtimeSkills: unknown;
+  agentConfigRevision: unknown;
+}) {
+  const sanitizedSecretManifest = sanitizeSecretManifestForConfigFingerprint(input.secretManifest);
+  return {
+    adapter: {
+      adapterType: input.adapterType,
+      agentConfigRevision: input.agentConfigRevision,
+    },
+    adapterConfig: input.effectiveAdapterConfig,
+    agentRuntimeConfig: input.agentRuntimeConfig,
+    modelProfile: input.modelProfile,
+    instructions: input.instructions,
+    issueOverrides: input.issueOverrides,
+    workspaceConfig: input.workspaceConfig,
+    environment: input.environment,
+    envBindings: {
+      environment: { env: input.environmentEnv },
+      project: { env: input.projectEnv },
+      routine: { env: input.routineEnv },
+    },
+    secrets: sanitizedSecretManifest,
+    runtimeSkills: input.runtimeSkills,
+  } satisfies Record<EffectiveRunSessionConfigCategory, unknown>;
+}
+
+export async function buildEffectiveRunSessionConfigMetadata(input: {
+  adapterType: string;
+  effectiveAdapterConfig: Record<string, unknown>;
+  agentRuntimeConfig: unknown;
+  modelProfile: unknown;
+  issueOverrides: unknown;
+  workspaceConfig: unknown;
+  environment: unknown;
+  environmentEnv: unknown;
+  projectEnv: unknown;
+  routineEnv: unknown;
+  secretManifest?: readonly EffectiveRunConfigSecretManifestEntry[];
+  runtimeSkills: unknown;
+  agentConfigRevision?: unknown;
+}): Promise<EffectiveRunSessionConfigMetadata> {
+  const secretManifest = input.secretManifest ?? [];
+  const instructions = await resolveInstructionsConfigFingerprintMetadata(input.effectiveAdapterConfig);
+  const categoryValues = buildSessionConfigCategoryValues({
+    adapterType: input.adapterType,
+    effectiveAdapterConfig: input.effectiveAdapterConfig,
+    agentRuntimeConfig: input.agentRuntimeConfig,
+    modelProfile: input.modelProfile,
+    instructions,
+    issueOverrides: input.issueOverrides,
+    workspaceConfig: input.workspaceConfig,
+    environment: input.environment,
+    environmentEnv: input.environmentEnv,
+    projectEnv: input.projectEnv,
+    routineEnv: input.routineEnv,
+    secretManifest,
+    runtimeSkills: input.runtimeSkills,
+    agentConfigRevision: input.agentConfigRevision ?? null,
+  });
+  const fingerprints = createEffectiveRunConfigFingerprints({
+    session: categoryValues,
+    secretManifest,
+  });
+  const categoryFingerprints = createEffectiveRunConfigSubcategoryFingerprints({
+    category: "session",
+    value: categoryValues,
+    subcategories: EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES,
+    secretManifest,
+  });
+  return {
+    version: EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION,
+    fingerprint: fingerprints.sessionFingerprint.fingerprint,
+    categories: [...EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES],
+    categoryFingerprints,
+    fingerprints,
+  };
+}
+
+function buildWorkspaceConfigCategoryValues(input: {
+  mode: unknown;
+  projectId: unknown;
+  projectWorkspaceId: unknown;
+  strategyType: unknown;
+  workspaceStrategy: unknown;
+  repoUrl: unknown;
+  repoRef: unknown;
+  branchName: unknown;
+  configSnapshot: Partial<ExecutionWorkspaceConfig> | null;
+  environment: unknown;
+  realization: unknown;
+}) {
+  const snapshot = input.configSnapshot ?? {};
+  return {
+    mode: {
+      mode: input.mode ?? null,
+    },
+    projectWorkspace: {
+      projectId: input.projectId ?? null,
+      projectWorkspaceId: input.projectWorkspaceId ?? null,
+    },
+    strategy: {
+      strategyType: input.strategyType ?? null,
+      workspaceStrategy: input.workspaceStrategy ?? null,
+    },
+    repo: {
+      repoUrl: input.repoUrl ?? null,
+      repoRef: input.repoRef ?? null,
+      branchName: input.branchName ?? null,
+    },
+    lifecycleCommands: {
+      provisionCommand: snapshot.provisionCommand ?? null,
+      teardownCommand: snapshot.teardownCommand ?? null,
+      cleanupCommand: snapshot.cleanupCommand ?? null,
+    },
+    runtimeServices: {
+      workspaceRuntime: snapshot.workspaceRuntime ?? null,
+      desiredState: snapshot.desiredState ?? null,
+      serviceStates: snapshot.serviceStates ?? null,
+    },
+    environment: input.environment ?? null,
+    realization: input.realization ?? null,
+  } satisfies Record<EffectiveRunWorkspaceConfigCategory, unknown>;
+}
+
+export function buildEffectiveRunWorkspaceConfigMetadata(input: {
+  mode: unknown;
+  projectId: unknown;
+  projectWorkspaceId: unknown;
+  strategyType: unknown;
+  workspaceStrategy: unknown;
+  repoUrl: unknown;
+  repoRef: unknown;
+  branchName?: unknown;
+  configSnapshot: Partial<ExecutionWorkspaceConfig> | null;
+  environment: unknown;
+  realization: unknown;
+  secretManifest?: readonly EffectiveRunConfigSecretManifestEntry[];
+  evaluatedAt?: string | Date | null;
+}): EffectiveRunWorkspaceConfigMetadata {
+  const secretManifest = input.secretManifest ?? [];
+  const categoryValues = buildWorkspaceConfigCategoryValues({
+    mode: input.mode,
+    projectId: input.projectId,
+    projectWorkspaceId: input.projectWorkspaceId,
+    strategyType: input.strategyType,
+    workspaceStrategy: input.workspaceStrategy,
+    repoUrl: input.repoUrl,
+    repoRef: input.repoRef,
+    branchName: input.branchName ?? null,
+    configSnapshot: input.configSnapshot,
+    environment: input.environment,
+    realization: input.realization,
+  });
+  const fingerprints = createEffectiveRunConfigFingerprints({
+    workspace: categoryValues,
+    secretManifest,
+  });
+  const categoryFingerprints = createEffectiveRunConfigSubcategoryFingerprints({
+    category: "workspace",
+    value: categoryValues,
+    subcategories: EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES,
+    secretManifest,
+  });
+  const evaluatedAt = input.evaluatedAt instanceof Date
+    ? input.evaluatedAt.toISOString()
+    : readNonEmptyString(input.evaluatedAt) ?? new Date().toISOString();
+  return {
+    version: EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION,
+    fingerprint: fingerprints.workspaceFingerprint.fingerprint,
+    categories: [...EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES],
+    categoryFingerprints,
+    fingerprints,
+    evaluatedAt,
+  };
+}
+
+export function resolveExecutionWorkspaceConfigFreshness(input: {
+  hasExistingWorkspace: boolean;
+  existingWorkspaceMetadata: Record<string, unknown> | null | undefined;
+  inferredMetadata?: EffectiveRunWorkspaceConfigMetadata | null;
+  nextMetadata: EffectiveRunWorkspaceConfigMetadata | null;
+}): ExecutionWorkspaceConfigFreshnessDecision {
+  if (!input.hasExistingWorkspace) {
+    return {
+      action: "create",
+      shouldReuseExisting: false,
+      shouldRefreshConfigSnapshot: false,
+      reasons: [],
+      changedCategories: [],
+      storedFingerprint: null,
+      inferredFingerprint: null,
+      nextFingerprint: input.nextMetadata?.fingerprint ?? null,
+      storedFingerprintPresent: false,
+    };
+  }
+
+  const stored = readWorkspaceConfigFingerprintFromMetadata(input.existingWorkspaceMetadata);
+  const previous = stored
+    ? {
+        version: stored.version,
+        fingerprint: stored.fingerprint,
+        categoryFingerprints: stored.categoryFingerprints,
+      }
+    : input.inferredMetadata
+      ? {
+          version: input.inferredMetadata.version,
+          fingerprint: input.inferredMetadata.fingerprint,
+          categoryFingerprints: input.inferredMetadata.categoryFingerprints,
+        }
+      : null;
+
+  if (!input.nextMetadata) {
+    return {
+      action: "reuse",
+      shouldReuseExisting: true,
+      shouldRefreshConfigSnapshot: false,
+      reasons: [],
+      changedCategories: [],
+      storedFingerprint: stored?.fingerprint ?? null,
+      inferredFingerprint: stored ? null : input.inferredMetadata?.fingerprint ?? null,
+      nextFingerprint: null,
+      storedFingerprintPresent: Boolean(stored),
+    };
+  }
+
+  if (!previous) {
+    return {
+      action: "replace",
+      shouldReuseExisting: false,
+      shouldRefreshConfigSnapshot: false,
+      reasons: ["execution workspace configuration fingerprint metadata is missing"],
+      changedCategories: [...input.nextMetadata.categories],
+      storedFingerprint: null,
+      inferredFingerprint: null,
+      nextFingerprint: input.nextMetadata.fingerprint,
+      storedFingerprintPresent: false,
+    };
+  }
+
+  if (previous.version !== input.nextMetadata.version) {
+    return {
+      action: "replace",
+      shouldReuseExisting: false,
+      shouldRefreshConfigSnapshot: false,
+      reasons: [
+        `execution workspace configuration fingerprint version changed from ${previous.version} to ${input.nextMetadata.version}`,
+      ],
+      changedCategories: [...input.nextMetadata.categories],
+      storedFingerprint: stored?.fingerprint ?? null,
+      inferredFingerprint: stored ? null : input.inferredMetadata?.fingerprint ?? null,
+      nextFingerprint: input.nextMetadata.fingerprint,
+      storedFingerprintPresent: Boolean(stored),
+    };
+  }
+
+  if (previous.fingerprint === input.nextMetadata.fingerprint) {
+    return {
+      action: "reuse",
+      shouldReuseExisting: true,
+      shouldRefreshConfigSnapshot: !stored,
+      reasons: stored ? [] : ["execution workspace configuration fingerprint metadata is missing"],
+      changedCategories: [],
+      storedFingerprint: stored?.fingerprint ?? null,
+      inferredFingerprint: stored ? null : input.inferredMetadata?.fingerprint ?? null,
+      nextFingerprint: input.nextMetadata.fingerprint,
+      storedFingerprintPresent: Boolean(stored),
+    };
+  }
+
+  const changedCategories = changedEffectiveRunWorkspaceConfigCategories({
+    previous: previous.categoryFingerprints,
+    next: input.nextMetadata.categoryFingerprints,
+  });
+  const replacementRequired = changedCategories.some((category) =>
+    WORKSPACE_REPLACEMENT_CONFIG_CATEGORIES.has(category)
+  );
+  const action: WorkspaceConfigFreshnessDecisionAction = replacementRequired ? "replace" : "refresh";
+  return {
+    action,
+    shouldReuseExisting: action !== "replace",
+    shouldRefreshConfigSnapshot: action === "refresh",
+    reasons: [
+      `execution workspace configuration changed: ${describeEffectiveRunWorkspaceConfigCategories(changedCategories)}`,
+    ],
+    changedCategories,
+    storedFingerprint: stored?.fingerprint ?? null,
+    inferredFingerprint: stored ? null : input.inferredMetadata?.fingerprint ?? null,
+    nextFingerprint: input.nextMetadata.fingerprint,
+    storedFingerprintPresent: Boolean(stored),
+  };
+}
 
 function readConfiguredModelFromAdapterConfig(
   adapterConfig: Record<string, unknown> | null | undefined,
@@ -2437,13 +3272,20 @@ function readConfiguredModelFromAdapterConfig(
   return readNonEmptyString(adapterConfig?.model);
 }
 
-function attachConfiguredModelToSessionParams(
+function attachPaperclipSessionMetadataToSessionParams(
   sessionParams: Record<string, unknown> | null | undefined,
   configuredModel: string | null,
+  configMetadata?: EffectiveRunSessionConfigMetadata | null,
 ) {
-  if (!configuredModel) return sessionParams ?? null;
+  if (!configuredModel && !configMetadata) return sessionParams ?? null;
   const next = { ...(sessionParams ?? {}) };
-  next[SESSION_CONFIGURED_MODEL_KEY] = configuredModel;
+  if (configuredModel) next[SESSION_CONFIGURED_MODEL_KEY] = configuredModel;
+  if (configMetadata) {
+    next[SESSION_CONFIG_FINGERPRINT_KEY] = configMetadata.fingerprint;
+    next[SESSION_CONFIG_FINGERPRINT_VERSION_KEY] = configMetadata.version;
+    next[SESSION_CONFIG_CATEGORIES_KEY] = configMetadata.categories;
+    next[SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY] = configMetadata.categoryFingerprints;
+  }
   return next;
 }
 
@@ -2470,6 +3312,78 @@ export function stripConfiguredModelFromSessionParams(
   const next = { ...sessionParams };
   delete next[SESSION_CONFIGURED_MODEL_KEY];
   return next;
+}
+
+export function stripPaperclipSessionMetadataFromSessionParams(
+  sessionParams: Record<string, unknown> | null | undefined,
+) {
+  if (!sessionParams) return null;
+  const next = { ...sessionParams };
+  for (const key of PAPERCLIP_SESSION_METADATA_KEYS) {
+    delete next[key];
+  }
+  return next;
+}
+
+export function resolveTaskSessionConfigFreshness(input: {
+  hasTaskSession: boolean;
+  configuredModel: string | null;
+  taskSessionParams: Record<string, unknown> | null | undefined;
+  configMetadata: EffectiveRunSessionConfigMetadata | null;
+  wakeResetReason?: string | null;
+  preserveLegacySessionWithoutConfigMetadata?: boolean;
+}): TaskSessionConfigFreshnessDecision {
+  if (!input.hasTaskSession) {
+    return {
+      reset: false,
+      reasons: [],
+      changedCategories: [],
+      storedFingerprint: null,
+      nextFingerprint: input.configMetadata?.fingerprint ?? null,
+    };
+  }
+
+  const reasons: string[] = [];
+  const storedConfig = readConfigFingerprintFromSessionParams(input.taskSessionParams);
+  const taskSessionConfiguredModel = readConfiguredModelFromSessionParams(input.taskSessionParams);
+  const modelChangedSinceTaskSession = shouldResetTaskSessionForModelChange({
+    configuredModel: input.configuredModel,
+    taskSessionParams: input.taskSessionParams,
+  });
+  if (modelChangedSinceTaskSession && taskSessionConfiguredModel) {
+    reasons.push(`configured model changed from "${taskSessionConfiguredModel}" to "${input.configuredModel}"`);
+  }
+
+  let changedCategories: EffectiveRunSessionConfigCategory[] = [];
+  if (input.configMetadata) {
+    if (!storedConfig && !input.preserveLegacySessionWithoutConfigMetadata) {
+      changedCategories = [...input.configMetadata.categories];
+      reasons.push("effective run configuration fingerprint metadata is missing");
+    } else if (storedConfig && storedConfig.version !== input.configMetadata.version) {
+      changedCategories = [...input.configMetadata.categories];
+      reasons.push(
+        `effective run configuration fingerprint version changed from ${storedConfig.version} to ${input.configMetadata.version}`,
+      );
+    } else if (storedConfig && storedConfig.fingerprint !== input.configMetadata.fingerprint) {
+      changedCategories = changedEffectiveRunSessionConfigCategories({
+        previous: storedConfig.categoryFingerprints,
+        next: input.configMetadata.categoryFingerprints,
+      });
+      reasons.push(
+        `effective run configuration changed: ${describeEffectiveRunConfigCategories(changedCategories)}`,
+      );
+    }
+  }
+
+  if (input.wakeResetReason) reasons.push(input.wakeResetReason);
+
+  return {
+    reset: reasons.length > 0,
+    reasons,
+    changedCategories,
+    storedFingerprint: storedConfig?.fingerprint ?? null,
+    nextFingerprint: input.configMetadata?.fingerprint ?? null,
+  };
 }
 
 function shouldAutoCheckoutIssueForWake(input: {
@@ -2635,6 +3549,7 @@ const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
   "interactionKind",
   "interactionStatus",
   "continuationPolicy",
+  "checkboxSelection",
 ] as const;
 
 function isInteractionResolutionWakePayload(payload: Record<string, unknown> | null | undefined) {
@@ -2878,7 +3793,7 @@ export async function buildPaperclipWakePayload(input: {
     });
   }
 
-  const annotationDeltas = annotationCommentId
+  const annotationDeltas = annotationCommentId && issueId
     ? await input.db
       .select({
         id: documentAnnotationComments.id,
@@ -2902,7 +3817,10 @@ export async function buildPaperclipWakePayload(input: {
       .innerJoin(documentAnnotationThreads, eq(documentAnnotationComments.threadId, documentAnnotationThreads.id))
       .where(and(
         eq(documentAnnotationComments.companyId, input.companyId),
+        eq(documentAnnotationComments.issueId, issueId),
         eq(documentAnnotationComments.id, annotationCommentId),
+        eq(documentAnnotationThreads.companyId, input.companyId),
+        eq(documentAnnotationThreads.issueId, issueId),
       ))
       .then((rows) => rows.map((row) => ({
         id: row.id,
@@ -2928,6 +3846,22 @@ export async function buildPaperclipWakePayload(input: {
             : { type: row.authorType, id: null },
       })))
     : [];
+  const interactionId = readNonEmptyString(input.contextSnapshot.interactionId);
+  const interactionKind = readNonEmptyString(input.contextSnapshot.interactionKind);
+  const interactionStatus = readNonEmptyString(input.contextSnapshot.interactionStatus);
+  const checkboxSelection = parseObject(input.contextSnapshot.checkboxSelection);
+  const planReviewContext = issueId
+    ? await buildPlanReviewContext({
+      db: input.db,
+      companyId: input.companyId,
+      issueId,
+      issueWorkMode: issueSummary?.workMode ?? null,
+      includeForIssueComment: commentIds.length > 0,
+      includeForAnnotationDelta: annotationDeltas.length > 0,
+      interactionId,
+    })
+    : null;
+  const payloadTruncated = truncated || planReviewContext?.truncated === true;
 
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
@@ -2958,8 +3892,9 @@ export async function buildPaperclipWakePayload(input: {
           instruction: readNonEmptyString(input.contextSnapshot.livenessContinuationInstruction),
         }
       : null,
-    interactionKind: readNonEmptyString(input.contextSnapshot.interactionKind),
-    interactionStatus: readNonEmptyString(input.contextSnapshot.interactionStatus),
+    interactionKind,
+    interactionStatus,
+    checkboxSelection: Object.keys(checkboxSelection).length > 0 ? checkboxSelection : null,
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
     dependencyBlockedInteraction: input.contextSnapshot.dependencyBlockedInteraction === true,
     treeHoldInteraction: input.contextSnapshot.treeHoldInteraction === true,
@@ -2989,13 +3924,14 @@ export async function buildPaperclipWakePayload(input: {
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
     annotationDeltas,
+    planReviewContext,
     commentWindow: {
       requestedCount: commentIds.length,
       includedCount: comments.length,
       missingCount: missingCommentCount,
     },
-    truncated,
-    fallbackFetchNeeded: truncated || missingCommentCount > 0,
+    truncated: payloadTruncated,
+    fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
   };
 }
 
@@ -3019,6 +3955,227 @@ function isHeartbeatRunTerminalStatus(
   );
 }
 
+function isHeartbeatRunRuntimeStatusActive(status: string | null | undefined): boolean {
+  return status === "queued" || status === "running";
+}
+
+type HeartbeatRunRuntimeStatusRunLike = {
+  id: string;
+  status?: string | null;
+  companyId?: string | null;
+  agentId?: string | null;
+  issueId?: string | null;
+  contextSnapshot?: Record<string, unknown> | null;
+};
+
+function readRuntimeStatusIssueIdCandidate(
+  run: HeartbeatRunRuntimeStatusRunLike,
+): string | null | undefined {
+  if ("issueId" in run) return readNonEmptyString(run.issueId) ?? null;
+  if ("contextSnapshot" in run) {
+    return readNonEmptyString(parseObject(run.contextSnapshot).issueId) ?? null;
+  }
+  return undefined;
+}
+
+function decorateHeartbeatRunRuntimeStatus<T extends HeartbeatRunRuntimeStatusRunLike>(
+  run: T,
+  expected: {
+    companyId?: string | null;
+    issueId?: string | null;
+    agentId?: string | null;
+  } = {},
+): T & {
+  currentStatusMessage: string | null;
+  currentStatusUpdatedAt: Date | null;
+  currentToolName: string | null;
+  lastAssistantSnippet: string | null;
+  lastEventAt: Date | null;
+} {
+  if (isHeartbeatRunTerminalStatus(run.status)) {
+    clearHeartbeatRunRuntimeStatus(run.id);
+  }
+
+  const companyId = expected.companyId ?? run.companyId ?? null;
+  const agentId = expected.agentId ?? run.agentId ?? null;
+  const issueId =
+    expected.issueId !== undefined ? expected.issueId : readRuntimeStatusIssueIdCandidate(run);
+  const currentStatus =
+    isHeartbeatRunRuntimeStatusActive(run.status) && companyId && agentId
+      ? getHeartbeatRunRuntimeStatus(run.id, {
+          companyId,
+          agentId,
+          ...(issueId !== undefined ? { issueId } : {}),
+        })
+      : null;
+
+  return {
+    ...run,
+    currentStatusMessage: currentStatus?.message ?? null,
+    currentStatusUpdatedAt: currentStatus?.updatedAt ?? null,
+    currentToolName: currentStatus?.currentToolName ?? null,
+    lastAssistantSnippet: currentStatus?.lastAssistantSnippet ?? null,
+    lastEventAt: currentStatus?.lastEventAt ?? null,
+  };
+}
+
+function publishHeartbeatRunRuntimeProgress(status: {
+  companyId: string;
+  runId: string;
+  agentId: string;
+  issueId: string | null;
+  phase: HeartbeatRunStatusPhase;
+  message: string;
+  updatedAt: Date;
+  currentToolName?: string | null;
+  lastAssistantSnippet?: string | null;
+  lastEventAt?: Date | null;
+}) {
+  publishLiveEvent({
+    companyId: status.companyId,
+    type: "heartbeat.run.progress",
+    payload: {
+      runId: status.runId,
+      agentId: status.agentId,
+      issueId: status.issueId,
+      phase: status.phase,
+      message: status.message,
+      currentToolName: status.currentToolName ?? null,
+      lastAssistantSnippet: status.lastAssistantSnippet ?? null,
+      lastEventAt: (status.lastEventAt ?? status.updatedAt).toISOString(),
+      updatedAt: status.updatedAt.toISOString(),
+    },
+  });
+}
+
+function recordHeartbeatRunRuntimeProgress(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "status" | "contextSnapshot">,
+  update: RuntimeStatusUpdate,
+  issueId: string | null,
+) {
+  if (!isHeartbeatRunRuntimeStatusActive(run.status)) return null;
+  const status = setHeartbeatRunRuntimeStatus({
+    companyId: run.companyId,
+    issueId,
+    agentId: run.agentId,
+    runId: run.id,
+    phase: update.phase as HeartbeatRunStatusPhase,
+    message: update.message,
+    currentToolName: readNonEmptyString(update.currentToolName) ?? null,
+    lastAssistantSnippet: readNonEmptyString(update.lastAssistantSnippet) ?? null,
+    lastEventAt: update.lastEventAt ? new Date(update.lastEventAt) : new Date(),
+  });
+  if (!status) return null;
+
+  publishHeartbeatRunRuntimeProgress(status);
+  return status;
+}
+
+function sanitizeLiveRunProgressText(value: string, maxChars: number): string | null {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  const redacted = redactSensitiveText(normalized);
+  if (redacted.length <= maxChars) return redacted;
+  return `${redacted.slice(0, maxChars - 3)}...`;
+}
+
+function readLiveRunProgressString(value: unknown, maxChars: number): string | null {
+  return typeof value === "string" ? sanitizeLiveRunProgressText(value, maxChars) : null;
+}
+
+function readFirstLiveRunProgressString(maxChars: number, values: unknown[]): string | null {
+  for (const value of values) {
+    const text = readLiveRunProgressString(value, maxChars);
+    if (text) return text;
+  }
+  return null;
+}
+
+function readLiveRunToolName(payload: Record<string, unknown> | null, eventType: string): string | null {
+  const toolCall = parseObject(payload?.tool_call) ?? parseObject(payload?.toolCall);
+  const message = parseObject(payload?.message);
+  const direct = readFirstLiveRunProgressString(MAX_HEARTBEAT_RUN_RUNTIME_TOOL_NAME_CHARS, [
+    payload?.toolName,
+    payload?.tool_name,
+    payload?.tool,
+    payload?.name,
+    payload?.title,
+    toolCall?.name,
+    toolCall?.toolName,
+    message?.name,
+    message?.toolName,
+  ]);
+  if (direct) return direct;
+
+  const normalizedEventType = eventType.toLowerCase();
+  if (!normalizedEventType.includes("tool")) return null;
+  return readLiveRunProgressString(eventType.replace(/[._-]+/g, " "), MAX_HEARTBEAT_RUN_RUNTIME_TOOL_NAME_CHARS);
+}
+
+function readLiveRunAssistantSnippet(
+  payload: Record<string, unknown> | null,
+  eventType: string,
+  message: string | null,
+): string | null {
+  const normalizedEventType = eventType.toLowerCase();
+  const messagePayload = parseObject(payload?.message);
+  const direct = readFirstLiveRunProgressString(MAX_HEARTBEAT_RUN_RUNTIME_ASSISTANT_SNIPPET_CHARS, [
+    payload?.text,
+    payload?.delta,
+    payload?.text_delta,
+    payload?.content,
+    payload?.summary,
+    messagePayload?.text,
+    messagePayload?.content,
+  ]);
+  if (direct) return direct;
+
+  if (
+    normalizedEventType.includes("assistant") ||
+    normalizedEventType.includes("text_delta") ||
+    normalizedEventType.includes("message.delta") ||
+    normalizedEventType.includes("message_delta")
+  ) {
+    return message ? sanitizeLiveRunProgressText(message, MAX_HEARTBEAT_RUN_RUNTIME_ASSISTANT_SNIPPET_CHARS) : null;
+  }
+
+  return null;
+}
+
+function buildRunEventRuntimeProgress(input: {
+  eventType: string;
+  message: string | null;
+  payload: Record<string, unknown> | null;
+  at: Date;
+}) {
+  const normalizedEventType = input.eventType.toLowerCase();
+  if (normalizedEventType === "lifecycle" || normalizedEventType === "adapter.invoke") {
+    return null;
+  }
+
+  const currentToolName = readLiveRunToolName(input.payload, input.eventType);
+  const lastAssistantSnippet = readLiveRunAssistantSnippet(input.payload, input.eventType, input.message);
+  const fallbackMessage =
+    readLiveRunProgressString(input.message, MAX_HEARTBEAT_RUN_RUNTIME_ASSISTANT_SNIPPET_CHARS) ??
+    sanitizeLiveRunProgressText(
+      input.eventType.replace(/[._-]+/g, " "),
+      MAX_HEARTBEAT_RUN_RUNTIME_ASSISTANT_SNIPPET_CHARS,
+    );
+  const message =
+    currentToolName
+      ? `Using ${currentToolName}`
+      : lastAssistantSnippet ?? fallbackMessage;
+
+  if (!message) return null;
+  return {
+    phase: "run_activity" as const,
+    message,
+    currentToolName,
+    lastAssistantSnippet,
+    lastEventAt: input.at,
+  };
+}
+
 export function buildPaperclipTaskMarkdown(input: {
   issue: {
     id: string;
@@ -3027,6 +4184,13 @@ export function buildPaperclipTaskMarkdown(input: {
     workMode?: string | null;
     description?: string | null;
   } | null;
+  ancestors?: Array<{
+    id: string;
+    identifier?: string | null;
+    title?: string | null;
+    status?: string | null;
+    priority?: string | null;
+  }> | null;
   wakeComment?: {
     id: string;
     body: string;
@@ -3047,6 +4211,7 @@ export function buildPaperclipTaskMarkdown(input: {
     return [fence + "text", value, fence].join("\n");
   };
   const issue = input.issue;
+  const ancestors = (input.ancestors ?? []).slice(0, 6);
   const wakeComment = input.wakeComment ?? null;
   const acceptedPlanContinuation =
     !wakeComment &&
@@ -3097,6 +4262,19 @@ export function buildPaperclipTaskMarkdown(input: {
     const description = issue.description?.trim();
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
+    }
+  }
+  if (ancestors.length > 0) {
+    lines.push("", "Authoritative parent / ancestor context:");
+    for (const [index, ancestor] of ancestors.entries()) {
+      const label = ancestor.identifier || ancestor.id;
+      const status = ancestor.status ? ` (${ancestor.status})` : "";
+      const priority = ancestor.priority ? ` [${ancestor.priority}]` : "";
+      const title = ancestor.title ? ` ${ancestor.title}` : "";
+      lines.push(`- ${index === 0 ? "Parent" : `Ancestor ${index + 1}`}: ${label}${title}${status}${priority}`);
+    }
+    if ((input.ancestors ?? []).length > ancestors.length) {
+      lines.push(`- [ancestor context truncated after ${ancestors.length} entries]`);
     }
   }
   if (wakeComment?.body.trim()) {
@@ -3387,7 +4565,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     environmentRuntime,
   });
   const workspaceOperationsSvc = workspaceOperationService(db);
-  const activeRunExecutions = new Set<string>();
   const liveRunExecutions = {
     has(id: string) {
       return runningProcesses.has(id) || activeRunExecutions.has(id);
@@ -3509,6 +4686,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function recordCurrentHeartbeatRunRuntimeProgress(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "status" | "contextSnapshot">,
+    update: RuntimeStatusUpdate,
+    issueId: string | null,
+  ) {
+    if (!isHeartbeatRunRuntimeStatusActive(run.status)) {
+      clearHeartbeatRunRuntimeStatus(run.id);
+      return null;
+    }
+
+    const currentRun = await getRun(run.id);
+    if (!currentRun || !isHeartbeatRunRuntimeStatusActive(currentRun.status)) {
+      clearHeartbeatRunRuntimeStatus(run.id);
+      return null;
+    }
+
+    return recordHeartbeatRunRuntimeProgress(currentRun, update, issueId);
+  }
+
   async function getRunLogAccess(runId: string) {
     return db
       .select(heartbeatRunLogAccessColumns)
@@ -3538,6 +4734,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         originKind: issues.originKind,
         originId: issues.originId,
         originRunId: issues.originRunId,
+        updatedAt: issues.updatedAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
@@ -3601,6 +4798,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .select()
       .from(agentRuntimeState)
       .where(eq(agentRuntimeState.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getLatestAgentConfigRevision(companyId: string, agentId: string) {
+    return db
+      .select({
+        id: agentConfigRevisions.id,
+        changedKeys: agentConfigRevisions.changedKeys,
+        createdAt: agentConfigRevisions.createdAt,
+      })
+      .from(agentConfigRevisions)
+      .where(and(eq(agentConfigRevisions.companyId, companyId), eq(agentConfigRevisions.agentId, agentId)))
+      .orderBy(desc(agentConfigRevisions.createdAt), desc(agentConfigRevisions.id))
+      .limit(1)
       .then((rows) => rows[0] ?? null);
   }
 
@@ -4896,6 +6107,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        clearHeartbeatRunRuntimeStatus(updated.id);
+      }
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -4930,6 +6144,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
 
     if (updated) {
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        clearHeartbeatRunRuntimeStatus(updated.id);
+      }
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -5470,6 +6687,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload?: Record<string, unknown>;
     },
   ) {
+    const eventAt = new Date();
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const sanitizedMessage = event.message
       ? redactCurrentUserText(event.message, currentUserRedactionOptions)
@@ -5481,6 +6699,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const sanitizedPayload = secretSanitizedPayload
       ? redactCurrentUserValue(secretSanitizedPayload, currentUserRedactionOptions)
       : secretSanitizedPayload;
+    const issueId = readRuntimeStatusIssueIdCandidate(run) ?? null;
+    const progress = buildRunEventRuntimeProgress({
+      eventType: event.eventType,
+      message: sanitizedMessage ?? null,
+      payload: sanitizedPayload ?? null,
+      at: eventAt,
+    });
 
     await db.insert(heartbeatRunEvents).values({
       companyId: run.companyId,
@@ -5501,15 +6726,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: {
         runId: run.id,
         agentId: run.agentId,
+        issueId,
         seq,
         eventType: event.eventType,
         stream: event.stream ?? null,
         level: event.level ?? null,
         color: event.color ?? null,
         message: sanitizedMessage ?? null,
+        currentToolName: progress?.currentToolName ?? null,
+        lastAssistantSnippet: progress?.lastAssistantSnippet ?? null,
+        lastEventAt: (progress?.lastEventAt ?? eventAt).toISOString(),
         payload: sanitizedPayload ?? null,
       },
     });
+    if (progress && isHeartbeatRunRuntimeStatusActive(run.status)) {
+      const status = setHeartbeatRunRuntimeStatus({
+        companyId: run.companyId,
+        issueId,
+        agentId: run.agentId,
+        runId: run.id,
+        phase: progress.phase,
+        message: progress.message,
+        updatedAt: eventAt,
+        currentToolName: progress.currentToolName,
+        lastAssistantSnippet: progress.lastAssistantSnippet,
+        lastEventAt: progress.lastEventAt,
+      });
+      if (status) publishHeartbeatRunRuntimeProgress(status);
+    }
   }
 
   async function nextRunEventSeq(runId: string) {
@@ -8371,24 +9615,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             id: projects.id,
             executionWorkspacePolicy: projects.executionWorkspacePolicy,
             env: projects.env,
+            updatedAt: projects.updatedAt,
           })
           .from(projects)
           .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
       : null;
+    const acceptedPlanContinuationWake = issueContext
+      ? readNonEmptyString(context.workspaceRefreshReason) === "accepted_plan_confirmation"
+        || (
+          issueContext.workMode === "planning"
+          && readNonEmptyString(context.interactionKind) === "request_confirmation"
+          && readNonEmptyString(context.interactionStatus) === "accepted"
+        )
+      : false;
     const acceptedPlanWakeRoutingDecision = issueContext
       ? await resolveAcceptedPlanWakeRoutingDecision({
           db,
           companyId: agent.companyId,
           agentId: agent.id,
           issueId,
-          acceptedPlanContinuationWake:
-            readNonEmptyString(context.workspaceRefreshReason) === "accepted_plan_confirmation"
-            || (
-              issueContext.workMode === "planning"
-              && readNonEmptyString(context.interactionKind) === "request_confirmation"
-              && readNonEmptyString(context.interactionStatus) === "accepted"
-            ),
+          acceptedPlanContinuationWake,
           contextSnapshot: context,
         })
       : null;
@@ -8432,27 +9679,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : null,
     });
     const config = parseObject(agent.adapterConfig);
-    const configuredModel = readConfiguredModelFromAdapterConfig(config);
     const taskSession = taskKey
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
     const taskSessionDecodedParams = normalizeSessionParams(
       sessionCodec.deserialize(taskSession?.sessionParamsJson ?? null),
     );
-    const modelChangedSinceTaskSession = shouldResetTaskSessionForModelChange({
-      configuredModel,
-      taskSessionParams: taskSessionDecodedParams,
-    });
-    const resetTaskSession = shouldResetTaskSessionForWake(context) || modelChangedSinceTaskSession;
-    const wakeSessionResetReason = describeSessionResetReason(context);
-    const taskSessionConfiguredModel = readConfiguredModelFromSessionParams(taskSessionDecodedParams);
-    const modelSessionResetReason = modelChangedSinceTaskSession && taskSessionConfiguredModel
-      ? `configured model changed from "${taskSessionConfiguredModel}" to "${configuredModel}"`
-      : null;
-    const sessionResetReason = [modelSessionResetReason, wakeSessionResetReason]
-      .filter((value): value is string => Boolean(value))
-      .join("; ") || null;
-    const taskSessionForRun = resetTaskSession ? null : taskSession;
     const explicitResumeSessionParams = normalizeResumeParamsForAdapter(
       agent.adapterType,
       sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
@@ -8462,17 +9694,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (sessionCodec.getDisplayId ? sessionCodec.getDisplayId(explicitResumeSessionParams) : null) ??
         readNonEmptyString(explicitResumeSessionParams?.sessionId),
     );
-    const previousSessionParams =
-      explicitResumeSessionParams ??
-      (isCanonicalSessionIdForAdapter(agent.adapterType, explicitResumeSessionDisplayId)
-        ? { sessionId: explicitResumeSessionDisplayId }
-        : null) ??
-      normalizeResumeParamsForAdapter(
-        agent.adapterType,
-        stripConfiguredModelFromSessionParams(
-          sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
-        ),
-      );
     const resolvedExecutionWorkspaceMode = resolveExecutionWorkspaceMode({
       projectPolicy: projectExecutionWorkspacePolicy,
       issueSettings: issueExecutionWorkspaceSettings,
@@ -8509,6 +9730,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       wakeCommentContext && !exposeLowTrustRaw
         ? sanitizeQuarantinedCommentForHigherTrust(wakeCommentContext)
         : wakeCommentContext;
+    const issueAncestors = issueRef
+      ? await issuesSvc.getAncestors(issueRef.id)
+      : [];
     if (continuationSummary) {
       context.paperclipContinuationSummary = {
         key: safeContinuationSummary!.key,
@@ -8554,6 +9778,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             description: issueRef.description,
           }
         : null,
+      ancestors: issueAncestors,
       wakeComment: safeWakeCommentContext,
       interaction: {
         kind: readNonEmptyString(context.interactionKind),
@@ -8600,19 +9825,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       instanceDefaultEnvironmentId: resolvedInstanceSettings.defaultEnvironmentId ?? null,
       localDefaultEnvironmentId: localEnvironment.id,
     });
-    const shouldReuseExisting = requestedShouldReuseExisting;
-    const reusableExecutionWorkspaceConfig = shouldReuseExisting
-      ? requestedReusableExecutionWorkspaceConfig
-      : null;
-    const persistedExecutionWorkspaceMode = shouldReuseExisting && existingExecutionWorkspace
-      ? issueExecutionWorkspaceModeForPersistedWorkspace(existingExecutionWorkspace.mode)
-      : null;
     const effectiveExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode> =
-      persistedExecutionWorkspaceMode === "isolated_workspace" ||
-      persistedExecutionWorkspaceMode === "operator_branch" ||
-      persistedExecutionWorkspaceMode === "agent_default"
-        ? persistedExecutionWorkspaceMode
-        : requestedExecutionWorkspaceMode;
+      requestedExecutionWorkspaceMode;
     const executionPolicy = { executionMode: (await instanceSettings.getGeneral()).executionMode };
     let selectedEnvironmentId = environmentResolution.environmentId;
     if (isExecutionForcedToKubernetes(executionPolicy)) {
@@ -8679,50 +9893,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       selectedEnvironmentId = kubernetesEnvironment.id;
     }
-    const {
-      selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
-      workspace: resolvedWorkspace,
-    } = await resolveWorkspaceAfterLowTrustPreflight({
-      db,
-      trustPreset,
-      isolatedWorkspacesEnabled,
-      effectiveExecutionWorkspaceMode,
-      issue: issueRef
-        ? {
-            companyId: agent.companyId,
-            id: issueRef.id,
-            projectId: issueRef.projectId,
-          }
-        : null,
-      resolveSelectedEnvironmentDriver: async () => {
-        const preflightEnvironment = await envOrchestrator.resolveEnvironment({
-          companyId: agent.companyId,
-          selectedEnvironmentId,
-          localEnvironmentId: localEnvironment.id,
-        });
-        return preflightEnvironment.driver;
-      },
-      resolveWorkspace: () =>
-        resolveWorkspaceForRun(
-          agent,
-          context,
-          previousSessionParams,
-          { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
-        ),
-    });
-    const workspaceManagedConfig = shouldReuseExisting
-      ? { ...config }
-      : buildExecutionWorkspaceAdapterConfig({
-          agentConfig: config,
-          projectPolicy: projectExecutionWorkspacePolicy,
-          issueSettings: issueExecutionWorkspaceSettings,
-          mode: requestedExecutionWorkspaceMode,
-          legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
-        });
-    const persistedWorkspaceManagedConfig = applyPersistedExecutionWorkspaceConfig({
-      config: workspaceManagedConfig,
-      workspaceConfig: reusableExecutionWorkspaceConfig,
-      mode: effectiveExecutionWorkspaceMode,
+    const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: config,
+      projectPolicy: projectExecutionWorkspacePolicy,
+      issueSettings: issueExecutionWorkspaceSettings,
+      mode: requestedExecutionWorkspaceMode,
+      legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
     });
     let adapterModelProfiles: AdapterModelProfileDefinition[] = [];
     let profileResolutionFallbackReason: string | null = null;
@@ -8756,7 +9932,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       delete context.paperclipModelProfile;
     }
     const mergedConfig = mergeModelProfileAdapterConfig({
-      baseConfig: persistedWorkspaceManagedConfig,
+      baseConfig: workspaceManagedConfig,
       modelProfile: modelProfileApplication,
       issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
     });
@@ -8780,6 +9956,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,
+      adapterType: agent.adapterType,
       issueId,
       heartbeatRunId: run.id,
       environmentId: selectedEnvironmentForConfig?.id ?? null,
@@ -8820,15 +9997,125 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...effectiveResolvedConfig,
       paperclipRuntimeSkills: runtimeSkillEntries,
     };
+    const latestAgentConfigRevision = await getLatestAgentConfigRevision(agent.companyId, agent.id);
+    const sessionConfigMetadata = await buildEffectiveRunSessionConfigMetadata({
+      adapterType: agent.adapterType,
+      effectiveAdapterConfig: runtimeConfig,
+      agentRuntimeConfig: agent.runtimeConfig,
+      modelProfile: modelProfileMetadata,
+      issueOverrides: issueAssigneeOverrides,
+      workspaceConfig: {
+        requestedMode: requestedExecutionWorkspaceMode,
+        effectiveMode: effectiveExecutionWorkspaceMode,
+        issueConfigRevisionAt: issueContext?.updatedAt instanceof Date
+          ? issueContext.updatedAt.toISOString()
+          : issueContext?.updatedAt ?? null,
+        projectConfigRevisionAt: projectContext?.updatedAt instanceof Date
+          ? projectContext.updatedAt.toISOString()
+          : projectContext?.updatedAt ?? null,
+        projectPolicy: projectExecutionWorkspacePolicy,
+        issueSettings: issueExecutionWorkspaceSettings,
+        reusableExecutionWorkspaceConfig: requestedReusableExecutionWorkspaceConfig,
+        existingExecutionWorkspace: existingExecutionWorkspace
+          ? {
+              id: existingExecutionWorkspace.id,
+              mode: existingExecutionWorkspace.mode,
+              strategyType: existingExecutionWorkspace.strategyType,
+              projectWorkspaceId: existingExecutionWorkspace.projectWorkspaceId,
+              repoUrl: existingExecutionWorkspace.repoUrl,
+              baseRef: existingExecutionWorkspace.baseRef,
+              branchName: existingExecutionWorkspace.branchName,
+              config: existingExecutionWorkspace.config,
+            }
+          : null,
+      },
+      environment: {
+        selectionSource: environmentResolution.source,
+        selectedEnvironmentId,
+        selectedEnvironment: selectedEnvironmentForConfig
+          ? {
+              id: selectedEnvironmentForConfig.id,
+              driver: selectedEnvironmentForConfig.driver,
+              config: selectedEnvironmentForConfig.config,
+              configRevisionAt: selectedEnvironmentForConfig.updatedAt instanceof Date
+                ? selectedEnvironmentForConfig.updatedAt.toISOString()
+                : selectedEnvironmentForConfig.updatedAt ?? null,
+            }
+          : null,
+        executionPolicy,
+      },
+      environmentEnv: selectedEnvironmentForConfig?.envVars ?? null,
+      projectEnv: projectContext?.env ?? null,
+      routineEnv: routineEnvContext.env,
+      secretManifest,
+      runtimeSkills: runtimeSkillEntries,
+      agentConfigRevision: latestAgentConfigRevision
+        ? {
+            id: latestAgentConfigRevision.id,
+            changedKeys: latestAgentConfigRevision.changedKeys,
+            configRevisionAt: latestAgentConfigRevision.createdAt.toISOString(),
+          }
+        : null,
+    });
+    const configuredModel = readConfiguredModelFromAdapterConfig(runtimeConfig);
+    const wakeSessionResetReason = describeSessionResetReason(context);
+    const sessionConfigFreshness = resolveTaskSessionConfigFreshness({
+      hasTaskSession: taskSession != null,
+      configuredModel,
+      taskSessionParams: taskSessionDecodedParams,
+      configMetadata: sessionConfigMetadata,
+      wakeResetReason: wakeSessionResetReason,
+      preserveLegacySessionWithoutConfigMetadata: acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision,
+    });
+    const resetTaskSession = shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
+    const sessionResetReason = sessionConfigFreshness.reasons.join("; ") || null;
+    const taskSessionForRun = resetTaskSession ? null : taskSession;
+    const previousSessionParams =
+      explicitResumeSessionParams ??
+      (isCanonicalSessionIdForAdapter(agent.adapterType, explicitResumeSessionDisplayId)
+        ? { sessionId: explicitResumeSessionDisplayId }
+        : null) ??
+      normalizeResumeParamsForAdapter(
+        agent.adapterType,
+        stripPaperclipSessionMetadataFromSessionParams(
+          sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
+        ),
+      );
+    const {
+      selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
+      workspace: resolvedWorkspace,
+    } = await resolveWorkspaceAfterLowTrustPreflight({
+      db,
+      trustPreset,
+      isolatedWorkspacesEnabled,
+      effectiveExecutionWorkspaceMode,
+      issue: issueRef
+        ? {
+            companyId: agent.companyId,
+            id: issueRef.id,
+            projectId: issueRef.projectId,
+          }
+        : null,
+      resolveSelectedEnvironmentDriver: async () => {
+        const preflightEnvironment = await envOrchestrator.resolveEnvironment({
+          companyId: agent.companyId,
+          selectedEnvironmentId,
+          localEnvironmentId: localEnvironment.id,
+        });
+        return preflightEnvironment.driver;
+      },
+      resolveWorkspace: () =>
+        resolveWorkspaceForRun(
+          agent,
+          context,
+          previousSessionParams,
+          { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
+        ),
+    });
     const hostExecutionWorkspaceConfig = stripHostWorkspaceProvisionForLowTrustSandbox({
-      config: runtimeConfig,
+      config: mergedConfig,
       trustPreset,
       selectedEnvironmentDriver: lowTrustPreflightEnvironmentDriver,
-    });
-    const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
-      companyId: agent.companyId,
-      heartbeatRunId: run.id,
-      executionWorkspaceId: existingExecutionWorkspace?.id ?? null,
     });
     const executionWorkspaceBase = {
       baseCwd: resolvedWorkspace.cwd,
@@ -8838,10 +10125,93 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       repoUrl: resolvedWorkspace.repoUrl,
       repoRef: resolvedWorkspace.repoRef,
     } satisfies ExecutionWorkspaceInput;
+    const workspaceStrategyForFingerprint = parseObject(hostExecutionWorkspaceConfig.workspaceStrategy);
+    const workspaceStrategyFingerprintValue =
+      Object.keys(workspaceStrategyForFingerprint).length > 0 ? workspaceStrategyForFingerprint : null;
+    const latestWorkspaceStrategyType =
+      readNonEmptyString(workspaceStrategyForFingerprint.type) ??
+      (requestedExecutionWorkspaceMode === "agent_default"
+        ? "adapter_managed"
+        : requestedExecutionWorkspaceMode === "isolated_workspace" ||
+            requestedExecutionWorkspaceMode === "operator_branch"
+          ? "git_worktree"
+          : "project_primary");
+    const selectedEnvironmentConfigForFingerprint = parseObject(selectedEnvironmentForConfig?.config);
+    const workspaceEnvironmentFingerprint = selectedEnvironmentForConfig
+      ? {
+          selectionSource: environmentResolution.source,
+          selectedEnvironmentId,
+          driver: selectedEnvironmentForConfig.driver,
+          provider: readNonEmptyString(selectedEnvironmentConfigForFingerprint.provider),
+          config: selectedEnvironmentForConfig.config,
+          configRevisionAt: selectedEnvironmentForConfig.updatedAt instanceof Date
+            ? selectedEnvironmentForConfig.updatedAt.toISOString()
+            : selectedEnvironmentForConfig.updatedAt ?? null,
+          executionPolicy,
+        }
+      : null;
+    const workspaceRealizationFingerprint = {
+      environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
+      environmentProvider: readNonEmptyString(selectedEnvironmentConfigForFingerprint.provider),
+      trustPreset: trustPreset.kind,
+      lowTrustSandboxDriver: lowTrustPreflightEnvironmentDriver,
+    };
+    const latestWorkspaceConfigMetadata = buildEffectiveRunWorkspaceConfigMetadata({
+      mode: requestedExecutionWorkspaceMode,
+      projectId: executionWorkspaceBase.projectId,
+      projectWorkspaceId: executionWorkspaceBase.workspaceId,
+      strategyType: latestWorkspaceStrategyType,
+      workspaceStrategy: workspaceStrategyFingerprintValue,
+      repoUrl: executionWorkspaceBase.repoUrl,
+      repoRef: readNonEmptyString(workspaceStrategyForFingerprint.baseRef) ?? executionWorkspaceBase.repoRef,
+      configSnapshot,
+      environment: workspaceEnvironmentFingerprint,
+      realization: workspaceRealizationFingerprint,
+      secretManifest,
+    });
+    const inferredExistingWorkspaceConfigMetadata = existingExecutionWorkspace
+      ? buildEffectiveRunWorkspaceConfigMetadata({
+          mode: issueExecutionWorkspaceModeForPersistedWorkspace(existingExecutionWorkspace.mode),
+          projectId: existingExecutionWorkspace.projectId,
+          projectWorkspaceId: existingExecutionWorkspace.projectWorkspaceId,
+          strategyType: existingExecutionWorkspace.strategyType,
+          workspaceStrategy: workspaceStrategyFingerprintValue
+            ? {
+                ...workspaceStrategyFingerprintValue,
+                type: existingExecutionWorkspace.strategyType,
+                ...(existingExecutionWorkspace.baseRef
+                  ? { baseRef: existingExecutionWorkspace.baseRef }
+                  : {}),
+              }
+            : { type: existingExecutionWorkspace.strategyType },
+          repoUrl: existingExecutionWorkspace.repoUrl,
+          repoRef: existingExecutionWorkspace.baseRef,
+          configSnapshot: existingExecutionWorkspace.config,
+          environment: workspaceEnvironmentFingerprint,
+          realization: workspaceRealizationFingerprint,
+          secretManifest,
+          evaluatedAt: latestWorkspaceConfigMetadata.evaluatedAt,
+        })
+      : null;
+    const workspaceConfigFreshness = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: requestedShouldReuseExisting && Boolean(existingExecutionWorkspace),
+      existingWorkspaceMetadata: existingExecutionWorkspace?.metadata ?? null,
+      inferredMetadata: inferredExistingWorkspaceConfigMetadata,
+      nextMetadata: latestWorkspaceConfigMetadata,
+    });
+    const shouldReuseExisting = requestedShouldReuseExisting && workspaceConfigFreshness.shouldReuseExisting;
+    const shouldRefreshWorkspaceConfigSnapshot = shouldReuseExisting && workspaceConfigFreshness.shouldRefreshConfigSnapshot;
+    const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
+      companyId: agent.companyId,
+      heartbeatRunId: run.id,
+      executionWorkspaceId: shouldReuseExisting ? existingExecutionWorkspace?.id ?? null : null,
+      issueId,
+    });
     const reusedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
       ? await ensurePersistedExecutionWorkspaceAvailable({
           base: executionWorkspaceBase,
           workspace: {
+            id: existingExecutionWorkspace.id,
             mode: existingExecutionWorkspace.mode,
             strategyType: existingExecutionWorkspace.strategyType,
             cwd: existingExecutionWorkspace.cwd,
@@ -8854,7 +10224,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             metadata: existingExecutionWorkspace.metadata as Record<string, unknown> | null,
             config: {
               provisionCommand:
-                existingExecutionWorkspace.config?.provisionCommand
+                configSnapshot?.provisionCommand
+                ?? existingExecutionWorkspace.config?.provisionCommand
                 ?? projectExecutionWorkspacePolicy?.workspaceStrategy?.provisionCommand
                 ?? null,
             },
@@ -8866,31 +10237,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             companyId: agent.companyId,
           },
           recorder: workspaceOperationRecorder,
-        }) ?? buildRealizedExecutionWorkspaceFromPersisted({
-          base: executionWorkspaceBase,
-          workspace: existingExecutionWorkspace,
         })
       : null;
     const executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
-          base: executionWorkspaceBase,
-          config: hostExecutionWorkspaceConfig,
-          issue: issueRef,
-          agent: {
-            id: agent.id,
-            name: agent.name,
-            companyId: agent.companyId,
-          },
-          recorder: workspaceOperationRecorder,
-        });
+      base: executionWorkspaceBase,
+      config: hostExecutionWorkspaceConfig,
+      issue: issueRef,
+      agent: {
+        id: agent.id,
+        name: agent.name,
+        companyId: agent.companyId,
+      },
+      recorder: workspaceOperationRecorder,
+    });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace = null;
     const nextExecutionWorkspaceMetadata = mergeExecutionWorkspaceMetadataForPersistence({
-      existingMetadata: existingExecutionWorkspace?.metadata ?? null,
+      existingMetadata: shouldReuseExisting ? existingExecutionWorkspace?.metadata ?? null : null,
       source: executionWorkspace.source,
       createdByRuntime: executionWorkspace.created,
       configSnapshot,
       shouldReuseExisting,
+      shouldRefreshConfigSnapshot: shouldRefreshWorkspaceConfigSnapshot,
+      workspaceConfigMetadata: latestWorkspaceConfigMetadata,
       baseRef: executionWorkspace.repoRef,
       baseRefSha: executionWorkspace.baseRefSha ?? null,
     });
@@ -8978,6 +10348,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       throw error;
     }
     await workspaceOperationRecorder.attachExecutionWorkspaceId(persistedExecutionWorkspace?.id ?? null);
+    await recordWorkspaceConfigFreshnessOperation({
+      recorder: workspaceOperationRecorder,
+      runId: run.id,
+      decision: workspaceConfigFreshness,
+      hasExistingWorkspace: Boolean(existingExecutionWorkspace),
+      reuseRequested: requestedShouldReuseExisting,
+      workspaceReused: Boolean(reusedExecutionWorkspace),
+      configSnapshotRefreshed: shouldRefreshWorkspaceConfigSnapshot,
+      previousWorkspaceId: existingExecutionWorkspace?.id ?? null,
+      activeWorkspaceId: persistedExecutionWorkspace?.id ?? null,
+    });
     if (
       existingExecutionWorkspace &&
       persistedExecutionWorkspace &&
@@ -9126,6 +10507,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...resolvedWorkspace.warnings,
       ...executionWorkspace.warnings,
       ...(runtimeSessionResolution.warning ? [runtimeSessionResolution.warning] : []),
+      ...(requestedShouldReuseExisting && workspaceConfigFreshness.reasons.length > 0
+        ? [
+            `Execution workspace reuse freshness action "${workspaceConfigFreshness.action}" because ${workspaceConfigFreshness.reasons.join("; ")}.`,
+          ]
+        : []),
       ...(resetTaskSession && sessionResetReason
         ? [
             taskKey
@@ -9154,7 +10540,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
     context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
     const runtimeServiceIntents = (() => {
-      const runtimeConfig = parseObject(resolvedConfig.workspaceRuntime);
+      const runtimeConfig = parseObject(hostExecutionWorkspaceConfig.workspaceRuntime);
       return Array.isArray(runtimeConfig.services)
         ? runtimeConfig.services.filter(
             (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
@@ -9195,7 +10581,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let runtimeSessionIdForAdapter =
       readNonEmptyString(runtimeSessionParams?.sessionId) ?? runtimeSessionFallback;
     let runtimeSessionParamsForAdapter = normalizeSessionParams(
-      stripConfiguredModelFromSessionParams(runtimeSessionParams),
+      stripPaperclipSessionMetadataFromSessionParams(runtimeSessionParams),
     );
 
     const sessionCompaction = await evaluateSessionCompaction({
@@ -9228,6 +10614,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       sessionDisplayId: previousSessionDisplayId,
       taskKey,
     };
+    const configFreshnessResultMetadata = {
+      version: sessionConfigMetadata.version,
+      session: {
+        fingerprintVersion: sessionConfigMetadata.version,
+        categories: sessionConfigMetadata.categories,
+        reset: resetTaskSession,
+        resetReasons: sessionConfigFreshness.reasons,
+        changedCategories: sessionConfigFreshness.changedCategories,
+        taskSessionAvailable: taskSession != null,
+        taskSessionReused: taskSessionForRun != null,
+        storedFingerprintPresent: Boolean(sessionConfigFreshness.storedFingerprint),
+        nextFingerprint: sessionConfigFreshness.nextFingerprint,
+      },
+      workspace: {
+        fingerprintVersion: latestWorkspaceConfigMetadata.version,
+        categories: latestWorkspaceConfigMetadata.categories,
+        action: workspaceConfigFreshness.action,
+        changedCategories: workspaceConfigFreshness.changedCategories,
+        reasons: workspaceConfigFreshness.reasons,
+        reuseRequested: requestedShouldReuseExisting,
+        workspaceReused: Boolean(reusedExecutionWorkspace),
+        configSnapshotRefreshed: shouldRefreshWorkspaceConfigSnapshot,
+        storedFingerprintPresent: workspaceConfigFreshness.storedFingerprintPresent,
+        storedFingerprint: workspaceConfigFreshness.storedFingerprint,
+        inferredFingerprint: workspaceConfigFreshness.inferredFingerprint,
+        nextFingerprint: workspaceConfigFreshness.nextFingerprint,
+        previousWorkspaceId: existingExecutionWorkspace?.id ?? null,
+        activeWorkspaceId: persistedExecutionWorkspace?.id ?? null,
+      },
+    };
 
     let seq = 1;
     let handle: RunLogHandle | null = null;
@@ -9235,12 +10651,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let stderrExcerpt = "";
     let outputSeq = Number(run.lastOutputSeq ?? 0);
     let lastOutputFlushAt: Date | null = run.lastOutputAt ?? null;
+    let lastLogRuntimeStatusTouchMs = 0;
     const outputProgressState: {
       pending: {
-      at: Date;
-      seq: number;
-      stream: "stdout" | "stderr";
-      bytes: number;
+        at: Date;
+        seq: number;
+        stream: "stdout" | "stderr";
+        bytes: number;
       } | null;
     } = { pending: null };
     let persistedLogBytes = Number(run.logBytes ?? 0);
@@ -9375,6 +10792,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
         await flushOutputProgress();
 
+        // Streamed CLI output is real run activity: keep the in-memory
+        // runtime status ("Working... / X ago") fresh between structured
+        // events so sandbox runs with mid-run log streaming never show a
+        // minutes-stale timestamp. Throttled to avoid churning the live
+        // event stream on every 250ms tail chunk.
+        const logActivityAt = new Date(ts);
+        if (
+          isHeartbeatRunRuntimeStatusActive(run.status) &&
+          logActivityAt.getTime() - lastLogRuntimeStatusTouchMs >=
+            ACTIVE_RUN_LOG_RUNTIME_STATUS_REFRESH_INTERVAL_MS
+        ) {
+          lastLogRuntimeStatusTouchMs = logActivityAt.getTime();
+          const touchedStatus = touchHeartbeatRunRuntimeStatus({
+            companyId: run.companyId,
+            issueId,
+            agentId: run.agentId,
+            runId: run.id,
+            at: logActivityAt,
+          });
+          if (touchedStatus) publishHeartbeatRunRuntimeProgress(touchedStatus);
+        }
+
         const payloadChunk =
           sanitizedChunk.length > MAX_LIVE_LOG_CHUNK_BYTES
             ? sanitizedChunk.slice(sanitizedChunk.length - MAX_LIVE_LOG_CHUNK_BYTES)
@@ -9386,6 +10825,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           payload: {
             runId: run.id,
             agentId: run.agentId,
+            issueId,
             ts,
             stream,
             chunk: payloadChunk,
@@ -9447,7 +10887,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issue: issueRef,
         workspace: executionWorkspace,
         executionWorkspaceId: persistedExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
-        config: effectiveResolvedConfig,
+        config: hostExecutionWorkspaceConfig,
         adapterEnv,
         onLog,
       });
@@ -9515,11 +10955,151 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
       }
       let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
+      const inspectFinalizeWorkspaceBranch = async () => {
+        const workspaceRecord = persistedExecutionWorkspace?.id
+          ? await executionWorkspacesSvc.getById(persistedExecutionWorkspace.id)
+          : persistedExecutionWorkspace;
+        if (workspaceRecord?.strategyType !== "git_worktree") return null;
+
+        const worktreePath =
+          readNonEmptyString(workspaceRecord.providerRef) ??
+          readNonEmptyString(workspaceRecord.cwd) ??
+          readNonEmptyString(executionWorkspace.worktreePath) ??
+          readNonEmptyString(executionWorkspace.cwd);
+        const expectedBranchName =
+          readNonEmptyString(workspaceRecord.branchName) ??
+          readNonEmptyString(executionWorkspace.branchName);
+        if (!worktreePath || !expectedBranchName) return null;
+
+        const inspection = await inspectManagedGitWorktreeBranch({
+          worktreePath,
+          expectedBranchName,
+        });
+        return { workspaceRecord, inspection };
+      };
       const recordWorkspaceFinalize = async (
         status: "succeeded" | "failed",
         metadata?: Record<string, unknown>,
       ) => {
         if (adapterFinalizeOutcome) return;
+        let finalizeBranchMetadata: Record<string, unknown> | null = null;
+        let finalizeBranchRepairMetadata: Record<string, unknown> | null = null;
+        if (status === "succeeded") {
+          const branchInspection = await inspectFinalizeWorkspaceBranch();
+          if (branchInspection) {
+            let inspection = branchInspection.inspection;
+            const initialManagedGitWorktreeBranch = formatManagedGitWorktreeBranchInspection(inspection);
+            if (!inspection.valid && inspection.reasonCode === "branch_mismatch" && inspection.repoRoot) {
+              try {
+                await ensureGitWorktreeBranchCoherent({
+                  repoRoot: inspection.repoRoot,
+                  worktreePath: inspection.worktreePath,
+                  expectedBranchName: inspection.expectedBranchName,
+                  actualBranchName: inspection.actualBranchName,
+                  sourceIssue: issueRef
+                    ? {
+                        id: issueRef.id,
+                        identifier: issueRef.identifier,
+                        title: issueRef.title,
+                        workMode: issueRef.workMode,
+                      }
+                    : null,
+                  executionWorkspaceId: branchInspection.workspaceRecord.id,
+                  recorder: workspaceOperationRecorder,
+                });
+              } catch (repairErr) {
+                const workspaceValidationFailure = isWorkspaceValidationFailure(repairErr) ? repairErr : null;
+                finalizeBranchMetadata = {
+                  executionWorkspaceId: branchInspection.workspaceRecord.id,
+                  ...initialManagedGitWorktreeBranch,
+                };
+                finalizeBranchRepairMetadata = {
+                  attempted: true,
+                  succeeded: false,
+                  initial: initialManagedGitWorktreeBranch,
+                  reason: repairErr instanceof Error ? repairErr.message : String(repairErr),
+                };
+                await workspaceOperationRecorder.recordOperation({
+                  phase: "workspace_finalize",
+                  cwd: executionWorkspace.cwd,
+                  metadata: {
+                    adapterType: agent.adapterType,
+                    executionTargetKind: executionTarget?.kind ?? "local",
+                    ...metadata,
+                    managedGitWorktreeBranch: finalizeBranchMetadata,
+                    managedGitWorktreeBranchRepair: finalizeBranchRepairMetadata,
+                    ...(workspaceValidationFailure?.resultJson
+                      ? { workspaceValidation: workspaceValidationFailure.resultJson.workspaceValidation ?? workspaceValidationFailure.resultJson }
+                      : {}),
+                  },
+                  run: async () => ({
+                    status: "failed",
+                    stderr: `Managed git worktree branch check failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)}\n`,
+                  }),
+                });
+                adapterFinalizeOutcome = "failed";
+                throw repairErr;
+              }
+
+              const repairedInspection = await inspectManagedGitWorktreeBranch({
+                worktreePath: inspection.worktreePath,
+                expectedBranchName: inspection.expectedBranchName,
+                repoRoot: inspection.repoRoot,
+              });
+              finalizeBranchRepairMetadata = {
+                attempted: true,
+                succeeded: repairedInspection.valid,
+                initial: initialManagedGitWorktreeBranch,
+                repaired: formatManagedGitWorktreeBranchInspection(repairedInspection),
+              };
+              inspection = repairedInspection;
+            }
+
+            const managedGitWorktreeBranch = formatManagedGitWorktreeBranchInspection(inspection);
+            finalizeBranchMetadata = {
+              executionWorkspaceId: branchInspection.workspaceRecord.id,
+              ...managedGitWorktreeBranch,
+            };
+            if (!inspection.valid) {
+              const workspaceValidationFingerprint = fingerprintFinalizeWorkspaceBranchValidation({
+                issueId: issueRef?.id ?? null,
+                executionWorkspaceId: branchInspection.workspaceRecord.id,
+                inspection: managedGitWorktreeBranch,
+              });
+              await workspaceOperationRecorder.recordOperation({
+                phase: "workspace_finalize",
+                cwd: executionWorkspace.cwd,
+                metadata: {
+                  adapterType: agent.adapterType,
+                  executionTargetKind: executionTarget?.kind ?? "local",
+                  ...metadata,
+                  managedGitWorktreeBranch: finalizeBranchMetadata,
+                  ...(finalizeBranchRepairMetadata ? { managedGitWorktreeBranchRepair: finalizeBranchRepairMetadata } : {}),
+                },
+                run: async () => ({
+                  status: "failed",
+                  stderr: `Managed git worktree branch check failed: ${inspection.reason ?? "unknown branch mismatch"}\n`,
+                }),
+              });
+              adapterFinalizeOutcome = "failed";
+              throw new WorkspaceValidationFailure(
+                `Execution workspace ${branchInspection.workspaceRecord.id} expected git worktree branch "${inspection.expectedBranchName}" at "${inspection.worktreePath}", but ${inspection.reason ?? "the checked-out branch could not be verified"}. Record a sanctioned execution-workspace branch transition or restore the workspace branch before completing the run.`,
+                {
+                  workspaceValidation: {
+                    reason: "git_worktree_branch_incoherence",
+                    fingerprint: workspaceValidationFingerprint,
+                    adapterType: agent.adapterType,
+                    issueId: issueRef?.id ?? null,
+                    issueIdentifier: issueRef?.identifier ?? null,
+                    persistedExecutionWorkspaceId: branchInspection.workspaceRecord.id,
+                    executionWorkspaceCwd: executionWorkspace.cwd,
+                    managedGitWorktreeBranch: finalizeBranchMetadata,
+                  },
+                },
+              );
+            }
+          }
+        }
         await workspaceOperationRecorder.recordOperation({
           phase: "workspace_finalize",
           cwd: executionWorkspace.cwd,
@@ -9527,6 +11107,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             adapterType: agent.adapterType,
             executionTargetKind: executionTarget?.kind ?? "local",
             ...metadata,
+            ...(finalizeBranchMetadata ? { managedGitWorktreeBranch: finalizeBranchMetadata } : {}),
+            ...(finalizeBranchRepairMetadata ? { managedGitWorktreeBranchRepair: finalizeBranchRepairMetadata } : {}),
           },
           run: async () => ({ status }),
         });
@@ -9551,6 +11133,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : undefined,
           onLog,
           onMeta: onAdapterMeta,
+          onRuntimeProgress: async (progress) => {
+            await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
+          },
           onSpawn: async (meta) => {
             await persistRunProcessMetadata(run.id, {
               pid: meta.pid,
@@ -9720,6 +11305,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               freshSession: runtimeForAdapter.sessionId == null && runtimeForAdapter.sessionDisplayId == null,
               sessionRotated: sessionCompaction.rotate,
               sessionRotationReason: sessionCompaction.reason,
+              configFreshness: configFreshnessResultMetadata,
               provider: readNonEmptyString(adapterResult.provider) ?? "unknown",
               biller: resolveLedgerBiller(adapterResult),
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
@@ -9732,7 +11318,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         mergeRunStopMetadataForAgent(agent, outcome, {
           resultJson: mergeModelProfileRunMetadata(
             mergeAdapterRecoveryMetadata({
-              resultJson: adapterResult.resultJson ?? null,
+              resultJson: {
+                ...parseObject(adapterResult.resultJson),
+                configFreshness: configFreshnessResultMetadata,
+              },
               errorFamily: adapterResult.errorFamily ?? null,
               retryNotBefore: adapterResult.retryNotBefore ?? null,
             }),
@@ -9914,7 +11503,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               agentId: agent.id,
               adapterType: agent.adapterType,
               taskKey,
-              sessionParamsJson: attachConfiguredModelToSessionParams(nextSessionState.params, configuredModel),
+              sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
+                nextSessionState.params,
+                configuredModel,
+                sessionConfigMetadata,
+              ),
               sessionDisplayId: nextSessionState.displayId,
               lastRunId: finalizedRun.id,
               lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
@@ -10016,7 +11609,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             agentId: agent.id,
             adapterType: agent.adapterType,
             taskKey,
-            sessionParamsJson: attachConfiguredModelToSessionParams(previousSessionParams, configuredModel),
+            sessionParamsJson: attachPaperclipSessionMetadataToSessionParams(
+              previousSessionParams,
+              configuredModel,
+              sessionConfigMetadata,
+            ),
             sessionDisplayId: previousSessionDisplayId,
             lastRunId: failedRun.id,
             lastError: message,
@@ -10036,8 +11633,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // A missing secret/env binding is a known pre-dispatch configuration gap,
           // not an opaque setup crash. Surface it with its own errorCode so the
           // recovery path routes it to a human owner instead of looping retries.
+          const workspaceValidationSetupFailure = isWorkspaceValidationFailure(outerErr) ? outerErr : null;
           const configurationIncompleteSetupFailure = isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
-          const setupFailureErrorCode = configurationIncompleteSetupFailure?.code ?? "setup_failed";
+          const setupFailureErrorCode =
+            workspaceValidationSetupFailure?.code ?? configurationIncompleteSetupFailure?.code ?? "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
           const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
           const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
@@ -10048,7 +11647,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               resultJson: mergeRunStopMetadataForAgent(setupFailureAgent, "failed", {
                 errorCode: setupFailureErrorCode,
                 errorMessage: message,
-                resultJson: configurationIncompleteSetupFailure?.resultJson ?? null,
+                resultJson:
+                  workspaceValidationSetupFailure?.resultJson ?? configurationIncompleteSetupFailure?.resultJson ?? null,
               }),
             } : {}),
           }).catch(() => ({ run: null, updated: false as const }));
@@ -10147,6 +11747,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
       `Resolving them as a runtime failure would only produce repeated opaque setup failures.${failureSummary ?? ""} ` +
       "Moving it to `blocked` with a source-scoped recovery action so an operator can bind the missing secret(s) before resuming."
+    );
+  }
+
+  function buildExecutionReviewParticipantRecoveryComment(input: {
+    latestRun: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode"> | null | undefined;
+  }) {
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    return (
+      "Paperclip retried the pending execution-review participant once, but the review stage still has no completed decision " +
+      `or live reviewer run.${failureSummary ?? ""} ` +
+      "Moving it to `blocked` with a source-scoped recovery action so the recovery owner can repair the reviewer runtime, " +
+      "restore the review stage, or record an intentional manual resolution."
     );
   }
 
@@ -10531,6 +12143,149 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
+      const findExistingExecutionPath = (agentId?: string | null) =>
+        tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, issue.companyId),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+              sql`${heartbeatRuns.id} <> ${run.id}`,
+              agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+      const issueHasScheduledMonitor =
+        issue.monitorNextCheckAt instanceof Date &&
+        issue.monitorNextCheckAt.getTime() > Date.now();
+      const executionState = parseIssueExecutionState(issue.executionState);
+      const currentParticipant = executionState?.status === "pending"
+        ? executionState.currentParticipant
+        : null;
+      const issueNeedsReviewParticipantRecovery =
+        issue.status === "in_review" &&
+        !issue.assigneeUserId &&
+        currentParticipant?.type === "agent" &&
+        currentParticipant.agentId === run.agentId &&
+        isExecutionReviewParticipantRecoveryEligibleRun(run) &&
+        HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+          run.status as (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+        );
+
+      if (issueNeedsReviewParticipantRecovery) {
+        const existingReviewParticipantExecutionPath = await findExistingExecutionPath(currentParticipant.agentId);
+        if (
+          options.suppressImmediateRecovery ||
+          existingReviewParticipantExecutionPath ||
+          issueHasScheduledMonitor ||
+          await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)
+        ) {
+          return { kind: "released" as const };
+        }
+
+        if (issue.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery) {
+          return {
+            kind: "blocked_recovery_in_place" as const,
+            issue,
+            previousStatus: issue.status,
+          };
+        }
+
+        const shouldBlockReviewRecovery =
+          !recoveryAgentInvokable ||
+          !recoveryAgent ||
+          isExecutionReviewParticipantRecoveryRun(run);
+        if (shouldBlockReviewRecovery) {
+          return {
+            kind: "blocked" as const,
+            issue,
+            previousStatus: issue.status,
+            comment: buildExecutionReviewParticipantRecoveryComment({ latestRun: run }),
+            recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE,
+            recoveryOwnerAgentId: currentParticipant.agentId,
+          };
+        }
+
+        const now = new Date();
+        const wakeupRequest = await tx
+          .insert(agentWakeupRequests)
+          .values({
+            companyId: issue.companyId,
+            agentId: recoveryAgent.id,
+            source: "automation",
+            triggerDetail: "system",
+            reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
+            payload: withRecoveryModelProfileHint({
+              issueId: issue.id,
+              retryOfRunId: run.id,
+              retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+              currentStageId: executionState?.currentStageId ?? null,
+              currentStageType: executionState?.currentStageType ?? null,
+            }, "normal_model"),
+            status: "queued",
+            requestedByActorType: "system",
+            requestedByActorId: null,
+            updatedAt: now,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+
+        const queuedRun = await tx
+          .insert(heartbeatRuns)
+          .values({
+            companyId: issue.companyId,
+            agentId: recoveryAgent.id,
+            invocationSource: "automation",
+            triggerDetail: "system",
+            status: "queued",
+            wakeupRequestId: wakeupRequest.id,
+            contextSnapshot: withRecoveryModelProfileHint({
+              issueId: issue.id,
+              taskId: issue.id,
+              wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
+              retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+              source: "issue.execution_review_recovery",
+              retryOfRunId: run.id,
+              currentStageId: executionState?.currentStageId ?? null,
+              currentStageType: executionState?.currentStageType ?? null,
+              reviewRecoveryInstruction:
+                "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
+            }, "normal_model"),
+            sessionIdBefore: recoverySessionBefore,
+            retryOfRunId: run.id,
+            updatedAt: now,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            runId: queuedRun.id,
+            updatedAt: now,
+          })
+          .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: queuedRun.id,
+            executionAgentNameKey: recoveryAgentNameKey,
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(eq(issues.id, issue.id));
+
+        return {
+          kind: "queued_recovery" as const,
+          run: queuedRun,
+        };
+      }
+
       const issueNeedsImmediateRecovery =
         (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
@@ -10544,19 +12299,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "released" as const };
       }
 
-      const existingExecutionPath = await tx
-        .select({ id: heartbeatRuns.id })
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, issue.companyId),
-            inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-            sql`${heartbeatRuns.id} <> ${run.id}`,
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
+      const existingExecutionPath = await findExistingExecutionPath();
       if (existingExecutionPath) {
         return { kind: "released" as const };
       }
@@ -10679,7 +12422,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (promotionResult?.kind === "blocked") {
       await recovery.escalateStrandedAssignedIssue({
         issue: promotionResult.issue,
-        previousStatus: promotionResult.previousStatus as "todo" | "in_progress",
+        previousStatus: promotionResult.previousStatus as "todo" | "in_progress" | "in_review",
         latestRun: run,
         comment: promotionResult.comment,
         recoveryCause:
@@ -10687,7 +12430,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
             : promotionResult.recoveryCause === CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
               ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+              : promotionResult.recoveryCause === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
+                ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
               : undefined,
+        recoveryOwnerAgentId: promotionResult.recoveryOwnerAgentId,
       });
       return;
     }
@@ -10695,7 +12441,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (promotionResult?.kind === "blocked_recovery_in_place") {
       await recovery.escalateStrandedRecoveryIssueInPlace({
         issue: promotionResult.issue,
-        previousStatus: promotionResult.previousStatus as "todo" | "in_progress",
+        previousStatus: promotionResult.previousStatus as "todo" | "in_progress" | "in_review",
         latestRun: run,
       });
       return;
@@ -11937,11 +13683,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   return {
-    list: async (companyId: string, agentId?: string, limit?: number) => {
+    list: async (
+      companyId: string,
+      agentId?: string,
+      limit?: number,
+      options: { summary?: boolean } = {},
+    ) => {
       const safeForLegacyEncoding = await hasUnsafeTextProjectionDatabase();
+      const summary = options.summary === true;
       const query = db
         .select(
-          safeForLegacyEncoding
+          summary
+            ? {
+                ...heartbeatRunSummaryListColumns,
+                ...heartbeatRunListContextColumns,
+              }
+            : safeForLegacyEncoding
             ? {
                 ...heartbeatRunListColumns,
                 error: sql<string | null>`NULL`.as("error"),
@@ -12002,7 +13759,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             wakeSource: contextWakeSource,
             wakeTriggerDetail: contextWakeTriggerDetail,
           }),
-          resultJson: safeForLegacyEncoding
+          resultJson: safeForLegacyEncoding || summary
             ? null
             : summarizeHeartbeatRunListResultJson({
                 summary: resultSummary,
@@ -12018,6 +13775,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     getRun,
+
+    decorateActiveRunStatus: decorateHeartbeatRunRuntimeStatus,
+    recordRuntimeProgress: recordCurrentHeartbeatRunRuntimeProgress,
+    sweepExpiredRuntimeStatuses: sweepExpiredHeartbeatRunRuntimeStatuses,
 
     getRunLogAccess,
 

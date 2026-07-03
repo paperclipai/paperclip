@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetLocalGitIndexToHead } from "./git-workspace-sync.js";
 
 import {
   mirrorDirectory,
@@ -103,6 +104,7 @@ describe("sandbox managed runtime", () => {
         });
       },
     };
+    const runtimeStatuses: string[] = [];
 
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
@@ -118,6 +120,9 @@ describe("sandbox managed runtime", () => {
       workspaceLocalDir: localWorkspaceDir,
       workspaceExclude: [".claude"],
       preserveAbsentOnRestore: [".claude"],
+      onRuntimeProgress: async (status) => {
+        runtimeStatuses.push(`${status.phase}:${status.message}`);
+      },
       assets: [{
         key: "skills",
         localDir: localAssetsDir,
@@ -143,6 +148,18 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(localWorkspaceDir, "local-stale.txt"), "utf8")).resolves.toBe("remove\n");
     await expect(readFile(path.join(localWorkspaceDir, ".claude", "settings.json"), "utf8")).resolves.toBe("{\"local\":true}\n");
     await expect(readFile(path.join(localWorkspaceDir, ".paperclip-runtime", "state.json"), "utf8")).resolves.toBe("{}\n");
+    expect(runtimeStatuses).toEqual(expect.arrayContaining([
+      "config_sync:Syncing workspace to sandbox",
+      "config_sync:Syncing runtime assets to sandbox",
+      "restore:Restoring workspace from sandbox",
+      "finalize:Finalizing sandbox workspace",
+    ]));
+    expect(runtimeStatuses).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^config_sync:Syncing workspace to sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
+      expect.stringMatching(/^config_sync:Syncing skills to sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
+      expect.stringMatching(/^restore:Restoring workspace from sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
+    ]));
+    expect(runtimeStatuses.at(-1)).toBe("finalize:Finalizing sandbox workspace");
   });
 
   it("syncs git-backed workspaces through a shallow standalone clone and keeps .git out of archives", async () => {
@@ -174,19 +191,29 @@ describe("sandbox managed runtime", () => {
 
     const uploadedTars: { remotePath: string; bytes: Buffer }[] = [];
     const downloadedTars: { remotePath: string; bytes: Buffer }[] = [];
+    const driveProgress = async (
+      total: number,
+      onProgress: ((done: number, total: number | null) => void | Promise<void>) | undefined,
+    ) => {
+      if (!onProgress) return;
+      await onProgress(Math.max(1, Math.floor(total / 2)), total);
+      await onProgress(total, total);
+    };
     const client: SandboxManagedRuntimeClient = {
       makeDir: async (remotePath) => {
         await mkdir(remotePath, { recursive: true });
       },
-      writeFile: async (remotePath, bytes) => {
+      writeFile: async (remotePath, bytes, options) => {
         await mkdir(path.dirname(remotePath), { recursive: true });
         const buffer = Buffer.from(bytes);
         if (remotePath.endsWith("-upload.tar")) uploadedTars.push({ remotePath, bytes: buffer });
         await writeFile(remotePath, buffer);
+        await driveProgress(buffer.byteLength, options?.onProgress);
       },
-      readFile: async (remotePath) => {
+      readFile: async (remotePath, options) => {
         const buffer = await readFile(remotePath);
         if (remotePath.endsWith("workspace-download.tar")) downloadedTars.push({ remotePath, bytes: buffer });
+        await driveProgress(buffer.byteLength, options?.onProgress);
         return buffer;
       },
       listFiles: async () => [],
@@ -197,6 +224,7 @@ describe("sandbox managed runtime", () => {
         await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
       },
     };
+    const runtimeStatuses: Array<{ phase: string; message: string }> = [];
 
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
@@ -210,6 +238,9 @@ describe("sandbox managed runtime", () => {
       adapterKey: "test-adapter",
       client,
       workspaceLocalDir: localWorkspaceDir,
+      onRuntimeProgress: async (status) => {
+        runtimeStatuses.push({ phase: status.phase, message: status.message });
+      },
     });
 
     expect((await lstat(path.join(remoteWorkspaceDir, ".git"))).isDirectory()).toBe(true);
@@ -254,6 +285,131 @@ describe("sandbox managed runtime", () => {
     const downloadMembers = await listTarMembers(rootDir, "workspace-download-list.tar", downloadedTars[0]!.bytes);
     expect(downloadMembers.some((entry) => entry === ".git" || entry.startsWith(".git/"))).toBe(false);
     expect(downloadMembers.some((entry) => entry === "node_modules" || entry.startsWith("node_modules/"))).toBe(false);
+    expect(runtimeStatuses.map((status) => status.phase)).toEqual(expect.arrayContaining([
+      "git_sync",
+      "config_sync",
+      "export",
+      "restore",
+      "finalize",
+    ]));
+    expect(runtimeStatuses.some((status) => (
+      status.phase === "git_sync" &&
+      /^Syncing git history to sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/.test(status.message)
+    ))).toBe(true);
+    expect(runtimeStatuses.some((status) => (
+      status.phase === "export" &&
+      /^Exporting git history from sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/.test(status.message)
+    ))).toBe(true);
+  });
+
+  it("repairs stale host index deletions when the sandbox restores a clean git worktree", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-clean-restore-"));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-worktree");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, "kept.txt"), "kept\n", "utf8");
+    await writeFile(path.join(sourceRepoDir, "restored.txt"), "restored\n", "utf8");
+    await git(sourceRepoDir, ["add", "kept.txt", "restored.txt"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+
+    await git(localWorkspaceDir, ["rm", "restored.txt"]);
+    expect(await git(localWorkspaceDir, ["status", "--short"])).toContain("D  restored.txt");
+
+    const missingStatusReads: string[] = [];
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => {
+        if (remotePath.endsWith("workspace-status.txt")) {
+          missingStatusReads.push(remotePath);
+          throw new Error("status file unavailable");
+        }
+        return await readFile(remotePath);
+      },
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    expect(await git(remoteWorkspaceDir, ["status", "--short"])).toContain("D restored.txt");
+    await git(remoteWorkspaceDir, ["reset", "--hard", "HEAD"]);
+    expect(await git(remoteWorkspaceDir, ["status", "--short"])).toBe("");
+
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(path.join(localWorkspaceDir, "restored.txt"), "utf8")).resolves.toBe("restored\n");
+    expect(await git(localWorkspaceDir, ["ls-files", "restored.txt"])).toBe("restored.txt");
+    expect(await git(localWorkspaceDir, ["status", "--short"])).toBe("");
+    expect(await git(localWorkspaceDir, ["diff", "--name-status", "HEAD", "--"])).toBe("");
+    expect(await git(localWorkspaceDir, ["diff", "--cached", "--name-status", "HEAD", "--"])).toBe("");
+    expect(missingStatusReads).toHaveLength(1);
+  });
+
+  it("does not fail clean restore checks when local working tree changes survive", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-preserved-local-"));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-worktree");
+
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, "kept.txt"), "base\n", "utf8");
+    await git(sourceRepoDir, ["add", "kept.txt"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+
+    await writeFile(path.join(localWorkspaceDir, "kept.txt"), "local user change\n", "utf8");
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await resetLocalGitIndexToHead({
+        localDir: localWorkspaceDir,
+        checkWorkingTreeClean: true,
+      });
+      expect(warnSpy).toHaveBeenCalledWith(
+        "[paperclip] Workspace restore preserved local working tree changes after clean sandbox restore.",
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    await expect(readFile(path.join(localWorkspaceDir, "kept.txt"), "utf8")).resolves.toBe("local user change\n");
+    expect(await git(localWorkspaceDir, ["diff", "--cached", "--name-status", "HEAD", "--"])).toBe("");
+    expect(await git(localWorkspaceDir, ["status", "--short"])).toContain("M kept.txt");
   });
 
   it("excludes unignored dependency trees from git-backed workspace overlay archives", async () => {
@@ -375,8 +531,9 @@ describe("sandbox managed runtime", () => {
     await writeFile(path.join(localWorkspaceDir, "src", "main.ts"), "x\n", "utf8");
     await writeFile(path.join(localAssetsDir, "asset.txt"), "a\n", "utf8");
 
-    // Capture every tar uploaded to the sandbox so we can inspect its members.
+    // Capture every tar uploaded/downloaded through the sandbox so we can inspect its members.
     const uploadedTars: { remotePath: string; bytes: Buffer }[] = [];
+    const downloadedTars: { remotePath: string; bytes: Buffer }[] = [];
     const client: SandboxManagedRuntimeClient = {
       makeDir: async (remotePath) => {
         await mkdir(remotePath, { recursive: true });
@@ -387,7 +544,11 @@ describe("sandbox managed runtime", () => {
         if (remotePath.endsWith("-upload.tar")) uploadedTars.push({ remotePath, bytes: buffer });
         await writeFile(remotePath, buffer);
       },
-      readFile: async (remotePath) => await readFile(remotePath),
+      readFile: async (remotePath) => {
+        const buffer = await readFile(remotePath);
+        if (remotePath.endsWith("workspace-download.tar")) downloadedTars.push({ remotePath, bytes: buffer });
+        return buffer;
+      },
       listFiles: async () => [],
       remove: async (remotePath) => {
         await rm(remotePath, { recursive: true, force: true });
@@ -397,7 +558,7 @@ describe("sandbox managed runtime", () => {
       },
     };
 
-    await prepareSandboxManagedRuntime({
+    const prepared = await prepareSandboxManagedRuntime({
       spec: {
         transport: "sandbox",
         provider: "test",
@@ -427,6 +588,103 @@ describe("sandbox managed runtime", () => {
     // And the workspace still extracts correctly into an existing target dir.
     await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("ws\n");
     await expect(readFile(path.join(remoteWorkspaceDir, "src", "main.ts"), "utf8")).resolves.toBe("x\n");
+
+    await prepared.restoreWorkspace();
+    expect(downloadedTars).toHaveLength(1);
+    const downloadMembers = await listTarMembers(rootDir, "workspace-download-list.tar", downloadedTars[0]!.bytes);
+    expect(downloadMembers).not.toContain(".");
+    expect(downloadMembers).not.toContain("./");
+  });
+
+  it("excludes transient symlinked home dirs from the asset tar while keeping required content", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-home-tmp-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const homeDir = path.join(rootDir, "codex-home");
+    await mkdir(localWorkspaceDir, { recursive: true });
+
+    // Simulate a host Codex binary that a stale `tmp/arg0` symlink points at.
+    // With followSymlinks the archive would otherwise inline this whole file.
+    const hostBinary = path.join(rootDir, "codex-host-binary");
+    const binaryMarker = "HOST_CODEX_BINARY_BYTES";
+    await writeFile(hostBinary, `${binaryMarker}\n`.repeat(4096), "utf8");
+
+    // Required managed-home content that MUST still reach the sandbox.
+    await mkdir(path.join(homeDir, "skills"), { recursive: true });
+    await writeFile(path.join(homeDir, "auth.json"), "{\"OPENAI_API_KEY\":\"sk-test\"}\n", "utf8");
+    await writeFile(path.join(homeDir, "config.toml"), "model = \"gpt\"\n", "utf8");
+    await writeFile(path.join(homeDir, "skills", "demo.md"), "skill body\n", "utf8");
+
+    // Transient dirs holding symlinks to the host binary (the bloat source).
+    await mkdir(path.join(homeDir, "tmp", "arg0"), { recursive: true });
+    await mkdir(path.join(homeDir, ".tmp"), { recursive: true });
+    await symlink(hostBinary, path.join(homeDir, "tmp", "arg0", "codex"));
+    await symlink(hostBinary, path.join(homeDir, ".tmp", "codex"));
+
+    const uploadedTars: { remotePath: string; bytes: Buffer }[] = [];
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        const buffer = Buffer.from(bytes);
+        if (remotePath.endsWith("-upload.tar")) uploadedTars.push({ remotePath, bytes: buffer });
+        await writeFile(remotePath, buffer);
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{
+        key: "home",
+        localDir: homeDir,
+        followSymlinks: true,
+        exclude: ["tmp", ".tmp"],
+      }],
+    });
+
+    const homeTar = uploadedTars.find(({ remotePath }) => path.basename(remotePath) === "home-upload.tar");
+    expect(homeTar).toBeDefined();
+    const members = await listTarMembers(rootDir, "home-members.tar", homeTar!.bytes);
+
+    // Transient symlink trees must be filtered out entirely.
+    expect(members.some((entry) => entry === "tmp" || entry.startsWith("tmp/"))).toBe(false);
+    expect(members.some((entry) => entry === ".tmp" || entry.startsWith(".tmp/"))).toBe(false);
+    // Required managed-home content must survive.
+    expect(members).toContain("auth.json");
+    expect(members).toContain("config.toml");
+    expect(members.some((entry) => entry === "skills/demo.md")).toBe(true);
+
+    // The host binary bytes must not have been inlined into the upload.
+    expect(homeTar!.bytes.includes(Buffer.from(binaryMarker))).toBe(false);
+
+    // The extracted sandbox home keeps required content and omits the transient dirs.
+    await expect(readFile(path.join(prepared.assetDirs.home, "auth.json"), "utf8"))
+      .resolves.toBe("{\"OPENAI_API_KEY\":\"sk-test\"}\n");
+    await expect(readFile(path.join(prepared.assetDirs.home, "skills", "demo.md"), "utf8"))
+      .resolves.toBe("skill body\n");
+    await expect(lstat(path.join(prepared.assetDirs.home, "tmp"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(path.join(prepared.assetDirs.home, ".tmp"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("emits throttled, labeled upload and restore progress with direction and percentages", async () => {
@@ -512,13 +770,15 @@ describe("sandbox managed runtime", () => {
     expect(restoreLines.some((line) => line.includes("100%"))).toBe(true);
   });
 
-  it("creates a valid empty workspace tarball when the local workspace is empty", async () => {
+  it("creates valid empty workspace tarballs when the workspace is empty", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-empty-"));
     cleanupDirs.push(rootDir);
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
     const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
     await mkdir(localWorkspaceDir, { recursive: true });
 
+    const downloadedTars: { remotePath: string; bytes: Buffer }[] = [];
+    const runCommands: string[] = [];
     const client: SandboxManagedRuntimeClient = {
       makeDir: async (remotePath) => {
         await mkdir(remotePath, { recursive: true });
@@ -527,30 +787,41 @@ describe("sandbox managed runtime", () => {
         await mkdir(path.dirname(remotePath), { recursive: true });
         await writeFile(remotePath, Buffer.from(bytes));
       },
-      readFile: async (remotePath) => await readFile(remotePath),
+      readFile: async (remotePath) => {
+        const buffer = await readFile(remotePath);
+        if (remotePath.endsWith("workspace-download.tar")) downloadedTars.push({ remotePath, bytes: buffer });
+        return buffer;
+      },
       listFiles: async () => [],
       remove: async (remotePath) => {
         await rm(remotePath, { recursive: true, force: true });
       },
       run: async (command) => {
+        runCommands.push(command);
         await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
       },
     };
 
-    await expect(
-      prepareSandboxManagedRuntime({
-        spec: {
-          transport: "sandbox",
-          provider: "test",
-          sandboxId: "sandbox-1",
-          remoteCwd: remoteWorkspaceDir,
-          timeoutMs: 30_000,
-          apiKey: null,
-        },
-        adapterKey: "test-adapter",
-        client,
-        workspaceLocalDir: localWorkspaceDir,
-      }),
-    ).resolves.toBeDefined();
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    await prepared.restoreWorkspace();
+    expect(downloadedTars).toHaveLength(1);
+    const members = await listTarMembers(rootDir, "empty-workspace-download.tar", downloadedTars[0]!.bytes);
+    expect(members).toEqual([]);
+    const emptyArchiveCommand = runCommands.find((command) => command.includes("dd if=/dev/zero"));
+    expect(emptyArchiveCommand).toBeDefined();
+    expect(emptyArchiveCommand).not.toContain("/dev/null");
   });
 });

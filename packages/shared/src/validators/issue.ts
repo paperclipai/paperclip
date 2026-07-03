@@ -657,6 +657,7 @@ export const askUserQuestionsPayloadSchema = z.object({
   version: z.literal(1),
   title: z.string().trim().max(240).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
+  supersedeOnUserComment: z.boolean().optional(),
   questions: z.array(askUserQuestionsQuestionSchema).min(1).max(10),
 }).superRefine((value, ctx) => {
   const seenQuestionIds = new Set<string>();
@@ -695,6 +696,8 @@ export const askUserQuestionsResultSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
   cancelled: z.literal(true).optional(),
   cancellationReason: z.string().trim().max(4000).nullable().optional(),
+  expirationReason: z.literal("superseded_by_comment").optional(),
+  commentId: z.string().uuid().nullable().optional(),
   summaryMarkdown: z.string().max(20000).nullable().optional(),
 });
 

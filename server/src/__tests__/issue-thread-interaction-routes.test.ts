@@ -326,12 +326,14 @@ describe.sequential("issue thread interaction routes", () => {
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValueOnce([
       {
         id: "interaction-expired",
-        kind: "request_confirmation",
+        kind: "ask_user_questions",
         status: "expired",
         result: {
           version: 1,
-          outcome: "superseded_by_comment",
+          answers: [],
+          expirationReason: "superseded_by_comment",
           commentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          summaryMarkdown: null,
         },
       },
     ]);
@@ -354,10 +356,10 @@ describe.sequential("issue thread interaction routes", () => {
         action: "issue.thread_interaction_expired",
         details: expect.objectContaining({
           interactionId: "interaction-expired",
-          interactionKind: "request_confirmation",
+          interactionKind: "ask_user_questions",
           source: "issue.interactions.catchup_superseded_by_comment",
           result: expect.objectContaining({
-            outcome: "superseded_by_comment",
+            expirationReason: "superseded_by_comment",
             commentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
           }),
         }),
@@ -564,7 +566,7 @@ describe.sequential("issue thread interaction routes", () => {
           prompt: "Delete selected files?",
           options: [
             { id: "file-a", label: "a.txt" },
-            { id: "file-b", label: "b.txt" },
+            { id: "file-b", label: "b.txt", description: "Generated build output" },
           ],
         },
         result: {
@@ -600,6 +602,18 @@ describe.sequential("issue thread interaction routes", () => {
           interactionId: "interaction-checkbox",
           interactionKind: "request_checkbox_confirmation",
           interactionStatus: "accepted",
+          checkboxSelection: {
+            prompt: "Delete selected files?",
+            selectedOptionIds: ["file-b"],
+            selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
+          },
+        }),
+        contextSnapshot: expect.objectContaining({
+          checkboxSelection: {
+            prompt: "Delete selected files?",
+            selectedOptionIds: ["file-b"],
+            selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
+          },
         }),
       }),
     );
@@ -610,6 +624,66 @@ describe.sequential("issue thread interaction routes", () => {
         details: expect.objectContaining({
           interactionKind: "request_checkbox_confirmation",
           interactionStatus: "accepted",
+        }),
+      }),
+    );
+  });
+
+  it("preserves accepted empty checkbox selections in assignee wake context", async () => {
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-checkbox-empty",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_checkbox_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: "run-checkbox",
+        payload: {
+          version: 1,
+          prompt: "Delete selected files?",
+          options: [
+            { id: "file-a", label: "a.txt", description: "Temporary export" },
+            { id: "file-b", label: "b.txt", description: "Generated build output" },
+          ],
+        },
+        result: {
+          version: 1,
+          outcome: "accepted",
+          selectedOptionIds: [],
+        },
+        createdAt: "2026-04-20T12:00:00.000Z",
+        updatedAt: "2026-04-20T12:05:00.000Z",
+        resolvedAt: "2026-04-20T12:05:00.000Z",
+      },
+      createdIssues: [],
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-checkbox-empty/accept")
+      .send({ selectedOptionIds: [] });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          checkboxSelection: {
+            prompt: "Delete selected files?",
+            selectedOptionIds: [],
+            selectedOptions: [],
+          },
+        }),
+        contextSnapshot: expect.objectContaining({
+          checkboxSelection: {
+            prompt: "Delete selected files?",
+            selectedOptionIds: [],
+            selectedOptions: [],
+          },
         }),
       }),
     );
@@ -667,6 +741,21 @@ describe.sequential("issue thread interaction routes", () => {
           interactionId: "interaction-plan",
           interactionKind: "request_confirmation",
           interactionStatus: "accepted",
+          planReviewInteraction: expect.objectContaining({
+            id: "interaction-plan",
+            kind: "request_confirmation",
+            status: "accepted",
+            acceptedTargetRevision: expect.objectContaining({
+              issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              documentId: "document-plan",
+              key: "plan",
+              revisionId: "revision-plan",
+              revisionNumber: 1,
+            }),
+            result: expect.objectContaining({
+              outcome: "accepted",
+            }),
+          }),
           forceFreshSession: true,
           workspaceRefreshReason: "accepted_plan_confirmation",
         }),

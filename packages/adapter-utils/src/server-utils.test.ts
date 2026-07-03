@@ -643,6 +643,82 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("named unblock owner/action");
   });
 
+  it("renders resolved checkbox selections in scoped wake prompts", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1581",
+        title: "Delete selected files",
+        status: "in_progress",
+      },
+      interactionKind: "request_checkbox_confirmation",
+      interactionStatus: "accepted",
+      checkboxSelection: {
+        prompt: "Delete selected files?",
+        selectedOptionIds: ["file-b"],
+        selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("- checkbox prompt: Delete selected files?");
+    expect(prompt).toContain("- checkbox selection ids: file-b");
+    expect(prompt).toContain("- checkbox selection options: file-b (b.txt) - Generated build output");
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      checkboxSelection: {
+        prompt: "Delete selected files?",
+        selectedOptionIds: ["file-b"],
+        selectedOptions: [{ id: "file-b", label: "b.txt", description: "Generated build output" }],
+      },
+    });
+  });
+
+  it("renders accepted empty checkbox selections explicitly", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1581",
+        title: "Delete selected files",
+        status: "in_progress",
+      },
+      interactionKind: "request_checkbox_confirmation",
+      interactionStatus: "accepted",
+      checkboxSelection: {
+        prompt: "Delete selected files?",
+        selectedOptionIds: [],
+        selectedOptions: [],
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("- checkbox prompt: Delete selected files?");
+    expect(prompt).toContain("- checkbox selection ids: (none)");
+    expect(prompt).toContain("- checkbox selection options: (none)");
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      checkboxSelection: {
+        prompt: "Delete selected files?",
+        selectedOptionIds: [],
+        selectedOptions: [],
+      },
+    });
+  });
+
   it("preserves Chinese, Japanese, and Hindi issue and comment text in scoped wake prompts", () => {
     const title = "验证中文任务";
     const commentBody = [
@@ -793,6 +869,235 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("accepted-plan continuation");
     expect(prompt).toContain("Create child issues from the approved plan only");
     expect(prompt).not.toContain("Update the plan only");
+  });
+
+  it("renders accepted plan review context with annotation text and comments", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        status: "in_progress",
+        workMode: "planning",
+      },
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+      annotationDeltas: [
+        {
+          id: "annotation-delta-1",
+          issueId: "issue-1",
+          threadId: "thread-1",
+          documentKey: "plan",
+          revisionNumber: 2,
+          quote: "Create worker issue",
+          prefix: "Before context",
+          suffix: "After context",
+          threadStatus: "open",
+          anchorState: "active",
+          anchorConfidence: "exact",
+          body: "New direct annotation comment.",
+          bodyTruncated: true,
+          author: { type: "user", id: "board-user-1" },
+          createdAt: "2026-06-01T12:00:00.000Z",
+        },
+      ],
+      planReviewContext: {
+        documentKey: "plan",
+        issueId: "issue-1",
+        latestRevisionId: "revision-2",
+        latestRevisionNumber: 2,
+        interaction: {
+          id: "interaction-1",
+          kind: "request_confirmation",
+          status: "accepted",
+          continuationPolicy: "wake_assignee_on_accept",
+          target: {
+            issueId: "issue-1",
+            documentId: "document-1",
+            key: "plan",
+            revisionId: "revision-2",
+            revisionNumber: 2,
+          },
+          acceptedTargetRevision: {
+            issueId: "issue-1",
+            documentId: "document-1",
+            key: "plan",
+            revisionId: "revision-2",
+            revisionNumber: 2,
+          },
+          result: {
+            outcome: "accepted",
+          },
+        },
+        threads: [
+          {
+            id: "thread-1",
+            documentKey: "plan",
+            documentId: "document-1",
+            status: "open",
+            revisionId: "revision-2",
+            revisionNumber: 2,
+            anchorState: "active",
+            anchorConfidence: "exact",
+            selectedText: "Create worker issue",
+            selectedTextTruncated: true,
+            prefixText: "Before context",
+            suffixText: "After context",
+            comments: [
+              {
+                id: "annotation-comment-1",
+                threadId: "thread-1",
+                body: "Split this into QA and implementation child tasks.",
+                bodyTruncated: true,
+                author: { type: "user", id: "board-user-1" },
+                createdAt: "2026-06-01T12:01:00.000Z",
+              },
+            ],
+          },
+        ],
+        totals: {
+          openThreadCount: 1,
+          includedThreadCount: 1,
+          omittedThreadCount: 0,
+          commentCount: 1,
+          includedCommentCount: 1,
+          omittedCommentCount: 0,
+        },
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      annotationDeltas: [
+        {
+          body: "New direct annotation comment.",
+          quote: "Create worker issue",
+          prefix: "Before context",
+          suffix: "After context",
+          bodyTruncated: true,
+        },
+      ],
+      planReviewContext: {
+        interaction: {
+          status: "accepted",
+          acceptedTargetRevision: {
+            revisionNumber: 2,
+          },
+        },
+        threads: [
+          {
+            selectedText: "Create worker issue",
+            prefixText: "Before context",
+            suffixText: "After context",
+            comments: [
+              {
+                body: "Split this into QA and implementation child tasks.",
+                bodyTruncated: true,
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("New plan annotation deltas:");
+    expect(prompt).toContain("These direct annotation deltas are user feedback tied to plan text.");
+    expect(prompt).toContain("  context before: Before context");
+    expect(prompt).toContain("  context after: After context");
+    expect(prompt).toContain("[annotation comment body truncated]");
+    expect(prompt).toContain("These open plan annotations are user feedback. Resolved annotations were intentionally omitted.");
+    expect(prompt).toContain("- result: accepted");
+    expect(prompt).toContain("- accepted target: plan revision #2");
+    expect(prompt).toContain("- thread thread-1 (open, revision #2, active, exact)");
+    expect(prompt).toContain("  selected text: Create worker issue");
+    expect(prompt).toContain("[selected text truncated]");
+    expect(prompt).toContain("Split this into QA and implementation child tasks.");
+    expect(prompt).toContain("[plan comment body truncated]");
+  });
+
+  it("renders rejected plan review context even when the rejection reason is empty", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        status: "in_progress",
+        workMode: "planning",
+      },
+      interactionKind: "request_confirmation",
+      interactionStatus: "rejected",
+      planReviewContext: {
+        documentKey: "plan",
+        issueId: "issue-1",
+        latestRevisionId: "revision-2",
+        latestRevisionNumber: 2,
+        interaction: {
+          id: "interaction-1",
+          kind: "request_confirmation",
+          status: "rejected",
+          continuationPolicy: "wake_assignee",
+          target: {
+            issueId: "issue-1",
+            documentId: "document-1",
+            key: "plan",
+            revisionId: "revision-2",
+            revisionNumber: 2,
+          },
+          result: {
+            outcome: "rejected",
+          },
+        },
+        threads: [
+          {
+            id: "thread-1",
+            documentKey: "plan",
+            documentId: "document-1",
+            status: "open",
+            revisionId: "revision-2",
+            revisionNumber: 2,
+            selectedText: "Launch checklist",
+            comments: [
+              {
+                id: "annotation-comment-1",
+                threadId: "thread-1",
+                body: "The rollout step needs an owner.",
+                author: { type: "user", id: "board-user-1" },
+              },
+            ],
+          },
+        ],
+        totals: {
+          openThreadCount: 1,
+          includedThreadCount: 1,
+          omittedThreadCount: 0,
+          commentCount: 1,
+          includedCommentCount: 1,
+          omittedCommentCount: 0,
+        },
+      },
+      commentIds: ["comment-1"],
+      latestCommentId: "comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [
+        {
+          id: "comment-1",
+          body: "Also mention launch owner in the plan.",
+          author: { type: "user", id: "board-user-1" },
+          createdAt: "2026-06-01T12:05:00.000Z",
+        },
+      ],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("- result: rejected");
+    expect(prompt).toContain("- thread thread-1 (open, revision #2)");
+    expect(prompt).toContain("The rollout step needs an owner.");
+    expect(prompt.indexOf("Open plan comments to incorporate:")).toBeLessThan(prompt.indexOf("New comments in order:"));
   });
 
   it("renders dependency-blocked interaction guidance", () => {

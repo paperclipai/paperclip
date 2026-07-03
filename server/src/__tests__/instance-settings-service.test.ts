@@ -10,6 +10,7 @@ describe("instance settings service", () => {
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
       enableCloudSync: true,
+      enableServerInfoDebugView: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
@@ -17,13 +18,15 @@ describe("instance settings service", () => {
     })).toEqual({
       enableEnvironments: true,
       enableIsolatedWorkspaces: true,
-      enableStreamlinedLeftNavigation: false,
+      enableStreamlinedLeftNavigation: true,
       enableConferenceRoomChat: false,
-      enableTaskWatchdogs: false,
+      enableExternalObjects: false,
+      enablePipelines: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
       enableCloudSync: true,
+      enableServerInfoDebugView: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
@@ -47,6 +50,14 @@ describe("instance settings service", () => {
     ).toBe(false);
   });
 
+  it("defaults enableServerInfoDebugView to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableServerInfoDebugView).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableServerInfoDebugView).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ autoRestartDevServerWhenIdle: true }).enableServerInfoDebugView,
+    ).toBe(false);
+  });
+
   it("round-trips an enableConferenceRoomChat patch through the update merge", () => {
     // updateExperimental merges `{ ...normalize(current), ...patch }` and
     // re-normalizes; emulate that to prove the flag survives the roundtrip
@@ -54,7 +65,7 @@ describe("instance settings service", () => {
     const current = normalizeExperimentalSettings({});
     const enabled = normalizeExperimentalSettings({ ...current, enableConferenceRoomChat: true });
     expect(enabled.enableConferenceRoomChat).toBe(true);
-    expect(enabled.enableStreamlinedLeftNavigation).toBe(false);
+    expect(enabled.enableStreamlinedLeftNavigation).toBe(true);
 
     const disabled = normalizeExperimentalSettings({ ...enabled, enableConferenceRoomChat: false });
     expect(disabled).toEqual(current);

@@ -33,8 +33,26 @@ export {
   resolveTaskWatchdogMutationScope,
   taskWatchdogScopeAllowsIssueMutation,
 } from "./task-watchdog-scope.js";
+export {
+  createExternalObjectDetectorRegistry,
+  createExternalObjectResolverRegistry,
+  externalObjectService,
+  type ExternalObjectDetector,
+  type ExternalObjectResolver,
+  type ExternalObjectResolveResult,
+  type ExternalObjectResolverSnapshot,
+} from "./external-objects.js";
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
+export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
+export type {
+  WorkTimelineActor,
+  WorkTimelineEdge,
+  WorkTimelineEvent,
+  WorkTimelineQuery,
+  WorkTimelineResult,
+  WorkTimelineSpan,
+} from "./work-timeline.js";
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
@@ -73,6 +91,13 @@ export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./clo
 export { companyPortabilityService } from "./company-portability.js";
 export { teamsCatalogService } from "./teams-catalog.js";
 export { environmentService } from "./environments.js";
+export {
+  applyCustomImageTemplateToSandboxConfig,
+  fingerprintEnvironmentSandboxProviderConfig,
+} from "./environment-custom-image-runtime.js";
+export {
+  environmentCustomImageService,
+} from "./environment-custom-images.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
 export { workspaceOperationService } from "./workspace-operations.js";
 export { workspaceFileResourceService } from "./workspace-file-resources.js";

@@ -67,6 +67,18 @@ describe("InboxIssueMetaLeading live state", () => {
     expect(text).not.toMatch(/(^|[^a-z])Live([^a-z]|$)/);
   });
 
+  it("can suppress the subtree chip when the status glyph already carries descendant liveness", () => {
+    const text = renderLeading(
+      <InboxIssueMetaLeading
+        issue={makeIssue({ id: "parent", identifier: "PAP-1", status: "blocked" })}
+        isLive={false}
+        subtreeLiveCount={2}
+        showSubtreeLiveChip={false}
+      />,
+    );
+    expect(text).not.toContain("live below");
+  });
+
   it("renders no live treatment when the issue and its subtree are idle", () => {
     const text = renderLeading(
       <InboxIssueMetaLeading

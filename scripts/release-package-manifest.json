@@ -40,6 +40,16 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/adapters/hermes",
+    "name": "@paperclipai/hermes-paperclip-adapter",
+    "publishFromCi": true
+  },
+  {
+    "dir": "packages/adapters/hermes-gateway",
+    "name": "@paperclipai/adapter-hermes-gateway",
+    "publishFromCi": false
+  },
+  {
     "dir": "packages/adapters/opencode-local",
     "name": "@paperclipai/adapter-opencode-local",
     "publishFromCi": true

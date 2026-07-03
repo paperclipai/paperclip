@@ -19,7 +19,6 @@ import {
   resolveAdapterExecutionTargetTimeoutSec,
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
-  runAdapterExecutionTargetShellCommand,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
@@ -45,7 +44,6 @@ import {
   stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
-import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import {
   parseClaudeStreamJson,
   describeClaudeFailure,
@@ -58,7 +56,11 @@ import {
   isClaudePoisonedPreviousMessageIdError,
   isClaudeImageProcessingError,
 } from "./parse.js";
-import { prepareClaudeConfigSeed, resolveSharedClaudeConfigDir } from "./claude-config.js";
+import {
+  materializeRemoteClaudeConfig,
+  prepareClaudeConfigSeed,
+  resolveSharedClaudeConfigDir,
+} from "./claude-config.js";
 import { claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
@@ -487,6 +489,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           installCommand: SANDBOX_INSTALL_COMMAND,
           detectCommand: command,
           onProgress: (line) => onLog("stdout", line),
+          onRuntimeProgress: ctx.onRuntimeProgress,
           assets: [
             {
               key: "skills",
@@ -554,21 +557,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       "stdout",
       `[paperclip] Materializing Claude auth/config into ${remoteClaudeConfigDir}.\n`,
     );
-    await runAdapterExecutionTargetShellCommand(
+    await materializeRemoteClaudeConfig({
       runId,
-      executionTarget,
-      `mkdir -p ${shellQuote(remoteClaudeConfigDir)} && ` +
-        `if [ -d ${shellQuote(remoteClaudeConfigSeedDir)} ]; then ` +
-        `cp -R ${shellQuote(`${remoteClaudeConfigSeedDir}/.`)} ${shellQuote(remoteClaudeConfigDir)}/; ` +
-        `fi`,
-      {
+      target: executionTarget,
+      remoteClaudeConfigDir,
+      remoteClaudeConfigSeedDir,
+      options: {
         cwd,
         env,
         timeoutSec: Math.max(timeoutSec, 15),
         graceSec,
         onLog,
       },
-    );
+    });
   }
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
   if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
@@ -714,7 +715,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     args.push(...buildClaudeExecutionPermissionArgs({
       dangerouslySkipPermissions,
-      targetIsSandbox: executionTargetIsSandbox,
+      targetIsRemote: executionTargetIsRemote,
     }));
     if (chrome) args.push("--chrome");
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
@@ -759,9 +760,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (!resumeSessionId) {
       commandNotes.push(`Using stable Claude prompt bundle ${promptBundle.bundleKey}.`);
     }
-    if (dangerouslySkipPermissions && executionTargetIsSandbox) {
+    if (dangerouslySkipPermissions && executionTargetIsRemote) {
       commandNotes.push(
-        "Using a broad --allowedTools whitelist for sandbox execution because Claude rejects --dangerously-skip-permissions under root/sudo.",
+        "Using a broad --allowedTools whitelist for remote execution so hosted targets do not inherit local Claude bypass permissions.",
       );
     }
     if (attemptInstructionsFilePath && !resumeSessionId) {
@@ -790,7 +791,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
       graceSec,
       onSpawn,
+      onRuntimeProgress: ctx.onRuntimeProgress,
       onLog,
+      runLogTail: paperclipBridge?.runLogTail,
       terminalResultCleanup: {
         graceMs: terminalResultCleanupGraceMs,
         hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,

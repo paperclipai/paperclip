@@ -73,6 +73,8 @@ async function createIssue(
     projectId?: string | null;
     parentId?: string | null;
     assigneeAgentId?: string | null;
+    originKind?: string | null;
+    originId?: string | null;
   } = {},
 ) {
   return db
@@ -86,6 +88,8 @@ async function createIssue(
       projectId: input.projectId ?? null,
       parentId: input.parentId ?? null,
       assigneeAgentId: input.assigneeAgentId ?? null,
+      originKind: input.originKind ?? "manual",
+      originId: input.originId ?? null,
     })
     .returning()
     .then((rows) => rows[0]!);
@@ -1021,6 +1025,25 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("denies active-checkout management outside the CEO caller company scope", async () => {
+    const sourceCompany = await createCompany(db, "CheckoutSource");
+    const targetCompany = await createCompany(db, "CheckoutTarget");
+    const actorAgent = await createAgent(db, sourceCompany.id, { role: "ceo" });
+    const targetAgent = await createAgent(db, targetCompany.id, { role: "engineer" });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: sourceCompany.id, source: "agent_jwt" },
+      action: "tasks:manage_active_checkouts",
+      resource: { type: "issue", companyId: targetCompany.id, assigneeAgentId: targetAgent.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_company_boundary",
+    });
+    expect(decision.explanation).toContain("another company");
+  });
+
   it("allows scoped assignment inside a granted project and denies other projects", async () => {
     const company = await createCompany(db, "ProjectScope");
     const project = await createProject(db, company.id, "Allowed");
@@ -1166,6 +1189,120 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision).toMatchObject({
       allowed: true,
       grant: { permissionKey: "tasks:assign" },
+    });
+  });
+
+  it("scopes task bridge keys away from company-wide reads and unrelated issue writes", async () => {
+    const company = await createCompany(db, "TaskBridge");
+    const bridgeAgent = await createAgent(db, company.id);
+    const targetAgent = await createAgent(db, company.id);
+    const project = await createProject(db, company.id, "Bridge");
+    const parentIssue = await createIssue(db, company.id, { projectId: project.id });
+    const assignedIssue = await createIssue(db, company.id, { assigneeAgentId: bridgeAgent.id });
+    const keyId = randomUUID();
+    const bridgeCreatedIssue = await createIssue(db, company.id, {
+      originKind: "task_bridge",
+      originId: keyId,
+    });
+    const unrelatedIssue = await createIssue(db, company.id);
+    const actor = {
+      type: "agent" as const,
+      agentId: bridgeAgent.id,
+      companyId: company.id,
+      source: "agent_key" as const,
+      keyId,
+      keyScope: {
+        kind: "task_bridge" as const,
+        parentIssueId: parentIssue.id,
+        allowedAssigneeAgentIds: [targetAgent.id],
+      },
+    };
+    const authz = authorizationService(db);
+
+    await expect(authz.decide({
+      actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        parentIssueId: parentIssue.id,
+        assigneeAgentId: targetAgent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        projectId: project.id,
+        assigneeUserId: randomUUID(),
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: assignedIssue.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: bridgeCreatedIssue.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: unrelatedIssue.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "agent_config:read",
+      resource: {
+        type: "agent",
+        companyId: company.id,
+        agentId: bridgeAgent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
     });
   });
 });

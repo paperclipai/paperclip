@@ -46,6 +46,14 @@ pnpm paperclipai run
 
 Paperclip listens on `http://127.0.0.1:3100` by default. The CLI talks to that server, so leave it running.
 
+> **Verifying branch behavior?** If you are testing a plugin against routes or
+> data shapes that only exist on a feature branch, the server you install into
+> must be the one running that branch's code. A long-lived control-plane host
+> may be on older code and silently return `API route not found` for routes the
+> branch added, which makes the plugin look broken when the real problem is the
+> test target. See [Targeting a branch / issue-workspace runtime](#targeting-a-branch--issue-workspace-runtime)
+> before you install.
+
 ### 2. Scaffold the plugin
 
 ```bash
@@ -83,15 +91,19 @@ paperclipai plugin install ~/dev/paperclip-plugins/hello-plugin
 
 The CLI auto-detects local paths (anything that looks absolute, starts with `./`, `../`, or `~`, or resolves to an existing folder relative to the current directory) and sends `{ isLocalPath: true }` to `POST /api/plugins/install` with the resolved absolute path. If you want to be explicit, pass `--local`.
 
-You will see a confirmation like:
+Before it installs, the CLI probes `GET /api/health` on the instance it is configured to talk to and prints the **target diagnostics** so you can confirm *which* Paperclip you are installing into. You will see a confirmation like:
 
 ```
+Target Paperclip: http://127.0.0.1:3100
+  health: status=ok  version=0.1.0  mode=local_trusted  exposure=private
 Installing plugin from local path: /Users/you/dev/paperclip-plugins/hello-plugin
 ✓ Installed acme.hello-plugin v0.1.0 (ready)
 Local plugin installs run trusted local code from your machine.
 Keep `pnpm dev` running in /Users/you/dev/paperclip-plugins/hello-plugin;
 Paperclip watches rebuilt dist output and reloads the plugin worker.
 ```
+
+Read that first line. If the API URL, version, or mode is not the instance you expect, stop and re-point the CLI (see [Targeting a branch / issue-workspace runtime](#targeting-a-branch--issue-workspace-runtime)) before trusting the result. Pass `--no-verify-target` to skip the probe, or run `paperclipai plugin target` to see the same diagnostics without installing anything.
 
 Relative paths are resolved against the current working directory, so `paperclipai plugin install .` from inside the plugin folder works too.
 
@@ -103,6 +115,67 @@ paperclipai plugin inspect acme.hello-plugin
 ```
 
 `list` shows plugin key, status, version, and short error. `inspect` prints the same record with the full last error if there is one. Both accept `--json` if you want to script against them.
+
+## Targeting a branch / issue-workspace runtime
+
+The five-step loop above assumes one Paperclip on `http://127.0.0.1:3100`. That breaks down the moment your plugin depends on **server code that only exists on a branch**. Examples:
+
+- a new scoped API route the plugin calls (e.g. a `GET /api/companies/:companyId/...` endpoint the branch adds),
+- a new field in an existing response the plugin reads,
+- a new managed-resource capability the worker reconciles.
+
+If you install the plugin into a long-lived control-plane host that is still on older code, the route or field is missing there. The plugin falls back or errors, and it *looks* like a plugin bug when the real problem is that you tested against the wrong runtime. To verify "what the published plugin will actually do," install into a Paperclip service that is **serving your branch**.
+
+### How the CLI chooses its target
+
+The CLI resolves the API base URL in this order (highest priority first):
+
+1. `--api-base <url>` flag on the command,
+2. `PAPERCLIP_API_URL` environment variable,
+3. the active CLI context profile's `apiBase`,
+4. inferred default `http://<PAPERCLIP_SERVER_HOST|localhost>:<PAPERCLIP_SERVER_PORT|config.server.port|3100>`.
+
+So the API URL is explicit and overridable — the gap was never that you *couldn't* point at a branch server, it was that nothing told you which server you ended up on. `paperclipai plugin target` and the pre-install probe close that gap.
+
+### Run the branch service and install into it
+
+```bash
+# 1. From the branch checkout (e.g. an issue worktree), run that branch's server.
+#    Pick a port that does not collide with any control-plane instance.
+PAPERCLIP_SERVER_PORT=3120 pnpm dev          # or: pnpm paperclipai run
+
+# 2. Confirm the CLI will talk to that exact branch service before installing.
+paperclipai plugin target --api-base http://127.0.0.1:3120
+# Target Paperclip: http://127.0.0.1:3120
+#   health: status=ok  version=<branch-version>  mode=local_trusted  exposure=private
+
+# 3. Install the local-path plugin into that service (not the default host).
+paperclipai plugin install ~/dev/paperclip-plugins/hello-plugin \
+  --api-base http://127.0.0.1:3120
+
+# Prefer setting it once for the shell instead of repeating --api-base:
+export PAPERCLIP_API_URL=http://127.0.0.1:3120
+paperclipai plugin target
+paperclipai plugin install ~/dev/paperclip-plugins/hello-plugin
+```
+
+`plugin target` and the install-time probe both read `GET /api/health`, which returns the server `version`, `deploymentMode`, and `deploymentExposure`. Compare that `version` against the branch you expect to be running. If the diagnostics show a different URL, an unexpected version, or `health: unreachable`, you are about to test against the wrong instance — fix the target before reading anything into the plugin's behavior.
+
+### End-to-end check that the branch route is actually served
+
+When the behavior you care about is a branch-only route, hit it directly against the same target you installed into, so you prove the route exists there rather than inferring it from plugin output:
+
+```bash
+# Same base URL you installed into; expect JSON, not "API route not found".
+curl -s "http://127.0.0.1:3120/api/companies/<companyId>/<branch-route>" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" | head
+```
+
+If that returns the route's JSON, the branch runtime is serving the route and the plugin is exercising real published behavior. If it returns `API route not found`, the service on that port is not running your branch code — restart the branch server (step 1) and re-check `plugin target` before continuing.
+
+### Why not just patch the control-plane host?
+
+You can, but you usually should not. The control-plane host is shared and may be deliberately pinned to a released version. Spinning up the branch service on its own port and pointing the CLI at it keeps your in-progress plugin work isolated, reproducible, and honest about which code it ran against. When you are done, publish the plugin as an npm package and install that form against the host you will actually ship on.
 
 ## Reload semantics, honestly
 
@@ -140,3 +213,4 @@ When you are done iterating locally, publish the package and reinstall the npm-p
 - **Edits do not seem to reload.** Confirm `pnpm dev` is still running and writing to `dist/`. If you renamed entry files, update the `paperclipPlugin.manifest` / `paperclipPlugin.worker` / `paperclipPlugin.ui` fields in `package.json` so the watcher targets them.
 - **Worker restarts but UI is stale.** Hard-reload the page. If you want HMR, run `pnpm dev:ui` and set `devUiUrl` in your manifest to `http://127.0.0.1:4177` during development.
 - **Path arguments fail on Windows.** Quote paths that contain spaces, and prefer absolute paths over `~`-prefixed paths in non-bash shells.
+- **Plugin behaves as if a route or field is missing (e.g. `API route not found`, empty data, or a fallback path triggering unexpectedly).** You are probably installed into a Paperclip instance that does not run your branch code. Run `paperclipai plugin target` and compare the reported API URL and `version` against the branch service you meant to test. See [Targeting a branch / issue-workspace runtime](#targeting-a-branch--issue-workspace-runtime) to run the branch server and point the CLI at it explicitly.
