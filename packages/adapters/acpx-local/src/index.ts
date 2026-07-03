@@ -1,7 +1,7 @@
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 
 export const type = "acpx_local";
-export const label = "ACPX (local)";
+export const label = "ACPX";
 
 export const DEFAULT_ACPX_LOCAL_AGENT = "claude";
 export const DEFAULT_ACPX_LOCAL_MODE = "persistent";

@@ -4,7 +4,7 @@ import {
 } from "@paperclipai/adapter-utils";
 
 export const type = "gemini_local";
-export const label = "Gemini CLI (local)";
+export const label = "Gemini CLI";
 
 export const SANDBOX_INSTALL_COMMAND = buildSandboxNpmInstallCommand("@google/gemini-cli");
 

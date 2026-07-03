@@ -1,7 +1,7 @@
 import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
 
 export const type = "codex_local";
-export const label = "Codex (local)";
+export const label = "Codex";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 
