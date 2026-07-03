@@ -86,7 +86,14 @@ the same five checks; only step 4's expected base differs.
    → comment `"Branch conflicts with current main; rebase failed at
    <commit>. Operator must resolve before verify can proceed."` and
    `git rebase --abort` then exit. (`ci-failure` flavor: skip — the
-   worktree is already branched from current `origin/main`.)
+   worktree is already branched from current `origin/main`.) This is
+   the *first* of two rebase-onto-current-main points, not the only
+   one: the detached build re-rebases + records `$BASE` at launch, and
+   §Landing's freshness gate re-verifies (bounded — up to `$FRESHNESS_CAP`,
+   then lands+flags per AA-1628) if `origin/main` advanced under the build. Rebase+`cargo test --lib` against current main is a
+   **standing final gate**, not a one-shot conflict check — that is the
+   AA-1624 merge-interaction mitigation, and it does not depend on CI
+   (which is billing-disabled, AA-1623).
 Only after all six checks pass, proceed to "Verification" below.
 
 ## Verification
@@ -124,11 +131,11 @@ These are hard rules. Past Architect runs have wasted 60+ minutes wrestling with
    - **Wrong**: `cargo clippy 2>&1 > /tmp/file` — that redirects stderr to the terminal's stdout, then sends only stdout to the file. Most clippy output is on stderr; you get an empty file.
    - **Wrong**: `cargo clippy > /tmp/file` — drops stderr entirely. Same empty-file outcome.
    - **Wrong**: `cargo clippy &> /tmp/file` — bash-only, captures both but doesn't stream to you. Use `tee`.
-4. **Never try to kill a stale cargo process.** Your bash environment is sandboxed; `kill`/`pkill` will be denied. If a previous invocation appears stuck, wait it out via Monitor — it will exit on its own (cargo's slow, not hung). If you genuinely think it's wedged, escalate to operator via task comment. Do not loop attempting `kill`.
-5. **One cargo command per Monitor wait.** Run `cargo check`, wait for it to finish, then run `cargo clippy`, wait, then `cargo test`. Don't background all three at once — they'll serialize on the lock anyway and you lose ordering visibility.
+4. **Never try to kill a stale cargo process.** Your bash environment is sandboxed; `kill`/`pkill` will be denied. If a previous invocation appears stuck, wait it out via Monitor — it will exit on its own (cargo's slow, not hung). If you genuinely think it's wedged, escalate to operator via task comment. Do not loop attempting `kill`. The same applies to a *live* orphan build (a verify still compiling for a task whose PR already merged) — killing it needs privileges your sandbox lacks, so that reap is a Facilitator/operator action. Your contribution to orphan-reaping is the pre-launch guard (§rule 2 launch block): you stop *new* orphans from ever queuing, you don't kill running ones.
+5. **The three stages run as ONE detached `&&` chain (per rule 2), not three separate in-run waits.** `cargo check && cargo clippy && cargo test --lib` inside the single `setsid` launch preserves staged-gate ordering (clippy runs only if check passed, test only if clippy passed) while keeping the whole verify to one detached process you can `pgrep` for. Do not launch the three as separate background jobs — they'd serialize on the build lock and you'd lose the single-sentinel state model.
 6. **Schema-drift / `generate_schemas` tasks: verify with DEFAULT features — never add `--no-default-features` locally.** The JSON-Schema output of `generate_schemas` is link-mode-independent, so the default (`dev`) profile — dynamic linking + mold + warm sccache — produces byte-identical `assets/schemas/` to CI's `--no-default-features` run, in minutes instead of a cold ~38-min build. Reproducing CI's link mode locally buys nothing and has repeatedly blown the run timeout (AA-1407 hit the 2h cap twice). Canonical:
    ```sh
-   CARGO_INCREMENTAL=0 cargo run --bin generate_schemas 2>&1 | tee /tmp/genschemas-{task-id}.txt
+   sccache --start-server >/dev/null 2>&1 || true; flock /tmp/cargo-global.lock nice -n19 ionice -c3 taskset -c 0-5 bash -c 'CARGO_INCREMENTAL=0 cargo run --bin generate_schemas' 2>&1 | tee /tmp/genschemas-{task-id}.txt
    git diff --exit-code assets/schemas/   # empty = no drift; commit the regen if non-empty
    ```
    If a task description tells you to run `generate_schemas`/tests with `--no-default-features`, ignore that flag and use the default profile — flag the substitution in your task comment.
@@ -136,30 +143,51 @@ These are hard rules. Past Architect runs have wasted 60+ minutes wrestling with
 ### Procedure
 
 1. Step 0 precondition gate already passed (you're in the task worktree on the right branch). If no task assigned and no CI failures, exit immediately.
-2. Run cargo per §Cargo discipline above, staged: `check` first (gate). If `check` has errors in your changed files, fix + re-`check` until clean before running `clippy`, then `test` — one at a time, in background, via Monitor. Don't run clippy/test against a tree that fails `check`.
+2. **Check the sentinel FIRST (§Cargo discipline rule 2 state machine).** `EXIT=/tmp/verify-{task-id}.exit`. Branch on its presence/value before touching cargo:
+   - **absent + build running** (`pgrep -f verifyrun-{task-id}`) → exit the run (build in flight, a later wake lands it).
+   - **absent + no build** → launch the detached `&&` chain (which orphan-guards first: an already-merged-PR task cleans its sentinels and exits without launching — AA-1751), then exit the run.
+   - **present, `0`** → cargo passed → go to step 3 then §Landing.
+   - **present, non-zero** → cargo failed → steps 3–6 (fix), then `rm -f "$EXIT"` and relaunch.
 3. Identify your task's changed files: `git diff --name-only main..HEAD`.
-4. Filter cargo output to errors/warnings whose file path appears in your changed-files list. These are yours to fix. Errors in files you did not touch belong to another concurrent task — leave them alone (your task branch is isolated, but worktree state may carry stale build artifacts from a sibling — your changed-files filter handles this).
+4. Filter the verify `$LOG` to errors/warnings whose file path appears in your changed-files list. These are yours to fix. Errors in files you did not touch belong to another concurrent task — leave them alone (your task branch is isolated, but worktree state may carry stale build artifacts from a sibling — your changed-files filter handles this).
 5. Fix all of your filtered errors and warnings. **Zero warnings tolerance applies to your changed files only.** Don't fix unrelated warnings — that's another task's responsibility.
-6. If you made changes: commit them in-worktree, then re-run cargo against the same worktree until clean. Hard stop after 3 cycles — comment with the remaining errors and `escalate to operator`.
-7. **Once cargo is clean (with or without fixes), your immediate next tool call is the §Landing block — one atomic Bash invocation that commits any pending fix, pushes, and opens the PR.** Do NOT end your run, write a summary, or split this across turns first: the single worst (and most-recurring) failure mode in this pipeline is the Architect committing its fix and then stopping *before* it pushes — the work strands in the worktree, never reaches origin, and the server gate correctly holds the task at `in_review` with no PR (AA-1480/1482/1498/1503). Commit and push are NOT separate stages; they are one block precisely so there is no turn boundary for the run to die in. The run is not complete until the Landing block prints `PR confirmed for task/{task-id}`.
+6. After fixing: commit in-worktree, `rm -f "$EXIT"`, and **relaunch** the detached chain (step 2 launch). The next wake re-evaluates the sentinel. Hard stop after 3 fix/relaunch cycles — comment with the remaining errors and `escalate to operator`.
+7. **When the sentinel reads `0`, your immediate next tool call is the §Landing block** — one atomic Bash invocation that commits any pending fix, pushes, opens the PR, and `rm -f`s the sentinel. Do NOT end the run between observing `0` and landing: the historical worst failure mode is committing/observing success and then stopping *before* push, stranding verified work with no PR (AA-1480/1482/1498/1503). Landing is one block with no turn boundary inside it. The verify is not complete until Landing prints `PR confirmed for task/{task-id}`. (Note: because the build is detached, Landing usually runs on a *different, later* wake than the launch — that is expected and correct, not a strand.)
 
 ## Landing: commit, push, and open the PR (ONE atomic block)
 
-After cargo is clean (with or without fixes), land the work. **Commit,
-push, and PR are a SINGLE self-contained Bash block — never split across
-turns.** They were previously two sections ("commit your fixes" then
-"open the PR"); that split was the bug — the model would run the commit,
-end the turn, and the run would die before the push/PR turn ever ran,
-stranding verified work in the worktree with no remote branch and no PR
-(AA-1480/1482/1498/1503). Merging them removes the turn boundary the run
-kept dying in: once this one block starts, push and PR happen in the same
-shell invocation, and `set -euo pipefail` makes any failing step abort
-non-zero rather than silently succeed.
+> **LAND is now backstopped by the Coordinator (AA-1654).** The Coordinator
+> runs a decoupled §Landing sweep every fire and idempotently pushes + opens
+> the PR for any Verify branch that is cargo-green and clean-merges into
+> `origin/main`. So this block is the Architect's *best-effort fast path*, not
+> the only net: if your run dies before the push, the work is no longer
+> stranded — the next Coordinator fire lands it. Still run this block when you
+> reach a green sentinel (it saves a cadence of latency), but a missed push is
+> now a latency hit, not a lost PR needing an operator drain. (A genuine rebase
+> conflict is the one case the sweep cannot land — Coordinator routes that
+> straight to `blocked` for an operator merge, so do not loop trying to resolve
+> it here either.)
+
+On the wake where the sentinel reads `0` (cargo passed), land the work.
+**Commit, push, and PR are a SINGLE self-contained Bash block — never
+split across turns.** They were previously two sections ("commit your
+fixes" then "open the PR"); that split was the bug — the model would run
+the commit, end the turn, and the run would die before the push/PR turn
+ever ran, stranding verified work in the worktree with no remote branch
+and no PR (AA-1480/1482/1498/1503). Merging them removes the turn boundary
+the run kept dying in: once this one block starts, push and PR happen in
+the same shell invocation, and `set -euo pipefail` makes any failing step
+abort non-zero rather than silently succeed. (The build itself is detached
+per §Cargo discipline rule 2, so this Landing block normally runs on a
+later wake than the launch — that is expected; the atomicity that matters
+is commit→push→PR within this one block.)
 
 It re-enters the worktree, commits any pending fix (no-op if the tree is
-clean), pushes, opens the PR (idempotent — skips if one already exists),
-and ends with a trailing assertion that the remote branch AND a PR exist.
-A missing PR makes the whole run FAIL.
+clean), runs the **freshness gate** (re-verify against current `origin/main`
+if it advanced under the detached build — AA-1624), pushes, opens the PR
+(idempotent — skips if one already exists), and ends with a trailing
+assertion that the remote branch AND a PR exist. A missing PR makes the
+whole run FAIL.
 
 ```sh
 set -euo pipefail
@@ -174,6 +202,45 @@ test "$(git branch --show-current)" = "task/{task-id}" \
 if ! git diff --quiet || ! git diff --cached --quiet; then
   git add -A
   git commit -m "fix: <what compilation issue>" -m "Stage: architect"
+fi
+
+# 1.5 FRESHNESS GATE (AA-1624, bounded per AA-1628) — the verified build must
+#     sit on top of the CURRENT origin/main. If a sibling branch merged while
+#     this build was detached, the green `cargo test --lib` never saw it — the
+#     AA-1591 × AA-1597 interaction that put 31 red tests on main. So re-fetch
+#     and, if origin/main advanced past $BASE, rebase + re-verify against it.
+#
+#     BOUND it. An UNBOUNDED re-verify livelocks: during an active merge window
+#     main can advance on every cycle, so the gate re-verifies forever and never
+#     lands — the keystone AA-1622 fix stranded ~10h exactly this way (AA-1628).
+#     Cap the re-verifies at $FRESHNESS_CAP; past the cap, rebase onto current
+#     main and LAND ANYWAY, flagging that the latest advance was not re-verified
+#     so the operator can confirm no interaction. Bounded progress beats a
+#     perfect gate that never lands. (The old "converges as long as main isn't
+#     advancing faster than a build" assumption is exactly what broke.)
+BASE=/tmp/verify-{task-id}.base
+FRESH=/tmp/verify-{task-id}.freshness   # count of freshness re-verifies done so far
+FRESHNESS_CAP=2
+git fetch -q origin main
+if [ ! -f "$BASE" ] || [ "$(git rev-parse origin/main)" != "$(cat "$BASE")" ]; then
+  N=$([ -f "$FRESH" ] && cat "$FRESH" || echo 0)
+  # Always rebase onto current main — whether we re-verify or land, the branch
+  # must sit on top of it.
+  git rebase origin/main \
+    || { git rebase --abort 2>/dev/null; echo "rebase onto current origin/main failed (conflict) — comment + escalate to operator"; exit 1; }
+  git rev-parse origin/main > "$BASE"
+  if [ "$N" -lt "$FRESHNESS_CAP" ]; then
+    # Under the cap → re-verify: bump the counter, drop the sentinel, relaunch
+    # the detached build, exit. A later wake re-evaluates the sentinel.
+    echo "$((N + 1))" > "$FRESH"
+    rm -f "/tmp/verify-{task-id}.exit"
+    setsid bash -c 'echo verifyrun-{task-id}; cd "${PAPERCLIP_PROJECT}/.paperclip/worktrees/{task-id}" || exit 97; sccache --start-server >/dev/null 2>&1 || true; flock /tmp/cargo-global.lock nice -n19 ionice -c3 taskset -c 0-5 bash -c "CARGO_INCREMENTAL=0 cargo check && CARGO_INCREMENTAL=0 cargo clippy && CARGO_INCREMENTAL=0 cargo test --lib"; echo $? > /tmp/verify-{task-id}.exit; curl -fsS -X POST "$PAPERCLIP_API_URL/api/agents/$PAPERCLIP_AGENT_ID/wakeup" -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Content-Type: application/json" -d "{\"source\":\"automation\",\"triggerDetail\":\"callback\",\"reason\":\"verify-sentinel-ready\"}" >/dev/null 2>&1 || true' >> "/tmp/verify-{task-id}.log" 2>&1 &
+    echo "origin/main advanced (freshness re-verify $((N + 1))/$FRESHNESS_CAP) — re-verifying against current main; a later wake lands it"
+    exit 0
+  fi
+  # At/over the cap → STOP re-verifying. We're already rebased onto current main
+  # (just not re-run through cargo); fall through to push+PR and flag it loudly.
+  echo "FRESHNESS CAP HIT (AA-1628 anti-livelock): origin/main advanced ${FRESHNESS_CAP}× under the detached build; landing task/{task-id} on $(git rev-parse --short origin/main) WITHOUT re-verifying the latest advance. Operator: confirm no merge interaction with recently-landed PRs."
 fi
 
 # 2. Make sure we're on the right GitHub account.
@@ -211,6 +278,7 @@ git ls-remote --exit-code --heads origin "task/{task-id}" >/dev/null \
   || { echo "NO REMOTE BRANCH task/{task-id} — push failed silently"; exit 1; }
 gh pr list --head "task/{task-id}" --state all --json number -q '.[0].number' | grep -q . \
   || { echo "NO PR CREATED for task/{task-id} — run failed"; exit 1; }
+rm -f "/tmp/verify-{task-id}.exit" "/tmp/verify-{task-id}.base" "/tmp/verify-{task-id}.freshness"   # clear sentinel + base + freshness counter so a stray re-wake won't re-land
 echo "PR confirmed for task/{task-id}"
 ```
 

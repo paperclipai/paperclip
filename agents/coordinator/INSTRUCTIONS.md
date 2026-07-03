@@ -46,12 +46,17 @@ Human merges. You GC the worktree + branch.
    - Reviewer done, `data-only` → Architect opens PR (no cargo), then mark parent done after merge
    - Architect `done` (branch confirmed on origin → PR exists) → mark parent done after PR merges
    - Architect `in_review` (assignee = Architect, **branch NOT on origin** → gate withheld auto-done):
-     the verify run did not land a PR (silent exit / bailed gate). Re-dispatch the Architect on
-     the same Verify subtask; do not mark anything done. **Cap re-dispatches at 2** (track a
-     `Verify re-dispatch: N` trailer in a task comment). If the branch is still not on origin
-     after 2 re-dispatches, the Architect is stuck before its Landing block — comment the
-     stranded commit SHA(s) (`git -C .paperclip/worktrees/{task-id} log --oneline origin/main..HEAD`)
-     and `escalate to operator` for a manual drain; stop re-dispatching that task.
+     the verify run did cargo but never landed (the recurring AA-1654 Landing bug). **FIRST run the
+     §Landing sweep** — if cargo is green (sentinel `/tmp/verify-{task-id}.exit` == 0) and the branch
+     merges cleanly into current `origin/main`, Coordinator itself pushes + opens the PR (landing is
+     decoupled from the flaky Architect run — that is the structural fix). Only re-dispatch the
+     Architect when the sweep is blocked **on cargo** (no green sentinel / non-zero exit) — that it
+     can fix. A **merge conflict goes straight to `blocked`, NOT a re-dispatch** (§Landing sweep
+     step 3): the Architect aborts on conflict and cannot resolve it, so re-dispatching only burns
+     cycles. **Cap cargo re-dispatches at 2** (track a `Verify re-dispatch: N` trailer in a task
+     comment). If still not landed after 2 re-dispatches, comment the stranded commit SHA(s)
+     (`git -C .paperclip/worktrees/{task-id} log --oneline origin/main..HEAD`) and `escalate to
+     operator`; stop re-dispatching that task.
 4. *(reserved — was Batch verify, removed; Coordinator no longer runs cargo)*
 5. Promote backlog → `todo` if <2 Worker tasks active. PATCH must set `assigneeAgentId`. **Allocate a worktree** for each task you promote (see §Worktree allocation below).
 6. Stale scan: `in_progress` with no activity 2+ days → comment or reassign. Also check `.paperclip/worktrees/` for orphans (worktrees with no active task) and GC them.
@@ -180,6 +185,59 @@ The previous design merged all queued tasks into a single integration
 tree to amortize cargo across them. Removed: it inverted dependencies
 (Coordinator waiting on cargo) and conflated unrelated tasks' errors.
 Each Architect verifies its own task branch in isolation now.
+
+## Landing sweep (Coordinator owns the LAND step — AA-1654 structural fix)
+
+The Architect "detached-verify-never-LANDs" bug recurred 7× (AA-1582,
+1606, 1607, 1609, 1610, 1628, 1637) because every point-fix kept the
+LAND step (push + open PR) *inside* the same flaky Architect run: cargo
+runs green, then the run is starved by turn/wall-clock/session budget
+and dies before pushing, so committed cargo-green work strands off
+origin and an operator drain is needed again.
+
+**The structural constraint (per CLAUDE.md "recurring churn is a missing
+constraint"): decouple LAND from the verify run.** Coordinator fires on
+a reliable routine and cannot be starved mid-cargo — so Coordinator owns
+landing. The Architect's only job is now: rebase if needed, run cargo,
+fix, commit. It MAY still try to push/PR; the sweep is idempotent and
+harmless if it already did.
+
+Run this sweep every fire, for every Verify subtask that is `in_review`
+with assignee = Architect (and as the FIRST action in the step-3 stranded
+branch handler). For each `{task-id}`:
+
+1. **Cargo-green gate.** Read `/tmp/verify-{task-id}.exit`. Must be `0`.
+   No sentinel, or non-zero → do NOT land; the Architect must (re-)run
+   cargo. Re-dispatch per step 3 cap, or leave running if a live run owns it.
+2. **Committed + ahead gate.** Worktree clean (`git -C
+   .paperclip/worktrees/{task-id} status --porcelain` empty) AND ahead of
+   `origin/main` (`git rev-list --count origin/main..HEAD` > 0). If clean
+   but NOT ahead → work already merged/landed elsewhere; skip.
+3. **Clean-merge gate.** `git merge-tree --write-tree origin/main {head}`
+   exits 0 (no conflict). **Conflict → do NOT land and do NOT re-dispatch.**
+   The Architect aborts on rebase conflict and cannot resolve it, so
+   re-dispatching only burns cycles. Set BOTH the Verify subtask and its
+   parent to `blocked`, with a comment naming the conflicting path(s) and
+   "needs operator merge (AA-1654 conflict class)". This parks it visibly in
+   one cadence instead of bouncing for hours or burying an `escalate`
+   comment. (AA-1674 was exactly this: a real `transitions.rs` conflict that
+   sat ~10h before a human hand-merged it as PR #367.)
+4. **LAND.** `git push origin task/{task-id}` then `gh pr create --head
+   task/{task-id} --base main` with a body noting cargo result + base SHA +
+   "Landed by Coordinator decoupled-land step (AA-1654)". Idempotent: if the
+   branch is already on origin / a PR already exists, skip that part.
+5. **Record.** Mark the Verify subtask `done` (goal = cargo-green + PR
+   landed, now met). Comment the PR link on the parent; leave the parent
+   `in_review` until the human merges (§Merge sweep tears down on merge).
+
+Do NOT re-verify against the latest main on every fire — that re-rebase
++ re-cargo loop is the livelock itself. Cargo-green against a *recent*
+base + clean textual merge is the accepted bar; merge-interaction
+regressions are caught later by a `ci-fix` task, not by blocking the land.
+
+This is the backstop the §PR-evidence audit was compensating for; with
+landing decoupled, that audit becomes a true backstop rather than the
+primary net.
 
 ## PR-evidence audit
 

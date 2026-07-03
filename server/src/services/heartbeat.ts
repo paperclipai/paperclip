@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { and, asc, desc, eq, gt, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { BillingType } from "@paperclipai/shared";
 import {
@@ -3125,21 +3125,45 @@ export function heartbeatService(db: Db) {
               .then((rows) => rows[0] ?? null);
             if (nextTask) {
               logger.info(
-                { agentId: agent.id, nextTaskId: nextTask.id, nextTaskIdentifier: nextTask.identifier },
-                "chain-waking agent for next queued task",
+                { agentId: agent.id, issueId, numTurns },
+                "skipping chain-wake — last run made zero tool calls (no-progress run must not advance the queue; AA-1611 N-cycle guard)",
               );
-              await enqueueWakeup(agent.id, {
-                source: "automation",
-                triggerDetail: "callback",
-                reason: "queue_chain",
-                payload: { issueId: nextTask.id, mutation: "chain_wake" },
-                contextSnapshot: { issueId: nextTask.id, source: "queue.chain" },
-              }).catch((err: unknown) =>
-                logger.warn(
-                  { err, agentId: agent.id, nextTaskId: nextTask.id },
-                  "failed to chain-wake agent on queue continuation",
-                ),
-              );
+            } else {
+              const nextTask = await db
+                .select()
+                .from(issues)
+                .where(
+                  and(
+                    eq(issues.companyId, agent.companyId),
+                    eq(issues.assigneeAgentId, agent.id),
+                    ne(issues.id, issueId),
+                    inArray(issues.status, ["in_progress", "in_review", "todo"]),
+                  ),
+                )
+                .orderBy(
+                  sql`CASE ${issues.status} WHEN 'in_progress' THEN 0 WHEN 'in_review' THEN 1 ELSE 2 END`,
+                  asc(issues.createdAt),
+                )
+                .limit(1)
+                .then((rows) => rows[0] ?? null);
+              if (nextTask) {
+                logger.info(
+                  { agentId: agent.id, nextTaskId: nextTask.id, nextTaskIdentifier: nextTask.identifier },
+                  "chain-waking agent for next queued task",
+                );
+                await enqueueWakeup(agent.id, {
+                  source: "automation",
+                  triggerDetail: "callback",
+                  reason: "queue_chain",
+                  payload: { issueId: nextTask.id, mutation: "chain_wake" },
+                  contextSnapshot: { issueId: nextTask.id, source: "queue.chain" },
+                }).catch((err: unknown) =>
+                  logger.warn(
+                    { err, agentId: agent.id, nextTaskId: nextTask.id },
+                    "failed to chain-wake agent on queue continuation",
+                  ),
+                );
+              }
             }
           }
         }

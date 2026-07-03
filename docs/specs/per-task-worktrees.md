@@ -142,6 +142,7 @@ env vars, not by editing every INSTRUCTIONS file.
 - **Worker exits without committing**: Coordinator detects empty branch (no commits beyond `main`'s tip) and routes back to Worker (or marks task `failed` after retry).
 - **Architect's cargo verification fails repeatedly**: Architect's existing "fix or open issue" rule applies; once the branch is buildable, PR opens.
 - **Merge conflict on PR**: Coordinator (or Architect on next wake) rebases `task/{id}` onto fresh `main`. If unresolvable, comments and pings the operator.
+- **Merge-interaction regression (concurrently-developed branches)**: rebasing onto fresh `main` is no longer conflict-triggered only — the Architect rebases `task/{id}` onto current `origin/main` *before* the detached build and re-checks at land time, blocking the PR if `origin/main` advanced under the build (re-verify against the new main). Without this, two branches each green on their own base can combine red on `main` (AA-1591 × AA-1597 → 31 `cargo test --lib` failures). This is the cheapest durable mitigation that does not depend on CI, which is billing-disabled (AA-1623). See `agents/architect/INSTRUCTIONS.md` §Landing "freshness gate" (AA-1624).
 
 ## 4. Implementation order
 
@@ -198,19 +199,18 @@ will spin up a fresh empty instance there, separate from your real
 data. The env var for the code checkout is `PAPERCLIP_REPO` —
 distinct name, no collision.
 
-### 6.2 Shared cargo build cache
+### 6.2 Per-worktree cargo build cache (sccache, NOT a shared target dir)
 
-Architect runs cargo with `CARGO_TARGET_DIR=$HOME/.cargo-shared-target`
-so parallel worktrees don't each cold-build their own `target/`. Add to
-the same shell init:
+> **SUPERSEDED (AA-1553/AA-1554, 2026-06-12).** The old shared
+> `CARGO_TARGET_DIR=$HOME/.cargo-shared-target` was **removed** — a single
+> shared target dir serialized every Architect on cargo's build lock and
+> corrupted the tree under concurrent writes. **Do NOT re-introduce it.**
 
-```sh
-export CARGO_TARGET_DIR="$HOME/.cargo-shared-target"
-```
-
-Cargo's own lockfile serializes concurrent builds — that's correct
-behavior, not a problem to solve. Architect runs are infrequent enough
-that the wait is rarely visible.
+Each worktree now builds in its **own** `target/`. Cache reuse comes from
+**sccache**, not a shared target: the running server env sets
+`RUSTC_WRAPPER=sccache` and leaves `CARGO_TARGET_DIR` **unset**, so
+concurrent Architect cargos run in parallel (bounded by CPU/RAM, not a
+lock). Do not export `CARGO_TARGET_DIR`.
 
 ### 6.3 Project repo `.gitignore`
 
@@ -235,9 +235,10 @@ PAPERCLIP_REPO=/...
 PAPERCLIP_PF2E_REF=/...
 PAPERCLIP_GH_USER=...
 
-# Cargo target shared
-$ env | grep ^CARGO_TARGET_DIR
-CARGO_TARGET_DIR=/.../.cargo-shared-target
+# Per-worktree target via sccache — CARGO_TARGET_DIR must be UNSET (§6.2)
+$ env | grep ^CARGO_TARGET_DIR   # expect: no output
+$ env | grep ^RUSTC_WRAPPER
+RUSTC_WRAPPER=sccache
 
 # gh auth has the right account available (it doesn't need to be ACTIVE
 # yet — Architect switches at PR time — just needs to be logged in)
