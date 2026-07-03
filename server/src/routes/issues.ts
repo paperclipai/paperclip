@@ -2085,8 +2085,8 @@ export function issueRoutes(
     }
     if (issue.assigneeAgentId !== actorAgentId) {
       if (boundaryDecision.reason === "allow_company_ceo") {
-        const isTodoToInProgressTransition = issue.status !== "in_progress" && requestedStatus === "in_progress";
-        if (!isTodoToInProgressTransition) {
+        const isTransitionToInProgress = issue.status !== "in_progress" && requestedStatus === "in_progress";
+        if (!isTransitionToInProgress) {
           if (issue.status === "in_progress") {
             res.status(409).json({
               error: "Issue is checked out by another agent",
