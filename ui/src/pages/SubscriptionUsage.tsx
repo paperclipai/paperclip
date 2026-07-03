@@ -9,8 +9,12 @@ import {
   Gauge,
   RefreshCw,
   ShieldCheck,
+  Users,
 } from "lucide-react";
 import { costsApi } from "../api/costs";
+import { claudeAccountsApi } from "../api/claudeAccounts";
+import { ApiError } from "../api/client";
+import { ClaudeAccountsPanel } from "../components/ClaudeAccountsPanel";
 import { ClaudeSubscriptionPanel } from "../components/ClaudeSubscriptionPanel";
 import { CodexSubscriptionPanel } from "../components/CodexSubscriptionPanel";
 import { EmptyState } from "../components/EmptyState";
@@ -278,6 +282,27 @@ export function SubscriptionUsage() {
     staleTime: 60_000,
   });
 
+  const {
+    data: accountsData,
+    error: accountsError,
+    isFetching: accountsIsFetching,
+    isLoading: accountsIsLoading,
+    refetch: refetchAccounts,
+  } = useQuery({
+    queryKey: queryKeys.claudeAccountsUsage(),
+    queryFn: () => claudeAccountsApi.usage(),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 300_000,
+    staleTime: 60_000,
+  });
+
+  const accountsErrorMessage = accountsError
+    ? accountsError instanceof ApiError &&
+      (accountsError.status === 401 || accountsError.status === 403)
+      ? "Multi-account Claude usage is visible to board members only."
+      : errorMessage(accountsError)
+    : null;
+
   const quotaData = quotaQuery.data;
   const claude = findProvider(quotaData, "anthropic");
   const codex = findProvider(quotaData, "openai");
@@ -318,10 +343,18 @@ export function SubscriptionUsage() {
         <Button
           variant="outline"
           size="sm"
-          onClick={() => quotaQuery.refetch()}
-          disabled={quotaQuery.isFetching}
+          onClick={() => {
+            void quotaQuery.refetch();
+            void refetchAccounts();
+          }}
+          disabled={quotaQuery.isFetching || accountsIsFetching}
         >
-          <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", quotaQuery.isFetching && "animate-spin")} />
+          <RefreshCw
+            className={cn(
+              "mr-1.5 h-3.5 w-3.5",
+              (quotaQuery.isFetching || accountsIsFetching) && "animate-spin",
+            )}
+          />
           Refresh
         </Button>
       </div>
@@ -403,6 +436,30 @@ export function SubscriptionUsage() {
           )}
         </ProviderShell>
       </div>
+
+      <Card>
+        <CardHeader className="px-5 pt-5 pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Users className="h-4 w-4" />
+            Claude accounts
+          </CardTitle>
+          <CardDescription>
+            Every host auth profile and its subscription usage, captured without switching the
+            active login. The account marked “Logged in” is what agents run as right now.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="px-5 pb-5 pt-0">
+          {accountsIsLoading ? (
+            <div className="grid gap-3 lg:grid-cols-2">
+              {Array.from({ length: 2 }).map((_, index) => (
+                <div key={index} className="h-40 animate-pulse border border-border bg-muted/40" />
+              ))}
+            </div>
+          ) : (
+            <ClaudeAccountsPanel data={accountsData} error={accountsErrorMessage} />
+          )}
+        </CardContent>
+      </Card>
 
       {otherResults.length > 0 ? (
         <Card>
