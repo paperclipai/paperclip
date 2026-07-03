@@ -1484,6 +1484,18 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/issues/blocked-inbox-rollup",
+  tags: ["issues"],
+  summary: "Get a blocked inbox rollup for a company",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ format: z.enum(["json", "markdown"]).optional() }).strict(),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/issues",
   tags: ["issues"],
