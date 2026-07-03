@@ -58,6 +58,7 @@ export interface ExecutionWorkspaceAgentRef {
   id: string | null;
   name: string;
   companyId: string;
+  gitEmail?: string | null;
 }
 
 export interface RealizedExecutionWorkspace extends ExecutionWorkspaceInput {
@@ -375,6 +376,65 @@ function sanitizeSlugPart(value: string | null | undefined, fallback: string): s
     .replace(/-+/g, "-")
     .replace(/^[-_]+|[-_]+$/g, "");
   return normalized.length > 0 ? normalized : fallback;
+}
+
+function sanitizeGitEmailLocalPart(value: string | null | undefined, fallback: string): string {
+  const normalized = (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._+-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "");
+  return normalized.length > 0 ? normalized : fallback;
+}
+
+function resolveAgentGitIdentity(agent: ExecutionWorkspaceAgentRef) {
+  const name = agent.name.trim() || "Paperclip Agent";
+  const configuredEmail = agent.gitEmail?.trim();
+  const email = configuredEmail && configuredEmail.includes("@")
+    ? configuredEmail
+    : `${sanitizeGitEmailLocalPart(agent.id ?? agent.name, "agent")}@agents.paperclip.local`;
+  return { name, email };
+}
+
+async function configureWorktreeGitIdentity(input: {
+  repoRoot: string;
+  worktreePath: string;
+  agent: ExecutionWorkspaceAgentRef;
+  recorder?: WorkspaceOperationRecorder | null;
+}) {
+  const identity = resolveAgentGitIdentity(input.agent);
+  const metadata = {
+    repoRoot: input.repoRoot,
+    worktreePath: input.worktreePath,
+    agentId: input.agent.id,
+    gitIdentity: identity,
+  };
+
+  await recordGitOperation(input.recorder, {
+    phase: "worktree_prepare",
+    args: ["config", "extensions.worktreeConfig", "true"],
+    cwd: input.repoRoot,
+    metadata,
+    successMessage: `Enabled worktree-local git config for ${input.worktreePath}\n`,
+    failureLabel: "git config extensions.worktreeConfig true",
+  });
+  await recordGitOperation(input.recorder, {
+    phase: "worktree_prepare",
+    args: ["config", "--worktree", "user.name", identity.name],
+    cwd: input.worktreePath,
+    metadata,
+    successMessage: `Configured worktree git user.name for ${input.worktreePath}\n`,
+    failureLabel: "git config --worktree user.name",
+  });
+  await recordGitOperation(input.recorder, {
+    phase: "worktree_prepare",
+    args: ["config", "--worktree", "user.email", identity.email],
+    cwd: input.worktreePath,
+    metadata,
+    successMessage: `Configured worktree git user.email for ${input.worktreePath}\n`,
+    failureLabel: "git config --worktree user.email",
+  });
 }
 
 function renderWorkspaceTemplate(template: string, input: {
@@ -1665,6 +1725,12 @@ export async function realizeExecutionWorkspace(input: {
         }),
       });
     }
+    await configureWorktreeGitIdentity({
+      repoRoot,
+      worktreePath: reusablePath,
+      agent: input.agent,
+      recorder: input.recorder ?? null,
+    });
     await provisionExecutionWorktree({
       strategy: rawStrategy,
       base: input.base,
@@ -1782,6 +1848,12 @@ export async function realizeExecutionWorkspace(input: {
       return await reuseExistingWorktree(reusablePath);
     }
   }
+  await configureWorktreeGitIdentity({
+    repoRoot,
+    worktreePath,
+    agent: input.agent,
+    recorder: input.recorder ?? null,
+  });
   await provisionExecutionWorktree({
     strategy: rawStrategy,
     base: input.base,
@@ -1889,6 +1961,12 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
         },
       );
     }
+    await configureWorktreeGitIdentity({
+      repoRoot,
+      worktreePath: reuseWorktreePath,
+      agent: input.agent,
+      recorder: input.recorder ?? null,
+    });
     const baseRefreshWarnings = reuseBaseRef
       ? await refreshRemoteTrackingBaseRef(repoRoot, reuseBaseRef)
       : [];
@@ -1998,6 +2076,13 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     baseRef: input.workspace.baseRef ?? input.base.repoRef ?? null,
     recordedBaseRefSha,
     skipRefresh: true,
+  });
+
+  await configureWorktreeGitIdentity({
+    repoRoot,
+    worktreePath,
+    agent: input.agent,
+    recorder: input.recorder ?? null,
   });
 
   await provisionExecutionWorktree({
