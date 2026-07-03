@@ -14,7 +14,8 @@
       "packages/adapters/*/src/**",
       "packages/plugins/*/src/**",
       "!**/*.json",
-      "!**/*.css"
+      "!**/*.css",
+      "!**/generated/**"
     ]
   },
   "formatter": {
