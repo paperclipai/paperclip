@@ -55,6 +55,9 @@ const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head",
 const explicitOpenApiCoverageExclusions = new Set([
   // Pipeline routes are experimental and not yet represented in the public OpenAPI document.
   "pipelines.ts",
+  // Board-gated internal instance-ops endpoints for the shadow-mode Claude auth-switch
+  // engine (TWX-1117/TWX-1121); not yet part of the public OpenAPI document.
+  "claude-accounts.ts",
 ]);
 
 function createApp() {
