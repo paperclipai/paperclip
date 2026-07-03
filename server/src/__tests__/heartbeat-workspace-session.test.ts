@@ -8,6 +8,10 @@ import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
+  ensurePersistedExecutionWorkspaceAvailable,
+  realizeExecutionWorkspace,
+} from "../services/workspace-runtime.js";
+import {
   applyPersistedExecutionWorkspaceConfig,
   assertGitSensitiveAdapterWorkspaceValid,
   assertPushCapabilityCheckoutValid,
@@ -123,6 +127,11 @@ async function runGit(cwd: string, args: string[]) {
   await execFile("git", args, { cwd });
 }
 
+async function runGitOutput(cwd: string, args: string[]) {
+  const { stdout } = await execFile("git", args, { cwd });
+  return stdout.trim();
+}
+
 async function createGitCheckout(options: { withRemote: boolean }) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-push-preflight-"));
   await runGit(root, ["init"]);
@@ -149,6 +158,131 @@ async function expectWorkspaceValidationFailure(
     },
   });
 }
+
+describe("execution workspace git identity", () => {
+  async function createCommittedRepo() {
+    const repoRoot = await createGitCheckout({ withRemote: false });
+    await runGit(repoRoot, ["config", "user.email", "repo@example.com"]);
+    await runGit(repoRoot, ["config", "user.name", "Repo User"]);
+    await fs.writeFile(path.join(repoRoot, "README.md"), "initial\n", "utf8");
+    await runGit(repoRoot, ["add", "README.md"]);
+    await runGit(repoRoot, ["commit", "-m", "Initial commit"]);
+    const baseRef = await runGitOutput(repoRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    return { repoRoot, baseRef };
+  }
+
+  function workspaceBase(repoRoot: string, baseRef: string) {
+    return {
+      baseCwd: repoRoot,
+      source: "project_primary" as const,
+      projectId: "project-1",
+      workspaceId: "workspace-1",
+      repoUrl: null,
+      repoRef: baseRef,
+    };
+  }
+
+  function workspaceConfig(worktreeParentDir: string) {
+    return {
+      workspaceStrategy: {
+        type: "git_worktree",
+        worktreeParentDir,
+        branchTemplate: "{{issue.identifier}}-{{agent.id}}",
+      },
+    };
+  }
+
+  async function commitFromWorktree(worktreePath: string, filename: string) {
+    await fs.writeFile(path.join(worktreePath, filename), `${filename}\n`, "utf8");
+    await runGit(worktreePath, ["add", filename]);
+    await runGit(worktreePath, ["commit", "-m", `Add ${filename}`]);
+    return await runGitOutput(worktreePath, ["log", "-1", "--format=%an <%ae>"]);
+  }
+
+  it("configures distinct worktree-local authors for concurrent managed worktrees", async () => {
+    const { repoRoot, baseRef } = await createCommittedRepo();
+    const worktreeParentDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-identity-"));
+
+    try {
+      const workspaceA = await realizeExecutionWorkspace({
+        base: workspaceBase(repoRoot, baseRef),
+        config: workspaceConfig(worktreeParentDir),
+        issue: { id: "issue-a", identifier: "PAP-1", title: "First issue" },
+        agent: { id: "agent-a", name: "Agent A", companyId: "company-1" },
+      });
+      const workspaceB = await realizeExecutionWorkspace({
+        base: workspaceBase(repoRoot, baseRef),
+        config: workspaceConfig(worktreeParentDir),
+        issue: { id: "issue-b", identifier: "PAP-2", title: "Second issue" },
+        agent: { id: "agent-b", name: "Agent B", companyId: "company-1" },
+      });
+
+      expect(workspaceA.worktreePath).not.toBe(workspaceB.worktreePath);
+      await expect(runGitOutput(workspaceA.worktreePath!, ["config", "--worktree", "user.email"]))
+        .resolves.toBe("agent-a@agents.paperclip.local");
+      await expect(runGitOutput(workspaceB.worktreePath!, ["config", "--worktree", "user.email"]))
+        .resolves.toBe("agent-b@agents.paperclip.local");
+
+      await expect(commitFromWorktree(workspaceA.worktreePath!, "agent-a.txt"))
+        .resolves.toBe("Agent A <agent-a@agents.paperclip.local>");
+      await expect(commitFromWorktree(workspaceB.worktreePath!, "agent-b.txt"))
+        .resolves.toBe("Agent B <agent-b@agents.paperclip.local>");
+      await expect(runGitOutput(repoRoot, ["config", "user.email"]))
+        .resolves.toBe("repo@example.com");
+    } finally {
+      await fs.rm(worktreeParentDir, { recursive: true, force: true });
+      await fs.rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes worktree-local author identity when restoring a persisted worktree", async () => {
+    const { repoRoot, baseRef } = await createCommittedRepo();
+    const worktreeParentDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-restore-"));
+
+    try {
+      const workspace = await realizeExecutionWorkspace({
+        base: workspaceBase(repoRoot, baseRef),
+        config: workspaceConfig(worktreeParentDir),
+        issue: { id: "issue-a", identifier: "PAP-3", title: "Persisted issue" },
+        agent: { id: "agent-a", name: "Agent A", companyId: "company-1" },
+      });
+      expect(await runGitOutput(workspace.worktreePath!, ["config", "--worktree", "user.email"]))
+        .toBe("agent-a@agents.paperclip.local");
+
+      await fs.rm(workspace.worktreePath!, { recursive: true, force: true });
+      await runGit(repoRoot, ["worktree", "prune"]);
+
+      const restored = await ensurePersistedExecutionWorkspaceAvailable({
+        base: workspaceBase(repoRoot, baseRef),
+        workspace: {
+          id: "execution-workspace-1",
+          mode: "task_session",
+          strategyType: "git_worktree",
+          cwd: workspace.cwd,
+          providerRef: workspace.worktreePath,
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+          repoUrl: null,
+          baseRef,
+          branchName: workspace.branchName,
+          metadata: null,
+          config: null,
+        },
+        issue: { id: "issue-a", identifier: "PAP-3", title: "Persisted issue" },
+        agent: { id: "agent-b", name: "Agent B", companyId: "company-1" },
+      });
+
+      expect(restored?.worktreePath).toBe(workspace.worktreePath);
+      await expect(runGitOutput(workspace.worktreePath!, ["config", "--worktree", "user.email"]))
+        .resolves.toBe("agent-b@agents.paperclip.local");
+      await expect(commitFromWorktree(workspace.worktreePath!, "agent-b.txt"))
+        .resolves.toBe("Agent B <agent-b@agents.paperclip.local>");
+    } finally {
+      await fs.rm(worktreeParentDir, { recursive: true, force: true });
+      await fs.rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
 
 function buildAgent(adapterType: string, runtimeConfig: Record<string, unknown> = {}) {
   return {
