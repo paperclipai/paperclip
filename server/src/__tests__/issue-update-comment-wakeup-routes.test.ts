@@ -447,6 +447,30 @@ describe("issue update comment wakeups", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it("rejects agent Routing to marker comments when the same PATCH assigns a different agent", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: PREVIOUS_AGENT_ID,
+      assigneeUserId: null,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+
+    const res = await request(await createApp(agentActor()))
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+        comment: "**Routing to:** [@QA](agent://33333333-3333-4333-8333-333333333333)\n**Action required:** Review this.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      error: "HandoffContractViolation",
+      contract: "/FAI/issues/FAI-3867",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
   it("exempts board-authored verdict marker comments from the handoff gate", async () => {
     const existing = makeIssue({
       assigneeAgentId: PREVIOUS_AGENT_ID,

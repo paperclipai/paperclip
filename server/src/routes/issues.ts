@@ -680,8 +680,8 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
 const HANDOFF_CONTRACT_LINK = "/FAI/issues/FAI-3867";
 const HANDOFF_VERDICT_MARKER_REGEX =
   /(?:^|\n)##\s*(?:Security|QA|Review)\s+(?:GO|NO[-\s]?GO)\b|(?:^|\n)\*\*(?:Next Owner|Routing to)\s*:\*\*|\b(?:Routing back to|Handing off to)\b/i;
-const NEXT_OWNER_AGENT_LINK_REGEX =
-  /(?:^|\n)\s*\*\*Next Owner:\*\*\s*\[[^\]\n]*\]\(agent:\/\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\)/i;
+const STRUCTURED_OWNER_AGENT_LINK_REGEX =
+  /(?:^|\n)\s*\*\*(?:Next Owner|Routing to)\s*:\*\*\s*\[[^\]\n]*\]\(agent:\/\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\)/i;
 
 function isHandoffVerdictMarkerComment(body: string | null | undefined) {
   return typeof body === "string" && HANDOFF_VERDICT_MARKER_REGEX.test(body.replace(/\r\n?/g, "\n"));
@@ -689,7 +689,7 @@ function isHandoffVerdictMarkerComment(body: string | null | undefined) {
 
 function extractNextOwnerAgentId(body: string | null | undefined) {
   if (typeof body !== "string") return null;
-  const match = body.replace(/\r\n?/g, "\n").match(NEXT_OWNER_AGENT_LINK_REGEX);
+  const match = body.replace(/\r\n?/g, "\n").match(STRUCTURED_OWNER_AGENT_LINK_REGEX);
   return match?.[1]?.toLowerCase() ?? null;
 }
 
@@ -697,7 +697,7 @@ function handoffContractViolationBody() {
   return {
     error: "HandoffContractViolation",
     message:
-      "Agent-authored verdict/routing comments must be paired with a PATCH that changes assigneeAgentId in the same X-Paperclip-Run-Id, and a structured Next Owner agent link must match that assigneeAgentId.",
+      "Agent-authored verdict/routing comments must be paired with a PATCH that changes assigneeAgentId in the same X-Paperclip-Run-Id, and a structured owner agent link must match that assigneeAgentId.",
     missingPatch:
       "PATCH /api/issues/{id} with assigneeAgentId in this request or as the immediately preceding issue.updated activity for the same X-Paperclip-Run-Id.",
     contract: HANDOFF_CONTRACT_LINK,
