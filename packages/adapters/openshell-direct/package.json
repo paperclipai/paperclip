@@ -19,5 +19,6 @@
   },
   "peerDependencies": {
     "@paperclipai/adapter-utils": "*"
-  }
+  },
+  "private": true
 }
