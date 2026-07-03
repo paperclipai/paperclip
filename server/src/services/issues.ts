@@ -494,6 +494,8 @@ export interface IssueFilters {
   offset?: number;
   sortField?: "updated";
   sortDir?: "asc" | "desc";
+  /** ISO 8601 timestamp — only return issues with updatedAt strictly after this value. */
+  updatedSince?: string;
 }
 
 type IssueRow = typeof issues.$inferSelect;
@@ -4822,6 +4824,12 @@ export function issueService(db: Db) {
             commentContainsMatch,
           )!,
         );
+      }
+      if (filters?.updatedSince) {
+        const since = new Date(filters.updatedSince);
+        if (Number.isFinite(since.getTime())) {
+          conditions.push(gt(issues.updatedAt, since));
+        }
       }
       if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
