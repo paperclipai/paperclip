@@ -10779,7 +10779,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         reasons: workspaceConfigFreshness.reasons,
         reuseRequested: requestedShouldReuseExisting,
         workspaceReused: Boolean(reusedExecutionWorkspace),
-        configSnapshotRefreshed: shouldRefreshWorkspaceConfigSnapshot,
+        configSnapshotRefreshed: resolvedWorkspaceReusePolicy.shouldRefreshWorkspaceConfigSnapshot,
         storedFingerprintPresent: workspaceConfigFreshness.storedFingerprintPresent,
         storedFingerprint: workspaceConfigFreshness.storedFingerprint,
         inferredFingerprint: workspaceConfigFreshness.inferredFingerprint,
