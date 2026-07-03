@@ -1294,47 +1294,58 @@ function formatBlockingFiles(files: string[]) {
   return `${shown.map((file) => `\`${file}\``).join(", ")}${suffix}`;
 }
 
+async function readGitRevision(cwd: string, ref: string) {
+  return runGitForDirtyCheckoutGuard(cwd, ["rev-parse", "--verify", ref])
+    .then((result) => readNonEmptyString(result.stdout.trim()))
+    .catch(() => null);
+}
+
 export async function inspectDirtyCheckoutPullBlockers(input: {
   cwd: string | null | undefined;
 }): Promise<{
   checked: boolean;
   blockingFiles: string[];
   reason: string | null;
+  localHead: string | null;
+  upstreamHead: string | null;
 }> {
   const cwd = readNonEmptyString(input.cwd);
-  if (!cwd) return { checked: false, blockingFiles: [], reason: "missing_cwd" };
+  if (!cwd) return { checked: false, blockingFiles: [], reason: "missing_cwd", localHead: null, upstreamHead: null };
   if (!await hasGitMetadata(cwd)) {
-    return { checked: false, blockingFiles: [], reason: "missing_git_metadata" };
+    return { checked: false, blockingFiles: [], reason: "missing_git_metadata", localHead: null, upstreamHead: null };
   }
 
   const insideWorkTree = await runGitForDirtyCheckoutGuard(cwd, ["rev-parse", "--is-inside-work-tree"])
     .then((result) => result.stdout.trim() === "true")
     .catch(() => false);
   if (!insideWorkTree) {
-    return { checked: false, blockingFiles: [], reason: "not_inside_work_tree" };
+    return { checked: false, blockingFiles: [], reason: "not_inside_work_tree", localHead: null, upstreamHead: null };
   }
 
+  const localHead = await readGitRevision(cwd, "HEAD");
   const dirtyFiles = uniqueSorted([
-    ...await listGitFiles(cwd, ["diff", "--name-only", "HEAD", "--"]),
-    ...await listGitFiles(cwd, ["diff", "--name-only", "--cached", "--"]),
+    ...await listGitFiles(cwd, ["diff", "--name-only", "HEAD", "--"]).catch(() => []),
+    ...await listGitFiles(cwd, ["diff", "--name-only", "--cached", "--"]).catch(() => []),
   ]);
   if (dirtyFiles.length === 0) {
-    return { checked: true, blockingFiles: [], reason: null };
+    return { checked: true, blockingFiles: [], reason: null, localHead, upstreamHead: null };
   }
 
+  // The manager startup command this protects is intentionally `git pull origin master`.
   const fetch = await runGitForDirtyCheckoutGuard(cwd, ["fetch", "--no-tags", "origin", "master"])
     .catch((error) => ({ error }));
   if ("error" in fetch) {
     const reason = fetch.error instanceof Error ? fetch.error.message : String(fetch.error);
-    return { checked: false, blockingFiles: [], reason: `fetch_failed: ${reason}` };
+    return { checked: false, blockingFiles: [], reason: `fetch_failed: ${reason}`, localHead, upstreamHead: null };
   }
 
+  const upstreamHead = await readGitRevision(cwd, "FETCH_HEAD");
   const upstreamFiles = new Set(
     await listGitFiles(cwd, ["diff", "--name-only", "HEAD", "FETCH_HEAD", "--"])
       .catch(() => []),
   );
   const blockingFiles = dirtyFiles.filter((file) => upstreamFiles.has(file));
-  return { checked: true, blockingFiles, reason: null };
+  return { checked: true, blockingFiles, reason: null, localHead, upstreamHead };
 }
 
 export async function assertRoutineDirtyCheckoutGuardValid(input: {
@@ -1354,7 +1365,7 @@ export async function assertRoutineDirtyCheckoutGuardValid(input: {
   const cwd = readNonEmptyString(input.cwd);
   const blockingFiles = uniqueSorted(inspection.blockingFiles);
   throw new WorkspaceValidationFailure(
-    `Issue ${input.issue.identifier ?? input.issue.id} is a routine heartbeat, but checkout "${cwd}" has tracked local modifications that would be overwritten by \`git pull origin master\`: ${formatBlockingFiles(blockingFiles)}. Resolve or move the existing work first; Paperclip will not stash, reset, delete, or overwrite unknown edits.`,
+    `Issue ${input.issue.identifier ?? input.issue.id} is a routine heartbeat, but checkout "${cwd}" has tracked local modifications that would be overwritten by \`git pull origin master\`: ${formatBlockingFiles(blockingFiles)}. Current HEAD: ${inspection.localHead ?? "unknown"}; origin/master: ${inspection.upstreamHead ?? "unknown"}. Resolve or move the existing work first; Paperclip will not stash, reset, delete, or overwrite unknown edits.`,
     {
       workspaceValidation: {
         reason: "dirty_checkout_blocks_git_pull",
@@ -1364,6 +1375,8 @@ export async function assertRoutineDirtyCheckoutGuardValid(input: {
         executionWorkspaceCwd: cwd,
         blockingFiles,
         checked: inspection.checked,
+        localHead: inspection.localHead,
+        upstreamHead: inspection.upstreamHead,
       },
     },
   );

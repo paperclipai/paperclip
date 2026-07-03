@@ -528,19 +528,30 @@ describe("assertRoutineDirtyCheckoutGuardValid", () => {
   it("rejects routine heartbeats when tracked local edits would block git pull origin master", async () => {
     const fixture = await createDirtyGuardFixture();
     try {
+      const localHead = await execFile("git", ["rev-parse", "HEAD"], { cwd: fixture.checkout })
+        .then((result) => result.stdout.trim());
+      const upstreamHead = await execFile("git", ["rev-parse", "HEAD"], { cwd: fixture.seed })
+        .then((result) => result.stdout.trim());
       const localContent = "base instructions\nlocal unsaved edit\n";
       await fs.writeFile(path.join(fixture.checkout, "AGENTS.md"), localContent, "utf8");
       await fs.writeFile(path.join(fixture.checkout, "README.md"), "base readme\nlocal-only edit\n", "utf8");
 
-      await expect(assertRoutineDirtyCheckoutGuardValid({
-        adapterType: "codex_local",
-        issue: {
-          id: "issue-1",
-          identifier: "PAP-1",
-          originKind: "routine_execution",
-        },
-        cwd: fixture.checkout,
-      })).rejects.toMatchObject({
+      let failure: unknown;
+      try {
+        await assertRoutineDirtyCheckoutGuardValid({
+          adapterType: "codex_local",
+          issue: {
+            id: "issue-1",
+            identifier: "PAP-1",
+            originKind: "routine_execution",
+          },
+          cwd: fixture.checkout,
+        });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toMatchObject({
         code: "workspace_validation_failed",
         message: expect.stringContaining("AGENTS.md"),
         resultJson: {
@@ -550,9 +561,13 @@ describe("assertRoutineDirtyCheckoutGuardValid", () => {
             issueId: "issue-1",
             executionWorkspaceCwd: fixture.checkout,
             blockingFiles: ["AGENTS.md"],
+            localHead,
+            upstreamHead,
           }),
         },
       });
+      expect(failure).toMatchObject({ message: expect.stringContaining(localHead) });
+      expect(failure).toMatchObject({ message: expect.stringContaining(upstreamHead) });
 
       await expect(fs.readFile(path.join(fixture.checkout, "AGENTS.md"), "utf8"))
         .resolves.toBe(localContent);
