@@ -8,14 +8,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { GanttChartSquare } from "lucide-react";
-import type { WorkTimelineActor, WorkTimelineResult } from "@paperclipai/shared";
+import type { WorkTimelineActor } from "@paperclipai/shared";
 import { workTimelineApi, type WorkTimelineParams } from "@/api/workTimeline";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { EmptyState } from "@/components/EmptyState";
 import { PageSkeleton } from "@/components/PageSkeleton";
-import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -23,11 +22,29 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { WorkTimelineChart, defaultZoomForWindow, type ZoomLevel } from "@/components/timeline/WorkTimelineChart";
-import { issueColor, type ColorMode } from "@/lib/timeline/layout";
+import {
+  WorkTimelineChart,
+  defaultZoomForWindow,
+  nearestZoomForScale,
+  zoomScaleForLevel,
+  type ZoomLevel,
+} from "@/components/timeline/WorkTimelineChart";
+import type { ColorMode } from "@/lib/timeline/layout";
 import { cn } from "@/lib/utils";
 
 const EVERYONE = "__everyone__";
+type RangePreset = "today" | "7d" | "30d";
+
+function rangeWindow(preset: RangePreset, now = new Date()): Pick<WorkTimelineParams, "from" | "to"> {
+  const to = new Date(now);
+  const from = new Date(now);
+  if (preset === "today") {
+    from.setHours(0, 0, 0, 0);
+  } else {
+    from.setDate(from.getDate() - (preset === "7d" ? 7 : 30));
+  }
+  return { from: from.toISOString(), to: to.toISOString() };
+}
 
 function Segmented<T extends string>({
   value,
@@ -65,13 +82,16 @@ export function Timeline() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [zoom, setZoom] = useState<ZoomLevel>("day");
+  const [zoomScale, setZoomScale] = useState(zoomScaleForLevel("day"));
   const zoomTouched = useRef(false);
   const setZoomManual = (z: ZoomLevel) => {
     zoomTouched.current = true;
     setZoom(z);
+    setZoomScale(zoomScaleForLevel(z));
   };
   const [colorMode, setColorMode] = useState<ColorMode>("issue");
   const [lensUserId, setLensUserId] = useState<string>(EVERYONE);
+  const [rangePreset, setRangePreset] = useState<RangePreset>("7d");
   // Union of users discovered across fetches so the lens list stays stable.
   const [knownUsers, setKnownUsers] = useState<WorkTimelineActor[]>([]);
 
@@ -80,19 +100,24 @@ export function Timeline() {
   }, [setBreadcrumbs]);
 
   const params: WorkTimelineParams = useMemo(
-    () => (lensUserId === EVERYONE ? {} : { userId: lensUserId.replace(/^user:/, "") }),
-    [lensUserId],
+    () => ({
+      ...rangeWindow(rangePreset),
+      ...(lensUserId === EVERYONE ? {} : { userId: lensUserId.replace(/^user:/, "") }),
+    }),
+    [lensUserId, rangePreset],
   );
 
   const { data, isLoading, error } = useQuery({
-    queryKey: queryKeys.workTimeline(selectedCompanyId ?? "", lensUserId),
+    queryKey: [...queryKeys.workTimeline(selectedCompanyId ?? "", lensUserId), rangePreset],
     queryFn: () => workTimelineApi.get(selectedCompanyId!, params),
     enabled: !!selectedCompanyId,
   });
 
   useEffect(() => {
     if (!data || zoomTouched.current) return;
-    setZoom(defaultZoomForWindow(new Date(data.window.from).getTime(), new Date(data.window.to).getTime()));
+    const defaultZoom = defaultZoomForWindow(new Date(data.window.from).getTime(), new Date(data.window.to).getTime());
+    setZoom(defaultZoom);
+    setZoomScale(zoomScaleForLevel(defaultZoom));
   }, [data]);
 
   useEffect(() => {
@@ -109,16 +134,9 @@ export function Timeline() {
   }
 
   const header = (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <GanttChartSquare className="h-6 w-6 text-muted-foreground" />
-        <h1 className="text-3xl font-semibold tracking-tight">Work Timeline</h1>
-      </div>
-      <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
-        A Gantt view of who did what, when. Rows are actors; bars are heartbeat runs colored by task;
-        the avatar chip at a bar's leading edge is who kicked it off; straight lines are agent→agent
-        delegation. Hover a bar for its task &amp; timing; click to open the task.
-      </p>
+    <div className="flex items-center gap-2">
+      <GanttChartSquare className="h-6 w-6 text-muted-foreground" />
+      <h1 className="text-3xl font-semibold tracking-tight">Work Timeline</h1>
     </div>
   );
 
@@ -153,6 +171,18 @@ export function Timeline() {
         </Select>
       </label>
       <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        Range
+        <Segmented
+          value={rangePreset}
+          onChange={setRangePreset}
+          options={[
+            { value: "today", label: "Today" },
+            { value: "7d", label: "7 days" },
+            { value: "30d", label: "30 days" },
+          ]}
+        />
+      </label>
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
         Color
         <Segmented
           value={colorMode}
@@ -185,9 +215,18 @@ export function Timeline() {
           <EmptyState icon={GanttChartSquare} message="No activity in this window for the selected lens." />
         ) : (
           <div className="space-y-3">
-            <Legend data={data} colorMode={colorMode} />
             <div className="rounded-lg border border-border bg-card">
-              <WorkTimelineChart data={data} zoom={zoom} colorMode={colorMode} />
+              <WorkTimelineChart
+                data={data}
+                zoom={zoom}
+                zoomScale={zoomScale}
+                colorMode={colorMode}
+                onZoomScaleChange={(nextScale) => {
+                  zoomTouched.current = true;
+                  setZoomScale(nextScale);
+                  setZoom(nearestZoomForScale(nextScale));
+                }}
+              />
             </div>
             <p className="text-xs text-muted-foreground">
               {data.spans.length} run{data.spans.length === 1 ? "" : "s"} ·{" "}
@@ -197,46 +236,6 @@ export function Timeline() {
           </div>
         )
       )}
-    </div>
-  );
-}
-
-function Legend({ data, colorMode }: { data: WorkTimelineResult; colorMode: ColorMode }) {
-  if (colorMode === "status") {
-    return (
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-3 w-4 border border-foreground bg-card" /> done
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span
-            className="inline-block h-3 w-4 border border-foreground"
-            style={{ background: "repeating-linear-gradient(90deg, var(--color-foreground) 0 2px, transparent 2px 5px)" }}
-          />{" "}
-          in&nbsp;progress
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span
-            className="inline-block h-3 w-4 border border-foreground"
-            style={{ background: "repeating-linear-gradient(45deg, var(--color-foreground) 0 2px, transparent 2px 6px)" }}
-          />{" "}
-          changes/blocked
-        </span>
-      </div>
-    );
-  }
-  const issues = Array.from(
-    new Map(data.spans.map((s) => [s.issueId, s.issueIdentifier ?? s.issueTitle ?? "task"])).entries(),
-  );
-  return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-      {issues.slice(0, 12).map(([id, label]) => (
-        <span key={id} className="flex items-center gap-1.5">
-          <span className="inline-block h-3 w-4 border border-foreground" style={{ borderLeft: `4px solid ${issueColor(id)}` }} />
-          {label}
-        </span>
-      ))}
-      {issues.length > 12 && <span>+{issues.length - 12} more</span>}
     </div>
   );
 }

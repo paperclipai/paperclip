@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import type { WorkTimelineResult } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkTimelineChart } from "./WorkTimelineChart";
+import { computeLayout } from "@/lib/timeline/layout";
 
 vi.mock("@/lib/router", () => ({
   useNavigate: () => vi.fn(),
@@ -108,7 +109,7 @@ describe("WorkTimelineChart", () => {
     expect(container.querySelector("[data-testid='work-timeline-actor-gutter']")?.textContent).toContain("CodexCoder");
   });
 
-  it("renders a human row with diamond event markers when the payload carries events", () => {
+  it("renders a human row with event markers and comment bubbles when the payload carries events", () => {
     const data = timelineSample();
     data.actors.push({ id: "user:dotta", type: "user", name: "Dotta" });
     data.events = [
@@ -121,8 +122,36 @@ describe("WorkTimelineChart", () => {
     // Dotta gets a row in the gutter…
     const gutter = container.querySelector<SVGSVGElement>("[data-testid='work-timeline-actor-gutter']");
     expect(gutter?.textContent).toContain("Dotta");
-    // …and her three instant events render as clickable diamond marker paths.
-    const markers = container.querySelectorAll("svg.absolute path.cursor-pointer");
-    expect(markers).toHaveLength(3);
+    // …and her instant events render as clickable markers, with comments as a chat bubble.
+    expect(container.querySelectorAll("[data-testid='timeline-event-marker']")).toHaveLength(2);
+    expect(container.querySelectorAll("[data-testid='timeline-comment-marker']")).toHaveLength(1);
+  });
+
+  it("keeps connector lines hidden until hover and preserves run ids for filtering", () => {
+    const data = timelineSample();
+    data.edges = [
+      {
+        fromActorId: "agent:codex",
+        toActorId: "agent:qa",
+        issueId: "issue-2",
+        at: "2026-07-02T10:45:00.000Z",
+        kind: "delegation",
+      },
+    ];
+    renderChart(data);
+
+    expect(container.querySelectorAll("[data-testid='timeline-connector']")).toHaveLength(0);
+
+    const layout = computeLayout(data, {
+      gutter: 176,
+      rowH: 34,
+      barH: 15,
+      laneGap: 4,
+      pxPerMinute: 8,
+      nowMs: new Date("2026-07-02T12:00:00.000Z").getTime(),
+    });
+    expect(layout.connectors).toMatchObject([
+      { sourceRunId: "run-1", targetRunId: "run-2", dashed: false },
+    ]);
   });
 });

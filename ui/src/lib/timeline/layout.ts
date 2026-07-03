@@ -82,6 +82,8 @@ export interface Connector {
   y1: number;
   x2: number;
   y2: number;
+  sourceRunId: string;
+  targetRunId: string;
   /** dashed = a return / retry (changes-requested) hop. */
   dashed: boolean;
 }
@@ -290,6 +292,8 @@ export function computeLayout(result: WorkTimelineResult, opts: LayoutOptions): 
         y1: source.yc,
         x2: bar.x1,
         y2: bar.yc,
+        sourceRunId: source.span.runId,
+        targetRunId: bar.span.runId,
         dashed: Boolean(bar.span.retryOfRunId),
       });
     }
