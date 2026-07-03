@@ -16,8 +16,14 @@ export function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.trim().replace(/\/+$/, "");
 }
 
-function buildHeaders(configured: Record<string, string>): Record<string, string> {
-  return { "content-type": "application/json", ...configured };
+function buildHeaders(
+  configured: Record<string, string>,
+  includeContentType = true,
+): Record<string, string> {
+  // Content-Type describes a request body (RFC 7231); omit it on GETs.
+  return includeContentType
+    ? { "content-type": "application/json", ...configured }
+    : { ...configured };
 }
 
 function truncate(text: string, max = 500): string {
@@ -148,7 +154,7 @@ export async function streamSession(opts: {
   }`;
   const res = await fetch(url, {
     method: "GET",
-    headers: buildHeaders(opts.headers),
+    headers: buildHeaders(opts.headers, false),
     signal: opts.signal,
   });
   if (!res.ok) {
@@ -183,8 +189,20 @@ export async function streamSession(opts: {
     await opts.onEvent(event, trimmed);
   };
 
+  const reader = res.body.getReader();
+  // Cancel the reader when the caller aborts so a pending read() resolves
+  // promptly even when the server keeps the (durable) stream open. Real fetch
+  // also rejects on abort, but reader.cancel() makes early exit deterministic.
+  const onAbort = () => {
+    void reader.cancel().catch(() => {});
+  };
+  if (opts.signal.aborted) {
+    onAbort();
+  } else {
+    opts.signal.addEventListener("abort", onAbort, { once: true });
+  }
+
   try {
-    const reader = res.body.getReader();
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -204,6 +222,8 @@ export async function streamSession(opts: {
   } catch (err) {
     if (opts.signal.aborted) return { skippedLines };
     throw err;
+  } finally {
+    opts.signal.removeEventListener("abort", onAbort);
   }
   return { skippedLines };
 }
@@ -218,7 +238,7 @@ export async function fetchInfo(opts: {
     `${baseUrl}/eve/v1/info`,
     {
       method: "GET",
-      headers: buildHeaders(opts.headers),
+      headers: buildHeaders(opts.headers, false),
     },
     opts.timeoutMs,
   );

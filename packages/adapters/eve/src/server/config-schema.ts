@@ -30,6 +30,13 @@ export function getConfigSchema(): AdapterConfigSchema {
         default: 30000,
         hint: "Per-HTTP-request timeout in milliseconds.",
       },
+      {
+        key: "runTimeoutMs",
+        label: "Run timeout ms",
+        type: "number",
+        default: 1800000,
+        hint: "Whole-run cap in milliseconds, default 1800000.",
+      },
     ],
   };
 }
@@ -70,6 +77,13 @@ export function getLocalConfigSchema(): AdapterConfigSchema {
         type: "number",
         default: 90000,
         hint: "How long to wait for the dev server to answer /eve/v1/info. First boot compiles the project and can take a while.",
+      },
+      {
+        key: "runTimeoutMs",
+        label: "Run timeout ms",
+        type: "number",
+        default: 1800000,
+        hint: "Whole-run cap in milliseconds, default 1800000.",
       },
     ],
   };

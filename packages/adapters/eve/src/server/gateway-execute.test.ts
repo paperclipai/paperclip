@@ -2,6 +2,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "./gateway-execute.js";
 
+function neverClosingNdjsonResponse(events: Array<Record<string, unknown>>): Response {
+  const body = events.map((event) => `${JSON.stringify(event)}\n`).join("");
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(body));
+        // Deliberately never call controller.close() — simulates Eve's durable
+        // stream staying open after the session parks.
+      },
+    }),
+    { status: 200 },
+  );
+}
+
 function ndjsonResponse(events: Array<Record<string, unknown>>, extraRawLines: string[] = []): Response {
   const lines = [...events.map((event) => JSON.stringify(event)), ...extraRawLines];
   const body = lines.map((line) => `${line}\n`).join("");
@@ -274,6 +288,124 @@ describe("eve_gateway execute", () => {
     expect(result.summary).toContain("waiting for human input");
     expect(result.resultJson).toMatchObject({ inputRequested: true });
   });
+
+  it("accepts headers provided as a JSON object string (whole-field secret resolution)", async () => {
+    routeFetch([
+      {
+        match: (url, method) => method === "POST" && url === "http://127.0.0.1:3000/eve/v1/session",
+        respond: () => jsonResponse({ sessionId: "sess-1", continuationToken: "tok-1" }),
+      },
+      {
+        match: (url, method) => method === "GET" && url.includes("/eve/v1/session/sess-1/stream"),
+        respond: () => ndjsonResponse(happyStreamEvents),
+      },
+    ]);
+
+    const ctx = createContext({
+      config: {
+        baseUrl: "http://127.0.0.1:3000",
+        headers: JSON.stringify({ Authorization: "Bearer from-string-secret" }),
+      },
+    });
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    const sessionCall = fetchCalls.find((call) => call.url.endsWith("/eve/v1/session"));
+    expect((sessionCall?.init?.headers as Record<string, string>).Authorization).toBe(
+      "Bearer from-string-secret",
+    );
+    // Even string-sourced header values never appear in logs or meta.
+    const allLogs = ctx.logs.map((entry) => entry.chunk).join("");
+    expect(allLogs).not.toContain("from-string-secret");
+    expect(JSON.stringify(ctx.meta)).not.toContain("from-string-secret");
+  });
+
+  it("warns about unresolved secret_ref header entries by key name without leaking values", async () => {
+    routeFetch([
+      {
+        match: (url, method) => method === "POST" && url === "http://127.0.0.1:3000/eve/v1/session",
+        respond: () => jsonResponse({ sessionId: "sess-1", continuationToken: "tok-1" }),
+      },
+      {
+        match: (url, method) => method === "GET" && url.includes("/eve/v1/session/sess-1/stream"),
+        respond: () => ndjsonResponse(happyStreamEvents),
+      },
+    ]);
+
+    const ctx = createContext({
+      config: {
+        baseUrl: "http://127.0.0.1:3000",
+        headers: {
+          "X-Plain": "plain-ok",
+          Authorization: { type: "secret_ref", secretId: "secret-id-123" },
+        },
+      },
+    });
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    const stderr = ctx.logs
+      .filter((entry) => entry.stream === "stderr")
+      .map((entry) => entry.chunk)
+      .join("");
+    expect(stderr).toContain("Ignoring unresolved bindings for header keys: Authorization");
+    expect(stderr).not.toContain("secret-id-123");
+    const sessionCall = fetchCalls.find((call) => call.url.endsWith("/eve/v1/session"));
+    const sentHeaders = sessionCall?.init?.headers as Record<string, string>;
+    expect(sentHeaders["X-Plain"]).toBe("plain-ok");
+    expect(sentHeaders).not.toHaveProperty("Authorization");
+  });
+
+  it("exits promptly on session.waiting even when the stream never closes and no turn.completed was seen", async () => {
+    routeFetch([
+      {
+        match: (url, method) => method === "POST" && url === "http://127.0.0.1:3000/eve/v1/session",
+        respond: () => jsonResponse({ sessionId: "sess-open", continuationToken: "tok-1" }),
+      },
+      {
+        match: (url, method) => method === "GET" && url.includes("/eve/v1/session/sess-open/stream"),
+        respond: () =>
+          neverClosingNdjsonResponse([
+            { type: "session.started", data: {} },
+            { type: "message.completed", data: { text: "Done." } },
+            { type: "session.waiting", data: {} },
+          ]),
+      },
+    ]);
+
+    const ctx = createContext();
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("Done.");
+    expect(result.resultJson).toMatchObject({ status: "session.waiting", eventCount: 3 });
+  }, 5_000);
+
+  it("exits promptly on mid-turn input.requested even when the stream never closes", async () => {
+    routeFetch([
+      {
+        match: (url, method) => method === "POST" && url === "http://127.0.0.1:3000/eve/v1/session",
+        respond: () => jsonResponse({ sessionId: "sess-hitl2", continuationToken: "tok-1" }),
+      },
+      {
+        match: (url, method) => method === "GET" && url.includes("/eve/v1/session/sess-hitl2/stream"),
+        respond: () =>
+          neverClosingNdjsonResponse([
+            { type: "session.started", data: {} },
+            { type: "step.started", data: {} },
+            // HITL pauses mid-turn: no turn.completed before input.requested.
+            { type: "input.requested", data: { prompt: "Approve tool call?" } },
+          ]),
+      },
+    ]);
+
+    const ctx = createContext();
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toContain("waiting for human input");
+    expect(result.resultJson).toMatchObject({ status: "input.requested", inputRequested: true });
+  }, 5_000);
 
   it("never logs configured header values", async () => {
     routeFetch([

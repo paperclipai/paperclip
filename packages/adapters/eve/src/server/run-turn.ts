@@ -188,7 +188,6 @@ type StreamAccumulator = {
   sawUsage: boolean;
   finalText: string;
   modelFromEvents: string | null;
-  sawTurnBoundary: boolean;
   terminalStatus: string | null;
   failureMessage: string | null;
   inputRequested: boolean;
@@ -229,12 +228,7 @@ function accumulateEvent(acc: StreamAccumulator, event: EveStreamEvent): boolean
       if (model) acc.modelFromEvents = model;
       break;
     }
-    case "turn.completed": {
-      acc.sawTurnBoundary = true;
-      break;
-    }
     case "turn.failed": {
-      acc.sawTurnBoundary = true;
       acc.terminalStatus = "turn.failed";
       acc.failureMessage = trimNullable(data?.message) ?? "Eve turn failed.";
       return true;
@@ -244,27 +238,25 @@ function accumulateEvent(acc: StreamAccumulator, event: EveStreamEvent): boolean
       acc.failureMessage = trimNullable(data?.message) ?? "Eve session failed.";
       return true;
     }
+    // Parked/waiting states terminate the read IMMEDIATELY whenever seen:
+    // `input.requested` typically fires mid-turn (a HITL approval pauses the
+    // turn before any turn.completed), and Eve's durable stream stays open —
+    // gating these on a turn boundary would hang until runTimeoutMs against a
+    // real server. Replaying a stale prior-turn `session.waiting` is not a
+    // concern: resumed runs request the stream with startIndex set past all
+    // previously-consumed events.
     case "input.requested": {
       acc.inputRequested = true;
-      if (acc.sawTurnBoundary) {
-        acc.terminalStatus = "input.requested";
-        return true;
-      }
-      break;
+      acc.terminalStatus = "input.requested";
+      return true;
     }
     case "session.waiting": {
-      if (acc.sawTurnBoundary) {
-        acc.terminalStatus = "session.waiting";
-        return true;
-      }
-      break;
+      acc.terminalStatus = "session.waiting";
+      return true;
     }
     case "session.completed": {
-      if (acc.sawTurnBoundary) {
-        acc.terminalStatus = "session.completed";
-        return true;
-      }
-      break;
+      acc.terminalStatus = "session.completed";
+      return true;
     }
     default:
       break;
@@ -354,7 +346,6 @@ export async function runEveTurn(opts: {
     sawUsage: false,
     finalText: "",
     modelFromEvents: null,
-    sawTurnBoundary: false,
     terminalStatus: null,
     failureMessage: null,
     inputRequested: false,

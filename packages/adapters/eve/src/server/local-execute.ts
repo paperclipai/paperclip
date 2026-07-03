@@ -11,7 +11,7 @@ import {
   asStringArray,
   buildPaperclipEnv,
 } from "@paperclipai/adapter-utils/server-utils";
-import { asStringHeaderMap } from "./gateway-execute.js";
+import { parseStringMapConfig, unresolvedBindingWarning } from "./gateway-execute.js";
 import {
   pickFreePort,
   spawnEveServer,
@@ -34,9 +34,12 @@ const DEFAULT_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_READY_TIMEOUT_MS = 90_000;
 const DEFAULT_COMMAND = "eve";
 
+// Keep in sync with the project-shape heuristics in local-test.ts so the
+// environment test and execute() agree on what counts as an Eve project.
 function looksLikeEveProject(projectDir: string): boolean {
   return (
     fsSync.existsSync(path.join(projectDir, "agent")) ||
+    fsSync.existsSync(path.join(projectDir, "agent.ts")) ||
     fsSync.existsSync(path.join(projectDir, "package.json"))
   );
 }
@@ -72,7 +75,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       configuredArgs.length > 0
         ? configuredArgs
         : ["dev", "--no-ui", "--port", String(port), "--host", "127.0.0.1"];
-    const configEnv = asStringHeaderMap(config.env);
+    const { map: configEnv, skippedKeys: skippedEnvKeys } = parseStringMapConfig(config.env);
+    if (skippedEnvKeys.length > 0) {
+      await onLog("stderr", unresolvedBindingWarning("env", skippedEnvKeys));
+    }
     const readyTimeoutMs = asNumber(config.readyTimeoutMs, DEFAULT_READY_TIMEOUT_MS);
     const timeoutMs = asNumber(config.timeoutMs, DEFAULT_TIMEOUT_MS);
     const runTimeoutMs = asNumber(config.runTimeoutMs, DEFAULT_RUN_TIMEOUT_MS);

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { EveStaleSessionError, sendFollowUp, startSession, streamSession } from "./client.js";
+import { EveStaleSessionError, fetchInfo, sendFollowUp, startSession, streamSession } from "./client.js";
 import type { EveStreamEvent } from "./events.js";
 
 function chunkedStreamResponse(chunks: string[]): Response {
@@ -83,6 +83,43 @@ describe("streamSession", () => {
       onEvent: async () => {},
     });
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/stream?startIndex=12");
+  });
+});
+
+describe("content-type handling", () => {
+  it("sends content-type on POSTs but not on GETs", async () => {
+    // POST: startSession
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ sessionId: "s", continuationToken: "t" }), { status: 200 }),
+    );
+    await startSession({
+      baseUrl: "http://127.0.0.1:3000",
+      headers: { "x-extra": "1" },
+      message: "hi",
+      timeoutMs: 5000,
+    });
+    const postHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
+    expect(postHeaders["content-type"]).toBe("application/json");
+    expect(postHeaders["x-extra"]).toBe("1");
+
+    // GET: streamSession
+    fetchMock.mockResolvedValueOnce(chunkedStreamResponse([]));
+    await streamSession({
+      baseUrl: "http://127.0.0.1:3000",
+      headers: { "x-extra": "1" },
+      sessionId: "s",
+      signal: new AbortController().signal,
+      onEvent: async () => {},
+    });
+    const streamHeaders = fetchMock.mock.calls[1]?.[1]?.headers as Record<string, string>;
+    expect(streamHeaders).not.toHaveProperty("content-type");
+    expect(streamHeaders["x-extra"]).toBe("1");
+
+    // GET: fetchInfo
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ name: "a" }), { status: 200 }));
+    await fetchInfo({ baseUrl: "http://127.0.0.1:3000", headers: {}, timeoutMs: 5000 });
+    const infoHeaders = fetchMock.mock.calls[2]?.[1]?.headers as Record<string, string>;
+    expect(infoHeaders).not.toHaveProperty("content-type");
   });
 });
 

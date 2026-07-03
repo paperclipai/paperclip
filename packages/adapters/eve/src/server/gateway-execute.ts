@@ -18,18 +18,67 @@ import {
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 
-export function asStringHeaderMap(value: unknown): Record<string, string> {
-  const parsed = parseObject(value);
-  const headers: Record<string, string> = {};
-  for (const [key, entry] of Object.entries(parsed)) {
-    if (typeof entry === "string") {
-      headers[key] = entry;
-    } else if (typeof entry === "object" && entry !== null && !Array.isArray(entry)) {
-      const rec = entry as Record<string, unknown>;
-      if (rec.type === "plain" && typeof rec.value === "string") headers[key] = rec.value;
+/**
+ * Platform contract (see server/src/services/secrets.ts,
+ * resolveAdapterConfigForRuntime, invoked by the heartbeat pipeline BEFORE
+ * adapter.execute): all `config.env` entries and any top-level config field
+ * whose schema declares `meta.secret === true` (the gateway `headers` field)
+ * are resolved to plain strings before execute() runs. A whole-field secret
+ * binding on `headers` therefore arrives here as a JSON *string* — accepted
+ * below. Any entry still `secret_ref`-shaped INSIDE the object was never
+ * resolved by the platform and cannot be resolved at the adapter layer; such
+ * keys are reported in `skippedKeys` so callers can warn (key names only,
+ * never values).
+ */
+export function parseStringMapConfig(value: unknown): {
+  map: Record<string, string>;
+  skippedKeys: string[];
+} {
+  let source: Record<string, unknown>;
+  if (typeof value === "string") {
+    source = {};
+    if (value.trim().length > 0) {
+      try {
+        const parsed = JSON.parse(value) as unknown;
+        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+          source = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // Not a JSON object string — treat as empty.
+      }
     }
+  } else {
+    source = parseObject(value);
   }
-  return headers;
+  const map: Record<string, string> = {};
+  const skippedKeys: string[] = [];
+  for (const [key, entry] of Object.entries(source)) {
+    if (typeof entry === "string") {
+      map[key] = entry;
+      continue;
+    }
+    if (typeof entry === "object" && entry !== null && !Array.isArray(entry)) {
+      const rec = entry as Record<string, unknown>;
+      if (rec.type === "plain" && typeof rec.value === "string") {
+        map[key] = rec.value;
+        continue;
+      }
+    }
+    skippedKeys.push(key);
+  }
+  return { map, skippedKeys };
+}
+
+export function asStringHeaderMap(value: unknown): Record<string, string> {
+  return parseStringMapConfig(value).map;
+}
+
+export function unresolvedBindingWarning(fieldName: string, skippedKeys: string[]): string {
+  return (
+    `[paperclip] Ignoring unresolved bindings for ${fieldName} keys: ${skippedKeys.join(", ")}. ` +
+    `secret_ref bindings inside headers/env objects are not resolved at the adapter layer; ` +
+    `use the env secret-binding UI (resolved by the platform before execution) or bind the whole field as a secret.\n`
+  );
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -43,7 +92,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       });
     }
     const baseUrl = normalizeBaseUrl(rawBaseUrl);
-    const headers = asStringHeaderMap(config.headers);
+    const { map: headers, skippedKeys: skippedHeaderKeys } = parseStringMapConfig(config.headers);
+    if (skippedHeaderKeys.length > 0) {
+      await onLog("stderr", unresolvedBindingWarning("header", skippedHeaderKeys));
+    }
     const configModel = trimNullable(config.model);
     const timeoutMs = asNumber(config.timeoutMs, DEFAULT_TIMEOUT_MS);
     const runTimeoutMs = asNumber(config.runTimeoutMs, DEFAULT_RUN_TIMEOUT_MS);
