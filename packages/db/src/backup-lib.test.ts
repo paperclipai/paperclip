@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import {
+  createBufferedTextFileWriter,
+  formatDatabaseBackupResult,
+  runDatabaseBackup,
+  runDatabaseRestore,
+} from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -70,6 +75,85 @@ describe("createBufferedTextFileWriter", () => {
     await writer.close();
 
     expect(fs.readFileSync(outputPath, "utf8")).toBe(lines.join("\n"));
+  });
+
+  it("rejects writes after close and treats double close as a no-op", async () => {
+    const tempDir = createTempDir("paperclip-buffered-writer-closed-");
+    const outputPath = path.join(tempDir, "backup.sql");
+    const writer = createBufferedTextFileWriter(outputPath);
+
+    writer.emit("only line");
+    await writer.close();
+    await writer.close();
+
+    expect(() => writer.emit("late line")).toThrow(
+      `Cannot write to closed backup file: ${outputPath}`,
+    );
+    await expect(writer.drain()).rejects.toThrow(
+      `Cannot drain closed backup file: ${outputPath}`,
+    );
+    expect(fs.readFileSync(outputPath, "utf8")).toBe("only line");
+  });
+
+  it("removes the partially written file on abort", async () => {
+    const tempDir = createTempDir("paperclip-buffered-writer-abort-");
+    const outputPath = path.join(tempDir, "backup.sql");
+    const writer = createBufferedTextFileWriter(outputPath, 4);
+
+    writer.emit("first line beyond the buffer threshold");
+    await writer.drain();
+    expect(fs.existsSync(outputPath)).toBe(true);
+
+    await writer.abort();
+
+    expect(fs.existsSync(outputPath)).toBe(false);
+    expect(() => writer.emit("late line")).toThrow(
+      `Cannot write to closed backup file: ${outputPath}`,
+    );
+  });
+});
+
+describe("formatDatabaseBackupResult", () => {
+  it("formats byte-sized backups without pruning", () => {
+    expect(
+      formatDatabaseBackupResult({
+        backupFile: "/backups/paperclip-2026-07-02.sql.gz",
+        sizeBytes: 512,
+        prunedCount: 0,
+      }),
+    ).toBe("/backups/paperclip-2026-07-02.sql.gz (512B)");
+  });
+
+  it("formats kilobyte and megabyte sizes with one decimal", () => {
+    expect(
+      formatDatabaseBackupResult({ backupFile: "/b/k.sql.gz", sizeBytes: 1536, prunedCount: 0 }),
+    ).toBe("/b/k.sql.gz (1.5K)");
+    expect(
+      formatDatabaseBackupResult({
+        backupFile: "/b/m.sql.gz",
+        sizeBytes: 5 * 1024 * 1024,
+        prunedCount: 0,
+      }),
+    ).toBe("/b/m.sql.gz (5.0M)");
+  });
+
+  it("promotes exact unit boundaries to the larger unit", () => {
+    expect(
+      formatDatabaseBackupResult({ backupFile: "/b/k.sql.gz", sizeBytes: 1024, prunedCount: 0 }),
+    ).toBe("/b/k.sql.gz (1.0K)");
+    expect(
+      formatDatabaseBackupResult({
+        backupFile: "/b/m.sql.gz",
+        sizeBytes: 1024 * 1024,
+        prunedCount: 0,
+      }),
+    ).toBe("/b/m.sql.gz (1.0M)");
+  });
+
+  it("mentions pruned backups only when something was pruned", () => {
+    expect(
+      formatDatabaseBackupResult({ backupFile: "/b/p.sql.gz", sizeBytes: 2048, prunedCount: 3 }),
+    ).toBe("/b/p.sql.gz (2.0K; pruned 3 old backup(s))");
   });
 });
 

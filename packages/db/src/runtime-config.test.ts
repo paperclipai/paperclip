@@ -106,6 +106,115 @@ describe("resolveDatabaseTarget", () => {
     });
   });
 
+  it("migrates legacy pglite config values to embedded postgres", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
+    const configPath = path.join(tempDir, "instance", "config.json");
+    process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.DATABASE_URL;
+    writeJson(configPath, {
+      database: {
+        mode: "pglite",
+        pgliteDataDir: "~/paperclip-legacy-db",
+        pglitePort: 55123,
+      },
+    });
+
+    const target = resolveDatabaseTarget();
+
+    expect(target).toMatchObject({
+      mode: "embedded-postgres",
+      dataDir: path.resolve(os.homedir(), "paperclip-legacy-db"),
+      port: 55123,
+      source: "embedded-postgres@55123",
+    });
+  });
+
+  it("prefers explicit embedded postgres settings over legacy pglite values", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
+    const configPath = path.join(tempDir, "instance", "config.json");
+    process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.DATABASE_URL;
+    writeJson(configPath, {
+      database: {
+        mode: "pglite",
+        pgliteDataDir: "~/paperclip-legacy-db",
+        pglitePort: 55123,
+        embeddedPostgresDataDir: "~/paperclip-new-db",
+        embeddedPostgresPort: 55321,
+      },
+    });
+
+    const target = resolveDatabaseTarget();
+
+    expect(target).toMatchObject({
+      mode: "embedded-postgres",
+      dataDir: path.resolve(os.homedir(), "paperclip-new-db"),
+      port: 55321,
+    });
+  });
+
+  it("throws a descriptive error when the config file is not valid JSON", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
+    const configPath = path.join(tempDir, "instance", "config.json");
+    process.env.PAPERCLIP_CONFIG = configPath;
+    delete process.env.DATABASE_URL;
+    writeText(configPath, "{not-json");
+
+    expect(() => resolveDatabaseTarget()).toThrow(`Failed to parse config at ${configPath}`);
+  });
+
+  it("parses export-prefixed and comment-trailing values from .paperclip/.env", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
+    const projectDir = path.join(tempDir, "repo");
+    fs.mkdirSync(projectDir, { recursive: true });
+    process.chdir(projectDir);
+    delete process.env.PAPERCLIP_CONFIG;
+    delete process.env.DATABASE_URL;
+    writeJson(path.join(projectDir, ".paperclip", "config.json"), {
+      database: { mode: "embedded-postgres" },
+    });
+    writeText(
+      path.join(projectDir, ".paperclip", ".env"),
+      [
+        "# database connection",
+        "export DATABASE_URL=postgres://exported:secret@db.example.com:5432/paperclip # primary",
+        "",
+      ].join("\n"),
+    );
+
+    const target = resolveDatabaseTarget();
+
+    expect(target).toMatchObject({
+      mode: "postgres",
+      connectionString: "postgres://exported:secret@db.example.com:5432/paperclip",
+      source: "paperclip-env",
+    });
+  });
+
+  it("ignores comments and blank DATABASE_URL entries in .paperclip/.env", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-runtime-"));
+    const projectDir = path.join(tempDir, "repo");
+    fs.mkdirSync(projectDir, { recursive: true });
+    process.chdir(projectDir);
+    delete process.env.PAPERCLIP_CONFIG;
+    delete process.env.DATABASE_URL;
+    writeJson(path.join(projectDir, ".paperclip", "config.json"), {
+      database: { mode: "embedded-postgres", embeddedPostgresPort: 55777 },
+    });
+    writeText(
+      path.join(projectDir, ".paperclip", ".env"),
+      ["# DATABASE_URL=postgres://commented@db.example.com/paperclip", "DATABASE_URL=", ""].join("\n"),
+    );
+
+    const target = resolveDatabaseTarget();
+
+    expect(target).toMatchObject({
+      mode: "embedded-postgres",
+      port: 55777,
+      source: "embedded-postgres@55777",
+    });
+  });
+
   it("uses the instance root for a fresh default embedded postgres target", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-home-"));
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-db-cwd-"));

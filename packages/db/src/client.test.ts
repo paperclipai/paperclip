@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import {
   applyPendingMigrations,
+  ensurePostgresDatabase,
   inspectMigrations,
 } from "./client.js";
 import {
@@ -1272,4 +1273,18 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+});
+
+describe("ensurePostgresDatabase name validation", () => {
+  // Validation happens before any connection is opened, so an unreachable
+  // connection string proves the rejection comes from the name check.
+  const unreachableUrl = "postgres://user:pass@127.0.0.1:1/postgres";
+
+  it("rejects database names that are unsafe SQL identifiers", async () => {
+    for (const unsafeName of ["bad-name", "1paperclip", 'quo"ted', "semi;colon", "with space", ""]) {
+      await expect(ensurePostgresDatabase(unreachableUrl, unsafeName)).rejects.toThrow(
+        `Unsafe database name: ${unsafeName}`,
+      );
+    }
+  });
 });
