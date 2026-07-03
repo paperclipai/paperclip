@@ -288,6 +288,7 @@ type SecretResolutionErrorCode =
   | "secret_scope_invalid"
   | "responsible_user_missing"
   | "user_secret_definition_missing"
+  | "user_secret_definition_inactive"
   | "user_secret_missing"
   | "version_missing"
   | "version_inactive"
@@ -364,6 +365,7 @@ function secretResolutionErrorCode(error: unknown): SecretResolutionErrorCode {
       return "responsible_user_missing";
     }
     if (error.message === "User secret definition not found") return "user_secret_definition_missing";
+    if (error.message === "User secret definition is not active") return "user_secret_definition_inactive";
     if (error.message === "User-scoped secrets must be resolved through user secret declarations") {
       return "secret_scope_invalid";
     }
@@ -378,6 +380,32 @@ function secretResolutionErrorCode(error: unknown): SecretResolutionErrorCode {
     if (error.status >= 500) return "provider_error";
   }
   return "provider_error";
+}
+
+function missingUserSecretDefinitionRuntimeBinding(
+  entry: {
+    key: string;
+    configPath: string;
+    binding: Extract<CanonicalEnvBinding, { type: "user_secret_ref" }>;
+  },
+  context: Omit<SecretConsumerContext, "configPath">,
+  definition: typeof userSecretDefinitions.$inferSelect | null,
+  errorCode: "user_secret_definition_missing" | "user_secret_definition_inactive",
+): MissingRuntimeBinding {
+  return {
+    consumerType: context.consumerType,
+    consumerId: context.consumerId,
+    configPath: entry.configPath,
+    envKey: entry.key,
+    bindingType: "user_secret_ref",
+    secretId: null,
+    secretName: null,
+    userSecretDefinitionId: definition?.id ?? null,
+    userSecretDefinitionKey: definition?.key ?? entry.binding.key,
+    userSecretDefinitionName: definition?.name ?? null,
+    responsibleUserId: context.responsibleUserId ?? null,
+    errorCode,
+  };
 }
 
 function assertSelectableProviderConfig(config: {
@@ -3522,18 +3550,25 @@ export function secretService(db: Db) {
         try {
           definition = await resolveUserSecretDefinition(companyId, { definitionKey: entry.binding.key });
         } catch {
-          missingUserSecretBindings.push({
-            consumerType: context.consumerType,
-            consumerId: context.consumerId,
-            configPath: entry.configPath,
-            envKey: entry.key,
-            bindingType: "user_secret_ref",
-            secretId: null,
-            secretName: null,
-            userSecretDefinitionKey: entry.binding.key,
-            responsibleUserId: context.responsibleUserId ?? null,
-            errorCode: "user_secret_definition_missing",
-          });
+          missingUserSecretBindings.push(
+            missingUserSecretDefinitionRuntimeBinding(
+              entry,
+              context,
+              null,
+              "user_secret_definition_missing",
+            ),
+          );
+          continue;
+        }
+        if (definition.status !== "active") {
+          missingUserSecretBindings.push(
+            missingUserSecretDefinitionRuntimeBinding(
+              entry,
+              context,
+              definition,
+              "user_secret_definition_inactive",
+            ),
+          );
           continue;
         }
 
@@ -3672,18 +3707,25 @@ export function secretService(db: Db) {
         try {
           definition = await resolveUserSecretDefinition(companyId, { definitionKey: entry.binding.key });
         } catch {
-          missingUserSecretBindings.push({
-            consumerType: context.consumerType,
-            consumerId: context.consumerId,
-            configPath: entry.configPath,
-            envKey: entry.key,
-            bindingType: "user_secret_ref",
-            secretId: null,
-            secretName: null,
-            userSecretDefinitionKey: entry.binding.key,
-            responsibleUserId: context.responsibleUserId ?? null,
-            errorCode: "user_secret_definition_missing",
-          });
+          missingUserSecretBindings.push(
+            missingUserSecretDefinitionRuntimeBinding(
+              entry,
+              context,
+              null,
+              "user_secret_definition_missing",
+            ),
+          );
+          continue;
+        }
+        if (definition.status !== "active") {
+          missingUserSecretBindings.push(
+            missingUserSecretDefinitionRuntimeBinding(
+              entry,
+              context,
+              definition,
+              "user_secret_definition_inactive",
+            ),
+          );
           continue;
         }
 

@@ -522,6 +522,24 @@ describeEmbeddedPostgres("secretService", () => {
       .set({ status: "disabled" })
       .where(eq(userSecretDefinitions.id, definition.id));
     await expect(
+      svc.collectMissingRuntimeBindings(companyId, env, {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        responsibleUserId: "user-2",
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        bindingType: "user_secret_ref",
+        configPath: "env.GITHUB_TOKEN",
+        envKey: "GITHUB_TOKEN",
+        userSecretDefinitionId: definition.id,
+        userSecretDefinitionKey: "github_token",
+        userSecretDefinitionName: "GitHub token",
+        responsibleUserId: "user-2",
+        errorCode: "user_secret_definition_inactive",
+      }),
+    ]);
+    await expect(
       svc.resolveEnvBindings(companyId, optionalEnv, {
         consumerType: "agent",
         consumerId: "agent-optional",
@@ -697,6 +715,34 @@ describeEmbeddedPostgres("secretService", () => {
         },
       ),
     ).resolves.toEqual([]);
+
+    await db
+      .update(userSecretDefinitions)
+      .set({ status: "archived" })
+      .where(eq(userSecretDefinitions.id, definition.id));
+    await expect(
+      svc.collectMissingAdapterConfigRuntimeBindings(
+        companyId,
+        adapterConfig,
+        "hermes_gateway",
+        {
+          consumerType: "agent",
+          consumerId: "agent-1",
+          responsibleUserId: "user-1",
+        },
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        bindingType: "user_secret_ref",
+        configPath: "apiKey",
+        envKey: "apiKey",
+        userSecretDefinitionId: definition.id,
+        userSecretDefinitionKey: "hermes_api_key",
+        userSecretDefinitionName: "Hermes API key",
+        responsibleUserId: "user-1",
+        errorCode: "user_secret_definition_inactive",
+      }),
+    ]);
   });
 
   it("records stable redacted failure codes for routine env secret resolution", async () => {
