@@ -677,6 +677,48 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
   "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
 
+const HANDOFF_CONTRACT_LINK = "/FAI/issues/FAI-3867";
+const HANDOFF_VERDICT_MARKER_REGEX =
+  /(?:^|\n)##\s*(?:Security|QA|Review)\s+(?:GO|NO[-\s]?GO)\b|(?:^|\n)\*\*(?:Next Owner|Routing to)\s*:\*\*|\b(?:Routing back to|Handing off to)\b/i;
+
+function isHandoffVerdictMarkerComment(body: string | null | undefined) {
+  return typeof body === "string" && HANDOFF_VERDICT_MARKER_REGEX.test(body.replace(/\r\n?/g, "\n"));
+}
+
+function handoffContractViolationBody() {
+  return {
+    error: "HandoffContractViolation",
+    message:
+      "Agent-authored verdict/routing comments must be paired with a PATCH that changes assigneeAgentId in the same X-Paperclip-Run-Id.",
+    missingPatch:
+      "PATCH /api/issues/{id} with assigneeAgentId in this request or as the immediately preceding issue.updated activity for the same X-Paperclip-Run-Id.",
+    contract: HANDOFF_CONTRACT_LINK,
+  };
+}
+
+function activityDetailsChangedAssigneeAgent(details: unknown) {
+  if (!details || typeof details !== "object") return false;
+  const record = details as Record<string, unknown>;
+  const nextAssigneeAgentId = readNonEmptyString(record.assigneeAgentId);
+  const previous = record._previous && typeof record._previous === "object"
+    ? record._previous as Record<string, unknown>
+    : null;
+  return (
+    !!nextAssigneeAgentId &&
+    !!previous &&
+    Object.prototype.hasOwnProperty.call(previous, "assigneeAgentId") &&
+    previous.assigneeAgentId !== nextAssigneeAgentId
+  );
+}
+
+function requestChangesAssigneeAgent(input: {
+  existingAssigneeAgentId: string | null | undefined;
+  nextAssigneeAgentId: unknown;
+}) {
+  const nextAssigneeAgentId = readNonEmptyString(input.nextAssigneeAgentId);
+  return !!nextAssigneeAgentId && nextAssigneeAgentId !== input.existingAssigneeAgentId;
+}
+
 function executionPrincipalsEqual(
   left: ParsedExecutionState["currentParticipant"] | null,
   right: ParsedExecutionState["currentParticipant"] | null,
@@ -1271,6 +1313,57 @@ export function issueRoutes(
     actor: ReturnType<typeof getActorInfo>,
   ) {
     return resolveActorSourceTrustForIssue({ db, issue, actor });
+  }
+
+  async function immediatelyPrecedingRunActivityChangedAssigneeAgent(input: {
+    companyId: string;
+    issueId: string;
+    runId: string | null | undefined;
+  }) {
+    if (!input.runId) return false;
+    const latestActivity = await db
+      .select({
+        action: activityLog.action,
+        details: activityLog.details,
+      })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, input.companyId),
+        eq(activityLog.entityType, "issue"),
+        eq(activityLog.entityId, input.issueId),
+        eq(activityLog.runId, input.runId),
+      ))
+      .orderBy(desc(activityLog.createdAt), desc(activityLog.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return latestActivity?.action === "issue.updated" &&
+      activityDetailsChangedAssigneeAgent(latestActivity.details);
+  }
+
+  async function assertAgentHandoffCommentHasAssigneePatch(input: {
+    req: Request;
+    res: Response;
+    issue: { id: string; companyId: string; assigneeAgentId?: string | null };
+    commentBody: string | null | undefined;
+    nextAssigneeAgentId?: unknown;
+  }) {
+    if (input.req.actor.type !== "agent" || !isHandoffVerdictMarkerComment(input.commentBody)) return true;
+    if (requestChangesAssigneeAgent({
+      existingAssigneeAgentId: input.issue.assigneeAgentId,
+      nextAssigneeAgentId: input.nextAssigneeAgentId,
+    })) {
+      return true;
+    }
+    const actor = getActorInfo(input.req);
+    if (await immediatelyPrecedingRunActivityChangedAssigneeAgent({
+      companyId: input.issue.companyId,
+      issueId: input.issue.id,
+      runId: actor.runId,
+    })) {
+      return true;
+    }
+    input.res.status(422).json(handoffContractViolationBody());
+    return false;
   }
 
   function hasExplicitIssueWorkspaceCreateSelection(input: Record<string, unknown>) {
@@ -6023,6 +6116,15 @@ export function issueRoutes(
       existing.assigneeAgentId,
       req.body.executionPolicy !== undefined && monitorChanged,
     );
+    if (!(await assertAgentHandoffCommentHasAssigneePatch({
+      req,
+      res,
+      issue: existing,
+      commentBody,
+      nextAssigneeAgentId: updateFields.assigneeAgentId,
+    }))) {
+      return;
+    }
 
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
@@ -7666,6 +7768,14 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    if (!(await assertAgentHandoffCommentHasAssigneePatch({
+      req,
+      res,
+      issue,
+      commentBody: req.body.body,
+    }))) {
+      return;
+    }
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
