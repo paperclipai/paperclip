@@ -192,13 +192,37 @@ export function WorkTimelineChart({
   const scrollRef = useRef<HTMLDivElement>(null);
   const initialWindowKeyRef = useRef<string | null>(null);
   const centerMsRef = useRef<number | null>(null);
+  const defaultNowRef = useRef<number | null>(null);
+  const documentDragCleanupRef = useRef<(() => void) | null>(null);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const [hoveredRunId, setHoveredRunId] = useState<string | null>(null);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [viewportW, setViewportW] = useState(0);
   const [dragSelection, setDragSelection] = useState<DragSelectionState | null>(null);
 
-  const now = nowMs ?? Date.now();
+  const clearDocumentDrag = () => {
+    documentDragCleanupRef.current?.();
+    documentDragCleanupRef.current = null;
+  };
+
+  const setDocumentDrag = (move: (event: MouseEvent) => void, up: (event: MouseEvent) => void) => {
+    clearDocumentDrag();
+    const handleUp = (event: MouseEvent) => {
+      clearDocumentDrag();
+      up(event);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", handleUp);
+    documentDragCleanupRef.current = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", handleUp);
+    };
+  };
+
+  useEffect(() => () => clearDocumentDrag(), []);
+
+  if (defaultNowRef.current == null) defaultNowRef.current = Date.now();
+  const now = nowMs ?? defaultNowRef.current;
   const pxPerMinute = zoomScale ?? zoomScaleForLevel(zoom, viewportW || DEFAULT_VIEWPORT_W);
   const layout = useMemo(
     () => computeLayout(data, { ...GEOM, pxPerMinute, nowMs: now }),
@@ -326,8 +350,6 @@ export function WorkTimelineChart({
       });
     };
     const up = (upEvent: MouseEvent) => {
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
       const endX = svgXFromClientX(upEvent.clientX, el);
       setDragSelection(null);
       if (Math.abs(endX - startX) < 8) return;
@@ -335,8 +357,7 @@ export function WorkTimelineChart({
       const toMs = Math.max(msFromSvgX(startX), msFromSvgX(endX));
       updateVisibleRange(fromMs, toMs);
     };
-    document.addEventListener("mousemove", move);
-    document.addEventListener("mouseup", up);
+    setDocumentDrag(move, up);
   };
 
   const connectorHintForBar = (bar: PositionedBar): string | null => {
@@ -720,6 +741,7 @@ function MiniMap({
   scrollLeft: number;
   onVisibleRangeChange: (fromMs: number, toMs: number) => void;
 }) {
+  const documentDragCleanupRef = useRef<(() => void) | null>(null);
   const W = Math.max(320, viewportW || 900);
   const H = 54;
   const pad = 8;
@@ -734,10 +756,31 @@ function MiniMap({
     const ms = layout.fromMs + ((x - layout.gutter) / layout.pxPerMinute) * 60000;
     return Math.max(layout.fromMs, Math.min(layout.toMs, ms));
   };
-  const visibleStartMs = timeAtX(scrollLeft);
-  const visibleEndMs = timeAtX(scrollLeft + (viewportW || W));
+  const visibleStartMs = timeAtX(scrollLeft + layout.gutter);
+  const visibleEndMs = timeAtX(scrollLeft + layout.gutter + (viewportW || W));
   const brushX = mx(visibleStartMs);
   const brushW = Math.max(24, mx(visibleEndMs) - brushX);
+
+  const clearDocumentDrag = () => {
+    documentDragCleanupRef.current?.();
+    documentDragCleanupRef.current = null;
+  };
+
+  const setDocumentDrag = (move: (event: MouseEvent) => void, up: (event: MouseEvent) => void) => {
+    clearDocumentDrag();
+    const handleUp = (event: MouseEvent) => {
+      clearDocumentDrag();
+      up(event);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", handleUp);
+    documentDragCleanupRef.current = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", handleUp);
+    };
+  };
+
+  useEffect(() => () => clearDocumentDrag(), []);
 
   const msAtClientX = (clientX: number, el: SVGSVGElement) => {
     const rect = el.getBoundingClientRect();
@@ -772,12 +815,7 @@ function MiniMap({
         onVisibleRangeChange(nextFrom, nextFrom + durationMs);
       }
     };
-    const up = () => {
-      document.removeEventListener("mousemove", move);
-      document.removeEventListener("mouseup", up);
-    };
-    document.addEventListener("mousemove", move);
-    document.addEventListener("mouseup", up);
+    setDocumentDrag(move, () => {});
   };
 
   return (
@@ -791,12 +829,7 @@ function MiniMap({
           const el = e.currentTarget;
           seek(e.clientX, el);
           const move = (ev: MouseEvent) => seek(ev.clientX, el);
-          const up = () => {
-            document.removeEventListener("mousemove", move);
-            document.removeEventListener("mouseup", up);
-          };
-          document.addEventListener("mousemove", move);
-          document.addEventListener("mouseup", up);
+          setDocumentDrag(move, () => {});
         }}
       >
         <rect x={0} y={0} width={W} height={H} fill="var(--color-card)" stroke="var(--color-foreground)" strokeWidth={1.5} />

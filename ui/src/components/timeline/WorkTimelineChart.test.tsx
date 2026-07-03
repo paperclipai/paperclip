@@ -330,6 +330,81 @@ describe("WorkTimelineChart", () => {
     expect(onZoomScaleChange).toHaveBeenCalled();
   });
 
+  it("cleans up chart drag listeners when unmounted mid-drag", () => {
+    const add = vi.spyOn(document, "addEventListener");
+    const remove = vi.spyOn(document, "removeEventListener");
+    renderChart(timelineSample(), { onZoomScaleChange: vi.fn() });
+
+    const chartSvg = container.querySelector<SVGSVGElement>("svg.absolute")!;
+    vi.spyOn(chartSvg, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 1000,
+      bottom: 400,
+      width: 1000,
+      height: 400,
+      toJSON: () => ({}),
+    });
+
+    flushSync(() => {
+      chartSvg.dispatchEvent(new MouseEvent("mousedown", { clientX: 260, bubbles: true, cancelable: true }));
+    });
+
+    expect(add).toHaveBeenCalledWith("mousemove", expect.any(Function));
+    expect(add).toHaveBeenCalledWith("mouseup", expect.any(Function));
+
+    flushSync(() => root.unmount());
+    root = createRoot(container);
+
+    expect(remove).toHaveBeenCalledWith("mousemove", expect.any(Function));
+    expect(remove).toHaveBeenCalledWith("mouseup", expect.any(Function));
+  });
+
+  it("cleans up minimap drag listeners when unmounted mid-drag", () => {
+    const add = vi.spyOn(document, "addEventListener");
+    const remove = vi.spyOn(document, "removeEventListener");
+    renderChart(timelineSample(), { onZoomScaleChange: vi.fn() });
+
+    const rightHandle = container.querySelector<SVGRectElement>("[data-testid='timeline-minimap-right-handle']")!;
+    const minimap = rightHandle.ownerSVGElement!;
+    vi.spyOn(minimap, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 900,
+      bottom: 54,
+      width: 900,
+      height: 54,
+      toJSON: () => ({}),
+    });
+
+    flushSync(() => {
+      rightHandle.dispatchEvent(new MouseEvent("mousedown", { clientX: 300, bubbles: true, cancelable: true }));
+    });
+
+    expect(add).toHaveBeenCalledWith("mousemove", expect.any(Function));
+    expect(add).toHaveBeenCalledWith("mouseup", expect.any(Function));
+
+    flushSync(() => root.unmount());
+    root = createRoot(container);
+
+    expect(remove).toHaveBeenCalledWith("mousemove", expect.any(Function));
+    expect(remove).toHaveBeenCalledWith("mouseup", expect.any(Function));
+  });
+
+  it("keeps the default now timestamp stable across rerenders", () => {
+    const now = new Date("2026-07-02T12:00:00.000Z").getTime();
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+
+    renderChart(timelineSample(), { nowMs: undefined });
+    renderChart(timelineSample(), { nowMs: undefined });
+
+    expect(nowSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("lets dragging the chart grid select a time range to zoom into", () => {
     const onZoomScaleChange = vi.fn();
     renderChart(timelineSample(), { onZoomScaleChange });

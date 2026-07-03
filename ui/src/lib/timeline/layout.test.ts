@@ -119,6 +119,32 @@ describe("computeLayout", () => {
     expect(ceoRun.kickoff?.id).toBe("user:dotta"); // human kickoff shown as chip
   });
 
+  it("prefers the nearest post-start kickoff edge when no prior edge exists", () => {
+    const data = sample();
+    data.spans.push({
+      actorId: "agent:ux",
+      laneHint: null,
+      runId: "late-edge-run",
+      issueId: "i-late",
+      issueIdentifier: "PAP-99999",
+      issueTitle: "Late kickoff fallback",
+      start: t("14:00"),
+      end: t("14:10"),
+      status: "completed",
+      retryOfRunId: null,
+    });
+    data.edges.push(
+      { fromActorId: "agent:qa", toActorId: "agent:ux", issueId: "i-late", at: t("14:30"), kind: "delegation" },
+      { fromActorId: "agent:cto", toActorId: "agent:ux", issueId: "i-late", at: t("14:02"), kind: "delegation" },
+    );
+
+    const layout = computeLayout(data, OPTS);
+    const lateRun = layout.rows
+      .find((r) => r.actor.id === "agent:ux")!
+      .bars.find((b) => b.span.runId === "late-edge-run")!;
+    expect(lateRun.kickoff?.id).toBe("agent:cto");
+  });
+
   it("draws agent→agent connectors only, dashing retries, never from a human", () => {
     const layout = computeLayout(sample(), OPTS);
     // 6 agent→agent edges resolve to bars; the dotta→ceo human edge draws no line.

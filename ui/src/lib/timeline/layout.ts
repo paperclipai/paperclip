@@ -158,7 +158,7 @@ function resolveKickoff(
     if (e.fromActorId === span.actorId) continue; // self-kickoff is not a delegation
     const at = new Date(e.at).getTime();
     // Prefer edges at-or-before the run start; otherwise smallest absolute gap.
-    const delta = at <= start ? start - at : (start - at) + 1e12;
+    const delta = at <= start ? start - at : (at - start) + 1e12;
     if (!best || delta < best.delta) best = { edge: e, delta };
   }
   if (!best) return null;
