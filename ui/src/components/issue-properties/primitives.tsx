@@ -26,7 +26,7 @@ export function PropertySection({
           {title}
         </div>
       ) : null}
-      <div className="space-y-1">{children}</div>
+      <div className="space-y-0.5">{children}</div>
     </div>
   );
 }
@@ -42,9 +42,18 @@ export function PropertyRow({
   wrap?: boolean;
 }) {
   return (
-    <div className="flex w-full min-w-0 items-start gap-3 py-1.5">
+    <div
+      className={cn(
+        "flex w-full min-w-0 gap-3 py-1",
+        wrap ? "items-start" : "items-center",
+      )}
+      data-property-row="true"
+    >
       <span
-        className="text-xs text-muted-foreground shrink-0 w-24 mt-0.5 truncate"
+        className={cn(
+          "text-xs text-muted-foreground shrink-0 w-24 truncate",
+          wrap && "mt-0.5",
+        )}
         title={typeof label === "string" ? label : undefined}
       >
         {label}
@@ -67,6 +76,7 @@ export function PropertyChip({
     <span
       className={cn("inline-flex max-w-full min-w-0 items-center gap-1 truncate rounded-full border px-2 py-0.5 text-xs", className)}
       style={style}
+      title={typeof children === "string" ? children : undefined}
     >
       {children}
     </span>

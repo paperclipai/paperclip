@@ -157,7 +157,7 @@ function findRowTrigger(container: HTMLElement, label: string): HTMLButtonElemen
   const labelSpan = Array.from(container.querySelectorAll("span.w-24")).find(
     (span) => span.textContent?.trim() === label,
   );
-  const row = labelSpan?.closest("div.py-1\\.5");
+  const row = labelSpan?.closest('[data-property-row="true"]');
   return (row?.querySelector("button") as HTMLButtonElement | null) ?? undefined;
 }
 
@@ -834,12 +834,12 @@ describe("IssueProperties", () => {
     expect(container.textContent).not.toContain("SUB-6");
     expect(
       Array.from(container.querySelectorAll("button")).filter((button) =>
-        button.textContent?.trim() === "+2 more",
+        button.textContent?.trim() === "Show 2 more",
       ),
     ).toHaveLength(2);
 
     const expandBlockedBy = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.trim() === "+2 more",
+      button.textContent?.trim() === "Show 2 more",
     );
     expect(expandBlockedBy).not.toBeUndefined();
     await act(async () => {
@@ -852,7 +852,7 @@ describe("IssueProperties", () => {
     expect(container.textContent).toContain("Show less");
 
     const expandSubTasks = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.trim() === "+2 more",
+      button.textContent?.trim() === "Show 2 more",
     );
     expect(expandSubTasks).not.toBeUndefined();
     await act(async () => {
@@ -863,7 +863,7 @@ describe("IssueProperties", () => {
     expect(container.textContent).toContain("SUB-7");
     expect(
       Array.from(container.querySelectorAll("button")).filter((button) =>
-        button.textContent?.trim() === "+2 more",
+        button.textContent?.trim() === "Show 2 more",
       ),
     ).toHaveLength(0);
     expect(
@@ -882,7 +882,131 @@ describe("IssueProperties", () => {
 
     expect(container.textContent).not.toContain("BLOCK-6");
     expect(container.textContent).toContain("SUB-6");
-    expect(container.textContent).toContain("+2 more");
+    expect(container.textContent).toContain("Show 2 more");
+
+    act(() => root.unmount());
+  });
+
+  it("collapses long blocking and related task lists until the more button is clicked", async () => {
+    const blocking = Array.from({ length: 7 }, (_, index) => ({
+      id: `blocking-${index + 1}`,
+      identifier: `BLOCKING-${index + 1}`,
+      title: `Blocking issue ${index + 1}`,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    })) as NonNullable<Issue["blocks"]>;
+    const relatedIssues = Array.from({ length: 7 }, (_, index) => ({
+      id: `related-${index + 1}`,
+      identifier: `RELATED-${index + 1}`,
+      title: `Related issue ${index + 1}`,
+      status: "todo" as const,
+      priority: "medium" as const,
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    }));
+    const root = renderProperties(container, {
+      issue: createIssue({
+        blocks: blocking,
+        relatedWork: {
+          outbound: relatedIssues.map((issue) => ({
+            issue,
+            mentionCount: 1,
+            sources: [{ kind: "description", sourceRecordId: null, label: "description", matchedText: issue.identifier }],
+          })),
+          inbound: [],
+        },
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    expect(container.textContent).toContain("BLOCKING-5");
+    expect(container.textContent).not.toContain("BLOCKING-6");
+    expect(container.textContent).toContain("RELATED-5");
+    expect(container.textContent).not.toContain("RELATED-6");
+    expect(
+      Array.from(container.querySelectorAll("button")).filter((button) =>
+        button.textContent?.trim() === "Show 2 more",
+      ),
+    ).toHaveLength(2);
+
+    const expandBlocking = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.trim() === "Show 2 more",
+    );
+    expect(expandBlocking).not.toBeUndefined();
+    await act(async () => {
+      expandBlocking!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("BLOCKING-6");
+    expect(container.textContent).toContain("BLOCKING-7");
+    expect(container.textContent).not.toContain("RELATED-6");
+
+    const expandRelated = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.trim() === "Show 2 more",
+    );
+    expect(expandRelated).not.toBeUndefined();
+    await act(async () => {
+      expandRelated!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("RELATED-6");
+    expect(container.textContent).toContain("RELATED-7");
+
+    act(() => root.unmount());
+  });
+
+  it("collapses long external URL rows until the more button is clicked", async () => {
+    const externalObjects = Array.from({ length: 7 }, (_, index) => ({
+      mentionCount: 1,
+      sourceLabels: ["Description"],
+      pill: {
+        providerKey: "url" as const,
+        objectType: "link" as const,
+        displayKey: null,
+        iconKey: null,
+        statusCategory: "unknown" as const,
+        statusIconKey: null,
+        statusLabel: null,
+        liveness: "unknown" as const,
+        displayTitle: `https://example.com/reference-${index + 1}`,
+        url: `https://example.com/reference-${index + 1}`,
+      },
+      group: {
+        object: null,
+        mentions: [],
+        mentionCount: 1,
+        sourceLabels: ["Description"],
+      },
+    }));
+    const root = renderProperties(container, {
+      issue: createIssue(),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+      externalObjects,
+    });
+    await flush();
+
+    expect(container.textContent).toContain("reference-5");
+    expect(container.textContent).not.toContain("reference-6");
+    expect(container.textContent).toContain("URLs");
+    const expandUrls = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.trim() === "Show 2 more",
+    );
+    expect(expandUrls).not.toBeUndefined();
+
+    await act(async () => {
+      expandUrls!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("reference-6");
+    expect(container.textContent).toContain("reference-7");
+    expect(container.textContent).toContain("Show less");
 
     act(() => root.unmount());
   });
@@ -919,7 +1043,7 @@ describe("IssueProperties", () => {
     await flush();
 
     const expandBlockedBy = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.trim() === "+2 more",
+      button.textContent?.trim() === "Show 2 more",
     );
     expect(expandBlockedBy).not.toBeUndefined();
     await act(async () => {
@@ -943,7 +1067,7 @@ describe("IssueProperties", () => {
     await flush();
 
     expect(container.textContent).not.toContain("BLOCK-6");
-    expect(container.textContent).toContain("+2 more");
+    expect(container.textContent).toContain("Show 2 more");
 
     act(() => root.unmount());
   });

@@ -28,7 +28,10 @@ export function Identity({ name, avatarUrl, initials, size = "default", classNam
   const displayInitials = initials ?? deriveInitials(name);
 
   return (
-    <span className={cn("inline-flex gap-1.5 items-center", size === "xs" && "gap-1", size === "lg" && "gap-2", className)}>
+    <span
+      className={cn("inline-flex min-w-0 gap-1.5 items-center", size === "xs" && "gap-1", size === "lg" && "gap-2", className)}
+      title={name}
+    >
       <Avatar size={size}>
         {avatarUrl && <AvatarImage src={avatarUrl} alt={name} />}
         <AvatarFallback>{displayInitials}</AvatarFallback>

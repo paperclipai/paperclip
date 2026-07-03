@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { IssueExternalObjectGroup } from "../../hooks/useIssueExternalObjects";
 import {
   externalObjectCategoryLabel,
@@ -15,6 +15,9 @@ import {
 import { cn } from "../../lib/utils";
 import { ExternalObjectStatusIcon } from "../ExternalObjectStatusIcon";
 import { PropertyRow } from "./primitives";
+import { ExpandRelationListButton } from "./relation-controls";
+
+const EXTERNAL_OBJECT_PROPERTY_PREVIEW_COUNT = 5;
 
 function sortExternalObjectGroups(groups: IssueExternalObjectGroup[]) {
   return [...groups].sort((a, b) => {
@@ -167,6 +170,12 @@ export function ExternalObjectRows({
   externalObjectsError?: boolean;
   onRetryExternalObjects?: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    setExpanded(false);
+  }, [externalObjects]);
+
   if (externalObjectsError) {
     return (
       <PropertyRow label="External objects">
@@ -199,9 +208,15 @@ export function ExternalObjectRows({
 
   if (!externalObjects || externalObjects.length === 0) return null;
 
+  const sortedExternalObjects = sortExternalObjectGroups(externalObjects);
+  const visibleExternalObjects = expanded
+    ? sortedExternalObjects
+    : sortedExternalObjects.slice(0, EXTERNAL_OBJECT_PROPERTY_PREVIEW_COUNT);
+  const hiddenExternalObjectCount = sortedExternalObjects.length - visibleExternalObjects.length;
+
   return (
     <>
-      {sortExternalObjectGroups(externalObjects)
+      {visibleExternalObjects
         .map((externalObject) => {
           const { pill, group } = externalObject;
           return (
@@ -213,6 +228,15 @@ export function ExternalObjectRows({
             </PropertyRow>
           );
         })}
+      {expanded || hiddenExternalObjectCount > 0 ? (
+        <PropertyRow label="URLs">
+          <ExpandRelationListButton
+            hiddenCount={hiddenExternalObjectCount}
+            expanded={expanded}
+            onClick={() => setExpanded((next) => !next)}
+          />
+        </PropertyRow>
+      ) : null}
     </>
   );
 }

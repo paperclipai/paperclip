@@ -28,7 +28,7 @@ export function PropertyPicker({
   children: ReactNode;
 }) {
   const btnCn = cn(
-    "inline-flex items-start gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors min-w-0 max-w-full text-left",
+    "inline-flex min-h-5 items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors min-w-0 max-w-full text-left",
     triggerClassName,
   );
 

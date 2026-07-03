@@ -89,7 +89,7 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: Compone
   }, [value]);
 
   return (
-    <div className="flex items-center gap-1.5 min-w-0 flex-1">
+    <div className="flex items-center gap-1.5 min-w-0 flex-1" title={value}>
       <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
       <button
         type="button"
@@ -163,7 +163,9 @@ export function IssueProperties({
   const [blockedByOpen, setBlockedByOpen] = useState(false);
   const [blockedBySearch, setBlockedBySearch] = useState("");
   const [blockedByExpanded, setBlockedByExpanded] = useState(false);
+  const [blockingExpanded, setBlockingExpanded] = useState(false);
   const [subTasksExpanded, setSubTasksExpanded] = useState(false);
+  const [relatedTasksExpanded, setRelatedTasksExpanded] = useState(false);
   const [parentOpen, setParentOpen] = useState(false);
   const [parentSearch, setParentSearch] = useState("");
   const [reviewersOpen, setReviewersOpen] = useState(false);
@@ -189,7 +191,9 @@ export function IssueProperties({
 
   useEffect(() => {
     setBlockedByExpanded(false);
+    setBlockingExpanded(false);
     setSubTasksExpanded(false);
+    setRelatedTasksExpanded(false);
   }, [issue.id]);
 
   const { data: session } = useQuery({
@@ -1309,7 +1313,7 @@ export function IssueProperties({
   ) : assigneeUserLabel ? (
     <>
       <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 truncate text-sm">{assigneeUserLabel}</span>
+      <span className="min-w-0 truncate text-sm" title={assigneeUserLabel}>{assigneeUserLabel}</span>
     </>
   ) : (
     <span className="text-sm text-muted-foreground">None</span>
@@ -1650,6 +1654,15 @@ export function IssueProperties({
     ? childIssues
     : childIssues.slice(0, ISSUE_PROPERTY_RELATION_PREVIEW_COUNT);
   const hiddenChildIssueCount = childIssues.length - visibleChildIssues.length;
+  const blockingIssues = issue.blocks ?? [];
+  const visibleBlockingIssues = blockingExpanded
+    ? blockingIssues
+    : blockingIssues.slice(0, ISSUE_PROPERTY_RELATION_PREVIEW_COUNT);
+  const hiddenBlockingIssueCount = blockingIssues.length - visibleBlockingIssues.length;
+  const visibleRelatedTasks = relatedTasksExpanded
+    ? relatedTasks
+    : relatedTasks.slice(0, ISSUE_PROPERTY_RELATION_PREVIEW_COUNT);
+  const hiddenRelatedTaskCount = relatedTasks.length - visibleRelatedTasks.length;
   const descendantIssueIds = useMemo(() => {
     if (!allIssues?.length) return new Set<string>();
     const childrenByParentId = new Map<string, string[]>();
@@ -1756,7 +1769,6 @@ export function IssueProperties({
       </div>
     </>
   );
-  const blockingIssues = issue.blocks ?? [];
   const blockerSearchActive = normalizedBlockedBySearch.length > 0;
   const blockerSourceIssues = blockerSearchActive ? searchedBlockedByIssues : allIssues;
   const blockerOptions = (blockerSourceIssues ?? [])
@@ -2000,19 +2012,24 @@ export function IssueProperties({
           </PropertyRow>
         )}
 
-        <PropertyRow label="Blocking">
+        <PropertyRow label="Blocking" wrap>
           {blockingIssues.length > 0 ? (
-            <div className="flex flex-wrap gap-1">
-              {blockingIssues.map((relation) => (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {visibleBlockingIssues.map((relation) => (
                 <IssueReferencePill key={relation.id} issue={relation} />
               ))}
+              <ExpandRelationListButton
+                hiddenCount={hiddenBlockingIssueCount}
+                expanded={blockingExpanded}
+                onClick={() => setBlockingExpanded((expanded) => !expanded)}
+              />
             </div>
           ) : (
             <span className="text-sm text-muted-foreground">None</span>
           )}
         </PropertyRow>
 
-        <PropertyRow label="Sub-tasks">
+        <PropertyRow label="Sub-tasks" wrap>
           <div className="flex flex-wrap items-center gap-1.5">
             {childIssues.length > 0
               ? visibleChildIssues.map((child) => (
@@ -2038,11 +2055,16 @@ export function IssueProperties({
         </PropertyRow>
 
         {relatedTasks.length > 0 ? (
-          <PropertyRow label="Related tasks">
-            <div className="flex flex-wrap gap-1">
-              {relatedTasks.map((related) => (
+          <PropertyRow label="Related tasks" wrap>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {visibleRelatedTasks.map((related) => (
                 <IssueReferencePill key={related.id} issue={related} />
               ))}
+              <ExpandRelationListButton
+                hiddenCount={hiddenRelatedTaskCount}
+                expanded={relatedTasksExpanded}
+                onClick={() => setRelatedTasksExpanded((expanded) => !expanded)}
+              />
             </div>
           </PropertyRow>
         ) : null}
