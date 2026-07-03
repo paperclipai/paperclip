@@ -2780,6 +2780,76 @@ function shouldAutoCheckoutIssueForWake(input: {
   return true;
 }
 
+/**
+ * Wake reasons that carry a genuinely new human/board or dependency signal for a
+ * blocked issue. These MUST always be allowed to check out and run so the
+ * assignee can respond; the human-owned-blocker backoff never suppresses them.
+ */
+const HUMAN_BLOCKED_BACKOFF_NEW_SIGNAL_WAKE_REASONS = new Set<string>([
+  "issue_commented",
+  "issue_comment_mentioned",
+  "issue_assigned",
+  "issue_checked_out",
+  "issue_blockers_resolved",
+  "source_scoped_recovery_action",
+]);
+
+/**
+ * Decide whether the heartbeat should back off (skip re-checkout / re-triage)
+ * for an issue that is `blocked` with no agent-actionable unblock path (a live
+ * human-owned or manual/external block).
+ *
+ * Root cause this guards: a `blocked` issue whose unblock is owned by a human
+ * (e.g. an `in_review` dependency awaiting a human, or a manual block with no
+ * agent-actionable path) gets re-selected every timer heartbeat with no new
+ * signal — checkout flips it `blocked → in_progress`, the agent re-discovers the
+ * same wait, and disposition flips it back to `blocked`. ~1 wasted
+ * block-oscillation per heartbeat.
+ *
+ * We back off ONLY when every guard holds:
+ *   - the issue is `blocked`,
+ *   - it is eligible for backoff (caller-computed: no agent-actionable unblock
+ *     path — see `computeBlockedIssueBackoffEligibility`),
+ *   - there is no new signal since the last triage: no fresh wake comment AND the
+ *     wake reason is not a directed/new-signal reason.
+ *
+ * The wake reason + fresh comment id are the signal-freshness proxy: a new human
+ * comment or blocker-state change on a blocked issue enqueues its own directed
+ * wake (with a comment id / `issue_blockers_resolved` reason), which is exempted
+ * here. Idle re-triage (timer/monitor/reconcile) carries no such signal.
+ *
+ * Preserved (returns false → normal checkout): fresh human/board comment wakes,
+ * blocker-state-change wakes (`issue_blockers_resolved`), assignment/checkout
+ * wakes, execution-state transitions, and any explicit interaction wake. Backoff
+ * therefore resets automatically on any new signal.
+ */
+export function shouldBackoffHumanOwnedBlockedIssueWake(input: {
+  issueStatus: string | null;
+  blockedIssueBackoffEligible: boolean;
+  wakeReason: string | null | undefined;
+  wakeCommentId: string | null | undefined;
+}): boolean {
+  if (readNonEmptyString(input.issueStatus) !== "blocked") return false;
+  if (!input.blockedIssueBackoffEligible) return false;
+  // A fresh comment attached to the wake is a new human/board signal — always
+  // let it through so the assignee can respond (blocked-issue comment contract).
+  if (readNonEmptyString(input.wakeCommentId)) return false;
+
+  const wakeReason = readNonEmptyString(input.wakeReason);
+  if (wakeReason) {
+    if (HUMAN_BLOCKED_BACKOFF_NEW_SIGNAL_WAKE_REASONS.has(wakeReason)) return false;
+    // Execution-state transitions and explicit issue interactions are directed,
+    // new-signal wakes; never suppress them.
+    if (wakeReason.startsWith("execution_")) return false;
+    if (wakeReason.startsWith("issue_interaction")) return false;
+  }
+
+  // Everything else (heartbeat_timer, issue_monitor_*, reconcile/continuation
+  // re-triage, generic scheduler wakes) is idle re-triage churn with no new
+  // signal since the last block — back off.
+  return true;
+}
+
 function shouldQueueFollowupForRunningIssueWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   wakeCommentId: string | null;
@@ -9252,14 +9322,50 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         agentId: agent.id,
       })
     ) {
-      try {
-        await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id);
-        context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
-      } catch (error) {
-        if (!isCheckoutConflictError(error)) throw error;
+      // Back off idle re-checkout of a `blocked` issue that has no
+      // agent-actionable unblock path (human-owned / manual-external block) when
+      // this wake carries no new human/board or blocker-state signal.
+      // New-signal wakes are exempted, so backoff self-resets.
+      const backoffEligibility =
+        readNonEmptyString(issueContext.status) === "blocked"
+          ? await issuesSvc.getBlockedIssueBackoffEligibility(agent.companyId, issueId)
+          : null;
+      const humanBlockedBackoff = shouldBackoffHumanOwnedBlockedIssueWake({
+        issueStatus: issueContext.status,
+        blockedIssueBackoffEligible: backoffEligibility?.eligibleForBackoff ?? false,
+        wakeReason: readNonEmptyString(context.wakeReason),
+        wakeCommentId: deriveCommentId(context, null),
+      });
+      if (humanBlockedBackoff) {
         context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
+        await logActivity(db, {
+          companyId: agent.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: agent.id,
+          runId: run.id,
+          action: "issue.human_blocked_backoff",
+          entityType: "issue",
+          entityId: issueId,
+          details: {
+            reason: "blocked_no_new_signal_human_owned",
+            wakeReason: readNonEmptyString(context.wakeReason),
+            humanOwnedBlockerIssueIds: backoffEligibility?.humanOwnedBlockerIssueIds ?? [],
+            sampleBlockerIdentifier: backoffEligibility?.sampleBlockerIdentifier ?? null,
+          },
+        }).catch((err) => {
+          logger.warn({ err, issueId, runId: run.id }, "failed to log human-blocked backoff");
+        });
+      } else {
+        try {
+          await issuesSvc.checkout(issueId, agent.id, ["todo", "backlog", "blocked"], run.id);
+          context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
+        } catch (error) {
+          if (!isCheckoutConflictError(error)) throw error;
+          context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
+        }
+        issueContext = await getIssueExecutionContext(agent.companyId, issueId);
       }
-      issueContext = await getIssueExecutionContext(agent.companyId, issueId);
     }
     const wakeCommentId = deriveCommentId(context, null);
     const wakeCommentContext =
