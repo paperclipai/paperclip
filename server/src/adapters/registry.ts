@@ -97,6 +97,10 @@ import {
   createHermesLocalServerAdapter,
 } from "@paperclipai/hermes-paperclip-adapter";
 import {
+  createEveGatewayServerAdapter,
+  createEveLocalServerAdapter,
+} from "@paperclipai/adapter-eve/server";
+import {
   execute as openCodeExecute,
   listOpenCodeSkills,
   syncOpenCodeSkills,
@@ -350,6 +354,10 @@ const hermesGatewayAdapter = createHermesGatewayServerAdapter();
 
 const hermesLocalAdapter = createHermesLocalServerAdapter();
 
+const eveGatewayAdapter = createEveGatewayServerAdapter();
+
+const eveLocalAdapter = createEveLocalServerAdapter();
+
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
   execute: openclawGatewayExecute,
@@ -424,6 +432,8 @@ function registerBuiltInAdapters() {
     grokLocalAdapter,
     hermesGatewayAdapter,
     hermesLocalAdapter,
+    eveGatewayAdapter,
+    eveLocalAdapter,
     openclawGatewayAdapter,
     processAdapter,
     httpAdapter,

@@ -4,6 +4,8 @@ import { claudeLocalUIAdapter } from "./claude-local";
 import { codexLocalUIAdapter } from "./codex-local";
 import { cursorCloudUIAdapter } from "./cursor-cloud";
 import { cursorLocalUIAdapter } from "./cursor";
+import { eveGatewayUIAdapter } from "./eve-gateway";
+import { eveLocalUIAdapter } from "./eve-local";
 import { geminiLocalUIAdapter } from "./gemini-local";
 import { grokLocalUIAdapter } from "./grok-local";
 import { hermesGatewayUIAdapter } from "./hermes-gateway";
@@ -57,6 +59,8 @@ function registerBuiltInUIAdapters() {
     claudeLocalUIAdapter,
     codexLocalUIAdapter,
     cursorCloudUIAdapter,
+    eveGatewayUIAdapter,
+    eveLocalUIAdapter,
     geminiLocalUIAdapter,
     grokLocalUIAdapter,
     hermesGatewayUIAdapter,
