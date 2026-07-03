@@ -14,6 +14,8 @@ export interface McpServer {
   url: string | null;
   headers: Record<string, string>;
   env: AgentEnvConfig;
+  /** Sealed credential material (localEncryptedProvider ref); never plaintext. */
+  credentialSecretRef: string | null;
   enabled: boolean;
   lastHealthStatus: McpServerHealthStatus;
   lastHealthcheckAt: Date | null;
@@ -37,6 +39,8 @@ export interface CreateMcpServerRequest {
   url?: string | null;
   headers?: Record<string, string>;
   env?: AgentEnvConfig;
+  /** Write-only plaintext credential; sealed via localEncryptedProvider at persistence. */
+  credential?: string | null;
   enabled?: boolean;
   metadata?: Record<string, unknown>;
 }
@@ -52,6 +56,8 @@ export interface UpdateMcpServerRequest {
   url?: string | null;
   headers?: Record<string, string>;
   env?: AgentEnvConfig;
+  /** Write-only plaintext credential; undefined = keep, null = clear, string = reseal. */
+  credential?: string | null;
   enabled?: boolean;
   metadata?: Record<string, unknown>;
 }

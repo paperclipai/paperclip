@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AgentEnvConfig, CompanySecret, EnvBinding, McpServer } from "@paperclipai/shared";
+import type { AgentEnvConfig, CompanySecret, EnvBinding, McpServer, McpServerTransport } from "@paperclipai/shared";
 import {
   Cable,
   CheckCircle2,
@@ -44,7 +44,7 @@ type ServerDraft = {
   name: string;
   slug: string;
   description: string;
-  transport: "stdio" | "http";
+  transport: McpServerTransport;
   command: string;
   args: string[];
   cwd: string;
@@ -394,8 +394,8 @@ export function CompanyMcpServers() {
         command: draft.transport === "stdio" ? draft.command.trim() || null : null,
         args: draft.transport === "stdio" ? normalizeStringArray(draft.args) : [],
         cwd: draft.transport === "stdio" ? draft.cwd.trim() || null : null,
-        url: draft.transport === "http" ? draft.url.trim() || null : null,
-        headers: draft.transport === "http" ? normalizeRecordRows(draft.headers) : {},
+        url: draft.transport !== "stdio" ? draft.url.trim() || null : null,
+        headers: draft.transport !== "stdio" ? normalizeRecordRows(draft.headers) : {},
         env: draft.transport === "stdio" ? draft.env : {},
         metadata: {
           ...(draft.transport === "stdio"
@@ -690,12 +690,13 @@ export function CompanyMcpServers() {
               <select
                 value={draft.transport}
                 onChange={(event) =>
-                  setDraft((current) => ({ ...current, transport: event.target.value as "stdio" | "http" }))
+                  setDraft((current) => ({ ...current, transport: event.target.value as McpServerTransport }))
                 }
                 className="h-10 rounded-md border border-border bg-background px-3 text-sm outline-none focus:ring-1 focus:ring-ring"
               >
                 <option value="stdio">stdio</option>
                 <option value="http">http</option>
+                <option value="sse">sse</option>
               </select>
             </label>
 

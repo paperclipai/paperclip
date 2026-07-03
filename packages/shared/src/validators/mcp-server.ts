@@ -20,6 +20,7 @@ export const mcpServerSchema = z.object({
   url: z.string().url().nullable(),
   headers: z.record(z.string()),
   env: envConfigSchema,
+  credentialSecretRef: z.string().nullable(),
   enabled: z.boolean(),
   lastHealthStatus: mcpServerHealthStatusSchema,
   lastHealthcheckAt: z.date().nullable(),
@@ -43,6 +44,7 @@ const mcpServerInputBaseSchema = z.object({
   url: z.string().url().nullable().optional(),
   headers: z.record(z.string()).optional(),
   env: envConfigSchema.optional(),
+  credential: z.string().min(1).nullable().optional(),
   enabled: z.boolean().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
@@ -56,10 +58,10 @@ export const createMcpServerSchema = mcpServerInputBaseSchema.superRefine((value
     });
   }
 
-  if (value.transport === "http" && typeof value.url !== "string") {
+  if ((value.transport === "http" || value.transport === "sse") && typeof value.url !== "string") {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "url is required for http MCP servers",
+      message: `url is required for ${value.transport} MCP servers`,
       path: ["url"],
     });
   }
@@ -78,7 +80,7 @@ export const updateMcpServerSchema = mcpServerInputBaseSchema
       });
     }
 
-    if (value.transport === "http" && value.url !== undefined && value.url !== null && value.url === "") {
+    if ((value.transport === "http" || value.transport === "sse") && value.url !== undefined && value.url !== null && value.url === "") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "url cannot be empty for http MCP servers",

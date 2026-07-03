@@ -18,7 +18,9 @@ export const mcpServers = pgTable(
     url: text("url"),
     headers: jsonb("headers").$type<Record<string, string>>().notNull().default({}),
     env: jsonb("env").$type<AgentEnvConfig>().notNull().default({}),
-    enabled: boolean("enabled").notNull().default(true),
+    // Sealed credential material (localEncryptedProvider ref) — never plaintext.
+    credentialSecretRef: text("credential_secret_ref"),
+    enabled: boolean("enabled").notNull().default(false),
     lastHealthStatus: text("last_health_status").notNull().default("unknown"),
     lastHealthcheckAt: timestamp("last_healthcheck_at", { withTimezone: true }),
     lastDiscoveryAt: timestamp("last_discovery_at", { withTimezone: true }),

@@ -22,7 +22,8 @@ import type {
   UpdateAgentMcpServerBindingRequest,
   UpdateMcpServerRequest,
 } from "@paperclipai/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
+import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import type { secretService } from "./secrets.js";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
@@ -30,6 +31,36 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const MCP_SERVER_METADATA_BEARER_ENV_KEY = "httpBearerTokenEnvVar";
 const MCP_SERVER_METADATA_FORWARDED_ENV_KEYS = "forwardedEnvKeys";
 const MCP_SERVER_METADATA_HEADER_ENV_BINDINGS = "headerEnvBindings";
+const MCP_SERVER_CREDENTIAL_PREFIX = "paperclip-mcp-credential:";
+const MCP_SERVER_CREDENTIAL_ENV_KEY = "MCP_CREDENTIAL";
+
+// Mirrors the cloud-upstreams sealed-credential path: credential material is
+// encrypted via localEncryptedProvider and only the sealed ref is persisted.
+export async function sealMcpServerCredential(value: string): Promise<string> {
+  const prepared = await localEncryptedProvider.createSecret({ value });
+  return `${MCP_SERVER_CREDENTIAL_PREFIX}${JSON.stringify(prepared.material)}`;
+}
+
+export async function unsealMcpServerCredential(value: string): Promise<string> {
+  if (!value.startsWith(MCP_SERVER_CREDENTIAL_PREFIX)) {
+    throw badRequest("Invalid MCP server credential ref (missing seal prefix)");
+  }
+  const encoded = value.slice(MCP_SERVER_CREDENTIAL_PREFIX.length);
+  let material: Record<string, unknown> | null = null;
+  try {
+    const parsed = JSON.parse(encoded) as unknown;
+    material = isRecord(parsed) ? parsed : null;
+  } catch {
+    material = null;
+  }
+  if (!material) {
+    throw badRequest("Invalid encrypted MCP server credential material");
+  }
+  return localEncryptedProvider.resolveVersion({
+    material,
+    externalRef: null,
+  });
+}
 
 interface JsonRpcRequest {
   jsonrpc: "2.0";
@@ -118,6 +149,7 @@ function normalizeMcpServerRow(row: typeof mcpServers.$inferSelect): McpServer {
     url: row.url,
     headers: normalizeHeaders(row.headers),
     env: normalizeEnv(row.env),
+    credentialSecretRef: row.credentialSecretRef,
     enabled: row.enabled,
     lastHealthStatus: row.lastHealthStatus as McpServerHealthStatus,
     lastHealthcheckAt: row.lastHealthcheckAt,
@@ -472,7 +504,7 @@ export function mcpServerService(
     const metadata = normalizeMetadata(server.metadata);
     const timeoutMs = Math.max(1, request?.timeoutSec ?? 15) * 1000;
 
-    if (server.transport === "http") {
+    if (server.transport === "http" || server.transport === "sse") {
       const bearerTokenEnvVar = asNullableString(metadata[MCP_SERVER_METADATA_BEARER_ENV_KEY]);
       const forwardedEnvKeys = normalizeStringArray(metadata[MCP_SERVER_METADATA_FORWARDED_ENV_KEYS]);
       const headerEnvBindings = normalizeHeaderEnvBindings(metadata[MCP_SERVER_METADATA_HEADER_ENV_BINDINGS]);
@@ -499,8 +531,13 @@ export function mcpServerService(
         }
       }
 
+      if (server.credentialSecretRef && !resolvedHeaders.Authorization) {
+        const credential = await unsealMcpServerCredential(server.credentialSecretRef);
+        resolvedHeaders.Authorization = `Bearer ${credential}`;
+      }
+
       throw unprocessable(
-        `HTTP MCP servers are not implemented yet for discovery. Saved URL and auth settings for "${server.name}".`,
+        `${server.transport} MCP servers are not implemented yet for discovery. Saved URL and auth settings for "${server.name}".`,
       );
     }
 
@@ -518,6 +555,13 @@ export function mcpServerService(
       }
     }
 
+    const credentialEnv: Record<string, string> = {};
+    if (server.credentialSecretRef && env[MCP_SERVER_CREDENTIAL_ENV_KEY] === undefined) {
+      credentialEnv[MCP_SERVER_CREDENTIAL_ENV_KEY] = await unsealMcpServerCredential(
+        server.credentialSecretRef,
+      );
+    }
+
     return {
       command: server.command,
       args: server.args,
@@ -525,6 +569,7 @@ export function mcpServerService(
       env: {
         ...process.env,
         ...forwardedEnv,
+        ...credentialEnv,
         ...env,
       },
       timeoutMs,
@@ -850,6 +895,10 @@ export function mcpServerService(
         input.env ?? {},
         { fieldPath: "env" },
       );
+      const credentialSecretRef =
+        typeof input.credential === "string" && input.credential.length > 0
+          ? await sealMcpServerCredential(input.credential)
+          : null;
       const [created] = await db
         .insert(mcpServers)
         .values({
@@ -864,7 +913,8 @@ export function mcpServerService(
           url: input.url ?? null,
           headers: input.headers ?? {},
           env,
-          enabled: input.enabled ?? true,
+          credentialSecretRef,
+          enabled: input.enabled ?? false,
           metadata: input.metadata ?? {},
           createdByAgentId: actor?.agentId ?? null,
           createdByUserId: actor?.userId ?? null,
@@ -884,6 +934,11 @@ export function mcpServerService(
         : await deps.secrets.normalizeEnvBindingsForPersistence(existing.companyId, patch.env, {
           fieldPath: "env",
         });
+      const nextCredentialSecretRef = patch.credential === undefined
+        ? existing.credentialSecretRef
+        : patch.credential === null || patch.credential.length === 0
+          ? null
+          : await sealMcpServerCredential(patch.credential);
       const [updated] = await db
         .update(mcpServers)
         .set({
@@ -897,6 +952,7 @@ export function mcpServerService(
           url: patch.url === undefined ? existing.url : patch.url,
           headers: patch.headers ?? existing.headers,
           env: nextEnv,
+          credentialSecretRef: nextCredentialSecretRef,
           enabled: patch.enabled ?? existing.enabled,
           metadata: patch.metadata ?? existing.metadata,
           updatedAt: new Date(),
