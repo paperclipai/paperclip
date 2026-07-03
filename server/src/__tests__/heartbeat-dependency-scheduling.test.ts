@@ -401,6 +401,386 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(noActiveRuns).toBe(true);
   });
 
+  it("delivers a non-assignee notification wake on a blocked issue without executing the blocked work (NDA-714)", async () => {
+    // Regression for the suppressed approval-requester wake. The approval_approved
+    // requester-wake carries the linked work issue (often still blocked) as its
+    // issueId, but its target is the requester (e.g. the CEO), NOT that issue's
+    // assignee. Before the fix the dependency-blocked gate suppressed it
+    // (status:"skipped", wakeRunId:null) at enqueue time, and even once delivered
+    // the claim-time dependency + assignee-mismatch gates cancelled it — so board
+    // approvals never woke the requester and every approval needed a manual ping.
+    // The fix delivers such a wake bounded (notificationOnlyWake) so the requester
+    // runs to process the approval, while the lazy-lock assignee guard keeps it
+    // from ever adopting or executing the still-blocked work issue.
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const requesterAgentId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+      {
+        id: requesterAgentId,
+        companyId,
+        name: "ChiefExec",
+        role: "manager",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Upstream blocker",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked work issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: assigneeAgentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    // Baseline: the assignee's own wake on the blocked issue is still suppressed.
+    const assigneeWake = await heartbeat.wakeup(assigneeAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: blockedIssueId },
+      contextSnapshot: { issueId: blockedIssueId, wakeReason: "issue_assigned" },
+    });
+    expect(assigneeWake).toBeNull();
+    const assigneeWakeSuppressed = await waitForCondition(async () => {
+      const wakeup = await db
+        .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, assigneeAgentId),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${blockedIssueId}`,
+          ),
+        )
+        .orderBy(agentWakeupRequests.requestedAt)
+        .then((rows) => rows[0] ?? null);
+      return Boolean(
+        wakeup && wakeup.status === "skipped" && wakeup.reason === "issue_dependencies_blocked",
+      );
+    });
+    expect(assigneeWakeSuppressed).toBe(true);
+
+    // The non-assignee notification wake (approval_approved, no commentId, so it is
+    // NOT an interaction wake) targeting the requester must be DELIVERED, not skipped.
+    const notificationWake = await heartbeat.wakeup(requesterAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "approval_approved",
+      payload: { issueId: blockedIssueId },
+      contextSnapshot: { issueId: blockedIssueId, wakeReason: "approval_approved" },
+    });
+    expect(notificationWake).not.toBeNull();
+
+    // It runs to completion (the requester actually wakes — no manual ping needed).
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, notificationWake!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    }, 10_000);
+
+    const notificationRun = await db
+      .select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, notificationWake!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(notificationRun?.status).toBe("succeeded");
+    // Delivered bounded: marked as a notification, never recorded as a dependency-blocked skip.
+    expect(notificationRun?.contextSnapshot).toMatchObject({
+      dependencyBlockedInteraction: true,
+      notificationOnlyWake: true,
+      unresolvedBlockerIssueIds: [blockerId],
+    });
+    const notificationWakeRequest = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, requesterAgentId),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${blockedIssueId}`,
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(notificationWakeRequest?.status).not.toBe("skipped");
+
+    // The blocked work issue is NOT adopted/executed by the requester's run: the
+    // lazy-lock assignee guard only stamps executionRunId for the issue assignee.
+    const blockedIssueAfter = await db
+      .select({
+        status: issues.status,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(blockedIssueAfter).toMatchObject({
+      status: "todo",
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+
+    const noActiveRuns = await waitForCondition(async () => {
+      const rows = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
+      return rows.every((run) => run.status !== "queued" && run.status !== "running");
+    }, 10_000);
+    expect(noActiveRuns).toBe(true);
+  });
+
+  it("does NOT deliver a non-assignee wake on a blocked issue when the reason is not allowlisted (NDA-959)", async () => {
+    // CodeRabbit/Greptile narrowing: the notification-only delivery bypass must be
+    // scoped to allowlisted reasons (board approval requester), not granted to ANY
+    // non-assignee wake on a blocked issue. A non-assignee wake whose reason is NOT in
+    // NOTIFICATION_ONLY_WAKE_REASONS must still be suppressed by the dependency gate
+    // (status:"skipped", reason:"issue_dependencies_blocked"), so the over-broad
+    // bypass cannot leak stray runs into the queue.
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Bystander",
+        role: "manager",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Upstream blocker",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked work issue",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: assigneeAgentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    // Non-assignee, non-allowlisted reason ("issue_assigned"), no commentId so it is
+    // NOT an interaction wake either. The only way this could be delivered is the
+    // pre-NDA-959 over-broad notification bypass.
+    const strayWake = await heartbeat.wakeup(otherAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: blockedIssueId },
+      contextSnapshot: { issueId: blockedIssueId, wakeReason: "issue_assigned" },
+    });
+    expect(strayWake).toBeNull();
+
+    const strayWakeSuppressed = await waitForCondition(async () => {
+      const wakeup = await db
+        .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, otherAgentId),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${blockedIssueId}`,
+          ),
+        )
+        .orderBy(agentWakeupRequests.requestedAt)
+        .then((rows) => rows[0] ?? null);
+      return Boolean(
+        wakeup && wakeup.status === "skipped" && wakeup.reason === "issue_dependencies_blocked",
+      );
+    });
+    expect(strayWakeSuppressed).toBe(true);
+
+    // No run was ever created for the stray wake, and the blocked issue stays unowned.
+    const strayRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, otherAgentId));
+    expect(strayRuns).toHaveLength(0);
+
+    const blockedIssueAfter = await db
+      .select({ status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(blockedIssueAfter).toMatchObject({ status: "todo", executionRunId: null });
+  });
+
+  it("voids the notification bypass when the approval requester IS the blocked issue's current assignee (NDA-959)", async () => {
+    // Greptile follow-up: the bypass must re-validate against the CURRENT assignee, not
+    // a persisted flag. The realistic failure is a reassignment that makes the wake
+    // target the assignee — e.g. the blocked issue is (re)assigned to the same agent the
+    // approval_approved wake targets. Even with an allowlisted reason, a wake whose
+    // target IS the current assignee is NOT a notification: it must fall back to the
+    // normal blocked-assignee gate (skipped / issue_dependencies_blocked), never
+    // delivered as notificationOnlyWake and never granted the execution lock.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Upstream blocker",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked work issue",
+        status: "todo",
+        priority: "medium",
+        // The reassignment outcome: the approval requester is now the assignee.
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    // Allowlisted reason (approval_approved), but the target IS the current assignee —
+    // so isNotificationOnlyWakeForIssue returns false and the wake is suppressed.
+    const selfApprovalWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "approval_approved",
+      payload: { issueId: blockedIssueId },
+      contextSnapshot: { issueId: blockedIssueId, wakeReason: "approval_approved" },
+    });
+    expect(selfApprovalWake).toBeNull();
+
+    const suppressed = await waitForCondition(async () => {
+      const wakeup = await db
+        .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, agentId),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${blockedIssueId}`,
+          ),
+        )
+        .orderBy(agentWakeupRequests.requestedAt)
+        .then((rows) => rows[0] ?? null);
+      return Boolean(
+        wakeup && wakeup.status === "skipped" && wakeup.reason === "issue_dependencies_blocked",
+      );
+    });
+    expect(suppressed).toBe(true);
+
+    // No run was created, and the blocked issue is never adopted.
+    const runs = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+
+    const blockedIssueAfter = await db
+      .select({ status: issues.status, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId))
+      .then((rows) => rows[0] ?? null);
+    expect(blockedIssueAfter).toMatchObject({ status: "todo", executionRunId: null });
+  });
+
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
