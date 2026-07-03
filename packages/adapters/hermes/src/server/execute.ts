@@ -439,7 +439,11 @@ export async function execute(
   const args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q", "--pass-session-id");
 
-  if (model) {
+  // "auto" means Hermes decides (profile default) — same treatment as
+  // provider below. Passing the literal "-m auto" through breaks the
+  // ChatGPT-account Codex route, which rejects it with HTTP 400
+  // ("The 'auto' model is not supported") as of 2026-07-02.
+  if (model && model !== "auto") {
     args.push("-m", model);
   }
 
