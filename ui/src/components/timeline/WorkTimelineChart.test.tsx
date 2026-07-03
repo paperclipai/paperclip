@@ -397,12 +397,25 @@ describe("WorkTimelineChart", () => {
 
   it("keeps the default now timestamp stable across rerenders", () => {
     const now = new Date("2026-07-02T12:00:00.000Z").getTime();
-    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+    const later = new Date("2026-07-02T13:00:00.000Z").getTime();
+    let currentNow = now;
+    vi.spyOn(Date, "now").mockImplementation(() => currentNow);
+    const data = timelineSample();
+    data.spans[0] = {
+      ...data.spans[0],
+      end: null,
+      status: "running",
+    };
 
-    renderChart(timelineSample(), { nowMs: undefined });
-    renderChart(timelineSample(), { nowMs: undefined });
+    renderChart(data, { nowMs: undefined });
+    const initialWidth = container
+      .querySelector<SVGRectElement>("[data-run-id='run-1'] rect")
+      ?.getAttribute("width");
 
-    expect(nowSpy).toHaveBeenCalledTimes(1);
+    currentNow = later;
+    renderChart(data, { nowMs: undefined });
+
+    expect(container.querySelector<SVGRectElement>("[data-run-id='run-1'] rect")?.getAttribute("width")).toBe(initialWidth);
   });
 
   it("lets dragging the chart grid select a time range to zoom into", () => {
