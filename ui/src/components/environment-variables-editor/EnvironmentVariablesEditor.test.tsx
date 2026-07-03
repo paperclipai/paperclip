@@ -97,6 +97,10 @@ describe("EnvironmentVariablesEditor", () => {
     flushSync(() => root!.render(node));
   }
 
+  function rerender(node: React.ReactNode) {
+    flushSync(() => root!.render(node));
+  }
+
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -184,6 +188,50 @@ describe("EnvironmentVariablesEditor", () => {
     valueInput.dispatchEvent(new Event("input", { bubbles: true }));
     await flush();
     expect(onChange).toHaveBeenLastCalledWith({ FOO: { type: "plain", value: "bar" } });
+  });
+
+  it("keeps the active row mounted when a save echo returns an equivalent value", async () => {
+    const onChange = vi.fn();
+    const emptyValue: Record<string, EnvBinding> = {};
+    const savedValue: Record<string, EnvBinding> = { API_TOKEN: { type: "plain", value: "secret-value" } };
+    render(
+      <EnvironmentVariablesEditor
+        value={emptyValue}
+        secrets={secrets}
+        onChange={onChange}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    const addButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Add variable"))!;
+    addButton.click();
+    await flush();
+
+    const [nameInput] = nameInputs();
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(nameInput, "API_TOKEN");
+    nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+
+    const valueInput = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    setter.call(valueInput, "secret-value");
+    valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+    valueInput.focus();
+    await flush();
+    expect(document.activeElement).toBe(valueInput);
+    expect(onChange).toHaveBeenLastCalledWith(savedValue);
+
+    rerender(
+      <EnvironmentVariablesEditor
+        value={{ API_TOKEN: { type: "plain", value: "secret-value" } }}
+        secrets={secrets}
+        onChange={onChange}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    await flush();
+
+    expect(document.activeElement).toBe(valueInput);
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')).toBe(valueInput);
   });
 
   it("emits undefined when the last binding is removed", async () => {

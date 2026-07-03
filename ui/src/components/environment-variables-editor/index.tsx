@@ -87,26 +87,35 @@ export function EnvironmentVariablesEditor({
   const valueRef = useRef(value);
   const emittingRef = useRef(false);
 
-  // Controlled sync: adopt external value changes, but ignore the echo of our
-  // own emit (same pattern as the previous editor).
+  function adoptExternalValue(nextValue: Record<string, EnvBinding>) {
+    valueRef.current = nextValue;
+    const nextRows = rowsFromValue(nextValue);
+    setRows(nextRows);
+    setTouchedNames((prev) => {
+      const next = new Set(prev);
+      for (const row of nextRows) {
+        const name = row.name.trim();
+        if (name) next.add(name);
+      }
+      return next;
+    });
+  }
+
+  // Controlled sync: adopt real external value changes, but preserve row ids
+  // across semantically-equivalent save/refetch echoes so focused inputs do not
+  // remount while the user is typing.
   useEffect(() => {
+    const incomingValueKey = normalizedEnvKey(value);
+    const currentValueKey = normalizedEnvKey(valueRef.current);
     if (emittingRef.current) {
       emittingRef.current = false;
+    }
+    if (incomingValueKey === currentValueKey) {
       valueRef.current = value;
       return;
     }
     if (value !== valueRef.current) {
-      valueRef.current = value;
-      const nextRows = rowsFromValue(value);
-      setRows(nextRows);
-      setTouchedNames((prev) => {
-        const next = new Set(prev);
-        for (const row of nextRows) {
-          const name = row.name.trim();
-          if (name) next.add(name);
-        }
-        return next;
-      });
+      adoptExternalValue(value);
     }
   }, [value]);
 
