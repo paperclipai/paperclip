@@ -23,7 +23,7 @@ const EXEMPT_TITLE_PREFIXES = [
   "Content idea:",
 ];
 
-function standardReviewPolicy(reviewerAgentId: string): Record<string, unknown> {
+export function standardRrOutreachReviewPolicy(reviewerAgentId: string): Record<string, unknown> {
   return {
     mode: "normal",
     commentRequired: true,
@@ -76,6 +76,6 @@ export function resolveRrOutreachRoutineGovernance(input: {
       RR_OUTREACH_LABEL_ID,
       ...(isLinkedInContent ? [RR_CONTENT_LABEL_ID] : []),
     ],
-    executionPolicy: standardReviewPolicy(reviewerAgentId),
+    executionPolicy: standardRrOutreachReviewPolicy(reviewerAgentId),
   };
 }

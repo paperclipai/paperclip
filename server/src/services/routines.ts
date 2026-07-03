@@ -400,7 +400,7 @@ function normalizeRoutineDispatchFingerprintValue(value: unknown): unknown {
   return String(value);
 }
 
-function createRoutineDispatchFingerprint(input: {
+export function createRoutineDispatchFingerprint(input: {
   payload: Record<string, unknown> | null;
   projectId: string | null;
   projectWorkspaceId: string | null;
@@ -417,7 +417,7 @@ function createRoutineDispatchFingerprint(input: {
   return crypto.createHash("sha256").update(canonical).digest("hex");
 }
 
-function createRoutineEnvFingerprint(env: unknown) {
+export function createRoutineEnvFingerprint(env: unknown) {
   const canonical = JSON.stringify(normalizeRoutineDispatchFingerprintValue(env ?? null));
   return crypto.createHash("sha256").update(canonical).digest("hex");
 }
@@ -1455,7 +1455,7 @@ export function routineService(
     const issueBillingCode = managedIssueTemplate?.billingCode ?? null;
     const dispatchFingerprint = createRoutineDispatchFingerprint({
       payload: triggerPayload,
-      projectId: issueProjectId,
+      projectId: projectId ?? null,
       projectWorkspaceId,
       assigneeAgentId,
       routineRevisionId: input.routine.latestRevisionId,
