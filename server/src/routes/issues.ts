@@ -3012,6 +3012,31 @@ export function issueRoutes(
     res.json(result);
   });
 
+  type IssueRefListFilterResolution =
+    | { ok: true; id?: string; noMatch?: boolean }
+    | { ok: false; error: string };
+
+  async function resolveIssueRefListFilter(
+    companyId: string,
+    paramName: "parentId" | "descendantOf",
+    raw: unknown,
+  ): Promise<IssueRefListFilterResolution> {
+    if (raw === undefined) return { ok: true };
+    if (typeof raw !== "string") {
+      return { ok: false, error: `${paramName} must be an issue UUID or identifier` };
+    }
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return { ok: true };
+    if (isUuidLike(trimmed)) return { ok: true, id: trimmed };
+    const identifier = normalizeIssueReferenceIdentifier(trimmed);
+    if (!identifier) {
+      return { ok: false, error: `${paramName} must be an issue UUID or identifier` };
+    }
+    const issue = await svc.getByIdentifier(identifier);
+    if (!issue || issue.companyId !== companyId) return { ok: true, noMatch: true };
+    return { ok: true, id: issue.id };
+  }
+
   router.get("/companies/:companyId/issues", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -3121,6 +3146,28 @@ export function issueRoutes(
         return;
       }
     }
+    const parentRef = await resolveIssueRefListFilter(
+      companyId,
+      "parentId",
+      req.query.parentId,
+    );
+    if (!parentRef.ok) {
+      res.status(422).json({ error: parentRef.error });
+      return;
+    }
+    const descendantOfRef = await resolveIssueRefListFilter(
+      companyId,
+      "descendantOf",
+      req.query.descendantOf,
+    );
+    if (!descendantOfRef.ok) {
+      res.status(422).json({ error: descendantOfRef.error });
+      return;
+    }
+    if (parentRef.noMatch || descendantOfRef.noMatch) {
+      res.json([]);
+      return;
+    }
     const offset = parsedOffset ?? 0;
 
     const rawResult = await svc.list(companyId, {
@@ -3138,8 +3185,8 @@ export function issueRoutes(
       projectId: req.query.projectId as string | undefined,
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
-      parentId: req.query.parentId as string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
+      parentId: parentRef.id,
+      descendantOf: descendantOfRef.id,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
@@ -3228,6 +3275,28 @@ export function issueRoutes(
       res.status(403).json({ error: "treeOwnerUserId=me requires board authentication" });
       return;
     }
+    const parentRef = await resolveIssueRefListFilter(
+      companyId,
+      "parentId",
+      req.query.parentId,
+    );
+    if (!parentRef.ok) {
+      res.status(422).json({ error: parentRef.error });
+      return;
+    }
+    const descendantOfRef = await resolveIssueRefListFilter(
+      companyId,
+      "descendantOf",
+      req.query.descendantOf,
+    );
+    if (!descendantOfRef.ok) {
+      res.status(422).json({ error: descendantOfRef.error });
+      return;
+    }
+    if (parentRef.noMatch || descendantOfRef.noMatch) {
+      res.json({ count: 0 });
+      return;
+    }
 
     const blockedCountFilters = {
       attention: "blocked",
@@ -3241,8 +3310,8 @@ export function issueRoutes(
       projectId: req.query.projectId as string | undefined,
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
-      parentId: req.query.parentId as string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
+      parentId: parentRef.id,
+      descendantOf: descendantOfRef.id,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
