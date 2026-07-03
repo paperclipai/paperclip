@@ -137,6 +137,66 @@ describe("issueThreadInteractionService", () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
 
+  it("normalizes legacy stale_duplicate confirmation results when listing interactions", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    const row = {
+      id: "interaction-stale-duplicate",
+      companyId: "company-1",
+      issueId,
+      kind: "request_confirmation",
+      status: "expired",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: "Confirm the plan",
+      summary: null,
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      resolvedByAgentId: null,
+      resolvedByUserId: null,
+      payload: {
+        version: 1,
+        prompt: "Apply this plan?",
+      },
+      result: {
+        version: 1,
+        outcome: "stale_duplicate",
+      },
+      resolvedAt: new Date("2026-04-20T10:01:00.000Z"),
+      createdAt: new Date("2026-04-20T10:00:00.000Z"),
+      updatedAt: new Date("2026-04-20T10:01:00.000Z"),
+    };
+    const db: any = {
+      select: vi.fn(() => ({
+        from() {
+          return {
+            where() {
+              return {
+                orderBy: async () => [row],
+              };
+            },
+          };
+        },
+      })),
+    };
+
+    const svc = issueThreadInteractionService(db as never);
+    const listed = await svc.listForIssue(issueId);
+
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      id: row.id,
+      kind: "request_confirmation",
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "stale_target",
+      },
+    });
+  });
+
   it("answerQuestions normalizes duplicate option ids and persists answered results", async () => {
     const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
 

@@ -154,18 +154,32 @@ function hydrateInteraction(
         ...base,
         kind: "request_confirmation",
         payload: requestConfirmationPayloadSchema.parse(row.payload),
-        result: row.result ? requestConfirmationResultSchema.parse(row.result) : null,
+        result: row.result
+          ? requestConfirmationResultSchema.parse(normalizeRequestConfirmationResult(row.result))
+          : null,
       } satisfies RequestConfirmationInteraction;
     case "request_checkbox_confirmation":
       return {
         ...base,
         kind: "request_checkbox_confirmation",
         payload: requestCheckboxConfirmationPayloadSchema.parse(row.payload),
-        result: row.result ? requestCheckboxConfirmationResultSchema.parse(row.result) : null,
+        result: row.result
+          ? requestCheckboxConfirmationResultSchema.parse(normalizeRequestConfirmationResult(row.result))
+          : null,
       } satisfies RequestCheckboxConfirmationInteraction;
     default:
       throw unprocessable(`Unknown interaction kind: ${row.kind}`);
   }
+}
+
+function normalizeRequestConfirmationResult(result: unknown) {
+  if (!result || typeof result !== "object") return result;
+  const candidate = result as { outcome?: unknown };
+  if (candidate.outcome !== "stale_duplicate") return result;
+  return {
+    ...candidate,
+    outcome: "stale_target",
+  };
 }
 
 async function touchIssue(db: IssueTouchDb, issueId: string) {
