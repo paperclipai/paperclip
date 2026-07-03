@@ -820,10 +820,10 @@ export async function startServer(): Promise<StartedServer> {
       }
 
       const issueGraphReconciled = await heartbeat.reconcileIssueGraphLiveness();
-      if (issueGraphReconciled.escalationsCreated > 0) {
+      if (issueGraphReconciled.escalationsCreated > 0 || issueGraphReconciled.dependencyWakesHealed > 0) {
         logger.warn(
           { ...issueGraphReconciled },
-          "startup issue-graph liveness reconciliation created escalations",
+          "startup issue-graph liveness reconciliation changed issue graph state",
         );
       }
 
@@ -924,8 +924,8 @@ export async function startServer(): Promise<StartedServer> {
         })
         .then(async () => {
           const reconciled = await heartbeat.reconcileIssueGraphLiveness();
-          if (reconciled.escalationsCreated > 0) {
-            logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation created escalations");
+          if (reconciled.escalationsCreated > 0 || reconciled.dependencyWakesHealed > 0) {
+            logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation changed issue graph state");
           }
         })
         .then(async () => {

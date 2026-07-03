@@ -119,6 +119,11 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import {
+  ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+  buildIssueBlockersResolvedWakeIdempotencyKey,
+  findExistingIssueBlockersResolvedWake,
+} from "../services/issue-dependency-wakeups.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
@@ -6616,6 +6621,10 @@ export function issueRoutes(
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
+      type DependencyReadinessProvider = {
+        getDependencyReadiness?: typeof svc.getDependencyReadiness;
+      };
+      const dependencyReadinessSvc = svc as DependencyReadinessProvider;
       const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
       const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
         const wakeIssueId =
@@ -6623,6 +6632,53 @@ export function issueRoutes(
             ? wakeup.payload.issueId
             : issue.id;
         wakeups.set(`${agentId}:${wakeIssueId}`, { agentId, wakeup });
+      };
+      const addDependencyResolvedWakeup = async (input: {
+        agentId: string;
+        dependentIssueId: string;
+        resolvedBlockerIssueId: string;
+        blockerIssueIds: string[];
+        source: string;
+        mutation: string;
+      }) => {
+        const idempotencyKey = buildIssueBlockersResolvedWakeIdempotencyKey({
+          dependentIssueId: input.dependentIssueId,
+          resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+        });
+        try {
+          const existingWake = await findExistingIssueBlockersResolvedWake(db, {
+            companyId: issue.companyId,
+            idempotencyKey,
+          });
+          if (existingWake) return;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: input.dependentIssueId, idempotencyKey },
+            "failed to check existing dependency wake before issue update wake",
+          );
+        }
+        addWakeup(input.agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+          payload: {
+            issueId: input.dependentIssueId,
+            resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+            blockerIssueIds: input.blockerIssueIds,
+            mutation: input.mutation,
+          },
+          idempotencyKey,
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: input.dependentIssueId,
+            taskId: input.dependentIssueId,
+            wakeReason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+            source: input.source,
+            resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+            blockerIssueIds: input.blockerIssueIds,
+          },
+        });
       };
 
       if (executionStageWakeup) {
@@ -6750,25 +6806,40 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
-          addWakeup(dependent.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_blockers_resolved",
-            payload: {
-              issueId: dependent.id,
-              resolvedBlockerIssueId: issue.id,
-              blockerIssueIds: dependent.blockerIssueIds,
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: dependent.id,
-              taskId: dependent.id,
-              wakeReason: "issue_blockers_resolved",
-              source: "issue.blockers_resolved",
-              resolvedBlockerIssueId: issue.id,
-              blockerIssueIds: dependent.blockerIssueIds,
-            },
+          await addDependencyResolvedWakeup({
+            agentId: dependent.assigneeAgentId,
+            dependentIssueId: dependent.id,
+            resolvedBlockerIssueId: issue.id,
+            blockerIssueIds: dependent.blockerIssueIds,
+            source: "issue.blockers_resolved",
+            mutation: "blocker_done",
+          });
+        }
+      }
+
+      const restoredBlockedReadyDependency =
+        issue.status === "blocked" &&
+        issue.assigneeAgentId &&
+        (
+          existing.status !== "blocked" ||
+          Array.isArray(req.body.blockedByIssueIds) ||
+          existing.assigneeAgentId !== issue.assigneeAgentId
+        );
+      if (restoredBlockedReadyDependency && typeof dependencyReadinessSvc.getDependencyReadiness === "function") {
+        const readiness = await dependencyReadinessSvc.getDependencyReadiness(issue.id);
+        const resolvedBlockerIssueId = readiness.blockerIssueIds[0] ?? null;
+        if (
+          resolvedBlockerIssueId &&
+          readiness.isDependencyReady &&
+          readiness.blockerIssueIds.length > 0
+        ) {
+          await addDependencyResolvedWakeup({
+            agentId: issue.assigneeAgentId!,
+            dependentIssueId: issue.id,
+            resolvedBlockerIssueId,
+            blockerIssueIds: readiness.blockerIssueIds,
+            source: "issue.blockers_restored",
+            mutation: "blocked_dependency_restored",
           });
         }
       }
@@ -6811,6 +6882,30 @@ export function issueRoutes(
       for (const { agentId, wakeup } of wakeups.values()) {
         heartbeat
           .wakeup(agentId, wakeup)
+          .then((wakeRun) => {
+            if (wakeup.reason !== ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) return;
+            const payload = wakeup.payload && typeof wakeup.payload === "object" ? wakeup.payload : {};
+            const dependentIssueId = typeof payload.issueId === "string" ? payload.issueId : issue.id;
+            return logActivity(db, {
+              companyId: issue.companyId,
+              actorType: "system",
+              actorId: "issue_update",
+              agentId,
+              runId: actor.runId,
+              action: "issue.blockers_resolved_wake_emitted",
+              entityType: "issue",
+              entityId: dependentIssueId,
+              details: {
+                source: wakeup.contextSnapshot?.source ?? "issue.update",
+                wakeupRunId: wakeRun?.id ?? null,
+                idempotencyKey: wakeup.idempotencyKey ?? null,
+                resolvedBlockerIssueId: typeof payload.resolvedBlockerIssueId === "string"
+                  ? payload.resolvedBlockerIssueId
+                  : null,
+                blockerIssueIds: Array.isArray(payload.blockerIssueIds) ? payload.blockerIssueIds : [],
+              },
+            });
+          })
           .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
       }
     })();
@@ -8049,6 +8144,51 @@ export function issueRoutes(
         if (wakeups.has(key)) return;
         wakeups.set(key, { agentId, wakeup });
       };
+      const addDependencyResolvedWakeup = async (input: {
+        agentId: string;
+        dependentIssueId: string;
+        resolvedBlockerIssueId: string;
+        blockerIssueIds: string[];
+      }) => {
+        const idempotencyKey = buildIssueBlockersResolvedWakeIdempotencyKey({
+          dependentIssueId: input.dependentIssueId,
+          resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+        });
+        try {
+          const existingWake = await findExistingIssueBlockersResolvedWake(db, {
+            companyId: currentIssue.companyId,
+            idempotencyKey,
+          });
+          if (existingWake) return;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: input.dependentIssueId, idempotencyKey },
+            "failed to check existing dependency wake before issue comment wake",
+          );
+        }
+        addWakeup(input.agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+          payload: {
+            issueId: input.dependentIssueId,
+            resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+            blockerIssueIds: input.blockerIssueIds,
+            mutation: "comment",
+          },
+          idempotencyKey,
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: input.dependentIssueId,
+            taskId: input.dependentIssueId,
+            wakeReason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+            source: "issue.blockers_resolved",
+            resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+            blockerIssueIds: input.blockerIssueIds,
+          },
+        });
+      };
 
       if (commentDecisionStageWakeup) {
         addWakeup(commentDecisionStageWakeup.agentId, commentDecisionStageWakeup.wakeup);
@@ -8148,25 +8288,11 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(currentIssue.id);
         for (const dependent of dependents) {
-          addWakeup(dependent.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_blockers_resolved",
-            payload: {
-              issueId: dependent.id,
-              resolvedBlockerIssueId: currentIssue.id,
-              blockerIssueIds: dependent.blockerIssueIds,
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: dependent.id,
-              taskId: dependent.id,
-              wakeReason: "issue_blockers_resolved",
-              source: "issue.blockers_resolved",
-              resolvedBlockerIssueId: currentIssue.id,
-              blockerIssueIds: dependent.blockerIssueIds,
-            },
+          await addDependencyResolvedWakeup({
+            agentId: dependent.assigneeAgentId,
+            dependentIssueId: dependent.id,
+            resolvedBlockerIssueId: currentIssue.id,
+            blockerIssueIds: dependent.blockerIssueIds,
           });
         }
       }
@@ -8210,6 +8336,30 @@ export function issueRoutes(
       for (const { agentId, wakeup } of wakeups.values()) {
         heartbeat
           .wakeup(agentId, wakeup)
+          .then((wakeRun) => {
+            if (wakeup.reason !== ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) return;
+            const payload = wakeup.payload && typeof wakeup.payload === "object" ? wakeup.payload : {};
+            const dependentIssueId = typeof payload.issueId === "string" ? payload.issueId : currentIssue.id;
+            return logActivity(db, {
+              companyId: currentIssue.companyId,
+              actorType: "system",
+              actorId: "issue_comment",
+              agentId,
+              runId: actor.runId,
+              action: "issue.blockers_resolved_wake_emitted",
+              entityType: "issue",
+              entityId: dependentIssueId,
+              details: {
+                source: wakeup.contextSnapshot?.source ?? "issue.comment",
+                wakeupRunId: wakeRun?.id ?? null,
+                idempotencyKey: wakeup.idempotencyKey ?? null,
+                resolvedBlockerIssueId: typeof payload.resolvedBlockerIssueId === "string"
+                  ? payload.resolvedBlockerIssueId
+                  : null,
+                blockerIssueIds: Array.isArray(payload.blockerIssueIds) ? payload.blockerIssueIds : [],
+              },
+            });
+          })
           .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
       }
     })();

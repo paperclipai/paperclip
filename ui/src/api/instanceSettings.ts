@@ -38,6 +38,15 @@ export const instanceSettingsApi = {
       skipped: number;
       skippedAutoRecoveryDisabled: number;
       skippedOutsideLookback: number;
+      dependencyWakeBackstopChecked: number;
+      dependencyWakesHealed: number;
+      dependencyWakeExistingSkipped: number;
+      dependencyWakeLivePathSkipped: number;
+      dependencyWakeInteractionSkipped: number;
+      dependencyWakePauseHoldSkipped: number;
+      dependencyWakeNotReadySkipped: number;
+      dependencyWakeEnqueueFailed: number;
+      dependencyWakeIssueIds: string[];
       escalationIssueIds: string[];
     }>(
       "/instance/settings/experimental/issue-graph-liveness-auto-recovery/run",
