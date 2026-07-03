@@ -267,6 +267,44 @@ describe("EnvironmentVariablesEditor", () => {
     expect(submittedValues).toEqual([{ FOO: { type: "plain", value: "bar" } }]);
   });
 
+  it("flushes unsaved editor changes before an external save button reads parent state", async () => {
+    const savedValues: Array<Record<string, EnvBinding>> = [];
+
+    function SaveButtonHarness() {
+      const [value, setValue] = useState<Record<string, EnvBinding>>({
+        FOO: { type: "plain", value: "" },
+      });
+      return (
+        <div>
+          <EnvironmentVariablesEditor
+            value={value}
+            secrets={secrets}
+            onChange={(next) => setValue(next ?? {})}
+            onCreateSecret={async () => secrets[0]}
+          />
+          <button type="button" onClick={() => savedValues.push(value)}>
+            Save settings
+          </button>
+        </div>
+      );
+    }
+
+    render(<SaveButtonHarness />);
+    const valueInput = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(valueInput, "bar");
+    valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+
+    const outerSave = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+      button.textContent?.includes("Save settings"),
+    )!;
+    outerSave.click();
+    await flush();
+
+    expect(savedValues).toEqual([{ FOO: { type: "plain", value: "bar" } }]);
+  });
+
   it("makes unsaved fields and save controls prominent while editing", async () => {
     render(<EnvironmentVariablesEditor value={{ FOO: { type: "plain", value: "" } }} secrets={secrets} onChange={() => {}} onCreateSecret={async () => secrets[0]} />);
     const valueInput = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { AlertCircle, KeyRound, Plus, RotateCcw, Save } from "lucide-react";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
@@ -182,21 +182,45 @@ export function EnvironmentVariablesEditor({
   const draftValueKey = useMemo(() => normalizedEnvKey(draftValue), [draftValue]);
   const hasUnsavedChanges = draftValueKey !== committedValueKey;
 
+  const flushPendingDraft = useCallback(() => {
+    if (disabled || !hasUnsavedChanges) return;
+    pendingSaveValueKeyRef.current = draftValueKey;
+    flushSync(() => {
+      onChange(draftValue);
+    });
+  }, [disabled, draftValue, draftValueKey, hasUnsavedChanges, onChange]);
+
   useEffect(() => {
     const form = editorRootRef.current?.closest("form");
     if (!form) return;
 
     function handleSubmit() {
-      if (disabled || !hasUnsavedChanges) return;
-      pendingSaveValueKeyRef.current = draftValueKey;
-      flushSync(() => {
-        onChange(draftValue);
-      });
+      flushPendingDraft();
     }
 
     form.addEventListener("submit", handleSubmit, true);
     return () => form.removeEventListener("submit", handleSubmit, true);
-  }, [disabled, draftValue, draftValueKey, hasUnsavedChanges, onChange]);
+  }, [flushPendingDraft]);
+
+  useEffect(() => {
+    const root = editorRootRef.current;
+    if (!root) return;
+    const currentRoot = root;
+
+    function handleDocumentClick(event: MouseEvent) {
+      const target = event.target;
+      if (!(target instanceof Element) || currentRoot.contains(target)) return;
+      const button = target.closest("button");
+      if (!button || button.disabled) return;
+      const label = `${button.getAttribute("aria-label") ?? ""} ${button.textContent ?? ""}`;
+      if (button.type === "submit" || /\bsave\b/i.test(label)) {
+        flushPendingDraft();
+      }
+    }
+
+    document.addEventListener("click", handleDocumentClick, true);
+    return () => document.removeEventListener("click", handleDocumentClick, true);
+  }, [flushPendingDraft]);
 
   function updateDraft(nextRows: EnvRow[]) {
     setRows(nextRows);
