@@ -2076,6 +2076,75 @@ describe("realizeExecutionWorkspace", () => {
     expect(actualHead).toBe(expectedHead);
   }, 15_000);
 
+  it("stamps the reattaching agent's git identity when a missing persisted git worktree is re-added", async () => {
+    const repoRoot = await createTempRepo();
+    const agentA = { id: "agent-a", name: "Agent Alpha", companyId: "company-1" };
+    const agentB = { id: "agent-b", name: "Agent Beta", companyId: "company-1" };
+
+    const initial = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-453",
+        title: "Restore identity test",
+      },
+      agent: agentA,
+    });
+
+    await fs.rm(initial.cwd, { recursive: true, force: true });
+
+    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: initial.cwd,
+        providerRef: initial.worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: initial.branchName,
+        config: {},
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-453",
+        title: "Restore identity test",
+      },
+      agent: agentB,
+    });
+
+    expect(restored).not.toBeNull();
+
+    await fs.writeFile(path.join(restored!.cwd, "probe.txt"), "identity check\n", "utf8");
+    await runGit(restored!.cwd, ["add", "probe.txt"]);
+    await runGit(restored!.cwd, ["commit", "-m", "identity probe"]);
+
+    const commitEmail = await readGit(restored!.cwd, ["log", "-1", "--format=%ae"]);
+    expect(commitEmail).toBe("agent-b@agents.paperclip.local");
+  }, 15_000);
+
   it("repairs a clean persisted git worktree branch mismatch when both branches point at the same commit", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-454-repair-clean-branch-mismatch";
