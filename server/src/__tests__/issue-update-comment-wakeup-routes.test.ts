@@ -103,7 +103,31 @@ vi.mock("../services/index.js", () => ({
   routineService: () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
+  resolveTaskWatchdogMutationScope: vi.fn(async () => ({ kind: "none" })),
   workProductService: () => ({}),
+}));
+
+vi.mock("../services/task-watchdog-scope.js", () => ({
+  TASK_WATCHDOG_ORIGIN_KIND: "task_watchdog",
+  resolveTaskWatchdogMutationScope: vi.fn(async () => ({ kind: "none" })),
+  taskWatchdogScopeAllowsIssueMutation: vi.fn(async () => ({ kind: "valid" })),
+}));
+
+vi.mock("../services/source-trust.js", () => ({
+  resolveActorSourceTrustForIssue: vi.fn(async () => null),
+  resolveCoreTrustPreset: vi.fn(() => null),
+}));
+
+vi.mock("../services/external-objects.js", () => ({
+  externalObjectService: () => ({
+    syncCommentSafely: vi.fn(async () => undefined),
+    syncDocumentSafely: vi.fn(async () => undefined),
+    syncIssueSafely: vi.fn(async () => undefined),
+    listForIssue: vi.fn(async () => []),
+    getIssueSummary: vi.fn(async () => null),
+    getIssueSummaries: vi.fn(async () => []),
+    refreshIssueObjects: vi.fn(async () => []),
+  }),
 }));
 
 function registerModuleMocks() {
@@ -172,7 +196,28 @@ function registerModuleMocks() {
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
+    resolveTaskWatchdogMutationScope: vi.fn(async () => ({ kind: "none" })),
     workProductService: () => ({}),
+  }));
+  vi.doMock("../services/task-watchdog-scope.js", () => ({
+    TASK_WATCHDOG_ORIGIN_KIND: "task_watchdog",
+    resolveTaskWatchdogMutationScope: vi.fn(async () => ({ kind: "none" })),
+    taskWatchdogScopeAllowsIssueMutation: vi.fn(async () => ({ kind: "valid" })),
+  }));
+  vi.doMock("../services/source-trust.js", () => ({
+    resolveActorSourceTrustForIssue: vi.fn(async () => null),
+    resolveCoreTrustPreset: vi.fn(() => null),
+  }));
+  vi.doMock("../services/external-objects.js", () => ({
+    externalObjectService: () => ({
+      syncCommentSafely: vi.fn(async () => undefined),
+      syncDocumentSafely: vi.fn(async () => undefined),
+      syncIssueSafely: vi.fn(async () => undefined),
+      listForIssue: vi.fn(async () => []),
+      getIssueSummary: vi.fn(async () => null),
+      getIssueSummaries: vi.fn(async () => []),
+      refreshIssueObjects: vi.fn(async () => []),
+    }),
   }));
 }
 
@@ -223,6 +268,7 @@ function agentActor(agentId = PREVIOUS_AGENT_ID) {
   return {
     type: "agent",
     agentId,
+    companyId: "company-1",
     companyIds: ["company-1"],
     source: "api_key",
     runId: RUN_ID,
@@ -375,6 +421,30 @@ describe("issue update comment wakeups", () => {
       expect.objectContaining({ assigneeAgentId: MENTIONED_AGENT_ID }),
     );
     expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects agent Next Owner marker comments when the same PATCH assigns a different agent", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: PREVIOUS_AGENT_ID,
+      assigneeUserId: null,
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+
+    const res = await request(await createApp(agentActor()))
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+        comment: "**Next Owner:** [@QA](agent://33333333-3333-4333-8333-333333333333)\n**Action required:** Review this.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      error: "HandoffContractViolation",
+      contract: "/FAI/issues/FAI-3867",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("exempts board-authored verdict marker comments from the handoff gate", async () => {
