@@ -2675,6 +2675,32 @@ type WorkspaceReuseIssueRef = {
   identifier?: string | null;
 } | null | undefined;
 
+export type ExecutionWorkspaceReuseRequestForIssue = {
+  requestedExecutionWorkspaceId: string | null;
+  requestedShouldReuseExisting: boolean;
+  existingExecutionWorkspaceAvailable: boolean;
+};
+
+export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
+  issueExecutionWorkspaceId?: string | null;
+  issueExecutionWorkspacePreference?: string | null;
+  existingExecutionWorkspaceStatus?: string | null;
+}): ExecutionWorkspaceReuseRequestForIssue {
+  const requestedExecutionWorkspaceId = readNonEmptyString(input.issueExecutionWorkspaceId);
+  const requestedShouldReuseExisting =
+    input.issueExecutionWorkspacePreference === "reuse_existing" && requestedExecutionWorkspaceId !== null;
+
+  return {
+    requestedExecutionWorkspaceId,
+    requestedShouldReuseExisting,
+    existingExecutionWorkspaceAvailable:
+      requestedShouldReuseExisting &&
+      input.existingExecutionWorkspaceStatus !== null &&
+      input.existingExecutionWorkspaceStatus !== undefined &&
+      input.existingExecutionWorkspaceStatus !== "archived",
+  };
+}
+
 export function resolveExecutionWorkspaceReuseProvisioningPolicy(input: {
   requestedShouldReuseExisting: boolean;
   workspaceConfigFreshness: ExecutionWorkspaceConfigFreshnessDecision;
@@ -9937,15 +9963,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipTaskMarkdown;
     }
+    const requestedExecutionWorkspaceId = readNonEmptyString(issueRef?.executionWorkspaceId);
     const existingExecutionWorkspace =
-      issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
-    const requestedShouldReuseExisting =
-      issueRef?.executionWorkspacePreference === "reuse_existing" &&
-      existingExecutionWorkspace !== null &&
-      existingExecutionWorkspace.status !== "archived";
-    const requestedReusableExecutionWorkspaceConfig = requestedShouldReuseExisting
-      ? existingExecutionWorkspace?.config ?? null
+      requestedExecutionWorkspaceId ? await executionWorkspacesSvc.getById(requestedExecutionWorkspaceId) : null;
+    const workspaceReuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
+      issueExecutionWorkspaceId: requestedExecutionWorkspaceId,
+      issueExecutionWorkspacePreference: issueRef?.executionWorkspacePreference ?? null,
+      existingExecutionWorkspaceStatus: existingExecutionWorkspace?.status ?? null,
+    });
+    const requestedShouldReuseExisting = workspaceReuseRequest.requestedShouldReuseExisting;
+    const reusableExistingExecutionWorkspace = workspaceReuseRequest.existingExecutionWorkspaceAvailable
+      ? existingExecutionWorkspace
       : null;
+    const requestedReusableExecutionWorkspaceConfig = reusableExistingExecutionWorkspace?.config ?? null;
     const localEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
     const resolvedInstanceSettings = await instanceSettings.get();
     const environmentResolution = resolveExecutionWorkspaceEnvironmentId({
@@ -10144,16 +10174,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         projectPolicy: projectExecutionWorkspacePolicy,
         issueSettings: issueExecutionWorkspaceSettings,
         reusableExecutionWorkspaceConfig: requestedReusableExecutionWorkspaceConfig,
-        existingExecutionWorkspace: existingExecutionWorkspace
+        existingExecutionWorkspace: reusableExistingExecutionWorkspace
           ? {
-              id: existingExecutionWorkspace.id,
-              mode: existingExecutionWorkspace.mode,
-              strategyType: existingExecutionWorkspace.strategyType,
-              projectWorkspaceId: existingExecutionWorkspace.projectWorkspaceId,
-              repoUrl: existingExecutionWorkspace.repoUrl,
-              baseRef: existingExecutionWorkspace.baseRef,
-              branchName: existingExecutionWorkspace.branchName,
-              config: existingExecutionWorkspace.config,
+              id: reusableExistingExecutionWorkspace.id,
+              mode: reusableExistingExecutionWorkspace.mode,
+              strategyType: reusableExistingExecutionWorkspace.strategyType,
+              projectWorkspaceId: reusableExistingExecutionWorkspace.projectWorkspaceId,
+              repoUrl: reusableExistingExecutionWorkspace.repoUrl,
+              baseRef: reusableExistingExecutionWorkspace.baseRef,
+              branchName: reusableExistingExecutionWorkspace.branchName,
+              config: reusableExistingExecutionWorkspace.config,
             }
           : null,
       },
@@ -10297,24 +10327,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       realization: workspaceRealizationFingerprint,
       secretManifest,
     });
-    const inferredExistingWorkspaceConfigMetadata = existingExecutionWorkspace
+    const inferredExistingWorkspaceConfigMetadata = reusableExistingExecutionWorkspace
       ? buildEffectiveRunWorkspaceConfigMetadata({
-          mode: issueExecutionWorkspaceModeForPersistedWorkspace(existingExecutionWorkspace.mode),
-          projectId: existingExecutionWorkspace.projectId,
-          projectWorkspaceId: existingExecutionWorkspace.projectWorkspaceId,
-          strategyType: existingExecutionWorkspace.strategyType,
+          mode: issueExecutionWorkspaceModeForPersistedWorkspace(reusableExistingExecutionWorkspace.mode),
+          projectId: reusableExistingExecutionWorkspace.projectId,
+          projectWorkspaceId: reusableExistingExecutionWorkspace.projectWorkspaceId,
+          strategyType: reusableExistingExecutionWorkspace.strategyType,
           workspaceStrategy: workspaceStrategyFingerprintValue
             ? {
                 ...workspaceStrategyFingerprintValue,
-                type: existingExecutionWorkspace.strategyType,
-                ...(existingExecutionWorkspace.baseRef
-                  ? { baseRef: existingExecutionWorkspace.baseRef }
+                type: reusableExistingExecutionWorkspace.strategyType,
+                ...(reusableExistingExecutionWorkspace.baseRef
+                  ? { baseRef: reusableExistingExecutionWorkspace.baseRef }
                   : {}),
               }
-            : { type: existingExecutionWorkspace.strategyType },
-          repoUrl: existingExecutionWorkspace.repoUrl,
-          repoRef: existingExecutionWorkspace.baseRef,
-          configSnapshot: existingExecutionWorkspace.config,
+            : { type: reusableExistingExecutionWorkspace.strategyType },
+          repoUrl: reusableExistingExecutionWorkspace.repoUrl,
+          repoRef: reusableExistingExecutionWorkspace.baseRef,
+          configSnapshot: reusableExistingExecutionWorkspace.config,
           environment: workspaceEnvironmentFingerprint,
           realization: workspaceRealizationFingerprint,
           secretManifest,
@@ -10322,8 +10352,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
       : null;
     const workspaceConfigFreshness = resolveExecutionWorkspaceConfigFreshness({
-      hasExistingWorkspace: requestedShouldReuseExisting && Boolean(existingExecutionWorkspace),
-      existingWorkspaceMetadata: existingExecutionWorkspace?.metadata ?? null,
+      hasExistingWorkspace: requestedShouldReuseExisting && Boolean(reusableExistingExecutionWorkspace),
+      existingWorkspaceMetadata: reusableExistingExecutionWorkspace?.metadata ?? null,
       inferredMetadata: inferredExistingWorkspaceConfigMetadata,
       nextMetadata: latestWorkspaceConfigMetadata,
     });
@@ -10335,36 +10365,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       companyId: agent.companyId,
       heartbeatRunId: run.id,
       executionWorkspaceId: workspaceReuseProvisioningPolicy.shouldRestoreExistingWorkspace
-        ? existingExecutionWorkspace?.id ?? null
+        ? workspaceReuseRequest.requestedExecutionWorkspaceId
         : null,
       issueId,
     });
     const { executionWorkspace, reusedExecutionWorkspace, policy: resolvedWorkspaceReusePolicy } =
       await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>({
         requestedShouldReuseExisting,
-        existingExecutionWorkspaceId: existingExecutionWorkspace?.id ?? null,
+        existingExecutionWorkspaceId: workspaceReuseRequest.requestedExecutionWorkspaceId,
         issueRef,
         runId: run.id,
         workspaceConfigFreshness,
-        restoreExistingWorkspace: existingExecutionWorkspace
+        restoreExistingWorkspace: reusableExistingExecutionWorkspace
           ? () => ensurePersistedExecutionWorkspaceAvailable({
               base: executionWorkspaceBase,
               workspace: {
-                id: existingExecutionWorkspace.id,
-                mode: existingExecutionWorkspace.mode,
-                strategyType: existingExecutionWorkspace.strategyType,
-                cwd: existingExecutionWorkspace.cwd,
-                providerRef: existingExecutionWorkspace.providerRef,
-                projectId: existingExecutionWorkspace.projectId,
-                projectWorkspaceId: existingExecutionWorkspace.projectWorkspaceId,
-                repoUrl: existingExecutionWorkspace.repoUrl,
-                baseRef: existingExecutionWorkspace.baseRef,
-                branchName: existingExecutionWorkspace.branchName,
-                metadata: existingExecutionWorkspace.metadata as Record<string, unknown> | null,
+                id: reusableExistingExecutionWorkspace.id,
+                mode: reusableExistingExecutionWorkspace.mode,
+                strategyType: reusableExistingExecutionWorkspace.strategyType,
+                cwd: reusableExistingExecutionWorkspace.cwd,
+                providerRef: reusableExistingExecutionWorkspace.providerRef,
+                projectId: reusableExistingExecutionWorkspace.projectId,
+                projectWorkspaceId: reusableExistingExecutionWorkspace.projectWorkspaceId,
+                repoUrl: reusableExistingExecutionWorkspace.repoUrl,
+                baseRef: reusableExistingExecutionWorkspace.baseRef,
+                branchName: reusableExistingExecutionWorkspace.branchName,
+                metadata: reusableExistingExecutionWorkspace.metadata as Record<string, unknown> | null,
                 config: {
                   provisionCommand:
                     configSnapshot?.provisionCommand
-                    ?? existingExecutionWorkspace.config?.provisionCommand
+                    ?? reusableExistingExecutionWorkspace.config?.provisionCommand
                     ?? projectExecutionWorkspacePolicy?.workspaceStrategy?.provisionCommand
                     ?? null,
                 },
@@ -10395,7 +10425,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let persistedExecutionWorkspace = null;
     const nextExecutionWorkspaceMetadata = mergeExecutionWorkspaceMetadataForPersistence({
       existingMetadata: resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace
-        ? existingExecutionWorkspace?.metadata ?? null
+        ? reusableExistingExecutionWorkspace?.metadata ?? null
         : null,
       source: executionWorkspace.source,
       createdByRuntime: executionWorkspace.created,
@@ -10409,8 +10439,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       baseRefSha: executionWorkspace.baseRefSha ?? null,
     });
     try {
-      persistedExecutionWorkspace = resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace && existingExecutionWorkspace
-        ? await executionWorkspacesSvc.update(existingExecutionWorkspace.id, {
+      persistedExecutionWorkspace = resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace && reusableExistingExecutionWorkspace
+        ? await executionWorkspacesSvc.update(reusableExistingExecutionWorkspace.id, {
             cwd: executionWorkspace.cwd,
             repoUrl: executionWorkspace.repoUrl,
             baseRef: executionWorkspace.repoRef,
@@ -10454,7 +10484,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         try {
           await cleanupExecutionWorkspaceArtifacts({
             workspace: {
-              id: existingExecutionWorkspace?.id ?? `transient-${run.id}`,
+              id:
+                reusableExistingExecutionWorkspace?.id
+                ?? workspaceReuseRequest.requestedExecutionWorkspaceId
+                ?? `transient-${run.id}`,
               cwd: executionWorkspace.cwd,
               providerType: executionWorkspace.strategy === "git_worktree" ? "git_worktree" : "local_fs",
               providerRef: executionWorkspace.worktreePath,
@@ -10496,20 +10529,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       recorder: workspaceOperationRecorder,
       runId: run.id,
       decision: workspaceConfigFreshness,
-      hasExistingWorkspace: Boolean(existingExecutionWorkspace),
+      hasExistingWorkspace: Boolean(reusableExistingExecutionWorkspace),
       reuseRequested: requestedShouldReuseExisting,
       workspaceReused: Boolean(reusedExecutionWorkspace),
       configSnapshotRefreshed: resolvedWorkspaceReusePolicy.shouldRefreshWorkspaceConfigSnapshot,
-      previousWorkspaceId: existingExecutionWorkspace?.id ?? null,
+      previousWorkspaceId: workspaceReuseRequest.requestedExecutionWorkspaceId,
       activeWorkspaceId: persistedExecutionWorkspace?.id ?? null,
     });
     if (
-      existingExecutionWorkspace &&
+      reusableExistingExecutionWorkspace &&
       persistedExecutionWorkspace &&
-      existingExecutionWorkspace.id !== persistedExecutionWorkspace.id &&
-      existingExecutionWorkspace.status === "active"
+      reusableExistingExecutionWorkspace.id !== persistedExecutionWorkspace.id &&
+      reusableExistingExecutionWorkspace.status === "active"
     ) {
-      await executionWorkspacesSvc.update(existingExecutionWorkspace.id, {
+      await executionWorkspacesSvc.update(reusableExistingExecutionWorkspace.id, {
         status: "idle",
         cleanupReason: null,
       });
@@ -10784,7 +10817,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         storedFingerprint: workspaceConfigFreshness.storedFingerprint,
         inferredFingerprint: workspaceConfigFreshness.inferredFingerprint,
         nextFingerprint: workspaceConfigFreshness.nextFingerprint,
-        previousWorkspaceId: existingExecutionWorkspace?.id ?? null,
+        previousWorkspaceId: workspaceReuseRequest.requestedExecutionWorkspaceId,
         activeWorkspaceId: persistedExecutionWorkspace?.id ?? null,
       },
     };

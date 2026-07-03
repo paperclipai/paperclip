@@ -25,6 +25,7 @@ import {
   parseSessionCompactionPolicy,
   provisionExecutionWorkspaceForFreshnessDecision,
   resolveExecutionWorkspaceConfigFreshness,
+  resolveExecutionWorkspaceReuseRequestForIssue,
   resolveExecutionWorkspaceReuseProvisioningPolicy,
   resolveNextSessionState,
   resolveTaskSessionConfigFreshness,
@@ -1148,7 +1149,7 @@ describe("effective run execution workspace config freshness", () => {
     await expect(provisionExecutionWorkspaceForFreshnessDecision({
       requestedShouldReuseExisting: true,
       existingExecutionWorkspaceId: "workspace-old",
-      issueRef: { id: "issue-1", identifier: "PAP-1154" },
+      issueRef: { id: "issue-1", identifier: "PAP-42" },
       runId: "run-1",
       workspaceConfigFreshness: decision,
       restoreExistingWorkspace: async () => {
@@ -1161,9 +1162,60 @@ describe("effective run execution workspace config freshness", () => {
         workspaceValidation: expect.objectContaining({
           reason: "inherited_workspace_reuse_failed",
           issueId: "issue-1",
-          issueIdentifier: "PAP-1154",
+          issueIdentifier: "PAP-42",
           executionWorkspaceId: "workspace-old",
           workspaceConfigFreshnessAction: "replace",
+          requestedReuseExisting: true,
+        }),
+      },
+    });
+    expect(realizeWorkspace).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: "missing", status: null },
+    { name: "archived", status: "archived" },
+  ])("fails explicit reuse when the inherited workspace row is $name", async ({ status }) => {
+    const reuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
+      issueExecutionWorkspaceId: "workspace-old",
+      issueExecutionWorkspacePreference: "reuse_existing",
+      existingExecutionWorkspaceStatus: status,
+    });
+
+    expect(reuseRequest).toEqual({
+      requestedExecutionWorkspaceId: "workspace-old",
+      requestedShouldReuseExisting: true,
+      existingExecutionWorkspaceAvailable: false,
+    });
+
+    const metadata = buildWorkspaceConfigMetadata();
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: reuseRequest.requestedShouldReuseExisting &&
+        reuseRequest.existingExecutionWorkspaceAvailable,
+      existingWorkspaceMetadata: null,
+      nextMetadata: metadata,
+    });
+    const realizeWorkspace = vi.fn(async () => ({ id: "fallback-workspace" }));
+
+    await expect(provisionExecutionWorkspaceForFreshnessDecision({
+      requestedShouldReuseExisting: reuseRequest.requestedShouldReuseExisting,
+      existingExecutionWorkspaceId: reuseRequest.requestedExecutionWorkspaceId,
+      issueRef: { id: "issue-1", identifier: "PAP-42" },
+      runId: "run-1",
+      workspaceConfigFreshness: decision,
+      restoreExistingWorkspace: reuseRequest.existingExecutionWorkspaceAvailable
+        ? async () => ({ id: "workspace-old" })
+        : null,
+      realizeWorkspace,
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "inherited_workspace_reuse_unavailable",
+          issueId: "issue-1",
+          issueIdentifier: "PAP-42",
+          executionWorkspaceId: "workspace-old",
+          workspaceConfigFreshnessAction: "create",
           requestedReuseExisting: true,
         }),
       },
@@ -1183,7 +1235,7 @@ describe("effective run execution workspace config freshness", () => {
     await expect(provisionExecutionWorkspaceForFreshnessDecision({
       requestedShouldReuseExisting: true,
       existingExecutionWorkspaceId: "workspace-old",
-      issueRef: { id: "issue-1", identifier: "PAP-1154" },
+      issueRef: { id: "issue-1", identifier: "PAP-42" },
       runId: "run-1",
       workspaceConfigFreshness: decision,
       restoreExistingWorkspace: async () => null,
