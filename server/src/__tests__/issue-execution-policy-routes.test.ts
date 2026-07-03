@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.ts";
 
 const mockIssueService = vi.hoisted(() => ({
+  create: vi.fn(),
   getById: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
@@ -29,15 +30,20 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
   hasPermission: vi.fn(async () => false),
 }));
-const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
-  then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-    Promise.resolve([{
-      companyId: "company-1",
-      agentId: "33333333-3333-4333-8333-333333333333",
-      contextSnapshot: null,
-      permissions: null,
-    }]).then(onFulfilled, onRejected),
-})));
+const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => {
+  const rows = [{
+    companyId: "company-1",
+    agentId: "33333333-3333-4333-8333-333333333333",
+    contextSnapshot: null,
+    permissions: null,
+  }];
+  const result = {
+    orderBy: vi.fn(() => result),
+    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+      Promise.resolve(rows).then(onFulfilled, onRejected),
+  };
+  return result;
+}));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
@@ -182,6 +188,9 @@ describe("issue execution policy routes", () => {
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
+      orderBy: vi.fn(function orderBy() {
+        return this;
+      }),
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
         Promise.resolve([{
           companyId: "company-1",
@@ -243,7 +252,10 @@ describe("issue execution policy routes", () => {
       runId: "run-1",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "in_review" });
+      .send({
+        status: "in_review",
+        reviewerAgentId: "44444444-4444-4444-8444-444444444444",
+      });
 
     expect(res.status).toBe(422);
     expect(res.body.error).toContain("invalid_issue_disposition");
@@ -285,7 +297,10 @@ describe("issue execution policy routes", () => {
       runId: "run-1",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "in_review" });
+      .send({
+        status: "in_review",
+        reviewerAgentId: "44444444-4444-4444-8444-444444444444",
+      });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
@@ -382,6 +397,7 @@ describe("issue execution policy routes", () => {
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({
         status: "in_review",
+        reviewerAgentId: "44444444-4444-4444-8444-444444444444",
         executionPolicy: {
           monitor: {
             nextCheckAt: "2026-12-01T12:00:00.000Z",
@@ -423,11 +439,124 @@ describe("issue execution policy routes", () => {
 
     const res = await request(await createApp())
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "in_review" });
+      .send({
+        status: "in_review",
+        reviewerAgentId: "44444444-4444-4444-8444-444444444444",
+      });
 
     expect(res.status).toBe(200);
     expect(mockIssueThreadInteractionService.listForIssue).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.listApprovalsForIssue).not.toHaveBeenCalled();
+  });
+
+  it("rejects moving an issue to in_review without reviewer", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      assigneeUserId: null,
+      reviewerAgentId: null,
+      reviewerUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1000",
+      title: "Manual review handoff",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "reviewer_required" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows moving an issue to in_review with reviewerAgentId in patch payload", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      assigneeUserId: null,
+      reviewerAgentId: null,
+      reviewerUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1001",
+      title: "Manual review handoff",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review", reviewerAgentId });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        reviewerAgentId,
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch.status).toBe("in_review");
+    expect(updatePatch.reviewerAgentId).toBe(reviewerAgentId);
+  });
+
+  it("allows moving an issue to in_review when reviewer already exists on row", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      assigneeUserId: null,
+      reviewerAgentId: "33333333-3333-4333-8333-333333333333",
+      reviewerUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Manual review handoff",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
   });
 
   it("does not auto-start execution review when reviewers are added to an already in_review issue", async () => {
@@ -446,6 +575,8 @@ describe("issue execution policy routes", () => {
       status: "in_review",
       assigneeAgentId: null,
       assigneeUserId: "local-board",
+      reviewerAgentId: "33333333-3333-4333-8333-333333333333",
+      reviewerUserId: null,
       createdByUserId: "local-board",
       identifier: "PAP-999",
       title: "Execution policy edit",
