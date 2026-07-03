@@ -33,3 +33,44 @@ export function getConfigSchema(): AdapterConfigSchema {
     ],
   };
 }
+
+export function getLocalConfigSchema(): AdapterConfigSchema {
+  return {
+    fields: [
+      {
+        key: "projectDir",
+        label: "Eve project directory",
+        type: "text",
+        required: true,
+        hint: "Absolute path to the Eve project (created with `npx eve init`). The adapter runs `eve dev --no-ui` from here for each run.",
+      },
+      {
+        key: "command",
+        label: "Eve command",
+        type: "text",
+        default: "eve",
+        hint: 'Command used to launch the Eve dev server. Install Eve (npm i -g eve) or point this at another binary.',
+      },
+      {
+        key: "port",
+        label: "Port",
+        type: "number",
+        hint: "Fixed local port for the dev server. Leave empty to pick a free ephemeral port per run.",
+      },
+      {
+        key: "env",
+        label: "Environment variables",
+        type: "textarea",
+        hint: "Optional JSON object of environment variables injected into the Eve server process.",
+        meta: { secret: true },
+      },
+      {
+        key: "readyTimeoutMs",
+        label: "Ready timeout ms",
+        type: "number",
+        default: 90000,
+        hint: "How long to wait for the dev server to answer /eve/v1/info. First boot compiles the project and can take a while.",
+      },
+    ],
+  };
+}
