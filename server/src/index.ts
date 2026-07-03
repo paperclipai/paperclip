@@ -45,6 +45,7 @@ import {
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
 } from "./services/index.js";
+import { claudeAuthSwitchService } from "./services/claude-auth-switch.js";
 import {
   parseAdapterRegistryEnv,
   reconcileAdapterAvailability,
@@ -777,6 +778,10 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
+    // TWX-1121 (C3): smart hourly Claude auth-switch decision engine. Self-gates
+    // to ~1/h inside maybeTick; ships in shadow/dry-run until an operator sets
+    // PAPERCLIP_CLAUDE_AUTOSWITCH_EXECUTE=1.
+    const claudeAuthSwitch = claudeAuthSwitchService(db as any);
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
     // into a dead "running" row during startup recovery.
@@ -882,7 +887,19 @@ export async function startServer(): Promise<StartedServer> {
         .catch((err) => {
           logger.error({ err }, "routine scheduler tick failed");
         });
-  
+
+      // TWX-1121 (C3): hourly-gated smart Claude auth-switch decision tick.
+      void claudeAuthSwitch
+        .maybeTick(new Date())
+        .then((result) => {
+          if (result && result.action !== "skipped") {
+            logger.info({ ...result }, "smart claude auth-switch tick");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "smart claude auth-switch tick failed");
+        });
+
       // Periodically reap orphaned runs (5-min staleness threshold) and make sure
       // persisted queued work is still being driven forward.
       void heartbeat

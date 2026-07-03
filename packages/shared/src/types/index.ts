@@ -80,6 +80,18 @@ export {
   DEFAULT_CLAUDE_ACCOUNT_TIERS,
   inferClaudeAccountTier,
 } from "./claude-account-usage.js";
+export type {
+  ClaudeSwitchPolicyConfig,
+  ClaudeSwitchCandidate,
+  ClaudeSwitchAction,
+  ClaudeSwitchDecisionInput,
+  ClaudeSwitchDecision,
+} from "./claude-auth-switch.js";
+export {
+  DEFAULT_CLAUDE_SWITCH_POLICY,
+  CLAUDE_SWITCH_PRIORITY,
+  decideClaudeAuthSwitch,
+} from "./claude-auth-switch.js";
 export {
   TRUST_PRESETS,
   DEFAULT_TRUST_PRESET,

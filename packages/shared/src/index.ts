@@ -1000,6 +1000,17 @@ export {
   type ClaudeAccountsUsageResponse,
 } from "./types/claude-account-usage.js";
 
+export {
+  DEFAULT_CLAUDE_SWITCH_POLICY,
+  CLAUDE_SWITCH_PRIORITY,
+  decideClaudeAuthSwitch,
+  type ClaudeSwitchPolicyConfig,
+  type ClaudeSwitchCandidate,
+  type ClaudeSwitchAction,
+  type ClaudeSwitchDecisionInput,
+  type ClaudeSwitchDecision,
+} from "./types/claude-auth-switch.js";
+
 export type {
   CloudUpstreamConnectStartResponse,
   CloudUpstreamActivationDecision,
