@@ -7,8 +7,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { GanttChartSquare } from "lucide-react";
-import type { WorkTimelineActor } from "@paperclipai/shared";
+import { GanttChartSquare, Minus, Plus, RotateCcw } from "lucide-react";
 import { workTimelineApi, type WorkTimelineParams } from "@/api/workTimeline";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
@@ -16,23 +15,18 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { EmptyState } from "@/components/EmptyState";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { RequestCollapsedSidebar } from "@/components/RequestCollapsedSidebar";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import {
   WorkTimelineChart,
+  clampZoomScale,
   defaultZoomForWindow,
   nearestZoomForScale,
   type ZoomLevel,
+  zoomScaleForLevel,
 } from "@/components/timeline/WorkTimelineChart";
 import { cn } from "@/lib/utils";
 
-const EVERYONE = "__everyone__";
 type RangePreset = "today" | "7d" | "30d" | "custom";
 interface DateRangeState {
   fromDate: string;
@@ -69,12 +63,6 @@ function rangeError(range: DateRangeState): string | null {
   if (!range.fromDate || !range.toDate) return "Choose a start and end date.";
   if (!rangeWindow(range)) return "Start date must be before end date.";
   return null;
-}
-
-function zoomDescription(zoom: ZoomLevel): string {
-  if (zoom === "hour") return "1 hour visible";
-  if (zoom === "day") return "24 hours visible";
-  return "7 days visible";
 }
 
 function Segmented<T extends string>({
@@ -114,19 +102,9 @@ export function Timeline() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const [zoom, setZoom] = useState<ZoomLevel>("day");
   const [zoomScale, setZoomScale] = useState<number | undefined>(undefined);
-  const [visibleRangeLabel, setVisibleRangeLabel] = useState<string>(() => zoomDescription("day"));
   const zoomTouched = useRef(false);
-  const setZoomManual = (z: ZoomLevel) => {
-    zoomTouched.current = true;
-    setZoom(z);
-    setZoomScale(undefined);
-    setVisibleRangeLabel(zoomDescription(z));
-  };
-  const [lensUserId, setLensUserId] = useState<string>(EVERYONE);
   const [rangePreset, setRangePreset] = useState<RangePreset>("7d");
   const [dateRange, setDateRange] = useState<DateRangeState>(() => presetRange("7d"));
-  // Union of users discovered across fetches so the lens list stays stable.
-  const [knownUsers, setKnownUsers] = useState<WorkTimelineActor[]>([]);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Timeline" }]);
@@ -136,14 +114,11 @@ export function Timeline() {
   const params: WorkTimelineParams | null = useMemo(() => {
     const window = rangeWindow(dateRange);
     if (!window) return null;
-    return {
-      ...window,
-      ...(lensUserId === EVERYONE ? {} : { userId: lensUserId.replace(/^user:/, "") }),
-    };
-  }, [dateRange, lensUserId]);
+    return window;
+  }, [dateRange]);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: [...queryKeys.workTimeline(selectedCompanyId ?? "", lensUserId), dateRange.fromDate, dateRange.toDate],
+    queryKey: [...queryKeys.workTimeline(selectedCompanyId ?? ""), dateRange.fromDate, dateRange.toDate],
     queryFn: () => workTimelineApi.get(selectedCompanyId!, params!),
     enabled: !!selectedCompanyId && !!params,
   });
@@ -153,15 +128,6 @@ export function Timeline() {
     const defaultZoom = defaultZoomForWindow(new Date(data.window.from).getTime(), new Date(data.window.to).getTime());
     setZoom(defaultZoom);
     setZoomScale(undefined);
-  }, [data]);
-
-  useEffect(() => {
-    if (!data) return;
-    setKnownUsers((prev) => {
-      const byId = new Map(prev.map((u) => [u.id, u]));
-      for (const a of data.actors) if (a.type === "user") byId.set(a.id, a);
-      return Array.from(byId.values());
-    });
   }, [data]);
 
   if (!selectedCompanyId) {
@@ -180,37 +146,26 @@ export function Timeline() {
     </div>
   );
 
+  const adjustZoom = (factor: number) => {
+    zoomTouched.current = true;
+    const nextScale = clampZoomScale((zoomScale ?? zoomScaleForLevel(zoom)) * factor);
+    setZoomScale(nextScale);
+    setZoom(nearestZoomForScale(nextScale));
+  };
+
+  const resetZoom = () => {
+    zoomTouched.current = true;
+    if (data) {
+      setZoom(defaultZoomForWindow(new Date(data.window.from).getTime(), new Date(data.window.to).getTime()));
+    } else {
+      setZoom("day");
+    }
+    setZoomScale(undefined);
+  };
+
   const toolbar = (
     <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-      <label className="flex items-center gap-2 text-xs text-muted-foreground">
-        Zoom
-        <Segmented
-          value={zoom}
-          onChange={setZoomManual}
-          options={[
-            { value: "hour", label: "Hour" },
-            { value: "day", label: "Day" },
-            { value: "week", label: "Week" },
-          ]}
-        />
-        <span>{visibleRangeLabel}</span>
-      </label>
-      <label className="flex items-center gap-2 text-xs text-muted-foreground">
-        <Select value={lensUserId} onValueChange={setLensUserId}>
-          <SelectTrigger className="h-8 w-[220px] text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={EVERYONE}>Everyone (company)</SelectItem>
-            {knownUsers.map((u) => (
-              <SelectItem key={u.id} value={u.id}>
-                {u.name} — work kicked off
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </label>
-      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+      <label className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
         Range
         <Segmented
           value={rangePreset}
@@ -247,6 +202,38 @@ export function Timeline() {
           aria-label="Timeline end date"
         />
       </label>
+      <div className="ml-auto flex items-center gap-1" aria-label="Timeline zoom controls">
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-xs"
+          onClick={() => adjustZoom(0.8)}
+          aria-label="Zoom out"
+          title="Zoom out"
+        >
+          <Minus className="h-3 w-3" />
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-xs"
+          onClick={() => adjustZoom(1.25)}
+          aria-label="Zoom in"
+          title="Zoom in"
+        >
+          <Plus className="h-3 w-3" />
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-xs"
+          onClick={resetZoom}
+          aria-label="Reset zoom"
+          title="Reset zoom"
+        >
+          <RotateCcw className="h-3 w-3" />
+        </Button>
+      </div>
     </div>
   );
 
@@ -274,7 +261,7 @@ export function Timeline() {
 
       {data && !isLoading && !dateRangeError && (
         data.spans.length === 0 ? (
-          <EmptyState icon={GanttChartSquare} message="No activity in this window for the selected lens." />
+          <EmptyState icon={GanttChartSquare} message="No activity in this window." />
         ) : (
           <div className="space-y-3">
             <div className="rounded-lg border border-border bg-card">
@@ -282,7 +269,6 @@ export function Timeline() {
                 data={data}
                 zoom={zoom}
                 zoomScale={zoomScale}
-                onVisibleRangeLabelChange={setVisibleRangeLabel}
                 onZoomScaleChange={(nextScale, nextZoom = nearestZoomForScale(nextScale)) => {
                   zoomTouched.current = true;
                   setZoomScale(nextScale);

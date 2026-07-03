@@ -92,4 +92,47 @@ describe("Timeline", () => {
 
     expect(container.querySelector('[data-testid="request-collapsed-sidebar"]')).not.toBeNull();
   });
+
+  it("renders range controls plus icon zoom controls without the user lens selector or visible-duration readout", async () => {
+    root = createRoot(container);
+
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <Timeline />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Range");
+    expect(container.querySelector('[aria-label="Zoom out"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Zoom in"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Reset zoom"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Everyone");
+    expect(container.textContent).not.toContain("work kicked off");
+    expect(container.textContent).not.toContain("visible");
+  });
+
+  it("requests the company timeline without a user lens parameter", async () => {
+    root = createRoot(container);
+
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <Timeline />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(mockWorkTimelineApi.get).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        from: expect.any(String),
+        to: expect.any(String),
+      }),
+    );
+    expect(mockWorkTimelineApi.get.mock.calls[0]?.[1]).not.toHaveProperty("userId");
+  });
 });

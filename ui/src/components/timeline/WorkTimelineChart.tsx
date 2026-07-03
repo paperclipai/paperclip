@@ -41,7 +41,7 @@ function plotViewportWidth(viewportWidth: number): number {
 }
 
 export function zoomScaleForLevel(level: ZoomLevel, viewportWidth = DEFAULT_VIEWPORT_W): number {
-  return clampScale(plotViewportWidth(viewportWidth) / ZOOM_DURATION_MIN[level]);
+  return clampZoomScale(plotViewportWidth(viewportWidth) / ZOOM_DURATION_MIN[level]);
 }
 
 export function nearestZoomForScale(pxPerMinute: number, viewportWidth = DEFAULT_VIEWPORT_W): ZoomLevel {
@@ -53,7 +53,7 @@ export function nearestZoomForScale(pxPerMinute: number, viewportWidth = DEFAULT
   ), "day");
 }
 
-function clampScale(pxPerMinute: number): number {
+export function clampZoomScale(pxPerMinute: number): number {
   return Math.min(MAX_PX_PER_MIN, Math.max(MIN_PX_PER_MIN, pxPerMinute));
 }
 
@@ -294,7 +294,7 @@ export function WorkTimelineChart({
     const durationMs = Math.max(MIN_MINIMAP_SELECTION_MS, endMs - startMs);
     const centerMs = startMs + durationMs / 2;
     const effectiveViewportW = el?.clientWidth || viewportW || DEFAULT_VIEWPORT_W;
-    const nextScale = clampScale(plotViewportWidth(effectiveViewportW) / (durationMs / 60000));
+    const nextScale = clampZoomScale(plotViewportWidth(effectiveViewportW) / (durationMs / 60000));
     centerMsRef.current = centerMs;
     onZoomScaleChange(nextScale, nearestZoomForScale(nextScale, effectiveViewportW));
   };
@@ -359,7 +359,7 @@ export function WorkTimelineChart({
     if (el) {
       centerMsRef.current = scrollCenterMs(el);
     }
-    const nextScale = clampScale(layout.pxPerMinute * Math.exp(-evt.deltaY * 0.001));
+    const nextScale = clampZoomScale(layout.pxPerMinute * Math.exp(-evt.deltaY * 0.001));
     onZoomScaleChange(nextScale, nearestZoomForScale(nextScale, el?.clientWidth ?? viewportW));
   };
 
