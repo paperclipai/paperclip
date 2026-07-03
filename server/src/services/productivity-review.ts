@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gt, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { clampIssueRequestDepth } from "@paperclipai/shared";
+import { clampIssueRequestDepth, issueExecutionPolicySchema, issueExecutionStateSchema } from "@paperclipai/shared";
 import {
   agents,
   companies,
@@ -33,6 +33,7 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const ACTIVE_MONITOR_STATUSES = ["scheduled"] as const;
 const MAX_CANDIDATE_ISSUES = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
@@ -136,6 +137,26 @@ function readPositiveInteger(value: number, fallback: number) {
 function coerceDate(value: Date | string | null | undefined) {
   if (!value) return null;
   return value instanceof Date ? value : new Date(value);
+}
+
+function isFutureDate(value: string | Date | null | undefined, now: Date) {
+  const parsed = coerceDate(value);
+  return parsed instanceof Date && Number.isFinite(parsed.getTime()) && parsed.getTime() > now.getTime();
+}
+
+function hasFutureActiveMonitor(sourceIssue: IssueRow, now: Date) {
+  const policy = issueExecutionPolicySchema.safeParse(sourceIssue.executionPolicy ?? null);
+  const state = issueExecutionStateSchema.safeParse(sourceIssue.executionState ?? null);
+  if (!policy.success || !state.success) return false;
+
+  const policyNextCheckAt = policy.data.monitor?.nextCheckAt ?? null;
+  const stateMonitor = state.data.monitor;
+  if (!policyNextCheckAt || !stateMonitor) return false;
+  if (!ACTIVE_MONITOR_STATUSES.includes(stateMonitor.status as (typeof ACTIVE_MONITOR_STATUSES)[number])) {
+    return false;
+  }
+
+  return isFutureDate(policyNextCheckAt, now) && isFutureDate(stateMonitor.nextCheckAt, now);
 }
 
 function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): ProductivityReviewThresholds {
@@ -476,7 +497,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       : null;
 
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    const longActive =
+      elapsedMs !== null &&
+      elapsedMs >= thresholds.longActiveMs &&
+      !hasFutureActiveMonitor(sourceIssue, now);
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
