@@ -141,8 +141,35 @@ describe("WorkTimelineChart", () => {
     expect(container.querySelectorAll("[data-testid='timeline-comment-marker']")).toHaveLength(0);
   });
 
-  it("keeps connector lines hidden until hover and preserves run ids for filtering", () => {
+  it("keeps connectors hidden until hover, renders them orthogonally, and highlights the connected graph", async () => {
     const data = timelineSample();
+    data.actors.push({ id: "agent:cto", type: "agent", name: "CTO" });
+    data.spans.push(
+      {
+        actorId: "agent:cto",
+        laneHint: null,
+        runId: "run-3",
+        issueId: "issue-3",
+        issueIdentifier: "PAP-12427",
+        issueTitle: "Follow-up validation",
+        start: "2026-07-02T11:45:00.000Z",
+        end: "2026-07-02T12:00:00.000Z",
+        status: "completed",
+        retryOfRunId: null,
+      },
+      {
+        actorId: "agent:codex",
+        laneHint: null,
+        runId: "run-4",
+        issueId: "issue-4",
+        issueIdentifier: "PAP-12428",
+        issueTitle: "Unrelated work",
+        start: "2026-07-02T13:00:00.000Z",
+        end: "2026-07-02T14:00:00.000Z",
+        status: "completed",
+        retryOfRunId: null,
+      },
+    );
     data.edges = [
       {
         fromActorId: "agent:codex",
@@ -151,10 +178,35 @@ describe("WorkTimelineChart", () => {
         at: "2026-07-02T10:45:00.000Z",
         kind: "delegation",
       },
+      {
+        fromActorId: "agent:qa",
+        toActorId: "agent:cto",
+        issueId: "issue-3",
+        at: "2026-07-02T11:35:00.000Z",
+        kind: "delegation",
+      },
     ];
     renderChart(data);
 
     expect(container.querySelectorAll("[data-testid='timeline-connector']")).toHaveLength(0);
+
+    const hovered = container.querySelector<SVGGElement>("[data-run-id='run-2']")!;
+    flushSync(() => {
+      hovered.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, clientX: 100, clientY: 100 }));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(container.querySelectorAll("[data-testid='timeline-connector']")).toHaveLength(2);
+    const connectorStrokePaths = Array.from(
+      container.querySelectorAll<SVGPathElement>("[data-testid='timeline-connector'] path[fill='none']"),
+    );
+    expect(connectorStrokePaths.map((path) => path.getAttribute("d"))).toEqual(
+      expect.arrayContaining([expect.stringMatching(/ V.+ H/)]),
+    );
+    expect(container.querySelector("[data-run-id='run-1']")?.getAttribute("data-connected-state")).toBe("connected");
+    expect(container.querySelector("[data-run-id='run-2']")?.getAttribute("data-connected-state")).toBe("connected");
+    expect(container.querySelector("[data-run-id='run-3']")?.getAttribute("data-connected-state")).toBe("connected");
+    expect(container.querySelector("[data-run-id='run-4']")?.getAttribute("data-connected-state")).toBe("faded");
 
     const layout = computeLayout(data, {
       gutter: 176,
@@ -166,6 +218,7 @@ describe("WorkTimelineChart", () => {
     });
     expect(layout.connectors).toMatchObject([
       { sourceRunId: "run-1", targetRunId: "run-2", dashed: false },
+      { sourceRunId: "run-2", targetRunId: "run-3", dashed: false },
     ]);
     const bars = new Map(layout.rows.flatMap((row) => row.bars.map((bar) => [bar.span.runId, bar])));
     expect(layout.connectors[0].x1).toBe(bars.get("run-1")?.x2);

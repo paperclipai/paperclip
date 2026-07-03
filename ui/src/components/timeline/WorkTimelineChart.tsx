@@ -201,9 +201,31 @@ export function WorkTimelineChart({
     () => computeLayout(data, { ...GEOM, pxPerMinute, nowMs: now }),
     [data, pxPerMinute, now],
   );
+  const connectedRunIds = useMemo(() => {
+    if (!hoveredRunId) return null;
+    const connected = new Set([hoveredRunId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const c of layout.connectors) {
+        if (connected.has(c.sourceRunId) && !connected.has(c.targetRunId)) {
+          connected.add(c.targetRunId);
+          changed = true;
+        }
+        if (connected.has(c.targetRunId) && !connected.has(c.sourceRunId)) {
+          connected.add(c.sourceRunId);
+          changed = true;
+        }
+      }
+    }
+    return connected;
+  }, [hoveredRunId, layout.connectors]);
   const visibleConnectors = useMemo(
-    () => layout.connectors.filter((c) => c.sourceRunId === hoveredRunId || c.targetRunId === hoveredRunId),
-    [hoveredRunId, layout.connectors],
+    () =>
+      connectedRunIds
+        ? layout.connectors.filter((c) => connectedRunIds.has(c.sourceRunId) && connectedRunIds.has(c.targetRunId))
+        : [],
+    [connectedRunIds, layout.connectors],
   );
   const companyPrefix = extractCompanyPrefixFromPath(location.pathname);
 
@@ -385,26 +407,25 @@ export function WorkTimelineChart({
           <line x1={layout.gutter} y1={0} x2={layout.gutter} y2={layout.height} stroke="var(--color-foreground)" strokeWidth={1.5} />
           <line x1={0} y1={AXIS_H} x2={layout.width} y2={AXIS_H} stroke="var(--color-foreground)" strokeWidth={1.5} />
 
-          {/* connectors (behind bars): only the hovered run's handoffs are shown. */}
+          {/* connectors (behind bars): hover reveals the connected handoff graph. */}
           {visibleConnectors.map((c, i) => {
-            const ang = (Math.atan2(c.y2 - c.y1, c.x2 - c.x1) * 180) / Math.PI;
+            const y1 = c.y1 + AXIS_H;
+            const y2 = c.y2 + AXIS_H;
+            const arrow =
+              c.x2 >= c.x1
+                ? `M${c.x2},${y2} l-10,-5 l0,10 z`
+                : `M${c.x2},${y2} l10,-5 l0,10 z`;
             return (
               <g key={`edge-${c.sourceRunId}-${c.targetRunId}-${i}`} data-testid="timeline-connector" opacity={0.86}>
-                <line
-                  x1={c.x1}
-                  y1={c.y1 + AXIS_H}
-                  x2={c.x2}
-                  y2={c.y2 + AXIS_H}
+                <path
+                  d={`M${c.x1},${y1} V${y2} H${c.x2}`}
+                  fill="none"
                   stroke="var(--color-foreground)"
                   strokeWidth={2.2}
                   strokeDasharray={c.dashed ? "5 4" : undefined}
                 />
-                <circle cx={c.x1} cy={c.y1 + AXIS_H} r={3.2} fill="var(--color-foreground)" />
-                <path
-                  d={`M${c.x2},${c.y2 + AXIS_H} l-10,-5 l0,10 z`}
-                  fill="var(--color-foreground)"
-                  transform={`rotate(${ang} ${c.x2} ${c.y2 + AXIS_H})`}
-                />
+                <circle cx={c.x1} cy={y1} r={3.2} fill="var(--color-foreground)" />
+                <path d={arrow} fill="var(--color-foreground)" />
               </g>
             );
           })}
@@ -443,12 +464,24 @@ export function WorkTimelineChart({
                   const yTop = bar.yTop + AXIS_H;
                   const w = bar.x2 - bar.x1;
                   const hue = issueColor(bar.span.issueId);
+                  const connectedState =
+                    connectedRunIds == null ? "idle" : connectedRunIds.has(bar.span.runId) ? "connected" : "faded";
+                  const barOpacity =
+                    connectedState === "idle"
+                      ? colorMode === "issue"
+                        ? 0.88
+                        : 1
+                      : connectedState === "connected"
+                        ? 1
+                        : 0.22;
                   return (
-                    <g key={bar.span.runId}>
+                    <g key={bar.span.runId} opacity={connectedState === "faded" ? 0.42 : 1}>
                       <g
                         className="cursor-pointer"
                         data-run-id={bar.span.runId}
+                        data-connected-state={connectedState}
                         onMouseEnter={(e) => showTooltip(e, bar)}
+                        onMouseOver={(e) => showTooltip(e, bar)}
                         onMouseMove={(e) => showTooltip(e, bar)}
                         onMouseLeave={() => {
                           setTooltip(null);
@@ -465,7 +498,7 @@ export function WorkTimelineChart({
                           fill={barFill(bar)}
                           stroke="var(--color-foreground)"
                           strokeWidth={1.5}
-                          opacity={colorMode === "issue" ? 0.88 : 1}
+                          opacity={barOpacity}
                         />
                         {/* left colour tab = issue identity (no textual ID on the bar) */}
                         <rect x={bar.x1} y={yTop} width={3.5} height={bar.height} fill={hue} />
