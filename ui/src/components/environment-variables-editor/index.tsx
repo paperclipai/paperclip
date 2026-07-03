@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { AlertCircle, KeyRound, Plus, RotateCcw, Save } from "lucide-react";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
@@ -104,6 +105,7 @@ export function EnvironmentVariablesEditor({
   footerHint,
 }: EnvironmentVariablesEditorProps) {
   const toast = useOptionalToastActions();
+  const editorRootRef = useRef<HTMLDivElement | null>(null);
   const [rows, setRows] = useState<EnvRow[]>(() => rowsFromValue(value));
   const rowsRef = useRef(rows);
   const [committedRows, setCommittedRows] = useState<EnvRow[]>(() => cloneRows(rows));
@@ -180,6 +182,22 @@ export function EnvironmentVariablesEditor({
   const draftValueKey = useMemo(() => normalizedEnvKey(draftValue), [draftValue]);
   const hasUnsavedChanges = draftValueKey !== committedValueKey;
 
+  useEffect(() => {
+    const form = editorRootRef.current?.closest("form");
+    if (!form) return;
+
+    function handleSubmit() {
+      if (disabled || !hasUnsavedChanges) return;
+      pendingSaveValueKeyRef.current = draftValueKey;
+      flushSync(() => {
+        onChange(draftValue);
+      });
+    }
+
+    form.addEventListener("submit", handleSubmit, true);
+    return () => form.removeEventListener("submit", handleSubmit, true);
+  }, [disabled, draftValue, draftValueKey, hasUnsavedChanges, onChange]);
+
   function updateDraft(nextRows: EnvRow[]) {
     setRows(nextRows);
   }
@@ -213,7 +231,7 @@ export function EnvironmentVariablesEditor({
     const pairs = parseDotenv(text);
     if (pairs.length === 0) return false;
     // Drop the empty row that received the paste, then upsert each pair.
-    const working = rows.filter((row) => row.id !== targetRowId);
+    const working = rows.filter((row) => row.id !== targetRowId).map((row) => ({ ...row }));
     for (const { key, value: pairValue } of pairs) {
       const existing = working.find((row) => row.name.trim() === key);
       if (existing) {
@@ -284,7 +302,7 @@ export function EnvironmentVariablesEditor({
 
   return (
     <TooltipProvider>
-      <div className="@container/env space-y-2">
+      <div ref={editorRootRef} className="@container/env space-y-2">
       {attentionCount > 1 ? (
         <p className="inline-flex items-center gap-1.5 text-[11px] font-medium text-amber-700 dark:text-amber-400">
           <AlertCircle className="size-3.5" />

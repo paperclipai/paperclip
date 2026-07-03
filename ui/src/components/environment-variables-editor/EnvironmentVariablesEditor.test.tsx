@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { useState } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -225,6 +226,47 @@ describe("EnvironmentVariablesEditor", () => {
     expect(onChange).toHaveBeenLastCalledWith({ FOO: { type: "plain", value: "bar" } });
   });
 
+  it("flushes unsaved editor changes before an enclosing form submits", async () => {
+    const submittedValues: Array<Record<string, EnvBinding> | undefined> = [];
+
+    function FormHarness() {
+      const [value, setValue] = useState<Record<string, EnvBinding>>({
+        FOO: { type: "plain", value: "" },
+      });
+      return (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            submittedValues.push(value);
+          }}
+        >
+          <EnvironmentVariablesEditor
+            value={value}
+            secrets={secrets}
+            onChange={(next) => setValue(next ?? {})}
+            onCreateSecret={async () => secrets[0]}
+          />
+          <button type="submit">Outer save</button>
+        </form>
+      );
+    }
+
+    render(<FormHarness />);
+    const valueInput = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(valueInput, "bar");
+    valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+
+    const outerSave = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+      button.textContent?.includes("Outer save"),
+    )!;
+    outerSave.click();
+    await flush();
+
+    expect(submittedValues).toEqual([{ FOO: { type: "plain", value: "bar" } }]);
+  });
+
   it("makes unsaved fields and save controls prominent while editing", async () => {
     render(<EnvironmentVariablesEditor value={{ FOO: { type: "plain", value: "" } }} secrets={secrets} onChange={() => {}} onCreateSecret={async () => secrets[0]} />);
     const valueInput = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
@@ -436,6 +478,35 @@ describe("EnvironmentVariablesEditor", () => {
       B: { type: "plain", value: "2" },
       C: { type: "plain", value: "3" },
     });
+  });
+
+  it("bulk-imports dotenv updates without mutating the committed row baseline", async () => {
+    render(
+      <EnvironmentVariablesEditor
+        value={{ A: { type: "plain", value: "old" } }}
+        secrets={secrets}
+        onChange={() => {}}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    const addButton = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Add variable"),
+    )!;
+    addButton.click();
+    await flush();
+
+    const targetNameInput = nameInputs().at(-1)!;
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true }) as unknown as ClipboardEvent;
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      value: { getData: () => "A=new" } as unknown as DataTransfer,
+    });
+    targetNameInput.dispatchEvent(pasteEvent);
+    await flush();
+
+    const valueInput = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    const valueCell = valueInput.closest<HTMLDivElement>(".relative.flex");
+    expect(valueInput.value).toBe("new");
+    expect(valueCell?.className).toContain("border-amber-500/70");
   });
 
   it("auto-detects a sensitive value and offers a value-preserving Store-as-secret popover", async () => {

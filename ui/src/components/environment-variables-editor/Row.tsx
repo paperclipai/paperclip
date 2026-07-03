@@ -155,7 +155,9 @@ export function EnvironmentVariableRow({
   }
 
   function openStoreAsSecret() {
-    setSecretPopover({ mode: "store", name: secretNameFromKey(row.name) || "secret", value: row.textValue });
+    const name = secretNameFromKey(row.name) || "secret";
+    const { textValue } = row;
+    window.setTimeout(() => setSecretPopover({ mode: "store", name, value: textValue }), 0);
   }
 
   const sourceLabel = row.source === "text" ? "Text value" : "Secret reference";
