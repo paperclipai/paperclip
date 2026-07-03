@@ -149,14 +149,14 @@ export function describeDenial(code: string, fallback: string): { title: string;
     return {
       icon: <Ban aria-hidden="true" className="h-6 w-6 text-red-500" />,
       title: "Path is outside the workspace",
-      body: "The viewer can only open files that live under the issue's workspace.",
+      body: "The viewer can only open files that live under the task's workspace.",
     };
   }
   if (lower.includes("archive") || lower.includes("cleaned")) {
     return {
       icon: <FolderOpen aria-hidden="true" className="h-6 w-6 text-muted-foreground" />,
       title: "Workspace is no longer available",
-      body: "The isolated worktree for this issue has been cleaned up, so files cannot be previewed.",
+      body: "The isolated worktree for this task has been cleaned up, so files cannot be previewed.",
     };
   }
   if (lower.includes("remote")) {
@@ -727,7 +727,7 @@ export function FileViewerSheet({
   const title = state ? basename(state.path) : "Browse workspace";
   const description = state
     ? middleTruncatePath(state.path)
-    : "Search and preview files from this issue's workspace.";
+    : "Search and preview files from this task's workspace.";
   const showDescription = state ? description !== title : true;
 
   return (
@@ -993,7 +993,7 @@ function FileViewerBody({
         <FileViewerStateView
           icon={<FolderOpen aria-hidden="true" className="h-6 w-6 text-muted-foreground" />}
           title="No workspace available"
-          body="This issue does not have a workspace that supports preview yet."
+          body="This task does not have a workspace that supports preview yet."
         />
       );
     }

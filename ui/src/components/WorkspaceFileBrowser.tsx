@@ -86,14 +86,14 @@ export function describeUnavailable(reason: string): { title: string; body: stri
     return {
       icon: <FolderOpen aria-hidden="true" className="h-5 w-5 text-muted-foreground" />,
       title: "No workspace yet",
-      body: "This issue does not have a workspace to browse. Files appear here once a run creates one.",
+      body: "This task does not have a workspace to browse. Files appear here once a run creates one.",
     };
   }
   if (lower.includes("archiv") || lower.includes("cleaned") || lower.includes("unavailable")) {
     return {
       icon: <FolderOpen aria-hidden="true" className="h-5 w-5 text-muted-foreground" />,
       title: "Workspace is no longer available",
-      body: "The isolated worktree for this issue has been cleaned up, so files cannot be previewed.",
+      body: "The isolated worktree for this task has been cleaned up, so files cannot be previewed.",
     };
   }
   return {
@@ -995,7 +995,7 @@ export function WorkspaceFileBrowser({
         title="Couldn't load files"
         body={
           status === 404
-            ? "Workspace browsing isn't available for this issue."
+            ? "Workspace browsing isn't available for this task."
             : "Something went wrong loading workspace files."
         }
       />

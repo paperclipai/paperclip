@@ -112,7 +112,7 @@ function ExternalObjectsSection({
       <div className="space-y-1">
         <h3 className="text-sm font-semibold">External objects</h3>
         <p className="text-xs text-muted-foreground">
-          Remote work referenced from this issue — pull requests, deployments, tickets in other systems, and more.
+          Remote work referenced from this task — pull requests, deployments, tickets in other systems, and more.
         </p>
       </div>
 

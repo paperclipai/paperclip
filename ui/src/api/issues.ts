@@ -36,6 +36,17 @@ export type ResolveRecoveryActionResponse = {
   recoveryAction: IssueRecoveryAction;
 };
 
+export type PendingInteractionItem = {
+  issue: {
+    id: string;
+    identifier: string;
+    title: string;
+    status: Issue["status"];
+    projectId: string | null;
+  };
+  interaction: IssueThreadInteraction;
+};
+
 export const issuesApi = {
   list: (
     companyId: string,
@@ -214,6 +225,8 @@ export const issuesApi = {
   },
   listInteractions: (id: string) =>
     api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
+  listPendingInteractions: (companyId: string) =>
+    api.get<PendingInteractionItem[]>(`/companies/${companyId}/pending-interactions`),
   listAcceptedPlanDecompositions: (id: string) =>
     api.get<AcceptedPlanDecompositionSummary[]>(`/issues/${id}/accepted-plan-decompositions`),
   createInteraction: (id: string, data: Record<string, unknown>) =>

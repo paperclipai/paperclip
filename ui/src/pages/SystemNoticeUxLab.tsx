@@ -227,7 +227,7 @@ export function SystemNoticeUxLab() {
         <div className="space-y-4 rounded-2xl border border-border/70 bg-background/70 p-4">
           <MockUserBubble
             authorName="Riley Board"
-            body="Why does this issue keep waking back up without a clear next step?"
+            body="Why does this task keep waking back up without a clear next step?"
             alignEnd
           />
           <MockAgentBubble
@@ -239,14 +239,14 @@ export function SystemNoticeUxLab() {
             label="System alert"
             source={{ label: "Paperclip", href: "/PAP/agents" }}
             timestamp="2026-05-04T16:48:00.000Z"
-            body="Paperclip could not resolve this issue's missing disposition automatically. The issue is blocked on a recovery owner."
+            body="Paperclip could not resolve this task's missing disposition automatically. The task is blocked on a recovery owner."
             metadata={[
               {
                 title: "Recovery owner",
                 rows: [
                   {
                     kind: "issue",
-                    label: "Recovery issue",
+                    label: "Recovery task",
                     identifier: "PAP-3440",
                     href: "/PAP/issues/PAP-3440",
                     title: "Successful run handoff missing disposition",
@@ -302,7 +302,7 @@ export function SystemNoticeUxLab() {
                       <div className="min-w-0">
                         <p className="m-0 font-semibold">Successful run handoff missing</p>
                         <ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-[13px] leading-5">
-                          <li>Source issue: PAP-3440</li>
+                          <li>Source task: PAP-3440</li>
                           <li>Source run: 9cdba892-c7ca-4d93-8604-4843873b127c</li>
                           <li>Recovery run: 61fdb79b-8012-4676-ac71-2971830e126a</li>
                           <li>Status before: in_progress</li>
