@@ -1,17 +1,20 @@
 #!/usr/bin/env -S node cli/node_modules/tsx/dist/cli.mjs
 
 import {
-  RR_COMPANY_ID,
-  resolveRrOutreachRoutineGovernance,
+  OUTREACH_ROUTINE_GOVERNANCE_CONFIG_ENV,
+  parseOutreachRoutineGovernanceConfig,
+  resolveOutreachRoutineGovernance,
   isOutreachGovernanceExemptTitle,
 } from "../server/src/services/outreach-routine-governance.ts";
 
 function parseArgs(argv) {
-  const args = { identifiers: [], dryRun: true };
+  const args = { identifiers: [], dryRun: true, configJson: undefined };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--identifiers") {
       args.identifiers = (argv[++i] || "").split(",").map((item) => item.trim()).filter(Boolean);
+    } else if (arg === "--config-json") {
+      args.configJson = argv[++i] || "";
     } else if (arg === "--apply") {
       args.dryRun = false;
     } else {
@@ -24,15 +27,16 @@ function parseArgs(argv) {
   return args;
 }
 
-function isOutreachIssue(issue) {
-  if (issue.companyId && issue.companyId !== RR_COMPANY_ID) return false;
+function isOutreachIssue(issue, config) {
+  if (issue.companyId && issue.companyId !== config.companyId) return false;
   if (issue.originKind !== "routine_execution") return false;
   if (isOutreachGovernanceExemptTitle(issue.title || "")) return false;
-  return Boolean(resolveRrOutreachRoutineGovernance({
-    companyId: issue.companyId || RR_COMPANY_ID,
+  return Boolean(resolveOutreachRoutineGovernance({
+    companyId: issue.companyId || config.companyId,
     title: issue.title || "",
     description: issue.description || null,
     assigneeAgentId: issue.assigneeAgentId || null,
+    config,
   }));
 }
 
@@ -40,13 +44,17 @@ function policyReviewer(policy) {
   return policy?.stages?.[0]?.participants?.[0]?.agentId ?? null;
 }
 
-export function diff(issue) {
-  if (!isOutreachIssue(issue)) return null;
-  const expected = resolveRrOutreachRoutineGovernance({
-    companyId: issue.companyId || RR_COMPANY_ID,
+export function diff(issue, config = parseOutreachRoutineGovernanceConfig()) {
+  if (!config) {
+    throw new Error(`${OUTREACH_ROUTINE_GOVERNANCE_CONFIG_ENV} or --config-json is required`);
+  }
+  if (!isOutreachIssue(issue, config)) return null;
+  const expected = resolveOutreachRoutineGovernance({
+    companyId: issue.companyId || config.companyId,
     title: issue.title || "",
     description: issue.description || null,
     assigneeAgentId: issue.assigneeAgentId || null,
+    config,
   });
   if (!expected) return null;
   const patch = {};
@@ -90,8 +98,8 @@ export async function api(path, options = {}) {
   return response.json();
 }
 
-export async function getIssueByIdentifier(identifier) {
-  const results = await api(`/api/companies/${RR_COMPANY_ID}/issues?q=${encodeURIComponent(identifier)}&limit=20`);
+export async function getIssueByIdentifier(identifier, config) {
+  const results = await api(`/api/companies/${config.companyId}/issues?q=${encodeURIComponent(identifier)}&limit=20`);
   const match = results.find((issue) => issue.identifier === identifier);
   if (!match) throw new Error(`Issue ${identifier} not found`);
   return api(`/api/issues/${match.id}`);
@@ -99,8 +107,12 @@ export async function getIssueByIdentifier(identifier) {
 
 export async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
-  const issues = await Promise.all(args.identifiers.map(getIssueByIdentifier));
-  const findings = issues.map(diff).filter(Boolean);
+  const config = parseOutreachRoutineGovernanceConfig(args.configJson || process.env[OUTREACH_ROUTINE_GOVERNANCE_CONFIG_ENV]);
+  if (!config) {
+    throw new Error(`${OUTREACH_ROUTINE_GOVERNANCE_CONFIG_ENV} or --config-json is required`);
+  }
+  const issues = await Promise.all(args.identifiers.map((identifier) => getIssueByIdentifier(identifier, config)));
+  const findings = issues.map((issue) => diff(issue, config)).filter(Boolean);
 
   console.log(`Outreach routine governance audit (${args.dryRun ? "dry-run" : "apply"})`);
   for (const finding of findings) {

@@ -1,20 +1,16 @@
-export const RR_COMPANY_ID = "0fabe377-3008-4cde-96ad-b1ae5eb5e469";
-export const RR_OPERATIONS_PROJECT_ID = "8e99b255-02f1-401d-ab06-93cc8dc15552";
-export const RR_OUTREACH_GO_LIVE_PROJECT_ID = "202c77b2-e2d0-4030-a416-e41fcf246a3e";
-export const RR_AUTOMATE_LABEL_ID = "519fc58e-0411-4b5d-bdeb-02fb637e4f8f";
-export const RR_OUTREACH_LABEL_ID = "7f4ac6f1-6e9e-472d-a751-899b6a0c16d1";
-export const RR_CONTENT_LABEL_ID = "6c443851-fe4f-44e9-b11f-a4e2b9a4cbcd";
-export const RR_CEO_AGENT_ID = "ce56f1d2-941d-42b1-a54b-fc99897d6e9e";
-export const RR_OUTREACH_MANAGER_AGENT_ID = "c100bafe-c428-4e55-be99-0ec4ebaa32a0";
+export interface OutreachRoutineGovernanceConfig {
+  companyId: string;
+  operationsProjectId: string;
+  outreachProjectId: string;
+  automateLabelId: string;
+  outreachLabelId: string;
+  contentLabelId?: string | null;
+  ceoAgentId: string;
+  outreachManagerAgentId: string;
+  outreachDirectReportAgentIds: string[];
+}
 
-const RR_OUTREACH_DIRECT_REPORT_AGENT_IDS = new Set([
-  "e7651b93-a8ca-4c74-8ac0-2003678abb77",
-  "431f481e-ee9a-4bac-a38a-8076db805f09",
-  "a4a8d13b-3f28-49fb-b16e-78e5ba5a57f3",
-  "6962d181-7524-4a9b-a1a2-de5e7de1f7f1",
-  "e27b046d-6518-492c-99d6-d10ad8cdea63",
-  "7fd12a67-5597-4eba-ae75-e4c2aea9cb7c",
-]);
+export const OUTREACH_ROUTINE_GOVERNANCE_CONFIG_ENV = "OUTREACH_ROUTINE_GOVERNANCE_CONFIG";
 
 const EXEMPT_TITLE_PREFIXES = [
   "Review productivity for",
@@ -23,7 +19,49 @@ const EXEMPT_TITLE_PREFIXES = [
   "Content idea:",
 ];
 
-export function standardRrOutreachReviewPolicy(reviewerAgentId: string): Record<string, unknown> {
+function nonEmptyString(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function nonEmptyStringArray(value: unknown) {
+  if (!Array.isArray(value)) return null;
+  const items = value.map(nonEmptyString).filter((item): item is string => Boolean(item));
+  return items.length === value.length ? items : null;
+}
+
+export function parseOutreachRoutineGovernanceConfig(raw: string | undefined = process.env[OUTREACH_ROUTINE_GOVERNANCE_CONFIG_ENV]) {
+  if (!raw?.trim()) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${OUTREACH_ROUTINE_GOVERNANCE_CONFIG_ENV} must be valid JSON`);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${OUTREACH_ROUTINE_GOVERNANCE_CONFIG_ENV} must be a JSON object`);
+  }
+  const record = parsed as Record<string, unknown>;
+  const config = {
+    companyId: nonEmptyString(record.companyId),
+    operationsProjectId: nonEmptyString(record.operationsProjectId),
+    outreachProjectId: nonEmptyString(record.outreachProjectId),
+    automateLabelId: nonEmptyString(record.automateLabelId),
+    outreachLabelId: nonEmptyString(record.outreachLabelId),
+    contentLabelId: record.contentLabelId == null ? null : nonEmptyString(record.contentLabelId),
+    ceoAgentId: nonEmptyString(record.ceoAgentId),
+    outreachManagerAgentId: nonEmptyString(record.outreachManagerAgentId),
+    outreachDirectReportAgentIds: nonEmptyStringArray(record.outreachDirectReportAgentIds),
+  };
+  const missing = Object.entries(config)
+    .filter(([key, value]) => key !== "contentLabelId" && (value == null || (Array.isArray(value) && value.length === 0)))
+    .map(([key]) => key);
+  if (missing.length > 0) {
+    throw new Error(`${OUTREACH_ROUTINE_GOVERNANCE_CONFIG_ENV} missing required field(s): ${missing.join(", ")}`);
+  }
+  return config as OutreachRoutineGovernanceConfig;
+}
+
+export function standardOutreachReviewPolicy(reviewerAgentId: string): Record<string, unknown> {
   return {
     mode: "normal",
     commentRequired: true,
@@ -41,41 +79,48 @@ export function isOutreachGovernanceExemptTitle(title: string) {
   return EXEMPT_TITLE_PREFIXES.some((prefix) => title.startsWith(prefix));
 }
 
-export function isRrOutreachRoutineIssue(input: {
-  companyId: string;
-  title: string;
-  assigneeAgentId?: string | null;
-}) {
-  if (input.companyId !== RR_COMPANY_ID) return false;
+export function isOutreachRoutineIssue(
+  config: OutreachRoutineGovernanceConfig | null,
+  input: {
+    companyId: string;
+    title: string;
+    assigneeAgentId?: string | null;
+  },
+) {
+  if (!config) return false;
+  if (input.companyId !== config.companyId) return false;
   if (isOutreachGovernanceExemptTitle(input.title)) return false;
-  if (input.assigneeAgentId === RR_OUTREACH_MANAGER_AGENT_ID) return true;
-  if (input.assigneeAgentId && RR_OUTREACH_DIRECT_REPORT_AGENT_IDS.has(input.assigneeAgentId)) return true;
+  if (input.assigneeAgentId === config.outreachManagerAgentId) return true;
+  if (input.assigneeAgentId && new Set(config.outreachDirectReportAgentIds).has(input.assigneeAgentId)) return true;
   return /outreach manager/i.test(input.title);
 }
 
-export function resolveRrOutreachRoutineGovernance(input: {
+export function resolveOutreachRoutineGovernance(input: {
   companyId: string;
   title: string;
   description?: string | null;
   assigneeAgentId?: string | null;
+  config?: OutreachRoutineGovernanceConfig | null;
 }) {
-  if (!isRrOutreachRoutineIssue(input)) return null;
+  const config = input.config ?? parseOutreachRoutineGovernanceConfig();
+  if (!config) return null;
+  if (!isOutreachRoutineIssue(config, input)) return null;
 
   const text = `${input.title}\n${input.description ?? ""}`.toLowerCase();
   const isOrgProcess = /\b(self-improvement|self improvement|automation|automate|executionpolicy scan|policy scan|governance|audit)\b/.test(text);
   const title = input.title.toLowerCase();
   const isLinkedInContent = /\blinkedin\b/.test(title) && /\b(content|publish|post)\b/.test(title);
-  const reviewerAgentId = input.assigneeAgentId === RR_OUTREACH_MANAGER_AGENT_ID || /outreach manager/i.test(input.title)
-    ? RR_CEO_AGENT_ID
-    : RR_OUTREACH_MANAGER_AGENT_ID;
+  const reviewerAgentId = input.assigneeAgentId === config.outreachManagerAgentId || /outreach manager/i.test(input.title)
+    ? config.ceoAgentId
+    : config.outreachManagerAgentId;
 
   return {
-    projectId: isOrgProcess ? RR_OPERATIONS_PROJECT_ID : RR_OUTREACH_GO_LIVE_PROJECT_ID,
+    projectId: isOrgProcess ? config.operationsProjectId : config.outreachProjectId,
     labelIds: [
-      ...(isOrgProcess ? [RR_AUTOMATE_LABEL_ID] : []),
-      RR_OUTREACH_LABEL_ID,
-      ...(isLinkedInContent ? [RR_CONTENT_LABEL_ID] : []),
+      ...(isOrgProcess ? [config.automateLabelId] : []),
+      config.outreachLabelId,
+      ...(isLinkedInContent && config.contentLabelId ? [config.contentLabelId] : []),
     ],
-    executionPolicy: standardRrOutreachReviewPolicy(reviewerAgentId),
+    executionPolicy: standardOutreachReviewPolicy(reviewerAgentId),
   };
 }

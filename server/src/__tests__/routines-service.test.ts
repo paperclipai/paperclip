@@ -37,19 +37,41 @@ import * as providerRegistry from "../secrets/provider-registry.ts";
 import { createRoutineDispatchFingerprint, createRoutineEnvFingerprint, routineService } from "../services/routines.ts";
 import { secretService } from "../services/secrets.ts";
 import {
-  RR_AUTOMATE_LABEL_ID,
-  RR_COMPANY_ID,
-  RR_CONTENT_LABEL_ID,
-  RR_OPERATIONS_PROJECT_ID,
-  RR_OUTREACH_GO_LIVE_PROJECT_ID,
-  RR_OUTREACH_LABEL_ID,
-  RR_OUTREACH_MANAGER_AGENT_ID,
-  RR_CEO_AGENT_ID,
+  OUTREACH_ROUTINE_GOVERNANCE_CONFIG_ENV,
 } from "../services/outreach-routine-governance.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const originalSecretsProviderEnv = process.env.PAPERCLIP_SECRETS_PROVIDER;
+const originalOutreachGovernanceEnv = process.env[OUTREACH_ROUTINE_GOVERNANCE_CONFIG_ENV];
+
+const RR_OUTREACH_GOVERNANCE_CONFIG = {
+  companyId: "0fabe377-3008-4cde-96ad-b1ae5eb5e469",
+  operationsProjectId: "8e99b255-02f1-401d-ab06-93cc8dc15552",
+  outreachProjectId: "202c77b2-e2d0-4030-a416-e41fcf246a3e",
+  automateLabelId: "519fc58e-0411-4b5d-bdeb-02fb637e4f8f",
+  outreachLabelId: "7f4ac6f1-6e9e-472d-a751-899b6a0c16d1",
+  contentLabelId: "6c443851-fe4f-44e9-b11f-a4e2b9a4cbcd",
+  ceoAgentId: "ce56f1d2-941d-42b1-a54b-fc99897d6e9e",
+  outreachManagerAgentId: "c100bafe-c428-4e55-be99-0ec4ebaa32a0",
+  outreachDirectReportAgentIds: [
+    "e7651b93-a8ca-4c74-8ac0-2003678abb77",
+    "431f481e-ee9a-4bac-a38a-8076db805f09",
+    "a4a8d13b-3f28-49fb-b16e-78e5ba5a57f3",
+    "6962d181-7524-4a9b-a1a2-de5e7de1f7f1",
+    "e27b046d-6518-492c-99d6-d10ad8cdea63",
+    "7fd12a67-5597-4eba-ae75-e4c2aea9cb7c",
+  ],
+};
+
+const RR_COMPANY_ID = RR_OUTREACH_GOVERNANCE_CONFIG.companyId;
+const RR_OPERATIONS_PROJECT_ID = RR_OUTREACH_GOVERNANCE_CONFIG.operationsProjectId;
+const RR_OUTREACH_GO_LIVE_PROJECT_ID = RR_OUTREACH_GOVERNANCE_CONFIG.outreachProjectId;
+const RR_AUTOMATE_LABEL_ID = RR_OUTREACH_GOVERNANCE_CONFIG.automateLabelId;
+const RR_OUTREACH_LABEL_ID = RR_OUTREACH_GOVERNANCE_CONFIG.outreachLabelId;
+const RR_CONTENT_LABEL_ID = RR_OUTREACH_GOVERNANCE_CONFIG.contentLabelId;
+const RR_CEO_AGENT_ID = RR_OUTREACH_GOVERNANCE_CONFIG.ceoAgentId;
+const RR_OUTREACH_MANAGER_AGENT_ID = RR_OUTREACH_GOVERNANCE_CONFIG.outreachManagerAgentId;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -71,6 +93,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       delete process.env.PAPERCLIP_SECRETS_PROVIDER;
     } else {
       process.env.PAPERCLIP_SECRETS_PROVIDER = originalSecretsProviderEnv;
+    }
+    if (originalOutreachGovernanceEnv === undefined) {
+      delete process.env[OUTREACH_ROUTINE_GOVERNANCE_CONFIG_ENV];
+    } else {
+      process.env[OUTREACH_ROUTINE_GOVERNANCE_CONFIG_ENV] = originalOutreachGovernanceEnv;
     }
     await db.delete(activityLog);
     await db.delete(issueLabels);
@@ -984,6 +1011,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   it("bootstraps governance fields on non-exempt RR Outreach routine execution issues", async () => {
+    process.env[OUTREACH_ROUTINE_GOVERNANCE_CONFIG_ENV] = JSON.stringify(RR_OUTREACH_GOVERNANCE_CONFIG);
     const companyId = RR_COMPANY_ID;
     const issuePrefix = "RR";
 
@@ -1080,6 +1108,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   it("coalesces RR Outreach routine dispatches with pre-governance project fingerprints", async () => {
+    process.env[OUTREACH_ROUTINE_GOVERNANCE_CONFIG_ENV] = JSON.stringify(RR_OUTREACH_GOVERNANCE_CONFIG);
     const companyId = RR_COMPANY_ID;
     const issuePrefix = "RR";
 

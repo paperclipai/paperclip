@@ -58,7 +58,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
-import { resolveRrOutreachRoutineGovernance } from "./outreach-routine-governance.js";
+import { resolveOutreachRoutineGovernance } from "./outreach-routine-governance.js";
 import { secretService } from "./secrets.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { parseCron, validateCron } from "./cron.js";
@@ -1438,7 +1438,7 @@ export function routineService(
     const description = [baseDescription, input.descriptionAppendix]
       .filter((part): part is string => Boolean(part && part.trim()))
       .join("\n\n");
-    const outreachGovernance = resolveRrOutreachRoutineGovernance({
+    const outreachGovernance = resolveOutreachRoutineGovernance({
       companyId: input.routine.companyId,
       title,
       description,
