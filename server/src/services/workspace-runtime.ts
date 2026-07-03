@@ -2078,6 +2078,13 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     skipRefresh: true,
   });
 
+  await configureWorktreeGitIdentity({
+    repoRoot,
+    worktreePath,
+    agent: input.agent,
+    recorder: input.recorder ?? null,
+  });
+
   await provisionExecutionWorktree({
     strategy: {
       type: "git_worktree",

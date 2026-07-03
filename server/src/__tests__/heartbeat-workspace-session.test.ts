@@ -249,6 +249,9 @@ describe("execution workspace git identity", () => {
       expect(await runGitOutput(workspace.worktreePath!, ["config", "--worktree", "user.email"]))
         .toBe("agent-a@agents.paperclip.local");
 
+      await fs.rm(workspace.worktreePath!, { recursive: true, force: true });
+      await runGit(repoRoot, ["worktree", "prune"]);
+
       const restored = await ensurePersistedExecutionWorkspaceAvailable({
         base: workspaceBase(repoRoot, baseRef),
         workspace: {
