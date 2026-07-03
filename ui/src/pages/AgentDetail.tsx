@@ -3593,6 +3593,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   const pendingLogLineRef = useRef("");
   const scrollContainerRef = useRef<ScrollContainer | null>(null);
   const isFollowingRef = useRef(false);
+  const missingLiveLogRunIdsRef = useRef<Set<string>>(new Set());
   const lastMetricsRef = useRef<{ scrollHeight: number; distanceFromBottom: number }>({
     scrollHeight: 0,
     distanceFromBottom: Number.POSITIVE_INFINITY,
@@ -3738,6 +3739,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
   useEffect(() => {
     let cancelled = false;
     pendingLogLineRef.current = "";
+    missingLiveLogRunIdsRef.current.delete(run.id);
     setLogLines([]);
     setLogOffset(0);
     setHasMoreLog(false);
@@ -3763,6 +3765,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       } catch (err) {
         if (!cancelled) {
           if (isLive && isRunLogUnavailable(err)) {
+            missingLiveLogRunIdsRef.current.add(run.id);
             setLogLoading(false);
             return;
           }
@@ -3815,7 +3818,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   // Poll shell log for running runs
   useEffect(() => {
-    if (!isLive || isStreamingConnected) return;
+    if (!isLive || isStreamingConnected || missingLiveLogRunIdsRef.current.has(run.id)) return;
     const interval = setInterval(async () => {
       try {
         const result = await heartbeatsApi.log(run.id, logOffset, 256_000);
@@ -3828,7 +3831,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           setLogOffset((prev) => prev + result.content.length);
         }
       } catch (err) {
-        if (isRunLogUnavailable(err)) return;
+        if (isRunLogUnavailable(err)) {
+          missingLiveLogRunIdsRef.current.add(run.id);
+          return;
+        }
         // ignore polling errors
       }
     }, 2000);
