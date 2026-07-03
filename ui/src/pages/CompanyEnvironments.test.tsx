@@ -116,6 +116,12 @@ function click(element: Element | null | undefined) {
   element?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 }
 
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 function getOpenDialog(): HTMLElement | null {
   return document.body.querySelector("[role='dialog']");
 }
@@ -378,6 +384,16 @@ describe("CompanyEnvironments — test provider button", () => {
       Array.from(dialog?.querySelectorAll("input") ?? []).some((input) => (input as HTMLInputElement).value === "Alpha"),
     ).toBe(true);
 
+    await act(async () => click(findButton(dialog!, "Add variable")));
+    await flushReact();
+    const variableName = dialog!.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')!;
+    const variableValue = dialog!.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    await act(async () => {
+      setInputValue(variableName, "API_TOKEN");
+      setInputValue(variableValue, "draft-token");
+    });
+    await flushReact();
+
     await act(async () => {
       findButton(document.body, "Save environment")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -385,7 +401,11 @@ describe("CompanyEnvironments — test provider button", () => {
 
     expect(mockEnvironmentsApi.update).toHaveBeenCalledExactlyOnceWith(
       "env-1",
-      expect.objectContaining({ name: "Alpha", driver: "sandbox" }),
+      expect.objectContaining({
+        name: "Alpha",
+        driver: "sandbox",
+        envVars: { API_TOKEN: { type: "plain", value: "draft-token" } },
+      }),
     );
     expect(getOpenDialog()).toBeNull();
   });

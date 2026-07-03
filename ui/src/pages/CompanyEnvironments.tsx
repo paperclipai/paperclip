@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Play, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import {
@@ -25,7 +25,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
+import {
+  EnvironmentVariablesEditor,
+  type EnvironmentVariablesEditorHandle,
+} from "@/components/environment-variables-editor";
 import { JsonSchemaForm, getDefaultValues, validateJsonSchemaForm } from "@/components/JsonSchemaForm";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -592,6 +595,7 @@ export function CompanyEnvironments() {
   const [environmentDialogOpen, setEnvironmentDialogOpen] = useState(false);
   const [editingEnvironmentId, setEditingEnvironmentId] = useState<string | null>(null);
   const [environmentForm, setEnvironmentForm] = useState<EnvironmentFormState>(createEmptyEnvironmentForm);
+  const environmentVariablesEditorRef = useRef<EnvironmentVariablesEditorHandle | null>(null);
   const [probeResults, setProbeResults] = useState<Record<string, EnvironmentProbeResult | null>>({});
   const [testingEnvironmentId, setTestingEnvironmentId] = useState<string | null>(null);
 
@@ -828,6 +832,11 @@ export function CompanyEnvironments() {
     setEnvironmentForm(createEmptyEnvironmentForm());
     environmentMutation.reset();
     draftEnvironmentProbeMutation.reset();
+  }
+
+  function flushEnvironmentForm(): EnvironmentFormState {
+    const flushedEnvVars = environmentVariablesEditorRef.current?.flushPendingDraft();
+    return flushedEnvVars ? { ...environmentForm, envVars: flushedEnvVars } : environmentForm;
   }
 
   const discoveredPluginSandboxProviders = Object.entries(environmentCapabilities?.sandboxProviders ?? {})
@@ -1256,6 +1265,7 @@ export function CompanyEnvironments() {
                 hint="Injected into runs that resolve through this environment. Use plain values or company secrets."
               >
                 <EnvironmentVariablesEditor
+                  ref={environmentVariablesEditorRef}
                   value={environmentForm.envVars}
                   secrets={secrets ?? []}
                   onCreateSecret={async (name, value) => await createSecret.mutateAsync({ name, value })}
@@ -1290,14 +1300,14 @@ export function CompanyEnvironments() {
             {environmentForm.driver !== "local" ? (
               <Button
                 variant="outline"
-                onClick={() => draftEnvironmentProbeMutation.mutate(environmentForm)}
+                onClick={() => draftEnvironmentProbeMutation.mutate(flushEnvironmentForm())}
                 disabled={draftEnvironmentProbeMutation.isPending || !environmentFormValid}
               >
                 {draftEnvironmentProbeMutation.isPending ? "Testing..." : "Test"}
               </Button>
             ) : null}
             <Button
-              onClick={() => environmentMutation.mutate(environmentForm)}
+              onClick={() => environmentMutation.mutate(flushEnvironmentForm())}
               disabled={environmentMutation.isPending || !environmentFormValid}
             >
               {environmentMutation.isPending

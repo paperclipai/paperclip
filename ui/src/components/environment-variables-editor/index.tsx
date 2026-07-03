@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { flushSync } from "react-dom";
 import { AlertCircle, KeyRound, Plus, RotateCcw, Save } from "lucide-react";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
@@ -94,7 +103,15 @@ export interface EnvironmentVariablesEditorProps {
   footerHint?: ReactNode | null;
 }
 
-export function EnvironmentVariablesEditor({
+export interface EnvironmentVariablesEditorHandle {
+  /**
+   * Promote the editor-local draft into the controlled value before an outer
+   * action reads parent state. Returns the promoted value when a draft existed.
+   */
+  flushPendingDraft: () => Record<string, EnvBinding> | null;
+}
+
+export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorHandle, EnvironmentVariablesEditorProps>(function EnvironmentVariablesEditor({
   value,
   onChange,
   secrets,
@@ -103,7 +120,7 @@ export function EnvironmentVariablesEditor({
   disabled,
   reservedPrefixes = DEFAULT_RESERVED_PREFIXES,
   footerHint,
-}: EnvironmentVariablesEditorProps) {
+}: EnvironmentVariablesEditorProps, ref) {
   const toast = useOptionalToastActions();
   const editorRootRef = useRef<HTMLDivElement | null>(null);
   const [rows, setRows] = useState<EnvRow[]>(() => rowsFromValue(value));
@@ -183,12 +200,15 @@ export function EnvironmentVariablesEditor({
   const hasUnsavedChanges = draftValueKey !== committedValueKey;
 
   const flushPendingDraft = useCallback(() => {
-    if (disabled || !hasUnsavedChanges) return;
+    if (disabled || !hasUnsavedChanges) return null;
     pendingSaveValueKeyRef.current = draftValueKey;
     flushSync(() => {
       onChange(draftValue);
     });
+    return draftValue ?? {};
   }, [disabled, draftValue, draftValueKey, hasUnsavedChanges, onChange]);
+
+  useImperativeHandle(ref, () => ({ flushPendingDraft }), [flushPendingDraft]);
 
   useEffect(() => {
     const form = editorRootRef.current?.closest("form");
@@ -213,7 +233,7 @@ export function EnvironmentVariablesEditor({
       const button = target.closest("button");
       if (!button || button.disabled) return;
       const label = `${button.getAttribute("aria-label") ?? ""} ${button.textContent ?? ""}`;
-      if (button.type === "submit" || /\bsave\b/i.test(label)) {
+      if (button.type === "submit" || /\b(save|create|update|test|import)\b/i.test(label)) {
         flushPendingDraft();
       }
     }
@@ -442,7 +462,7 @@ export function EnvironmentVariablesEditor({
       </div>
     </TooltipProvider>
   );
-}
+});
 
 export type { EnvRow } from "./model";
 export { EnvironmentVariableRow } from "./Row";
