@@ -2233,11 +2233,19 @@ export function resolveJoinRequestAgentManagerId(
   const ceoCandidates = candidates.filter(
     (candidate) => candidate.role === "ceo"
   );
-  if (ceoCandidates.length === 0) return null;
-  const rootCeo = ceoCandidates.find(
+  if (ceoCandidates.length > 0) {
+    const rootCeo = ceoCandidates.find(
+      (candidate) => candidate.reportsTo === null
+    );
+    return (rootCeo ?? ceoCandidates[0] ?? null)?.id ?? null;
+  }
+  // Bootstrap fallback: no agent has been promoted to CEO yet. Fall back to
+  // the top of the reporting chain (an agent with no manager of its own) so
+  // agent join requests aren't hard-blocked until someone is made CEO.
+  const rootCandidates = candidates.filter(
     (candidate) => candidate.reportsTo === null
   );
-  return (rootCeo ?? ceoCandidates[0] ?? null)?.id ?? null;
+  return rootCandidates[0]?.id ?? null;
 }
 
 function isInviteTokenHashCollisionError(error: unknown) {
@@ -4171,7 +4179,7 @@ export function accessRoutes(
         const managerId = resolveJoinRequestAgentManagerId(existingAgents);
         if (!managerId) {
           throw conflict(
-            "Join request cannot be approved because this company has no active CEO"
+            "Join request cannot be approved because this company has no active CEO or other agent to act as manager"
           );
         }
 
