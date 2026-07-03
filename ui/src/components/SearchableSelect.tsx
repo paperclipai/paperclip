@@ -17,6 +17,7 @@ export interface SearchableSelectOption<TValue extends string = string> {
   key: string;
   value: TValue;
   label: string;
+  title?: string;
   searchText?: string;
   disabled?: boolean;
 }
@@ -37,7 +38,7 @@ export interface SearchableSelectProps<
 > {
   value: TValue | "";
   groups: readonly SearchableSelectGroup<TValue, TOption>[];
-  onValueChange: (value: TValue, option: TOption) => void;
+  onValueChange: (value: TValue, option: TOption) => void | boolean | { close?: boolean };
   placeholder: string;
   searchPlaceholder?: string;
   emptyMessage?: string;
@@ -51,6 +52,10 @@ export interface SearchableSelectProps<
   contentWidth?: "trigger" | "auto";
   renderValue?: (option: TOption | null) => ReactNode;
   renderOption?: (option: TOption, state: SearchableSelectRenderState) => ReactNode;
+  deriveGroups?: (
+    query: string,
+    groups: readonly SearchableSelectGroup<TValue, TOption>[],
+  ) => readonly SearchableSelectGroup<TValue, TOption>[];
   filterOption?: (option: TOption, query: string) => boolean;
   scoreOption?: (option: TOption, query: string) => number | null;
   disablePortal?: boolean;
@@ -98,6 +103,7 @@ export function SearchableSelect<
   contentWidth = "trigger",
   renderValue,
   renderOption,
+  deriveGroups,
   filterOption = defaultFilterOption,
   scoreOption,
   disablePortal,
@@ -116,10 +122,15 @@ export function SearchableSelect<
     return null;
   }, [groups, value]);
 
+  const visibleGroups = useMemo(
+    () => (deriveGroups ? deriveGroups(query, groups) : groups),
+    [deriveGroups, groups, query],
+  );
+
   const filteredGroups = useMemo(() => {
     if (loading) return [];
     const normalizedQuery = normalizeSearchText(query);
-    return groups
+    return visibleGroups
       .map((group) => {
         const options = group.options
           .map((option, index) => {
@@ -150,7 +161,7 @@ export function SearchableSelect<
         };
       })
       .filter((group) => group.options.length > 0);
-  }, [filterOption, groups, loading, query, scoreOption]);
+  }, [filterOption, loading, query, scoreOption, visibleGroups]);
 
   const hasOptions = filteredGroups.some((group) => group.options.length > 0);
 
@@ -165,7 +176,10 @@ export function SearchableSelect<
   function selectOption(option: TOption) {
     if (option.disabled) return;
     suppressNextTriggerFocusRef.current = true;
-    onValueChange(option.value, option);
+    const result = onValueChange(option.value, option);
+    if (result === false || (typeof result === "object" && result?.close === false)) {
+      return;
+    }
     closePopover();
   }
 

@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import { KeyRound, Plus } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
+import { CornerUpLeft, Folder, KeyRound, Plus } from "lucide-react";
 import type { CompanySecret, SecretStatus } from "@paperclipai/shared";
 import {
   SearchableSelect,
@@ -7,13 +7,19 @@ import {
   type SearchableSelectOption,
 } from "@/components/SearchableSelect";
 import { Badge } from "@/components/ui/badge";
+import { normalizeSearchText } from "@/lib/searchable-select";
 import { cn } from "@/lib/utils";
 
 interface SecretOption extends SearchableSelectOption {
+  kind?: "secret" | "folder" | "back";
   secret?: CompanySecret;
   missing?: boolean;
   status?: SecretStatus;
+  folderPath?: string;
+  pathHint?: string;
 }
+
+const FOLDER_VALUE_PREFIX = "__secret_folder__:";
 
 function statusBadge(status: SecretStatus | undefined) {
   if (!status || status === "active") return null;
@@ -22,6 +28,100 @@ function statusBadge(status: SecretStatus | undefined) {
       {status}
     </Badge>
   );
+}
+
+function splitSecretPath(name: string) {
+  return name.split("/").filter((part) => part.length > 0);
+}
+
+function pathKey(parts: readonly string[]) {
+  return parts.join("/");
+}
+
+function pathLabel(parts: readonly string[]) {
+  return parts.length > 0 ? `/${parts.join("/")}` : "/";
+}
+
+function pathStartsWith(parts: readonly string[], prefix: readonly string[]) {
+  if (parts.length < prefix.length) return false;
+  return prefix.every((part, index) => parts[index] === part);
+}
+
+function folderValue(parts: readonly string[]) {
+  return `${FOLDER_VALUE_PREFIX}${pathKey(parts)}`;
+}
+
+function buildFolderGroup(
+  secrets: readonly CompanySecret[],
+  currentPath: readonly string[],
+  currentSecretId: string,
+): SearchableSelectGroup<string, SecretOption> {
+  const currentLength = currentPath.length;
+  const folders = new Map<string, SecretOption>();
+  const leafSecrets: SecretOption[] = [];
+
+  for (const secret of secrets) {
+    const parts = splitSecretPath(secret.name);
+    if (!pathStartsWith(parts, currentPath)) continue;
+
+    if (parts.length > currentLength + 1) {
+      const folderParts = parts.slice(0, currentLength + 1);
+      const key = pathKey(folderParts);
+      if (!folders.has(key)) {
+        const label = folderParts[folderParts.length - 1] ?? "/";
+        const fullPath = pathLabel(folderParts);
+        folders.set(key, {
+          key: `folder-${key || "root"}`,
+          value: folderValue(folderParts),
+          label,
+          title: fullPath,
+          searchText: fullPath,
+          kind: "folder",
+          folderPath: key,
+          pathHint: fullPath,
+        });
+      }
+      continue;
+    }
+
+    if (parts.length === currentLength + 1 || (currentLength === 0 && parts.length === 0)) {
+      const label = parts.at(-1) ?? secret.name;
+      leafSecrets.push({
+        key: `browse-${secret.id}`,
+        value: secret.id,
+        label,
+        title: secret.name,
+        searchText: `${secret.key} ${secret.name}`,
+        secret,
+        status: secret.status,
+        kind: "secret",
+        pathHint: secret.name,
+        disabled: secret.status !== "active" && secret.id !== currentSecretId,
+      });
+    }
+  }
+
+  const options: SecretOption[] = [];
+  if (currentPath.length > 0) {
+    const parentPath = currentPath.slice(0, -1);
+    options.push({
+      key: `folder-up-${pathKey(currentPath)}`,
+      value: folderValue(parentPath),
+      label: "Up one folder",
+      title: pathLabel(parentPath),
+      searchText: pathLabel(parentPath),
+      kind: "back",
+      folderPath: pathKey(parentPath),
+      pathHint: pathLabel(parentPath),
+    });
+  }
+  options.push(...folders.values(), ...leafSecrets);
+
+  return {
+    id: "browse-secrets",
+    label: currentPath.length > 0 ? pathLabel(currentPath) : "Browse secrets",
+    options,
+  };
 }
 
 export interface SecretPickerProps {
@@ -54,11 +154,14 @@ export function SecretPicker({
   triggerClassName,
   disablePortal,
 }: SecretPickerProps) {
+  const [currentPathKey, setCurrentPathKey] = useState("");
   const boundSecret = useMemo(
     () => secrets.find((secret) => secret.id === secretId) ?? null,
     [secrets, secretId],
   );
   const boundMissing = Boolean(secretId) && !boundSecret;
+  const currentPath = useMemo(() => (currentPathKey ? currentPathKey.split("/") : []), [currentPathKey]);
+  const hasFolderPaths = useMemo(() => secrets.some((secret) => splitSecretPath(secret.name).length > 1), [secrets]);
 
   const groups = useMemo<SearchableSelectGroup<string, SecretOption>[]>(() => {
     const result: SearchableSelectGroup<string, SecretOption>[] = [];
@@ -74,6 +177,7 @@ export function SecretPicker({
             key: `missing-${secretId}`,
             value: secretId,
             label: `Missing secret (${secretId.slice(0, 8)}…)`,
+            title: `Missing secret (${secretId})`,
             missing: true,
             disabled: true,
           },
@@ -92,9 +196,11 @@ export function SecretPicker({
           key: `recent-${secret.id}`,
           value: secret.id,
           label: secret.name,
-          searchText: secret.key,
+          title: secret.name,
+          searchText: `${secret.key} ${secret.name}`,
           secret,
           status: secret.status,
+          kind: "secret",
         })),
       });
     }
@@ -106,9 +212,11 @@ export function SecretPicker({
         key: `all-${secret.id}`,
         value: secret.id,
         label: secret.name,
-        searchText: secret.key,
+        title: secret.name,
+        searchText: `${secret.key} ${secret.name}`,
         secret,
         status: secret.status,
+        kind: "secret",
         // Non-active secrets are not selectable for new bindings, but the
         // already-bound one stays selectable (it's the current value).
         disabled: secret.status !== "active" && secret.id !== secretId,
@@ -118,11 +226,31 @@ export function SecretPicker({
     return result;
   }, [boundMissing, recentlyUsedSecrets, secretId, secrets]);
 
+  const deriveGroups = useCallback(
+    (query: string, baseGroups: readonly SearchableSelectGroup<string, SecretOption>[]) => {
+      if (!hasFolderPaths) return baseGroups;
+      if (normalizeSearchText(query)) return baseGroups;
+
+      const browseGroup = buildFolderGroup(secrets, currentPath, secretId);
+      const stableGroups = baseGroups.filter((group) => group.id === "current-missing" || group.id === "recently-used");
+      return browseGroup.options.length > 0 ? [...stableGroups, browseGroup] : stableGroups;
+    },
+    [currentPath, hasFolderPaths, secretId, secrets],
+  );
+
   return (
     <SearchableSelect<string, SecretOption>
       value={secretId || ""}
       groups={groups}
-      onValueChange={(next) => onSelect(next)}
+      onValueChange={(next, option) => {
+        if (option.folderPath !== undefined) {
+          setCurrentPathKey(option.folderPath);
+          return false;
+        }
+        setCurrentPathKey("");
+        onSelect(next);
+      }}
+      deriveGroups={deriveGroups}
       disabled={disabled}
       disablePortal={disablePortal}
       placeholder="Select secret…"
@@ -148,20 +276,47 @@ export function SecretPicker({
         }
         const nonActive = option.status && option.status !== "active";
         return (
-          <span className="inline-flex min-w-0 items-center gap-1.5">
+          <span className="inline-flex min-w-0 items-center gap-1.5" title={option.title}>
             <KeyRound className={cn("size-3.5 shrink-0", nonActive ? "text-amber-600" : "text-muted-foreground")} />
             <span className="truncate">{option.label}</span>
             {nonActive ? <span className="text-amber-600">({option.status})</span> : null}
           </span>
         );
       }}
-      renderOption={(option, { selected }) => (
-        <span className={cn("flex min-w-0 flex-1 items-center gap-1.5", option.disabled && "opacity-60")}>
-          <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className={cn("min-w-0 truncate font-mono text-sm", selected && "font-medium")}>{option.label}</span>
-          {statusBadge(option.status)}
-        </span>
-      )}
+      renderOption={(option, { selected }) => {
+        if (option.kind === "folder" || option.kind === "back") {
+          const Icon = option.kind === "back" ? CornerUpLeft : Folder;
+          return (
+            <span className="flex min-w-0 flex-1 items-center gap-1.5" title={option.title ?? option.label}>
+              <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="flex min-w-0 flex-col">
+                <span className={cn("truncate text-sm", selected && "font-medium")}>{option.label}</span>
+                {option.pathHint ? (
+                  <span className="truncate font-mono text-[11px] text-muted-foreground">{option.pathHint}</span>
+                ) : null}
+              </span>
+            </span>
+          );
+        }
+
+        return (
+          <span
+            className={cn("flex min-w-0 flex-1 items-center gap-1.5", option.disabled && "opacity-60")}
+            title={option.title ?? option.label}
+          >
+            <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="flex min-w-0 flex-col">
+              <span className={cn("min-w-0 truncate font-mono text-sm", selected && "font-medium")}>
+                {option.label}
+              </span>
+              {option.pathHint && option.pathHint !== option.label ? (
+                <span className="truncate font-mono text-[11px] text-muted-foreground">{option.pathHint}</span>
+              ) : null}
+            </span>
+            {statusBadge(option.status)}
+          </span>
+        );
+      }}
       createItem={{
         render: (query) => (
           <span className="flex items-center gap-1.5 text-sm">

@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import { EnvironmentVariablesEditor } from "./index";
+import { SecretPicker } from "./SecretPicker";
 
 // Radix (DropdownMenu/Popover) relies on Pointer Capture APIs that jsdom omits.
 const OriginalPointerEvent = globalThis.PointerEvent;
@@ -106,6 +107,9 @@ describe("EnvironmentVariablesEditor", () => {
     // exit without restoring if it throws) so unmount cleanup runs on real timers
     // and gets drained below.
     vi.useRealTimers();
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     flushSync(() => root?.unmount());
     root = null;
     container.remove();
@@ -114,6 +118,10 @@ describe("EnvironmentVariablesEditor", () => {
     // mid-way through the next one and dismiss its freshly-opened popover — that
     // cross-test leak is what made the real-timer sibling regression tests flaky.
     await flush();
+    for (const child of [...document.body.children]) {
+      child.remove();
+    }
+    document.body.style.pointerEvents = "";
     vi.restoreAllMocks();
   });
 
@@ -431,5 +439,93 @@ describe("EnvironmentVariablesEditor", () => {
     if (lastEmit) {
       expect(lastEmit).toEqual({ STRIPE_API_KEY: { type: "plain", value: "supersecretvalue" } });
     }
+  });
+
+  it("lets slash-delimited secrets be browsed by folder and exposes full paths on hover", async () => {
+    const cloudProviderKey = "/paperclip-cloud/prod/provider/aws-access-key-id";
+    const cloudMigrationKey = "/paperclip-cloud/prod/migration/postgres-url";
+    const onSelect = vi.fn();
+    render(
+      <SecretPicker
+        secretId=""
+        secrets={[
+          makeSecret("provider-key", { name: cloudProviderKey, key: cloudProviderKey }),
+          makeSecret("migration-key", { name: cloudMigrationKey, key: cloudMigrationKey }),
+          makeSecret("plain-key", { name: "paperclip-page-aws-access-key-id", key: "paperclip-page-aws-access-key-id" }),
+        ]}
+        onSelect={onSelect}
+        onCreateNew={() => {}}
+        disablePortal
+      />,
+    );
+
+    const combobox = container.querySelector<HTMLElement>('[role="combobox"]')!;
+    combobox.focus();
+    await flush();
+
+    const itemByText = (text: string) =>
+      [...document.querySelectorAll<HTMLElement>("[cmdk-item]")].find((el) =>
+        el.textContent?.includes(text),
+      );
+    const rowTitle = (item: HTMLElement | undefined) => item?.querySelector<HTMLElement>("[title]")?.getAttribute("title");
+
+    expect(rowTitle(itemByText("paperclip-cloud"))).toBe("/paperclip-cloud");
+    expect(rowTitle(itemByText("paperclip-page-aws-access-key-id"))).toBe(
+      "paperclip-page-aws-access-key-id",
+    );
+
+    itemByText("paperclip-cloud")!.click();
+    await flush();
+    expect(rowTitle(itemByText("prod"))).toBe("/paperclip-cloud/prod");
+
+    itemByText("prod")!.click();
+    await flush();
+    expect(rowTitle(itemByText("provider"))).toBe("/paperclip-cloud/prod/provider");
+    expect(rowTitle(itemByText("migration"))).toBe("/paperclip-cloud/prod/migration");
+
+    itemByText("provider")!.click();
+    await flush();
+    const leaf = itemByText("aws-access-key-id");
+    expect(rowTitle(leaf)).toBe(cloudProviderKey);
+
+    leaf!.click();
+    await flush();
+    expect(onSelect).toHaveBeenCalledWith("provider-key");
+  });
+
+  it("keeps secret search global while browsing starts at slash folders", async () => {
+    const cloudMigrationKey = "/paperclip-cloud/prod/migration/postgres-url";
+    render(
+      <SecretPicker
+        secretId=""
+        secrets={[
+          makeSecret("provider-key", {
+            name: "/paperclip-cloud/prod/provider/aws-access-key-id",
+            key: "/paperclip-cloud/prod/provider/aws-access-key-id",
+          }),
+          makeSecret("migration-key", { name: cloudMigrationKey, key: cloudMigrationKey }),
+        ]}
+        onSelect={() => {}}
+        onCreateNew={() => {}}
+        disablePortal
+      />,
+    );
+
+    const combobox = container.querySelector<HTMLElement>('[role="combobox"]')!;
+    combobox.focus();
+    await flush();
+    expect(document.body.textContent).toContain("paperclip-cloud");
+    expect(document.body.textContent).not.toContain("postgres-url");
+
+    const search = document.querySelector<HTMLInputElement>('input[placeholder="Search secrets…"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(search, "postgres");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+
+    const match = [...document.querySelectorAll<HTMLElement>("[cmdk-item]")].find((el) =>
+      el.textContent?.includes(cloudMigrationKey),
+    );
+    expect(match?.querySelector<HTMLElement>("[title]")?.getAttribute("title")).toBe(cloudMigrationKey);
   });
 });
