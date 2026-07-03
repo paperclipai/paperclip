@@ -32,7 +32,6 @@ import type {
   RoutineVariable,
 } from "@paperclipai/shared";
 import {
-  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
   PROJECT_ICON_NAMES,
@@ -53,6 +52,7 @@ import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
+import { resolveAgentDefaultMaxConcurrentRuns } from "./agent-concurrency-defaults.js";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
@@ -662,17 +662,21 @@ const COMPANY_LOGO_CONTENT_TYPE_EXTENSIONS: Record<string, string> = {
 
 const COMPANY_LOGO_FILE_NAME = "company-logo";
 
-const RUNTIME_DEFAULT_RULES: Array<{ path: string[]; value: unknown }> = [
+type DefaultRuleStaticValue = null | boolean | number | string | readonly unknown[] | Record<string, unknown>;
+
+type DefaultRule = { path: string[]; value: DefaultRuleStaticValue | (() => DefaultRuleStaticValue) };
+
+const RUNTIME_DEFAULT_RULES: DefaultRule[] = [
   { path: ["heartbeat", "cooldownSec"], value: 10 },
   { path: ["heartbeat", "intervalSec"], value: 3600 },
   { path: ["heartbeat", "wakeOnOnDemand"], value: true },
   { path: ["heartbeat", "wakeOnAssignment"], value: true },
   { path: ["heartbeat", "wakeOnAutomation"], value: true },
   { path: ["heartbeat", "wakeOnDemand"], value: true },
-  { path: ["heartbeat", "maxConcurrentRuns"], value: AGENT_DEFAULT_MAX_CONCURRENT_RUNS },
+  { path: ["heartbeat", "maxConcurrentRuns"], value: () => resolveAgentDefaultMaxConcurrentRuns() },
 ];
 
-const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, Array<{ path: string[]; value: unknown }>> = {
+const ADAPTER_DEFAULT_RULES_BY_TYPE: Record<string, DefaultRule[]> = {
   codex_local: [
     { path: ["timeoutSec"], value: 0 },
     { path: ["graceSec"], value: 15 },
@@ -922,7 +926,7 @@ function disableImportedTimerHeartbeat(runtimeConfig: unknown) {
   const heartbeat = isPlainRecord(next.heartbeat) ? { ...next.heartbeat } : {};
   heartbeat.enabled = false;
   if (parseFiniteNumberLike(heartbeat.maxConcurrentRuns) == null) {
-    heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+    heartbeat.maxConcurrentRuns = resolveAgentDefaultMaxConcurrentRuns();
   }
   next.heartbeat = heartbeat;
   return next;
@@ -1815,8 +1819,11 @@ function jsonEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function isPathDefault(pathSegments: string[], value: unknown, rules: Array<{ path: string[]; value: unknown }>) {
-  return rules.some((rule) => jsonEqual(rule.path, pathSegments) && jsonEqual(rule.value, value));
+function isPathDefault(pathSegments: string[], value: unknown, rules: DefaultRule[]) {
+  return rules.some((rule) => {
+    const defaultValue = typeof rule.value === "function" ? rule.value() : rule.value;
+    return jsonEqual(rule.path, pathSegments) && jsonEqual(defaultValue, value);
+  });
 }
 
 function pruneDefaultLikeValue(
@@ -1824,7 +1831,7 @@ function pruneDefaultLikeValue(
   opts: {
     dropFalseBooleans: boolean;
     path?: string[];
-    defaultRules?: Array<{ path: string[]; value: unknown }>;
+    defaultRules?: DefaultRule[];
   },
 ): unknown {
   const pathSegments = opts.path ?? [];

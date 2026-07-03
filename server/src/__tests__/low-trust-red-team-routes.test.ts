@@ -345,7 +345,10 @@ async function seedLowTrustFixture(db: Db) {
     role: "engineer",
     adapterType: "process",
     adapterConfig: { token: canaries.agentConfig },
-    runtimeConfig: { env: { SECRET_MARKER: canaries.agentConfig } },
+    runtimeConfig: {
+      env: { SECRET_MARKER: canaries.agentConfig },
+      heartbeat: { maxConcurrentRuns: 20 },
+    },
     permissions: {},
   }).returning();
   const [cto] = await db.insert(agents).values({
