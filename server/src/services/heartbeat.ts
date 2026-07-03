@@ -2664,6 +2664,125 @@ type WorkspaceConfigFreshnessOperationInput = {
   activeWorkspaceId: string | null;
 };
 
+type ExecutionWorkspaceReuseProvisioningPolicy = {
+  shouldRestoreExistingWorkspace: boolean;
+  shouldRefreshWorkspaceConfigSnapshot: boolean;
+  shouldPersistLatestWorkspaceConfigMetadata: boolean;
+};
+
+type WorkspaceReuseIssueRef = {
+  id?: string | null;
+  identifier?: string | null;
+} | null | undefined;
+
+export function resolveExecutionWorkspaceReuseProvisioningPolicy(input: {
+  requestedShouldReuseExisting: boolean;
+  workspaceConfigFreshness: ExecutionWorkspaceConfigFreshnessDecision;
+}): ExecutionWorkspaceReuseProvisioningPolicy {
+  const shouldRestoreExistingWorkspace = input.requestedShouldReuseExisting;
+  const replacementClassDrift =
+    input.requestedShouldReuseExisting && input.workspaceConfigFreshness.action === "replace";
+
+  return {
+    shouldRestoreExistingWorkspace,
+    shouldRefreshWorkspaceConfigSnapshot:
+      shouldRestoreExistingWorkspace &&
+      !replacementClassDrift &&
+      input.workspaceConfigFreshness.shouldRefreshConfigSnapshot,
+    shouldPersistLatestWorkspaceConfigMetadata: !replacementClassDrift,
+  };
+}
+
+function createInheritedExecutionWorkspaceReuseFailure(input: {
+  reason: "inherited_workspace_reuse_failed" | "inherited_workspace_reuse_unavailable";
+  issueRef: WorkspaceReuseIssueRef;
+  runId: string;
+  executionWorkspaceId: string | null | undefined;
+  workspaceConfigFreshness: ExecutionWorkspaceConfigFreshnessDecision;
+  cause?: unknown;
+}) {
+  const issueLabel = input.issueRef?.identifier ?? input.issueRef?.id ?? input.runId;
+  const workspaceLabel = input.executionWorkspaceId ?? "unknown workspace";
+  const causeMessage = input.cause instanceof Error
+    ? input.cause.message
+    : input.cause != null
+      ? String(input.cause)
+      : null;
+  const message = causeMessage
+    ? `Issue ${issueLabel} requested inherited execution workspace reuse for ${workspaceLabel}, but the workspace could not be restored because ${causeMessage}.`
+    : `Issue ${issueLabel} requested inherited execution workspace reuse for ${workspaceLabel} but the workspace could not be restored; workspace provisioning cannot replace it because this is an explicit reuse path.`;
+
+  return new WorkspaceValidationFailure(message, {
+    workspaceValidation: {
+      reason: input.reason,
+      issueId: input.issueRef?.id ?? null,
+      issueIdentifier: input.issueRef?.identifier ?? null,
+      executionWorkspaceId: input.executionWorkspaceId ?? null,
+      workspaceConfigFreshnessAction: input.workspaceConfigFreshness.action,
+      workspaceConfigFreshnessReasons: input.workspaceConfigFreshness.reasons,
+      requestedReuseExisting: true,
+    },
+  });
+}
+
+export async function provisionExecutionWorkspaceForFreshnessDecision<T>(input: {
+  requestedShouldReuseExisting: boolean;
+  existingExecutionWorkspaceId?: string | null;
+  issueRef: WorkspaceReuseIssueRef;
+  runId: string;
+  workspaceConfigFreshness: ExecutionWorkspaceConfigFreshnessDecision;
+  restoreExistingWorkspace?: (() => Promise<T | null>) | null;
+  realizeWorkspace: () => Promise<T>;
+}): Promise<{
+  executionWorkspace: T;
+  reusedExecutionWorkspace: T | null;
+  policy: ExecutionWorkspaceReuseProvisioningPolicy;
+}> {
+  const policy = resolveExecutionWorkspaceReuseProvisioningPolicy({
+    requestedShouldReuseExisting: input.requestedShouldReuseExisting,
+    workspaceConfigFreshness: input.workspaceConfigFreshness,
+  });
+
+  if (!policy.shouldRestoreExistingWorkspace) {
+    const executionWorkspace = await input.realizeWorkspace();
+    return {
+      executionWorkspace,
+      reusedExecutionWorkspace: null,
+      policy,
+    };
+  }
+
+  let restored: T | null = null;
+  try {
+    restored = (await input.restoreExistingWorkspace?.()) ?? null;
+  } catch (error) {
+    throw createInheritedExecutionWorkspaceReuseFailure({
+      reason: "inherited_workspace_reuse_failed",
+      issueRef: input.issueRef,
+      runId: input.runId,
+      executionWorkspaceId: input.existingExecutionWorkspaceId,
+      workspaceConfigFreshness: input.workspaceConfigFreshness,
+      cause: error,
+    });
+  }
+
+  if (!restored) {
+    throw createInheritedExecutionWorkspaceReuseFailure({
+      reason: "inherited_workspace_reuse_unavailable",
+      issueRef: input.issueRef,
+      runId: input.runId,
+      executionWorkspaceId: input.existingExecutionWorkspaceId,
+      workspaceConfigFreshness: input.workspaceConfigFreshness,
+    });
+  }
+
+  return {
+    executionWorkspace: restored,
+    reusedExecutionWorkspace: restored,
+    policy,
+  };
+}
+
 const EFFECTIVE_RUN_SESSION_CONFIG_CATEGORY_LABELS: Record<EffectiveRunSessionConfigCategory, string> = {
   adapter: "adapter",
   adapterConfig: "adapter config",
@@ -10208,37 +10327,60 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       inferredMetadata: inferredExistingWorkspaceConfigMetadata,
       nextMetadata: latestWorkspaceConfigMetadata,
     });
-    const shouldReuseExisting = requestedShouldReuseExisting && workspaceConfigFreshness.shouldReuseExisting;
-    const shouldRefreshWorkspaceConfigSnapshot = shouldReuseExisting && workspaceConfigFreshness.shouldRefreshConfigSnapshot;
+    const workspaceReuseProvisioningPolicy = resolveExecutionWorkspaceReuseProvisioningPolicy({
+      requestedShouldReuseExisting,
+      workspaceConfigFreshness,
+    });
     const workspaceOperationRecorder = workspaceOperationsSvc.createRecorder({
       companyId: agent.companyId,
       heartbeatRunId: run.id,
-      executionWorkspaceId: shouldReuseExisting ? existingExecutionWorkspace?.id ?? null : null,
+      executionWorkspaceId: workspaceReuseProvisioningPolicy.shouldRestoreExistingWorkspace
+        ? existingExecutionWorkspace?.id ?? null
+        : null,
       issueId,
     });
-    const reusedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
-      ? await ensurePersistedExecutionWorkspaceAvailable({
+    const { executionWorkspace, reusedExecutionWorkspace, policy: resolvedWorkspaceReusePolicy } =
+      await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>({
+        requestedShouldReuseExisting,
+        existingExecutionWorkspaceId: existingExecutionWorkspace?.id ?? null,
+        issueRef,
+        runId: run.id,
+        workspaceConfigFreshness,
+        restoreExistingWorkspace: existingExecutionWorkspace
+          ? () => ensurePersistedExecutionWorkspaceAvailable({
+              base: executionWorkspaceBase,
+              workspace: {
+                id: existingExecutionWorkspace.id,
+                mode: existingExecutionWorkspace.mode,
+                strategyType: existingExecutionWorkspace.strategyType,
+                cwd: existingExecutionWorkspace.cwd,
+                providerRef: existingExecutionWorkspace.providerRef,
+                projectId: existingExecutionWorkspace.projectId,
+                projectWorkspaceId: existingExecutionWorkspace.projectWorkspaceId,
+                repoUrl: existingExecutionWorkspace.repoUrl,
+                baseRef: existingExecutionWorkspace.baseRef,
+                branchName: existingExecutionWorkspace.branchName,
+                metadata: existingExecutionWorkspace.metadata as Record<string, unknown> | null,
+                config: {
+                  provisionCommand:
+                    configSnapshot?.provisionCommand
+                    ?? existingExecutionWorkspace.config?.provisionCommand
+                    ?? projectExecutionWorkspacePolicy?.workspaceStrategy?.provisionCommand
+                    ?? null,
+                },
+              },
+              issue: issueRef,
+              agent: {
+                id: agent.id,
+                name: agent.name,
+                companyId: agent.companyId,
+              },
+              recorder: workspaceOperationRecorder,
+            })
+          : null,
+        realizeWorkspace: () => realizeExecutionWorkspace({
           base: executionWorkspaceBase,
-          workspace: {
-            id: existingExecutionWorkspace.id,
-            mode: existingExecutionWorkspace.mode,
-            strategyType: existingExecutionWorkspace.strategyType,
-            cwd: existingExecutionWorkspace.cwd,
-            providerRef: existingExecutionWorkspace.providerRef,
-            projectId: existingExecutionWorkspace.projectId,
-            projectWorkspaceId: existingExecutionWorkspace.projectWorkspaceId,
-            repoUrl: existingExecutionWorkspace.repoUrl,
-            baseRef: existingExecutionWorkspace.baseRef,
-            branchName: existingExecutionWorkspace.branchName,
-            metadata: existingExecutionWorkspace.metadata as Record<string, unknown> | null,
-            config: {
-              provisionCommand:
-                configSnapshot?.provisionCommand
-                ?? existingExecutionWorkspace.config?.provisionCommand
-                ?? projectExecutionWorkspacePolicy?.workspaceStrategy?.provisionCommand
-                ?? null,
-            },
-          },
+          config: hostExecutionWorkspaceConfig,
           issue: issueRef,
           agent: {
             id: agent.id,
@@ -10246,35 +10388,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             companyId: agent.companyId,
           },
           recorder: workspaceOperationRecorder,
-        })
-      : null;
-    const executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
-      base: executionWorkspaceBase,
-      config: hostExecutionWorkspaceConfig,
-      issue: issueRef,
-      agent: {
-        id: agent.id,
-        name: agent.name,
-        companyId: agent.companyId,
-      },
-      recorder: workspaceOperationRecorder,
-    });
+        }),
+      });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace = null;
     const nextExecutionWorkspaceMetadata = mergeExecutionWorkspaceMetadataForPersistence({
-      existingMetadata: shouldReuseExisting ? existingExecutionWorkspace?.metadata ?? null : null,
+      existingMetadata: resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace
+        ? existingExecutionWorkspace?.metadata ?? null
+        : null,
       source: executionWorkspace.source,
       createdByRuntime: executionWorkspace.created,
       configSnapshot,
-      shouldReuseExisting,
-      shouldRefreshConfigSnapshot: shouldRefreshWorkspaceConfigSnapshot,
-      workspaceConfigMetadata: latestWorkspaceConfigMetadata,
+      shouldReuseExisting: resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace,
+      shouldRefreshConfigSnapshot: resolvedWorkspaceReusePolicy.shouldRefreshWorkspaceConfigSnapshot,
+      workspaceConfigMetadata: resolvedWorkspaceReusePolicy.shouldPersistLatestWorkspaceConfigMetadata
+        ? latestWorkspaceConfigMetadata
+        : null,
       baseRef: executionWorkspace.repoRef,
       baseRefSha: executionWorkspace.baseRefSha ?? null,
     });
     try {
-      persistedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
+      persistedExecutionWorkspace = resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace && existingExecutionWorkspace
         ? await executionWorkspacesSvc.update(existingExecutionWorkspace.id, {
             cwd: executionWorkspace.cwd,
             repoUrl: executionWorkspace.repoUrl,
@@ -10364,7 +10499,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasExistingWorkspace: Boolean(existingExecutionWorkspace),
       reuseRequested: requestedShouldReuseExisting,
       workspaceReused: Boolean(reusedExecutionWorkspace),
-      configSnapshotRefreshed: shouldRefreshWorkspaceConfigSnapshot,
+      configSnapshotRefreshed: resolvedWorkspaceReusePolicy.shouldRefreshWorkspaceConfigSnapshot,
       previousWorkspaceId: existingExecutionWorkspace?.id ?? null,
       activeWorkspaceId: persistedExecutionWorkspace?.id ?? null,
     });

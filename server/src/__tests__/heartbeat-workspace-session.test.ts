@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
@@ -23,7 +23,9 @@ import {
   preflightLowTrustWorkspaceIsolation,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  provisionExecutionWorkspaceForFreshnessDecision,
   resolveExecutionWorkspaceConfigFreshness,
+  resolveExecutionWorkspaceReuseProvisioningPolicy,
   resolveNextSessionState,
   resolveTaskSessionConfigFreshness,
   requiresPushCapabilityPreflight,
@@ -1060,6 +1062,143 @@ describe("effective run execution workspace config freshness", () => {
     expect(decision.action).toBe("replace");
     expect(decision.shouldReuseExisting).toBe(false);
     expect(decision.changedCategories).toContain(category);
+  });
+
+  it("keeps replacement-class drift visible when explicit reuse restores the old workspace", () => {
+    const base = buildWorkspaceConfigMetadata();
+    const next = buildWorkspaceConfigMetadata({
+      repoRef: "origin/release",
+      workspaceStrategy: {
+        type: "git_worktree",
+        baseRef: "origin/release",
+        branchTemplate: "{{issue.identifier}}-{{slug}}",
+        worktreeParentDir: ".paperclip/worktrees",
+      },
+      configSnapshot: {
+        provisionCommand: "pnpm install --frozen-lockfile",
+      },
+    });
+
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(base),
+      nextMetadata: next,
+    });
+    const policy = resolveExecutionWorkspaceReuseProvisioningPolicy({
+      requestedShouldReuseExisting: true,
+      workspaceConfigFreshness: decision,
+    });
+
+    expect(decision.action).toBe("replace");
+    expect(policy).toEqual({
+      shouldRestoreExistingWorkspace: true,
+      shouldRefreshWorkspaceConfigSnapshot: false,
+      shouldPersistLatestWorkspaceConfigMetadata: false,
+    });
+
+    const metadata = mergeExecutionWorkspaceMetadataForPersistence({
+      existingMetadata: {
+        config: {
+          provisionCommand: "pnpm install",
+        },
+        ...persistedWorkspaceConfigFingerprint(base),
+      },
+      source: "task_session",
+      createdByRuntime: false,
+      configSnapshot: {
+        provisionCommand: "pnpm install --frozen-lockfile",
+      },
+      shouldReuseExisting: policy.shouldRestoreExistingWorkspace,
+      shouldRefreshConfigSnapshot: policy.shouldRefreshWorkspaceConfigSnapshot,
+      workspaceConfigMetadata: policy.shouldPersistLatestWorkspaceConfigMetadata ? next : null,
+      baseRef: "origin/release",
+      baseRefSha: "release-sha",
+    });
+
+    expect(metadata?.config).toEqual({
+      provisionCommand: "pnpm install",
+    });
+    expect(metadata?.configFingerprint).toMatchObject({
+      workspaceHash: base.fingerprint,
+      categories: base.categories,
+    });
+    expect(metadata?.configFingerprint).not.toMatchObject({
+      workspaceHash: next.fingerprint,
+    });
+  });
+
+  it("fails explicit reuse restore errors without realizing a fallback workspace", async () => {
+    const base = buildWorkspaceConfigMetadata();
+    const next = buildWorkspaceConfigMetadata({
+      repoRef: "origin/release",
+      workspaceStrategy: {
+        type: "git_worktree",
+        baseRef: "origin/release",
+        branchTemplate: "{{issue.identifier}}-{{slug}}",
+        worktreeParentDir: ".paperclip/worktrees",
+      },
+    });
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(base),
+      nextMetadata: next,
+    });
+    const realizeWorkspace = vi.fn(async () => ({ id: "fallback-workspace" }));
+
+    await expect(provisionExecutionWorkspaceForFreshnessDecision({
+      requestedShouldReuseExisting: true,
+      existingExecutionWorkspaceId: "workspace-old",
+      issueRef: { id: "issue-1", identifier: "PAP-1154" },
+      runId: "run-1",
+      workspaceConfigFreshness: decision,
+      restoreExistingWorkspace: async () => {
+        throw new Error("restore command failed");
+      },
+      realizeWorkspace,
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "inherited_workspace_reuse_failed",
+          issueId: "issue-1",
+          issueIdentifier: "PAP-1154",
+          executionWorkspaceId: "workspace-old",
+          workspaceConfigFreshnessAction: "replace",
+          requestedReuseExisting: true,
+        }),
+      },
+    });
+    expect(realizeWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("fails explicit reuse restore misses without realizing a fallback workspace", async () => {
+    const metadata = buildWorkspaceConfigMetadata();
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(metadata),
+      nextMetadata: metadata,
+    });
+    const realizeWorkspace = vi.fn(async () => ({ id: "fallback-workspace" }));
+
+    await expect(provisionExecutionWorkspaceForFreshnessDecision({
+      requestedShouldReuseExisting: true,
+      existingExecutionWorkspaceId: "workspace-old",
+      issueRef: { id: "issue-1", identifier: "PAP-1154" },
+      runId: "run-1",
+      workspaceConfigFreshness: decision,
+      restoreExistingWorkspace: async () => null,
+      realizeWorkspace,
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "inherited_workspace_reuse_unavailable",
+          workspaceConfigFreshnessAction: "reuse",
+          requestedReuseExisting: true,
+        }),
+      },
+    });
+    expect(realizeWorkspace).not.toHaveBeenCalled();
   });
 
   it("formats a safe workspace operation payload for config drift decisions", () => {
