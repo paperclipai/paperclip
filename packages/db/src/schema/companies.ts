@@ -25,6 +25,10 @@ export const companies = pgTable(
     feedbackDataSharingConsentAt: timestamp("feedback_data_sharing_consent_at", { withTimezone: true }),
     feedbackDataSharingConsentByUserId: text("feedback_data_sharing_consent_by_user_id"),
     feedbackDataSharingTermsVersion: text("feedback_data_sharing_terms_version"),
+    // Per-company MCP client gate (NEO-286 D2-5): PAPERCLIP_MCP_CLIENT_ENABLED
+    // mounts the routes process-wide; this column decides which tenants get a
+    // non-empty MCP tool surface, so flag-GA is not on-for-everyone.
+    mcpClientEnabled: boolean("mcp_client_enabled").notNull().default(false),
     brandColor: text("brand_color"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

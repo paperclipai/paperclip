@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { resolvePaperclipEnvPath } from "./paths.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
+import { isMcpClientEnabled } from "./mcp-client-flag.js";
 import {
   AUTH_BASE_URL_MODES,
   BIND_MODES,
@@ -89,6 +90,13 @@ export interface Config {
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+  /**
+   * PAPERCLIP_MCP_CLIENT_ENABLED (legacy alias: CORTEX_MCP_CLIENT_ENABLED),
+   * off by default (NEO-286 D2-5). Mounts the MCP registry + agent tool
+   * routes; per-tenant exposure is additionally gated by
+   * `companies.mcp_client_enabled`.
+   */
+  mcpClientEnabled: boolean;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -368,5 +376,6 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    mcpClientEnabled: isMcpClientEnabled(),
   };
 }

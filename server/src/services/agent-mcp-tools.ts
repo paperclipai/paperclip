@@ -1,4 +1,6 @@
+import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { companies } from "@paperclipai/db";
 import type {
   AgentMcpServerBindingDetail,
   AgentMcpToolDescriptor,
@@ -7,6 +9,10 @@ import type {
   ExecuteAgentMcpToolResponse,
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
+import {
+  createStderrMcpTelemetrySink,
+  type McpToolTelemetrySink,
+} from "./mcp-client-telemetry.js";
 import { mcpServerService } from "./mcp-servers.js";
 import type { secretService } from "./secrets.js";
 
@@ -20,9 +26,27 @@ export function agentMcpToolService(
     secrets: ReturnType<typeof secretService>;
     /** Injectable for tests; defaults to the real db-backed service. */
     mcpServers?: Pick<ReturnType<typeof mcpServerService>, "listBindingsForAgent" | "executeTool">;
+    /** Injectable for tests; defaults to a db lookup on `companies.mcp_client_enabled`. */
+    isCompanyMcpClientEnabled?: (companyId: string) => Promise<boolean>;
+    /** Injectable for tests; defaults to one JSON line per call on stderr. */
+    telemetry?: McpToolTelemetrySink;
   },
 ) {
   const mcpServers = deps.mcpServers ?? mcpServerService(db, { secrets: deps.secrets });
+  const emitTelemetry = deps.telemetry ?? createStderrMcpTelemetrySink();
+  // Per-company gate (NEO-286 D2-5): the process-wide flag mounts the MCP
+  // surface, but only companies with mcp_client_enabled=true expose tools —
+  // so enabling the flag on a shared instance is not on-for-everyone.
+  const isCompanyMcpClientEnabled =
+    deps.isCompanyMcpClientEnabled ??
+    (async (companyId: string) => {
+      const [row] = await db
+        .select({ enabled: companies.mcpClientEnabled })
+        .from(companies)
+        .where(eq(companies.id, companyId))
+        .limit(1);
+      return row?.enabled === true;
+    });
 
   // The agent's visible MCP tool set is the intersection of the company's
   // enabled servers with the agent's enabled bindings (`agent_mcp_servers`
@@ -35,10 +59,29 @@ export function agentMcpToolService(
     opts?: { companyId?: string | null },
   ): Promise<AgentMcpToolListResponse> {
     const companyId = opts?.companyId ?? null;
+    if (companyId !== null && !(await isCompanyMcpClientEnabled(companyId))) {
+      return { servers: [], tools: [] };
+    }
     const bindings = await mcpServers.listBindingsForAgent(agentId);
-    const servers = bindings
-      .filter((binding) => binding.enabled && binding.server.enabled)
-      .filter((binding) => companyId === null || binding.server.companyId === companyId)
+    // Unscoped calls still honor the per-company gate: each binding's own
+    // company must be enabled for its servers to surface.
+    const gateCache = new Map<string, boolean>();
+    const companyGateAllows = async (id: string): Promise<boolean> => {
+      if (companyId !== null) return true; // already checked above
+      const cached = gateCache.get(id);
+      if (cached !== undefined) return cached;
+      const allowed = await isCompanyMcpClientEnabled(id);
+      gateCache.set(id, allowed);
+      return allowed;
+    };
+    const gatedBindings: typeof bindings = [];
+    for (const binding of bindings) {
+      if (!binding.enabled || !binding.server.enabled) continue;
+      if (companyId !== null && binding.server.companyId !== companyId) continue;
+      if (!(await companyGateAllows(binding.server.companyId))) continue;
+      gatedBindings.push(binding);
+    }
+    const servers = gatedBindings
       .map((binding) => {
         const allowedTools = new Set(binding.allowedTools);
         const tools = (binding.latestSnapshot?.tools ?? [])
@@ -113,10 +156,36 @@ export function agentMcpToolService(
     if (runContext.companyId != null && selectedBinding.server.companyId !== runContext.companyId) {
       throw notFound("The selected MCP server binding is no longer available");
     }
-    const result = await mcpServers.executeTool(selectedBinding.server, {
-      toolName: selected.toolName,
-      arguments: request.arguments ?? {},
-      workspacePath: runContext.workspacePath ?? selectedBinding.server.cwd,
+    // One telemetry event per call (NEO-286 D2-5, mirroring NEO-296): tool,
+    // server, actor, company, outcome, latency. Arguments, headers, and
+    // credentials are never part of the event.
+    const startedAt = Date.now();
+    let result: Awaited<ReturnType<typeof mcpServers.executeTool>>;
+    try {
+      result = await mcpServers.executeTool(selectedBinding.server, {
+        toolName: selected.toolName,
+        arguments: request.arguments ?? {},
+        workspacePath: runContext.workspacePath ?? selectedBinding.server.cwd,
+      });
+    } catch (error) {
+      emitTelemetry({
+        tool: selected.toolName,
+        server: selected.serverSlug,
+        actor: runContext.agentId,
+        company: runContext.companyId ?? null,
+        status: "error",
+        durationMs: Date.now() - startedAt,
+        errorName: error instanceof Error ? error.constructor.name : "UnknownError",
+      });
+      throw error;
+    }
+    emitTelemetry({
+      tool: selected.toolName,
+      server: selected.serverSlug,
+      actor: runContext.agentId,
+      company: runContext.companyId ?? null,
+      status: result.error ? "error" : "ok",
+      durationMs: Date.now() - startedAt,
     });
 
     return {

@@ -715,6 +715,13 @@
       "when": 1781902400001,
       "tag": "0111_mcp_server_registry",
       "breakpoints": true
+    },
+    {
+      "idx": 112,
+      "version": "7",
+      "when": 1781902400002,
+      "tag": "0112_company_mcp_client_enabled",
+      "breakpoints": true
     }
   ]
 }

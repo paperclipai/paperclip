@@ -329,65 +329,73 @@ describe("execute", () => {
   });
 });
 
-describe("agentMcpToolService company scoping", () => {
-  function binding(overrides: {
-    companyId: string;
-    serverId: string;
-    slug: string;
-    enabled?: boolean;
-    serverEnabled?: boolean;
-    allowedTools?: string[];
-  }) {
-    return {
+function binding(overrides: {
+  companyId: string;
+  serverId: string;
+  slug: string;
+  enabled?: boolean;
+  serverEnabled?: boolean;
+  allowedTools?: string[];
+}) {
+  return {
+    companyId: overrides.companyId,
+    agentId: AGENT_1,
+    mcpServerId: overrides.serverId,
+    bindingMode: "allowed" as const,
+    enabled: overrides.enabled ?? true,
+    allowedTools: overrides.allowedTools ?? [],
+    createdByAgentId: null,
+    createdByUserId: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    server: {
+      id: overrides.serverId,
       companyId: overrides.companyId,
-      agentId: AGENT_1,
-      mcpServerId: overrides.serverId,
-      bindingMode: "allowed" as const,
-      enabled: overrides.enabled ?? true,
-      allowedTools: overrides.allowedTools ?? [],
-      createdByAgentId: null,
-      createdByUserId: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      server: {
-        id: overrides.serverId,
-        companyId: overrides.companyId,
-        name: overrides.slug,
-        slug: overrides.slug,
-        enabled: overrides.serverEnabled ?? true,
-        transport: "http",
-        cwd: null,
-      },
-      latestSnapshot: {
-        tools: [
-          {
-            name: "create_issue",
-            title: "Create issue",
-            description: "desc",
-            inputSchema: {},
-          },
-        ],
-      },
-    };
-  }
+      name: overrides.slug,
+      slug: overrides.slug,
+      enabled: overrides.serverEnabled ?? true,
+      transport: "http",
+      cwd: null,
+    },
+    latestSnapshot: {
+      tools: [
+        {
+          name: "create_issue",
+          title: "Create issue",
+          description: "desc",
+          inputSchema: {},
+        },
+      ],
+    },
+  };
+}
 
-  function serviceWithBindings(bindings: unknown[]) {
-    const executeTool = vi.fn(async () => ({
-      content: "ok",
-      data: {},
-      error: null,
-      logs: [],
-    }));
-    const svc = agentMcpToolService(NO_DB, {
-      secrets: null as never,
-      mcpServers: {
-        listBindingsForAgent: vi.fn(async () => bindings),
-        executeTool,
-      } as never,
-    });
-    return { svc, executeTool };
-  }
+function serviceWithBindings(
+  bindings: unknown[],
+  opts: {
+    isCompanyMcpClientEnabled?: (companyId: string) => Promise<boolean>;
+  } = {},
+) {
+  const executeTool = vi.fn(async () => ({
+    content: "ok",
+    data: {},
+    error: null,
+    logs: [],
+  }));
+  const telemetry = vi.fn();
+  const svc = agentMcpToolService(NO_DB, {
+    secrets: null as never,
+    mcpServers: {
+      listBindingsForAgent: vi.fn(async () => bindings),
+      executeTool,
+    } as never,
+    isCompanyMcpClientEnabled: opts.isCompanyMcpClientEnabled ?? (async () => true),
+    telemetry,
+  });
+  return { svc, executeTool, telemetry };
+}
 
+describe("agentMcpToolService company scoping", () => {
   it("intersects the agent's bindings with the requesting company", async () => {
     const { svc } = serviceWithBindings([
       binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github" }),
@@ -426,6 +434,118 @@ describe("agentMcpToolService company scoping", () => {
     );
     expect(result.ok).toBe(true);
     expect(executeTool).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("agentMcpToolService per-company gate (NEO-286 D2-5)", () => {
+  const gateOnlyFor = (enabledCompanyId: string) => async (companyId: string) =>
+    companyId === enabledCompanyId;
+
+  it("returns an empty tool surface when the company gate is off", async () => {
+    const { svc } = serviceWithBindings(
+      [binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github" })],
+      { isCompanyMcpClientEnabled: async () => false },
+    );
+
+    const catalog = await svc.listForAgent(AGENT_1, { companyId: COMPANY_A });
+    expect(catalog.servers).toEqual([]);
+    expect(catalog.tools).toEqual([]);
+  });
+
+  it("refuses to execute when the company gate is off", async () => {
+    const { svc, executeTool, telemetry } = serviceWithBindings(
+      [binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github" })],
+      { isCompanyMcpClientEnabled: async () => false },
+    );
+
+    await expect(
+      svc.executeForRun(
+        { agentId: AGENT_1, companyId: COMPANY_A },
+        { toolName: "create_issue" },
+      ),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(telemetry).not.toHaveBeenCalled();
+  });
+
+  it("gates unscoped listings by each binding's own company", async () => {
+    const { svc } = serviceWithBindings(
+      [
+        binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github" }),
+        binding({ companyId: COMPANY_B, serverId: SERVER_Y, slug: "slack" }),
+      ],
+      { isCompanyMcpClientEnabled: gateOnlyFor(COMPANY_A) },
+    );
+
+    const unscoped = await svc.listForAgent(AGENT_1);
+    expect(unscoped.servers.map((server) => server.serverSlug)).toEqual(["github"]);
+  });
+});
+
+describe("agentMcpToolService telemetry (NEO-286 D2-5)", () => {
+  it("emits one redacted event per successful call", async () => {
+    const { svc, telemetry } = serviceWithBindings([
+      binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github" }),
+    ]);
+
+    await svc.executeForRun(
+      { agentId: AGENT_1, companyId: COMPANY_A },
+      { toolName: "create_issue", arguments: { apiKey: "sk-super-secret" } },
+    );
+
+    expect(telemetry).toHaveBeenCalledTimes(1);
+    const event = telemetry.mock.calls[0]![0];
+    expect(event).toMatchObject({
+      tool: "create_issue",
+      server: "github",
+      actor: AGENT_1,
+      company: COMPANY_A,
+      status: "ok",
+    });
+    expect(typeof event.durationMs).toBe("number");
+    // Creds/arguments never ride along on the telemetry event.
+    expect(JSON.stringify(event)).not.toContain("sk-super-secret");
+  });
+
+  it("emits an error event when the tool call throws, then rethrows", async () => {
+    const { svc, executeTool, telemetry } = serviceWithBindings([
+      binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github" }),
+    ]);
+    executeTool.mockRejectedValueOnce(new TypeError("boom"));
+
+    await expect(
+      svc.executeForRun(
+        { agentId: AGENT_1, companyId: COMPANY_A },
+        { toolName: "create_issue" },
+      ),
+    ).rejects.toThrow("boom");
+
+    expect(telemetry).toHaveBeenCalledTimes(1);
+    expect(telemetry.mock.calls[0]![0]).toMatchObject({
+      tool: "create_issue",
+      status: "error",
+      errorName: "TypeError",
+    });
+  });
+
+  it("marks tool-level errors as error outcomes", async () => {
+    const { svc, telemetry, executeTool } = serviceWithBindings([
+      binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github" }),
+    ]);
+    executeTool.mockResolvedValueOnce({
+      content: null,
+      data: null,
+      error: "tool exploded",
+      logs: [],
+    });
+
+    const result = await svc.executeForRun(
+      { agentId: AGENT_1, companyId: COMPANY_A },
+      { toolName: "create_issue" },
+    );
+    expect(result.ok).toBe(false);
+    expect(telemetry.mock.calls[0]![0]).toMatchObject({ status: "error" });
+    expect(telemetry.mock.calls[0]![0].errorName).toBeUndefined();
   });
 });
 
