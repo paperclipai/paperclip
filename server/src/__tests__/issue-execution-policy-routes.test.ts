@@ -30,15 +30,20 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
   hasPermission: vi.fn(async () => false),
 }));
-const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
-  then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-    Promise.resolve([{
-      companyId: "company-1",
-      agentId: "33333333-3333-4333-8333-333333333333",
-      contextSnapshot: null,
-      permissions: null,
-    }]).then(onFulfilled, onRejected),
-})));
+const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => {
+  const rows = [{
+    companyId: "company-1",
+    agentId: "33333333-3333-4333-8333-333333333333",
+    contextSnapshot: null,
+    permissions: null,
+  }];
+  const result = {
+    orderBy: vi.fn(() => result),
+    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+      Promise.resolve(rows).then(onFulfilled, onRejected),
+  };
+  return result;
+}));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
@@ -183,6 +188,9 @@ describe("issue execution policy routes", () => {
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
+      orderBy: vi.fn(function orderBy() {
+        return this;
+      }),
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
         Promise.resolve([{
           companyId: "company-1",

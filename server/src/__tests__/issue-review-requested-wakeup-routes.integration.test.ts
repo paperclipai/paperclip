@@ -10,6 +10,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueComments,
   issueRelations,
   issues,
@@ -38,8 +39,9 @@ describeEmbeddedPostgres("issue review_requested wake pipeline", () => {
     await db.delete(issueRelations);
     await db.delete(activityLog);
     await db.delete(issues);
-    await db.delete(agentWakeupRequests);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(agents);
     await db.delete(companies);
   });

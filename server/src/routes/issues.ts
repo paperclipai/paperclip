@@ -6687,7 +6687,7 @@ export function issueRoutes(
     });
 
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
-    void (async () => {
+    await (async () => {
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
       const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
       const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
@@ -6908,7 +6908,7 @@ export function issueRoutes(
       }
 
       for (const { agentId, wakeup } of wakeups.values()) {
-        heartbeat
+        await heartbeat
           .wakeup(agentId, wakeup)
           .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
       }

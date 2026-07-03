@@ -5314,7 +5314,7 @@ export function issueService(db: Db) {
         await assertAssignableUser(companyId, data.assigneeUserId);
       }
       if (data.reviewerAgentId) {
-        await assertAssignableAgent(companyId, data.reviewerAgentId);
+        await assertAssignableAgent(db, companyId, data.reviewerAgentId);
       }
       if (data.reviewerUserId) {
         await assertAssignableUser(companyId, data.reviewerUserId);
@@ -5598,7 +5598,6 @@ export function issueService(db: Db) {
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
       }
-      let nextProjectId = issueData.projectId !== undefined ? issueData.projectId : existing.projectId;
       if (issueData.reviewerAgentId) {
         await assertAssignableAgent(dbOrTx as Db, existing.companyId, issueData.reviewerAgentId);
       }
