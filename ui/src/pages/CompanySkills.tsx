@@ -799,7 +799,12 @@ function SkillCategoryChip({ label }: { label: string }) {
   );
 }
 
-function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: DiscoveryCard) => void }) {
+function SkillCard({ card, onOpen, selected = false, onToggleSelect }: {
+  card: DiscoveryCard;
+  onOpen: (card: DiscoveryCard) => void;
+  selected?: boolean;
+  onToggleSelect?: () => void;
+}) {
   return (
     <button
       type="button"
@@ -807,6 +812,7 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
       className={cn(
         "group flex h-full min-h-[11.5rem] flex-col rounded-md border border-border p-4 text-left transition-colors hover:border-primary hover:bg-accent/30 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         card.required && "bg-muted/30",
+        selected && "border-primary bg-accent/40",
       )}
     >
       <div className="flex items-start gap-3">
@@ -817,6 +823,33 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
             by {card.author}{card.version ? ` · ${card.version}` : ""}
           </div>
         </div>
+        {onToggleSelect ? (
+          <span
+            role="checkbox"
+            aria-checked={selected}
+            aria-label={`Select ${card.name}`}
+            tabIndex={0}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleSelect();
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                event.stopPropagation();
+                onToggleSelect();
+              }
+            }}
+            className={cn(
+              "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors",
+              selected
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border text-transparent opacity-0 hover:border-primary group-hover:opacity-100 focus-visible:opacity-100",
+            )}
+          >
+            <Check className="h-3 w-3" aria-hidden="true" />
+          </span>
+        ) : null}
         {/* Where the skill came from (PAP-10907 E); native title gives a hover hint. */}
         {(() => {
           const meta = sourceMeta(card.sourceBadge ?? "catalog", card.sourceLabel ?? null);
@@ -951,6 +984,8 @@ export function DiscoveryGrid({
   onScan,
   scanPending,
   scanStatus,
+  selectedKeys,
+  onToggleSelect,
 }: {
   tab: DiscoveryTab;
   tabCounts: Record<DiscoveryTab, number>;
@@ -974,6 +1009,8 @@ export function DiscoveryGrid({
   onScan: () => void;
   scanPending: boolean;
   scanStatus: string | null;
+  selectedKeys?: Set<string>;
+  onToggleSelect?: (card: DiscoveryCard) => void;
 }) {
   // Source filter (github / skills.sh / local / …) lives in the grid so it
   // narrows whatever the parent already filtered by tab/category/search (PAP-10907 E).
@@ -1209,7 +1246,13 @@ export function DiscoveryGrid({
               </p>
               <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(19rem,1fr))]">
                 {sourceFilteredCards.map((card) => (
-                  <SkillCard key={card.key} card={card} onOpen={onOpenCard} />
+                  <SkillCard
+                    key={card.key}
+                    card={card}
+                    onOpen={onOpenCard}
+                    selected={selectedKeys?.has(card.key) ?? false}
+                    onToggleSelect={onToggleSelect && card.installed && card.skillId ? () => onToggleSelect(card) : undefined}
+                  />
                 ))}
               </div>
             </>
@@ -3736,6 +3779,7 @@ export function CompanySkills() {
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string | null>(null);
   const uploadInputRef = useRef<HTMLInputElement>(null);
+  const [bulkSkillKeys, setBulkSkillKeys] = useState<Set<string>>(new Set());
   const parsedRoute = useMemo(() => parseSkillRoute(routePath), [routePath]);
   const routeSkillToken = parsedRoute.skillToken;
   const selectedPath = parsedRoute.filePath;
@@ -4325,6 +4369,45 @@ export function CompanySkills() {
     },
   });
 
+  function toggleBulkSkill(card: DiscoveryCard) {
+    setBulkSkillKeys((current) => {
+      const next = new Set(current);
+      if (next.has(card.key)) next.delete(card.key);
+      else next.add(card.key);
+      return next;
+    });
+  }
+
+  // Bulk assign is additive only: it adds the selected skills to the chosen
+  // agents and never detaches. Detaching stays on the single-skill dialog.
+  async function handleBulkAssign(agentIds: string[]) {
+    const skillKeys = [...bulkSkillKeys];
+    if (skillKeys.length === 0 || agentIds.length === 0) return;
+    try {
+      for (const agentId of agentIds) {
+        const snapshot = await agentsApi.skills(agentId, selectedCompanyId ?? undefined);
+        const currentEntries: AgentDesiredSkillEntry[] =
+          snapshot.desiredSkillEntries ?? snapshot.desiredSkills.map((key) => ({ key, versionId: null }));
+        const have = new Set(currentEntries.map((entry) => entry.key));
+        const additions = skillKeys.filter((key) => !have.has(key)).map((key) => ({ key, versionId: null }));
+        if (additions.length === 0) continue;
+        await attachAgentsMutation.mutateAsync({ agentId, desiredSkills: [...currentEntries, ...additions] });
+      }
+      setBulkSkillKeys(new Set());
+      pushToast({
+        tone: "success",
+        title: "Skills assigned",
+        body: `${skillKeys.length} skill${skillKeys.length === 1 ? "" : "s"} assigned to ${agentIds.length} agent${agentIds.length === 1 ? "" : "s"}.`,
+      });
+    } catch (error) {
+      pushToast({
+        tone: "error",
+        title: "Bulk assign failed",
+        body: error instanceof Error ? error.message : "Failed to assign skills.",
+      });
+    }
+  }
+
   async function handleAttachSubmit(nextAgentIds: string[], versionId: string | null = null) {
     if (!activeDetail) return;
     const skillKey = activeDetail.key;
@@ -4735,30 +4818,52 @@ export function CompanySkills() {
       </Dialog>
 
       {isDiscovery ? (
-        <DiscoveryGrid
-          tab={discoveryTab}
-          tabCounts={discoveryTabCounts}
-          onTabChange={setDiscoveryTab}
-          categories={discoveryCategoryCounts}
-          categoryTotal={discoveryTabCards.length}
-          activeCategory={discoveryCategory}
-          onCategoryChange={setDiscoveryCategory}
-          search={discoverySearch}
-          onSearchChange={setDiscoverySearch}
-          sort={discoverySort}
-          onSortChange={setDiscoverySort}
-          cards={visibleDiscoveryCards}
-          onOpenCard={openDiscoveryCard}
-          loading={skillsQuery.isLoading || catalogListQuery.isLoading}
-          error={skillsQuery.error?.message ?? catalogListQuery.error?.message ?? null}
-          totalCount={discoveryCards.length}
-          onCreate={() => openCreateWizard()}
-          onImport={() => setImportDialogOpen(true)}
-          onBrowseCatalog={() => setDiscoveryTab("catalog")}
-          onScan={() => scanProjects.mutate()}
-          scanPending={scanProjects.isPending}
-          scanStatus={scanStatusMessage}
-        />
+        <>
+          <DiscoveryGrid
+            tab={discoveryTab}
+            tabCounts={discoveryTabCounts}
+            onTabChange={setDiscoveryTab}
+            categories={discoveryCategoryCounts}
+            categoryTotal={discoveryTabCards.length}
+            activeCategory={discoveryCategory}
+            onCategoryChange={setDiscoveryCategory}
+            search={discoverySearch}
+            onSearchChange={setDiscoverySearch}
+            sort={discoverySort}
+            onSortChange={setDiscoverySort}
+            cards={visibleDiscoveryCards}
+            onOpenCard={openDiscoveryCard}
+            loading={skillsQuery.isLoading || catalogListQuery.isLoading}
+            error={skillsQuery.error?.message ?? catalogListQuery.error?.message ?? null}
+            totalCount={discoveryCards.length}
+            onCreate={() => openCreateWizard()}
+            onImport={() => setImportDialogOpen(true)}
+            onBrowseCatalog={() => setDiscoveryTab("catalog")}
+            onScan={() => scanProjects.mutate()}
+            scanPending={scanProjects.isPending}
+            scanStatus={scanStatusMessage}
+            selectedKeys={bulkSkillKeys}
+            onToggleSelect={toggleBulkSkill}
+          />
+          {bulkSkillKeys.size > 0 ? (
+            <div className="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-border bg-background px-4 py-2 shadow-lg">
+              <span className="text-sm text-foreground">
+                {bulkSkillKeys.size} skill{bulkSkillKeys.size === 1 ? "" : "s"} selected
+              </span>
+              <AttachAgentsPopover
+                agents={eligibleAgentsForAttach}
+                attachedAgentIds={[]}
+                versions={[]}
+                selectedVersionId={null}
+                pending={attachAgentsMutation.isPending}
+                onSubmit={(ids) => void handleBulkAssign(ids)}
+              />
+              <Button size="sm" variant="ghost" onClick={() => setBulkSkillKeys(new Set())}>
+                Clear
+              </Button>
+            </div>
+          ) : null}
+        </>
       ) : activeView === "installed" && selectedSkillId ? (
         <SkillDetailPage
           detail={activeDetail}
