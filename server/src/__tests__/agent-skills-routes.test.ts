@@ -686,7 +686,9 @@ describe.sequential("agent skill routes", () => {
       }),
       expect.objectContaining({
         "AGENTS.md": expect.stringContaining("You are the CEO."),
-        "HEARTBEAT.md": expect.stringContaining("CEO Heartbeat Checklist"),
+        "HEARTBEAT.md": expect.stringMatching(
+          /CEO Heartbeat Checklist[\s\S]*\/issues\/blocked-inbox-rollup\?format=markdown/,
+        ),
         "SOUL.md": expect.stringContaining("CEO Persona"),
         "TOOLS.md": expect.stringContaining("# Tools"),
       }),
