@@ -11,6 +11,7 @@ export const models = [
   { id: "claude-mythos-5", label: "Claude Mythos 5" },
   { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
   { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
+  { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
   { id: "claude-haiku-4-6", label: "Claude Haiku 4.6" },
   { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
@@ -25,6 +26,36 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
     adapterConfig: {
       model: "claude-sonnet-4-6",
       effort: "low",
+    },
+    source: "adapter_default",
+  },
+  {
+    key: "standard",
+    label: "Standard",
+    description: "Claude Sonnet 5 at medium effort — the default lane for normal implementation, review, QA, and research work.",
+    adapterConfig: {
+      model: "claude-sonnet-5",
+      effort: "medium",
+    },
+    source: "adapter_default",
+  },
+  {
+    key: "premium",
+    label: "Premium",
+    description: "Claude Opus at high effort — hard reasoning, architecture, security-sensitive review, and subtle debugging.",
+    adapterConfig: {
+      model: "claude-opus-4-8",
+      effort: "high",
+    },
+    source: "adapter_default",
+  },
+  {
+    key: "flagship",
+    label: "Flagship",
+    description: "Claude Fable 5 at high effort — the most demanding long-horizon or novel work. Priced above Opus; use deliberately.",
+    adapterConfig: {
+      model: "claude-fable-5",
+      effort: "high",
     },
     source: "adapter_default",
   },

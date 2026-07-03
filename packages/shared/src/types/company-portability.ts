@@ -122,6 +122,7 @@ export interface CompanyPortabilityIssueManifestEntry {
   legacyRecurrence: Record<string, unknown> | null;
   status: string | null;
   priority: string | null;
+  complexity: string | null;
   labelIds: string[];
   billingCode: string | null;
   executionWorkspaceSettings: Record<string, unknown> | null;

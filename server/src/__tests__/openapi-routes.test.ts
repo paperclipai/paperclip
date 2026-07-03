@@ -19,6 +19,7 @@ const apiPrefixes: Record<string, string> = {
   "assets.ts": "/api",
   "auth.ts": "/api/auth",
   "board-chat.ts": "/api",
+  "claude-accounts.ts": "/api",
   "cloud-upstreams.ts": "/api",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
@@ -55,9 +56,6 @@ const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head",
 const explicitOpenApiCoverageExclusions = new Set([
   // Pipeline routes are experimental and not yet represented in the public OpenAPI document.
   "pipelines.ts",
-  // Board-gated internal instance-ops endpoints for the shadow-mode Claude auth-switch
-  // engine (TWX-1117/TWX-1121); not yet part of the public OpenAPI document.
-  "claude-accounts.ts",
 ]);
 
 function createApp() {

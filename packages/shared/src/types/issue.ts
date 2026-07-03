@@ -14,6 +14,7 @@ import type {
   IssueExecutionStageType,
   IssueExecutionStateStatus,
   IssueOriginKind,
+  IssueComplexity,
   IssuePriority,
   IssueRecoveryActionKind,
   IssueRecoveryActionOutcome,
@@ -159,6 +160,7 @@ export interface AcceptedPlanDecompositionChild {
   status: IssueStatus;
   workMode: IssueWorkMode;
   priority: IssuePriority;
+  complexity?: IssueComplexity | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
   requestDepth?: number;
@@ -554,6 +556,7 @@ export interface Issue {
   status: IssueStatus;
   workMode: IssueWorkMode;
   priority: IssuePriority;
+  complexity?: IssueComplexity | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   checkoutRunId: string | null;
@@ -722,6 +725,7 @@ export interface SuggestedTaskDraft {
   title: string;
   description?: string | null;
   priority?: IssuePriority | null;
+  complexity?: IssueComplexity | null;
   workMode?: IssueWorkMode | null;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;

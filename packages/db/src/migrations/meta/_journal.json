@@ -918,6 +918,13 @@
       "when": 1782341100000,
       "tag": "0130_claude_auth_switch_decision",
       "breakpoints": true
+    },
+    {
+      "idx": 131,
+      "version": "7",
+      "when": 1782982464062,
+      "tag": "0131_issue_complexity",
+      "breakpoints": true
     }
   ]
 }

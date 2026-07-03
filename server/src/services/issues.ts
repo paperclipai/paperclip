@@ -91,7 +91,11 @@ import {
   parseIssueGraphLivenessIncidentKey,
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
-import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
+import {
+  classifyIssueGraphLiveness,
+  hasScheduledMonitor,
+  type IssueLivenessFinding,
+} from "./recovery/issue-graph-liveness.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -901,6 +905,53 @@ async function listUnresolvedBlockerIssueIds(
       ),
     )
     .then((rows) => rows.map((row) => row.id));
+}
+
+export const INVALID_AGENT_BLOCKED_DISPOSITION_MESSAGE =
+  "Agents cannot set status=blocked without a live blocker or waiting path. " +
+  "Create the blocker issue first and reference it via blockedByIssueIds, or route the wait to a human " +
+  "(set assigneeUserId and use status=in_review, optionally with a pending issue-thread interaction). " +
+  "Done or cancelled blockers do not count as live — replace or clear them.";
+
+// Live means non-terminal: a done blocker is resolved and a cancelled blocker never
+// auto-resumes the dependent (SKILL.md status guide), so neither justifies `blocked`.
+async function listLiveBlockerIssueIds(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  blockerIssueIds: string[],
+) {
+  const uniqueBlockerIssueIds = [...new Set(blockerIssueIds.filter(Boolean))];
+  if (uniqueBlockerIssueIds.length === 0) return [];
+  return dbOrTx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(
+      and(
+        eq(issues.companyId, companyId),
+        inArray(issues.id, uniqueBlockerIssueIds),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ),
+    )
+    .then((rows: Array<{ id: string }>) => rows.map((row) => row.id));
+}
+
+async function hasPendingIssueThreadInteraction(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  issueId: string,
+) {
+  const rows = await dbOrTx
+    .select({ id: issueThreadInteractions.id })
+    .from(issueThreadInteractions)
+    .where(
+      and(
+        eq(issueThreadInteractions.companyId, companyId),
+        eq(issueThreadInteractions.issueId, issueId),
+        eq(issueThreadInteractions.status, "pending"),
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
 }
 async function getProjectDefaultGoalId(
   db: ProjectGoalReader,
@@ -1965,6 +2016,40 @@ async function listIssueBlockerAttentionMap(
     for (const row of recoveryActionRows) explicitWaitingIssueIds.add(row.sourceIssueId);
   }
 
+  // Parity with graph-liveness: an in_review blocker that carries a healthy
+  // scheduled issue-monitor is a valid waiting path, not a stalled review. We
+  // reuse graph-liveness' `hasScheduledMonitor` predicate against the same
+  // monitor signals (monitorNextCheckAt + execution policy/state monitor) so the
+  // two engines never diverge (TWB-3032).
+  const scheduledMonitorIssueIds = new Set<string>();
+  const monitorCandidateIds = [...nodesById.values()]
+    .filter((node) => node.status === "in_review")
+    .map((node) => node.id);
+  if (monitorCandidateIds.length > 0) {
+    const nowMs = Date.now();
+    for (const chunk of chunkList(monitorCandidateIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+      const monitorRows: Array<{
+        id: string;
+        executionPolicy: Record<string, unknown> | null;
+        executionState: Record<string, unknown> | null;
+        monitorNextCheckAt: Date | null;
+        monitorAttemptCount: number | null;
+      }> = await dbOrTx
+        .select({
+          id: issues.id,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), inArray(issues.id, chunk)));
+      for (const row of monitorRows) {
+        if (hasScheduledMonitor(row, nowMs)) scheduledMonitorIssueIds.add(row.id);
+      }
+    }
+  }
+
   const agentRows: IssueBlockerAttentionAgentRow[] = agentIds.size > 0
     ? await dbOrTx
         .select({
@@ -2006,7 +2091,10 @@ async function listIssueBlockerAttentionMap(
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (node.status === "in_review") {
-      const hasWaitingPath = activeIssueIds.has(node.id) || Boolean(node.assigneeUserId);
+      const hasWaitingPath =
+        activeIssueIds.has(node.id) ||
+        Boolean(node.assigneeUserId) ||
+        scheduledMonitorIssueIds.has(node.id);
       if (hasWaitingPath) {
         return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
       }
@@ -2144,6 +2232,7 @@ const issueListSelect = {
   status: issues.status,
   workMode: issues.workMode,
   priority: issues.priority,
+  complexity: issues.complexity,
   assigneeAgentId: issues.assigneeAgentId,
   assigneeUserId: issues.assigneeUserId,
   checkoutRunId: issues.checkoutRunId,
@@ -5308,6 +5397,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        allowAgentBlockedWithoutLivePath?: boolean;
       },
       dbOrTx: any = db,
     ) => {
@@ -5323,6 +5413,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        allowAgentBlockedWithoutLivePath,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -5363,6 +5454,45 @@ export function issueService(db: Db) {
             ).get(id)?.unresolvedBlockerIssueIds ?? [];
         if (unresolvedBlockerIssueIds.length > 0) {
           throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+        }
+      }
+      // Agent-set `blocked` must leave a machine-resumable path behind; board/human
+      // actors and system flows (no agent actor) may park issues deliberately.
+      if (
+        patch.status === "blocked" &&
+        actorAgentId &&
+        !actorUserId &&
+        !allowAgentBlockedWithoutLivePath
+      ) {
+        const hasHumanAssigneeWaitingPath =
+          typeof nextAssigneeUserId === "string" && nextAssigneeUserId.trim().length > 0;
+        if (!hasHumanAssigneeWaitingPath) {
+          // Evaluate the post-update blocker set: the ids sent with this update when
+          // provided (they replace the relation set), otherwise the existing relations.
+          const candidateBlockerIssueIds = blockedByIssueIds !== undefined
+            ? blockedByIssueIds
+            : (
+                await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])
+              ).get(id)?.blockerIssueIds ?? [];
+          const liveBlockerIssueIds = await listLiveBlockerIssueIds(
+            dbOrTx,
+            existing.companyId,
+            candidateBlockerIssueIds,
+          );
+          if (
+            liveBlockerIssueIds.length === 0 &&
+            !(await hasPendingIssueThreadInteraction(dbOrTx, existing.companyId, id))
+          ) {
+            throw unprocessable(INVALID_AGENT_BLOCKED_DISPOSITION_MESSAGE, {
+              code: "invalid_issue_disposition",
+              missing: "blocked_path",
+              validBlockedPaths: [
+                "live_blocker_issue_ids",
+                "human_assignee_user_id",
+                "pending_issue_thread_interaction",
+              ],
+            });
+          }
         }
       }
       const shouldValidateNextAssignee =

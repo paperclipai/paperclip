@@ -4,7 +4,19 @@ export const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set([
   "opencode_local",
 ]);
 
-export type IssueModelLane = "primary" | "cheap" | "custom";
+import { MODEL_PROFILE_KEYS, type ModelProfileKey } from "@paperclipai/shared";
+
+export type IssueModelLane = "primary" | ModelProfileKey | "custom";
+
+export function isProfileLane(lane: IssueModelLane): lane is ModelProfileKey {
+  return (MODEL_PROFILE_KEYS as readonly string[]).includes(lane);
+}
+
+export function profileLaneFromOverrides(modelProfile: unknown): ModelProfileKey | null {
+  return typeof modelProfile === "string" && (MODEL_PROFILE_KEYS as readonly string[]).includes(modelProfile)
+    ? (modelProfile as ModelProfileKey)
+    : null;
+}
 
 export interface BuildAssigneeAdapterOverridesInput {
   adapterType: string | null | undefined;
@@ -19,8 +31,9 @@ export interface BuildAssigneeAdapterOverridesInput {
  *
  * Lane semantics:
  * - "primary" → no overrides, runs on the agent's primary model.
- * - "cheap"   → `modelProfile: "cheap"` only; the runtime resolves the actual
- *               adapter config from the agent's runtimeConfig + adapter default.
+ * - profile lanes ("cheap", "standard", "premium", "flagship") → `modelProfile`
+ *               only; the runtime resolves the actual adapter config from the
+ *               agent's runtimeConfig + adapter default.
  * - "custom"  → preserves the legacy explicit override path
  *               (`adapterConfig.model`, thinking effort, chrome).
  */
@@ -36,8 +49,8 @@ export function buildAssigneeAdapterOverrides(
     return null;
   }
 
-  if (input.lane === "cheap") {
-    return { modelProfile: "cheap" };
+  if (isProfileLane(input.lane)) {
+    return { modelProfile: input.lane };
   }
 
   const adapterConfig: Record<string, unknown> = {};

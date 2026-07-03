@@ -163,13 +163,26 @@ function readDateMs(value: unknown): number | null {
   return Number.isNaN(time) ? null : time;
 }
 
-function monitorFromIssue(issue: IssueLivenessIssueInput) {
+/**
+ * Minimal shape needed to evaluate whether an issue has a healthy scheduled
+ * monitor. `IssueLivenessIssueInput` is assignable to this, and it lets other
+ * engines (e.g. blocker-attention) reuse `hasScheduledMonitor` from a plain
+ * monitor-columns query without carrying the full liveness input.
+ */
+export type IssueScheduledMonitorInput = {
+  executionPolicy?: Record<string, unknown> | null;
+  executionState?: Record<string, unknown> | null;
+  monitorNextCheckAt?: Date | string | null;
+  monitorAttemptCount?: number | null;
+};
+
+function monitorFromIssue(issue: IssueScheduledMonitorInput) {
   const policyMonitor = readRecord(readRecord(issue.executionPolicy)?.monitor);
   const stateMonitor = readRecord(readRecord(issue.executionState)?.monitor);
   return { policyMonitor, stateMonitor };
 }
 
-function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
+export function hasScheduledMonitor(issue: IssueScheduledMonitorInput, nowMs: number) {
   const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
   if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
 

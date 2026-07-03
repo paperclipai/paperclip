@@ -147,7 +147,7 @@ export interface AdapterModel {
   label: string;
 }
 
-export type AdapterModelProfileKey = "cheap";
+export type AdapterModelProfileKey = "cheap" | "standard" | "premium" | "flagship";
 
 export interface AdapterModelProfileDefinition {
   key: AdapterModelProfileKey;

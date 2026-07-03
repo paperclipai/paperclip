@@ -2556,6 +2556,40 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/claude-accounts/usage",
+  tags: ["instance"],
+  summary: "Get Claude account usage snapshots",
+  request: {
+    query: z.object({
+      refresh: z.union([z.literal("1"), z.literal("true")]).optional(),
+    }),
+  },
+  responses: { 200: r.ok(z.unknown()), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/claude-accounts/switch-decisions",
+  tags: ["instance"],
+  summary: "List recent Claude auth-switch decisions",
+  request: {
+    query: z.object({
+      limit: z.coerce.number().int().positive().optional(),
+    }),
+  },
+  responses: { 200: r.ok(z.unknown()), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/instance/claude-accounts/switch",
+  tags: ["instance"],
+  summary: "Run one Claude auth-switch decision cycle now",
+  responses: { 200: r.ok(z.unknown()), 401: r.unauthorized, 403: r.forbidden },
+});
+
 // ─── Board chat (Conference Room Chat, experimental) ──────────────────────────
 
 registry.registerPath({

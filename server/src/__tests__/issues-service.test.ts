@@ -3019,6 +3019,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
   afterEach(async () => {
     await db.delete(issueComments);
     await db.delete(issueRelations);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(issues);
@@ -3677,6 +3678,212 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       ],
       childIssueSummaryTruncated: false,
     });
+  });
+
+  async function seedBlockedGuardCompany() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Backend",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
+
+  function issueRow(companyId: string, input: {
+    id: string;
+    title: string;
+    status?: string;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+  }) {
+    return {
+      id: input.id,
+      companyId,
+      title: input.title,
+      status: input.status ?? "todo",
+      priority: "medium",
+      assigneeAgentId: input.assigneeAgentId ?? null,
+      assigneeUserId: input.assigneeUserId ?? null,
+    };
+  }
+
+  it("rejects agent-set blocked without a live blocker or waiting path", async () => {
+    const { companyId, agentId } = await seedBlockedGuardCompany();
+    const issueId = randomUUID();
+    await db.insert(issues).values(issueRow(companyId, {
+      id: issueId,
+      title: "Dead-end candidate",
+      assigneeAgentId: agentId,
+    }));
+
+    await expect(svc.update(issueId, {
+      status: "blocked",
+      actorAgentId: agentId,
+    })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "invalid_issue_disposition",
+        missing: "blocked_path",
+      },
+    });
+
+    const row = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId));
+    expect(row[0]?.status).toBe("todo");
+  });
+
+  it("rejects agent-set blocked when the update replaces live blockers with terminal ones", async () => {
+    const { companyId, agentId } = await seedBlockedGuardCompany();
+    const issueId = randomUUID();
+    const liveBlockerId = randomUUID();
+    const doneBlockerId = randomUUID();
+    const cancelledBlockerId = randomUUID();
+    await db.insert(issues).values([
+      issueRow(companyId, { id: issueId, title: "Dependent", assigneeAgentId: agentId }),
+      issueRow(companyId, { id: liveBlockerId, title: "Live blocker", status: "todo" }),
+      issueRow(companyId, { id: doneBlockerId, title: "Done blocker", status: "done" }),
+      issueRow(companyId, { id: cancelledBlockerId, title: "Cancelled blocker", status: "cancelled" }),
+    ]);
+    await svc.update(issueId, { blockedByIssueIds: [liveBlockerId] });
+
+    // The blockedByIssueIds sent with the update replace the relation set, so the
+    // pre-existing live blocker cannot satisfy the guard here.
+    await expect(svc.update(issueId, {
+      status: "blocked",
+      blockedByIssueIds: [doneBlockerId, cancelledBlockerId],
+      actorAgentId: agentId,
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "invalid_issue_disposition", missing: "blocked_path" },
+    });
+  });
+
+  it("accepts agent-set blocked with a live blocker in the same update", async () => {
+    const { companyId, agentId } = await seedBlockedGuardCompany();
+    const issueId = randomUUID();
+    const blockerId = randomUUID();
+    await db.insert(issues).values([
+      issueRow(companyId, { id: issueId, title: "Dependent", assigneeAgentId: agentId }),
+      issueRow(companyId, { id: blockerId, title: "Live blocker", status: "in_progress", assigneeAgentId: agentId }),
+    ]);
+
+    const updated = await svc.update(issueId, {
+      status: "blocked",
+      blockedByIssueIds: [blockerId],
+      actorAgentId: agentId,
+    });
+    expect(updated?.status).toBe("blocked");
+  });
+
+  it("accepts agent-set blocked backed by existing live blocker relations", async () => {
+    const { companyId, agentId } = await seedBlockedGuardCompany();
+    const issueId = randomUUID();
+    const blockerId = randomUUID();
+    await db.insert(issues).values([
+      issueRow(companyId, { id: issueId, title: "Dependent", assigneeAgentId: agentId }),
+      issueRow(companyId, { id: blockerId, title: "Live blocker", status: "todo" }),
+    ]);
+    await svc.update(issueId, { blockedByIssueIds: [blockerId] });
+
+    const updated = await svc.update(issueId, {
+      status: "blocked",
+      actorAgentId: agentId,
+    });
+    expect(updated?.status).toBe("blocked");
+  });
+
+  it("accepts agent-set blocked when a human assignee holds the waiting path", async () => {
+    const { companyId, agentId } = await seedBlockedGuardCompany();
+    const issueId = randomUUID();
+    await db.insert(issues).values(issueRow(companyId, {
+      id: issueId,
+      title: "Waiting on a human",
+      assigneeUserId: randomUUID(),
+    }));
+
+    const updated = await svc.update(issueId, {
+      status: "blocked",
+      actorAgentId: agentId,
+    });
+    expect(updated?.status).toBe("blocked");
+  });
+
+  it("accepts agent-set blocked with a pending issue-thread interaction", async () => {
+    const { companyId, agentId } = await seedBlockedGuardCompany();
+    const issueId = randomUUID();
+    await db.insert(issues).values(issueRow(companyId, {
+      id: issueId,
+      title: "Waiting on an interaction",
+      assigneeAgentId: agentId,
+    }));
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Confirm the rollout plan?",
+      },
+      createdByAgentId: agentId,
+    });
+
+    const updated = await svc.update(issueId, {
+      status: "blocked",
+      actorAgentId: agentId,
+    });
+    expect(updated?.status).toBe("blocked");
+  });
+
+  it("keeps human and system actors exempt from the blocked guard", async () => {
+    const { companyId, agentId } = await seedBlockedGuardCompany();
+    const humanParkedId = randomUUID();
+    const systemParkedId = randomUUID();
+    await db.insert(issues).values([
+      issueRow(companyId, { id: humanParkedId, title: "Human-parked", assigneeAgentId: agentId }),
+      issueRow(companyId, { id: systemParkedId, title: "System-parked", assigneeAgentId: agentId }),
+    ]);
+
+    const humanParked = await svc.update(humanParkedId, {
+      status: "blocked",
+      actorUserId: randomUUID(),
+    });
+    expect(humanParked?.status).toBe("blocked");
+
+    const systemParked = await svc.update(systemParkedId, { status: "blocked" });
+    expect(systemParked?.status).toBe("blocked");
+  });
+
+  it("allows the explicit internal bypass used by master-runtime parking", async () => {
+    const { companyId, agentId } = await seedBlockedGuardCompany();
+    const issueId = randomUUID();
+    await db.insert(issues).values(issueRow(companyId, {
+      id: issueId,
+      title: "Runtime-limited",
+      assigneeAgentId: agentId,
+    }));
+
+    const updated = await svc.update(issueId, {
+      status: "blocked",
+      actorAgentId: agentId,
+      allowAgentBlockedWithoutLivePath: true,
+    });
+    expect(updated?.status).toBe("blocked");
   });
 });
 

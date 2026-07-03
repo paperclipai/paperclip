@@ -1,6 +1,15 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export { isAbsolutePath } from "./absolute-path.js";
 export {
+  COMPLEXITY_MODEL_PROFILE_MAP,
+  complexityToModelProfileKey,
+  decideModelRouting,
+  isIssueComplexity,
+  type ModelRoutingDecision,
+  type ModelRoutingInput,
+  type ModelRoutingSkipReason,
+} from "./model-routing.js";
+export {
   getAgentOrgChainHealth,
   getAgentWorkEligibility,
   isAgentAssignableToWork,
@@ -110,6 +119,7 @@ export {
   ISSUE_STATUSES,
   INBOX_MINE_ISSUE_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
+  ISSUE_COMPLEXITIES,
   ISSUE_PRIORITIES,
   ISSUE_WORK_MODES,
   MAX_ISSUE_REQUEST_DEPTH,
@@ -251,6 +261,7 @@ export {
   type AgentIconName,
   type ProjectIconName,
   type IssueStatus,
+  type IssueComplexity,
   type IssuePriority,
   type IssueWorkMode,
   type IssueCommentAuthorType,
