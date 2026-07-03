@@ -162,7 +162,6 @@ import {
   XCircle,
 } from "lucide-react";
 import {
-  deriveResponsibleUser,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
@@ -467,19 +466,6 @@ export type AttributionActor = {
   avatarUrl?: string | null;
 };
 
-function sameAttributionActor(left: AttributionActor | null, right: AttributionActor | null): boolean {
-  return Boolean(left && right && left.kind === right.kind && left.id === right.id);
-}
-
-export function shouldShowResponsibleAttribution(
-  creator: AttributionActor | null,
-  assignee: AttributionActor | null,
-  responsibleActor: AttributionActor | null,
-): boolean {
-  if (sameAttributionActor(creator, responsibleActor)) return false;
-  return Boolean(responsibleActor || creator || assignee);
-}
-
 function AttributionIdentity({ actor }: { actor: AttributionActor }) {
   return (
     <Identity
@@ -521,68 +507,11 @@ function IssueAttributionByline({
           avatarUrl: userProfileMap.get(issue.createdByUserId)?.image ?? null,
         }
       : null;
-  const assignee: AttributionActor | null = issue.assigneeAgentId
-    ? {
-        kind: "agent",
-        id: issue.assigneeAgentId,
-        name: agentMap.get(issue.assigneeAgentId)?.name ?? issue.assigneeAgentId.slice(0, 8),
-      }
-    : issue.assigneeUserId
-      ? {
-          kind: "user",
-          id: issue.assigneeUserId,
-          name: formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, userLabelMap)
-            ?? userProfileMap.get(issue.assigneeUserId)?.label
-            ?? "User",
-          avatarUrl: userProfileMap.get(issue.assigneeUserId)?.image ?? null,
-        }
-      : null;
-  const responsible = deriveResponsibleUser(issue);
-  const responsibleActor: AttributionActor | null = responsible.userId
-    ? {
-        kind: "user",
-        id: responsible.userId,
-        name: formatAssigneeUserLabel(responsible.userId, currentUserId, userLabelMap)
-          ?? userProfileMap.get(responsible.userId)?.label
-          ?? "User",
-        avatarUrl: userProfileMap.get(responsible.userId)?.image ?? null,
-      }
-    : null;
-  const showAssignee = Boolean(assignee && !sameAttributionActor(creator, assignee));
-  const showResponsible = shouldShowResponsibleAttribution(
-    creator,
-    showAssignee ? assignee : null,
-    responsibleActor,
-  );
-
-  if (!creator && !showAssignee && !showResponsible) return null;
+  if (!creator) return null;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-      {creator ? (
-        <>
-          <AttributionIdentity actor={creator} />
-          <span>kicked this off</span>
-        </>
-      ) : null}
-      {showAssignee && assignee ? (
-        <>
-          <span aria-hidden="true">-&gt;</span>
-          <AttributionIdentity actor={assignee} />
-          <span>is on it</span>
-        </>
-      ) : null}
-      {showResponsible ? (
-        <>
-          {(creator || showAssignee) ? <span aria-hidden="true">·</span> : null}
-          {responsibleActor ? (
-            <AttributionIdentity actor={responsibleActor} />
-          ) : (
-            <span className="text-muted-foreground">Unassigned</span>
-          )}
-          <span>responsible</span>
-        </>
-      ) : null}
+      <AttributionIdentity actor={creator} />
     </div>
   );
 }

@@ -460,7 +460,7 @@ describe("IssueProperties", () => {
     document.body.innerHTML = "";
   });
 
-  it("shows kicked off by and explicit responsible people near assignee", async () => {
+  it("shows originating and explicit responsible people near assignee", async () => {
     mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "CodexCoder", status: "active", adapterType: "codex_local" }]);
     const root = renderProperties(container, {
       issue: createIssue({
@@ -477,10 +477,11 @@ describe("IssueProperties", () => {
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Responsible");
       expect(container.textContent).toContain("CodexCoder");
-      expect(container.textContent).toContain("Kicked off by");
+      expect(container.textContent).toContain("Originating");
       expect(container.textContent).toContain("Riley Board");
       expect(container.textContent).toContain("Responsible");
       expect(container.textContent).toContain("Morgan Product");
+      expect(container.textContent).not.toContain("Kicked off by");
       expect(container.textContent).not.toContain("Created by");
       expect(container.querySelector('[data-shape="square"]')?.textContent).toContain("CodexCoder");
     });
@@ -488,7 +489,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("collapses kicked off by and responsible when responsible is derived from the creator", async () => {
+  it("shows originating without merged responsible wording when responsible is derived from the creator", async () => {
     const root = renderProperties(container, {
       issue: createIssue({
         createdByUserId: "user-1",
@@ -501,8 +502,10 @@ describe("IssueProperties", () => {
     await flush();
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Kicked off by · responsible");
+      expect(container.textContent).toContain("Originating");
       expect(container.textContent).toContain("Riley Board");
+      expect(container.textContent).not.toContain("Kicked off by");
+      expect(container.textContent).not.toContain("Kicked off by · responsible");
       expect(container.textContent).not.toContain("(auto)");
       expect(container.textContent).not.toContain("Created by");
     });
@@ -525,10 +528,11 @@ describe("IssueProperties", () => {
     await flush();
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Kicked off by");
+      expect(container.textContent).toContain("Originating");
       expect(container.textContent).toContain("CodexCoder");
       expect(container.textContent).toContain("Responsible");
       expect(container.textContent).toContain("Unassigned");
+      expect(container.textContent).not.toContain("Kicked off by");
       expect(container.querySelector('[data-shape="square"]')?.textContent).toContain("CodexCoder");
     });
 
