@@ -42,21 +42,25 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     await tempDb?.cleanup();
   });
 
-  function createApp(companyId: string) {
+  function createApp(
+    companyId: string,
+    opts: Parameters<typeof issueRoutes>[2] = {},
+  ) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
+      const userId = req.header("x-test-user-id") ?? "cloud-user-1";
       (req as any).actor = {
         type: "board",
-        userId: "cloud-user-1",
+        userId,
         companyIds: [companyId],
-        memberships: [{ companyId, membershipRole: "owner", status: "active" }],
+        memberships: [{ companyId, membershipRole: "owner", status: "active", principalId: userId }],
         source: "cloud_tenant",
         isInstanceAdmin: false,
       };
       next();
     });
-    app.use("/api", issueRoutes(db, {} as any));
+    app.use("/api", issueRoutes(db, {} as any, opts));
     app.use(errorHandler);
     return app;
   }
@@ -66,18 +70,18 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     return `P${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`;
   }
 
-  async function seedCloudTenantMember(companyId: string) {
+  async function seedCloudTenantMember(companyId: string, userId = "cloud-user-1") {
     await db.insert(companyMemberships).values({
       companyId,
       principalType: "user",
-      principalId: "cloud-user-1",
+      principalId: userId,
       status: "active",
       membershipRole: "owner",
       updatedAt: new Date(),
     });
     await ensureHumanRoleDefaultGrants(db, {
       companyId,
-      principalId: "cloud-user-1",
+      principalId: userId,
       membershipRole: "owner",
       grantedByUserId: null,
     });
@@ -214,6 +218,189 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
 
     expect(second.status).toBe(304);
     expect(second.text).toBe("");
+  });
+
+  it("coalesces simultaneous identical compact issue-list requests into one service computation", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    let computeCount = 0;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Coalesced issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const app = createApp(companyId, {
+      issueListDiagnostics: {
+        async onComputeStart() {
+          computeCount += 1;
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        },
+      },
+    });
+    const responses = await Promise.all(Array.from({ length: 10 }, () =>
+      request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .query({ view: "compact", limit: "20" })
+    ));
+
+    expect(responses.every((res) => res.status === 200)).toBe(true);
+    expect(responses.map((res) => res.body.map((issue: { id: string }) => issue.id))).toEqual(
+      Array.from({ length: 10 }, () => [issueId]),
+    );
+    expect(computeCount).toBe(1);
+    expect(responses.some((res) => res.headers["x-paperclip-request-cache"] === "coalesced")).toBe(true);
+  });
+
+  it("keeps compact issue-list cache keys separated by board user identity", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    let computeCount = 0;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId, "cloud-user-1");
+    await seedCloudTenantMember(companyId, "cloud-user-2");
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Separated issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const app = createApp(companyId, {
+      issueListDiagnostics: {
+        async onComputeStart() {
+          computeCount += 1;
+          await new Promise((resolve) => setTimeout(resolve, 40));
+        },
+      },
+    });
+    const [first, second] = await Promise.all([
+      request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .set("X-Test-User-Id", "cloud-user-1")
+        .query({ view: "compact", limit: "20" }),
+      request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .set("X-Test-User-Id", "cloud-user-2")
+        .query({ view: "compact", limit: "20" }),
+    ]);
+
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    expect(computeCount).toBe(2);
+    expect(first.headers["x-paperclip-request-cache"]).toBe("miss");
+    expect(second.headers["x-paperclip-request-cache"]).toBe("miss");
+  });
+
+  it("serves repeated compact issue-list requests from the short server cache", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    let computeCount = 0;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Cached issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const app = createApp(companyId, {
+      issueListDiagnostics: {
+        onComputeStart() {
+          computeCount += 1;
+        },
+      },
+    });
+    const first = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ view: "compact", limit: "20" });
+    const second = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ view: "compact", limit: "20" });
+
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    expect(computeCount).toBe(1);
+    expect(first.headers["x-paperclip-request-cache"]).toBe("miss");
+    expect(second.headers["x-paperclip-request-cache"]).toBe("hit");
+  });
+
+  it("logs request_storm_detected for identical in-flight compact issue-list fanout without query values", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const stormEvents: unknown[] = [];
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Storm issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const app = createApp(companyId, {
+      issueListDiagnostics: {
+        async onComputeStart() {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        },
+        onStormDetected(event) {
+          stormEvents.push(event);
+        },
+      },
+    });
+    const responses = await Promise.all(Array.from({ length: 5 }, () =>
+      request(app)
+        .get(`/api/companies/${companyId}/issues`)
+        .set("Referer", "http://localhost:3100/issues?q=do-not-log-this")
+        .set("X-Paperclip-Tab-Visible", "visible")
+        .query({ view: "compact", limit: "20", q: "do-not-log-this" })
+    ));
+
+    expect(responses.every((res) => res.status === 200)).toBe(true);
+    expect(stormEvents).toHaveLength(1);
+    expect(stormEvents[0]).toMatchObject({
+      event: "request_storm_detected",
+      route: "GET /api/companies/:companyId/issues",
+      companyId,
+      visibilityHint: "visible",
+      referer: "/issues",
+    });
+    expect((stormEvents[0] as { queryKeys: string[] }).queryKeys).toEqual(
+      expect.arrayContaining(["limit", "q", "view"]),
+    );
+    expect(JSON.stringify(stormEvents[0])).not.toContain("do-not-log-this");
   });
 
   it("keeps UUID assignee filtering behavior unchanged", async () => {

@@ -105,6 +105,7 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueReferenceService,
   issueService,
+  type IssueFilters,
   clampIssueListLimit,
   documentService,
   documentAnnotationService,
@@ -2074,6 +2075,319 @@ function requestMatchesEtag(ifNoneMatchHeader: string | undefined, etag: string)
     .some((value) => value === "*" || value === etag || value === `W/${etag}`);
 }
 
+const ISSUE_LIST_SERVER_CACHE_TTL_MS = 2_000;
+const ISSUE_LIST_SERVER_CACHE_STALE_MS = 5_000;
+const ISSUE_LIST_STORM_WINDOW_MS = 500;
+const ISSUE_LIST_STORM_THRESHOLD = 4;
+const ISSUE_LIST_MAX_ACTOR_CLIENT_INFLIGHT = 8;
+
+type IssueListPreparedResponse =
+  | {
+      kind: "compact";
+      body: CompactIssue[];
+      etag: string;
+      cacheControl: string;
+    }
+  | {
+      kind: "full";
+      body: unknown[];
+    };
+
+type IssueListCacheStatus = "miss" | "hit" | "coalesced" | "stale" | "retry";
+
+type IssueListStormEvent = {
+  event: "request_storm_detected";
+  route: string;
+  companyId: string;
+  actorType: string;
+  actorIdentityHash: string;
+  clientHash: string;
+  cacheKeyHash: string;
+  queryKeys: string[];
+  identicalInFlightCount: number;
+  windowMs: number;
+  referer: string | null;
+  visibilityHint: string | null;
+};
+
+type IssueListDiagnostics = {
+  onComputeStart?: (context: { companyId: string; cacheKeyHash: string }) => void | Promise<void>;
+  onStormDetected?: (event: IssueListStormEvent) => void;
+};
+
+type IssueListCacheEntry = {
+  response: IssueListPreparedResponse;
+  expiresAt: number;
+  staleUntil: number;
+};
+
+type IssueListInflightEntry = {
+  promise: Promise<IssueListPreparedResponse>;
+  startedAt: number;
+  waiterCount: number;
+  stormLogged: boolean;
+};
+
+const issueListResponseCache = new Map<string, IssueListCacheEntry>();
+const issueListInflight = new Map<string, IssueListInflightEntry>();
+const issueListActorClientInflight = new Map<string, number>();
+
+function shortHash(value: string): string {
+  return createHash("sha256").update(value).digest("base64url").slice(0, 16);
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .filter((key) => record[key] !== undefined)
+    .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+    .join(",")}}`;
+}
+
+function normalizeIssueListCacheValue(value: unknown): unknown {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (Array.isArray(value)) {
+    return value.map(normalizeIssueListCacheValue).sort((a, b) => stableJson(a).localeCompare(stableJson(b)));
+  }
+  if (typeof value === "object") {
+    const normalized: Record<string, unknown> = {};
+    for (const [key, nestedValue] of Object.entries(value as Record<string, unknown>)) {
+      const next = normalizeIssueListCacheValue(nestedValue);
+      if (next !== undefined) normalized[key] = next;
+    }
+    return normalized;
+  }
+  return value;
+}
+
+function issueListActorIdentity(req: Request, companyId: string) {
+  if (req.actor.type === "agent") {
+    const key = [
+      "agent",
+      companyId,
+      req.actor.agentId ?? "unknown-agent",
+      req.actor.keyId ?? req.actor.source ?? "agent-auth",
+    ].join(":");
+    return { actorType: "agent", key, hash: shortHash(key) };
+  }
+
+  if (req.actor.type === "board") {
+    const sessionPart = req.actor.source === "session"
+      ? `cookie:${shortHash(String(req.headers.cookie ?? "no-cookie"))}`
+      : req.actor.keyId ?? req.actor.source ?? "board";
+    const key = [
+      "board",
+      companyId,
+      req.actor.source ?? "board",
+      req.actor.userId ?? "unknown-user",
+      sessionPart,
+    ].join(":");
+    return { actorType: "board", key, hash: shortHash(key) };
+  }
+
+  const key = ["none", companyId, req.actor.source ?? "none"].join(":");
+  return { actorType: "none", key, hash: shortHash(key) };
+}
+
+function issueListClientIdentity(req: Request) {
+  const forwardedFor = Array.isArray(req.headers["x-forwarded-for"])
+    ? req.headers["x-forwarded-for"][0]
+    : req.headers["x-forwarded-for"];
+  const client = [
+    String(forwardedFor ?? req.ip ?? "unknown-ip").split(",")[0]?.trim() ?? "unknown-ip",
+    req.header("user-agent") ?? "unknown-agent",
+  ].join(":");
+  return { key: client, hash: shortHash(client) };
+}
+
+function safeRefererPath(req: Request): string | null {
+  const referer = req.header("referer");
+  if (!referer) return null;
+  try {
+    return new URL(referer).pathname;
+  } catch {
+    return referer.split("?")[0]?.slice(0, 160) ?? null;
+  }
+}
+
+function issueListRequestKey(input: {
+  req: Request;
+  companyId: string;
+  normalizedQuery: Record<string, unknown>;
+}) {
+  const route = "GET /api/companies/:companyId/issues";
+  const actor = issueListActorIdentity(input.req, input.companyId);
+  const client = issueListClientIdentity(input.req);
+  const normalizedQuery = normalizeIssueListCacheValue(input.normalizedQuery) as Record<string, unknown>;
+  const queryKeys = Object.keys(normalizedQuery).sort();
+  const key = stableJson({
+    actor: actor.key,
+    companyId: input.companyId,
+    query: normalizedQuery,
+    route,
+  });
+  return {
+    actor,
+    client,
+    key,
+    keyHash: shortHash(key),
+    queryKeys,
+    route,
+  };
+}
+
+function pruneIssueListResponseCache(now: number) {
+  for (const [key, entry] of issueListResponseCache) {
+    if (entry.staleUntil <= now) issueListResponseCache.delete(key);
+  }
+}
+
+function decrementIssueListActorClientInflight(actorClientKey: string) {
+  const next = (issueListActorClientInflight.get(actorClientKey) ?? 1) - 1;
+  if (next <= 0) issueListActorClientInflight.delete(actorClientKey);
+  else issueListActorClientInflight.set(actorClientKey, next);
+}
+
+async function coordinateIssueListGet(input: {
+  req: Request;
+  companyId: string;
+  requestKey: ReturnType<typeof issueListRequestKey>;
+  allowTtlCache: boolean;
+  diagnostics?: IssueListDiagnostics;
+  compute: () => Promise<IssueListPreparedResponse>;
+}): Promise<{
+  response: IssueListPreparedResponse | null;
+  cacheStatus: IssueListCacheStatus;
+  identicalInFlightCount: number;
+  retryAfterSeconds?: number;
+}> {
+  const now = Date.now();
+  pruneIssueListResponseCache(now);
+
+  const cached = input.allowTtlCache ? issueListResponseCache.get(input.requestKey.key) : undefined;
+  if (cached && cached.expiresAt > now) {
+    return { response: cached.response, cacheStatus: "hit", identicalInFlightCount: 0 };
+  }
+
+  const existing = issueListInflight.get(input.requestKey.key);
+  if (existing) {
+    existing.waiterCount += 1;
+    const identicalInFlightCount = existing.waiterCount + 1;
+    if (
+      !existing.stormLogged &&
+      identicalInFlightCount >= ISSUE_LIST_STORM_THRESHOLD &&
+      now - existing.startedAt <= ISSUE_LIST_STORM_WINDOW_MS
+    ) {
+      existing.stormLogged = true;
+      const event: IssueListStormEvent = {
+        event: "request_storm_detected",
+        route: input.requestKey.route,
+        companyId: input.companyId,
+        actorType: input.requestKey.actor.actorType,
+        actorIdentityHash: input.requestKey.actor.hash,
+        clientHash: input.requestKey.client.hash,
+        cacheKeyHash: input.requestKey.keyHash,
+        queryKeys: input.requestKey.queryKeys,
+        identicalInFlightCount,
+        windowMs: now - existing.startedAt,
+        referer: safeRefererPath(input.req),
+        visibilityHint: input.req.header("x-paperclip-tab-visible") ?? null,
+      };
+      logger.warn(event, "request_storm_detected");
+      input.diagnostics?.onStormDetected?.(event);
+    }
+    const response = await existing.promise;
+    return { response, cacheStatus: "coalesced", identicalInFlightCount };
+  }
+
+  const actorClientKey = `${input.requestKey.actor.key}:${input.requestKey.client.key}`;
+  const actorClientInflight = issueListActorClientInflight.get(actorClientKey) ?? 0;
+  if (actorClientInflight >= ISSUE_LIST_MAX_ACTOR_CLIENT_INFLIGHT) {
+    if (cached && cached.staleUntil > now) {
+      return { response: cached.response, cacheStatus: "stale", identicalInFlightCount: 0 };
+    }
+    return { response: null, cacheStatus: "retry", identicalInFlightCount: 0, retryAfterSeconds: 1 };
+  }
+
+  issueListActorClientInflight.set(actorClientKey, actorClientInflight + 1);
+  const promise = (async () => {
+    await input.diagnostics?.onComputeStart?.({
+      companyId: input.companyId,
+      cacheKeyHash: input.requestKey.keyHash,
+    });
+    return input.compute();
+  })();
+  const inflightEntry: IssueListInflightEntry = {
+    promise,
+    startedAt: now,
+    waiterCount: 0,
+    stormLogged: false,
+  };
+  issueListInflight.set(input.requestKey.key, inflightEntry);
+
+  try {
+    const response = await promise;
+    if (input.allowTtlCache) {
+      issueListResponseCache.set(input.requestKey.key, {
+        response,
+        expiresAt: Date.now() + ISSUE_LIST_SERVER_CACHE_TTL_MS,
+        staleUntil: Date.now() + ISSUE_LIST_SERVER_CACHE_STALE_MS,
+      });
+    }
+    return { response, cacheStatus: "miss", identicalInFlightCount: 1 };
+  } finally {
+    if (issueListInflight.get(input.requestKey.key) === inflightEntry) {
+      issueListInflight.delete(input.requestKey.key);
+    }
+    decrementIssueListActorClientInflight(actorClientKey);
+  }
+}
+
+function estimatedJsonBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+function logIssueListRequest(input: {
+  req: Request;
+  res: Response;
+  companyId: string;
+  requestKey: ReturnType<typeof issueListRequestKey>;
+  startedAt: number;
+  cacheStatus: IssueListCacheStatus;
+  bodyBytes: number;
+  etagOutcome: "none" | "fresh" | "not_modified";
+  identicalInFlightCount: number;
+}) {
+  input.res.once("finish", () => {
+    const contentEncoding = input.res.getHeader("content-encoding");
+    const contentLength = Number(input.res.getHeader("content-length"));
+    logger.debug({
+      event: "safe_get_request_observed",
+      route: input.requestKey.route,
+      companyId: input.companyId,
+      actorType: input.requestKey.actor.actorType,
+      actorIdentityHash: input.requestKey.actor.hash,
+      clientHash: input.requestKey.client.hash,
+      cacheKeyHash: input.requestKey.keyHash,
+      queryKeys: input.requestKey.queryKeys,
+      requestCount: input.identicalInFlightCount,
+      durationMs: Date.now() - input.startedAt,
+      statusCode: input.res.statusCode,
+      responseBytes: input.bodyBytes,
+      compressedBytes: contentEncoding && Number.isFinite(contentLength) ? contentLength : null,
+      contentEncoding: contentEncoding ? String(contentEncoding) : null,
+      cacheStatus: input.cacheStatus,
+      etagOutcome: input.etagOutcome,
+      referer: safeRefererPath(input.req),
+      visibilityHint: input.req.header("x-paperclip-tab-visible") ?? null,
+    }, "safe authenticated GET observed");
+  });
+}
+
 export function issueRoutes(
   db: Db,
   storage: StorageService,
@@ -2090,6 +2404,7 @@ export function issueRoutes(
     searchRateLimiter?: CompanySearchRateLimiter;
     pluginWorkerManager?: PluginWorkerManager;
     taskWatchdogEnqueueWakeup?: TaskWatchdogServiceDeps["enqueueWakeup"] | null;
+    issueListDiagnostics?: IssueListDiagnostics;
   } = {},
 ) {
   const router = Router();
@@ -4090,6 +4405,7 @@ export function issueRoutes(
   });
 
   router.get("/companies/:companyId/issues", async (req, res) => {
+    const startedAt = Date.now();
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (isTaskBridgeKeyActor(req)) {
@@ -4202,7 +4518,7 @@ export function issueRoutes(
     }
     const offset = parsedOffset ?? 0;
 
-    const rawResult = await svc.list(companyId, {
+    const listFilters: IssueFilters = {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
@@ -4236,45 +4552,121 @@ export function issueRoutes(
       offset,
       sortField: sortField === "updated" ? "updated" : undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
+    };
+    const requestKey = issueListRequestKey({
+      req,
+      companyId,
+      normalizedQuery: {
+        ...listFilters,
+        view: compactView ? "compact" : undefined,
+      },
     });
-    const result = await actorCanReadCompanyScope(req, companyId)
-      ? rawResult
-      : await filterIssuesForActor(req, rawResult);
-    if (compactView) {
-      const compactResult = result.map(toCompactIssue);
-      const etag = compactIssueListEtag(compactResult);
-      res.setHeader("Cache-Control", "private, must-revalidate");
-      res.setHeader("ETag", etag);
-      if (requestMatchesEtag(req.header("if-none-match"), etag)) {
+    const coordinated = await coordinateIssueListGet({
+      req,
+      companyId,
+      requestKey,
+      allowTtlCache: compactView,
+      diagnostics: opts.issueListDiagnostics,
+      compute: async () => {
+        const rawResult = await svc.list(companyId, listFilters);
+        const result = await actorCanReadCompanyScope(req, companyId)
+          ? rawResult
+          : await filterIssuesForActor(req, rawResult);
+        if (compactView) {
+          const compactResult = result.map(toCompactIssue);
+          return {
+            kind: "compact",
+            body: compactResult,
+            etag: compactIssueListEtag(compactResult),
+            cacheControl: "private, must-revalidate",
+          };
+        }
+        const issueIds = result.map((issue) => issue.id);
+        const [handoffStates, recoveryActionByIssue] = await Promise.all([
+          listSuccessfulRunHandoffStates(db, companyId, issueIds),
+          recoveryActionsSvc.listActiveForIssues(companyId, issueIds),
+        ]);
+        const actor = getActorInfo(req);
+        await Promise.all(result.map(async (issue) => {
+          const activeRecoveryAction = recoveryActionByIssue.get(issue.id) ?? null;
+          if (!activeRecoveryAction) return;
+          const revalidated = await revalidateActiveSourceRecoveryForRead({
+            issue,
+            trigger: "read_projection",
+            actor,
+            activeRecoveryAction,
+          });
+          if (revalidated) recoveryActionByIssue.set(issue.id, revalidated);
+          else recoveryActionByIssue.delete(issue.id);
+        }));
+        return {
+          kind: "full",
+          body: result.map((issue) => ({
+            ...issue,
+            successfulRunHandoff: handoffStates.get(issue.id) ?? null,
+            activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+          })),
+        };
+      },
+    });
+
+    res.setHeader("X-Paperclip-Request-Cache", coordinated.cacheStatus);
+    if (!coordinated.response) {
+      const body = {
+        error: "Too many concurrent issue-list requests for this actor/client",
+        retryAfterSeconds: coordinated.retryAfterSeconds ?? 1,
+      };
+      res.setHeader("Retry-After", String(body.retryAfterSeconds));
+      logIssueListRequest({
+        req,
+        res,
+        companyId,
+        requestKey,
+        startedAt,
+        cacheStatus: "retry",
+        bodyBytes: estimatedJsonBytes(body),
+        etagOutcome: "none",
+        identicalInFlightCount: coordinated.identicalInFlightCount,
+      });
+      res.status(429).json(body);
+      return;
+    }
+
+    if (coordinated.response.kind === "compact") {
+      res.setHeader("Cache-Control", coordinated.response.cacheControl);
+      res.setHeader("ETag", coordinated.response.etag);
+      const etagMatched = requestMatchesEtag(req.header("if-none-match"), coordinated.response.etag);
+      logIssueListRequest({
+        req,
+        res,
+        companyId,
+        requestKey,
+        startedAt,
+        cacheStatus: coordinated.cacheStatus,
+        bodyBytes: etagMatched ? 0 : estimatedJsonBytes(coordinated.response.body),
+        etagOutcome: etagMatched ? "not_modified" : "fresh",
+        identicalInFlightCount: coordinated.identicalInFlightCount,
+      });
+      if (etagMatched) {
         res.status(304).end();
         return;
       }
-      res.json(compactResult);
+      res.json(coordinated.response.body);
       return;
     }
-    const issueIds = result.map((issue) => issue.id);
-    const [handoffStates, recoveryActionByIssue] = await Promise.all([
-      listSuccessfulRunHandoffStates(db, companyId, issueIds),
-      recoveryActionsSvc.listActiveForIssues(companyId, issueIds),
-    ]);
-    const actor = getActorInfo(req);
-    await Promise.all(result.map(async (issue) => {
-      const activeRecoveryAction = recoveryActionByIssue.get(issue.id) ?? null;
-      if (!activeRecoveryAction) return;
-      const revalidated = await revalidateActiveSourceRecoveryForRead({
-        issue,
-        trigger: "read_projection",
-        actor,
-        activeRecoveryAction,
-      });
-      if (revalidated) recoveryActionByIssue.set(issue.id, revalidated);
-      else recoveryActionByIssue.delete(issue.id);
-    }));
-    res.json(result.map((issue) => ({
-      ...issue,
-      successfulRunHandoff: handoffStates.get(issue.id) ?? null,
-      activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
-    })));
+
+    logIssueListRequest({
+      req,
+      res,
+      companyId,
+      requestKey,
+      startedAt,
+      cacheStatus: coordinated.cacheStatus,
+      bodyBytes: estimatedJsonBytes(coordinated.response.body),
+      etagOutcome: "none",
+      identicalInFlightCount: coordinated.identicalInFlightCount,
+    });
+    res.json(coordinated.response.body);
   });
 
   router.get("/companies/:companyId/issues/count", async (req, res) => {
