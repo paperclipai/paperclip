@@ -93,11 +93,34 @@ describe("WorkTimelineChart", () => {
   it("renders date-aware AM/PM labels on the header axis", () => {
     renderChart(timelineSample());
 
-    const chartSvg = container.querySelector<SVGSVGElement>("svg.absolute");
+    const timeAxis = container.querySelector<HTMLElement>("[data-testid='work-timeline-time-axis']");
 
-    expect(chartSvg?.textContent).toContain("Jul 2");
-    expect(chartSvg?.textContent).toContain("AM");
-    expect(chartSvg?.textContent).not.toContain("09:00");
+    expect(timeAxis?.textContent).toContain("Jul 2");
+    expect(timeAxis?.textContent).toContain("AM");
+    expect(timeAxis?.textContent).not.toContain("09:00");
+  });
+
+  it("freezes the time axis over vertical scrolling while preserving horizontal alignment", async () => {
+    renderChart(timelineSample());
+
+    const scroller = container.querySelector<HTMLElement>("[data-testid='work-timeline-scroll']")!;
+    const timeAxis = container.querySelector<HTMLElement>("[data-testid='work-timeline-time-axis']")!;
+    const axisSvg = timeAxis.querySelector<SVGSVGElement>("svg")!;
+
+    expect(timeAxis.getAttribute("class")).toContain("absolute");
+    expect(timeAxis.getAttribute("class")).toContain("top-0");
+    expect(timeAxis.style.height).toBe("32px");
+    expect(axisSvg.style.transform).toBe("translateX(0px)");
+
+    flushSync(() => {
+      Object.defineProperty(scroller, "scrollTop", { configurable: true, value: 400 });
+      Object.defineProperty(scroller, "scrollLeft", { configurable: true, value: 240 });
+      scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(timeAxis.textContent).toContain("Jul 2");
+    expect(axisSvg.style.transform).toBe("translateX(-240px)");
   });
 
   it("renders actor labels in a sticky gutter outside the horizontally scrolling SVG", () => {
@@ -112,6 +135,7 @@ describe("WorkTimelineChart", () => {
     expect(chartSvg).not.toBeNull();
     expect(gutter?.getAttribute("class")).toContain("sticky");
     expect(gutter?.getAttribute("class")).toContain("left-0");
+    expect(gutter?.getAttribute("class")).not.toContain("top-0");
     expect(gutter?.getAttribute("width")).toBe("176");
     expect(chartSvg?.getAttribute("width")).not.toBe(gutter?.getAttribute("width"));
     expect(gutter?.textContent).toContain("CodexCoder");
