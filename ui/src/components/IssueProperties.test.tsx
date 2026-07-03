@@ -150,13 +150,11 @@ async function flush() {
 
 /**
  * Finds the trigger button for a property row by its (sentence-case) label.
- * Rows share the `PropertyRow` grid (`w-24` label span + value slot), so we
- * match the label span text and return the first button in that row.
+ * `PropertyRow` exposes a stable label hook so layout utility changes do not
+ * affect tests that need to find the corresponding value slot.
  */
 function findRowTrigger(container: HTMLElement, label: string): HTMLButtonElement | undefined {
-  const labelSpan = Array.from(container.querySelectorAll("span.w-24")).find(
-    (span) => span.textContent?.trim() === label,
-  );
+  const labelSpan = container.querySelector(`[data-property-label="${label}"]`);
   const row = labelSpan?.closest('[data-property-row="true"]');
   return (row?.querySelector("button") as HTMLButtonElement | null) ?? undefined;
 }
@@ -994,7 +992,7 @@ describe("IssueProperties", () => {
 
     expect(container.textContent).toContain("reference-5");
     expect(container.textContent).not.toContain("reference-6");
-    expect(container.textContent).toContain("URLs");
+    expect(container.textContent).toContain("References");
     const expandUrls = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.trim() === "Show 2 more",
     );

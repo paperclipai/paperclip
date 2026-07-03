@@ -54,6 +54,7 @@ export function PropertyRow({
           "text-xs text-muted-foreground shrink-0 w-24 truncate",
           wrap && "mt-0.5",
         )}
+        data-property-label={typeof label === "string" ? label : undefined}
         title={typeof label === "string" ? label : undefined}
       >
         {label}
