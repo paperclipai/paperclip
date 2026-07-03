@@ -4,6 +4,10 @@ import type { Duplex } from "node:stream";
 import type { Db } from "@paperclipai/db";
 import { conflict, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
+import {
+  readCustomImageSetupSessionCompanyId,
+  requireFutureCustomImageSetupExpiry,
+} from "../services/environment-custom-image-setup-session-utils.js";
 import { environmentCustomImageService } from "../services/environment-custom-images.js";
 import {
   environmentCustomImageTerminalConnectionRegistry,
@@ -155,29 +159,6 @@ function parseTerminalDimension(value: string | null, fallback: number) {
   if (!/^\d{1,4}$/.test(value)) return fallback;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 && parsed <= 9999 ? parsed : fallback;
-}
-
-function readDate(value: unknown): Date | null {
-  if (!value) return null;
-  const date = value instanceof Date ? value : new Date(String(value));
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function requireFutureSetupExpiry(session: { expiresAt: Date | string | null }, now: Date): Date {
-  const expiresAt = readDate(session.expiresAt);
-  if (!expiresAt || expiresAt.getTime() <= now.getTime()) {
-    throw conflict("Environment customImage setup session has expired.");
-  }
-  return expiresAt;
-}
-
-function readSetupSessionCompanyId(session: {
-  metadata?: Record<string, unknown> | null;
-}): string | null {
-  const value = session.metadata?.setupRpcCompanyId;
-  if (typeof value !== "string") return null;
-  const companyId = value.trim();
-  return companyId && companyId !== "instance" ? companyId : null;
 }
 
 function safeErrorName(err: unknown) {
@@ -342,7 +323,7 @@ async function validateTerminalUpgrade(input: {
     input.sessionStore.delete(terminalSession.id);
     throw unprocessable("Invalid terminal setup session.");
   }
-  const storedSetupCompanyId = readSetupSessionCompanyId(storedSetupSession);
+  const storedSetupCompanyId = readCustomImageSetupSessionCompanyId(storedSetupSession);
   if (
     storedSetupCompanyId !== terminalSession.companyId
     || storedSetupSession.environmentId !== terminalSession.environmentId
@@ -358,7 +339,7 @@ async function validateTerminalUpgrade(input: {
   });
   if (
     refreshed.session.id !== terminalSession.setupSessionId
-    || readSetupSessionCompanyId(refreshed.session) !== terminalSession.companyId
+    || readCustomImageSetupSessionCompanyId(refreshed.session) !== terminalSession.companyId
     || refreshed.session.environmentId !== terminalSession.environmentId
     || refreshed.session.provider !== terminalSession.provider
   ) {
@@ -369,7 +350,7 @@ async function validateTerminalUpgrade(input: {
     input.sessionStore.delete(terminalSession.id);
     throw conflict(`Cannot open terminal for setup status "${refreshed.session.status}".`);
   }
-  const sessionExpiresAt = requireFutureSetupExpiry(refreshed.session, input.now);
+  const sessionExpiresAt = requireFutureCustomImageSetupExpiry(refreshed.session, input.now);
 
   const payloadValidation = validateCustomImageSetupSshPayload(refreshed.connectionPayload, input.now);
   if (!payloadValidation.ok) {

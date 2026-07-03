@@ -29,6 +29,10 @@ import {
   type EnvironmentCustomImageTerminalPayloadValidationResult,
 } from "../services/environment-custom-image-terminal-sessions.js";
 import {
+  readCustomImageSetupSessionCompanyId,
+  requireFutureCustomImageSetupExpiry,
+} from "../services/environment-custom-image-setup-session-utils.js";
+import {
   collectEnvironmentSecretRefs,
   normalizeEnvironmentConfigForPersistence,
   normalizeEnvironmentConfigForProbe,
@@ -187,20 +191,11 @@ export function environmentRoutes(
     throw unprocessable("companyId query parameter is required for environment customImage setup.");
   }
 
-  function readSetupSessionCompanyId(session: {
-    metadata?: Record<string, unknown> | null;
-  }): string | null {
-    const value = session.metadata?.setupRpcCompanyId;
-    if (typeof value !== "string") return null;
-    const companyId = value.trim();
-    return companyId && companyId !== "instance" ? companyId : null;
-  }
-
   async function resolveCustomImageSessionCompanyId(
     req: Request,
     session: { metadata?: Record<string, unknown> | null },
   ): Promise<string> {
-    const metadataCompanyId = readSetupSessionCompanyId(session);
+    const metadataCompanyId = readCustomImageSetupSessionCompanyId(session);
     if (metadataCompanyId) {
       assertCustomImageCompanyAccess(req, metadataCompanyId);
       return metadataCompanyId;
@@ -319,20 +314,6 @@ export function environmentRoutes(
       sourceTemplateRef: template.sourceTemplateRef,
       metadata: template.metadata,
     });
-  }
-
-  function readDate(value: unknown): Date | null {
-    if (!value) return null;
-    const date = value instanceof Date ? value : typeof value === "string" ? new Date(value) : null;
-    return date && !Number.isNaN(date.getTime()) ? date : null;
-  }
-
-  function requireFutureSetupExpiry(session: { expiresAt: Date | string | null }, now: Date): Date {
-    const expiresAt = readDate(session.expiresAt);
-    if (!expiresAt || expiresAt.getTime() <= now.getTime()) {
-      throw conflict("Environment customImage setup session has expired.");
-    }
-    return expiresAt;
   }
 
   function throwTerminalPayloadValidationFailure(
@@ -460,7 +441,7 @@ export function environmentRoutes(
       if (refreshed.session.status !== "waiting_for_user") {
         throw conflict(`Cannot create terminal session token from setup status "${refreshed.session.status}".`);
       }
-      const setupExpiresAt = requireFutureSetupExpiry(refreshed.session, now);
+      const setupExpiresAt = requireFutureCustomImageSetupExpiry(refreshed.session, now);
       const payloadValidation = validateCustomImageSetupSshPayload(refreshed.connectionPayload, now);
       if (!payloadValidation.ok) {
         throwTerminalPayloadValidationFailure(payloadValidation);

@@ -1,4 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import {
+  readFutureDate,
+  readNullableDate,
+} from "./environment-custom-image-setup-session-utils.js";
 
 const DEFAULT_TERMINAL_SESSION_TOKEN_TTL_MS = 5 * 60 * 1000;
 const TERMINAL_SESSION_TOKEN_BYTES = 32;
@@ -102,12 +106,6 @@ function readConnectionPayload(payload: unknown): Record<string, unknown> | null
     : null;
 }
 
-function readDate(value: unknown): Date | null {
-  if (!value) return null;
-  const date = value instanceof Date ? value : typeof value === "string" ? new Date(value) : null;
-  return date && !Number.isNaN(date.getTime()) ? date : null;
-}
-
 export function validateCustomImageSetupSshPayload(
   payload: unknown,
   now: Date,
@@ -142,7 +140,7 @@ export function validateCustomImageSetupSshPayload(
     };
   }
 
-  const connectionExpiresAt = readDate(record.expiresAt);
+  const connectionExpiresAt = readNullableDate(record.expiresAt);
   if (record.expiresAt != null && !connectionExpiresAt) {
     return {
       ok: false,
@@ -172,10 +170,7 @@ function minDate(dates: Date[]): Date {
 }
 
 function toValidFutureDate(value: Date | string | null | undefined, now: Date): Date | null {
-  if (!value) return null;
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  return date.getTime() > now.getTime() ? date : null;
+  return readFutureDate(value, now);
 }
 
 function normalizeHostKeySha256(value: unknown): string | null {
