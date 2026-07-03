@@ -380,12 +380,15 @@ export function secretRoutes(db: Db) {
         return;
       }
       const activityActor = userSecretDefinitionActivityActor(req);
+      const activityAction = req.body.status === "deleted"
+        ? "user_secret_definition.deleted"
+        : "user_secret_definition.updated";
 
       await logActivity(db, {
         companyId,
         actorType: activityActor.actorType,
         actorId: activityActor.actorId,
-        action: "user_secret_definition.updated",
+        action: activityAction,
         entityType: "user_secret_definition",
         entityId: updated.id,
         details: { key: updated.key, status: updated.status },

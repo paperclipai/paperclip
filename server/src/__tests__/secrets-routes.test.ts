@@ -162,6 +162,37 @@ describe("secret routes", () => {
     expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("\"board\"");
   });
 
+  it("logs patched user-secret definition deletion as deletion activity", async () => {
+    mockSecretService.updateUserSecretDefinition.mockResolvedValue({
+      id: "definition-1",
+      companyId: "company-1",
+      key: "github_token__deleted__definition-1",
+      name: "GitHub token",
+      provider: "local_encrypted",
+      status: "deleted",
+    });
+
+    const res = await request(createApp())
+      .patch("/api/companies/company-1/user-secret-definitions/definition-1")
+      .send({ status: "deleted" });
+
+    expect(res.status).toBe(200);
+    expect(mockSecretService.updateUserSecretDefinition).toHaveBeenCalledWith(
+      "company-1",
+      "definition-1",
+      expect.objectContaining({ status: "deleted" }),
+      { userId: "user-1", agentId: null },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "user_secret_definition.deleted",
+        entityType: "user_secret_definition",
+        entityId: "definition-1",
+      }),
+    );
+  });
+
   it("creates current-user secret values for the authenticated user only", async () => {
     mockSecretService.createCurrentUserSecretValue.mockResolvedValue({
       id: "secret-1",
