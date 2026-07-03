@@ -29,7 +29,7 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 6 * 60 * 60 * 1000
 export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
-export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
+export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 1;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -676,6 +676,32 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     );
     if (recentCreationCount >= opts.thresholds.maxCreationsPerWindow) {
       return { kind: "creation_capped" as const, reviewIssueId: null };
+    }
+
+    // Gate: Never spawn a productivity review on a blocked issue
+    if (evidence.sourceIssue.status === "blocked") {
+      return { kind: "blocked_skip" as const, reviewIssueId: null };
+    }
+
+    // Gate: Never spawn on a container epic (has child issues).
+    // Exclude productivity-review children (they are rooted under the source issue
+    // and would otherwise make every reviewed issue look like an epic) and terminal
+    // issues (a real container epic has actionable, non-review children).
+    const childCount = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, evidence.sourceIssue.companyId),
+          eq(issues.parentId, evidence.sourceIssue.id),
+          sql`${issues.originKind} <> ${PRODUCTIVITY_REVIEW_ORIGIN_KIND}`,
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows.length);
+    if (childCount > 0) {
+      return { kind: "epic_skip" as const, reviewIssueId: null };
     }
 
     const ownerAgentId = await resolveReviewOwnerAgentId(evidence.sourceIssue, evidence.sourceAgent);

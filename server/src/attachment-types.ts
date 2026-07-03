@@ -35,6 +35,7 @@ export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "video/mp4",
   "video/webm",
   "video/quicktime",
+  "video/ogg",
   "video/x-m4v",
 ];
 
@@ -47,10 +48,7 @@ export const INLINE_ATTACHMENT_TYPES: readonly string[] = [
   "text/markdown",
   "application/json",
   "text/csv",
-  "video/mp4",
-  "video/webm",
-  "video/quicktime",
-  "video/x-m4v",
+  "video/*",
 ];
 
 /**

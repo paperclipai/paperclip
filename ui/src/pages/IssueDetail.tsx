@@ -140,6 +140,7 @@ import {
   AlertTriangle,
   Archive,
   ArrowLeft,
+  Bot,
   Check,
   ChevronRight,
   Copy,
@@ -159,6 +160,7 @@ import {
   Plus,
   Repeat,
   SlidersHorizontal,
+  Trash2,
   XCircle,
 } from "lucide-react";
 import {
@@ -761,6 +763,7 @@ type IssueDetailChatTabProps = {
   assigneeUserId: string | null;
   onResumeFromBacklog?: () => Promise<void> | void;
   resumeFromBacklogPending?: boolean;
+  chatMode?: "chat" | "agent_notes";
   externalReferences?: MarkdownExternalReferenceMap;
 };
 
@@ -823,6 +826,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   assigneeUserId,
   onResumeFromBacklog,
   resumeFromBacklogPending,
+  chatMode,
   externalReferences,
 }: IssueDetailChatTabProps) {
   const ThreadComponent = IssueChatThread;
@@ -1044,6 +1048,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         onResumeFromBacklog={onResumeFromBacklog}
         resumeFromBacklogPending={resumeFromBacklogPending}
         footer={footer}
+        chatMode={chatMode}
         externalReferences={externalReferences}
       />
     </div>
@@ -1333,6 +1338,7 @@ export function IssueDetail() {
   const { pushToast } = useToastActions();
   const { isMobile } = useSidebar();
   const [moreOpen, setMoreOpen] = useState(false);
+  const [confirmDeleteIssue, setConfirmDeleteIssue] = useState(false);
   const [copied, setCopied] = useState(false);
   const [mobilePropsOpen, setMobilePropsOpen] = useState(false);
   const [fileViewerPromptOpen, setFileViewerPromptOpen] = useState(false);
@@ -1936,6 +1942,16 @@ export function IssueDetail() {
       }
     },
   });
+  const deleteIssue = useMutation({
+    mutationFn: () => issuesApi.remove(issueId!),
+    onSuccess: () => {
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      }
+      navigate(-1);
+    },
+  });
+
   const resolveRecoveryAction = useMutation({
     mutationFn: (data: {
       actionId?: string;
@@ -4022,6 +4038,38 @@ export function IssueDetail() {
                 <EyeOff className="h-3 w-3" />
                 Hide this task
               </button>
+              {!confirmDeleteIssue ? (
+                <button
+                  className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-destructive/10 text-destructive"
+                  onClick={() => setConfirmDeleteIssue(true)}
+                >
+                  <Trash2 className="h-3 w-3" />
+                  Delete issue...
+                </button>
+              ) : (
+                <div className="px-2 py-1.5">
+                  <p className="text-xs text-destructive mb-1.5">Permanently delete this issue?</p>
+                  <div className="flex gap-1.5">
+                    <button
+                      className="flex-1 rounded bg-destructive text-destructive-foreground text-xs px-2 py-1 hover:bg-destructive/90"
+                      onClick={() => {
+                        deleteIssue.mutate();
+                        setMoreOpen(false);
+                        setConfirmDeleteIssue(false);
+                      }}
+                      disabled={deleteIssue.isPending}
+                    >
+                      Delete
+                    </button>
+                    <button
+                      className="flex-1 rounded border text-xs px-2 py-1 hover:bg-accent/50"
+                      onClick={() => setConfirmDeleteIssue(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             </PopoverContent>
             </Popover>
           </div>
@@ -4260,6 +4308,10 @@ export function IssueDetail() {
             <MessageSquare className="h-3.5 w-3.5" />
             Chat
           </TabsTrigger>
+          <TabsTrigger value="agent_notes" className="gap-1.5">
+            <Bot className="h-3.5 w-3.5" />
+            Agent Notes
+          </TabsTrigger>
           <TabsTrigger value="activity" className="gap-1.5">
             <ActivityIcon className="h-3.5 w-3.5" />
             Activity
@@ -4300,6 +4352,7 @@ export function IssueDetail() {
               onLoadOlderComments={loadOlderComments}
               onRefreshLatestComments={refetchLatestComments}
               composerRef={commentComposerRef}
+              chatMode="chat"
               footer={
                 siblingNavigation ? (
                   <IssueSiblingNavigation
@@ -4352,6 +4405,78 @@ export function IssueDetail() {
                 updateIssue.isPending && updateIssue.variables?.status === "todo"
               }
               externalReferences={externalObjectsState.isEnabled ? externalObjectsState.markdownReferences : undefined}
+            />
+          ) : null}
+        </TabsContent>
+
+        <TabsContent value="agent_notes">
+          {detailTab === "agent_notes" ? (
+            <IssueDetailChatTab
+              issueId={issue.id}
+              companyId={issue.companyId}
+              projectId={issue.projectId ?? null}
+              issueStatus={issue.status}
+              issueWorkMode={issue.workMode ?? "standard"}
+              executionRunId={issue.executionRunId ?? null}
+              blockedBy={issue.blockedBy ?? []}
+              blockerAttention={issue.blockerAttention ?? null}
+              successfulRunHandoff={issue.successfulRunHandoff ?? null}
+              recoveryAction={issue.activeRecoveryAction ?? null}
+              onResolveRecoveryAction={handleResolveRecoveryAction}
+              canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}
+              legacyRecoverySourceIssue={legacyRecoverySourceIssue}
+              comments={threadComments}
+              locallyQueuedCommentRunIds={locallyQueuedCommentRunIds}
+              interactions={interactions}
+              hasOlderComments={hasOlderComments}
+              commentsLoadingOlder={commentsLoadingOlder}
+              onLoadOlderComments={loadOlderComments}
+              onRefreshLatestComments={refetchLatestComments}
+              composerRef={commentComposerRef}
+              footer={null}
+              feedbackVotes={feedbackVotes}
+              feedbackDataSharingPreference={feedbackDataSharingPreference}
+              feedbackTermsUrl={FEEDBACK_TERMS_URL}
+              agentMap={agentMap}
+              currentUserId={currentUserId}
+              userLabelMap={userLabelMap}
+              userProfileMap={userProfileMap}
+              draftKey={`paperclip:issue-comment-draft:${issue.id}:agent_notes`}
+              reassignOptions={commentReassignOptions}
+              currentAssigneeValue={actualAssigneeValue}
+              suggestedAssigneeValue={suggestedAssigneeValue}
+              mentions={mentionOptions}
+              composerDisabledReason={commentComposerDisabledReason}
+              composerHint={composerHint}
+              queuedCommentReason={queuedCommentReason}
+              onVote={handleCommentVote}
+              onAdd={handleChatAdd}
+              onImageUpload={handleCommentImageUpload}
+              onAttachImage={handleCommentAttachImage}
+              onInterruptQueued={handleInterruptQueuedRun}
+              onPauseWorkRun={canManageTreeControl
+                ? (runId) => pauseIssueWorkRun.mutateAsync({ runId, scope: treeControlScope }).then(() => undefined)
+                : undefined}
+              onWorkModeChange={(nextMode) => {
+                const currentMode: IssueWorkMode = issue.workMode ?? "standard";
+                if (currentMode === nextMode) return;
+                return updateIssue.mutateAsync({ workMode: nextMode }).then(() => undefined);
+              }}
+              onCancelQueued={handleCancelQueuedComment}
+              interruptingQueuedRunId={interruptQueuedComment.isPending ? interruptQueuedComment.variables ?? null : null}
+              pausingWorkRunId={pauseIssueWorkRun.isPending ? pauseIssueWorkRun.variables?.runId ?? null : null}
+              onImageClick={handleChatImageClick}
+              onAcceptInteraction={handleAcceptInteraction}
+              onRejectInteraction={handleRejectInteraction}
+              onSubmitInteractionAnswers={handleSubmitInteractionAnswers}
+              onCancelInteraction={handleCancelInteraction}
+              assigneeUserId={issue.assigneeUserId ?? null}
+              onResumeFromBacklog={canResumeFromBacklog ? handleResumeFromBacklog : undefined}
+              resumeFromBacklogPending={
+                updateIssue.isPending && updateIssue.variables?.status === "todo"
+              }
+              scheduledRetry={issue.scheduledRetry ?? null}
+              chatMode="agent_notes"
             />
           ) : null}
         </TabsContent>

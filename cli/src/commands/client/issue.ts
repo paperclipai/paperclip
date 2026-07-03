@@ -241,12 +241,25 @@ export function registerIssueCommands(program: Command): void {
   addCommonClientOptions(
     issue
       .command("delete")
-      .description("Delete an issue")
-      .argument("<issueId>", "Issue ID")
-      .option("--yes", "Confirm deletion")
+      .description("Permanently delete an issue by ID or identifier")
+      .argument("<issueId>", "Issue ID or identifier (e.g. VAS-353)")
+      .option("--yes", "Skip confirmation prompt")
       .action(async (issueId: string, opts: IssueDeleteOptions) => {
         try {
-          if (!opts.yes) throw new Error("Refusing to delete without --yes");
+          if (!opts.yes) {
+            // Non-interactive callers (agents, scripts) must pass --yes explicitly
+            if (!process.stdin.isTTY) throw new Error("Refusing to delete without --yes");
+            const readline = await import("node:readline");
+            const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+            const answer = await new Promise<string>((resolve) =>
+              rl.question(`Delete issue ${issueId}? This cannot be undone. (yes/N): `, resolve),
+            );
+            rl.close();
+            if (answer.trim().toLowerCase() !== "yes") {
+              console.log("Aborted.");
+              process.exit(0);
+            }
+          }
           const ctx = resolveCommandContext(opts);
           const deleted = await ctx.api.delete<Issue>(apiPath`/api/issues/${issueId}`);
           printOutput(deleted, { json: ctx.json });
@@ -1320,6 +1333,7 @@ export function registerIssueCommands(program: Command): void {
         }
       }),
   );
+
 }
 
 function parseCsv(value: string | undefined): string[] {

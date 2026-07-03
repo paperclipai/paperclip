@@ -1695,6 +1695,32 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "patch",
+  path: "/api/issue-comments/{commentId}",
+  tags: ["issues"],
+  summary: "Attach local files to an existing issue comment",
+  request: {
+    params: z.object({ commentId: z.string() }),
+    body: jsonBody(
+      z.object({
+        attachments: z
+          .array(
+            z.object({
+              kind: z.literal("local_file"),
+              path: z.string().min(1),
+              label: z.string().optional(),
+              mimeType: z.string().optional(),
+              preview: z.string().optional(),
+            }),
+          )
+          .min(1),
+      }),
+    ),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/issues/{id}/approvals",
   tags: ["issues"],
@@ -2677,6 +2703,43 @@ registry.registerPath({
     ),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+// ─── Agent chat (Agent detail Chat tab) ───────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/chat/messages",
+  tags: ["agents"],
+  summary: "List chat messages for an agent",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/chat/messages",
+  tags: ["agents"],
+  summary: "Send a chat message to an agent",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(
+      z.object({
+        message: z.string(),
+        images: z.array(z.string()).optional(),
+      }),
+    ),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/agents/{id}/chat/messages",
+  tags: ["agents"],
+  summary: "Clear an agent's chat history",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
 // ─── Access / invites / members ───────────────────────────────────────────────

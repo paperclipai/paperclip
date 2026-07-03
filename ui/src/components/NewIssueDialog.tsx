@@ -13,6 +13,7 @@ import { agentsApi } from "../api/agents";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { assetsApi } from "../api/assets";
+import { isProjectExemptAgentRole } from "@paperclipai/shared";
 import { buildCompanyUserInlineOptions, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
 import { orderReusableExecutionWorkspaces } from "../lib/reusable-execution-workspaces";
@@ -1130,7 +1131,14 @@ export function NewIssueDialog() {
       ...currentUserAssigneeOption(currentUserId),
       ...buildCompanyUserInlineOptions(companyMembers?.users, { excludeUserIds: [currentUserId] }),
       ...sortAgentsByRecency(
-        (agents ?? []).filter(isAgentTaskTarget),
+        // When the new issue has no project yet, the server will reject non-C-suite
+        // assignees (see services/issues.ts assertAssignableAgent). Filter them out
+        // of the picker so users don't pick an agent that can't be saved.
+        (agents ?? []).filter((agent) => {
+          if (!isAgentTaskTarget(agent)) return false;
+          if (!projectId && !isProjectExemptAgentRole(agent.role)) return false;
+          return true;
+        }),
         recentAssigneeIds,
       ).map((agent) => ({
         id: assigneeValueFromSelection({ assigneeAgentId: agent.id }),
@@ -1138,7 +1146,7 @@ export function NewIssueDialog() {
         searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
       })),
     ],
-    [agents, companyMembers?.users, currentUserId, recentAssigneeIds],
+    [agents, companyMembers?.users, currentUserId, projectId, recentAssigneeIds],
   );
   const watchdogAgentOptions = useMemo<InlineEntityOption[]>(
     () =>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import type { Goal } from "@paperclipai/shared";
@@ -12,6 +12,7 @@ import { formatDate, cn, agentUrl } from "../lib/utils";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 interface GoalPropertiesProps {
   goal: Goal;
@@ -67,6 +68,104 @@ function PickerButton({
         ))}
       </PopoverContent>
     </Popover>
+  );
+}
+
+function toDateInputValue(value: Date | string | null | undefined): string {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString().slice(0, 10);
+}
+
+// Editable metric fields (target / current / unit / target date). Saves on blur
+// so the goal can carry a measurable outcome the Health tab tracks against.
+function MetricEditor({ goal, onUpdate }: { goal: Goal; onUpdate: (data: Record<string, unknown>) => void }) {
+  const [target, setTarget] = useState(goal.metricTarget ?? "");
+  const [current, setCurrent] = useState(goal.metricCurrent ?? "");
+  const [unit, setUnit] = useState(goal.metricUnit ?? "");
+  const [targetDate, setTargetDate] = useState(toDateInputValue(goal.targetDate));
+
+  // Re-sync local inputs when the goal is refetched after a save elsewhere.
+  useEffect(() => {
+    setTarget(goal.metricTarget ?? "");
+    setCurrent(goal.metricCurrent ?? "");
+    setUnit(goal.metricUnit ?? "");
+    setTargetDate(toDateInputValue(goal.targetDate));
+  }, [goal.metricTarget, goal.metricCurrent, goal.metricUnit, goal.targetDate]);
+
+  const commit = (field: string, raw: string, kind: "number" | "text" | "date") => {
+    let value: unknown;
+    if (raw.trim() === "") {
+      value = null;
+    } else if (kind === "number") {
+      const n = Number(raw);
+      if (!Number.isFinite(n)) return;
+      value = n;
+    } else {
+      value = raw;
+    }
+    const existing =
+      field === "metricTarget"
+        ? goal.metricTarget
+        : field === "metricCurrent"
+          ? goal.metricCurrent
+          : field === "metricUnit"
+            ? goal.metricUnit
+            : toDateInputValue(goal.targetDate);
+    const existingNorm = kind === "number" && existing != null ? Number(existing) : existing ?? null;
+    if (existingNorm === value) return;
+    onUpdate({ [field]: value });
+  };
+
+  return (
+    <div className="space-y-2">
+      <span className="text-xs text-muted-foreground">Metric</span>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-1">
+          <label className="text-[10px] uppercase text-muted-foreground">Current</label>
+          <Input
+            value={current}
+            inputMode="decimal"
+            onChange={(e) => setCurrent(e.target.value)}
+            onBlur={(e) => commit("metricCurrent", e.target.value, "number")}
+            placeholder="0"
+            className="h-7 text-sm"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] uppercase text-muted-foreground">Target</label>
+          <Input
+            value={target}
+            inputMode="decimal"
+            onChange={(e) => setTarget(e.target.value)}
+            onBlur={(e) => commit("metricTarget", e.target.value, "number")}
+            placeholder="10000"
+            className="h-7 text-sm"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] uppercase text-muted-foreground">Unit</label>
+          <Input
+            value={unit}
+            onChange={(e) => setUnit(e.target.value)}
+            onBlur={(e) => commit("metricUnit", e.target.value, "text")}
+            placeholder="subscribers"
+            className="h-7 text-sm"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] uppercase text-muted-foreground">Target date</label>
+          <Input
+            type="date"
+            value={targetDate}
+            onChange={(e) => setTargetDate(e.target.value)}
+            onBlur={(e) => commit("targetDate", e.target.value, "date")}
+            className="h-7 text-sm"
+          />
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -148,6 +247,13 @@ export function GoalProperties({ goal, onUpdate }: GoalPropertiesProps) {
           </PropertyRow>
         )}
       </div>
+
+      {onUpdate && (
+        <>
+          <Separator />
+          <MetricEditor goal={goal} onUpdate={onUpdate} />
+        </>
+      )}
 
       <Separator />
 

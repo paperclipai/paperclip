@@ -63,11 +63,9 @@ Status quick guide:
 
 ## 8. Exit
 
-- Comment on any in_progress work before exiting.
 - If no assignments and no valid mention-handoff, exit cleanly.
 
 ---
-
 ## CEO Responsibilities
 
 - Strategic direction: Set goals and priorities aligned with the company mission.

@@ -85,6 +85,12 @@ vi.mock("../context/ToastContext", () => ({
   }),
 }));
 
+vi.mock("../context/ToastContext", () => ({
+  useToastActions: () => ({
+    pushToast: mockPushToast,
+  }),
+}));
+
 vi.mock("../api/projects", () => ({
   projectsApi: mockProjectsApi,
 }));
