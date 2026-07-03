@@ -58,6 +58,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { issueService } from "./issues.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import { resolveRrOutreachRoutineGovernance } from "./outreach-routine-governance.js";
 import { secretService } from "./secrets.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { parseCron, validateCron } from "./cron.js";
@@ -1437,6 +1438,13 @@ export function routineService(
     const description = [baseDescription, input.descriptionAppendix]
       .filter((part): part is string => Boolean(part && part.trim()))
       .join("\n\n");
+    const outreachGovernance = resolveRrOutreachRoutineGovernance({
+      companyId: input.routine.companyId,
+      title,
+      description,
+      assigneeAgentId,
+    });
+    const issueProjectId = outreachGovernance?.projectId ?? projectId ?? null;
     const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
     const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
     const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
@@ -1447,7 +1455,7 @@ export function routineService(
     const issueBillingCode = managedIssueTemplate?.billingCode ?? null;
     const dispatchFingerprint = createRoutineDispatchFingerprint({
       payload: triggerPayload,
-      projectId,
+      projectId: issueProjectId,
       projectWorkspaceId,
       assigneeAgentId,
       routineRevisionId: input.routine.latestRevisionId,
@@ -1540,7 +1548,7 @@ export function routineService(
 
         try {
           createdIssue = await issueSvc.create(input.routine.companyId, {
-            projectId,
+            projectId: issueProjectId,
             projectWorkspaceId,
             goalId: input.routine.goalId,
             parentId: input.routine.parentIssueId,
@@ -1559,6 +1567,12 @@ export function routineService(
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
+            ...(outreachGovernance
+              ? {
+                executionPolicy: outreachGovernance.executionPolicy,
+                labelIds: outreachGovernance.labelIds,
+              }
+              : {}),
           });
         } catch (error) {
           const isOpenExecutionConflict =
