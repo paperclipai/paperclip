@@ -3,7 +3,7 @@
  *
  * Renders actor rows with concurrency sub-lanes, run bars (no issue IDs on the
  * bar — identity is the thin left colour tab; truncated title shows on hover),
- * kickoff avatar chips at each bar's leading edge (incl. humans), straight
+ * human kickoff chips at each bar's leading edge, straight
  * hover-revealed agent→agent delegation connectors (dashed for retries), an
  * in-progress fade to "now", a hover tooltip, and a full-window mini-map with a
  * draggable brush.
@@ -430,7 +430,7 @@ export function WorkTimelineChart({
             );
           })}
 
-          {/* rows: gutter avatar/label, lane baselines, bars, chips */}
+          {/* rows: gutter avatar/label, lane baselines, bars, human kickoff chips */}
           {layout.rows.map((row) => {
             const cy = row.y + AXIS_H + row.h / 2;
             return (
@@ -507,8 +507,8 @@ export function WorkTimelineChart({
                           <rect x={bar.x2 - Math.min(w - 2, 26)} y={yTop + 1.5} width={Math.min(w - 2, 26)} height={bar.height - 3} fill="url(#tl-fade)" />
                         )}
                       </g>
-                      {bar.kickoff && (
-                        <g className="pointer-events-none">
+                      {bar.kickoff && actorType(bar.kickoff) === "user" && (
+                        <g className="pointer-events-none" data-testid="timeline-kickoff-chip">
                           <AvatarGlyph
                             cx={bar.x1}
                             cy={yTop + bar.height / 2}

@@ -225,6 +225,33 @@ describe("WorkTimelineChart", () => {
     expect(layout.connectors[0].x2).toBe(bars.get("run-2")?.x1);
   });
 
+  it("renders kickoff chips for human users but not delegating agents", () => {
+    const data = timelineSample();
+    data.actors.push({ id: "user:dotta", type: "user", name: "Dotta" });
+    data.edges = [
+      {
+        fromActorId: "user:dotta",
+        toActorId: "agent:codex",
+        issueId: "issue-1",
+        at: "2026-07-02T08:45:00.000Z",
+        kind: "delegation",
+      },
+      {
+        fromActorId: "agent:codex",
+        toActorId: "agent:qa",
+        issueId: "issue-2",
+        at: "2026-07-02T10:45:00.000Z",
+        kind: "delegation",
+      },
+    ];
+
+    renderChart(data);
+
+    const kickoffChips = container.querySelectorAll("[data-testid='timeline-kickoff-chip']");
+    expect(kickoffChips).toHaveLength(1);
+    expect(kickoffChips[0].textContent).toContain("DO");
+  });
+
   it("reserves normal wheel input for panning and uses modifier-wheel for continuous zoom", () => {
     const onZoomScaleChange = vi.fn();
     renderChart(timelineSample(), { onZoomScaleChange });
