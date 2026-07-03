@@ -645,7 +645,7 @@ export function mcpServerService(
     };
   }
 
-  function acquirePooledClient(
+  function acquireHttpPooledClient(
     server: McpServer,
     runtime: ResolvedHttpRuntimeConfig,
   ): Promise<PooledMcpClient> {
@@ -655,6 +655,21 @@ export function mcpServerService(
       transport: runtime.transport,
       endpoint: runtime.url,
       headers: runtime.headers,
+    });
+  }
+
+  function acquireStdioPooledClient(
+    server: McpServer,
+    runtime: ResolvedStdioRuntimeConfig,
+  ): Promise<PooledMcpClient> {
+    return mcpClients.acquire({
+      companyId: server.companyId,
+      mcpServerId: server.id,
+      transport: "stdio",
+      command: runtime.command,
+      args: runtime.args,
+      env: runtime.env as Record<string, string>,
+      cwd: runtime.cwd,
     });
   }
 
@@ -712,7 +727,7 @@ export function mcpServerService(
     if (runtime.kind === "http") {
       logs.push(`[tool-call] url=${runtime.url}`);
       try {
-        const pooled = await acquirePooledClient(server, runtime);
+        const pooled = await acquireHttpPooledClient(server, runtime);
         const rawResult = await withRequestTimeout(
           pooled.client.callTool({
             name: input.toolName,
@@ -728,33 +743,32 @@ export function mcpServerService(
       }
     }
 
+    // stdio: governance gate — server must be explicitly allowlisted before
+    // any process spawn. Distinct from the http/sse enablement check.
+    if (server.governanceStatus !== "allowlisted") {
+      throw unprocessable(
+        `MCP server "${server.name}" must be allowlisted before stdio tool execution (current status: ${server.governanceStatus})`,
+      );
+    }
+
     logs.push(`[tool-call] command=${runtime.command} ${runtime.args.join(" ")}`.trim());
     logs.push(`[tool-call] cwd=${runtime.cwd}`);
 
-    const client = new StdioJsonRpcClient(runtime.command, runtime.args, {
-      cwd: runtime.cwd,
-      env: runtime.env,
-      timeoutMs: runtime.timeoutMs,
-      logs,
-    });
-
     try {
-      await client.request("initialize", {
-        protocolVersion: MCP_PROTOCOL_VERSION,
-        capabilities: {},
-        clientInfo: {
-          name: "paperclip.mcp-runtime",
-          version: "0.1.0",
-        },
-      });
-      client.notify("notifications/initialized");
-      const rawResult = await client.request("tools/call", {
-        name: input.toolName,
-        arguments: input.arguments ?? {},
-      });
+      const pooled = await acquireStdioPooledClient(server, runtime);
+      const rawResult = await withRequestTimeout(
+        pooled.client.callTool({
+          name: input.toolName,
+          arguments: input.arguments ?? {},
+        }),
+        runtime.timeoutMs,
+      );
       return normalizeToolCallResult(rawResult, logs);
-    } finally {
-      await client.close();
+    } catch (error) {
+      // Drop the pooled connection on any error — stdio processes may have
+      // crashed or become wedged.
+      void mcpClients.invalidateServer(server.companyId, server.id).catch(() => {});
+      throw error;
     }
   }
 
@@ -783,7 +797,7 @@ export function mcpServerService(
           logs.push(`[discovery] url=${runtime.url}`);
           let pooled: PooledMcpClient;
           try {
-            pooled = await acquirePooledClient(server, runtime);
+            pooled = await acquireHttpPooledClient(server, runtime);
             toolsRaw = await listOptional("tools", logs, () => pooled.client.listTools());
             resourcesRaw = await listOptional("resources", logs, pooled.client.listResources?.bind(pooled.client));
             promptsRaw = await listOptional("prompts", logs, pooled.client.listPrompts?.bind(pooled.client));

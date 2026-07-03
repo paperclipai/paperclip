@@ -2,6 +2,7 @@ import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
@@ -11,7 +12,9 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 //
 // D2-3 (NEO-351): executing http/sse client — lazy connect, per-company pools,
 // TTL eviction + idle reaping, listTools health pings, SSRF endpoint guard.
-// stdio remains gated until the D2-6 allowlist/approval gate exists.
+// D2-7 (NEO-355): stdio spawn harness — gated behind stdioEnabled + per-company
+// concurrency cap + connect backoff. Callers must verify governance allowlist
+// before calling acquire() with transport="stdio".
 
 const MCP_CLIENT_NAME = "paperclip-mcp-client";
 const MCP_CLIENT_VERSION = "0.1.0";
@@ -33,9 +36,13 @@ export interface McpClientTarget {
   endpoint?: string;
   /** Extra headers (e.g. Authorization) applied to every request. */
   headers?: Record<string, string>;
-  /** stdio only — refused until the D2-6 allowlist gate exists. */
+  /** stdio only — process command to spawn. */
   command?: string;
   args?: string[];
+  /** stdio only — environment variables injected into the spawned process (credential refs already decrypted by caller). */
+  env?: Record<string, string>;
+  /** stdio only — working directory for the spawned process. */
+  cwd?: string;
 }
 
 /**
@@ -60,6 +67,7 @@ export type McpClientHealth = "healthy" | "unhealthy";
 export interface PooledMcpClient {
   companyId: string;
   mcpServerId: string;
+  transport: McpClientTransportKind;
   client: McpWireClient;
   health: McpClientHealth;
   /** Epoch ms. */
@@ -75,6 +83,8 @@ export interface McpClientPoolStats {
 
 export type McpClientManagerErrorCode =
   | "stdio_gated"
+  | "stdio_concurrency_limit"
+  | "stdio_backoff"
   | "invalid_target"
   | "endpoint_denied"
   | "connect_timeout"
@@ -217,14 +227,24 @@ export function createTransportForTarget(target: McpClientTarget): Transport {
           fetch(input, { ...init, headers: mergeHeaders(init?.headers, headers) }),
       });
     }
-    case "stdio":
-      // Company-configured stdio = arbitrary process launch on the
-      // control-plane host. Refused at the pool boundary until the D2-6
-      // allowlist/approval gate exists (ADR §3).
-      throw new McpClientManagerError(
-        "stdio_gated",
-        `MCP server ${target.mcpServerId} uses stdio transport, which is gated pending the D2-6 allowlist/approval gate`,
-      );
+    case "stdio": {
+      if (!target.command) {
+        throw new McpClientManagerError(
+          "invalid_target",
+          `MCP server ${target.mcpServerId} has transport "stdio" but no command`,
+        );
+      }
+      // Credentials arrive pre-decrypted in target.env — never logged, never
+      // written to disk. stderr is piped to suppress output from the child
+      // appearing on the parent process's stderr stream.
+      return new StdioClientTransport({
+        command: target.command,
+        args: target.args ?? [],
+        env: target.env,
+        cwd: target.cwd,
+        stderr: "pipe",
+      });
+    }
   }
 }
 
@@ -259,6 +279,21 @@ export interface McpClientManagerOptions {
   healthCheckTimeoutMs?: number;
   /** Disables the SSRF guard — tests and explicitly-trusted deployments only. */
   allowPrivateEndpoints?: boolean;
+  /**
+   * Enables stdio transport. Off by default. Callers must verify the server's
+   * governance status is "allowlisted" before calling acquire() with stdio.
+   */
+  stdioEnabled?: boolean;
+  /**
+   * Max concurrent live stdio connections per company. Default 5.
+   * Prevents a single tenant from exhausting file descriptors.
+   */
+  stdioMaxPerCompany?: number;
+  /**
+   * Minimum delay (ms) before retrying a stdio server that just failed to
+   * connect. Default 5 000 ms. Prevents hot-loops on a broken command.
+   */
+  stdioConnectBackoffMs?: number;
   /** Injectable clock (epoch ms) for deterministic eviction tests. */
   now?: () => number;
   /** Injectable wire-connect factory; production uses the official SDK. */
@@ -287,6 +322,9 @@ export interface McpClientManager {
   stats(): McpClientPoolStats;
 }
 
+const DEFAULT_STDIO_MAX_PER_COMPANY = 5;
+const DEFAULT_STDIO_CONNECT_BACKOFF_MS = 5_000;
+
 export function mcpClientManager(options: McpClientManagerOptions = {}): McpClientManager {
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   const idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
@@ -294,6 +332,9 @@ export function mcpClientManager(options: McpClientManagerOptions = {}): McpClie
   const healthCheckIntervalMs = options.healthCheckIntervalMs ?? DEFAULT_HEALTH_CHECK_INTERVAL_MS;
   const connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
   const healthCheckTimeoutMs = options.healthCheckTimeoutMs ?? DEFAULT_HEALTH_CHECK_TIMEOUT_MS;
+  const stdioEnabled = options.stdioEnabled ?? false;
+  const stdioMaxPerCompany = options.stdioMaxPerCompany ?? DEFAULT_STDIO_MAX_PER_COMPANY;
+  const stdioConnectBackoffMs = options.stdioConnectBackoffMs ?? DEFAULT_STDIO_CONNECT_BACKOFF_MS;
   const now = options.now ?? (() => Date.now());
 
   // A pool entry is only reachable through its (companyId, mcpServerId) key —
@@ -302,6 +343,10 @@ export function mcpClientManager(options: McpClientManagerOptions = {}): McpClie
   const pools = new Map<string, Map<string, PooledMcpClient>>();
   // Dedupes concurrent connects to the same (companyId, mcpServerId).
   const connecting = new Map<string, Promise<PooledMcpClient>>();
+  // Tracks stdio concurrency per company: how many live stdio connections exist.
+  const stdioCountByCompany = new Map<string, number>();
+  // Last connect-failure timestamp per poolKey — enforces stdioConnectBackoffMs.
+  const stdioFailedAt = new Map<string, number>();
   let reapTimer: NodeJS.Timeout | undefined;
   let healthTimer: NodeJS.Timeout | undefined;
 
@@ -339,12 +384,24 @@ export function mcpClientManager(options: McpClientManagerOptions = {}): McpClie
     }
   }
 
+  function stdioCountIncrement(companyId: string): void {
+    stdioCountByCompany.set(companyId, (stdioCountByCompany.get(companyId) ?? 0) + 1);
+  }
+
+  function stdioCountDecrement(companyId: string): void {
+    const current = stdioCountByCompany.get(companyId) ?? 0;
+    const next = current - 1;
+    if (next <= 0) stdioCountByCompany.delete(companyId);
+    else stdioCountByCompany.set(companyId, next);
+  }
+
   /** Removes the entry from the pool and closes it. */
   async function evict(entry: PooledMcpClient): Promise<void> {
     const pool = pools.get(entry.companyId);
     if (pool?.get(entry.mcpServerId) === entry) {
       pool.delete(entry.mcpServerId);
       if (pool.size === 0) pools.delete(entry.companyId);
+      if (entry.transport === "stdio") stdioCountDecrement(entry.companyId);
     }
     await closeQuietly(entry);
   }
@@ -362,13 +419,22 @@ export function mcpClientManager(options: McpClientManagerOptions = {}): McpClie
   }
 
   async function acquire(target: McpClientTarget): Promise<PooledMcpClient> {
-    if (target.transport === "stdio") {
-      throw new McpClientManagerError(
-        "stdio_gated",
-        `MCP server ${target.mcpServerId} uses stdio transport, which is gated pending the D2-6 allowlist/approval gate`,
-      );
-    }
-    if (!target.endpoint) {
+    const isStdio = target.transport === "stdio";
+
+    if (isStdio) {
+      if (!stdioEnabled) {
+        throw new McpClientManagerError(
+          "stdio_gated",
+          `MCP server ${target.mcpServerId} uses stdio transport, which requires explicit stdioEnabled=true (D2-7 gate)`,
+        );
+      }
+      if (!target.command) {
+        throw new McpClientManagerError(
+          "invalid_target",
+          `MCP server ${target.mcpServerId} has transport "stdio" but no command`,
+        );
+      }
+    } else if (!target.endpoint) {
       throw new McpClientManagerError(
         "invalid_target",
         `MCP server ${target.mcpServerId} has transport "${target.transport}" but no endpoint`,
@@ -391,10 +457,30 @@ export function mcpClientManager(options: McpClientManagerOptions = {}): McpClie
     if (inFlight) return inFlight;
 
     const connectPromise = (async () => {
-      // SSRF guard sits at the pool boundary, ahead of any wire activity.
-      await assertMcpEndpointAllowed(target.endpoint as string, {
-        allowPrivateEndpoints: options.allowPrivateEndpoints,
-      });
+      if (isStdio) {
+        // Backoff: block reconnects too soon after a failed connect.
+        const failedAt = stdioFailedAt.get(key);
+        if (failedAt !== undefined && at - failedAt < stdioConnectBackoffMs) {
+          throw new McpClientManagerError(
+            "stdio_backoff",
+            `MCP server ${target.mcpServerId} is in backoff after a recent connect failure (retry after ${stdioConnectBackoffMs}ms)`,
+          );
+        }
+        // Concurrency cap: limit live stdio connections per company.
+        const activeCount = stdioCountByCompany.get(target.companyId) ?? 0;
+        if (activeCount >= stdioMaxPerCompany) {
+          throw new McpClientManagerError(
+            "stdio_concurrency_limit",
+            `MCP server ${target.mcpServerId}: company ${target.companyId} has reached the stdio concurrency limit (${stdioMaxPerCompany})`,
+          );
+        }
+      } else {
+        // SSRF guard sits at the pool boundary, ahead of any wire activity.
+        await assertMcpEndpointAllowed(target.endpoint as string, {
+          allowPrivateEndpoints: options.allowPrivateEndpoints,
+        });
+      }
+
       let client: McpWireClient;
       try {
         client = await withTimeout(
@@ -407,6 +493,7 @@ export function mcpClientManager(options: McpClientManagerOptions = {}): McpClie
             ),
         );
       } catch (error) {
+        if (isStdio) stdioFailedAt.set(key, now());
         if (error instanceof McpClientManagerError) throw error;
         throw new McpClientManagerError(
           "connect_failed",
@@ -415,10 +502,12 @@ export function mcpClientManager(options: McpClientManagerOptions = {}): McpClie
           }`,
         );
       }
+
       const connectedAt = now();
       const entry: PooledMcpClient = {
         companyId: target.companyId,
         mcpServerId: target.mcpServerId,
+        transport: target.transport,
         client,
         health: "healthy",
         connectedAt,
@@ -431,6 +520,10 @@ export function mcpClientManager(options: McpClientManagerOptions = {}): McpClie
         pools.set(target.companyId, pool);
       }
       pool.set(target.mcpServerId, entry);
+      if (isStdio) {
+        stdioCountIncrement(target.companyId);
+        stdioFailedAt.delete(key);
+      }
       return entry;
     })().finally(() => {
       connecting.delete(key);
@@ -512,6 +605,8 @@ export function getSharedMcpClientManager(): McpClientManager {
     sharedManager = mcpClientManager({
       allowPrivateEndpoints:
         process.env.PAPERCLIP_MCP_CLIENT_ALLOW_PRIVATE_ENDPOINTS === "true",
+      stdioEnabled:
+        process.env.PAPERCLIP_MCP_CLIENT_STDIO_ENABLED === "true",
     });
   }
   return sharedManager;

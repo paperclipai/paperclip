@@ -325,3 +325,132 @@ describe("mcp-client-manager connect failures & lifecycle", () => {
     expect(error.code).toBe("endpoint_denied");
   });
 });
+
+// ---------------------------------------------------------------------------
+// stdio D2-7 — gate, concurrency cap, backoff
+// ---------------------------------------------------------------------------
+
+function stdioTarget(overrides: Partial<McpClientTarget> = {}): McpClientTarget {
+  return {
+    companyId: "company-a",
+    mcpServerId: "stdio-server-1",
+    transport: "stdio",
+    command: "/usr/bin/echo",
+    args: ["hello"],
+    env: { MCP_CREDENTIAL: "s3cr3t" },
+    cwd: "/tmp",
+    ...overrides,
+  };
+}
+
+describe("mcp-client-manager stdio gate (D2-7)", () => {
+  it("blocks stdio when stdioEnabled is false (default)", async () => {
+    const { manager } = testManager();
+    await expect(manager.acquire(stdioTarget())).rejects.toMatchObject({
+      code: "stdio_gated",
+    });
+  });
+
+  it("blocks stdio with no command even when stdioEnabled=true", async () => {
+    const { manager } = testManager({ stdioEnabled: true });
+    await expect(
+      manager.acquire(stdioTarget({ command: undefined })),
+    ).rejects.toMatchObject({ code: "invalid_target" });
+  });
+
+  it("connects stdio when stdioEnabled=true and command is present", async () => {
+    const { manager } = testManager({ stdioEnabled: true });
+    const entry = await manager.acquire(stdioTarget());
+    expect(entry.transport).toBe("stdio");
+    expect(manager.stats()).toEqual({ companies: 1, clients: 1 });
+  });
+
+  it("constructs a stdio transport without throwing", () => {
+    expect(() =>
+      createTransportForTarget(stdioTarget()),
+    ).not.toThrow();
+  });
+
+  it("rejects a stdio target without command via createTransportForTarget", () => {
+    expect(() =>
+      createTransportForTarget(stdioTarget({ command: undefined })),
+    ).toThrowError(expect.objectContaining({ code: "invalid_target" }));
+  });
+
+  it("enforces per-company concurrency cap", async () => {
+    const { manager } = testManager({ stdioEnabled: true, stdioMaxPerCompany: 2 });
+    // acquire 2 — fills the cap
+    await manager.acquire(stdioTarget({ mcpServerId: "s1" }));
+    await manager.acquire(stdioTarget({ mcpServerId: "s2" }));
+    // third should be denied
+    await expect(manager.acquire(stdioTarget({ mcpServerId: "s3" }))).rejects.toMatchObject({
+      code: "stdio_concurrency_limit",
+    });
+    expect(manager.stats()).toEqual({ companies: 1, clients: 2 });
+  });
+
+  it("releases a concurrency slot on eviction and allows a new connection", async () => {
+    const { manager } = testManager({ stdioEnabled: true, stdioMaxPerCompany: 1 });
+    await manager.acquire(stdioTarget({ mcpServerId: "s1" }));
+    // currently at cap
+    await expect(manager.acquire(stdioTarget({ mcpServerId: "s2" }))).rejects.toMatchObject({
+      code: "stdio_concurrency_limit",
+    });
+    await manager.invalidateServer("company-a", "s1");
+    // slot freed — should succeed now
+    await expect(manager.acquire(stdioTarget({ mcpServerId: "s2" }))).resolves.toBeDefined();
+  });
+
+  it("enforces connect backoff after a failed stdio connect", async () => {
+    let nowMs = 0;
+    let attempts = 0;
+    const manager = mcpClientManager({
+      reapIntervalMs: 0,
+      healthCheckIntervalMs: 0,
+      stdioEnabled: true,
+      stdioConnectBackoffMs: 5_000,
+      now: () => nowMs,
+      connectClient: async (target) => {
+        attempts += 1;
+        if (target.transport === "stdio") throw new Error("spawn failed");
+        return (await fakeFactory().connect(target)) as McpWireClient;
+      },
+    });
+    // First attempt fails, backoff is set
+    await expect(manager.acquire(stdioTarget())).rejects.toMatchObject({ code: "connect_failed" });
+    expect(attempts).toBe(1);
+    // Immediate retry hits backoff
+    await expect(manager.acquire(stdioTarget())).rejects.toMatchObject({ code: "stdio_backoff" });
+    expect(attempts).toBe(1);
+    // After backoff window passes, retry is allowed
+    nowMs += 6_000;
+    await expect(manager.acquire(stdioTarget())).rejects.toMatchObject({ code: "connect_failed" });
+    expect(attempts).toBe(2);
+  });
+
+  it("clears backoff on successful connect", async () => {
+    let nowMs = 0;
+    let shouldFail = true;
+    const manager = mcpClientManager({
+      reapIntervalMs: 0,
+      healthCheckIntervalMs: 0,
+      stdioEnabled: true,
+      stdioConnectBackoffMs: 5_000,
+      now: () => nowMs,
+      connectClient: async (target) => {
+        if (target.transport === "stdio" && shouldFail) throw new Error("spawn failed");
+        return (await fakeFactory().connect(target)) as McpWireClient;
+      },
+    });
+    // fail to set backoff
+    await expect(manager.acquire(stdioTarget())).rejects.toMatchObject({ code: "connect_failed" });
+    // advance past backoff
+    nowMs += 6_000;
+    shouldFail = false;
+    // success clears the backoff
+    await expect(manager.acquire(stdioTarget())).resolves.toBeDefined();
+    // immediate retry is now fine (no backoff)
+    await manager.invalidateServer("company-a", "stdio-server-1");
+    await expect(manager.acquire(stdioTarget())).resolves.toBeDefined();
+  });
+});
