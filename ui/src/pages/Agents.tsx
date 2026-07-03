@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
+import { claudeAccountsApi } from "../api/claudeAccounts";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -20,8 +21,14 @@ import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
-import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
+import { AlertTriangle, Bot, Plus, List, GitBranch, KeyRound } from "lucide-react";
+import {
+  AGENT_ROLE_LABELS,
+  type Agent,
+  type ClaudeAccountUsageSnapshot,
+  type Environment,
+  type EnvironmentCapabilities,
+} from "@paperclipai/shared";
 import {
   resourceMembershipState,
   useResourceMembershipMutation,
@@ -201,6 +208,16 @@ export function Agents() {
     enabled: !!selectedCompanyId,
     refetchInterval: 15_000,
   });
+
+  const { data: claudeAccounts } = useQuery({
+    queryKey: queryKeys.claudeAccountsUsage(),
+    queryFn: () => claudeAccountsApi.usage(),
+    enabled: !!selectedCompanyId,
+    refetchInterval: 300_000,
+    staleTime: 60_000,
+    retry: false,
+  });
+
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
   const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
 
@@ -246,6 +263,11 @@ export function Agents() {
     }
     return map;
   }, [agents, environmentsById, environmentCapabilities, instanceSettings?.defaultEnvironmentId]);
+
+  const activeClaudeAccount = useMemo(
+    () => claudeAccounts?.accounts.find((account) => account.active) ?? null,
+    [claudeAccounts],
+  );
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Agents" }]);
@@ -391,6 +413,7 @@ export function Agents() {
           />
         </Tabs>
         <div className="flex items-center gap-2">
+          <ActiveClaudeAccountIndicator account={activeClaudeAccount} />
           {/* View toggle */}
           {!forceListView && (
             <div className="flex items-center border border-border">
@@ -613,6 +636,27 @@ function OrgTreeNode({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function ActiveClaudeAccountIndicator({
+  account,
+}: {
+  account: ClaudeAccountUsageSnapshot | null;
+}) {
+  return (
+    <div
+      className="flex max-w-[12rem] items-center gap-2 border border-border px-2.5 py-1.5 text-xs text-muted-foreground sm:max-w-64"
+      title={
+        account
+          ? `Claude agents currently use ${account.profile}${account.email ? ` (${account.email})` : ""}`
+          : "Active Claude account not reported yet"
+      }
+    >
+      <KeyRound className="h-3.5 w-3.5 shrink-0" />
+      <span className="shrink-0 font-medium text-foreground">Claude login</span>
+      <span className="min-w-0 truncate">{account?.profile ?? "Unknown"}</span>
     </div>
   );
 }
