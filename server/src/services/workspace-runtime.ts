@@ -411,14 +411,21 @@ async function configureWorktreeGitIdentity(input: {
     gitIdentity: identity,
   };
 
-  await recordGitOperation(input.recorder, {
-    phase: "worktree_prepare",
-    args: ["config", "extensions.worktreeConfig", "true"],
-    cwd: input.repoRoot,
-    metadata,
-    successMessage: `Enabled worktree-local git config for ${input.worktreePath}\n`,
-    failureLabel: "git config extensions.worktreeConfig true",
-  });
+  // extensions.worktreeConfig lives in the shared .git/config. git holds an
+  // exclusive lock while writing — concurrent realize calls race and fail with
+  // "could not lock config file". Read first; skip the write if already set.
+  const worktreeConfigEnabled =
+    await runGit(["config", "--get", "extensions.worktreeConfig"], input.repoRoot).catch(() => "");
+  if (worktreeConfigEnabled.trim() !== "true") {
+    await recordGitOperation(input.recorder, {
+      phase: "worktree_prepare",
+      args: ["config", "extensions.worktreeConfig", "true"],
+      cwd: input.repoRoot,
+      metadata,
+      successMessage: `Enabled worktree-local git config for ${input.worktreePath}\n`,
+      failureLabel: "git config extensions.worktreeConfig true",
+    });
+  }
   await recordGitOperation(input.recorder, {
     phase: "worktree_prepare",
     args: ["config", "--worktree", "user.name", identity.name],
