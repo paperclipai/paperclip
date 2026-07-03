@@ -1856,7 +1856,7 @@ export function agentRoutes(
         return;
       }
 
-      res.json(await agentMcpTools.listForAgent(req.actor.agentId));
+      res.json(await agentMcpTools.listForAgent(req.actor.agentId, { companyId: req.actor.companyId }));
     });
 
     router.post("/agents/me/mcp-tools/execute", validate(executeAgentMcpToolSchema), async (req, res) => {
@@ -1874,6 +1874,7 @@ export function agentRoutes(
       const result = await agentMcpTools.executeForRun(
         {
           agentId: req.actor.agentId,
+          companyId: req.actor.companyId,
         },
         req.body,
       );

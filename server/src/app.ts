@@ -24,6 +24,7 @@ import { goalRoutes } from "./routes/goals.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { mcpServerRoutes } from "./routes/mcp-servers.js";
+import { agentToolRoutes } from "./routes/agent-tools.js";
 import { isMcpClientEnabled } from "./mcp-client-flag.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
@@ -317,6 +318,10 @@ export async function createApp(
       { workerManager },
     ),
   );
+  if (isMcpClientEnabled()) {
+    // Merged plugin + MCP tool surface (D2-4); needs the dispatcher above.
+    api.use(agentToolRoutes(db, { toolDispatcher }));
+  }
   api.use(agentRoutes(db));
   api.use(adapterRoutes());
   api.use(

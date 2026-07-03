@@ -18,14 +18,27 @@ export function agentMcpToolService(
   db: Db,
   deps: {
     secrets: ReturnType<typeof secretService>;
+    /** Injectable for tests; defaults to the real db-backed service. */
+    mcpServers?: Pick<ReturnType<typeof mcpServerService>, "listBindingsForAgent" | "executeTool">;
   },
 ) {
-  const mcpServers = mcpServerService(db, { secrets: deps.secrets });
+  const mcpServers = deps.mcpServers ?? mcpServerService(db, { secrets: deps.secrets });
 
-  async function listForAgent(agentId: string): Promise<AgentMcpToolListResponse> {
+  // The agent's visible MCP tool set is the intersection of the company's
+  // enabled servers with the agent's enabled bindings (`agent_mcp_servers`
+  // is the reconciled home of the plan's `mcpServerIds: string[]`). When a
+  // companyId is supplied, bindings whose server belongs to another company
+  // are dropped outright — bindings are written company-consistent, but the
+  // read path must not depend on that invariant.
+  async function listForAgent(
+    agentId: string,
+    opts?: { companyId?: string | null },
+  ): Promise<AgentMcpToolListResponse> {
+    const companyId = opts?.companyId ?? null;
     const bindings = await mcpServers.listBindingsForAgent(agentId);
     const servers = bindings
       .filter((binding) => binding.enabled && binding.server.enabled)
+      .filter((binding) => companyId === null || binding.server.companyId === companyId)
       .map((binding) => {
         const allowedTools = new Set(binding.allowedTools);
         const tools = (binding.latestSnapshot?.tools ?? [])
@@ -62,12 +75,13 @@ export function agentMcpToolService(
   async function executeForRun(
     runContext: {
       agentId: string;
+      companyId?: string | null;
       workspacePath?: string | null;
     },
     request: ExecuteAgentMcpToolRequest,
   ): Promise<ExecuteAgentMcpToolResponse> {
     const bindings = await mcpServers.listBindingsForAgent(runContext.agentId);
-    const catalog = await listForAgent(runContext.agentId);
+    const catalog = await listForAgent(runContext.agentId, { companyId: runContext.companyId });
     const requestedServerId = normalizeName(request.serverId);
     const requestedServerName = normalizeName(request.serverName);
     const requestedToolName = normalizeName(request.toolName);
@@ -94,6 +108,9 @@ export function agentMcpToolService(
     const selected = candidates[0]!;
     const selectedBinding = bindings.find((binding) => binding.server.id === selected.serverId);
     if (!selectedBinding || !selectedBinding.enabled || !selectedBinding.server.enabled) {
+      throw notFound("The selected MCP server binding is no longer available");
+    }
+    if (runContext.companyId != null && selectedBinding.server.companyId !== runContext.companyId) {
       throw notFound("The selected MCP server binding is no longer available");
     }
     const result = await mcpServers.executeTool(selectedBinding.server, {

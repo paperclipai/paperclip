@@ -247,6 +247,10 @@ export {
   executeAgentMcpToolSchema,
   type ExecuteAgentMcpTool,
 } from "./agent-mcp-tool.js";
+export {
+  executeMergedAgentToolSchema,
+  type ExecuteMergedAgentTool,
+} from "./agent-tools.js";
 
 export {
   createDocumentAnnotationCommentSchema,

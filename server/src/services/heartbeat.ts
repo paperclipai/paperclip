@@ -82,6 +82,7 @@ import {
   mergeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
 import { agentMcpToolService } from "./agent-mcp-tools.js";
+import { buildCompactMcpRunContext } from "./agent-tools.js";
 import { isMcpClientEnabled } from "../mcp-client-flag.js";
 import {
   buildHeartbeatRunStopMetadata,
@@ -8443,10 +8444,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         delete context.paperclipMcpServers;
         delete context.paperclipMcpPrimaryServerName;
       }
-      const availableAgentMcpTools = await agentMcpTools.listForAgent(agent.id);
+      const availableAgentMcpTools = await agentMcpTools.listForAgent(agent.id, {
+        companyId: agent.companyId,
+      });
       if (availableAgentMcpTools.servers.length > 0) {
-        context.paperclipAgentMcpServers = availableAgentMcpTools.servers;
-        context.paperclipAvailableMcpTools = availableAgentMcpTools.tools;
+        // Compact projection only (plan §5): full input schemas stay behind
+        // the on-demand schema endpoint instead of riding along in run context.
+        const compact = buildCompactMcpRunContext(availableAgentMcpTools);
+        context.paperclipAgentMcpServers = compact.servers;
+        context.paperclipAvailableMcpTools = compact.tools;
       } else {
         delete context.paperclipAgentMcpServers;
         delete context.paperclipAvailableMcpTools;

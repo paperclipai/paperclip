@@ -247,6 +247,15 @@ export type {
   ExecuteAgentMcpToolResponse,
 } from "./agent-mcp-tool.js";
 export type {
+  AgentToolSource,
+  MergedAgentToolIndexEntry,
+  MergedAgentToolCounts,
+  MergedAgentToolIndexResponse,
+  MergedAgentToolSchemaResponse,
+  ExecuteMergedAgentToolRequest,
+  ExecuteMergedAgentToolResponse,
+} from "./agent-tools.js";
+export type {
   WorkspaceOperation,
   WorkspaceOperationPhase,
   WorkspaceOperationStatus,
