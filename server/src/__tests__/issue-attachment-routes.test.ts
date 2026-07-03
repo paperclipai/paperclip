@@ -15,6 +15,7 @@ const mockCompanyService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockGenerateCodexIssueImage = vi.hoisted(() => vi.fn());
 
 function registerRouteMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -229,6 +230,8 @@ describe("issue attachment routes", () => {
     vi.doUnmock("../services/issues.js");
     vi.doUnmock("../services/index.js");
     vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/codex-image-generation.js");
+    vi.doUnmock("../services/openai-image-generation.js");
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
@@ -349,7 +352,9 @@ describe("issue attachment routes", () => {
 
   it("binds reference image attachment bytes to the OpenAI image edit request", async () => {
     const previousImageKey = process.env.PAPERCLIP_IMAGE_OPENAI_API_KEY;
+    const previousImageProvider = process.env.PAPERCLIP_IMAGE_PROVIDER;
     process.env.PAPERCLIP_IMAGE_OPENAI_API_KEY = "sk-test-image-key";
+    process.env.PAPERCLIP_IMAGE_PROVIDER = "openai";
     const referenceAttachmentId = "2d8a654e-2ece-43cf-9000-ab0fe254e1a6";
     const storage = createStorageService();
     storage.getObject = vi.fn(async () => ({
@@ -451,6 +456,114 @@ describe("issue attachment routes", () => {
         delete process.env.PAPERCLIP_IMAGE_OPENAI_API_KEY;
       } else {
         process.env.PAPERCLIP_IMAGE_OPENAI_API_KEY = previousImageKey;
+      }
+      if (previousImageProvider === undefined) {
+        delete process.env.PAPERCLIP_IMAGE_PROVIDER;
+      } else {
+        process.env.PAPERCLIP_IMAGE_PROVIDER = previousImageProvider;
+      }
+    }
+  });
+
+  it("uses Codex-native image generation by default with bound reference attachments", async () => {
+    const previousImageProvider = process.env.PAPERCLIP_IMAGE_PROVIDER;
+    delete process.env.PAPERCLIP_IMAGE_PROVIDER;
+    mockGenerateCodexIssueImage.mockReset();
+    vi.doMock("../services/codex-image-generation.js", () => ({
+      generateCodexIssueImage: mockGenerateCodexIssueImage,
+    }));
+
+    const referenceAttachmentId = "2d8a654e-2ece-43cf-9000-ab0fe254e1a6";
+    const storage = createStorageService();
+    storage.getObject = vi.fn(async () => ({
+      stream: Readable.from(Buffer.from("PNGDATA")),
+      contentType: "image/png",
+      contentLength: 7,
+    }));
+    const issue = {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    };
+    const referenceAttachment = {
+      ...makeAttachment("image/png", "foto_event.png"),
+      id: referenceAttachmentId,
+      issueId: issue.id,
+    };
+    const outputAttachment = {
+      ...makeAttachment("image/png", "carousel.png"),
+      id: "33333333-3333-4333-8333-333333333333",
+      issueId: issue.id,
+    };
+    const auditAttachment = {
+      ...makeAttachment("application/json", "paperclip-image-audit.json"),
+      id: "44444444-4444-4444-8444-444444444444",
+      issueId: issue.id,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getAttachmentById.mockResolvedValue(referenceAttachment);
+    mockIssueService.createAttachment
+      .mockResolvedValueOnce(outputAttachment)
+      .mockResolvedValueOnce(auditAttachment);
+    mockGenerateCodexIssueImage.mockResolvedValue({
+      provider: "codex_native",
+      model: "gpt-image-2",
+      endpoint: "codex_exec_image_gen",
+      generationMode: "reference_backed",
+      actualImageInputsBound: [referenceAttachmentId],
+      outputBytes: Buffer.from("generated-png"),
+      outputContentType: "image/png",
+      providerRequestId: "019f286b-9bae-7961-bb48-e5c658f53427",
+      codexThreadId: "019f286b-9bae-7961-bb48-e5c658f53427",
+      codexOutputPath: "/paperclip/.codex/generated_images/019f286b-9bae-7961-bb48-e5c658f53427/ig_test.png",
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const app = await createApp(storage);
+      const res = await request(app)
+        .post(`/api/issues/${issue.id}/image-generations`)
+        .send({
+          prompt: "Generate a cafe founder carousel image.",
+          referenceImageAttachmentIds: [referenceAttachmentId],
+          size: "1080x1350",
+          quality: "high",
+          model: "gpt-image-2",
+          outputFilename: "carousel.png",
+        });
+
+      expect(res.status).toBe(201);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(mockGenerateCodexIssueImage).toHaveBeenCalledWith(expect.objectContaining({
+        prompt: "Generate a cafe founder carousel image.",
+        size: "1080x1350",
+        quality: "high",
+        companyId: "company-1",
+        references: [expect.objectContaining({
+          attachmentId: referenceAttachmentId,
+          filename: "foto_event.png",
+          contentType: "image/png",
+          bytes: Buffer.from("PNGDATA"),
+        })],
+      }));
+
+      const audit = JSON.parse(storage.__calls.putFiles[1]?.body.toString() ?? "{}") as {
+        provider?: string;
+        generationMode?: string;
+        actualImageInputsBound?: string[];
+        codexThreadId?: string;
+      };
+      expect(audit.provider).toBe("codex_native");
+      expect(audit.generationMode).toBe("reference_backed");
+      expect(audit.actualImageInputsBound).toEqual([referenceAttachmentId]);
+      expect(audit.codexThreadId).toBe("019f286b-9bae-7961-bb48-e5c658f53427");
+      expect(res.body.provider).toBe("codex_native");
+    } finally {
+      if (previousImageProvider === undefined) {
+        delete process.env.PAPERCLIP_IMAGE_PROVIDER;
+      } else {
+        process.env.PAPERCLIP_IMAGE_PROVIDER = previousImageProvider;
       }
     }
   });

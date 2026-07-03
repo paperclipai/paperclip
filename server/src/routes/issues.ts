@@ -110,6 +110,7 @@ import {
   streamToBuffer,
   type ImageReferenceInput,
 } from "../services/openai-image-generation.js";
+import { generateCodexIssueImage } from "../services/codex-image-generation.js";
 import {
   createCompanySearchRateLimiter,
   type CompanySearchRateLimiter,
@@ -143,6 +144,8 @@ const SUPPORTED_REFERENCE_IMAGE_TYPES = new Set([
   "image/jpg",
   "image/webp",
 ]);
+
+type IssueImageProvider = "codex_native" | "openai";
 const MAX_REFERENCE_IMAGE_BYTES = 25 * 1024 * 1024;
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
@@ -947,6 +950,15 @@ export function issueRoutes(
 
   function generatedImageFilename(input: string | undefined) {
     return input?.trim() || `paperclip-generated-${Date.now()}.png`;
+  }
+
+  function resolveIssueImageProvider(): IssueImageProvider {
+    const configured = (process.env.PAPERCLIP_IMAGE_PROVIDER ?? process.env.PAPERCLIP_IMAGE_BACKEND ?? "")
+      .trim()
+      .toLowerCase();
+    if (configured === "openai") return "openai";
+    if (configured === "codex" || configured === "codex_native" || configured === "codex-native") return "codex_native";
+    return "codex_native";
   }
 
   async function createIssueGeneratedAttachment(input: {
@@ -5349,17 +5361,28 @@ export function issueRoutes(
       throw unprocessable("No reference image attachment could be bound");
     }
 
-    const credentialResolution = actor.agentId
+    const imageProvider = resolveIssueImageProvider();
+    const credentialResolution = imageProvider === "openai" && actor.agentId
       ? await resolveAllCredentialEnv(db, actor.agentId)
       : { env: {} as Record<string, string> };
 
-    const generated = await generateOpenAiIssueImage({
-      prompt: body.prompt,
-      size: body.size,
-      quality: body.quality,
-      references,
-      apiKey: credentialResolution.env.OPENAI_API_KEY,
-    });
+    const generated = imageProvider === "openai"
+      ? await generateOpenAiIssueImage({
+          prompt: body.prompt,
+          size: body.size,
+          quality: body.quality,
+          references,
+          apiKey: credentialResolution.env.OPENAI_API_KEY,
+        })
+      : await generateCodexIssueImage({
+          prompt: body.prompt,
+          size: body.size,
+          quality: body.quality,
+          references,
+          companyId: issue.companyId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+        });
 
     const outputAttachment = await createIssueGeneratedAttachment({
       issueId: issue.id,
@@ -5373,7 +5396,7 @@ export function issueRoutes(
 
     const audit = {
       generatedAt: new Date().toISOString(),
-      provider: "openai",
+      provider: imageProvider,
       endpoint: generated.endpoint,
       model: generated.model,
       prompt: body.prompt,
@@ -5387,6 +5410,8 @@ export function issueRoutes(
       outputContentType: generated.outputContentType,
       outputByteSize: generated.outputBytes.length,
       providerRequestId: generated.providerRequestId,
+      codexThreadId: "codexThreadId" in generated ? generated.codexThreadId : null,
+      codexOutputPath: "codexOutputPath" in generated ? generated.codexOutputPath : null,
       referenceImageInputs: references.map((reference) => ({
         attachmentId: reference.attachmentId,
         filename: reference.filename,
@@ -5415,6 +5440,7 @@ export function issueRoutes(
       entityType: "issue",
       entityId: issue.id,
       details: {
+        provider: imageProvider,
         model: generated.model,
         generationMode: generated.generationMode,
         requestedReferenceImageAttachmentIds,

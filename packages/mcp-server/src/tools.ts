@@ -494,7 +494,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipGenerateIssueImage",
-      "Generate one PNG issue attachment with OpenAI gpt-image-2 when a supported image backend is configured. Codex subscription auth alone is not enough in the current server runtime: Codex CLI can attach images as input, but it does not expose a callable image-output tool. Use referenceImageAttachmentIds when an existing issue image must be passed as real image[] input; otherwise the audit will mark generationMode as prompt_only. Common sizes include 1024x1024, 1024x1536, 1536x1024, or a requested production size like 1080x1350 when supported by the provider. quality must be auto, low, medium, or high.",
+      "Generate one PNG issue attachment with gpt-image-2. By default Paperclip uses the Codex-native image tool through the local Codex subscription runtime, not an OpenAI API key. Use referenceImageAttachmentIds whenever an existing issue attachment must be passed as a real visual reference input; Paperclip downloads those attachments, validates them as images, passes them to Codex with --image, and the audit records actualImageInputsBound. If no reference is supplied, the audit marks generationMode as prompt_only. Common sizes include 1024x1024, 1024x1536, 1536x1024, or a requested production size like 1080x1350. quality must be auto, low, medium, or high.",
       generateIssueImageToolSchema,
       async ({ issueId, ...body }) =>
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/image-generations`, { body }),
