@@ -228,6 +228,8 @@ const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
+const DIRTY_CHECKOUT_GUARD_MAX_FILES = 25;
+const DIRTY_CHECKOUT_GUARD_GIT_TIMEOUT_MS = 20_000;
 
 export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   summary: string,
@@ -1265,6 +1267,108 @@ async function hasGitPushRemote(cwd: string | null | undefined) {
   return false;
 }
 
+async function runGitForDirtyCheckoutGuard(cwd: string, args: string[]) {
+  return execFile("git", args, {
+    cwd,
+    env: sanitizeRuntimeServiceBaseEnv(process.env),
+    timeout: DIRTY_CHECKOUT_GUARD_GIT_TIMEOUT_MS,
+  });
+}
+
+async function listGitFiles(cwd: string, args: string[]) {
+  const output = await runGitForDirtyCheckoutGuard(cwd, args);
+  return output.stdout
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
+
+function uniqueSorted(values: Iterable<string>) {
+  return [...new Set(values)].sort((a, b) => a.localeCompare(b));
+}
+
+function formatBlockingFiles(files: string[]) {
+  const shown = files.slice(0, DIRTY_CHECKOUT_GUARD_MAX_FILES);
+  const remaining = files.length - shown.length;
+  const suffix = remaining > 0 ? ` and ${remaining} more` : "";
+  return `${shown.map((file) => `\`${file}\``).join(", ")}${suffix}`;
+}
+
+export async function inspectDirtyCheckoutPullBlockers(input: {
+  cwd: string | null | undefined;
+}): Promise<{
+  checked: boolean;
+  blockingFiles: string[];
+  reason: string | null;
+}> {
+  const cwd = readNonEmptyString(input.cwd);
+  if (!cwd) return { checked: false, blockingFiles: [], reason: "missing_cwd" };
+  if (!await hasGitMetadata(cwd)) {
+    return { checked: false, blockingFiles: [], reason: "missing_git_metadata" };
+  }
+
+  const insideWorkTree = await runGitForDirtyCheckoutGuard(cwd, ["rev-parse", "--is-inside-work-tree"])
+    .then((result) => result.stdout.trim() === "true")
+    .catch(() => false);
+  if (!insideWorkTree) {
+    return { checked: false, blockingFiles: [], reason: "not_inside_work_tree" };
+  }
+
+  const dirtyFiles = uniqueSorted([
+    ...await listGitFiles(cwd, ["diff", "--name-only", "HEAD", "--"]),
+    ...await listGitFiles(cwd, ["diff", "--name-only", "--cached", "--"]),
+  ]);
+  if (dirtyFiles.length === 0) {
+    return { checked: true, blockingFiles: [], reason: null };
+  }
+
+  const fetch = await runGitForDirtyCheckoutGuard(cwd, ["fetch", "--no-tags", "origin", "master"])
+    .catch((error) => ({ error }));
+  if ("error" in fetch) {
+    const reason = fetch.error instanceof Error ? fetch.error.message : String(fetch.error);
+    return { checked: false, blockingFiles: [], reason: `fetch_failed: ${reason}` };
+  }
+
+  const upstreamFiles = new Set(
+    await listGitFiles(cwd, ["diff", "--name-only", "HEAD", "FETCH_HEAD", "--"])
+      .catch(() => []),
+  );
+  const blockingFiles = dirtyFiles.filter((file) => upstreamFiles.has(file));
+  return { checked: true, blockingFiles, reason: null };
+}
+
+export async function assertRoutineDirtyCheckoutGuardValid(input: {
+  adapterType: string;
+  issue: {
+    id: string;
+    identifier: string | null;
+    originKind?: string | null;
+  } | null;
+  cwd: string | null | undefined;
+}) {
+  if (input.issue?.originKind !== "routine_execution") return;
+
+  const inspection = await inspectDirtyCheckoutPullBlockers({ cwd: input.cwd });
+  if (inspection.blockingFiles.length === 0) return;
+
+  const cwd = readNonEmptyString(input.cwd);
+  const blockingFiles = uniqueSorted(inspection.blockingFiles);
+  throw new WorkspaceValidationFailure(
+    `Issue ${input.issue.identifier ?? input.issue.id} is a routine heartbeat, but checkout "${cwd}" has tracked local modifications that would be overwritten by \`git pull origin master\`: ${formatBlockingFiles(blockingFiles)}. Resolve or move the existing work first; Paperclip will not stash, reset, delete, or overwrite unknown edits.`,
+    {
+      workspaceValidation: {
+        reason: "dirty_checkout_blocks_git_pull",
+        adapterType: input.adapterType,
+        issueId: input.issue.id,
+        issueIdentifier: input.issue.identifier,
+        executionWorkspaceCwd: cwd,
+        blockingFiles,
+        checked: inspection.checked,
+      },
+    },
+  );
+}
+
 export async function assertPushCapabilityCheckoutValid(input: {
   enabled: boolean;
   issue: {
@@ -1299,6 +1403,7 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
     identifier: string | null;
     projectId: string | null;
     projectWorkspaceId: string | null;
+    originKind?: string | null;
   } | null;
   resolvedWorkspace: ResolvedWorkspaceForRun;
   executionWorkspace: RealizedExecutionWorkspace;
@@ -10853,6 +10958,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               identifier: issueRef.identifier,
               projectId: issueRef.projectId,
               projectWorkspaceId: issueRef.projectWorkspaceId,
+              originKind: issueContext?.originKind ?? null,
             }
           : null,
         resolvedWorkspace,
@@ -10861,6 +10967,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionTarget,
         environmentDriver: selectedEnvironment.driver,
         leaseMetadata: activeEnvironmentLease.lease.metadata,
+      });
+      await assertRoutineDirtyCheckoutGuardValid({
+        adapterType: agent.adapterType,
+        issue: issueRef
+          ? {
+              id: issueRef.id,
+              identifier: issueRef.identifier,
+              originKind: issueContext?.originKind ?? null,
+            }
+          : null,
+        cwd: executionWorkspace.cwd,
       });
       await assertPushCapabilityCheckoutValid({
         enabled: pushCapabilityPreflightRequired && executionTarget?.kind === "local",

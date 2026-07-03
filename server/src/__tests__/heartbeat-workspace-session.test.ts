@@ -11,6 +11,7 @@ import {
   applyPersistedExecutionWorkspaceConfig,
   assertGitSensitiveAdapterWorkspaceValid,
   assertPushCapabilityCheckoutValid,
+  assertRoutineDirtyCheckoutGuardValid,
   buildExplicitResumeSessionOverride,
   buildEffectiveRunSessionConfigMetadata,
   buildEffectiveRunWorkspaceConfigMetadata,
@@ -130,6 +131,36 @@ async function createGitCheckout(options: { withRemote: boolean }) {
     await runGit(root, ["remote", "add", "origin", "https://github.com/example/repo.git"]);
   }
   return root;
+}
+
+async function createDirtyGuardFixture() {
+  const remote = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-dirty-remote-"));
+  const seed = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-dirty-seed-"));
+  const checkout = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-dirty-checkout-"));
+
+  await runGit(remote, ["init", "--bare"]);
+  await runGit(seed, ["init"]);
+  await runGit(seed, ["config", "user.email", "paperclip-test@example.com"]);
+  await runGit(seed, ["config", "user.name", "Paperclip Test"]);
+  await fs.writeFile(path.join(seed, "AGENTS.md"), "base instructions\n", "utf8");
+  await fs.writeFile(path.join(seed, "README.md"), "base readme\n", "utf8");
+  await runGit(seed, ["add", "AGENTS.md", "README.md"]);
+  await runGit(seed, ["commit", "-m", "initial"]);
+  await runGit(seed, ["branch", "-M", "master"]);
+  await runGit(seed, ["remote", "add", "origin", remote]);
+  await runGit(seed, ["push", "-u", "origin", "master"]);
+
+  await fs.rm(checkout, { recursive: true, force: true });
+  await execFile("git", ["clone", remote, checkout]);
+  await runGit(checkout, ["config", "user.email", "paperclip-test@example.com"]);
+  await runGit(checkout, ["config", "user.name", "Paperclip Test"]);
+
+  await fs.writeFile(path.join(seed, "AGENTS.md"), "base instructions\nupstream change\n", "utf8");
+  await runGit(seed, ["add", "AGENTS.md"]);
+  await runGit(seed, ["commit", "-m", "upstream agents change"]);
+  await runGit(seed, ["push", "origin", "master"]);
+
+  return { remote, seed, checkout };
 }
 
 async function expectWorkspaceValidationFailure(
@@ -489,6 +520,97 @@ describe("assertPushCapabilityCheckoutValid", () => {
       })).resolves.toBeUndefined();
     } finally {
       await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("assertRoutineDirtyCheckoutGuardValid", () => {
+  it("rejects routine heartbeats when tracked local edits would block git pull origin master", async () => {
+    const fixture = await createDirtyGuardFixture();
+    try {
+      const localContent = "base instructions\nlocal unsaved edit\n";
+      await fs.writeFile(path.join(fixture.checkout, "AGENTS.md"), localContent, "utf8");
+      await fs.writeFile(path.join(fixture.checkout, "README.md"), "base readme\nlocal-only edit\n", "utf8");
+
+      await expect(assertRoutineDirtyCheckoutGuardValid({
+        adapterType: "codex_local",
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          originKind: "routine_execution",
+        },
+        cwd: fixture.checkout,
+      })).rejects.toMatchObject({
+        code: "workspace_validation_failed",
+        message: expect.stringContaining("AGENTS.md"),
+        resultJson: {
+          workspaceValidation: expect.objectContaining({
+            reason: "dirty_checkout_blocks_git_pull",
+            adapterType: "codex_local",
+            issueId: "issue-1",
+            executionWorkspaceCwd: fixture.checkout,
+            blockingFiles: ["AGENTS.md"],
+          }),
+        },
+      });
+
+      await expect(fs.readFile(path.join(fixture.checkout, "AGENTS.md"), "utf8"))
+        .resolves.toBe(localContent);
+      await expect(fs.readFile(path.join(fixture.checkout, "README.md"), "utf8"))
+        .resolves.toBe("base readme\nlocal-only edit\n");
+    } finally {
+      await fs.rm(fixture.checkout, { recursive: true, force: true });
+      await fs.rm(fixture.seed, { recursive: true, force: true });
+      await fs.rm(fixture.remote, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a clean routine checkout that is behind origin master without pulling it forward", async () => {
+    const fixture = await createDirtyGuardFixture();
+    try {
+      const headBefore = await execFile("git", ["rev-parse", "HEAD"], { cwd: fixture.checkout })
+        .then((result) => result.stdout.trim());
+
+      await expect(assertRoutineDirtyCheckoutGuardValid({
+        adapterType: "codex_local",
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          originKind: "routine_execution",
+        },
+        cwd: fixture.checkout,
+      })).resolves.toBeUndefined();
+
+      const headAfter = await execFile("git", ["rev-parse", "HEAD"], { cwd: fixture.checkout })
+        .then((result) => result.stdout.trim());
+      expect(headAfter).toBe(headBefore);
+      await expect(fs.readFile(path.join(fixture.checkout, "AGENTS.md"), "utf8"))
+        .resolves.toBe("base instructions\n");
+    } finally {
+      await fs.rm(fixture.checkout, { recursive: true, force: true });
+      await fs.rm(fixture.seed, { recursive: true, force: true });
+      await fs.rm(fixture.remote, { recursive: true, force: true });
+    }
+  });
+
+  it("does not apply the dirty checkout guard to non-routine issue heartbeats", async () => {
+    const fixture = await createDirtyGuardFixture();
+    try {
+      await fs.writeFile(path.join(fixture.checkout, "AGENTS.md"), "base instructions\nlocal unsaved edit\n", "utf8");
+
+      await expect(assertRoutineDirtyCheckoutGuardValid({
+        adapterType: "codex_local",
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          originKind: "manual",
+        },
+        cwd: fixture.checkout,
+      })).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(fixture.checkout, { recursive: true, force: true });
+      await fs.rm(fixture.seed, { recursive: true, force: true });
+      await fs.rm(fixture.remote, { recursive: true, force: true });
     }
   });
 });
