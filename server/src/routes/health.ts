@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { isMcpClientEnabled } from "../mcp-client-flag.js";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
@@ -175,6 +176,7 @@ export function healthRoutes(
       bootstrapInviteActive,
       features: {
         companyDeletionEnabled: opts.companyDeletionEnabled,
+        mcpClientEnabled: isMcpClientEnabled(),
       },
       ...(devServer ? { devServer } : {}),
     });

@@ -22,6 +22,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { healthApi } from "../api/health";
 import { AgentConfigForm } from "../components/AgentConfigForm";
 import { AgentMcpServersTab } from "../components/AgentMcpServersTab";
 import { PageTabBar } from "../components/PageTabBar";
@@ -657,6 +658,14 @@ export function AgentDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+    staleTime: 60_000,
+  });
+  const mcpClientEnabled = health?.features?.mcpClientEnabled === true;
+
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
   const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
@@ -1052,7 +1061,7 @@ export function AgentDetail() {
               { value: "dashboard", label: "Dashboard" },
               { value: "instructions", label: "Instructions" },
               { value: "skills", label: "Skills" },
-              { value: "mcp", label: "MCP Servers" },
+              ...(mcpClientEnabled ? [{ value: "mcp", label: "MCP Servers" }] : []),
               { value: "configuration", label: "Configuration" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },

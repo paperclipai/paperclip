@@ -25,6 +25,7 @@ import { Link, NavLink } from "@/lib/router";
 import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
 import { SIDEBAR_SCROLL_RESET_STATE } from "@/lib/navigation-scroll";
 import { queryKeys } from "@/lib/queryKeys";
+import { healthApi } from "@/api/health";
 import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { usePluginSlots } from "@/plugins/slots";
@@ -50,6 +51,13 @@ export function CompanySettingsSidebar() {
     companyId: selectedCompanyId,
     enabled: !!selectedCompanyId,
   });
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+    staleTime: 60_000,
+  });
+  const mcpClientEnabled = health?.features?.mcpClientEnabled === true;
   const { data: badges } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.sidebarBadges(selectedCompanyId)
@@ -140,7 +148,9 @@ export function CompanySettingsSidebar() {
             ))}
           <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
           <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
-          <SidebarNavItem to="/company/settings/mcp-servers" label="MCP Servers" icon={Server} end />
+          {mcpClientEnabled ? (
+            <SidebarNavItem to="/company/settings/mcp-servers" label="MCP Servers" icon={Server} end />
+          ) : null}
         </div>
         <div className="mt-5 px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           Instance settings

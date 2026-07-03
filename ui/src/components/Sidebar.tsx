@@ -27,6 +27,7 @@ import { useCompany } from "../context/CompanyContext";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
+import { healthApi } from "../api/health";
 import { useInboxBadge } from "../hooks/useInboxBadge";
 import { Button } from "@/components/ui/button";
 import { PluginSlotOutlet } from "@/plugins/slots";
@@ -37,6 +38,13 @@ export function Sidebar() {
   const { openNewIssue } = useDialogActions();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const inboxBadge = useInboxBadge(selectedCompanyId);
+  const { data: health } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => healthApi.get(),
+    retry: false,
+    staleTime: 60_000,
+  });
+  const mcpClientEnabled = health?.features?.mcpClientEnabled === true;
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -135,7 +143,9 @@ export function Sidebar() {
         <SidebarSection label="Company">
           <SidebarNavItem to="/org" label="Org" icon={Network} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
-          <SidebarNavItem to="/company/settings/mcp-servers" label="MCP Servers" icon={Server} />
+          {mcpClientEnabled ? (
+            <SidebarNavItem to="/company/settings/mcp-servers" label="MCP Servers" icon={Server} />
+          ) : null}
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />

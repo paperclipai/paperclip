@@ -708,6 +708,13 @@
       "when": 1782604800000,
       "tag": "0100_neo259_heartbeat_runs_auth_context",
       "breakpoints": true
+    },
+    {
+      "idx": 111,
+      "version": "7",
+      "when": 1781902400001,
+      "tag": "0111_mcp_server_registry",
+      "breakpoints": true
     }
   ]
 }

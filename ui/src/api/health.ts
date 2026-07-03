@@ -22,6 +22,7 @@ export type HealthStatus = {
   bootstrapInviteActive?: boolean;
   features?: {
     companyDeletionEnabled?: boolean;
+    mcpClientEnabled?: boolean;
   };
   devServer?: DevServerHealthStatus;
 };

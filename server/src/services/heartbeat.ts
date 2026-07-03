@@ -82,6 +82,7 @@ import {
   mergeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
 import { agentMcpToolService } from "./agent-mcp-tools.js";
+import { isMcpClientEnabled } from "../mcp-client-flag.js";
 import {
   buildHeartbeatRunStopMetadata,
   mergeHeartbeatRunStopMetadata,
@@ -8433,21 +8434,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipRuntimeServiceIntents;
     }
-    const workspaceMcpServers = listWorkspaceMcpServers(parseObject(resolvedConfig.workspaceRuntime));
-    if (workspaceMcpServers.length > 0) {
-      context.paperclipMcpServers = workspaceMcpServers;
-      context.paperclipMcpPrimaryServerName = workspaceMcpServers[0]?.name ?? null;
-    } else {
-      delete context.paperclipMcpServers;
-      delete context.paperclipMcpPrimaryServerName;
-    }
-    const availableAgentMcpTools = await agentMcpTools.listForAgent(agent.id);
-    if (availableAgentMcpTools.servers.length > 0) {
-      context.paperclipAgentMcpServers = availableAgentMcpTools.servers;
-      context.paperclipAvailableMcpTools = availableAgentMcpTools.tools;
-    } else {
-      delete context.paperclipAgentMcpServers;
-      delete context.paperclipAvailableMcpTools;
+    if (isMcpClientEnabled()) {
+      const workspaceMcpServers = listWorkspaceMcpServers(parseObject(resolvedConfig.workspaceRuntime));
+      if (workspaceMcpServers.length > 0) {
+        context.paperclipMcpServers = workspaceMcpServers;
+        context.paperclipMcpPrimaryServerName = workspaceMcpServers[0]?.name ?? null;
+      } else {
+        delete context.paperclipMcpServers;
+        delete context.paperclipMcpPrimaryServerName;
+      }
+      const availableAgentMcpTools = await agentMcpTools.listForAgent(agent.id);
+      if (availableAgentMcpTools.servers.length > 0) {
+        context.paperclipAgentMcpServers = availableAgentMcpTools.servers;
+        context.paperclipAvailableMcpTools = availableAgentMcpTools.tools;
+      } else {
+        delete context.paperclipAgentMcpServers;
+        delete context.paperclipAvailableMcpTools;
+      }
     }
     if (executionWorkspace.projectId && !readNonEmptyString(context.projectId)) {
       context.projectId = executionWorkspace.projectId;
