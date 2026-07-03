@@ -199,6 +199,29 @@ describe("EnvironmentVariablesEditor", () => {
     expect(container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!.disabled).toBe(true);
   });
 
+  it("renders name warnings as a row spanning the name and value columns", () => {
+    render(
+      <EnvironmentVariablesEditor
+        value={{ PAPERCLIP_PAGE_BASE_URL: { type: "plain", value: "https://pages.paperclip.ing" } }}
+        secrets={secrets}
+        onChange={() => {}}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+
+    const nameInput = container.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')!;
+    const warning = [...container.querySelectorAll<HTMLParagraphElement>("p")].find((node) =>
+      node.textContent?.includes("Reserved prefix"),
+    );
+
+    expect(warning, "reserved-prefix warning should render").toBeTruthy();
+    expect(nameInput.getAttribute("aria-describedby")).toBe(warning!.id);
+    expect(warning!.parentElement?.contains(nameInput), "warning should stay in the row grid").toBe(true);
+    expect(warning!.parentElement).not.toBe(nameInput.parentElement);
+    expect(warning!.className).toContain("col-span-2");
+    expect(warning!.className).toContain("@[40rem]/env:row-start-2");
+  });
+
   it("bulk-imports a dotenv paste into an empty name field", async () => {
     const onChange = vi.fn();
     render(<EnvironmentVariablesEditor value={{}} secrets={secrets} onChange={onChange} onCreateSecret={async () => secrets[0]} />);

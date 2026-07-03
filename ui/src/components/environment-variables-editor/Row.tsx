@@ -198,17 +198,6 @@ export function EnvironmentVariableRow({
             }
           }}
         />
-        {showNameIssue && nameIssue ? (
-          <p
-            id={nameErrorId}
-            className={cn(
-              "mt-0.5 text-[11px]",
-              nameIssue.level === "error" ? "text-destructive" : "text-amber-600 dark:text-amber-400",
-            )}
-          >
-            {nameIssue.message}
-          </p>
-        ) : null}
       </div>
 
       {/* Value cell — mobile full-width line 2 / desktop col 2 */}
@@ -461,6 +450,18 @@ export function EnvironmentVariableRow({
           </p>
         ) : null}
       </div>
+
+      {showNameIssue && nameIssue ? (
+        <p
+          id={nameErrorId}
+          className={cn(
+            "col-span-2 col-start-1 row-start-3 min-w-0 text-[11px] @[40rem]/env:col-span-2 @[40rem]/env:row-start-2",
+            nameIssue.level === "error" ? "text-destructive" : "text-amber-600 dark:text-amber-400",
+          )}
+        >
+          {nameIssue.message}
+        </p>
+      ) : null}
 
       {/* Actions cell — mobile col 2 line 1 / desktop col 3 */}
       <div className="col-start-2 row-start-1 flex items-center justify-end gap-0.5 self-start @[40rem]/env:col-start-3 @[40rem]/env:self-center">
