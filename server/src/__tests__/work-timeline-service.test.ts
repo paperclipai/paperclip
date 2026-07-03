@@ -253,6 +253,72 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     ]));
   });
 
+  it("does not join activity rows to runs from another company", async () => {
+    const { companyId, agentAId } = await seedBase();
+    const otherCompanyId = randomUUID();
+    const otherAgentId = randomUUID();
+    const issueId = randomUUID();
+    const foreignRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Timeline Co",
+      issuePrefix: `O${randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId: otherCompanyId,
+      name: "Foreign Coder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Local issue",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentAId,
+      createdAt: new Date("2026-03-02T10:00:00Z"),
+      updatedAt: new Date("2026-03-02T10:00:00Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: foreignRunId,
+      companyId: otherCompanyId,
+      agentId: otherAgentId,
+      status: "completed",
+      invocationSource: "manual",
+      startedAt: new Date("2026-03-02T11:00:00Z"),
+      finishedAt: new Date("2026-03-02T11:15:00Z"),
+      contextSnapshot: {},
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentAId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      agentId: agentAId,
+      runId: foreignRunId,
+      createdAt: new Date("2026-03-02T11:05:00Z"),
+    });
+
+    const result = await workTimelineService(db).getTimeline({
+      companyId,
+      from: new Date("2026-03-02T00:00:00Z"),
+      to: new Date("2026-03-03T00:00:00Z"),
+    });
+
+    expect(result.events.map((event) => event.issueId)).toContain(issueId);
+    expect(result.spans.map((span) => span.runId)).not.toContain(foreignRunId);
+  });
+
   it("applies the user lens as a transitive issue subtree", async () => {
     const { companyId, userId, agentAId, agentBId } = await seedBase();
     const rootIssueId = randomUUID();
@@ -343,6 +409,40 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     expect(result.events.map((event) => event.issueId)).toContain(visibleIssueId);
     expect(result.events.map((event) => event.issueId)).not.toContain(hiddenIssueId);
     expect(result.pagination.totalIssues).toBe(1);
+  });
+
+  it("bounds pre-pagination ACL checks", async () => {
+    const { companyId, agentAId } = await seedBase();
+    const issueCount = 40;
+    await db.insert(issues).values(Array.from({ length: issueCount }, (_, index) => ({
+      id: randomUUID(),
+      companyId,
+      title: `Visible ${index}`,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentAId,
+      createdAt: new Date(Date.parse("2026-03-04T10:00:00Z") + index * 1000),
+      updatedAt: new Date(Date.parse("2026-03-04T10:00:00Z") + index * 1000),
+    })));
+
+    let activeChecks = 0;
+    let maxActiveChecks = 0;
+    const result = await workTimelineService(db).getTimeline({
+      companyId,
+      from: new Date("2026-03-04T00:00:00Z"),
+      to: new Date("2026-03-05T00:00:00Z"),
+      limit: issueCount,
+      canReadIssue: async () => {
+        activeChecks += 1;
+        maxActiveChecks = Math.max(maxActiveChecks, activeChecks);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        activeChecks -= 1;
+        return true;
+      },
+    });
+
+    expect(result.pagination.totalIssues).toBe(issueCount);
+    expect(maxActiveChecks).toBeLessThanOrEqual(16);
   });
 
   it("serves GET /api/companies/:companyId/timeline", async () => {

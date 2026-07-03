@@ -272,6 +272,7 @@ export const externalObjectStatusIcon: Record<string, string> = {
   waiting: "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400",
   running: "text-cyan-600 border-cyan-600 dark:text-cyan-400 dark:border-cyan-400",
   succeeded: "text-green-600 border-green-600 dark:text-green-400 dark:border-green-400",
+  merged: "text-violet-600 border-violet-600 dark:text-violet-400 dark:border-violet-400",
   failed: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
   blocked: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
   closed: "text-neutral-500 border-neutral-500",

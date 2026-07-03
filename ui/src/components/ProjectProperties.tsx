@@ -21,7 +21,7 @@ import { ChoosePathButton } from "./PathInstructionsModal";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
-import { EnvVarEditor } from "./EnvVarEditor";
+import { EnvironmentVariablesEditor } from "./environment-variables-editor";
 
 const PROJECT_STATUSES = [
   { value: "backlog", label: "Backlog" },
@@ -623,7 +623,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           valueClassName="space-y-2"
         >
           <div className="space-y-2">
-            <EnvVarEditor
+            <EnvironmentVariablesEditor
               value={project.env ?? {}}
               secrets={availableSecrets}
               onCreateSecret={async (name, value) => {

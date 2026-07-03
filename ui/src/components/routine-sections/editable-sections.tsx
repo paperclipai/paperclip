@@ -33,7 +33,7 @@ import { MarkdownEditor } from "../MarkdownEditor";
 import { ScheduleEditor, getScheduleCronValidation } from "../ScheduleEditor";
 import { RoutineVariablesEditor, RoutineVariablesHint } from "../RoutineVariablesEditor";
 import { RoutineTriggerCard } from "../RoutineTriggerCard";
-import { EnvVarEditor } from "../EnvVarEditor";
+import { EnvironmentVariablesEditor } from "../environment-variables-editor";
 import { createDefaultNewTrigger, useRoutineDetail } from "./context";
 import type { EnvBinding, RoutineDetail as RoutineDetailType } from "@paperclipai/shared";
 
@@ -649,7 +649,7 @@ export function SecretsSection() {
         </div>
       ) : null}
 
-      <EnvVarEditor
+      <EnvironmentVariablesEditor
         value={(editDraft.env ?? {}) as Record<string, EnvBinding>}
         secrets={availableSecrets}
         recentlyUsedSecrets={recentlyUsedSecrets}
