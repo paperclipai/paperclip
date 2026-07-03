@@ -409,6 +409,29 @@ export type IssueDependencyReadiness = {
   allBlockersDone: boolean;
   isDependencyReady: boolean;
 };
+/**
+ * Whether a `blocked` issue is eligible for heartbeat backoff: it has no
+ * agent-actionable unblock path, so re-checking it out and re-blocking it every
+ * timer heartbeat with no new human/board signal is pure churn.
+ *
+ * `eligibleForBackoff` is true when the issue is blocked and either:
+ *   - all of its unresolved first-class blockers are live human-owned (an
+ *     explicit human assignee, or an `in_review` blocker awaiting human
+ *     review/approval), or
+ *   - it has no first-class blocker relation at all (a manual/external block the
+ *     assignee agent cannot progress on its own).
+ *
+ * It is false when the issue has an agent-actionable path: an unresolved
+ * agent-owned/unassigned/pending-finalize blocker, or a first-class blocker that
+ * has since resolved (`allBlockersDone` — the dependent is ready to proceed, not
+ * waiting on a human).
+ */
+export type BlockedIssueBackoffEligibility = {
+  eligibleForBackoff: boolean;
+  unresolvedBlockerIssueIds: string[];
+  humanOwnedBlockerIssueIds: string[];
+  sampleBlockerIdentifier: string | null;
+};
 export type ChildIssueCompletionSummary = {
   id: string;
   identifier: string | null;
@@ -884,6 +907,101 @@ async function listIssueDependencyReadinessMap(
   }
 
   return readinessMap;
+}
+
+function ineligibleBlockedIssueBackoff(
+  unresolvedBlockerIssueIds: string[] = [],
+): BlockedIssueBackoffEligibility {
+  return {
+    eligibleForBackoff: false,
+    unresolvedBlockerIssueIds,
+    humanOwnedBlockerIssueIds: [],
+    sampleBlockerIdentifier: null,
+  };
+}
+
+/**
+ * Classify whether a `blocked` issue has any agent-actionable unblock path, to
+ * decide whether the heartbeat should back off idle re-triage.
+ *
+ * The caller has already established the issue is `blocked` and assigned to the
+ * agent. This inspects its first-class blocker relations:
+ *   - No blocker relation at all → manual/external block the agent cannot
+ *     progress → eligible for backoff.
+ *   - Unresolved blockers, all live human-owned (human assignee, or `in_review`)
+ *     → eligible for backoff.
+ *   - Any unresolved blocker that is agent-owned / unassigned / cancelled /
+ *     pending-finalize → NOT eligible (there is a non-human path; keep cadence).
+ *   - All blockers resolved (`allBlockersDone` with ≥1 blocker) → NOT eligible
+ *     (the dependent is ready to proceed, not waiting on a human).
+ */
+async function computeBlockedIssueBackoffEligibility(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  issueId: string,
+): Promise<BlockedIssueBackoffEligibility> {
+  const readiness =
+    (await listIssueDependencyReadinessMap(dbOrTx, companyId, [issueId])).get(issueId) ??
+    createIssueDependencyReadiness(issueId);
+  const unresolved = [...new Set(readiness.unresolvedBlockerIssueIds)];
+
+  if (unresolved.length === 0) {
+    // A blocked issue whose blockers all resolved is ready to proceed — do not
+    // back off; let the normal blockers-resolved/timer path pick it up.
+    if (readiness.blockerIssueIds.length > 0) return ineligibleBlockedIssueBackoff();
+    // No first-class blocker relation → manual/external (human-owned) block.
+    return {
+      eligibleForBackoff: true,
+      unresolvedBlockerIssueIds: [],
+      humanOwnedBlockerIssueIds: [],
+      sampleBlockerIdentifier: null,
+    };
+  }
+
+  // A done-but-finalizing blocker is agent-owned work (sync-back pending).
+  if (readiness.pendingFinalizeBlockerIssueIds.length > 0) {
+    return ineligibleBlockedIssueBackoff(unresolved);
+  }
+
+  const blockerRows = await dbOrTx
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      status: issues.status,
+      assigneeUserId: issues.assigneeUserId,
+      assigneeAgentId: issues.assigneeAgentId,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, unresolved)));
+
+  const humanOwned: string[] = [];
+  let sample: string | null = null;
+  for (const row of blockerRows) {
+    // A cancelled blocker stays unresolved until an operator edits the relation —
+    // an operator action, not a live human-owned unblock path. Keep normal cadence.
+    if (row.status === "cancelled") return ineligibleBlockedIssueBackoff(unresolved);
+    const humanOwnsUnblock =
+      (Boolean(row.assigneeUserId) && !row.assigneeAgentId) || row.status === "in_review";
+    if (!humanOwnsUnblock) {
+      // At least one unresolved blocker is agent-owned / unassigned; there is a
+      // non-human unblock path, so this is not a solely-human-owned wait.
+      return {
+        eligibleForBackoff: false,
+        unresolvedBlockerIssueIds: unresolved,
+        humanOwnedBlockerIssueIds: humanOwned,
+        sampleBlockerIdentifier: null,
+      };
+    }
+    humanOwned.push(row.id);
+    if (!sample) sample = row.identifier ?? row.id;
+  }
+
+  return {
+    eligibleForBackoff: humanOwned.length > 0,
+    unresolvedBlockerIssueIds: unresolved,
+    humanOwnedBlockerIssueIds: humanOwned,
+    sampleBlockerIdentifier: sample,
+  };
 }
 
 async function listUnresolvedBlockerIssueIds(
@@ -4691,6 +4809,17 @@ export function issueService(db: Db) {
 
     listDependencyReadiness: async (companyId: string, issueIds: string[], dbOrTx: any = db) => {
       return listIssueDependencyReadinessMap(dbOrTx, companyId, issueIds);
+    },
+
+    // Classify whether a blocked issue has no agent-actionable unblock path
+    // (human-owned or manual/external block), so the heartbeat can back off idle
+    // re-triage churn.
+    getBlockedIssueBackoffEligibility: async (
+      companyId: string,
+      issueId: string,
+      dbOrTx: any = db,
+    ) => {
+      return computeBlockedIssueBackoffEligibility(dbOrTx, companyId, issueId);
     },
 
     listBlockerAttention: async (
