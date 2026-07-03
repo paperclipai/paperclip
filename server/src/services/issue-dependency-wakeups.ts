@@ -42,3 +42,31 @@ export async function findExistingIssueBlockersResolvedWake(
     .limit(1)
     .then((rows) => rows[0] ?? null);
 }
+
+export async function findExistingIssueBlockersResolvedWakeForAnyKey(
+  db: Db,
+  input: {
+    companyId: string;
+    idempotencyKeys: string[];
+  },
+) {
+  const idempotencyKeys = [...new Set(input.idempotencyKeys.filter(Boolean))];
+  if (idempotencyKeys.length === 0) return null;
+
+  return db
+    .select({
+      id: agentWakeupRequests.id,
+      status: agentWakeupRequests.status,
+      idempotencyKey: agentWakeupRequests.idempotencyKey,
+    })
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        inArray(agentWakeupRequests.idempotencyKey, idempotencyKeys),
+        inArray(agentWakeupRequests.status, [...IDEMPOTENT_DEPENDENCY_WAKE_STATUSES]),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+}

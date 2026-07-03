@@ -63,6 +63,7 @@ vi.mock("../adapters/index.ts", async () => {
 
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { issueService } from "../services/issues.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -419,6 +420,96 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(wake).toMatchObject({
       reason: "issue_blockers_resolved",
       idempotencyKey: `issue_blockers_resolved:${blockedIssueId}:${blockerIssueId}`,
+    });
+  });
+
+  it("does not duplicate an existing dependency wake keyed to any resolved blocker", async () => {
+    await enableAutoRecovery();
+    const { companyId, agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const secondBlockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: secondBlockerIssueId,
+      companyId,
+      title: "Second completed blocker",
+      status: "done",
+      priority: "medium",
+      issueNumber: 3,
+      identifier: "R-MULTI-3",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: secondBlockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const readiness = await issueService(db).getDependencyReadiness(blockedIssueId);
+    const blockerIdNotUsedByBackstop = readiness.blockerIssueIds.find((id) => id !== blockerIssueId);
+    if (!blockerIdNotUsedByBackstop) {
+      throw new Error("Expected a second blocker id in dependency readiness");
+    }
+    expect(blockerIdNotUsedByBackstop).toBe(secondBlockerIssueId);
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: {
+        issueId: blockedIssueId,
+        resolvedBlockerIssueId: blockerIdNotUsedByBackstop,
+      },
+      status: "queued",
+      idempotencyKey: `issue_blockers_resolved:${blockedIssueId}:${blockerIdNotUsedByBackstop}`,
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.dependencyWakesHealed).toBe(0);
+    expect(result.dependencyWakeExistingSkipped).toBe(1);
+
+    const wakes = await db
+      .select({
+        id: agentWakeupRequests.id,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.idempotencyKey).toBe(
+      `issue_blockers_resolved:${blockedIssueId}:${blockerIdNotUsedByBackstop}`,
+    );
+  });
+
+  it("counts null dependency wake returns as deferred instead of enqueue failures", async () => {
+    await enableAutoRecovery();
+    const { companyId, agentId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await db
+      .update(agents)
+      .set({
+        runtimeConfig: { heartbeat: { wakeOnDemand: false, maxConcurrentRuns: 1 } },
+      })
+      .where(eq(agents.id, agentId));
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.dependencyWakesHealed).toBe(0);
+    expect(result.dependencyWakeDeferredOrFailed).toBe(1);
+    expect(result.dependencyWakeEnqueueFailed).toBe(0);
+
+    const skippedWake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)))
+      .then((rows) => rows[0] ?? null);
+    expect(skippedWake).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.wakeOnDemand.disabled",
     });
   });
 

@@ -40,7 +40,7 @@ import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeIdempotencyKey,
-  findExistingIssueBlockersResolvedWake,
+  findExistingIssueBlockersResolvedWakeForAnyKey,
 } from "../issue-dependency-wakeups.js";
 import { parseIssueExecutionState } from "../issue-execution-policy.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
@@ -79,6 +79,7 @@ const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueR
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
+const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -521,6 +522,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   const budgets = budgetService(db);
   const instanceSettings = instanceSettingsService(db);
   const runLogStore = getRunLogStore();
+  let resolvedDependencyWakeBackstopCandidateCursor: string | null = null;
 
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -4080,26 +4082,57 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       interactionSkipped: 0,
       pauseHoldSkipped: 0,
       notReadySkipped: 0,
+      candidateLimitSkipped: 0,
+      deferredOrFailed: 0,
       enqueueFailed: 0,
       issueIds: [] as string[],
     };
 
-    const candidates = await db
-      .select({
-        id: issues.id,
-        companyId: issues.companyId,
-        identifier: issues.identifier,
-        assigneeAgentId: issues.assigneeAgentId,
-      })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.status, "blocked"),
-          isNull(issues.hiddenAt),
-          sql`${issues.assigneeAgentId} is not null`,
-        ),
-      );
+    const queryCandidates = (afterIssueId: string | null) => {
+      const filters = [
+        eq(issues.status, "blocked"),
+        isNull(issues.hiddenAt),
+        sql`${issues.assigneeAgentId} is not null`,
+      ];
+      if (afterIssueId) filters.push(gt(issues.id, afterIssueId));
+
+      return db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          assigneeAgentId: issues.assigneeAgentId,
+          totalCount: sql<number>`count(*) over()::int`,
+        })
+        .from(issues)
+        .where(and(...filters))
+        .orderBy(asc(issues.id))
+        .limit(RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT);
+    };
+
+    let candidateRows = await queryCandidates(resolvedDependencyWakeBackstopCandidateCursor);
+    if (candidateRows.length === 0 && resolvedDependencyWakeBackstopCandidateCursor) {
+      resolvedDependencyWakeBackstopCandidateCursor = null;
+      candidateRows = await queryCandidates(null);
+    }
+    const totalCandidateCount = candidateRows[0]?.totalCount ?? 0;
+    const candidates = candidateRows.map(({ totalCount: _totalCount, ...candidate }) => candidate);
     result.checked = candidates.length;
+    result.candidateLimitSkipped = Math.max(0, totalCandidateCount - candidates.length);
+    const lastCandidate = candidates[candidates.length - 1] ?? null;
+    resolvedDependencyWakeBackstopCandidateCursor =
+      result.candidateLimitSkipped > 0 && lastCandidate ? lastCandidate.id : null;
+    if (result.candidateLimitSkipped > 0) {
+      logger.warn(
+        {
+          processed: candidates.length,
+          skipped: result.candidateLimitSkipped,
+          limit: RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT,
+          nextCursor: resolvedDependencyWakeBackstopCandidateCursor,
+        },
+        "issue graph liveness backstop deferred resolved dependency wake candidates past page limit",
+      );
+    }
 
     const candidatesByCompany = new Map<string, typeof candidates>();
     for (const candidate of candidates) {
@@ -4130,13 +4163,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        const idempotencyKeys = readiness.blockerIssueIds.map((blockerIssueId) =>
+          buildIssueBlockersResolvedWakeIdempotencyKey({
+            dependentIssueId: candidate.id,
+            resolvedBlockerIssueId: blockerIssueId,
+          })
+        );
         const idempotencyKey = buildIssueBlockersResolvedWakeIdempotencyKey({
           dependentIssueId: candidate.id,
           resolvedBlockerIssueId,
         });
-        const existingWake = await findExistingIssueBlockersResolvedWake(db, {
+        const existingWake = await findExistingIssueBlockersResolvedWakeForAnyKey(db, {
           companyId,
-          idempotencyKey,
+          idempotencyKeys,
         });
         if (existingWake) {
           result.existingWakeSkipped += 1;
@@ -4185,7 +4224,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             },
           });
           if (!wake) {
-            result.enqueueFailed += 1;
+            // enqueueWakeup returns null for normal deferred/skipped paths
+            // such as disabled wake-on-demand or concurrency gating. That is
+            // not an enqueue error, but the backstop still did not heal now.
+            result.deferredOrFailed += 1;
             continue;
           }
 
@@ -4210,6 +4252,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             },
           });
         } catch (err) {
+          result.deferredOrFailed += 1;
           result.enqueueFailed += 1;
           logger.warn(
             { err, issueId: candidate.id, agentId, idempotencyKey },
@@ -4269,6 +4312,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       dependencyWakeInteractionSkipped: 0,
       dependencyWakePauseHoldSkipped: 0,
       dependencyWakeNotReadySkipped: 0,
+      dependencyWakeCandidateLimitSkipped: 0,
+      dependencyWakeDeferredOrFailed: 0,
       dependencyWakeEnqueueFailed: 0,
       dependencyWakeIssueIds: [] as string[],
       issueIds: [] as string[],
@@ -4291,6 +4336,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     result.dependencyWakeInteractionSkipped = dependencyWakeBackstop.interactionSkipped;
     result.dependencyWakePauseHoldSkipped = dependencyWakeBackstop.pauseHoldSkipped;
     result.dependencyWakeNotReadySkipped = dependencyWakeBackstop.notReadySkipped;
+    result.dependencyWakeCandidateLimitSkipped = dependencyWakeBackstop.candidateLimitSkipped;
+    result.dependencyWakeDeferredOrFailed = dependencyWakeBackstop.deferredOrFailed;
     result.dependencyWakeEnqueueFailed = dependencyWakeBackstop.enqueueFailed;
     result.dependencyWakeIssueIds = dependencyWakeBackstop.issueIds;
 

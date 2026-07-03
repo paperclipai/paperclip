@@ -11450,8 +11450,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // Dependency wake re-check: if this run's issue was marked done mid-run,
         // the route-time `issue_blockers_resolved` wake may have been gated by
         // workspace finalization or merged into this run. Re-evaluate after any
-        // run completion; dependency readiness still enforces the finalize
-        // barrier before a dependent can be woken.
+        // run completion, including failed adapter outcomes; this is safe because
+        // `listWakeableBlockedDependents` delegates to dependency readiness, which
+        // only returns dependents whose done blockers have crossed the successful
+        // `workspace_finalize` barrier.
         if (issueId && finalizedRun) {
           try {
             const blockerIssueStatus = await db

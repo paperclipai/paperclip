@@ -45,6 +45,8 @@ export const instanceSettingsApi = {
       dependencyWakeInteractionSkipped: number;
       dependencyWakePauseHoldSkipped: number;
       dependencyWakeNotReadySkipped: number;
+      dependencyWakeCandidateLimitSkipped: number;
+      dependencyWakeDeferredOrFailed: number;
       dependencyWakeEnqueueFailed: number;
       dependencyWakeIssueIds: string[];
       escalationIssueIds: string[];
