@@ -24,6 +24,11 @@ import type {
 } from "@paperclipai/shared";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
+import {
+  getSharedMcpClientManager,
+  type McpClientManager,
+  type PooledMcpClient,
+} from "./mcp-client-manager.js";
 import type { secretService } from "./secrets.js";
 
 const MCP_PROTOCOL_VERSION = "2024-11-05";
@@ -81,12 +86,40 @@ interface JsonRpcResponse {
   method?: string;
 }
 
-interface ResolvedRuntimeConfig {
+interface ResolvedStdioRuntimeConfig {
+  kind: "stdio";
   command: string;
   args: string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
+}
+
+interface ResolvedHttpRuntimeConfig {
+  kind: "http";
+  transport: "http" | "sse";
+  url: string;
+  headers: Record<string, string>;
+  timeoutMs: number;
+}
+
+type ResolvedRuntimeConfig = ResolvedStdioRuntimeConfig | ResolvedHttpRuntimeConfig;
+
+async function withRequestTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Timed out waiting for MCP response after ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -393,12 +426,32 @@ async function callOptionalList(
   }
 }
 
+async function listOptional(
+  key: "tools" | "resources" | "prompts",
+  logs: string[],
+  fn: (() => Promise<unknown>) | undefined,
+): Promise<Array<Record<string, unknown>>> {
+  if (!fn) return [];
+  try {
+    const result = await fn();
+    if (!isRecord(result)) return [];
+    const entries = Array.isArray(result[key]) ? result[key] : [];
+    return entries.filter((entry): entry is Record<string, unknown> => isRecord(entry));
+  } catch (error) {
+    logs.push(`[discovery] ${key}/list unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  }
+}
+
 export function mcpServerService(
   db: Db,
   deps: {
     secrets: ReturnType<typeof secretService>;
+    /** Pooled multi-tenant MCP client manager; defaults to the shared one. */
+    mcpClients?: McpClientManager;
   },
 ) {
+  const mcpClients = deps.mcpClients ?? getSharedMcpClientManager();
   async function getLatestSnapshotForServer(mcpServerId: string) {
     const row = await db
       .select()
@@ -536,9 +589,16 @@ export function mcpServerService(
         resolvedHeaders.Authorization = `Bearer ${credential}`;
       }
 
-      throw unprocessable(
-        `${server.transport} MCP servers are not implemented yet for discovery. Saved URL and auth settings for "${server.name}".`,
-      );
+      if (!server.url) {
+        throw unprocessable(`MCP server "${server.name}" is missing a URL`);
+      }
+      return {
+        kind: "http",
+        transport: server.transport,
+        url: server.url,
+        headers: resolvedHeaders,
+        timeoutMs,
+      };
     }
 
     if (!server.command) {
@@ -563,6 +623,7 @@ export function mcpServerService(
     }
 
     return {
+      kind: "stdio",
       command: server.command,
       args: server.args,
       cwd,
@@ -573,6 +634,48 @@ export function mcpServerService(
         ...env,
       },
       timeoutMs,
+    };
+  }
+
+  function acquirePooledClient(
+    server: McpServer,
+    runtime: ResolvedHttpRuntimeConfig,
+  ): Promise<PooledMcpClient> {
+    return mcpClients.acquire({
+      companyId: server.companyId,
+      mcpServerId: server.id,
+      transport: runtime.transport,
+      endpoint: runtime.url,
+      headers: runtime.headers,
+    });
+  }
+
+  function normalizeToolCallResult(rawResult: unknown, logs: string[]): {
+    content: string | null;
+    data: unknown;
+    error: string | null;
+    logs: string[];
+  } {
+    const content = isRecord(rawResult) && Array.isArray(rawResult.content)
+      ? rawResult.content
+          .map((entry) => {
+            if (!isRecord(entry)) return null;
+            if (typeof entry.text === "string" && entry.text.trim().length > 0) return entry.text;
+            return null;
+          })
+          .filter((entry): entry is string => entry !== null)
+          .join("\n")
+      : null;
+
+    const error = isRecord(rawResult) && typeof rawResult.isError === "boolean" && rawResult.isError
+      ? content ?? "MCP tool call returned an error"
+      : null;
+
+    return {
+      content: content && content.trim().length > 0 ? content : null,
+      data: rawResult ?? null,
+      error,
+      logs,
     };
   }
 
@@ -597,6 +700,26 @@ export function mcpServerService(
     });
 
     logs.push(`[tool-call] transport=${server.transport}`);
+
+    if (runtime.kind === "http") {
+      logs.push(`[tool-call] url=${runtime.url}`);
+      try {
+        const pooled = await acquirePooledClient(server, runtime);
+        const rawResult = await withRequestTimeout(
+          pooled.client.callTool({
+            name: input.toolName,
+            arguments: input.arguments ?? {},
+          }),
+          runtime.timeoutMs,
+        );
+        return normalizeToolCallResult(rawResult, logs);
+      } catch (error) {
+        // Drop the pooled connection so the next call reconnects fresh.
+        void mcpClients.invalidateServer(server.companyId, server.id).catch(() => {});
+        throw error;
+      }
+    }
+
     logs.push(`[tool-call] command=${runtime.command} ${runtime.args.join(" ")}`.trim());
     logs.push(`[tool-call] cwd=${runtime.cwd}`);
 
@@ -621,28 +744,7 @@ export function mcpServerService(
         name: input.toolName,
         arguments: input.arguments ?? {},
       });
-
-      const content = isRecord(rawResult) && Array.isArray(rawResult.content)
-        ? rawResult.content
-            .map((entry) => {
-              if (!isRecord(entry)) return null;
-              if (typeof entry.text === "string" && entry.text.trim().length > 0) return entry.text;
-              return null;
-            })
-            .filter((entry): entry is string => entry !== null)
-            .join("\n")
-        : null;
-
-      const error = isRecord(rawResult) && typeof rawResult.isError === "boolean" && rawResult.isError
-        ? content ?? "MCP tool call returned an error"
-        : null;
-
-      return {
-        content: content && content.trim().length > 0 ? content : null,
-        data: rawResult ?? null,
-        error,
-        logs,
-      };
+      return normalizeToolCallResult(rawResult, logs);
     } finally {
       await client.close();
     }
@@ -660,32 +762,62 @@ export function mcpServerService(
     try {
       const runtime = await resolveRuntimeConfig(server, request);
       logs.push(`[discovery] transport=${server.transport}`);
-      logs.push(`[discovery] command=${runtime.command} ${runtime.args.join(" ")}`.trim());
-      logs.push(`[discovery] cwd=${runtime.cwd}`);
 
-      const client = new StdioJsonRpcClient(runtime.command, runtime.args, {
-        cwd: runtime.cwd,
-        env: runtime.env,
-        timeoutMs: runtime.timeoutMs,
-        logs,
-      });
+      let toolsRaw: Array<Record<string, unknown>>;
+      let resourcesRaw: Array<Record<string, unknown>>;
+      let promptsRaw: Array<Record<string, unknown>>;
+      let serverInfo: Record<string, unknown>;
+      let protocolVersion: string | null;
+      let stdioClient: StdioJsonRpcClient | null = null;
 
       try {
-        const initializeResult = await client.request("initialize", {
-          protocolVersion: MCP_PROTOCOL_VERSION,
-          capabilities: {},
-          clientInfo: {
-            name: "paperclip.mcp-registry",
-            version: "0.1.0",
-          },
-        });
-        client.notify("notifications/initialized");
-        const toolsRaw = await callOptionalList(client, "tools/list", logs);
-        const resourcesRaw = await callOptionalList(client, "resources/list", logs);
-        const promptsRaw = await callOptionalList(client, "prompts/list", logs);
-        const serverInfo = isRecord(initializeResult) && isRecord(initializeResult.serverInfo)
-          ? initializeResult.serverInfo
-          : {};
+        if (runtime.kind === "http") {
+          logs.push(`[discovery] url=${runtime.url}`);
+          let pooled: PooledMcpClient;
+          try {
+            pooled = await acquirePooledClient(server, runtime);
+            toolsRaw = await listOptional("tools", logs, () => pooled.client.listTools());
+            resourcesRaw = await listOptional("resources", logs, pooled.client.listResources?.bind(pooled.client));
+            promptsRaw = await listOptional("prompts", logs, pooled.client.listPrompts?.bind(pooled.client));
+          } catch (error) {
+            void mcpClients.invalidateServer(server.companyId, server.id).catch(() => {});
+            throw error;
+          }
+          const version = pooled.client.getServerVersion?.();
+          serverInfo = version
+            ? { ...(version.name ? { name: version.name } : {}), ...(version.version ? { version: version.version } : {}) }
+            : {};
+          protocolVersion = null;
+        } else {
+          logs.push(`[discovery] command=${runtime.command} ${runtime.args.join(" ")}`.trim());
+          logs.push(`[discovery] cwd=${runtime.cwd}`);
+
+          stdioClient = new StdioJsonRpcClient(runtime.command, runtime.args, {
+            cwd: runtime.cwd,
+            env: runtime.env,
+            timeoutMs: runtime.timeoutMs,
+            logs,
+          });
+          const initializeResult = await stdioClient.request("initialize", {
+            protocolVersion: MCP_PROTOCOL_VERSION,
+            capabilities: {},
+            clientInfo: {
+              name: "paperclip.mcp-registry",
+              version: "0.1.0",
+            },
+          });
+          stdioClient.notify("notifications/initialized");
+          toolsRaw = await callOptionalList(stdioClient, "tools/list", logs);
+          resourcesRaw = await callOptionalList(stdioClient, "resources/list", logs);
+          promptsRaw = await callOptionalList(stdioClient, "prompts/list", logs);
+          serverInfo = isRecord(initializeResult) && isRecord(initializeResult.serverInfo)
+            ? initializeResult.serverInfo
+            : {};
+          protocolVersion = asNullableString(
+            isRecord(initializeResult) ? initializeResult.protocolVersion : null,
+          );
+        }
+
         const serverLabel = asString(serverInfo.name, server.name);
         const tools = toolsRaw
           .map(normalizeCatalogTool)
@@ -705,9 +837,7 @@ export function mcpServerService(
 
         const snapshot = await createSnapshot(server, {
           status: "succeeded",
-          protocolVersion: asNullableString(
-            isRecord(initializeResult) ? initializeResult.protocolVersion : null,
-          ),
+          protocolVersion,
           serverName: asNullableString(serverInfo.name) ?? server.name,
           serverVersion: asNullableString(serverInfo.version),
           summary,
@@ -731,7 +861,8 @@ export function mcpServerService(
           logs,
         };
       } finally {
-        await client.close();
+        // Pooled http/sse clients stay open for reuse; only stdio is per-call.
+        if (stdioClient) await stdioClient.close();
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -959,6 +1090,9 @@ export function mcpServerService(
         })
         .where(eq(mcpServers.id, id))
         .returning();
+      // Config changed — drop any pooled connection so the next tool call
+      // reconnects with the new endpoint/credentials.
+      void mcpClients.invalidateServer(existing.companyId, id).catch(() => {});
       return updated ? normalizeMcpServerRow(updated) : null;
     },
 
@@ -966,6 +1100,7 @@ export function mcpServerService(
       const existing = await getById(id);
       if (!existing) return null;
       await db.delete(mcpServers).where(eq(mcpServers.id, id));
+      void mcpClients.invalidateServer(existing.companyId, id).catch(() => {});
       return existing;
     },
 

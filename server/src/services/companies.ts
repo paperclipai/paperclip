@@ -33,6 +33,7 @@ import { notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
+import { getSharedMcpClientManager } from "./mcp-client-manager.js";
 
 export interface CompanyActivityActor {
   actorType: "user" | "agent" | "system" | "plugin";
@@ -104,6 +105,10 @@ export function companyService(db: Db) {
     for (const runId of cascade.activeRunIds) {
       await heartbeat.cancelRun(runId, "Cancelled because the company was archived");
     }
+
+    // Company deactivated — gracefully drop its pooled MCP client connections
+    // (NEO-351 lifecycle). Fire-and-forget: pool close must not block archive.
+    void getSharedMcpClientManager().invalidateCompany(id).catch(() => {});
 
     await logActivity(db, {
       companyId: id,
