@@ -1,0 +1,139 @@
+import express from "express";
+import { createServer } from "node:http";
+import { request as httpRequest } from "node:http";
+import type { AddressInfo } from "node:net";
+import { deflateSync, gunzipSync, inflateSync } from "node:zlib";
+import { afterEach, describe, expect, it } from "vitest";
+import { apiCompression } from "../middleware/api-compression.js";
+
+type RawResponse = {
+  statusCode: number;
+  headers: Record<string, string | string[] | undefined>;
+  body: Buffer;
+};
+
+const openServers: Array<ReturnType<typeof createServer>> = [];
+
+afterEach(async () => {
+  await Promise.all(openServers.splice(0).map((server) => new Promise<void>((resolve, reject) => {
+    server.close((err) => err ? reject(err) : resolve());
+  })));
+});
+
+function issueListFixture(count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `issue-${index}`,
+    companyId: "company-1",
+    identifier: `PAP-${index + 1}`,
+    title: `Synthetic issue list row ${index}`,
+    description: "repeatable payload used to prove API compression on the hot issue-list response",
+    status: index % 2 === 0 ? "in_progress" : "todo",
+    priority: "medium",
+    assigneeAgentId: index % 3 === 0 ? "agent-1" : null,
+    assigneeUserId: null,
+    parentId: null,
+    projectId: "project-1",
+    goalId: "goal-1",
+    createdAt: "2026-07-03T00:00:00.000Z",
+    updatedAt: "2026-07-03T00:00:00.000Z",
+    successfulRunHandoff: null,
+    activeRecoveryAction: null,
+  }));
+}
+
+async function requestRaw(app: express.Express, path: string, headers: Record<string, string> = {}): Promise<RawResponse> {
+  const server = createServer(app);
+  openServers.push(server);
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address() as AddressInfo;
+
+  return await new Promise<RawResponse>((resolve, reject) => {
+    const req = httpRequest({
+      host: "127.0.0.1",
+      port: address.port,
+      path,
+      headers,
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      res.on("end", () => {
+        resolve({
+          statusCode: res.statusCode ?? 0,
+          headers: res.headers,
+          body: Buffer.concat(chunks),
+        });
+      });
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+function buildApp() {
+  const app = express();
+  app.use("/api", apiCompression());
+  app.get("/api/companies/:companyId/issues", (_req, res) => {
+    res.json(issueListFixture(500));
+  });
+  app.get("/api/small", (_req, res) => {
+    res.json({ ok: true });
+  });
+  app.get("/api/encoded", (_req, res) => {
+    const body = Buffer.from(JSON.stringify({ already: "encoded" }));
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Content-Encoding", "deflate");
+    res.end(deflateSync(body));
+  });
+  return app;
+}
+
+describe("API compression middleware", () => {
+  it("compresses the hot 500-item issue-list response with gzip when the client supports it", async () => {
+    const uncompressed = await requestRaw(buildApp(), "/api/companies/company-1/issues?limit=500");
+    const compressed = await requestRaw(buildApp(), "/api/companies/company-1/issues?limit=500", {
+      "accept-encoding": "gzip",
+    });
+
+    expect(uncompressed.statusCode).toBe(200);
+    expect(compressed.statusCode).toBe(200);
+    expect(compressed.headers["content-encoding"]).toBe("gzip");
+    expect(compressed.headers["vary"]).toContain("Accept-Encoding");
+    expect(JSON.parse(gunzipSync(compressed.body).toString("utf8"))).toHaveLength(500);
+    expect(compressed.body.byteLength).toBeLessThan(uncompressed.body.byteLength / 5);
+  });
+
+  it("uses deflate when that is the supported content encoding", async () => {
+    const res = await requestRaw(buildApp(), "/api/companies/company-1/issues?limit=500", {
+      "accept-encoding": "deflate",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-encoding"]).toBe("deflate");
+    expect(JSON.parse(inflateSync(res.body).toString("utf8"))).toHaveLength(500);
+  });
+
+  it("keeps small JSON responses uncompressed for compatibility", async () => {
+    const res = await requestRaw(buildApp(), "/api/small", {
+      "accept-encoding": "gzip, deflate",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-encoding"]).toBeUndefined();
+    expect(JSON.parse(res.body.toString("utf8"))).toEqual({ ok: true });
+  });
+
+  it("does not double-compress responses that already set Content-Encoding", async () => {
+    const res = await requestRaw(buildApp(), "/api/encoded", {
+      "accept-encoding": "gzip, deflate",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-encoding"]).toBe("deflate");
+    expect(JSON.parse(inflateSync(res.body).toString("utf8"))).toEqual({ already: "encoded" });
+  });
+});
