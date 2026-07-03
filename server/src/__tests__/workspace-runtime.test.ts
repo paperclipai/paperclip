@@ -876,7 +876,7 @@ describe("realizeExecutionWorkspace", () => {
     const expectedWorktreePath = await fs.realpath(existingWorktree);
     expect(realized.created).toBe(false);
     await expect(fs.realpath(realized.cwd)).resolves.toBe(expectedWorktreePath);
-    expect(operations).toHaveLength(1);
+    expect(operations).toHaveLength(4);
     expect(operations[0]?.phase).toBe("worktree_prepare");
     expect(operations[0]?.command).toBeNull();
     expect(operations[0]?.metadata).toMatchObject({
@@ -885,6 +885,11 @@ describe("realizeExecutionWorkspace", () => {
       reused: true,
       worktreePath: expectedWorktreePath,
     });
+    expect(operations.slice(1).map((operation) => operation.command)).toEqual([
+      "git config extensions.worktreeConfig true",
+      'git config --worktree user.name "Codex Coder"',
+      'git config --worktree user.email "agent-1@agents.paperclip.local"',
+    ]);
   });
 
   it("slugifies unsafe issue titles for branch names and worktree folders", async () => {
@@ -1874,6 +1879,9 @@ describe("realizeExecutionWorkspace", () => {
 
     expect(operations.map((operation) => operation.phase)).toEqual([
       "worktree_prepare",
+      "worktree_prepare",
+      "worktree_prepare",
+      "worktree_prepare",
       "workspace_provision",
     ]);
     expect(operations[0]?.command).toContain("git worktree add");
@@ -1881,7 +1889,12 @@ describe("realizeExecutionWorkspace", () => {
       branchName: "PAP-540-record-workspace-operations",
       created: true,
     });
-    expect(operations[1]?.command).toBe("bash ./scripts/provision.sh");
+    expect(operations.slice(1, 4).map((operation) => operation.command)).toEqual([
+      "git config extensions.worktreeConfig true",
+      'git config --worktree user.name "Codex Coder"',
+      'git config --worktree user.email "agent-1@agents.paperclip.local"',
+    ]);
+    expect(operations[4]?.command).toBe("bash ./scripts/provision.sh");
   });
 
   it("truncates oversized provision command output before storing it in memory", async () => {
