@@ -53,9 +53,9 @@ export interface PositionedBar {
 }
 
 /**
- * An instant human/actor action (issue created, comment, approval, delegation,
- * assignment) — plotted as a diamond marker at its timestamp on the actor's row.
- * Humans have no "runs", so these markers are their only presence on the chart.
+ * Instant human/actor actions are deliberately not plotted in the main chart.
+ * The shape remains in the layout model so call sites do not need special cases,
+ * but rows now stay focused on actors with actual run participation.
  */
 export interface PositionedMarker {
   event: WorkTimelineEvent;
@@ -73,7 +73,7 @@ export interface ActorRow {
   h: number;
   laneCount: number;
   bars: PositionedBar[];
-  /** instant event markers (issue created / comment / approval / …) on this row. */
+  /** reserved for instant event markers; currently empty by design. */
   markers: PositionedMarker[];
 }
 
@@ -175,28 +175,17 @@ export function computeLayout(result: WorkTimelineResult, opts: LayoutOptions): 
 
   const x = (ms: number) => gutter + ((ms - fromMs) / 60000) * pxPerMinute;
 
-  // Rows: any actor with in-window activity gets a row — agents/system via their
-  // runs (spans), and humans (type "user") via their instant events, since humans
-  // have no "runs" and would otherwise never appear. Order by first activity so the
-  // eye follows the delegation chain top-to-bottom.
+  // Rows: any actor with in-window runs gets a row. Event-only comments/creates
+  // do not create marker-only rows because they make the chart noisy.
   const firstActivity = new Map<string, number>();
   const noteActivity = (actorId: string, t: number) => {
     const cur = firstActivity.get(actorId);
     if (cur === undefined || t < cur) firstActivity.set(actorId, t);
   };
   for (const s of result.spans) noteActivity(s.actorId, spanStartMs(s));
-  for (const e of result.events) noteActivity(e.actorId, new Date(e.at).getTime());
-
-  // Instant events grouped by the actor who performed them.
-  const eventsByActor = new Map<string, WorkTimelineEvent[]>();
-  for (const e of result.events) {
-    const arr = eventsByActor.get(e.actorId);
-    if (arr) arr.push(e);
-    else eventsByActor.set(e.actorId, [e]);
-  }
 
   const rowActors = result.actors
-    .filter((a) => firstActivity.has(a.id)) // drop idle actors with no run/event in-window
+    .filter((a) => firstActivity.has(a.id)) // drop actors with no run in-window
     .sort((a, b) => (firstActivity.get(a.id)! - firstActivity.get(b.id)!));
 
   // Issue hue map (ordered by first appearance) for the "by issue" color mode + legend.
@@ -263,15 +252,7 @@ export function computeLayout(result: WorkTimelineResult, opts: LayoutOptions): 
       return bar;
     });
 
-    // Instant markers for this actor, positioned at their timestamp on this row.
-    const markers: PositionedMarker[] = (eventsByActor.get(actor.id) ?? [])
-      .slice()
-      .sort((p, q) => new Date(p.at).getTime() - new Date(q.at).getTime())
-      .map((event) => ({
-        event,
-        x: x(new Date(event.at).getTime()),
-        yc: y + h / 2,
-      }));
+    const markers: PositionedMarker[] = [];
 
     rows.push({ actor, y, h, laneCount, bars, markers });
     y += h;

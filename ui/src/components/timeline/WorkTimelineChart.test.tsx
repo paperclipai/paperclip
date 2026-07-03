@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
+import type { ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { WorkTimelineResult } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,7 +29,10 @@ afterEach(() => {
   container.remove();
 });
 
-function renderChart(data: WorkTimelineResult) {
+function renderChart(
+  data: WorkTimelineResult,
+  props: Partial<ComponentProps<typeof WorkTimelineChart>> = {},
+) {
   flushSync(() => {
     root.render(
       <WorkTimelineChart
@@ -36,6 +40,7 @@ function renderChart(data: WorkTimelineResult) {
         zoom="hour"
         colorMode="issue"
         nowMs={new Date("2026-07-02T12:00:00.000Z").getTime()}
+        {...props}
       />,
     );
   });
@@ -109,7 +114,7 @@ describe("WorkTimelineChart", () => {
     expect(container.querySelector("[data-testid='work-timeline-actor-gutter']")?.textContent).toContain("CodexCoder");
   });
 
-  it("renders a human row with event markers and comment bubbles when the payload carries events", () => {
+  it("does not render created diamonds or comment bubbles from instant events", () => {
     const data = timelineSample();
     data.actors.push({ id: "user:dotta", type: "user", name: "Dotta" });
     data.events = [
@@ -119,12 +124,10 @@ describe("WorkTimelineChart", () => {
     ];
     renderChart(data);
 
-    // Dotta gets a row in the gutter…
     const gutter = container.querySelector<SVGSVGElement>("[data-testid='work-timeline-actor-gutter']");
-    expect(gutter?.textContent).toContain("Dotta");
-    // …and her instant events render as clickable markers, with comments as a chat bubble.
-    expect(container.querySelectorAll("[data-testid='timeline-event-marker']")).toHaveLength(2);
-    expect(container.querySelectorAll("[data-testid='timeline-comment-marker']")).toHaveLength(1);
+    expect(gutter?.textContent).not.toContain("Dotta");
+    expect(container.querySelectorAll("[data-testid='timeline-event-marker']")).toHaveLength(0);
+    expect(container.querySelectorAll("[data-testid='timeline-comment-marker']")).toHaveLength(0);
   });
 
   it("keeps connector lines hidden until hover and preserves run ids for filtering", () => {
@@ -153,5 +156,21 @@ describe("WorkTimelineChart", () => {
     expect(layout.connectors).toMatchObject([
       { sourceRunId: "run-1", targetRunId: "run-2", dashed: false },
     ]);
+  });
+
+  it("reserves normal wheel input for panning and uses modifier-wheel for continuous zoom", () => {
+    const onZoomScaleChange = vi.fn();
+    renderChart(timelineSample(), { onZoomScaleChange });
+
+    const scroller = container.querySelector<HTMLElement>("[data-testid='work-timeline-scroll']")!;
+    flushSync(() => {
+      scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 80, bubbles: true, cancelable: true }));
+    });
+    expect(onZoomScaleChange).not.toHaveBeenCalled();
+
+    flushSync(() => {
+      scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 80, ctrlKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(onZoomScaleChange).toHaveBeenCalledTimes(1);
   });
 });

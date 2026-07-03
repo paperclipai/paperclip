@@ -4,16 +4,13 @@
  * Renders actor rows with concurrency sub-lanes, run bars (no issue IDs on the
  * bar — identity is the thin left colour tab; truncated title shows on hover),
  * kickoff avatar chips at each bar's leading edge (incl. humans), straight
- * hover-revealed agent→agent delegation connectors (dashed for retries), an in-progress fade to
- * "now", a hover tooltip, and a full-window mini-map with a draggable brush.
+ * hover-revealed agent→agent delegation connectors (dashed for retries), an
+ * in-progress fade to "now", a hover tooltip, and a full-window mini-map with a
+ * draggable brush.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@/lib/router";
-import type {
-  TimelineEventKind,
-  WorkTimelineActor,
-  WorkTimelineResult,
-} from "@paperclipai/shared";
+import type { WorkTimelineActor, WorkTimelineResult } from "@paperclipai/shared";
 import {
   AXIS_H,
   actorType,
@@ -25,26 +22,33 @@ import {
   type ColorMode,
   type LayoutOptions,
   type PositionedBar,
-  type PositionedMarker,
 } from "@/lib/timeline/layout";
 
 export type ZoomLevel = "hour" | "day" | "week";
 
-const ZOOM_PX_PER_MIN: Record<ZoomLevel, number> = {
-  hour: 8,
-  day: 1.6,
-  week: 0.32,
+const ZOOM_DURATION_MIN: Record<ZoomLevel, number> = {
+  hour: 60,
+  day: 24 * 60,
+  week: 7 * 24 * 60,
 };
 const MIN_PX_PER_MIN = 0.08;
 const MAX_PX_PER_MIN = 12;
+const DEFAULT_VIEWPORT_W = 960;
 
-export function zoomScaleForLevel(level: ZoomLevel): number {
-  return ZOOM_PX_PER_MIN[level];
+function plotViewportWidth(viewportWidth: number): number {
+  return Math.max(240, viewportWidth - GEOM.gutter - 24);
 }
 
-export function nearestZoomForScale(pxPerMinute: number): ZoomLevel {
-  return (Object.entries(ZOOM_PX_PER_MIN) as [ZoomLevel, number][]).reduce<ZoomLevel>((best, [level, scale]) => (
-    Math.abs(scale - pxPerMinute) < Math.abs(ZOOM_PX_PER_MIN[best] - pxPerMinute) ? level : best
+export function zoomScaleForLevel(level: ZoomLevel, viewportWidth = DEFAULT_VIEWPORT_W): number {
+  return clampScale(plotViewportWidth(viewportWidth) / ZOOM_DURATION_MIN[level]);
+}
+
+export function nearestZoomForScale(pxPerMinute: number, viewportWidth = DEFAULT_VIEWPORT_W): ZoomLevel {
+  return (Object.entries(ZOOM_DURATION_MIN) as [ZoomLevel, number][]).reduce<ZoomLevel>((best, [level]) => (
+    Math.abs(zoomScaleForLevel(level, viewportWidth) - pxPerMinute)
+    < Math.abs(zoomScaleForLevel(best, viewportWidth) - pxPerMinute)
+      ? level
+      : best
   ), "day");
 }
 
@@ -68,34 +72,12 @@ const GEOM: Omit<LayoutOptions, "pxPerMinute" | "nowMs"> = {
 };
 const AVATAR_R = 11;
 const CHIP_R = 9;
-const MARKER_R = 5.5;
-
-/**
- * Per-kind styling for instant event markers. Each kind gets a
- * distinct fill + verb so created / commented / approved / delegated / assigned
- * read apart at a glance; the hues sit mid-lightness so they hold on light+dark.
- */
-const EVENT_STYLE: Record<TimelineEventKind, { fill: string; verb: string }> = {
-  created: { fill: "hsl(145 55% 42%)", verb: "created" },
-  commented: { fill: "hsl(212 62% 54%)", verb: "commented on" },
-  approved: { fill: "hsl(265 52% 60%)", verb: "approved" },
-  delegated: { fill: "hsl(28 78% 52%)", verb: "delegated" },
-  assigned: { fill: "hsl(190 58% 44%)", verb: "assigned" },
-};
 
 interface TooltipState {
   x: number;
   y: number;
   bar: PositionedBar;
   connectorHint: string | null;
-}
-
-interface MarkerTooltipState {
-  x: number;
-  y: number;
-  marker: PositionedMarker;
-  /** resolved issue label (identifier/title) or the raw id as a fallback. */
-  issueLabel: string;
 }
 
 function fmtClock(ms: number): string {
@@ -157,7 +139,7 @@ export interface WorkTimelineChartProps {
   data: WorkTimelineResult;
   zoom: ZoomLevel;
   zoomScale?: number;
-  onZoomScaleChange?: (nextScale: number) => void;
+  onZoomScaleChange?: (nextScale: number, nextZoom: ZoomLevel) => void;
   colorMode: ColorMode;
   /** override "now" (tests / stories); defaults to Date.now(). */
   nowMs?: number;
@@ -176,13 +158,12 @@ export function WorkTimelineChart({
   const initialWindowKeyRef = useRef<string | null>(null);
   const centerMsRef = useRef<number | null>(null);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
-  const [markerTooltip, setMarkerTooltip] = useState<MarkerTooltipState | null>(null);
   const [hoveredRunId, setHoveredRunId] = useState<string | null>(null);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [viewportW, setViewportW] = useState(0);
 
   const now = nowMs ?? Date.now();
-  const pxPerMinute = zoomScale ?? ZOOM_PX_PER_MIN[zoom];
+  const pxPerMinute = zoomScale ?? zoomScaleForLevel(zoom, viewportW || DEFAULT_VIEWPORT_W);
   const layout = useMemo(
     () => computeLayout(data, { ...GEOM, pxPerMinute, nowMs: now }),
     [data, pxPerMinute, now],
@@ -225,13 +206,6 @@ export function WorkTimelineChart({
     }
   }, [data.window.from, data.window.to, layout.fromMs, layout.gutter, layout.pxPerMinute, layout.toMs, layout.width, viewportW]);
 
-  // Resolve an event's issue to its human label (identifier/title) via the legend
-  // hue map, falling back to the raw id for issues that have no run in-window.
-  const issueLabelById = useMemo(
-    () => new Map(layout.issues.map((i) => [i.key, i.label])),
-    [layout.issues],
-  );
-
   const stepMs = chooseTickStepMs(layout.pxPerMinute);
   const ticks: number[] = [];
   const startTick = Math.ceil(layout.fromMs / stepMs) * stepMs;
@@ -244,7 +218,7 @@ export function WorkTimelineChart({
         return "url(#tl-hatchD)";
       return "var(--color-card)";
     }
-    return "var(--color-card)";
+    return issueColor(bar.span.issueId);
   };
 
   const openIssue = (issueId: string) => navigate(`/issues/${issueId}`);
@@ -262,28 +236,22 @@ export function WorkTimelineChart({
     setTooltip({ x: evt.clientX, y: evt.clientY, bar, connectorHint: connectorHintForBar(bar) });
   };
 
-  const showMarkerTooltip = (evt: React.MouseEvent, marker: PositionedMarker) => {
-    const issueLabel = issueLabelById.get(marker.event.issueId) ?? marker.event.issueId;
-    setMarkerTooltip({ x: evt.clientX, y: evt.clientY, marker, issueLabel });
-  };
-
   const handleWheel = (evt: React.WheelEvent<HTMLDivElement>) => {
-    if (!onZoomScaleChange || Math.abs(evt.deltaY) < Math.abs(evt.deltaX)) return;
+    if (!onZoomScaleChange || !(evt.ctrlKey || evt.metaKey || evt.altKey)) return;
     evt.preventDefault();
     const el = scrollRef.current;
     if (el) {
-      const rect = el.getBoundingClientRect();
-      const anchorX = evt.clientX - rect.left + el.scrollLeft;
-      centerMsRef.current = layout.fromMs + ((anchorX - layout.gutter) / layout.pxPerMinute) * 60000;
+      centerMsRef.current = scrollCenterMs(el);
     }
-    onZoomScaleChange(clampScale(layout.pxPerMinute * Math.exp(-evt.deltaY * 0.001)));
+    const nextScale = clampScale(layout.pxPerMinute * Math.exp(-evt.deltaY * 0.001));
+    onZoomScaleChange(nextScale, nearestZoomForScale(nextScale, el?.clientWidth ?? viewportW));
   };
 
   return (
     <div className="relative">
       <div
         ref={scrollRef}
-        className="overflow-x-auto overflow-y-hidden"
+        className="max-h-[70vh] overflow-auto"
         data-testid="work-timeline-scroll"
         onScroll={(e) => {
           setScrollLeft(e.currentTarget.scrollLeft);
@@ -442,6 +410,7 @@ export function WorkTimelineChart({
                           fill={barFill(bar)}
                           stroke="var(--color-foreground)"
                           strokeWidth={1.5}
+                          opacity={colorMode === "issue" ? 0.88 : 1}
                         />
                         {/* left colour tab = issue identity (no textual ID on the bar) */}
                         <rect x={bar.x1} y={yTop} width={3.5} height={bar.height} fill={hue} />
@@ -465,55 +434,6 @@ export function WorkTimelineChart({
                   );
                 })}
 
-                {/* instant event markers at x(event.at) on this row */}
-                {row.markers.map((marker) => {
-                  const style = EVENT_STYLE[marker.event.kind];
-                  const mx = marker.x;
-                  const my = marker.yc + AXIS_H;
-                  const markerKey = `ev-${row.actor.id}-${marker.event.kind}-${marker.event.issueId}-${marker.event.at}`;
-                  if (marker.event.kind === "commented") {
-                    return (
-                      <g
-                        key={markerKey}
-                        className="cursor-pointer"
-                        data-testid="timeline-comment-marker"
-                        onMouseMove={(e) => showMarkerTooltip(e, marker)}
-                        onMouseLeave={() => setMarkerTooltip(null)}
-                      >
-                        <rect
-                          x={mx - 6.5}
-                          y={my - 5.5}
-                          width={13}
-                          height={10}
-                          rx={3}
-                          fill={style?.fill ?? "var(--color-primary)"}
-                          stroke="var(--color-foreground)"
-                          strokeWidth={1.2}
-                        />
-                        <path
-                          d={`M ${mx - 1.5} ${my + 4.5} L ${mx - 4.5} ${my + 8} L ${mx + 3} ${my + 4.5} Z`}
-                          fill={style?.fill ?? "var(--color-primary)"}
-                          stroke="var(--color-foreground)"
-                          strokeWidth={1.2}
-                          strokeLinejoin="round"
-                        />
-                      </g>
-                    );
-                  }
-                  return (
-                    <path
-                      key={markerKey}
-                      className="cursor-pointer"
-                      data-testid="timeline-event-marker"
-                      d={`M ${mx} ${my - MARKER_R} L ${mx + MARKER_R} ${my} L ${mx} ${my + MARKER_R} L ${mx - MARKER_R} ${my} Z`}
-                      fill={style?.fill ?? "var(--color-primary)"}
-                      stroke="var(--color-foreground)"
-                      strokeWidth={1.2}
-                      onMouseMove={(e) => showMarkerTooltip(e, marker)}
-                      onMouseLeave={() => setMarkerTooltip(null)}
-                    />
-                  );
-                })}
               </g>
             );
           })}
@@ -524,37 +444,6 @@ export function WorkTimelineChart({
       <MiniMap layout={layout} scrollRef={scrollRef} viewportW={viewportW} scrollLeft={scrollLeft} />
 
       {tooltip && <Tooltip tooltip={tooltip} now={now} />}
-      {markerTooltip && <MarkerTooltip tooltip={markerTooltip} />}
-    </div>
-  );
-}
-
-function MarkerTooltip({ tooltip }: { tooltip: MarkerTooltipState }) {
-  const { marker, issueLabel } = tooltip;
-  const style = EVENT_STYLE[marker.event.kind];
-  const atMs = new Date(marker.event.at).getTime();
-  const left = Math.min(tooltip.x + 14, (typeof window !== "undefined" ? window.innerWidth : 1200) - 300);
-  return (
-    <div
-      className="pointer-events-none fixed z-50 max-w-[280px] rounded-md border border-foreground bg-card px-2.5 py-2 text-xs shadow-md"
-      style={{ left, top: tooltip.y + 14 }}
-    >
-      <div className="flex items-center gap-1.5 text-[13px] font-medium text-foreground">
-        {marker.event.kind === "commented" ? (
-          <span
-            className="inline-block h-2.5 w-3 rounded-[3px] border border-foreground"
-            style={{ backgroundColor: style?.fill ?? "var(--color-primary)" }}
-          />
-        ) : (
-          <span
-            className="inline-block h-2.5 w-2.5 rotate-45 border border-foreground"
-            style={{ backgroundColor: style?.fill ?? "var(--color-primary)" }}
-          />
-        )}
-        <span className="capitalize">{style?.verb ?? marker.event.kind}</span>
-        <span className="font-normal text-muted-foreground">{truncate(issueLabel, 28)}</span>
-      </div>
-      <div className="mt-0.5 text-muted-foreground">{fmtClock(atMs)}</div>
     </div>
   );
 }
