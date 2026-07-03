@@ -1321,14 +1321,14 @@ export function IssueProperties({
   );
 
   const assigneeTrigger = assignee ? (
-    <Identity name={assignee.name} size="sm" />
+    <Identity name={assignee.name} size="sm" shape="square" />
   ) : assigneeUserLabel ? (
     <>
       <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate text-sm" title={assigneeUserLabel}>{assigneeUserLabel}</span>
     </>
   ) : (
-    <span className="text-sm text-muted-foreground">None</span>
+    <span className="text-sm text-muted-foreground">Unassigned</span>
   );
 
   // Grouped picker options (design surface 2): a board-users section and an
