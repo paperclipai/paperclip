@@ -1,5 +1,4 @@
 import fsSync from "node:fs";
-import path from "node:path";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
@@ -13,6 +12,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { parseStringMapConfig, unresolvedBindingWarning } from "./gateway-execute.js";
 import {
+  looksLikeEveProject,
   pickFreePort,
   spawnEveServer,
   stopEveServer,
@@ -34,16 +34,6 @@ const DEFAULT_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_READY_TIMEOUT_MS = 90_000;
 const DEFAULT_COMMAND = "eve";
 
-// Keep in sync with the project-shape heuristics in local-test.ts so the
-// environment test and execute() agree on what counts as an Eve project.
-function looksLikeEveProject(projectDir: string): boolean {
-  return (
-    fsSync.existsSync(path.join(projectDir, "agent")) ||
-    fsSync.existsSync(path.join(projectDir, "agent.ts")) ||
-    fsSync.existsSync(path.join(projectDir, "package.json"))
-  );
-}
-
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, onLog, onMeta, onSpawn } = ctx;
   let handle: EveServerHandle | null = null;
@@ -62,7 +52,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     if (!looksLikeEveProject(projectDir)) {
       return errorResult({
-        errorMessage: `eve_local projectDir does not look like an Eve project (missing agent/ and package.json): ${projectDir}`,
+        errorMessage: `eve_local projectDir does not look like an Eve project (missing agent/instructions.md and agent.ts): ${projectDir}. Run \`npx eve init\` in the project directory, or double-check the path.`,
       });
     }
 

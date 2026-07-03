@@ -1,10 +1,25 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import fsSync from "node:fs";
 import net from "node:net";
+import path from "node:path";
 import {
   ensurePathInEnv,
   sanitizeInheritedPaperclipEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import { fetchInfo } from "../shared/client.js";
+
+/**
+ * Shared project-shape heuristic for eve_local, used by both execute()
+ * (hard error before any spawn) and testEnvironment() (warn path) so the
+ * two can never drift apart. A directory counts as an Eve project iff it
+ * contains `agent/instructions.md` or `agent.ts`.
+ */
+export function looksLikeEveProject(projectDir: string): boolean {
+  return (
+    fsSync.existsSync(path.join(projectDir, "agent", "instructions.md")) ||
+    fsSync.existsSync(path.join(projectDir, "agent.ts"))
+  );
+}
 
 export type EveServerHandle = {
   child: ChildProcess;

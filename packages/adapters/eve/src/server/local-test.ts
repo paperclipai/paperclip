@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process";
 import fsSync from "node:fs";
-import path from "node:path";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import { asString, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { looksLikeEveProject } from "./local-runtime.js";
 
 const COMMAND_PROBE_TIMEOUT_MS = 10_000;
 
@@ -86,9 +86,7 @@ export async function testEnvironment(
       detail: projectDir,
     });
   } else {
-    const hasInstructions = fsSync.existsSync(path.join(projectDir, "agent", "instructions.md"));
-    const hasAgentTs = fsSync.existsSync(path.join(projectDir, "agent.ts"));
-    if (!hasInstructions && !hasAgentTs) {
+    if (!looksLikeEveProject(projectDir)) {
       checks.push({
         code: "eve_local_project_shape_unrecognized",
         level: "warn",

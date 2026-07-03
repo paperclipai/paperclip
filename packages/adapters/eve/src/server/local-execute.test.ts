@@ -1,6 +1,8 @@
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { execute } from "./local-execute.js";
 
@@ -9,6 +11,30 @@ const fixturePath = path.join(
   "__fixtures__",
   "fake-eve-server.mjs",
 );
+
+const tempDirs: string[] = [];
+
+/** Make a throwaway project dir seeded with the given relative files. */
+function makeProjectDir(files: Record<string, string>): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "eve-local-test-"));
+  tempDirs.push(dir);
+  for (const [rel, content] of Object.entries(files)) {
+    const full = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, content, "utf8");
+  }
+  return dir;
+}
+
+afterAll(() => {
+  for (const dir of tempDirs) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Best effort only.
+    }
+  }
+});
 
 function processGone(pid: number): boolean {
   try {
@@ -52,7 +78,7 @@ function createContext(
       taskKey: null,
     },
     config: {
-      projectDir: process.cwd(),
+      projectDir: makeProjectDir({ "agent/instructions.md": "You are a test agent." }),
       command: process.execPath,
       commandArgs: [fixturePath],
       promptTemplate: "Do the work for {{agent.name}}",
@@ -109,10 +135,27 @@ describe("eve_local execute", () => {
     expect(ctx.spawns).toHaveLength(0);
   });
 
+  it("fails fast with a shape error for a generic Node project (only package.json) without spawning", async () => {
+    const ctx = createContext({
+      config: {
+        projectDir: makeProjectDir({ "package.json": "{}" }),
+        command: process.execPath,
+        commandArgs: [fixturePath],
+      },
+    });
+    const result = await execute(ctx);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toContain("does not look like an Eve project");
+    expect(result.errorMessage).toContain("npx eve init");
+    expect(ctx.spawns).toHaveLength(0);
+  });
+
   it("returns a readiness-timeout error and kills a server that never becomes ready", async () => {
     const ctx = createContext({
       config: {
-        projectDir: process.cwd(),
+        // Only agent.ts — proves an agent.ts-only project passes the shape guard.
+        projectDir: makeProjectDir({ "agent.ts": "export default {};" }),
         command: process.execPath,
         // Node process that runs but never listens on the port.
         commandArgs: ["-e", "setInterval(() => {}, 1000);"],
