@@ -120,7 +120,7 @@ function normalizeConnectionSummary(
   const label = readString((summary as unknown as Record<string, unknown>).label);
   return {
     type: readConnectionType(summary.type),
-    username: readString(summary.username),
+    username: null,
     hostRedacted: true,
     portRedacted: true,
     ...(label ? { label } : {}),

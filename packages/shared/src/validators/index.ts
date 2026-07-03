@@ -52,12 +52,16 @@ export {
   startEnvironmentCustomImageSetupSessionSchema,
   finishEnvironmentCustomImageSetupSessionSchema,
   cancelEnvironmentCustomImageSetupSessionSchema,
+  createEnvironmentCustomImageTerminalSessionTokenSchema,
+  environmentCustomImageTerminalSessionTokenSchema,
   type EnvironmentCustomImageSetupConnectionSummary,
   type EnvironmentCustomImageTemplate,
   type EnvironmentCustomImageSetupSession,
   type StartEnvironmentCustomImageSetupSession,
   type FinishEnvironmentCustomImageSetupSession,
   type CancelEnvironmentCustomImageSetupSession,
+  type CreateEnvironmentCustomImageTerminalSessionToken,
+  type EnvironmentCustomImageTerminalSessionToken,
 } from "./environment-custom-images.js";
 export {
   feedbackDataSharingPreferenceSchema,

@@ -6,8 +6,10 @@ import type {
   EnvironmentProbeResult,
   EnvironmentCustomImageSetupSession,
   EnvironmentCustomImageTemplate,
+  EnvironmentCustomImageTerminalSessionToken,
   FinishEnvironmentCustomImageSetupSession,
   StartEnvironmentCustomImageSetupSession,
+  CreateEnvironmentCustomImageTerminalSessionToken,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -80,6 +82,14 @@ export const environmentsApi = {
   customImageSetupSession: (sessionId: string) =>
     api.get<EnvironmentCustomImageSetupSessionResult>(
       `/environment-custom-image-setup-sessions/${sessionId}`,
+    ),
+  createCustomImageTerminalSessionToken: (
+    sessionId: string,
+    body: CreateEnvironmentCustomImageTerminalSessionToken = {},
+  ) =>
+    api.post<EnvironmentCustomImageTerminalSessionToken>(
+      `/environment-custom-image-setup-sessions/${sessionId}/terminal-session-token`,
+      body,
     ),
   finishCustomImageSetupSession: (
     sessionId: string,

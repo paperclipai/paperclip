@@ -73,7 +73,9 @@ import {
   // Environments
   createEnvironmentSchema,
   cancelEnvironmentCustomImageSetupSessionSchema,
+  createEnvironmentCustomImageTerminalSessionTokenSchema,
   environmentCustomImageSetupSessionSchema,
+  environmentCustomImageTerminalSessionTokenSchema,
   environmentCustomImageTemplateSchema,
   finishEnvironmentCustomImageSetupSessionSchema,
   updateEnvironmentSchema,
@@ -3636,6 +3638,26 @@ registry.registerPath({
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/environment-custom-image-setup-sessions/{sessionId}/terminal-session-token",
+  tags: ["environments"],
+  summary: "Mint a short-lived terminal websocket token for a customImage SSH setup session",
+  request: {
+    params: z.object({ sessionId: z.string() }),
+    body: jsonBody(createEnvironmentCustomImageTerminalSessionTokenSchema),
+  },
+  responses: {
+    201: r.ok(environmentCustomImageTerminalSessionTokenSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
   },
 });
 
