@@ -83,6 +83,7 @@ import {
   goalService,
   heartbeatService,
   issueApprovalService,
+  blockedInboxRollupService,
   issueRecoveryActionService,
   issueThreadInteractionService,
   ISSUE_LIST_DEFAULT_LIMIT,
@@ -96,6 +97,7 @@ import {
   projectService,
   routineService,
   workProductService,
+  renderBlockedInboxRollupMarkdown,
 } from "../services/index.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
 import {
@@ -3063,6 +3065,31 @@ export function issueRoutes(
     }
     const result = await getSearchService().search(companyId, query);
     res.json(result);
+  });
+
+  router.get("/companies/:companyId/issues/blocked-inbox-rollup", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (isTaskBridgeKeyActor(req)) {
+      res.status(403).json({ error: "Task bridge keys cannot use company-wide blocked inbox rollup APIs" });
+      return;
+    }
+    if (!(await actorCanReadCompanyScope(req, companyId))) {
+      res.status(403).json({ error: "Blocked inbox rollup requires company-scope read access" });
+      return;
+    }
+
+    const rollup = await blockedInboxRollupService(db).build(companyId);
+    const format = req.query.format as string | undefined;
+    if (format === "markdown") {
+      res.type("text/markdown").send(renderBlockedInboxRollupMarkdown(rollup));
+      return;
+    }
+    if (format !== undefined && format !== "json") {
+      res.status(400).json({ error: "format must be 'json' or 'markdown' when provided" });
+      return;
+    }
+    res.json(rollup);
   });
 
   router.get("/companies/:companyId/issues", async (req, res) => {
