@@ -443,6 +443,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
       }),
     });
     await waitForRuntimeStateLastRun(db, agentId, run!.id);
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
 
     const finalizeOps = await listFinalizeOperations(db, run!.id);
     expect(finalizeOps).toHaveLength(1);

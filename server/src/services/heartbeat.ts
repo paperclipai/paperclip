@@ -1201,7 +1201,7 @@ function fingerprintFinalizeWorkspaceBranchValidation(input: {
   const digest = createHash("sha256")
     .update(stableStringifyForFingerprint({
       version: 1,
-      reason: "git_worktree_branch_mismatch_after_run",
+      reason: "git_worktree_branch_incoherence",
       issueId: input.issueId,
       executionWorkspaceId: input.executionWorkspaceId,
       worktreePath: input.inspection.worktreePath ? path.resolve(input.inspection.worktreePath) : null,
@@ -10900,7 +10900,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 `Execution workspace ${branchInspection.workspaceRecord.id} expected git worktree branch "${inspection.expectedBranchName}" at "${inspection.worktreePath}", but ${inspection.reason ?? "the checked-out branch could not be verified"}. Record a sanctioned execution-workspace branch transition or restore the workspace branch before completing the run.`,
                 {
                   workspaceValidation: {
-                    reason: "git_worktree_branch_mismatch_after_run",
+                    reason: "git_worktree_branch_incoherence",
                     fingerprint: workspaceValidationFingerprint,
                     adapterType: agent.adapterType,
                     issueId: issueRef?.id ?? null,
