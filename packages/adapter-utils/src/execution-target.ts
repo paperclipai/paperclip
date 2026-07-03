@@ -15,9 +15,14 @@ import {
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
   DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES,
+  sandboxCallbackBridgeDirectories,
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
 } from "./sandbox-callback-bridge.js";
+import {
+  createSandboxRunLogTailFactory,
+  type SandboxRunLogTailFactory,
+} from "./sandbox-run-log-stream.js";
 import { createSshCommandManagedRuntimeRunner, parseSshRemoteExecutionSpec, runSshCommand, shellQuote } from "./ssh.js";
 import {
   ensureCommandResolvable,
@@ -57,6 +62,13 @@ export interface AdapterSandboxExecutionTarget {
   remoteCwd: string;
   timeoutMs?: number | null;
   runner?: CommandManagedRuntimeRunner;
+  /**
+   * Sandbox-backed adapter runs stream the agent CLI's stdout/stderr
+   * incrementally via a log-tail loop beside the callback bridge instead of
+   * waiting for the batched provider result. Streaming is ON by default;
+   * set to `false` to explicitly opt out back to batch-at-end delivery.
+   */
+  streamRunLogs?: boolean | null;
 }
 
 export type AdapterExecutionTarget =
@@ -86,6 +98,12 @@ export interface AdapterExecutionTargetProcessOptions {
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   terminalResultCleanup?: TerminalResultCleanupOptions;
+  /**
+   * Sandbox-only: factory from the Paperclip bridge handle that streams the
+   * CLI's stdout/stderr during the run. When provided, the batched provider
+   * onLog is suppressed and incremental chunks flow through `onLog` instead.
+   */
+  runLogTail?: SandboxRunLogTailFactory | null;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -98,6 +116,12 @@ export interface AdapterExecutionTargetShellOptions {
 
 export interface AdapterExecutionTargetPaperclipBridgeHandle {
   env: Record<string, string>;
+  /**
+   * Present when the sandbox target opted into run-log streaming
+   * (`streamRunLogs`). Create one handle per CLI attempt and pass it to
+   * `runAdapterExecutionTargetProcess` via `options.runLogTail`.
+   */
+  runLogTail?: SandboxRunLogTailFactory | null;
   stop(): Promise<void>;
 }
 
@@ -412,18 +436,38 @@ export async function runAdapterExecutionTargetProcess(
       phase: "adapter_startup",
       message: "Starting adapter in sandbox",
     });
-    return await runner.execute({
-      command,
-      args,
-      cwd: target.remoteCwd,
-      env,
-      stdin: options.stdin,
-      timeoutMs: options.timeoutSec > 0 ? options.timeoutSec * 1000 : target.timeoutMs ?? undefined,
-      onLog: options.onLog,
-      onSpawn: options.onSpawn
-        ? async (meta) => options.onSpawn?.({ ...meta, processGroupId: null })
-        : undefined,
-    });
+    const runLogTail = options.runLogTail?.create() ?? null;
+    let execCommand = command;
+    let execArgs = args;
+    if (runLogTail) {
+      ({ command: execCommand, args: execArgs } = runLogTail.wrapCommand(command, args));
+      runLogTail.start(options.onLog);
+    }
+    try {
+      const result = await runner.execute({
+        command: execCommand,
+        args: execArgs,
+        cwd: target.remoteCwd,
+        env,
+        stdin: options.stdin,
+        timeoutMs: options.timeoutSec > 0 ? options.timeoutSec * 1000 : target.timeoutMs ?? undefined,
+        // The tail loop already streams incremental chunks; suppress the
+        // runner's end-of-run batched onLog to avoid duplicate log bytes.
+        onLog: runLogTail ? undefined : options.onLog,
+        onSpawn: options.onSpawn
+          ? async (meta) => options.onSpawn?.({ ...meta, processGroupId: null })
+          : undefined,
+      });
+      if (runLogTail) {
+        await runLogTail.finish({ stdout: result.stdout, stderr: result.stderr });
+      }
+      return result;
+    } catch (error) {
+      if (runLogTail) {
+        await runLogTail.abort();
+      }
+      throw error;
+    }
   }
 
   const env =
@@ -886,6 +930,7 @@ export function parseAdapterExecutionTarget(value: unknown): AdapterExecutionTar
       leaseId: readStringMeta(parsed, "leaseId"),
       remoteCwd,
       timeoutMs: typeof parsed.timeoutMs === "number" ? parsed.timeoutMs : null,
+      streamRunLogs: typeof parsed.streamRunLogs === "boolean" ? parsed.streamRunLogs : null,
     };
   }
 
@@ -1194,12 +1239,25 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     throw error;
   }
 
+  let runLogTail: SandboxRunLogTailFactory | null = null;
+  if (target.transport === "sandbox" && target.streamRunLogs !== false) {
+    runLogTail = createSandboxRunLogTailFactory({
+      runner,
+      remoteCwd: target.remoteCwd,
+      logsDir: sandboxCallbackBridgeDirectories(queueDir).logsDir,
+      shellCommand,
+    });
+    await onLog("stdout", "[paperclip] Sandbox run log streaming enabled for this run.\n");
+  }
+
   return {
     env: {
       PAPERCLIP_API_URL: server.baseUrl,
       PAPERCLIP_API_KEY: bridgeToken,
       PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
+      PAPERCLIP_BRIDGE_QUEUE_DIR: queueDir,
     },
+    runLogTail,
     stop: async () => {
       await Promise.allSettled([
         server?.stop(),

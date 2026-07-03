@@ -16,6 +16,7 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
   type AdapterSandboxExecutionTarget,
 } from "./execution-target.js";
+import { createSandboxRunLogTailFactory } from "./sandbox-run-log-stream.js";
 import { runChildProcess } from "./server-utils.js";
 import { shellQuote } from "./ssh.js";
 
@@ -73,6 +74,33 @@ describe("sandbox adapter execution targets", () => {
       }
     }
     return contents;
+  }
+
+  function encodeTailTick(stdout: Buffer, stderr: Buffer): string {
+    return [
+      "__PAPERCLIP_RUN_LOG_STDOUT__",
+      stdout.toString("base64"),
+      "__PAPERCLIP_RUN_LOG_STDERR__",
+      stderr.toString("base64"),
+      "__PAPERCLIP_RUN_LOG_END__",
+      "",
+    ].join("\n");
+  }
+
+  async function waitForCondition(predicate: () => boolean, message: string): Promise<void> {
+    const deadline = Date.now() + 1000;
+    while (Date.now() < deadline) {
+      if (predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error(message);
+  }
+
+  function combinedStream(
+    events: Array<{ stream: "stdout" | "stderr"; chunk: string }>,
+    stream: "stdout" | "stderr",
+  ): string {
+    return events.filter((event) => event.stream === stream).map((event) => event.chunk).join("");
   }
 
   it("executes through the provider-neutral runner without a remote spec", async () => {
@@ -462,6 +490,245 @@ describe("sandbox adapter execution targets", () => {
       await bridge?.stop();
       await new Promise<void>((resolve) => apiServer.close(() => resolve()));
     }
+  });
+
+  it("creates a sandbox run log tail factory when bridge streaming is enabled", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-stream-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "codex");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+      streamRunLogs: true,
+      timeoutMs: 30_000,
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-stream",
+      target,
+      runtimeRootDir,
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: "http://127.0.0.1:9",
+      onLog: async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+    });
+    try {
+      expect(bridge?.runLogTail).toBeTruthy();
+      expect(combinedStream(logs, "stdout")).toContain("Sandbox run log streaming enabled");
+
+      const wrapped = bridge!.runLogTail!.create().wrapCommand("agent-cli", ["--message", "hello world"]);
+      expect(wrapped.command).toBe("sh");
+      expect(wrapped.args.join("\n")).toContain("tee -a");
+      expect(wrapped.args.join("\n")).toContain("agent-cli");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("defaults sandbox run log streaming on and honors the explicit opt-out", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-execution-target-bridge-stream-default-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    const runtimeRootDir = path.join(remoteCwd, ".paperclip-runtime", "codex");
+    await mkdir(runtimeRootDir, { recursive: true });
+
+    const baseTarget: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "e2b",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+      timeoutMs: 30_000,
+    };
+
+    const defaultBridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-stream-default",
+      target: baseTarget,
+      runtimeRootDir,
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: "http://127.0.0.1:9",
+    });
+    try {
+      expect(defaultBridge?.runLogTail).toBeTruthy();
+    } finally {
+      await defaultBridge?.stop();
+    }
+
+    const optOutBridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-bridge-stream-opt-out",
+      target: { ...baseTarget, streamRunLogs: false },
+      runtimeRootDir,
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: "http://127.0.0.1:9",
+    });
+    try {
+      expect(optOutBridge?.runLogTail ?? null).toBeNull();
+    } finally {
+      await optOutBridge?.stop();
+    }
+  });
+
+  it("tails sandbox run log chunks with byte offsets and dedupes the final batch", async () => {
+    const stdoutText = "stdout-abc\n";
+    const stderrText = "stderr-xyz\n";
+    const stdoutBytes = Buffer.from(stdoutText, "utf8");
+    const stderrBytes = Buffer.from(stderrText, "utf8");
+    const stdoutOffsets: number[] = [];
+    const stderrOffsets: number[] = [];
+    const events: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+
+    const runner = {
+      execute: vi.fn(async (input: {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+        timeoutMs?: number;
+      }) => {
+        const script = input.args?.[1] ?? "";
+        const offsets = [...script.matchAll(/tail -c \+(\d+) /g)].map((match) => Number(match[1]));
+        const stdoutStart = Math.max(0, (offsets[0] ?? 1) - 1);
+        const stderrStart = Math.max(0, (offsets[1] ?? 1) - 1);
+        stdoutOffsets.push(stdoutStart + 1);
+        stderrOffsets.push(stderrStart + 1);
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: encodeTailTick(
+            stdoutBytes.subarray(stdoutStart, stdoutStart + 4),
+            stderrBytes.subarray(stderrStart, stderrStart + 4),
+          ),
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        };
+      }),
+    };
+
+    const tail = createSandboxRunLogTailFactory({
+      runner,
+      remoteCwd: "/workspace",
+      logsDir: "/workspace/.paperclip-runtime/codex/paperclip-bridge/queue/logs",
+      pollIntervalMs: 1,
+      maxChunkBytesPerTick: 4,
+      tickTimeoutMs: 50,
+    }).create();
+
+    tail.start(async (stream, chunk) => {
+      events.push({ stream, chunk });
+    });
+
+    await waitForCondition(
+      () => combinedStream(events, "stdout") === stdoutText && combinedStream(events, "stderr") === stderrText,
+      "run log tail did not stream expected stdout/stderr chunks",
+    );
+
+    await tail.finish({ stdout: stdoutText, stderr: stderrText });
+
+    expect(combinedStream(events, "stdout")).toBe(stdoutText);
+    expect(combinedStream(events, "stderr")).toBe(stderrText);
+    expect(stdoutOffsets.slice(0, 3)).toEqual([1, 5, 9]);
+    expect(stderrOffsets.slice(0, 3)).toEqual([1, 5, 9]);
+    expect(runner.execute).toHaveBeenCalledWith(expect.objectContaining({
+      command: "sh",
+      cwd: "/workspace",
+      env: { PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge" },
+      timeoutMs: 50,
+    }));
+  });
+
+  it("emits only the unstreamed final suffix when the tail loop stops early", async () => {
+    const finalStdout = "prefix suffix\n";
+    const finalBytes = Buffer.from(finalStdout, "utf8");
+    const events: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+
+    const runner = {
+      execute: vi.fn(async (input: { args?: string[] }) => {
+        const script = input.args?.[1] ?? "";
+        const offsets = [...script.matchAll(/tail -c \+(\d+) /g)].map((match) => Number(match[1]));
+        const stdoutStart = Math.max(0, (offsets[0] ?? 1) - 1);
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: encodeTailTick(finalBytes.subarray(stdoutStart, stdoutStart + 7), Buffer.alloc(0)),
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        };
+      }),
+    };
+
+    const tail = createSandboxRunLogTailFactory({
+      runner,
+      remoteCwd: "/workspace",
+      logsDir: "/workspace/.paperclip-runtime/codex/paperclip-bridge/queue/logs",
+      pollIntervalMs: 1,
+      maxChunkBytesPerTick: 7,
+      tickTimeoutMs: 50,
+    }).create();
+
+    tail.start(async (stream, chunk) => {
+      events.push({ stream, chunk });
+    });
+    await waitForCondition(() => combinedStream(events, "stdout").length >= 7, "run log tail did not emit prefix");
+    await tail.finish({ stdout: finalStdout, stderr: "" });
+
+    expect(combinedStream(events, "stdout")).toBe(finalStdout);
+    expect(events.filter((event) => event.stream === "stdout").map((event) => event.chunk).join("|"))
+      .toBe("prefix |suffix\n");
+  });
+
+  it("delivers the final batch and a warning when run log polling degrades", async () => {
+    const events: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    const runner = {
+      execute: vi.fn(async () => ({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "tail failed",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+
+    const tail = createSandboxRunLogTailFactory({
+      runner,
+      remoteCwd: "/workspace",
+      logsDir: "/workspace/.paperclip-runtime/codex/paperclip-bridge/queue/logs",
+      pollIntervalMs: 1,
+      tickTimeoutMs: 50,
+      maxConsecutiveFailures: 1,
+    }).create();
+
+    tail.start(async (stream, chunk) => {
+      events.push({ stream, chunk });
+    });
+    await waitForCondition(() => runner.execute.mock.calls.length >= 1, "run log tail did not poll before finish");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await tail.finish({ stdout: "final out\n", stderr: "final err\n" });
+
+    expect(combinedStream(events, "stdout")).toBe("final out\n");
+    expect(combinedStream(events, "stderr")).toBe(
+      "final err\n[paperclip] Run log streaming degraded during the run; remaining output was delivered at completion.\n",
+    );
   });
 
   it("exposes the Paperclip bridge to the sandbox shell surface", async () => {

@@ -382,10 +382,28 @@ function makeTransferProgress(
   phase: RuntimeProgressPhase,
   direction: RuntimeProgressDirection,
   label?: string,
-): { options: SandboxTransferProgressOptions | undefined; finish: () => Promise<void> } {
-  if (!sink) return { options: undefined, finish: async () => {} };
+  runtimeStatus?: {
+    sink: RuntimeStatusSink | undefined;
+    phase: RuntimeStatusPhase;
+  },
+): {
+  options: SandboxTransferProgressOptions | undefined;
+  finish: (doneBytes?: number, totalBytes?: number | null) => Promise<void>;
+} {
+  if (!sink && !runtimeStatus?.sink) {
+    return { options: undefined, finish: async () => {} };
+  }
   const reporter = createRuntimeProgressReporter({
-    sink,
+    sink: async (line) => {
+      await sink?.(line);
+      if (runtimeStatus?.sink) {
+        await emitRuntimeStatus(
+          runtimeStatus.sink,
+          runtimeStatus.phase,
+          line.replace(/^\[paperclip\]\s*/, "").trim(),
+        );
+      }
+    },
     phase,
     direction,
     target: "sandbox",
@@ -397,8 +415,8 @@ function makeTransferProgress(
         await reporter.report(transferredBytes, totalBytes);
       },
     },
-    finish: async () => {
-      await reporter.complete();
+    finish: async (doneBytes, totalBytes) => {
+      await reporter.complete(doneBytes, totalBytes);
     },
   };
 }
@@ -460,9 +478,15 @@ export async function prepareSandboxManagedRuntime(input: {
         const gitTarBytes = await fs.readFile(gitTarPath);
         const remoteGitTar = path.posix.join(runtimeRootDir, "git-workspace-upload.tar");
         await input.client.makeDir(runtimeRootDir);
-        const gitUpload = makeTransferProgress(input.onProgress, "Syncing", "to", "git history");
+        const gitUpload = makeTransferProgress(
+          input.onProgress,
+          "Syncing",
+          "to",
+          "git history",
+          { sink: input.onRuntimeProgress, phase: "git_sync" },
+        );
         await input.client.writeFile(remoteGitTar, toArrayBuffer(gitTarBytes), gitUpload.options);
-        await gitUpload.finish();
+        await gitUpload.finish(gitTarBytes.byteLength, gitTarBytes.byteLength);
         await input.client.run(
           `sh -c ${shellQuote(
             `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
@@ -494,13 +518,19 @@ export async function prepareSandboxManagedRuntime(input: {
     const workspaceTarBytes = await fs.readFile(workspaceTarPath);
     const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-upload.tar");
     await input.client.makeDir(runtimeRootDir);
-    const workspaceUpload = makeTransferProgress(input.onProgress, "Syncing", "to", "workspace");
+    const workspaceUpload = makeTransferProgress(
+      input.onProgress,
+      "Syncing",
+      "to",
+      "workspace",
+      { sink: input.onRuntimeProgress, phase: "config_sync" },
+    );
     await input.client.writeFile(
       remoteWorkspaceTar,
       toArrayBuffer(workspaceTarBytes),
       workspaceUpload.options,
     );
-    await workspaceUpload.finish();
+    await workspaceUpload.finish(workspaceTarBytes.byteLength, workspaceTarBytes.byteLength);
     const extractWorkspaceTarCommand = gitSnapshot
       ? `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
         `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
@@ -534,9 +564,15 @@ export async function prepareSandboxManagedRuntime(input: {
       const assetTarBytes = await fs.readFile(assetTarPath);
       const remoteAssetDir = path.posix.join(runtimeRootDir, asset.key);
       const remoteAssetTar = path.posix.join(runtimeRootDir, `${asset.key}-upload.tar`);
-      const assetUpload = makeTransferProgress(input.onProgress, "Syncing", "to", asset.key);
+      const assetUpload = makeTransferProgress(
+        input.onProgress,
+        "Syncing",
+        "to",
+        asset.key,
+        { sink: input.onRuntimeProgress, phase: "config_sync" },
+      );
       await input.client.writeFile(remoteAssetTar, toArrayBuffer(assetTarBytes), assetUpload.options);
-      await assetUpload.finish();
+      await assetUpload.finish(assetTarBytes.byteLength, assetTarBytes.byteLength);
       await input.client.run(
         `sh -c ${shellQuote(
           `rm -rf ${shellQuote(remoteAssetDir)} && ` +
@@ -582,9 +618,16 @@ export async function prepareSandboxManagedRuntime(input: {
               }))}`,
               { timeoutMs: input.spec.timeoutMs },
             );
-            const gitExport = makeTransferProgress(restoreSink, "Exporting git history", "from");
+            const gitExport = makeTransferProgress(
+              restoreSink,
+              "Exporting git history",
+              "from",
+              undefined,
+              { sink: input.onRuntimeProgress, phase: "export" },
+            );
             const bundleBytes = await input.client.readFile(remoteGitBundle, gitExport.options);
-            await gitExport.finish();
+            const bundleBuffer = toBuffer(bundleBytes);
+            await gitExport.finish(bundleBuffer.byteLength, bundleBuffer.byteLength);
             await input.client.remove(remoteGitBundle).catch(() => undefined);
             remoteWorkspaceStatus = await input.client.readFile(remoteWorkspaceStatusPath)
               .then((bytes) => toBuffer(bytes).toString("utf8").trim())
@@ -592,7 +635,7 @@ export async function prepareSandboxManagedRuntime(input: {
             remoteWorkspaceStatus = remoteWorkspaceStatus === "clean" ? "clean" : "dirty";
             await input.client.remove(remoteWorkspaceStatusPath).catch(() => undefined);
             const bundlePath = path.join(tempDir, "git-delta.bundle");
-            await fs.writeFile(bundlePath, toBuffer(bundleBytes));
+            await fs.writeFile(bundlePath, bundleBuffer);
             importedHead = await fetchGitBundleIntoLocalRef({
               localDir: input.workspaceLocalDir,
               bundlePath,
@@ -612,13 +655,20 @@ export async function prepareSandboxManagedRuntime(input: {
             }))}`,
             { timeoutMs: input.spec.timeoutMs },
           );
-          const workspaceRestore = makeTransferProgress(restoreSink, "Restoring", "from", "workspace");
+          const workspaceRestore = makeTransferProgress(
+            restoreSink,
+            "Restoring",
+            "from",
+            "workspace",
+            { sink: input.onRuntimeProgress, phase: "restore" },
+          );
           const archiveBytes = await input.client.readFile(remoteWorkspaceTar, workspaceRestore.options);
-          await workspaceRestore.finish();
+          const archiveBuffer = toBuffer(archiveBytes);
+          await workspaceRestore.finish(archiveBuffer.byteLength, archiveBuffer.byteLength);
           await input.client.remove(remoteWorkspaceTar).catch(() => undefined);
           const localArchivePath = path.join(tempDir, "workspace.tar");
           const extractedDir = path.join(tempDir, "workspace");
-          await fs.writeFile(localArchivePath, toBuffer(archiveBytes));
+          await fs.writeFile(localArchivePath, archiveBuffer);
           await extractTarballToDirectory({
             archivePath: localArchivePath,
             localDir: extractedDir,

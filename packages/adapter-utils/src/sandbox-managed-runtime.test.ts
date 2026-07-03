@@ -148,12 +148,18 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(localWorkspaceDir, "local-stale.txt"), "utf8")).resolves.toBe("remove\n");
     await expect(readFile(path.join(localWorkspaceDir, ".claude", "settings.json"), "utf8")).resolves.toBe("{\"local\":true}\n");
     await expect(readFile(path.join(localWorkspaceDir, ".paperclip-runtime", "state.json"), "utf8")).resolves.toBe("{}\n");
-    expect(runtimeStatuses).toEqual([
+    expect(runtimeStatuses).toEqual(expect.arrayContaining([
       "config_sync:Syncing workspace to sandbox",
       "config_sync:Syncing runtime assets to sandbox",
       "restore:Restoring workspace from sandbox",
       "finalize:Finalizing sandbox workspace",
-    ]);
+    ]));
+    expect(runtimeStatuses).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^config_sync:Syncing workspace to sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
+      expect.stringMatching(/^config_sync:Syncing skills to sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
+      expect.stringMatching(/^restore:Restoring workspace from sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
+    ]));
+    expect(runtimeStatuses.at(-1)).toBe("finalize:Finalizing sandbox workspace");
   });
 
   it("syncs git-backed workspaces through a shallow standalone clone and keeps .git out of archives", async () => {
@@ -185,19 +191,29 @@ describe("sandbox managed runtime", () => {
 
     const uploadedTars: { remotePath: string; bytes: Buffer }[] = [];
     const downloadedTars: { remotePath: string; bytes: Buffer }[] = [];
+    const driveProgress = async (
+      total: number,
+      onProgress: ((done: number, total: number | null) => void | Promise<void>) | undefined,
+    ) => {
+      if (!onProgress) return;
+      await onProgress(Math.max(1, Math.floor(total / 2)), total);
+      await onProgress(total, total);
+    };
     const client: SandboxManagedRuntimeClient = {
       makeDir: async (remotePath) => {
         await mkdir(remotePath, { recursive: true });
       },
-      writeFile: async (remotePath, bytes) => {
+      writeFile: async (remotePath, bytes, options) => {
         await mkdir(path.dirname(remotePath), { recursive: true });
         const buffer = Buffer.from(bytes);
         if (remotePath.endsWith("-upload.tar")) uploadedTars.push({ remotePath, bytes: buffer });
         await writeFile(remotePath, buffer);
+        await driveProgress(buffer.byteLength, options?.onProgress);
       },
-      readFile: async (remotePath) => {
+      readFile: async (remotePath, options) => {
         const buffer = await readFile(remotePath);
         if (remotePath.endsWith("workspace-download.tar")) downloadedTars.push({ remotePath, bytes: buffer });
+        await driveProgress(buffer.byteLength, options?.onProgress);
         return buffer;
       },
       listFiles: async () => [],
@@ -208,7 +224,7 @@ describe("sandbox managed runtime", () => {
         await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
       },
     };
-    const runtimeStatusPhases: string[] = [];
+    const runtimeStatuses: Array<{ phase: string; message: string }> = [];
 
     const prepared = await prepareSandboxManagedRuntime({
       spec: {
@@ -223,7 +239,7 @@ describe("sandbox managed runtime", () => {
       client,
       workspaceLocalDir: localWorkspaceDir,
       onRuntimeProgress: async (status) => {
-        runtimeStatusPhases.push(status.phase);
+        runtimeStatuses.push({ phase: status.phase, message: status.message });
       },
     });
 
@@ -269,13 +285,21 @@ describe("sandbox managed runtime", () => {
     const downloadMembers = await listTarMembers(rootDir, "workspace-download-list.tar", downloadedTars[0]!.bytes);
     expect(downloadMembers.some((entry) => entry === ".git" || entry.startsWith(".git/"))).toBe(false);
     expect(downloadMembers.some((entry) => entry === "node_modules" || entry.startsWith("node_modules/"))).toBe(false);
-    expect(runtimeStatusPhases).toEqual([
+    expect(runtimeStatuses.map((status) => status.phase)).toEqual(expect.arrayContaining([
       "git_sync",
       "config_sync",
       "export",
       "restore",
       "finalize",
-    ]);
+    ]));
+    expect(runtimeStatuses.some((status) => (
+      status.phase === "git_sync" &&
+      /^Syncing git history to sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/.test(status.message)
+    ))).toBe(true);
+    expect(runtimeStatuses.some((status) => (
+      status.phase === "export" &&
+      /^Exporting git history from sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/.test(status.message)
+    ))).toBe(true);
   });
 
   it("repairs stale host index deletions when the sandbox restores a clean git worktree", async () => {

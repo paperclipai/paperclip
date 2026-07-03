@@ -3464,6 +3464,8 @@ describe("IssueChatThread", () => {
               adapterType: "codex_local",
               currentStatusMessage: "Syncing git worktree to sandbox",
               currentStatusUpdatedAt: "2026-04-06T12:00:05.000Z",
+              currentToolName: "bash",
+              lastEventAt: new Date(Date.now() - 2000).toISOString(),
             }}
             onAdd={async () => {}}
             enableLiveTranscriptPolling={false}
@@ -3473,8 +3475,9 @@ describe("IssueChatThread", () => {
     });
 
     expect(container.textContent).toContain("Working...");
-    expect(container.textContent).toContain("Syncing git worktree to sandbox");
-    expect(container.querySelector('[title="Syncing git worktree to sandbox"]')).not.toBeNull();
+    expect(container.textContent).toContain("Using bash");
+    expect(container.textContent).not.toContain("last activity");
+    expect(container.textContent).toMatch(/\d+ seconds? ago/);
 
     act(() => {
       root.unmount();

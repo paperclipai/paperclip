@@ -20,6 +20,7 @@ When a heartbeat fires, Paperclip:
 |---------|----------|-------------|
 | [Claude Code](/adapters/claude-local) | `claude_local` | Runs Claude Code CLI locally |
 | [Codex](/adapters/codex-local) | `codex_local` | Runs OpenAI Codex CLI locally |
+| ACPX Local | `acpx_local` | Runs Claude, Codex, or a custom ACP agent through ACPX with live structured event streaming |
 | [Gemini CLI](/adapters/gemini-local) | `gemini_local` | Runs Gemini CLI locally (experimental — adapter package exists, not yet in stable type enum) |
 | OpenCode | `opencode_local` | Runs OpenCode CLI locally (multi-provider `provider/model`) |
 | Cursor | `cursor` | Runs Cursor in background mode |
@@ -92,11 +93,24 @@ my-adapter/
 
 ## Choosing an Adapter
 
-- **Need a coding agent?** Use `claude_local`, `codex_local`, `opencode_local`, `hermes_local`, or install `droid_local` as an external plugin
+- **Need a coding agent?** Use `claude_local`, `codex_local`, `acpx_local`, `opencode_local`, `hermes_local`, or install `droid_local` as an external plugin
+- **Need the richest live run feedback (especially for sandbox workers)?** Use `acpx_local` — see [Feedback granularity](#feedback-granularity)
 - **Need Hermes on another host or already running as a service?** Use `hermes_gateway`
 - **Need to run a script or command?** Use `process`
 - **Need to call a custom external service?** Use `http`
 - **Need something custom?** [Create your own adapter](/adapters/creating-an-adapter) or [build an external adapter plugin](/adapters/external-adapters)
+
+## Feedback Granularity
+
+Adapter choice determines how much structured, live detail a run's transcript can show while the agent is still working. Every adapter's stdout is streamed to the run log and rendered live in the UI — including runs on sandbox execution targets, whose logs are tailed and delivered incrementally — but the *granularity* of what you see depends on the event stream the adapter emits.
+
+Rough tiers, richest first:
+
+1. **`acpx_local` — full structured event stream.** ACPX emits a JSONL event per meaningful runtime moment: `acpx.session` (agent, mode, session identity), `acpx.status` (progress text plus context-window usage), `acpx.text_delta` (assistant/thinking token deltas), `acpx.tool_call` (tool title, call id, and status updates as the call progresses), `acpx.result` (stop reason summary), and `acpx.error` (code, message, retryability). The transcript renders these as live-updating message, thinking, tool, and status blocks, and repeated `acpx.tool_call` status updates fold into a single tool card instead of stacking duplicates.
+2. **CLI wrappers (`claude_local`, `codex_local`, `cursor`, `opencode_local`, …).** These parse each CLI's own streaming JSON output. You get assistant text, tool calls/results, and a final usage/cost summary, but granularity is limited to what the CLI prints — some emit tool progress, others only call/finish pairs.
+3. **Generic adapters (`process`, `http`).** Plain stdout/stderr lines with no structured transcript — you see raw output only.
+
+**Recommendation:** for sandbox workers, prefer `acpx_local`. Sandbox run logs are streamed live, so the richer the event stream, the more useful the live transcript and status line are while a remote run is in flight. ACPX's status events (including context usage) and incremental tool-call updates give the closest thing to watching the agent work locally.
 
 ## UI Parser Contract
 

@@ -36,6 +36,11 @@ function pickToolUseId(parsed: Record<string, unknown>): string {
   );
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
 function statusText(parsed: Record<string, unknown>): string {
   const text = asString(parsed.text).trim();
   const tag = asString(parsed.tag).trim();
@@ -86,12 +91,19 @@ export function parseAcpxStdoutLine(line: string, ts: string): TranscriptEntry[]
     const text = asString(parsed.text);
     const name = asString(parsed.name, "acp_tool");
     const toolUseId = pickToolUseId(parsed);
-    const input =
-      parsed.input !== undefined
-        ? parsed.input
-        : text || status
-          ? { ...(text ? { text } : {}), ...(status ? { status } : {}) }
-          : {};
+    const parsedInput = parsed.input;
+    const input = (() => {
+      if (parsedInput === undefined) {
+        return text || status ? { ...(text ? { text } : {}), ...(status ? { status } : {}) } : {};
+      }
+      const inputRecord = asRecord(parsedInput);
+      if (!inputRecord) return parsedInput;
+      return {
+        ...inputRecord,
+        ...(status && inputRecord.status === undefined ? { status } : {}),
+        ...(text && inputRecord.text === undefined ? { text } : {}),
+      };
+    })();
     const entries: TranscriptEntry[] = [
       {
         kind: "tool_call",

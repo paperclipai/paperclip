@@ -893,6 +893,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             if (!cleaned.trim()) return;
             await onLog(stream, cleaned);
           },
+          runLogTail: paperclipBridge?.runLogTail,
         });
         const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
         return {

@@ -75,6 +75,7 @@ const fakeSandboxEnvironmentConfigSchema = z.object({
     .min(1, "Fake sandbox environments require an image.")
     .default("ubuntu:24.04"),
   reuseLease: z.boolean().optional().default(false),
+  streamRunLogs: z.boolean().optional(),
 }).strict();
 
 const pluginSandboxProviderKeySchema = z.string()
@@ -89,6 +90,7 @@ const pluginSandboxEnvironmentConfigSchema = z.object({
   provider: pluginSandboxProviderKeySchema,
   timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
   reuseLease: z.boolean().optional().default(false),
+  streamRunLogs: z.boolean().optional(),
 }).catchall(z.unknown());
 
 const pluginEnvironmentConfigSchema = z.object({

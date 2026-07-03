@@ -688,6 +688,9 @@ describe("buildIssueChatMessages", () => {
       adapterType: "codex_local",
       currentStatusMessage: "Syncing git worktree to sandbox",
       currentStatusUpdatedAt: "2026-04-06T12:03:05.000Z",
+      currentToolName: "bash",
+      lastAssistantSnippet: "Checking repository status",
+      lastEventAt: "2026-04-06T12:03:08.000Z",
     };
 
     const messages = buildIssueChatMessages({
@@ -709,6 +712,9 @@ describe("buildIssueChatMessages", () => {
           runId: "run-active-1",
           currentStatusMessage: "Syncing git worktree to sandbox",
           currentStatusUpdatedAt: "2026-04-06T12:03:05.000Z",
+          currentToolName: "bash",
+          lastAssistantSnippet: "Checking repository status",
+          lastEventAt: "2026-04-06T12:03:08.000Z",
         },
       },
     });

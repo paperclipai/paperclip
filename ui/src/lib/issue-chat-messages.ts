@@ -871,6 +871,11 @@ function normalizeLiveRuns(
       currentStatusUpdatedAt: activeRun.currentStatusUpdatedAt
         ? toDate(activeRun.currentStatusUpdatedAt).toISOString()
         : null,
+      currentToolName: activeRun.currentToolName ?? null,
+      lastAssistantSnippet: activeRun.lastAssistantSnippet ?? null,
+      lastEventAt: activeRun.lastEventAt
+        ? toDate(activeRun.lastEventAt).toISOString()
+        : null,
     });
   }
   return [...deduped.values()].sort((a, b) => toTimestamp(a.createdAt) - toTimestamp(b.createdAt));
@@ -911,6 +916,9 @@ function createLiveRunMessage(args: {
       chainOfThoughtSegments: segments,
       currentStatusMessage: run.currentStatusMessage ?? null,
       currentStatusUpdatedAt: run.currentStatusUpdatedAt ?? null,
+      currentToolName: run.currentToolName ?? null,
+      lastAssistantSnippet: run.lastAssistantSnippet ?? null,
+      lastEventAt: run.lastEventAt ?? null,
     }),
   };
   return message;

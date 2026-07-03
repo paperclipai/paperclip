@@ -204,8 +204,11 @@ import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import {
   clearHeartbeatRunRuntimeStatus,
   getHeartbeatRunRuntimeStatus,
+  MAX_HEARTBEAT_RUN_RUNTIME_ASSISTANT_SNIPPET_CHARS,
+  MAX_HEARTBEAT_RUN_RUNTIME_TOOL_NAME_CHARS,
   setHeartbeatRunRuntimeStatus,
   sweepExpiredHeartbeatRunRuntimeStatuses,
+  touchHeartbeatRunRuntimeStatus,
 } from "./heartbeat-run-runtime-status.js";
 import {
   assertLowTrustRuntimeServicesAllowed,
@@ -266,6 +269,7 @@ export {
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
 } from "./recovery/service.js";
 export const ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS = 60 * 1000;
+export const ACTIVE_RUN_LOG_RUNTIME_STATUS_REFRESH_INTERVAL_MS = 5 * 1000;
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
   2 * 60 * 1000,
   10 * 60 * 1000,
@@ -3985,6 +3989,9 @@ function decorateHeartbeatRunRuntimeStatus<T extends HeartbeatRunRuntimeStatusRu
 ): T & {
   currentStatusMessage: string | null;
   currentStatusUpdatedAt: Date | null;
+  currentToolName: string | null;
+  lastAssistantSnippet: string | null;
+  lastEventAt: Date | null;
 } {
   if (isHeartbeatRunTerminalStatus(run.status)) {
     clearHeartbeatRunRuntimeStatus(run.id);
@@ -4007,7 +4014,39 @@ function decorateHeartbeatRunRuntimeStatus<T extends HeartbeatRunRuntimeStatusRu
     ...run,
     currentStatusMessage: currentStatus?.message ?? null,
     currentStatusUpdatedAt: currentStatus?.updatedAt ?? null,
+    currentToolName: currentStatus?.currentToolName ?? null,
+    lastAssistantSnippet: currentStatus?.lastAssistantSnippet ?? null,
+    lastEventAt: currentStatus?.lastEventAt ?? null,
   };
+}
+
+function publishHeartbeatRunRuntimeProgress(status: {
+  companyId: string;
+  runId: string;
+  agentId: string;
+  issueId: string | null;
+  phase: HeartbeatRunStatusPhase;
+  message: string;
+  updatedAt: Date;
+  currentToolName?: string | null;
+  lastAssistantSnippet?: string | null;
+  lastEventAt?: Date | null;
+}) {
+  publishLiveEvent({
+    companyId: status.companyId,
+    type: "heartbeat.run.progress",
+    payload: {
+      runId: status.runId,
+      agentId: status.agentId,
+      issueId: status.issueId,
+      phase: status.phase,
+      message: status.message,
+      currentToolName: status.currentToolName ?? null,
+      lastAssistantSnippet: status.lastAssistantSnippet ?? null,
+      lastEventAt: (status.lastEventAt ?? status.updatedAt).toISOString(),
+      updatedAt: status.updatedAt.toISOString(),
+    },
+  });
 }
 
 function recordHeartbeatRunRuntimeProgress(
@@ -4023,22 +4062,119 @@ function recordHeartbeatRunRuntimeProgress(
     runId: run.id,
     phase: update.phase as HeartbeatRunStatusPhase,
     message: update.message,
+    currentToolName: readNonEmptyString(update.currentToolName) ?? null,
+    lastAssistantSnippet: readNonEmptyString(update.lastAssistantSnippet) ?? null,
+    lastEventAt: update.lastEventAt ? new Date(update.lastEventAt) : new Date(),
   });
   if (!status) return null;
 
-  publishLiveEvent({
-    companyId: status.companyId,
-    type: "heartbeat.run.progress",
-    payload: {
-      runId: status.runId,
-      agentId: status.agentId,
-      issueId: status.issueId,
-      phase: status.phase,
-      message: status.message,
-      updatedAt: status.updatedAt.toISOString(),
-    },
-  });
+  publishHeartbeatRunRuntimeProgress(status);
   return status;
+}
+
+function sanitizeLiveRunProgressText(value: string, maxChars: number): string | null {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  const redacted = redactSensitiveText(normalized);
+  if (redacted.length <= maxChars) return redacted;
+  return `${redacted.slice(0, maxChars - 3)}...`;
+}
+
+function readLiveRunProgressString(value: unknown, maxChars: number): string | null {
+  return typeof value === "string" ? sanitizeLiveRunProgressText(value, maxChars) : null;
+}
+
+function readFirstLiveRunProgressString(maxChars: number, values: unknown[]): string | null {
+  for (const value of values) {
+    const text = readLiveRunProgressString(value, maxChars);
+    if (text) return text;
+  }
+  return null;
+}
+
+function readLiveRunToolName(payload: Record<string, unknown> | null, eventType: string): string | null {
+  const toolCall = parseObject(payload?.tool_call) ?? parseObject(payload?.toolCall);
+  const message = parseObject(payload?.message);
+  const direct = readFirstLiveRunProgressString(MAX_HEARTBEAT_RUN_RUNTIME_TOOL_NAME_CHARS, [
+    payload?.toolName,
+    payload?.tool_name,
+    payload?.tool,
+    payload?.name,
+    payload?.title,
+    toolCall?.name,
+    toolCall?.toolName,
+    message?.name,
+    message?.toolName,
+  ]);
+  if (direct) return direct;
+
+  const normalizedEventType = eventType.toLowerCase();
+  if (!normalizedEventType.includes("tool")) return null;
+  return readLiveRunProgressString(eventType.replace(/[._-]+/g, " "), MAX_HEARTBEAT_RUN_RUNTIME_TOOL_NAME_CHARS);
+}
+
+function readLiveRunAssistantSnippet(
+  payload: Record<string, unknown> | null,
+  eventType: string,
+  message: string | null,
+): string | null {
+  const normalizedEventType = eventType.toLowerCase();
+  const messagePayload = parseObject(payload?.message);
+  const direct = readFirstLiveRunProgressString(MAX_HEARTBEAT_RUN_RUNTIME_ASSISTANT_SNIPPET_CHARS, [
+    payload?.text,
+    payload?.delta,
+    payload?.text_delta,
+    payload?.content,
+    payload?.summary,
+    messagePayload?.text,
+    messagePayload?.content,
+  ]);
+  if (direct) return direct;
+
+  if (
+    normalizedEventType.includes("assistant") ||
+    normalizedEventType.includes("text_delta") ||
+    normalizedEventType.includes("message.delta") ||
+    normalizedEventType.includes("message_delta")
+  ) {
+    return message ? sanitizeLiveRunProgressText(message, MAX_HEARTBEAT_RUN_RUNTIME_ASSISTANT_SNIPPET_CHARS) : null;
+  }
+
+  return null;
+}
+
+function buildRunEventRuntimeProgress(input: {
+  eventType: string;
+  message: string | null;
+  payload: Record<string, unknown> | null;
+  at: Date;
+}) {
+  const normalizedEventType = input.eventType.toLowerCase();
+  if (normalizedEventType === "lifecycle" || normalizedEventType === "adapter.invoke") {
+    return null;
+  }
+
+  const currentToolName = readLiveRunToolName(input.payload, input.eventType);
+  const lastAssistantSnippet = readLiveRunAssistantSnippet(input.payload, input.eventType, input.message);
+  const fallbackMessage =
+    readLiveRunProgressString(input.message, MAX_HEARTBEAT_RUN_RUNTIME_ASSISTANT_SNIPPET_CHARS) ??
+    sanitizeLiveRunProgressText(
+      input.eventType.replace(/[._-]+/g, " "),
+      MAX_HEARTBEAT_RUN_RUNTIME_ASSISTANT_SNIPPET_CHARS,
+    );
+  const message =
+    currentToolName
+      ? `Using ${currentToolName}`
+      : lastAssistantSnippet ?? fallbackMessage;
+
+  if (!message) return null;
+  return {
+    phase: "run_activity" as const,
+    message,
+    currentToolName,
+    lastAssistantSnippet,
+    lastEventAt: input.at,
+  };
 }
 
 export function buildPaperclipTaskMarkdown(input: {
@@ -6552,6 +6688,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload?: Record<string, unknown>;
     },
   ) {
+    const eventAt = new Date();
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const sanitizedMessage = event.message
       ? redactCurrentUserText(event.message, currentUserRedactionOptions)
@@ -6563,6 +6700,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const sanitizedPayload = secretSanitizedPayload
       ? redactCurrentUserValue(secretSanitizedPayload, currentUserRedactionOptions)
       : secretSanitizedPayload;
+    const issueId = readRuntimeStatusIssueIdCandidate(run) ?? null;
+    const progress = buildRunEventRuntimeProgress({
+      eventType: event.eventType,
+      message: sanitizedMessage ?? null,
+      payload: sanitizedPayload ?? null,
+      at: eventAt,
+    });
 
     await db.insert(heartbeatRunEvents).values({
       companyId: run.companyId,
@@ -6583,15 +6727,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: {
         runId: run.id,
         agentId: run.agentId,
+        issueId,
         seq,
         eventType: event.eventType,
         stream: event.stream ?? null,
         level: event.level ?? null,
         color: event.color ?? null,
         message: sanitizedMessage ?? null,
+        currentToolName: progress?.currentToolName ?? null,
+        lastAssistantSnippet: progress?.lastAssistantSnippet ?? null,
+        lastEventAt: (progress?.lastEventAt ?? eventAt).toISOString(),
         payload: sanitizedPayload ?? null,
       },
     });
+    if (progress && isHeartbeatRunRuntimeStatusActive(run.status)) {
+      const status = setHeartbeatRunRuntimeStatus({
+        companyId: run.companyId,
+        issueId,
+        agentId: run.agentId,
+        runId: run.id,
+        phase: progress.phase,
+        message: progress.message,
+        updatedAt: eventAt,
+        currentToolName: progress.currentToolName,
+        lastAssistantSnippet: progress.lastAssistantSnippet,
+        lastEventAt: progress.lastEventAt,
+      });
+      if (status) publishHeartbeatRunRuntimeProgress(status);
+    }
   }
 
   async function nextRunEventSeq(runId: string) {
@@ -10489,6 +10652,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     let stderrExcerpt = "";
     let outputSeq = Number(run.lastOutputSeq ?? 0);
     let lastOutputFlushAt: Date | null = run.lastOutputAt ?? null;
+    let lastLogRuntimeStatusTouchMs = 0;
     const outputProgressState: {
       pending: {
         at: Date;
@@ -10629,6 +10793,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
         await flushOutputProgress();
 
+        // Streamed CLI output is real run activity: keep the in-memory
+        // runtime status ("Working... / X ago") fresh between structured
+        // events so sandbox runs with mid-run log streaming never show a
+        // minutes-stale timestamp. Throttled to avoid churning the live
+        // event stream on every 250ms tail chunk.
+        const logActivityAt = new Date(ts);
+        if (
+          isHeartbeatRunRuntimeStatusActive(run.status) &&
+          logActivityAt.getTime() - lastLogRuntimeStatusTouchMs >=
+            ACTIVE_RUN_LOG_RUNTIME_STATUS_REFRESH_INTERVAL_MS
+        ) {
+          lastLogRuntimeStatusTouchMs = logActivityAt.getTime();
+          const touchedStatus = touchHeartbeatRunRuntimeStatus({
+            companyId: run.companyId,
+            issueId,
+            agentId: run.agentId,
+            runId: run.id,
+            at: logActivityAt,
+          });
+          if (touchedStatus) publishHeartbeatRunRuntimeProgress(touchedStatus);
+        }
+
         const payloadChunk =
           sanitizedChunk.length > MAX_LIVE_LOG_CHUNK_BYTES
             ? sanitizedChunk.slice(sanitizedChunk.length - MAX_LIVE_LOG_CHUNK_BYTES)
@@ -10640,6 +10826,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           payload: {
             runId: run.id,
             agentId: run.agentId,
+            issueId,
             ts,
             stream,
             chunk: payloadChunk,

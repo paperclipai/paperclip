@@ -1231,6 +1231,16 @@ export function CompanyEnvironments() {
                       This provider does not declare additional configuration fields.
                     </div>
                   )}
+                  <ToggleField
+                    label="Stream run logs"
+                    hint="Stream the agent CLI's output live while sandbox runs execute (recommended). Turn off to deliver output only when the run finishes."
+                    checked={environmentForm.sandboxConfig.streamRunLogs !== false}
+                    onChange={(checked) =>
+                      setEnvironmentForm((current) => ({
+                        ...current,
+                        sandboxConfig: { ...current.sandboxConfig, streamRunLogs: checked },
+                      }))}
+                  />
                 </div>
               ) : null}
 

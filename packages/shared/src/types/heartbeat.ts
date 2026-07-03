@@ -64,6 +64,9 @@ export interface HeartbeatRun {
    */
   currentStatusMessage?: string | null;
   currentStatusUpdatedAt?: Date | string | null;
+  currentToolName?: string | null;
+  lastAssistantSnippet?: string | null;
+  lastEventAt?: Date | string | null;
 }
 
 /**
@@ -77,7 +80,8 @@ export type HeartbeatRunStatusPhase =
   | "adapter_startup"
   | "restore"
   | "export"
-  | "finalize";
+  | "finalize"
+  | "run_activity";
 
 export type HeartbeatRunOutputSilenceLevel =
   | "not_applicable"

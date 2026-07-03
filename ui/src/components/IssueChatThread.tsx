@@ -301,6 +301,59 @@ function useLiveElapsed(startMs: number | null | undefined, active: boolean): st
   return formatDurationWords(Date.now() - startMs);
 }
 
+function readCustomString(custom: Record<string, unknown>, key: string): string {
+  return typeof custom[key] === "string" ? custom[key].trim() : "";
+}
+
+function toTimestampOrNull(value: string): number | null {
+  if (!value) return null;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function IssueChatLiveRunStatusLine({
+  custom,
+  active,
+  className,
+}: {
+  custom: Record<string, unknown>;
+  active: boolean;
+  className?: string;
+}) {
+  const currentStatusMessage = readCustomString(custom, "currentStatusMessage");
+  const currentToolName = readCustomString(custom, "currentToolName");
+  const lastAssistantSnippet = readCustomString(custom, "lastAssistantSnippet");
+  const lastEventAt = readCustomString(custom, "lastEventAt");
+  const lastEventAtMs = toTimestampOrNull(lastEventAt);
+  const lastActivityElapsed = useLiveElapsed(lastEventAtMs, active);
+  const lastActivityAgeMs = lastEventAtMs ? Date.now() - lastEventAtMs : null;
+
+  if (!active) return null;
+
+  const primary =
+    currentToolName
+      ? `Using ${currentToolName}`
+      : lastAssistantSnippet
+        ? lastAssistantSnippet
+        : currentStatusMessage;
+  const activityText = lastActivityElapsed
+    ? lastActivityAgeMs !== null && lastActivityAgeMs >= 15_000
+      ? `no output for ${lastActivityElapsed} - still running`
+      : `${lastActivityElapsed} ago`
+    : "";
+  const text = [primary, activityText].filter(Boolean).join(" · ");
+  if (!text) return null;
+
+  return (
+    <span
+      className={cn("mt-0.5 block truncate text-xs leading-4 text-muted-foreground/70", className)}
+      title={text}
+    >
+      {text}
+    </span>
+  );
+}
+
 function useStableEvent<T extends (...args: never[]) => unknown>(callback: T | undefined): T | undefined {
   const callbackRef = useRef(callback);
   useLayoutEffect(() => {
@@ -873,8 +926,6 @@ function IssueChatChainOfThought({
   const rawSegments = Array.isArray(custom.chainOfThoughtSegments)
     ? (custom.chainOfThoughtSegments as SegmentTiming[])
     : [];
-  const currentStatusMessage =
-    typeof custom.currentStatusMessage === "string" ? custom.currentStatusMessage.trim() : "";
   const segmentTiming = myIndex >= 0 ? rawSegments[myIndex] ?? null : null;
   const isActive = isCoTSegmentActive({
     isMessageRunning,
@@ -937,14 +988,7 @@ function IssueChatChainOfThought({
               <span className="text-xs text-muted-foreground/40">· {toolSummary}</span>
             ) : null}
           </div>
-          {isActive && currentStatusMessage ? (
-            <span
-              className="mt-0.5 block truncate pl-6 text-xs leading-4 text-muted-foreground/70"
-              title={currentStatusMessage}
-            >
-              {currentStatusMessage}
-            </span>
-          ) : null}
+          <IssueChatLiveRunStatusLine custom={custom} active={isActive} className="pl-6" />
         </div>
         {hasContent ? (
           <ChevronDown className={cn("mt-0.5 h-4 w-4 shrink-0 text-muted-foreground/50 transition-transform", expanded && "rotate-180")} />
@@ -1592,8 +1636,6 @@ function IssueChatAssistantMessage({
     ? custom.notices.filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
     : [];
   const waitingText = typeof custom.waitingText === "string" ? custom.waitingText : "";
-  const currentStatusMessage =
-    typeof custom.currentStatusMessage === "string" ? custom.currentStatusMessage.trim() : "";
   const isRunning = message.role === "assistant" && message.status?.type === "running";
   const runHref = runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
   const canStopRun = Boolean(runId) && (isRunActive || runStatus === "queued" || runStatus === "running");
@@ -1881,14 +1923,7 @@ function IssueChatAssistantMessage({
                         <span className="shimmer-text">{waitingText}</span>
                       </span>
                     </div>
-                    {isRunning && currentStatusMessage ? (
-                      <div
-                        className="mt-0.5 truncate pl-6 text-xs leading-4 text-muted-foreground/70"
-                        title={currentStatusMessage}
-                      >
-                        {currentStatusMessage}
-                      </div>
-                    ) : null}
+                    <IssueChatLiveRunStatusLine custom={custom} active={isRunning} className="pl-6" />
                   </div>
                 ) : null}
                 {notices.length > 0 ? (
@@ -4215,6 +4250,9 @@ export function IssueChatThread({
         outputSilence: activeRun.outputSilence,
         currentStatusMessage: activeRun.currentStatusMessage ?? null,
         currentStatusUpdatedAt: toIsoString(activeRun.currentStatusUpdatedAt),
+        currentToolName: activeRun.currentToolName ?? null,
+        lastAssistantSnippet: activeRun.lastAssistantSnippet ?? null,
+        lastEventAt: toIsoString(activeRun.lastEventAt),
       });
     }
     return [...deduped.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
