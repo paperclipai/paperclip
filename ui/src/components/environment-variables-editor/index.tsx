@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AlertCircle, KeyRound, Plus } from "lucide-react";
+import { AlertCircle, KeyRound, Plus, RotateCcw, Save } from "lucide-react";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -78,19 +78,29 @@ export function EnvironmentVariablesEditor({
 }: EnvironmentVariablesEditorProps) {
   const toast = useOptionalToastActions();
   const [rows, setRows] = useState<EnvRow[]>(() => rowsFromValue(value));
+  const rowsRef = useRef(rows);
+  const initialValueKey = useMemo(() => normalizedEnvKey(value), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const committedValueKeyRef = useRef(initialValueKey);
+  const lastPropValueKeyRef = useRef(initialValueKey);
+  const pendingSaveValueKeyRef = useRef<string | null>(null);
+  const [committedValueKey, setCommittedValueKey] = useState(initialValueKey);
   // Seeded (already-committed) names are "touched" so a saved reserved/invalid
   // var surfaces its message on load; freshly-typed rows wait for blur (§6.2).
   const [touchedNames, setTouchedNames] = useState<ReadonlySet<string>>(
     () => new Set(rowsFromValue(value).map((row) => row.name.trim()).filter(Boolean)),
   );
   const [pendingFocus, setPendingFocus] = useState<{ rowId: string; field: "name" | "value" } | null>(null);
-  const valueRef = useRef(value);
-  const emittingRef = useRef(false);
 
-  function adoptExternalValue(nextValue: Record<string, EnvBinding>) {
-    valueRef.current = nextValue;
-    const nextRows = rowsFromValue(nextValue);
-    setRows(nextRows);
+  useEffect(() => {
+    rowsRef.current = rows;
+  }, [rows]);
+
+  function markCommitted(nextValueKey: string) {
+    committedValueKeyRef.current = nextValueKey;
+    setCommittedValueKey(nextValueKey);
+  }
+
+  function touchCommittedNames(nextRows: EnvRow[]) {
     setTouchedNames((prev) => {
       const next = new Set(prev);
       for (const row of nextRows) {
@@ -101,39 +111,55 @@ export function EnvironmentVariablesEditor({
     });
   }
 
-  // Controlled sync: adopt real external value changes, but preserve row ids
-  // across semantically-equivalent save/refetch echoes so focused inputs do not
-  // remount while the user is typing.
+  function adoptExternalValue(nextValue: Record<string, EnvBinding>) {
+    const nextRows = rowsFromValue(nextValue);
+    setRows(nextRows);
+    touchCommittedNames(nextRows);
+  }
+
+  // Controlled sync: clean external changes replace the editor rows, but dirty
+  // local drafts are never clobbered by refetches. A save echo only advances the
+  // committed baseline so the focused row keeps its local id.
   useEffect(() => {
     const incomingValueKey = normalizedEnvKey(value);
-    const currentValueKey = normalizedEnvKey(valueRef.current);
-    if (emittingRef.current) {
-      emittingRef.current = false;
-    }
-    if (incomingValueKey === currentValueKey) {
-      valueRef.current = value;
+    if (incomingValueKey === lastPropValueKeyRef.current) {
       return;
     }
-    if (value !== valueRef.current) {
+    lastPropValueKeyRef.current = incomingValueKey;
+
+    const draftValueKey = normalizedEnvKey(valueFromRows(rowsRef.current));
+    const draftIsDirty = draftValueKey !== committedValueKeyRef.current;
+    const matchesPendingSave = pendingSaveValueKeyRef.current === incomingValueKey;
+    if (matchesPendingSave) {
+      pendingSaveValueKeyRef.current = null;
+    }
+
+    if (!draftIsDirty) {
       adoptExternalValue(value);
+      markCommitted(incomingValueKey);
+      return;
+    }
+
+    if (matchesPendingSave || draftValueKey === incomingValueKey) {
+      touchCommittedNames(rowsRef.current);
+      markCommitted(incomingValueKey);
     }
   }, [value]);
 
-  function commit(nextRows: EnvRow[]) {
+  const draftValue = useMemo(() => valueFromRows(rows), [rows]);
+  const draftValueKey = useMemo(() => normalizedEnvKey(draftValue), [draftValue]);
+  const hasUnsavedChanges = draftValueKey !== committedValueKey;
+
+  function updateDraft(nextRows: EnvRow[]) {
     setRows(nextRows);
-    const nextValue = valueFromRows(nextRows);
-    if (normalizedEnvKey(nextValue) === normalizedEnvKey(valueRef.current)) return;
-    emittingRef.current = true;
-    valueRef.current = nextValue ?? {};
-    onChange(nextValue);
   }
 
   function patchRow(id: string, patch: Partial<EnvRow>) {
-    commit(rows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+    updateDraft(rows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
   }
 
   function removeRow(id: string) {
-    commit(rows.filter((row) => row.id !== id));
+    updateDraft(rows.filter((row) => row.id !== id));
   }
 
   function addRow() {
@@ -170,7 +196,7 @@ export function EnvironmentVariablesEditor({
         working.push({ ...emptyRow(), name: key, textValue: pairValue });
       }
     }
-    commit(working);
+    updateDraft(working);
     toast?.pushToast({ title: `Imported ${pairs.length} variable${pairs.length === 1 ? "" : "s"}`, tone: "success" });
     return true;
   }
@@ -189,7 +215,20 @@ export function EnvironmentVariablesEditor({
     target.secretId = secret.id;
     target.version = "latest";
     if (!target.name) target.name = envKeyFromSecretName(secret.name);
-    commit(next);
+    updateDraft(next);
+  }
+
+  function saveDraft() {
+    if (!hasUnsavedChanges) return;
+    pendingSaveValueKeyRef.current = draftValueKey;
+    onChange(draftValue);
+  }
+
+  function revertDraft() {
+    pendingSaveValueKeyRef.current = null;
+    lastPropValueKeyRef.current = normalizedEnvKey(value);
+    adoptExternalValue(value);
+    markCommitted(lastPropValueKeyRef.current);
   }
 
   const duplicateNames = useMemo(() => computeDuplicateNames(rows), [rows]);
@@ -287,6 +326,28 @@ export function EnvironmentVariablesEditor({
                 + {secret.name}
               </button>
             ))}
+          </div>
+        ) : null}
+
+        {hasUnsavedChanges && !disabled ? (
+          <div className="ml-auto flex items-center gap-1.5">
+            <span className="text-[11px] text-muted-foreground">Unsaved changes</span>
+            <button
+              type="button"
+              onClick={revertDraft}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            >
+              <RotateCcw className="size-3.5" />
+              Revert
+            </button>
+            <button
+              type="button"
+              onClick={saveDraft}
+              className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            >
+              <Save className="size-3.5" />
+              Save
+            </button>
           </div>
         ) : null}
       </div>

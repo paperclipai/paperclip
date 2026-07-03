@@ -135,6 +135,10 @@ describe("EnvironmentVariablesEditor", () => {
     return [...container.querySelectorAll<HTMLInputElement>('input[aria-label="Variable name"]')];
   }
 
+  function saveButton() {
+    return [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Save")!;
+  }
+
   it("renders header + a row per binding, no trailing ghost row", () => {
     render(
       <EnvironmentVariablesEditor
@@ -206,7 +210,7 @@ describe("EnvironmentVariablesEditor", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it("emits plain bindings as the value is edited", async () => {
+  it("saves plain bindings only when Save is clicked", async () => {
     const onChange = vi.fn();
     render(<EnvironmentVariablesEditor value={{ FOO: { type: "plain", value: "" } }} secrets={secrets} onChange={onChange} onCreateSecret={async () => secrets[0]} />);
     const valueInput = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
@@ -214,10 +218,70 @@ describe("EnvironmentVariablesEditor", () => {
     setter.call(valueInput, "bar");
     valueInput.dispatchEvent(new Event("input", { bubbles: true }));
     await flush();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Unsaved changes");
+    saveButton().click();
+    await flush();
     expect(onChange).toHaveBeenLastCalledWith({ FOO: { type: "plain", value: "bar" } });
   });
 
-  it("keeps the active row mounted when a save echo returns an equivalent value", async () => {
+  it("does not emit or remount while typing a new variable before manual save", async () => {
+    const onChange = vi.fn();
+    const savedValue: Record<string, EnvBinding> = {
+      ZED: { type: "plain", value: "z" },
+      ALPHA: { type: "plain", value: "a" },
+    };
+    render(
+      <EnvironmentVariablesEditor
+        value={savedValue}
+        secrets={secrets}
+        onChange={onChange}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    const addButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Add variable"))!;
+    addButton.click();
+    await flush();
+
+    const newNameInput = nameInputs().at(-1)!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(newNameInput, "ca");
+    newNameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    newNameInput.focus();
+    await flush();
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(newNameInput);
+
+    rerender(
+      <EnvironmentVariablesEditor
+        value={savedValue}
+        secrets={secrets}
+        onChange={onChange}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    await flush();
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(newNameInput);
+    expect(nameInputs().at(-1)).toBe(newNameInput);
+
+    setter.call(newNameInput, "carol");
+    newNameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+    expect(onChange).not.toHaveBeenCalled();
+
+    saveButton().click();
+    await flush();
+    expect(onChange).toHaveBeenLastCalledWith({
+      ZED: { type: "plain", value: "z" },
+      ALPHA: { type: "plain", value: "a" },
+      carol: { type: "plain", value: "" },
+    });
+  });
+
+  it("keeps the active row mounted when a manual save echo returns an equivalent value", async () => {
     const onChange = vi.fn();
     const emptyValue: Record<string, EnvBinding> = {};
     const savedValue: Record<string, EnvBinding> = { API_TOKEN: { type: "plain", value: "secret-value" } };
@@ -245,6 +309,9 @@ describe("EnvironmentVariablesEditor", () => {
     valueInput.focus();
     await flush();
     expect(document.activeElement).toBe(valueInput);
+    expect(onChange).not.toHaveBeenCalled();
+    saveButton().click();
+    await flush();
     expect(onChange).toHaveBeenLastCalledWith(savedValue);
 
     rerender(
@@ -266,6 +333,9 @@ describe("EnvironmentVariablesEditor", () => {
     render(<EnvironmentVariablesEditor value={{ FOO: { type: "plain", value: "x" } }} secrets={secrets} onChange={onChange} onCreateSecret={async () => secrets[0]} />);
     const removeButton = container.querySelector<HTMLButtonElement>('button[aria-label^="Remove"]')!;
     removeButton.click();
+    await flush();
+    expect(onChange).not.toHaveBeenCalled();
+    saveButton().click();
     await flush();
     expect(onChange).toHaveBeenLastCalledWith(undefined);
   });
@@ -319,6 +389,9 @@ describe("EnvironmentVariablesEditor", () => {
     const pasteEvent = new Event("paste", { bubbles: true, cancelable: true }) as unknown as ClipboardEvent;
     Object.defineProperty(pasteEvent, "clipboardData", { value: clipboardData });
     nameInput.dispatchEvent(pasteEvent);
+    await flush();
+    expect(onChange).not.toHaveBeenCalled();
+    saveButton().click();
     await flush();
     expect(onChange).toHaveBeenLastCalledWith({
       A: { type: "plain", value: "1" },
