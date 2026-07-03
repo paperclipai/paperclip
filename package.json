@@ -18,6 +18,7 @@
     "db:backup": "./scripts/backup-db.sh",
     "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
     "build:npm": "./scripts/build-npm.sh",
+    "test:openclaw-gateway-patch": "node scripts/test-patch-openclaw-gateway-dist.mjs",
     "release": "./scripts/release.sh",
     "release:canary": "./scripts/release.sh canary",
     "release:stable": "./scripts/release.sh stable",

@@ -1,0 +1,35 @@
+{
+  "$meta": {
+    "version": 1,
+    "updatedAt": "2026-03-20T00:00:00.000Z",
+    "source": "railway"
+  },
+  "database": {
+    "mode": "postgres"
+  },
+  "logging": {
+    "mode": "stdout"
+  },
+  "server": {
+    "deploymentMode": "authenticated",
+    "exposure": "private",
+    "host": "0.0.0.0",
+    "port": 3100,
+    "allowedHostnames": [],
+    "serveUi": true
+  },
+  "auth": {
+    "baseUrlMode": "auto",
+    "disableSignUp": false
+  },
+  "storage": {
+    "provider": "local_disk",
+    "localDisk": {
+      "baseDir": "/paperclip/instances/default/data/storage"
+    }
+  },
+  "secrets": {
+    "provider": "local_encrypted",
+    "strictMode": false
+  }
+}

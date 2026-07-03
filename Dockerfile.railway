@@ -1,0 +1,40 @@
+FROM node:22-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl git \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g paperclipai@2026.318.0 --omit=dev --no-audit --no-fund
+
+COPY scripts/patch-openclaw-gateway-dist.mjs /tmp/patch-openclaw-gateway-dist.mjs
+COPY scripts/test-patch-openclaw-gateway-dist.mjs /tmp/test-patch-openclaw-gateway-dist.mjs
+COPY scripts/verify-openclaw-gateway-dist-patch.mjs /tmp/verify-openclaw-gateway-dist-patch.mjs
+RUN node /tmp/test-patch-openclaw-gateway-dist.mjs
+RUN node /tmp/patch-openclaw-gateway-dist.mjs
+RUN node /tmp/verify-openclaw-gateway-dist-patch.mjs
+
+# Overwrite bundled UI with patched build (OpenClaw Gateway enabled)
+COPY ui-patched/ /usr/local/lib/node_modules/paperclipai/node_modules/@paperclipai/server/ui-dist/
+
+RUN mkdir -p /paperclip/instances/default/data/storage \
+  /paperclip/instances/default/secrets \
+  /paperclip/instances/default/logs \
+  && chown -R node:node /paperclip
+
+COPY config.railway.json /paperclip/instances/default/config.json
+RUN chown node:node /paperclip/instances/default/config.json
+
+ENV NODE_ENV=production \
+  HOME=/paperclip \
+  HOST=0.0.0.0 \
+  SERVE_UI=true \
+  PAPERCLIP_HOME=/paperclip \
+  PAPERCLIP_INSTANCE_ID=default \
+  PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \
+  PAPERCLIP_DEPLOYMENT_MODE=authenticated \
+  PAPERCLIP_DEPLOYMENT_EXPOSURE=private
+
+EXPOSE 3100
+
+USER node
+CMD ["sh", "-c", "SERVER_PATH=$(find /usr/local/lib/node_modules -path '*/@paperclipai/server/dist/index.js' | head -1) && node $SERVER_PATH"]
