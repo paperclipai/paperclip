@@ -5,6 +5,7 @@ import {
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   createRoutineTriggerSchema,
+  isUuidLike,
   rotateRoutineTriggerSecretSchema,
   runRoutineSchema,
   updateDocumentAnnotationThreadSchema,
@@ -189,7 +190,12 @@ export function routineRoutes(
   });
 
   router.get("/routines/:id", async (req, res) => {
-    const detail = await svc.getDetail(req.params.id as string);
+    const id = req.params.id as string;
+    if (!isUuidLike(id)) {
+      res.status(400).json({ error: "Invalid routine id" });
+      return;
+    }
+    const detail = await svc.getDetail(id);
     if (!detail) {
       res.status(404).json({ error: "Routine not found" });
       return;

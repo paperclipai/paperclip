@@ -47,6 +47,7 @@ import {
   getBuiltinRoutineVariableValues,
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
+  isUuidLike,
   isValidRoutineDateString,
   pluginOperationIssueOriginKind,
   stringifyRoutineVariableValue,
@@ -564,6 +565,9 @@ export function routineService(
   });
 
   async function getRoutineById(id: string) {
+    // Route/short ids that are not valid UUIDs would make Postgres throw
+    // `invalid input syntax for type uuid` (a 500). Treat them as "not found".
+    if (!isUuidLike(id)) return null;
     return db
       .select()
       .from(routines)

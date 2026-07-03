@@ -325,6 +325,38 @@ describe("routine routes", () => {
     expect(mockRoutineService.list).toHaveBeenCalledWith(companyId, { projectId });
   });
 
+  it("rejects a malformed (non-UUID) routine detail id with 400 instead of hitting the service", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app).get("/api/routines/6dba0ccf");
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: "Invalid routine id" });
+    expect(mockRoutineService.getDetail).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when a well-formed routine id has no detail", async () => {
+    mockRoutineService.getDetail.mockResolvedValue(null);
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app).get(`/api/routines/${routineId}`);
+
+    expect(res.status).toBe(404);
+    expect(mockRoutineService.getDetail).toHaveBeenCalledWith(routineId);
+  });
+
   it("lists routine revisions for a board member in newest-first service order", async () => {
     const app = await createApp({
       type: "board",
