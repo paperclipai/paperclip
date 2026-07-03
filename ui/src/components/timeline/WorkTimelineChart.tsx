@@ -20,7 +20,6 @@ import {
   formatDuration,
   issueColor,
   shortLabel,
-  type ColorMode,
   type LayoutOptions,
   type PositionedBar,
 } from "@/lib/timeline/layout";
@@ -80,6 +79,11 @@ interface TooltipState {
   y: number;
   bar: PositionedBar;
   connectorHint: string | null;
+}
+
+interface DragSelectionState {
+  anchorX: number;
+  currentX: number;
 }
 
 function fmtClock(ms: number): string {
@@ -172,7 +176,6 @@ export interface WorkTimelineChartProps {
   zoomScale?: number;
   onZoomScaleChange?: (nextScale: number, nextZoom: ZoomLevel) => void;
   onVisibleRangeLabelChange?: (label: string) => void;
-  colorMode: ColorMode;
   /** override "now" (tests / stories); defaults to Date.now(). */
   nowMs?: number;
 }
@@ -183,7 +186,6 @@ export function WorkTimelineChart({
   zoomScale,
   onZoomScaleChange,
   onVisibleRangeLabelChange,
-  colorMode,
   nowMs,
 }: WorkTimelineChartProps) {
   const location = useLocation();
@@ -194,6 +196,7 @@ export function WorkTimelineChart({
   const [hoveredRunId, setHoveredRunId] = useState<string | null>(null);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [viewportW, setViewportW] = useState(0);
+  const [dragSelection, setDragSelection] = useState<DragSelectionState | null>(null);
 
   const now = nowMs ?? Date.now();
   const pxPerMinute = zoomScale ?? zoomScaleForLevel(zoom, viewportW || DEFAULT_VIEWPORT_W);
@@ -274,15 +277,7 @@ export function WorkTimelineChart({
   const startTick = Math.ceil(layout.fromMs / stepMs) * stepMs;
   for (let ms = startTick; ms <= layout.toMs; ms += stepMs) ticks.push(ms);
 
-  const barFill = (bar: PositionedBar): string => {
-    if (colorMode === "status") {
-      if (bar.running) return "url(#tl-hatchV)";
-      if (bar.span.status.includes("change") || bar.span.status.includes("fail") || bar.span.status === "blocked")
-        return "url(#tl-hatchD)";
-      return "var(--color-card)";
-    }
-    return issueColor(bar.span.issueId);
-  };
+  const barFill = (bar: PositionedBar): string => issueColor(bar.span.issueId);
 
   const openIssue = (issueId: string) => {
     const href = applyCompanyPrefix(`/issues/${encodeURIComponent(issueId)}`, companyPrefix);
@@ -292,12 +287,56 @@ export function WorkTimelineChart({
   const updateVisibleRange = (fromMs: number, toMs: number) => {
     if (!onZoomScaleChange) return;
     const el = scrollRef.current;
-    const durationMs = Math.max(MIN_MINIMAP_SELECTION_MS, toMs - fromMs);
-    const centerMs = fromMs + durationMs / 2;
+    const boundedFrom = Math.max(layout.fromMs, Math.min(layout.toMs, fromMs));
+    const boundedTo = Math.max(layout.fromMs, Math.min(layout.toMs, toMs));
+    const startMs = Math.min(boundedFrom, boundedTo);
+    const endMs = Math.max(boundedFrom, boundedTo);
+    const durationMs = Math.max(MIN_MINIMAP_SELECTION_MS, endMs - startMs);
+    const centerMs = startMs + durationMs / 2;
     const effectiveViewportW = el?.clientWidth || viewportW || DEFAULT_VIEWPORT_W;
     const nextScale = clampScale(plotViewportWidth(effectiveViewportW) / (durationMs / 60000));
     centerMsRef.current = centerMs;
     onZoomScaleChange(nextScale, nearestZoomForScale(nextScale, effectiveViewportW));
+  };
+
+  const svgXFromClientX = (clientX: number, el: SVGSVGElement) => {
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0) return layout.gutter;
+    const x = ((clientX - rect.left) / rect.width) * layout.width;
+    return Math.max(layout.gutter, Math.min(layout.width - 40, x));
+  };
+
+  const msFromSvgX = (x: number) => (
+    layout.fromMs + ((x - layout.gutter) / layout.pxPerMinute) * 60000
+  );
+
+  const handlePlotMouseDown = (event: React.MouseEvent<SVGSVGElement>) => {
+    if (!onZoomScaleChange || event.button !== 0) return;
+    const el = event.currentTarget;
+    const startX = svgXFromClientX(event.clientX, el);
+    event.preventDefault();
+    setTooltip(null);
+    setHoveredRunId(null);
+    setDragSelection({ anchorX: startX, currentX: startX });
+
+    const move = (moveEvent: MouseEvent) => {
+      setDragSelection((prev) => prev && {
+        ...prev,
+        currentX: svgXFromClientX(moveEvent.clientX, el),
+      });
+    };
+    const up = (upEvent: MouseEvent) => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      const endX = svgXFromClientX(upEvent.clientX, el);
+      setDragSelection(null);
+      if (Math.abs(endX - startX) < 8) return;
+      const fromMs = Math.min(msFromSvgX(startX), msFromSvgX(endX));
+      const toMs = Math.max(msFromSvgX(startX), msFromSvgX(endX));
+      updateVisibleRange(fromMs, toMs);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
   };
 
   const connectorHintForBar = (bar: PositionedBar): string | null => {
@@ -344,19 +383,12 @@ export function WorkTimelineChart({
             height={layout.height}
             viewBox={`0 0 ${layout.width} ${layout.height}`}
             className="absolute inset-0 block select-none"
+            onMouseDown={handlePlotMouseDown}
             ref={(el) => {
               if (el && viewportW === 0 && scrollRef.current) setViewportW(scrollRef.current.clientWidth);
             }}
           >
           <defs>
-            <pattern id="tl-hatchV" width={5} height={6} patternUnits="userSpaceOnUse">
-              <rect width={5} height={6} fill="var(--color-card)" />
-              <line x1={0} y1={0} x2={0} y2={6} stroke="var(--color-foreground)" strokeWidth={2} />
-            </pattern>
-            <pattern id="tl-hatchD" width={6} height={6} patternUnits="userSpaceOnUse">
-              <rect width={6} height={6} fill="var(--color-card)" />
-              <path d="M0,6 l6,-6" stroke="var(--color-foreground)" strokeWidth={1.5} />
-            </pattern>
             <linearGradient id="tl-fade" x1="0" y1="0" x2="1" y2="0">
               <stop offset="0%" stopColor="var(--color-foreground)" stopOpacity={0.28} />
               <stop offset="100%" stopColor="var(--color-foreground)" stopOpacity={0} />
@@ -468,9 +500,7 @@ export function WorkTimelineChart({
                     connectedRunIds == null ? "idle" : connectedRunIds.has(bar.span.runId) ? "connected" : "faded";
                   const barOpacity =
                     connectedState === "idle"
-                      ? colorMode === "issue"
-                        ? 0.88
-                        : 1
+                      ? 0.88
                       : connectedState === "connected"
                         ? 1
                         : 0.22;
@@ -487,6 +517,7 @@ export function WorkTimelineChart({
                           setTooltip(null);
                           setHoveredRunId(null);
                         }}
+                        onMouseDown={(e) => e.stopPropagation()}
                         onClick={() => openIssue(bar.span.issueId)}
                       >
                         <rect
@@ -525,6 +556,20 @@ export function WorkTimelineChart({
               </g>
             );
           })}
+          {dragSelection && (
+            <rect
+              data-testid="timeline-drag-selection"
+              x={Math.min(dragSelection.anchorX, dragSelection.currentX)}
+              y={AXIS_H}
+              width={Math.abs(dragSelection.currentX - dragSelection.anchorX)}
+              height={layout.height - AXIS_H}
+              fill="var(--color-primary)"
+              opacity={0.16}
+              stroke="var(--color-primary)"
+              strokeWidth={1.5}
+              pointerEvents="none"
+            />
+          )}
           </svg>
         </div>
       </div>

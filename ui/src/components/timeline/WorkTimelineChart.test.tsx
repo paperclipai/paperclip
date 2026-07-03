@@ -39,7 +39,6 @@ function renderChart(
       <WorkTimelineChart
         data={data}
         zoom="hour"
-        colorMode="issue"
         nowMs={new Date("2026-07-02T12:00:00.000Z").getTime()}
         {...props}
       />,
@@ -305,5 +304,39 @@ describe("WorkTimelineChart", () => {
     });
 
     expect(onZoomScaleChange).toHaveBeenCalled();
+  });
+
+  it("lets dragging the chart grid select a time range to zoom into", () => {
+    const onZoomScaleChange = vi.fn();
+    renderChart(timelineSample(), { onZoomScaleChange });
+
+    const chartSvg = container.querySelector<SVGSVGElement>("svg.absolute")!;
+    const width = Number(chartSvg.getAttribute("width") ?? "1000");
+    const height = Number(chartSvg.getAttribute("height") ?? "400");
+    vi.spyOn(chartSvg, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: width,
+      bottom: height,
+      width,
+      height,
+      toJSON: () => ({}),
+    });
+
+    flushSync(() => {
+      chartSvg.dispatchEvent(new MouseEvent("mousedown", { clientX: 260, bubbles: true, cancelable: true }));
+      document.dispatchEvent(new MouseEvent("mousemove", { clientX: 520, bubbles: true, cancelable: true }));
+    });
+
+    expect(container.querySelector("[data-testid='timeline-drag-selection']")).not.toBeNull();
+
+    flushSync(() => {
+      document.dispatchEvent(new MouseEvent("mouseup", { clientX: 520, bubbles: true, cancelable: true }));
+    });
+
+    expect(onZoomScaleChange).toHaveBeenCalled();
+    expect(container.querySelector("[data-testid='timeline-drag-selection']")).toBeNull();
   });
 });

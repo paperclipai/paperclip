@@ -310,6 +310,24 @@ describe("Sidebar", () => {
     });
   });
 
+  it("places Timeline in the Company section", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    const root = await renderSidebar();
+
+    const sections = [...container.querySelectorAll("nav > div")];
+    const workSection = sections.find((section) => section.textContent?.startsWith("Work"));
+    const companySection = sections.find((section) => section.textContent?.startsWith("Company"));
+    expect(workSection?.textContent).not.toContain("Timeline");
+    expect(companySection?.textContent).toContain("Timeline");
+
+    const timelineLink = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Timeline");
+    expect(timelineLink?.getAttribute("href")).toBe("/timeline");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
   it("shows the Conference Room nav item when conference room chat is enabled (PAP-137)", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,

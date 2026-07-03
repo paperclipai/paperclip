@@ -19,8 +19,6 @@ import type {
   WorkTimelineSpan,
 } from "@paperclipai/shared";
 
-export type ColorMode = "issue" | "status";
-
 export interface LayoutOptions {
   /** px per minute along the x axis (set by the zoom level). */
   pxPerMinute: number;
@@ -101,7 +99,7 @@ export interface TimelineLayout {
   toMs: number;
   gutter: number;
   pxPerMinute: number;
-  /** ordered list of distinct issue keys present, for the legend + hue map. */
+  /** ordered list of distinct issue keys present for the task hue map. */
   issues: { key: string; label: string; color: string }[];
 }
 
@@ -188,7 +186,7 @@ export function computeLayout(result: WorkTimelineResult, opts: LayoutOptions): 
     .filter((a) => firstActivity.has(a.id)) // drop actors with no run in-window
     .sort((a, b) => (firstActivity.get(a.id)! - firstActivity.get(b.id)!));
 
-  // Issue hue map (ordered by first appearance) for the "by issue" color mode + legend.
+  // Issue hue map (ordered by first appearance) for the task color map.
   const issueOrder: string[] = [];
   const issueLabel = new Map<string, string>();
   for (const s of result.spans) {

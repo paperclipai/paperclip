@@ -29,7 +29,6 @@ import {
   nearestZoomForScale,
   type ZoomLevel,
 } from "@/components/timeline/WorkTimelineChart";
-import type { ColorMode } from "@/lib/timeline/layout";
 import { cn } from "@/lib/utils";
 
 const EVERYONE = "__everyone__";
@@ -122,7 +121,6 @@ export function Timeline() {
     setZoomScale(undefined);
     setVisibleRangeLabel(zoomDescription(z));
   };
-  const [colorMode, setColorMode] = useState<ColorMode>("issue");
   const [lensUserId, setLensUserId] = useState<string>(EVERYONE);
   const [rangePreset, setRangePreset] = useState<RangePreset>("7d");
   const [dateRange, setDateRange] = useState<DateRangeState>(() => presetRange("7d"));
@@ -192,7 +190,6 @@ export function Timeline() {
         <span>{visibleRangeLabel}</span>
       </label>
       <label className="flex items-center gap-2 text-xs text-muted-foreground">
-        Report for
         <Select value={lensUserId} onValueChange={setLensUserId}>
           <SelectTrigger className="h-8 w-[220px] text-xs">
             <SelectValue />
@@ -244,17 +241,6 @@ export function Timeline() {
           aria-label="Timeline end date"
         />
       </label>
-      <label className="flex items-center gap-2 text-xs text-muted-foreground">
-        Color
-        <Segmented
-          value={colorMode}
-          onChange={setColorMode}
-          options={[
-            { value: "issue", label: "By task" },
-            { value: "status", label: "By status" },
-          ]}
-        />
-      </label>
     </div>
   );
 
@@ -289,7 +275,6 @@ export function Timeline() {
                 data={data}
                 zoom={zoom}
                 zoomScale={zoomScale}
-                colorMode={colorMode}
                 onVisibleRangeLabelChange={setVisibleRangeLabel}
                 onZoomScaleChange={(nextScale, nextZoom = nearestZoomForScale(nextScale)) => {
                   zoomTouched.current = true;
