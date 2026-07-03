@@ -2312,6 +2312,7 @@ export function secretService(db: Db) {
           ))
           .then((rows) => rows[0] ?? null);
         if (!declaration) {
+          if (optionalBinding) return null;
           throw unprocessable(
             `User secret is not declared for ${context.consumerType}:${context.consumerId} at ${context.configPath}`,
             { code: "binding_missing" },

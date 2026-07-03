@@ -12,6 +12,7 @@ import {
   rotateUserSecretValueSchema,
   secretProviderConfigDiscoveryPreviewSchema,
   secretProviderConfigPayloadSchema,
+  updateUserSecretValueSchema,
   updateUserSecretDefinitionSchema,
   updateSecretProviderConfigSchema,
 } from "./secret.js";
@@ -77,11 +78,24 @@ describe("secret validators", () => {
   it("requires secret rotation payloads to include rotation input", () => {
     expect(() => rotateSecretSchema.parse({})).toThrow(/requires value, externalRef/);
     expect(() => rotateUserSecretValueSchema.parse({})).toThrow(/requires value, externalRef/);
+    expect(() => rotateUserSecretValueSchema.parse({ providerVersionRef: null })).toThrow(/requires value, externalRef/);
+    expect(() => rotateUserSecretValueSchema.parse({ providerConfigId: null })).toThrow(/requires value, externalRef/);
+    expect(() => rotateUserSecretValueSchema.parse({ externalRef: "" })).toThrow();
+    expect(() => rotateUserSecretValueSchema.parse({ providerVersionRef: "" })).toThrow();
     expect(rotateUserSecretValueSchema.parse({ value: "new-secret" })).toEqual({
       value: "new-secret",
     });
     expect(rotateUserSecretValueSchema.parse({ providerVersionRef: "version-2" })).toEqual({
       providerVersionRef: "version-2",
+    });
+  });
+
+  it("rejects empty external selectors in user secret patches", () => {
+    expect(() => updateUserSecretValueSchema.parse({ externalRef: "" })).toThrow();
+    expect(() => updateUserSecretValueSchema.parse({ providerVersionRef: "" })).toThrow();
+    expect(updateUserSecretValueSchema.parse({ externalRef: null, providerVersionRef: null })).toEqual({
+      externalRef: null,
+      providerVersionRef: null,
     });
   });
 

@@ -745,6 +745,54 @@ describeEmbeddedPostgres("secretService", () => {
     ]);
   });
 
+  it("skips optional user secret refs when the declaration is missing at runtime", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_api_token",
+      name: "GitHub API token",
+      provider: "local_encrypted",
+    });
+    await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionId: definition.id,
+      value: "ghp_secret",
+    });
+
+    await expect(
+      svc.resolveUserSecretValue(
+        companyId,
+        {
+          definitionKey: "github_api_token",
+          responsibleUserId: "user-1",
+          required: false,
+        },
+        {
+          consumerType: "agent",
+          consumerId: "agent-with-stale-config",
+          configPath: "env.GITHUB_TOKEN",
+        },
+      ),
+    ).resolves.toBeNull();
+
+    await expect(
+      svc.resolveUserSecretValue(
+        companyId,
+        {
+          definitionKey: "github_api_token",
+          responsibleUserId: "user-1",
+        },
+        {
+          consumerType: "agent",
+          consumerId: "agent-with-stale-config",
+          configPath: "env.GITHUB_TOKEN",
+        },
+      ),
+    ).rejects.toMatchObject({
+      details: { code: "binding_missing" },
+    });
+  });
+
   it("records stable redacted failure codes for routine env secret resolution", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

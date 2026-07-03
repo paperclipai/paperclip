@@ -4919,7 +4919,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.id, parentId)))
       .then((rows) => rows[0] ?? null);
-    return parent?.responsibleUserId ?? parent?.createdByUserId ?? null;
+    return parent?.responsibleUserId ?? null;
   }
 
   function isManualUserRun(input: {
@@ -4954,9 +4954,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (input.routineEnvContext.responsibleUserId) return input.routineEnvContext.responsibleUserId;
     if (isManualUserRun(input) && requestedUserId) return requestedUserId;
     if (input.issueContext?.responsibleUserId) return input.issueContext.responsibleUserId;
-    if (input.issueContext?.createdByUserId) return input.issueContext.createdByUserId;
     const parentResponsibleUserId = await resolveParentIssueResponsibleUserId(input.companyId, input.issueContext?.parentId);
     if (parentResponsibleUserId) return parentResponsibleUserId;
+    if (input.issueContext) return resolveCompanyDefaultResponsibleUserId(input.companyId);
     if (requestedUserId) return requestedUserId;
     return resolveCompanyDefaultResponsibleUserId(input.companyId);
   }

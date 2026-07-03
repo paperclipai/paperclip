@@ -643,6 +643,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       title: "Environment matrix: e2b / codex_local",
       status: "in_progress",
       priority: "medium",
+      responsibleUserId: "responsible-user",
       assigneeAgentId: agentId,
       executionWorkspaceId: staleExecutionWorkspaceId,
       executionWorkspaceSettings: {

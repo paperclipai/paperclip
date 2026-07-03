@@ -191,6 +191,83 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     expect(completed?.responsibleUserId).toBe(ownerUserId);
   });
 
+  it("does not use an issue creator as an implicit responsible user for automated issue runs", async () => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    const creatorUserId = `creator-${randomUUID()}`;
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Creator is not credential owner",
+      status: "todo",
+      assigneeAgentId: agentId,
+      createdByUserId: creatorUserId,
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId: randomUUID() },
+      requestedByActorType: "user",
+      requestedByActorId: `commenter-${randomUUID()}`,
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_commented" },
+    });
+    expect(run).not.toBeNull();
+    const completed = await waitForRun(db, run!.id);
+    expect(completed?.responsibleUserId).toBe(ownerUserId);
+    expect(completed?.responsibleUserId).not.toBe(creatorUserId);
+  });
+
+  it("fails automated issue dispatch instead of falling back to the issue creator when no default exists", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Creator-only",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Creator-only issue",
+      status: "todo",
+      assigneeAgentId: agentId,
+      createdByUserId: `creator-${randomUUID()}`,
+    });
+
+    await expect(heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId: randomUUID() },
+      requestedByActorType: "user",
+      requestedByActorId: `commenter-${randomUUID()}`,
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_commented" },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "responsible_user_unresolved" },
+    });
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+    expect(runs).toHaveLength(0);
+  });
+
   it("fails dispatch before creating a run when no responsible user can be resolved", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
