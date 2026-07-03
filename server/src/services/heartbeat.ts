@@ -1818,6 +1818,15 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function resolveAgentGitEmail(agent: { runtimeConfig?: unknown; metadata?: unknown }): string | null {
+  const runtimeConfig = parseObject(agent.runtimeConfig);
+  const metadata = parseObject(agent.metadata);
+  return readNonEmptyString(runtimeConfig.gitEmail)
+    ?? readNonEmptyString(runtimeConfig.git_email)
+    ?? readNonEmptyString(metadata.gitEmail)
+    ?? readNonEmptyString(metadata.git_email);
+}
+
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
   return MODEL_PROFILE_KEYS.includes(value as ModelProfileKey)
     ? (value as ModelProfileKey)
@@ -10236,6 +10245,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             id: agent.id,
             name: agent.name,
             companyId: agent.companyId,
+            gitEmail: resolveAgentGitEmail(agent),
           },
           recorder: workspaceOperationRecorder,
         })
@@ -10248,6 +10258,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         id: agent.id,
         name: agent.name,
         companyId: agent.companyId,
+        gitEmail: resolveAgentGitEmail(agent),
       },
       recorder: workspaceOperationRecorder,
     });
