@@ -139,6 +139,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     scheduledRetryAttempt?: number;
     runtimeConfig?: Record<string, unknown>;
     issueStatus?: string;
+    issueOriginKind?: string;
+    contextSnapshot?: Record<string, unknown>;
   }) {
     const companyId = input?.companyId ?? randomUUID();
     const agentId = input?.agentId ?? randomUUID();
@@ -194,6 +196,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       contextSnapshot: {
         issueId,
         wakeReason: "issue_assigned",
+        ...(input?.contextSnapshot ?? {}),
       },
       updatedAt: now,
       createdAt: now,
@@ -209,6 +212,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       executionRunId: runId,
       executionAgentNameKey: "claudecoder",
       executionLockedAt: now,
+      originKind: input?.issueOriginKind ?? "manual",
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
     });
@@ -421,6 +425,80 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(retryRuns[0]?.id);
+  });
+
+  it("suppresses max-turn continuations for routine execution issues by default", async () => {
+    const { issueId, runId, now } = await seedMaxTurnFixture({
+      issueOriginKind: "routine_execution",
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+          maxTurnContinuation: {
+            enabled: true,
+            maxAttempts: 10,
+            delayMs: 1_000,
+          },
+        },
+      },
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 10,
+      delayMs: 1_000,
+    });
+
+    expect(scheduled).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "routine_execution_auto_continuation_disabled",
+      issueId,
+    });
+
+    const retryRuns = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(retryRuns).toBe(0);
+
+    const event = await db
+      .select({
+        message: heartbeatRunEvents.message,
+        payload: heartbeatRunEvents.payload,
+      })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId))
+      .orderBy(sql`${heartbeatRunEvents.seq} desc`)
+      .then((rows) => rows[0] ?? null);
+    expect(event?.message).toContain("routine execution issue");
+    expect(event?.payload).toMatchObject({
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      maxAttempts: 10,
+      originKind: "routine_execution",
+      optInContextKey: "allowMaxTurnContinuation",
+    });
+  });
+
+  it("allows routine max-turn continuation when the run explicitly opts in", async () => {
+    const { runId, now } = await seedMaxTurnFixture({
+      issueOriginKind: "routine_execution",
+      contextSnapshot: { allowMaxTurnContinuation: true },
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    });
+
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+    expect(scheduled.attempt).toBe(1);
   });
 
   it("does not promote a duplicate max-turn continuation that does not own the issue lock", async () => {
