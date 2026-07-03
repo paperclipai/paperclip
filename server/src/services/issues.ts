@@ -4787,7 +4787,7 @@ export function issueService(db: Db) {
       companyId: string;
       runId: string;
     }) => {
-      const row = await db
+      const rows = await db
         .select({ details: activityLog.details })
         .from(activityLog)
         .where(
@@ -4799,18 +4799,21 @@ export function issueService(db: Db) {
             eq(activityLog.runId, input.runId),
           ),
         )
-        .orderBy(desc(activityLog.createdAt), desc(activityLog.id))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      const details = row?.details;
-      if (!details || typeof details !== "object") return false;
-      const previous = (details as Record<string, unknown>)._previous;
-      return (
-        Object.prototype.hasOwnProperty.call(details, "assigneeAgentId") &&
-        !!previous &&
-        typeof previous === "object" &&
-        Object.prototype.hasOwnProperty.call(previous, "assigneeAgentId")
-      );
+        .orderBy(desc(activityLog.createdAt), desc(activityLog.id));
+      return rows.some((row) => {
+        const details = row.details;
+        if (!details || typeof details !== "object") return false;
+        const detailsRecord = details as Record<string, unknown>;
+        const previous = detailsRecord._previous;
+        return (
+          Object.prototype.hasOwnProperty.call(detailsRecord, "assigneeAgentId") &&
+          detailsRecord.assigneeAgentId !== null &&
+          detailsRecord.assigneeAgentId !== undefined &&
+          !!previous &&
+          typeof previous === "object" &&
+          Object.prototype.hasOwnProperty.call(previous, "assigneeAgentId")
+        );
+      });
     },
 
     getRelationSummaries: async (issueId: string) => {

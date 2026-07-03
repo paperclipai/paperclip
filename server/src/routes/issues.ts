@@ -185,6 +185,7 @@ function isAssigneeAgentPatchPairedWithComment(input: {
 }) {
   return (
     input.normalizedAssigneeAgentId !== undefined &&
+    input.normalizedAssigneeAgentId !== null &&
     input.normalizedAssigneeAgentId !== input.existingAssigneeAgentId
   );
 }
@@ -193,7 +194,7 @@ function sendHandoffContractViolation(res: Response) {
   res.status(422).json({
     error: "HandoffContractViolation",
     message:
-      "Agent verdict/routing comments must be paired with an assigneeAgentId PATCH in the same request or an immediately preceding PATCH in the same X-Paperclip-Run-Id.",
+      "Agent verdict/routing comments must be paired with an assigneeAgentId PATCH in the same request or an earlier PATCH in the same X-Paperclip-Run-Id.",
     details: {
       missingPatch: "PATCH /api/issues/{id} with assigneeAgentId",
       contract: "Cross-Agent Handoff Contract",

@@ -290,6 +290,34 @@ describe("issue update comment wakeups", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   }, 20_000);
 
+  it("rejects agent verdict-marker patch comments when assigneeAgentId is cleared", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      userId: undefined,
+      runId: "dddddddd-1111-4111-8111-dddddddddddd",
+      source: "agent_jwt",
+    }))
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        assigneeAgentId: null,
+        comment: "**Next Owner:** nobody\n**Action required:** Clear ownership.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ error: "HandoffContractViolation" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  }, 20_000);
+
   it("allows agent verdict-marker patch comments when the same request changes assigneeAgentId", async () => {
     const existing = makeIssue({
       assigneeAgentId: PREVIOUS_AGENT_ID,
@@ -366,6 +394,37 @@ describe("issue update comment wakeups", () => {
       runId: "cccccccc-1111-4111-8111-cccccccccccc",
     });
     expect(mockIssueService.addComment).toHaveBeenCalled();
+  }, 20_000);
+
+  it("rejects agent top-level verdict-marker comments without a prior same-run handoff", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      userId: undefined,
+      runId: "eeeeeeee-1111-4111-8111-eeeeeeeeeeee",
+      source: "agent_jwt",
+    }))
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({
+        body: "## Security GO\n\nApproved.",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ error: "HandoffContractViolation" });
+    expect(mockIssueService.hasIssueAssigneeAgentHandoffInRun).toHaveBeenCalledWith({
+      issueId: existing.id,
+      companyId: existing.companyId,
+      runId: "eeeeeeee-1111-4111-8111-eeeeeeeeeeee",
+    });
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   }, 20_000);
 
   it("exempts board verdict-marker comments from the handoff contract gate", async () => {
