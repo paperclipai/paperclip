@@ -24,11 +24,21 @@ Per non-paused agent: `GET /issues?assigneeAgentId={id}&status=todo,in_progress`
 The priority step — surface and clear blockers before anything else. `GET /issues?status=blocked` (and scan `in_progress` whose latest comment names an unmet dependency, missing input, or "waiting on …"). For each:
 - Identify the blocker: upstream task not `done`, missing PR/branch, failed Architect verify, permission/skill gap, ambiguous spec.
 - If the blocker is already resolved (dependency now `done`, branch merged) → comment citing it and PATCH back to `todo`/`in_progress` so the owning agent re-picks it.
-- If a wake didn't fire after the blocker cleared → file a config/rotation bug.
+- If a wake didn't fire after the blocker cleared → re-fire it via the assignee toggle in §2a; file a rotation bug only if the toggle also fails to start a run.
 - If genuinely waiting on the operator or another agent → leave, but surface it in the report with the specific dependency so it doesn't rot silently.
 - Blocked >2 days with no movement → escalate in the report as a stuck task.
 
 Dedupe followups against existing.
+
+### 2a. Missed-wake re-dispatch (the most common silent stall)
+
+Steps 1 & 2 scan `todo`/`in_progress`/`blocked`; nothing else scans `in_review`. But Review and Verify stages **live in `in_review`** (Coordinator creates them there — verifying/reviewing *is* the in-review stage), so a stage whose assignment wake never fired rots here invisibly, out of every other query. This is the single most common silent stall.
+
+`GET /issues?status=in_review,in_progress`. Flag any task that is **assigned** (`assigneeAgentId` set) but has **no live run** — `activeRun` false and either no `executionRunId` or a stale `executionLockedAt` — and `updatedAt` older than ~2h. That combination means the assignment wake was missed (or fired into a dead session); the agent is idle and nothing will re-wake it on its own.
+
+**Remedy — re-fire the wake by *changing the assignee*, not by commenting.** `wakeOnDemand` triggers on an assignee **change**, so re-assigning the *same* agent is a no-op, and a re-dispatch *comment* does nothing at all (that is the §4 comment-without-PATCH failure mode applied to wakes — the historical trap here). You must make the assignee value actually change: **unassign (set `assigneeAgentId` to null), then re-assign the original agent** (null → agent). Do **not** change `status` — `in_review` is already correct. After the toggle, confirm a fresh `executionRunId` / `executionLockedAt` appears within ~30s; if it does, the stage is moving. If no run starts even after the toggle, *then* it is a genuine rotation/config bug — file it (§3).
+
+The parent Worker task that spawned a stalled Review/Verify child is usually itself `in_review` waiting on that child — re-dispatching the child is enough; it advances on its own once the child completes. Toggle the child, not the parent.
 
 ### 3. Run productivity
 
@@ -65,11 +75,11 @@ Auto-delete only cases 1 & 2. Never force-push.
 
 ### 8. Report
 
-Comment one summary on the routine task: queue depth delta per agent, blocked tasks (with their specific blocker) and which were cleared, stuck tasks cleared, branches deleted, followups filed. Or `Pipeline healthy` if nothing.
+Comment one summary on the routine task: queue depth delta per agent, blocked tasks (with their specific blocker) and which were cleared, missed-wake stalls re-dispatched (§2a — list the task ids), stuck tasks cleared, branches deleted, followups filed. Or `Pipeline healthy` if nothing.
 
 ## Common failure modes
 
-Permission blocks → check `dangerouslySkipPermissions`. Missing `paperclip` skill → fix instructions or adapter env (`packages/adapters/claude-local/src/`). Timeouts → raise `timeoutSec`/`maxTurnsPerRun`. Stuck loops → read transcripts, fix triggering instruction. Stale tasks on terminated agents → reassign. Short-circuit (succeed, no tool calls) → rotation policy didn't fire, file bug. Comment-without-PATCH → PATCH on behalf, file fix.
+Permission blocks → check `dangerouslySkipPermissions`. Missing `paperclip` skill → fix instructions or adapter env (`packages/adapters/claude-local/src/`). Timeouts → raise `timeoutSec`/`maxTurnsPerRun`. Stuck loops → read transcripts, fix triggering instruction. Stale tasks on terminated agents → reassign. Missed assignment wake (assigned task, no live run, esp. `in_review` Review/Verify stages) → re-fire via the §2a assignee toggle (null → agent); a same-agent re-set or a bare comment is a no-op. Short-circuit (succeed, no tool calls) → rotation policy didn't fire, file bug. Comment-without-PATCH → PATCH on behalf, file fix.
 
 ## Authority
 
