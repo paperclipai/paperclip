@@ -32,7 +32,7 @@
   {
     "dir": "packages/adapters/eve",
     "name": "@paperclipai/adapter-eve",
-    "publishFromCi": false
+    "publishFromCi": true
   },
   {
     "dir": "packages/adapters/gemini-local",
