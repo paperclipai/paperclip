@@ -16,6 +16,7 @@ import {
   valueFromRows,
   type EnvRow,
 } from "./model";
+import type { EnvironmentVariableDirtyFields } from "./Row";
 
 const DEFAULT_RESERVED_PREFIXES = ["PAPERCLIP_"];
 
@@ -51,6 +52,32 @@ function normalizedEnvKey(value: Record<string, EnvBinding> | null | undefined):
   return JSON.stringify(entries);
 }
 
+function cloneRows(rows: readonly EnvRow[]): EnvRow[] {
+  return rows.map((row) => ({ ...row }));
+}
+
+function rowDirtyFields(row: EnvRow, committedRow: EnvRow | undefined): EnvironmentVariableDirtyFields {
+  if (!committedRow) {
+    return {
+      name: Boolean(row.name.trim()),
+      value:
+        row.source !== "text" ||
+        Boolean(row.textValue) ||
+        Boolean(row.secretId) ||
+        row.version !== "latest",
+    };
+  }
+
+  return {
+    name: row.name.trim() !== committedRow.name.trim(),
+    value:
+      row.source !== committedRow.source ||
+      row.textValue !== committedRow.textValue ||
+      row.secretId !== committedRow.secretId ||
+      row.version !== committedRow.version,
+  };
+}
+
 export interface EnvironmentVariablesEditorProps {
   value: Record<string, EnvBinding>;
   onChange: (next: Record<string, EnvBinding> | undefined) => void;
@@ -79,6 +106,7 @@ export function EnvironmentVariablesEditor({
   const toast = useOptionalToastActions();
   const [rows, setRows] = useState<EnvRow[]>(() => rowsFromValue(value));
   const rowsRef = useRef(rows);
+  const [committedRows, setCommittedRows] = useState<EnvRow[]>(() => cloneRows(rows));
   const initialValueKey = useMemo(() => normalizedEnvKey(value), []); // eslint-disable-line react-hooks/exhaustive-deps
   const committedValueKeyRef = useRef(initialValueKey);
   const lastPropValueKeyRef = useRef(initialValueKey);
@@ -95,9 +123,10 @@ export function EnvironmentVariablesEditor({
     rowsRef.current = rows;
   }, [rows]);
 
-  function markCommitted(nextValueKey: string) {
+  function markCommitted(nextValueKey: string, nextRows: readonly EnvRow[] = rowsRef.current) {
     committedValueKeyRef.current = nextValueKey;
     setCommittedValueKey(nextValueKey);
+    setCommittedRows(cloneRows(nextRows));
   }
 
   function touchCommittedNames(nextRows: EnvRow[]) {
@@ -111,10 +140,11 @@ export function EnvironmentVariablesEditor({
     });
   }
 
-  function adoptExternalValue(nextValue: Record<string, EnvBinding>) {
+  function adoptExternalValue(nextValue: Record<string, EnvBinding>): EnvRow[] {
     const nextRows = rowsFromValue(nextValue);
     setRows(nextRows);
     touchCommittedNames(nextRows);
+    return nextRows;
   }
 
   // Controlled sync: clean external changes replace the editor rows, but dirty
@@ -135,8 +165,8 @@ export function EnvironmentVariablesEditor({
     }
 
     if (!draftIsDirty) {
-      adoptExternalValue(value);
-      markCommitted(incomingValueKey);
+      const nextRows = adoptExternalValue(value);
+      markCommitted(incomingValueKey, nextRows);
       return;
     }
 
@@ -227,8 +257,8 @@ export function EnvironmentVariablesEditor({
   function revertDraft() {
     pendingSaveValueKeyRef.current = null;
     lastPropValueKeyRef.current = normalizedEnvKey(value);
-    adoptExternalValue(value);
-    markCommitted(lastPropValueKeyRef.current);
+    const nextRows = adoptExternalValue(value);
+    markCommitted(lastPropValueKeyRef.current, nextRows);
   }
 
   const duplicateNames = useMemo(() => computeDuplicateNames(rows), [rows]);
@@ -247,10 +277,14 @@ export function EnvironmentVariablesEditor({
 
   const hasRows = rows.length > 0;
   const hint = footerHint === undefined ? DEFAULT_HINT : footerHint;
+  const committedRowsById = useMemo(
+    () => new Map(committedRows.map((row) => [row.id, row])),
+    [committedRows],
+  );
 
   return (
     <TooltipProvider>
-      <div className="@container/env space-y-1.5">
+      <div className="@container/env space-y-2">
       {attentionCount > 1 ? (
         <p className="inline-flex items-center gap-1.5 text-[11px] font-medium text-amber-700 dark:text-amber-400">
           <AlertCircle className="size-3.5" />
@@ -280,6 +314,7 @@ export function EnvironmentVariablesEditor({
                 disabled={disabled}
                 nameIssue={issue}
                 showNameIssue={touched}
+                dirtyFields={rowDirtyFields(row, committedRowsById.get(row.id))}
                 onPatch={(patch) => patchRow(row.id, patch)}
                 onRemove={() => removeRow(row.id)}
                 onNameBlur={() => markTouched(row.id)}
@@ -298,7 +333,7 @@ export function EnvironmentVariablesEditor({
       )}
 
       {/* Footer bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
         <button
           type="button"
           onClick={addRow}
@@ -329,28 +364,37 @@ export function EnvironmentVariablesEditor({
           </div>
         ) : null}
 
-        {hasUnsavedChanges && !disabled ? (
-          <div className="ml-auto flex items-center gap-1.5">
-            <span className="text-[11px] text-muted-foreground">Unsaved changes</span>
+      </div>
+
+      {hasUnsavedChanges && !disabled ? (
+        <div
+          role="status"
+          className="mt-3 flex w-full flex-col gap-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-amber-950 shadow-sm dark:bg-amber-500/15 dark:text-amber-100 @[34rem]/env:flex-row @[34rem]/env:items-center @[34rem]/env:justify-between"
+        >
+          <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
+            <span className="size-2 rounded-full bg-amber-500 shadow-[0_0_0_3px_rgba(245,158,11,0.18)]" />
+            <span>Unsaved changes</span>
+          </div>
+          <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={revertDraft}
-              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-amber-500/30 bg-background px-3 text-sm font-medium text-foreground transition-colors hover:bg-amber-500/10 dark:bg-background/80"
             >
-              <RotateCcw className="size-3.5" />
+              <RotateCcw className="size-4" />
               Revert
             </button>
             <button
               type="button"
               onClick={saveDraft}
-              className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
             >
-              <Save className="size-3.5" />
+              <Save className="size-4" />
               Save
             </button>
           </div>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
 
       {hint ? <p className="text-[11px] text-muted-foreground/70">{hint}</p> : null}
       </div>

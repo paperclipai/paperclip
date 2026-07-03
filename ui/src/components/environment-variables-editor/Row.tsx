@@ -35,6 +35,10 @@ const valueTextInputClass =
   "min-w-0 flex-1 bg-transparent px-2 py-1.5 text-sm font-mono outline-none placeholder:text-muted-foreground/40";
 
 type SecretPopoverState = { mode: "create" | "store"; name: string; value: string } | null;
+export interface EnvironmentVariableDirtyFields {
+  name: boolean;
+  value: boolean;
+}
 
 export interface EnvironmentVariableRowProps {
   row: EnvRow;
@@ -44,6 +48,7 @@ export interface EnvironmentVariableRowProps {
   disabled?: boolean;
   nameIssue: NameIssue | null;
   showNameIssue: boolean;
+  dirtyFields: EnvironmentVariableDirtyFields;
   onPatch: (patch: Partial<EnvRow>) => void;
   onRemove: () => void;
   onNameBlur: () => void;
@@ -66,6 +71,7 @@ export function EnvironmentVariableRow({
   disabled,
   nameIssue,
   showNameIssue,
+  dirtyFields,
   onPatch,
   onRemove,
   onNameBlur,
@@ -155,6 +161,7 @@ export function EnvironmentVariableRow({
   const sourceLabel = row.source === "text" ? "Text value" : "Secret reference";
   const nameErrorId = `${row.id}-name-error`;
   const healthId = `${row.id}-health`;
+  const isDirty = dirtyFields.name || dirtyFields.value;
 
   const versions = boundSecret ? Math.max(0, boundSecret.latestVersion) : 0;
   const versionTagLabel = row.version === "latest" ? "latest" : `v${row.version}`;
@@ -163,8 +170,9 @@ export function EnvironmentVariableRow({
   return (
     <div
       className={cn(
-        "group/row grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-1.5 gap-y-1",
+        "group/row grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-1.5 gap-y-1 rounded-md px-1 py-1",
         "@[40rem]/env:grid-cols-[minmax(160px,2fr)_minmax(240px,3fr)_32px] @[40rem]/env:items-center",
+        isDirty && "bg-amber-500/[0.06] ring-1 ring-amber-500/20",
       )}
     >
       {/* Name cell — mobile col 1 / desktop col 1 */}
@@ -173,6 +181,7 @@ export function EnvironmentVariableRow({
           ref={nameInputRef}
           className={cn(
             nameInputClass,
+            dirtyFields.name && "border-amber-500/70 bg-amber-500/10 focus-visible:ring-amber-500/40",
             showNameIssue && nameIssue?.level === "error" && "border-destructive focus-visible:ring-destructive/40",
             showNameIssue && nameIssue?.level === "warn" && "border-amber-500 focus-visible:ring-amber-500/40",
           )}
@@ -213,6 +222,7 @@ export function EnvironmentVariableRow({
               ref={valueCellRef}
               className={cn(
                 "relative flex items-stretch overflow-hidden rounded-md border border-border bg-transparent focus-within:ring-2 focus-within:ring-ring/40",
+                dirtyFields.value && "border-amber-500/70 bg-amber-500/10 focus-within:ring-amber-500/40",
                 disabled && "opacity-60",
               )}
             >

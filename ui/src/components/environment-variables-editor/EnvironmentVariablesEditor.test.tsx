@@ -225,6 +225,44 @@ describe("EnvironmentVariablesEditor", () => {
     expect(onChange).toHaveBeenLastCalledWith({ FOO: { type: "plain", value: "bar" } });
   });
 
+  it("makes unsaved fields and save controls prominent while editing", async () => {
+    render(<EnvironmentVariablesEditor value={{ FOO: { type: "plain", value: "" } }} secrets={secrets} onChange={() => {}} onCreateSecret={async () => secrets[0]} />);
+    const valueInput = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(valueInput, "bar");
+    valueInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+
+    const unsavedBar = [...container.querySelectorAll<HTMLElement>('[role="status"]')].find((node) =>
+      node.textContent?.includes("Unsaved changes"),
+    );
+    const valueCell = valueInput.closest<HTMLDivElement>(".relative.flex");
+    const save = saveButton();
+    const revert = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent?.trim() === "Revert")!;
+
+    expect(unsavedBar?.className).toContain("bg-amber-500/10");
+    expect(valueCell?.className).toContain("border-amber-500/70");
+    expect(save.className).toContain("h-9");
+    expect(save.className).toContain("px-4");
+    expect(revert.className).toContain("h-9");
+  });
+
+  it("marks a newly typed variable name as unsaved before saving", async () => {
+    render(<EnvironmentVariablesEditor value={{}} secrets={secrets} onChange={() => {}} onCreateSecret={async () => secrets[0]} />);
+    const addButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Add variable"))!;
+    addButton.click();
+    await flush();
+
+    const nameInput = nameInputs()[0]!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(nameInput, "API_TOKEN");
+    nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+
+    expect(nameInput.className).toContain("border-amber-500/70");
+    expect(container.textContent).toContain("Unsaved changes");
+  });
+
   it("does not emit or remount while typing a new variable before manual save", async () => {
     const onChange = vi.fn();
     const savedValue: Record<string, EnvBinding> = {
