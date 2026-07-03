@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { Issue } from "@paperclipai/shared";
+import { deriveOriginatingActor, type Issue } from "@paperclipai/shared";
 import { Columns3 } from "lucide-react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Button } from "@/components/ui/button";
@@ -235,6 +235,7 @@ export function InboxIssueTrailingColumns({
   creatorAgentName,
   creatorUserName,
   creatorUserAvatarUrl,
+  viaAgentName,
   currentUserId,
   parentIdentifier,
   parentTitle,
@@ -253,6 +254,7 @@ export function InboxIssueTrailingColumns({
   creatorAgentName?: string | null;
   creatorUserName?: string | null;
   creatorUserAvatarUrl?: string | null;
+  viaAgentName?: string | null;
   currentUserId: string | null;
   parentIdentifier: string | null;
   parentTitle: string | null;
@@ -261,7 +263,9 @@ export function InboxIssueTrailingColumns({
 }) {
   const activityText = timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
   const userLabel = assigneeUserName ?? formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ?? "User";
-  const creatorUserLabel = creatorUserName ?? formatAssigneeUserLabel(issue.createdByUserId, currentUserId) ?? "User";
+  const originatingActor = deriveOriginatingActor(issue);
+  const originatingUserId = originatingActor?.kind === "user" ? originatingActor.id : null;
+  const creatorUserLabel = creatorUserName ?? formatAssigneeUserLabel(originatingUserId, currentUserId) ?? "User";
 
   return (
     <span
@@ -308,8 +312,8 @@ export function InboxIssueTrailingColumns({
         }
 
         if (column === "kickedOffBy") {
-          if (issue.createdByAgentId) {
-            const name = creatorAgentName ?? issue.createdByAgentId.slice(0, 8);
+          if (originatingActor?.kind === "agent") {
+            const name = creatorAgentName ?? originatingActor.id.slice(0, 8);
             return (
               <Tooltip key={column}>
                 <TooltipTrigger asChild>
@@ -327,7 +331,8 @@ export function InboxIssueTrailingColumns({
             );
           }
 
-          if (issue.createdByUserId) {
+          if (originatingActor?.kind === "user") {
+            const tooltipText = viaAgentName ? `${creatorUserLabel} · via ${viaAgentName}` : creatorUserLabel;
             return (
               <Tooltip key={column}>
                 <TooltipTrigger asChild>
@@ -340,7 +345,7 @@ export function InboxIssueTrailingColumns({
                     />
                   </span>
                 </TooltipTrigger>
-                <TooltipContent side="top" sideOffset={6}>{creatorUserLabel}</TooltipContent>
+                <TooltipContent side="top" sideOffset={6}>{tooltipText}</TooltipContent>
               </Tooltip>
             );
           }

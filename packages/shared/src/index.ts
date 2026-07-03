@@ -35,8 +35,10 @@ export {
 } from "./pipeline-case-type.js";
 export {
   deriveResponsibleUser,
+  deriveOriginatingActor,
   type ResponsibleUserAttribution,
   type ResponsibleUserSource,
+  type OriginatingActor,
 } from "./issue-attribution.js";
 export {
   RESPONSIBLE_USER_DENIAL_CODES,

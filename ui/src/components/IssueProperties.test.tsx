@@ -544,6 +544,53 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("attributes an agent-created issue to the transitive responsible user with a via affordance", async () => {
+    mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "CodexCoder", status: "active", adapterType: "codex_local" }]);
+    const root = renderProperties(container, {
+      issue: createIssue({
+        createdByAgentId: "agent-1",
+        createdByUserId: null,
+        responsibleUserId: "user-2",
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Originating");
+      expect(container.textContent).toContain("Morgan Product");
+      expect(container.textContent).toContain("via CodexCoder");
+      expect(container.textContent).not.toContain("Responsible");
+      expect(container.textContent).not.toContain("Kicked off by");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("shows originating responsible user for a routine execution with no creator", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        createdByAgentId: null,
+        createdByUserId: null,
+        responsibleUserId: "user-2",
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Originating");
+      expect(container.textContent).toContain("Morgan Product");
+      expect(container.textContent).not.toContain("via ");
+    });
+
+    act(() => root.unmount());
+  });
+
   it("groups the assignee picker and gates a live-run reassign behind an interrupt confirm", async () => {
     const minimalAgent = (id: string, name: string) =>
       ({

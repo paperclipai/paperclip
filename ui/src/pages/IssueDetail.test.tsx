@@ -1085,6 +1085,55 @@ describe("IssueDetail", () => {
     });
   });
 
+  it("attributes an agent-created issue to the transitive responsible user with a via affordance", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      assigneeAgentId: "agent-1",
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      responsibleUserId: "user-1",
+    }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ name: "CodexCoder" })]);
+    mockAccessApi.listUserDirectory.mockResolvedValue({
+      users: [
+        {
+          principalId: "user-1",
+          status: "active",
+          user: { id: "user-1", name: "Dotta", email: "dotta@example.com", image: null },
+        },
+      ],
+    });
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      const originatingAvatar = container.querySelector('[data-testid="issue-originating-avatar"]');
+      expect(originatingAvatar?.getAttribute("aria-label")).toBe("Originating: Dotta · via CodexCoder");
+    });
+
+    const pointerEvent = window.PointerEvent ?? MouseEvent;
+    const originatingAvatar = container.querySelector('[data-testid="issue-originating-avatar"]');
+    await act(async () => {
+      originatingAvatar?.dispatchEvent(new pointerEvent("pointermove", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      const tooltip = document.body.querySelector('[data-testid="issue-originating-tooltip"]');
+      expect(tooltip?.textContent).toContain("Dotta");
+      expect(tooltip?.textContent).toContain("via CodexCoder");
+    });
+  });
+
   it("does not mark the wake comment for the current live run as queued when active-run cache is stale", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue({
       status: "in_progress",

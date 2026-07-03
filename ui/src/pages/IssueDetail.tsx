@@ -164,6 +164,7 @@ import {
   XCircle,
 } from "lucide-react";
 import {
+  deriveOriginatingActor,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
@@ -474,8 +475,16 @@ function attributionInitials(name: string): string {
   return name.slice(0, 2).toUpperCase();
 }
 
-function AttributionAvatar({ label, actor }: { label: "Assignee" | "Originating"; actor: AttributionActor }) {
-  const accessibleLabel = `${label}: ${actor.name}`;
+function AttributionAvatar({
+  label,
+  actor,
+  via,
+}: {
+  label: "Assignee" | "Originating";
+  actor: AttributionActor;
+  via?: string | null;
+}) {
+  const accessibleLabel = via ? `${label}: ${actor.name} · via ${via}` : `${label}: ${actor.name}`;
   const testIdLabel = label.toLowerCase();
 
   return (
@@ -507,6 +516,9 @@ function AttributionAvatar({ label, actor }: { label: "Assignee" | "Originating"
           <div className="min-w-0">
             <div className="text-[10px] font-medium uppercase leading-none text-background/70">{label}</div>
             <div className="max-w-48 truncate text-xs font-medium leading-4 text-background">{actor.name}</div>
+            {via ? (
+              <div className="max-w-48 truncate text-[10px] leading-3 text-background/60">via {via}</div>
+            ) : null}
           </div>
         </div>
       </TooltipContent>
@@ -541,21 +553,26 @@ function IssueAttributionByline({
           avatarUrl: userProfileMap.get(issue.assigneeUserId)?.image ?? null,
         }
       : null;
-  const originator: AttributionActor | null = issue.createdByAgentId
-    ? {
-        kind: "agent",
-        id: issue.createdByAgentId,
-        name: agentMap.get(issue.createdByAgentId)?.name ?? issue.createdByAgentId.slice(0, 8),
-      }
-    : issue.createdByUserId
+  const originatingActor = deriveOriginatingActor(issue);
+  const originator: AttributionActor | null = originatingActor
+    ? originatingActor.kind === "agent"
       ? {
-          kind: "user",
-          id: issue.createdByUserId,
-          name: formatUserLabel(issue.createdByUserId, userLabelMap)
-            ?? userProfileMap.get(issue.createdByUserId)?.label
-            ?? "User",
-          avatarUrl: userProfileMap.get(issue.createdByUserId)?.image ?? null,
+          kind: "agent",
+          id: originatingActor.id,
+          name: agentMap.get(originatingActor.id)?.name ?? originatingActor.id.slice(0, 8),
         }
+      : {
+          kind: "user",
+          id: originatingActor.id,
+          name: formatUserLabel(originatingActor.id, userLabelMap)
+            ?? userProfileMap.get(originatingActor.id)?.label
+            ?? "User",
+          avatarUrl: userProfileMap.get(originatingActor.id)?.image ?? null,
+        }
+    : null;
+  const originatorVia =
+    originatingActor?.kind === "user" && originatingActor.viaAgentId
+      ? agentMap.get(originatingActor.viaAgentId)?.name ?? originatingActor.viaAgentId.slice(0, 8)
       : null;
   if (!assignee && !originator) return null;
 
@@ -563,7 +580,7 @@ function IssueAttributionByline({
     <TooltipProvider>
       <AvatarGroup className="-space-x-1.5" aria-label="Task people" data-testid="issue-attribution-avatar-stack">
         {assignee ? <AttributionAvatar label="Assignee" actor={assignee} /> : null}
-        {originator ? <AttributionAvatar label="Originating" actor={originator} /> : null}
+        {originator ? <AttributionAvatar label="Originating" actor={originator} via={originatorVia} /> : null}
       </AvatarGroup>
     </TooltipProvider>
   );
