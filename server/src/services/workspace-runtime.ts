@@ -816,7 +816,7 @@ function branchIncoherenceValidationFailure(evidence: GitWorktreeBranchIncoheren
   );
 }
 
-async function ensureGitWorktreeBranchCoherent(input: {
+export async function ensureGitWorktreeBranchCoherent(input: {
   repoRoot: string;
   worktreePath: string;
   expectedBranchName: string | null;
