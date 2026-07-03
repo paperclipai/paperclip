@@ -45,6 +45,7 @@ import {
   executePluginEnvironmentCommand,
   realizePluginEnvironmentWorkspace,
   resolvePluginSandboxProviderDriverByKey,
+  resolvePluginExecuteBudget,
   resolvePluginExecuteRpcTimeoutMs,
   resumePluginEnvironmentLease,
 } from "./plugin-environment-driver.js";
@@ -1209,6 +1210,13 @@ function createSandboxEnvironmentDriver(
             provider: providerKey,
           });
           const sanitizedConfig = stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig);
+          // Resolve BOTH budgets together so the plugin-side timeout always
+          // undercuts the host RPC timer by the overhead buffer (see
+          // resolvePluginExecuteBudget).
+          const execBudget = resolvePluginExecuteBudget({
+            requestedTimeoutMs: input.timeoutMs,
+            config: sanitizedConfig,
+          });
           return await pluginWorkerManager.call(pluginId, "environmentExecute", {
             driverKey: providerKey,
             companyId: input.lease.companyId,
@@ -1225,11 +1233,8 @@ function createSandboxEnvironmentDriver(
             cwd: input.cwd,
             env: input.env,
             stdin: input.stdin,
-            timeoutMs: input.timeoutMs,
-          }, resolvePluginExecuteRpcTimeoutMs({
-            requestedTimeoutMs: input.timeoutMs,
-            config: sanitizedConfig,
-          }));
+            timeoutMs: execBudget.pluginTimeoutMs ?? input.timeoutMs,
+          }, execBudget.rpcTimeoutMs);
         }
       }
       throw new Error("Sandbox driver does not support direct command execution for built-in providers.");

@@ -22,7 +22,7 @@ import type {
 } from "@paperclipai/plugin-sdk";
 import { unprocessable } from "../errors.js";
 import { pluginRegistryService } from "./plugin-registry.js";
-import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { resolveMaxRpcTimeoutMs, type PluginWorkerManager } from "./plugin-worker-manager.js";
 
 export function pluginDriverProviderKey(config: Pick<PluginEnvironmentConfig, "pluginKey" | "driverKey">): string {
   return `${config.pluginKey}:${config.driverKey}`;
@@ -333,14 +333,19 @@ export async function executePluginEnvironmentCommand(input: {
         workerManager: input.workerManager,
         config: input.config,
       });
+  // Resolve BOTH budgets together so the plugin-side timeout always
+  // undercuts the host RPC timer by the overhead buffer (see
+  // resolvePluginExecuteBudget). Passing the raw requested timeout through
+  // to the plugin would defeat the buffer whenever it exceeds the host cap.
+  const budget = resolvePluginExecuteBudget({
+    requestedTimeoutMs: input.params.timeoutMs,
+    config: input.config.driverConfig,
+  });
   return await input.workerManager.call(
     plugin.id,
     "environmentExecute",
-    input.params,
-    resolvePluginExecuteRpcTimeoutMs({
-      requestedTimeoutMs: input.params.timeoutMs,
-      config: input.config.driverConfig,
-    }),
+    { ...input.params, timeoutMs: budget.pluginTimeoutMs ?? input.params.timeoutMs },
+    budget.rpcTimeoutMs,
   );
 }
 
@@ -451,18 +456,52 @@ export async function deletePluginEnvironmentTemplate(input: {
 
 const RPC_OVERHEAD_BUFFER_MS = 30_000;
 
+function resolvePluginExecuteBaseMs(input: {
+  requestedTimeoutMs?: number;
+  config: Record<string, unknown>;
+}): number | undefined {
+  if (Number.isFinite(input.requestedTimeoutMs) && (input.requestedTimeoutMs ?? 0) > 0) {
+    return Math.trunc(input.requestedTimeoutMs!);
+  }
+  const configTimeoutMs = typeof input.config.timeoutMs === "number" ? input.config.timeoutMs : null;
+  if (configTimeoutMs && Number.isFinite(configTimeoutMs) && configTimeoutMs > 0) {
+    return Math.trunc(configTimeoutMs);
+  }
+  return undefined;
+}
+
 export function resolvePluginExecuteRpcTimeoutMs(input: {
   requestedTimeoutMs?: number;
   config: Record<string, unknown>;
 }): number | undefined {
-  let baseMs: number | undefined;
-  if (Number.isFinite(input.requestedTimeoutMs) && (input.requestedTimeoutMs ?? 0) > 0) {
-    baseMs = Math.trunc(input.requestedTimeoutMs!);
-  } else {
-    const configTimeoutMs = typeof input.config.timeoutMs === "number" ? input.config.timeoutMs : null;
-    if (configTimeoutMs && Number.isFinite(configTimeoutMs) && configTimeoutMs > 0) {
-      baseMs = Math.trunc(configTimeoutMs);
-    }
-  }
+  const baseMs = resolvePluginExecuteBaseMs(input);
   return baseMs != null ? baseMs + RPC_OVERHEAD_BUFFER_MS : undefined;
+}
+
+/**
+ * Resolve the execute-call budgets so the plugin-side graceful timeout path
+ * ALWAYS fires before the host-side RPC timer.
+ *
+ * The host clamps every RPC timeout at resolveMaxRpcTimeoutMs(). Before this
+ * helper, a requested timeout whose value + buffer exceeded that cap was
+ * clamped to EXACTLY the cap while the plugin still received the full
+ * requested budget — the buffer was defeated and the host timer fired first,
+ * producing a contentless "RPC call timed out" failure with everything the
+ * plugin knew about the run discarded.
+ *
+ * Invariant: pluginTimeoutMs + RPC_OVERHEAD_BUFFER_MS <= rpcTimeoutMs <= cap.
+ * When neither a requested nor a config timeout exists, both budgets stay
+ * undefined and legacy behavior is preserved.
+ */
+export function resolvePluginExecuteBudget(input: {
+  requestedTimeoutMs?: number;
+  config: Record<string, unknown>;
+}): { pluginTimeoutMs: number | undefined; rpcTimeoutMs: number | undefined } {
+  const baseMs = resolvePluginExecuteBaseMs(input);
+  if (baseMs == null) {
+    return { pluginTimeoutMs: undefined, rpcTimeoutMs: undefined };
+  }
+  const maxRpcTimeoutMs = resolveMaxRpcTimeoutMs();
+  const pluginTimeoutMs = Math.min(baseMs, maxRpcTimeoutMs - RPC_OVERHEAD_BUFFER_MS);
+  return { pluginTimeoutMs, rpcTimeoutMs: pluginTimeoutMs + RPC_OVERHEAD_BUFFER_MS };
 }

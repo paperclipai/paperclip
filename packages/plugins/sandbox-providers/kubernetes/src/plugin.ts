@@ -32,6 +32,7 @@ import { jobOrchestrator, JobTimeoutError } from "./job-orchestrator.js";
 import {
   sandboxCrOrchestrator,
   SandboxCrTimeoutError,
+  SandboxSchedulingError,
 } from "./sandbox-cr-orchestrator.js";
 import { execInPod, wrapCommandWithEnv } from "./pod-exec.js";
 import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
@@ -576,27 +577,68 @@ const plugin = definePlugin({
       // block for up to twice the requested timeout.
       const executeStartedAt = Date.now();
 
+      // The readiness wait has its OWN budget (podReadyTimeoutSec), never
+      // more than the caller's whole exec budget. Before this cap the wait
+      // shared the full exec budget, so a pod that was never coming up burned
+      // the entire window before the (host-side) timer produced a contentless
+      // RPC timeout. The exec/streaming phase below keeps the remaining share
+      // of the caller's budget.
+      const readyTimeoutMs = Math.min(
+        config.podReadyTimeoutSec * 1000,
+        effectiveTimeoutMs,
+      );
+
       if (!podAlreadyKnownReady) {
         try {
           await sandboxCrOrchestrator.waitForCompletion(
             clients,
             namespace,
             lease.providerLeaseId,
-            { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
+            {
+              timeoutMs: readyTimeoutMs,
+              pollMs: 2000,
+              unschedulableGraceMs: config.podUnschedulableGraceSec * 1000,
+            },
           );
           readySandboxesByLease.add(lease.providerLeaseId);
         } catch (err) {
-          if (err instanceof SandboxCrTimeoutError) {
+          if (err instanceof SandboxSchedulingError) {
+            // The scheduler cannot place the pod (cluster out of capacity /
+            // autoscaler outage). Fail fast with an actionable message and a
+            // distinct error code instead of burning the whole exec budget.
+            // NOTE: the stderr marker below is classified server-side (see
+            // adapter-utils sandbox-infra-failure) — keep them in sync.
             return {
-              exitCode: null,
-              timedOut: true,
+              exitCode: 1,
+              timedOut: false,
               stdout: "",
-              stderr: `Sandbox pod did not become Ready within ${effectiveTimeoutMs}ms`,
+              stderr:
+                "Sandbox pod could not be scheduled: cluster has no capacity for it. " +
+                "This is an infrastructure issue, not a problem with your task. " +
+                `(${err.message})`,
               metadata: {
                 provider: "kubernetes",
                 backend: "sandbox-cr",
                 namespace,
                 sandboxName: lease.providerLeaseId,
+                errorCode: "sandbox_unschedulable",
+              },
+            };
+          }
+          if (err instanceof SandboxCrTimeoutError) {
+            // NOTE: the stderr marker below is classified server-side (see
+            // adapter-utils sandbox-infra-failure) — keep them in sync.
+            return {
+              exitCode: null,
+              timedOut: true,
+              stdout: "",
+              stderr: `Sandbox pod did not become Ready within ${readyTimeoutMs}ms`,
+              metadata: {
+                provider: "kubernetes",
+                backend: "sandbox-cr",
+                namespace,
+                sandboxName: lease.providerLeaseId,
+                errorCode: "sandbox_not_ready",
               },
             };
           }

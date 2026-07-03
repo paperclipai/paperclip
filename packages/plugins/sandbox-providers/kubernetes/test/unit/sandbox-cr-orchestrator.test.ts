@@ -5,6 +5,7 @@ import {
   getSandboxCrStatus,
   findPodForSandbox,
   SandboxCrTimeoutError,
+  SandboxSchedulingError,
   waitForSandboxReady,
 } from "../../src/sandbox-cr-orchestrator.js";
 
@@ -266,5 +267,143 @@ describe("waitForSandboxReady", () => {
         pollMs: 10,
       }),
     ).rejects.toThrow(/failed.*OOMKilled/i);
+  });
+});
+
+describe("waitForSandboxReady unschedulable detection", () => {
+  function unschedulablePod(lastTransitionTime: string | undefined) {
+    return {
+      metadata: { name: "pc-abc" },
+      status: {
+        phase: "Pending",
+        conditions: [
+          {
+            type: "PodScheduled",
+            status: "False",
+            reason: "Unschedulable",
+            message: "0/9 nodes are available: 9 Insufficient cpu.",
+            ...(lastTransitionTime ? { lastTransitionTime } : {}),
+          },
+        ],
+      },
+    };
+  }
+
+  it("throws SandboxSchedulingError when the pod has been Unschedulable past the grace period", async () => {
+    const get = vi.fn().mockResolvedValue(makeCr("Pending"));
+    const read = vi
+      .fn()
+      .mockResolvedValue(unschedulablePod(new Date(Date.now() - 10 * 60_000).toISOString()));
+    const clients = {
+      custom: { getNamespacedCustomObject: get },
+      core: { readNamespacedPod: read },
+    };
+    await expect(
+      waitForSandboxReady(clients as never, "ns", "pc-abc", {
+        timeoutMs: 5000,
+        pollMs: 10,
+        unschedulableGraceMs: 1000,
+      }),
+    ).rejects.toBeInstanceOf(SandboxSchedulingError);
+  });
+
+  it("includes the scheduler's message in the SandboxSchedulingError", async () => {
+    const get = vi.fn().mockResolvedValue(makeCr("Pending"));
+    const read = vi
+      .fn()
+      .mockResolvedValue(unschedulablePod(new Date(Date.now() - 10 * 60_000).toISOString()));
+    const clients = {
+      custom: { getNamespacedCustomObject: get },
+      core: { readNamespacedPod: read },
+    };
+    await expect(
+      waitForSandboxReady(clients as never, "ns", "pc-abc", {
+        timeoutMs: 5000,
+        pollMs: 10,
+        unschedulableGraceMs: 1000,
+      }),
+    ).rejects.toThrow(/Insufficient cpu/);
+  });
+
+  it("reads the pod named in the Sandbox CR status.podName when present", async () => {
+    const get = vi.fn().mockResolvedValue(makeCr("Pending", "pc-abc-pod-777"));
+    const read = vi
+      .fn()
+      .mockResolvedValue(unschedulablePod(new Date(Date.now() - 10 * 60_000).toISOString()));
+    const clients = {
+      custom: { getNamespacedCustomObject: get },
+      core: { readNamespacedPod: read },
+    };
+    await expect(
+      waitForSandboxReady(clients as never, "ns", "pc-abc", {
+        timeoutMs: 5000,
+        pollMs: 10,
+        unschedulableGraceMs: 1000,
+      }),
+    ).rejects.toBeInstanceOf(SandboxSchedulingError);
+    expect(read).toHaveBeenCalledWith({ namespace: "ns", name: "pc-abc-pod-777" });
+  });
+
+  it("does NOT throw while the Unschedulable condition is younger than the grace period", async () => {
+    const get = vi
+      .fn()
+      .mockResolvedValueOnce(makeCr("Pending"))
+      .mockResolvedValueOnce(makeCr("Ready"));
+    const read = vi.fn().mockResolvedValue(unschedulablePod(new Date().toISOString()));
+    const clients = {
+      custom: { getNamespacedCustomObject: get },
+      core: { readNamespacedPod: read },
+    };
+    const status = await waitForSandboxReady(clients as never, "ns", "pc-abc", {
+      timeoutMs: 5000,
+      pollMs: 10,
+      unschedulableGraceMs: 60_000,
+    });
+    expect(status.phase).toBe("Running");
+  });
+
+  it("falls back to first-observation timing when the condition has no lastTransitionTime", async () => {
+    const get = vi.fn().mockResolvedValue(makeCr("Pending"));
+    const read = vi.fn().mockResolvedValue(unschedulablePod(undefined));
+    const clients = {
+      custom: { getNamespacedCustomObject: get },
+      core: { readNamespacedPod: read },
+    };
+    await expect(
+      waitForSandboxReady(clients as never, "ns", "pc-abc", {
+        timeoutMs: 5000,
+        pollMs: 10,
+        unschedulableGraceMs: 50,
+      }),
+    ).rejects.toBeInstanceOf(SandboxSchedulingError);
+  });
+
+  it("keeps polling to the normal timeout when the pod does not exist yet", async () => {
+    const get = vi.fn().mockResolvedValue(makeCr("Pending"));
+    const read = vi.fn().mockRejectedValue({ code: 404 });
+    const clients = {
+      custom: { getNamespacedCustomObject: get },
+      core: { readNamespacedPod: read },
+    };
+    await expect(
+      waitForSandboxReady(clients as never, "ns", "pc-abc", {
+        timeoutMs: 60,
+        pollMs: 10,
+        unschedulableGraceMs: 1,
+      }),
+    ).rejects.toBeInstanceOf(SandboxCrTimeoutError);
+  });
+
+  it("does not inspect pods at all when no grace is configured (previous behavior)", async () => {
+    const get = vi.fn().mockResolvedValue(makeCr("Pending"));
+    const read = vi.fn();
+    const clients = {
+      custom: { getNamespacedCustomObject: get },
+      core: { readNamespacedPod: read },
+    };
+    await expect(
+      waitForSandboxReady(clients as never, "ns", "pc-abc", { timeoutMs: 50, pollMs: 10 }),
+    ).rejects.toBeInstanceOf(SandboxCrTimeoutError);
+    expect(read).not.toHaveBeenCalled();
   });
 });

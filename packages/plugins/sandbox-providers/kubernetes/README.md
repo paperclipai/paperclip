@@ -74,6 +74,8 @@ Common optional fields:
 | `serviceAccountAnnotations` | `{}` | Annotations applied to per-tenant ServiceAccount (e.g. IRSA `eks.amazonaws.com/role-arn`). |
 | `jobTtlSecondsAfterFinished` | `900` | Seconds after a Job completes before garbage-collection. |
 | `podActivityDeadlineSec` | `3600` | Hard ceiling on a single run's wall-clock time. |
+| `podUnschedulableGraceSec` | `120` | sandbox-cr only. How long a pod may sit `PodScheduled=False` reason `Unschedulable` before the readiness wait fails fast with a distinct scheduling error (`sandbox_unschedulable`) instead of burning the exec budget. Sized to absorb normal autoscaler scale-up latency. |
+| `podReadyTimeoutSec` | `300` | sandbox-cr only. Budget for the wait-for-Ready phase on the first exec of a lease, independent of the exec budget (and never more than it). A readiness timeout surfaces as `sandbox_not_ready`; the exec phase keeps the remaining share of the caller's budget. |
 
 Full JSON Schema in `src/manifest.ts`.
 
