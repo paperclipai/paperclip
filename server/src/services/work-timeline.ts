@@ -78,6 +78,7 @@ const MAX_LIMIT = 500;
 const MAX_WINDOW_MS = 31 * 24 * 60 * 60 * 1000;
 const DEFAULT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_SOURCE_ROWS = 5_000;
+const ACL_FILTER_CONCURRENCY = 16;
 
 function actorId(type: TimelineActorType, id: string) {
   return `${type}:${id}`;
@@ -132,6 +133,34 @@ function runOverlapsWindow(from: Date, to: Date) {
 }
 
 export function workTimelineService(db: Db) {
+  async function filterReadableIssues(
+    rows: IssueRow[],
+    canReadIssue: NonNullable<WorkTimelineQuery["canReadIssue"]> | undefined,
+  ) {
+    if (!canReadIssue) return rows;
+
+    const allowedRows: IssueRow[] = [];
+    for (let index = 0; index < rows.length; index += ACL_FILTER_CONCURRENCY) {
+      const batch = rows.slice(index, index + ACL_FILTER_CONCURRENCY);
+      const decisions = await Promise.all(batch.map(async (issue) => ({
+        issue,
+        allowed: await canReadIssue({
+          id: issue.id,
+          companyId: issue.companyId,
+          projectId: issue.projectId,
+          parentId: issue.parentId,
+          assigneeAgentId: issue.assigneeAgentId,
+          assigneeUserId: issue.assigneeUserId,
+          status: issue.status,
+        }),
+      })));
+      for (const decision of decisions) {
+        if (decision.allowed) allowedRows.push(decision.issue);
+      }
+    }
+    return allowedRows;
+  }
+
   async function collectIssueIds(input: WorkTimelineQuery, from: Date, to: Date) {
     const ids = new Set<string>();
 
@@ -403,20 +432,7 @@ export function workTimelineService(db: Db) {
     const candidateIssueIds = await collectIssueIds(input, from, to);
     const loadedIssues = await loadIssues(input, candidateIssueIds);
     const userScopedIssues = await applyUserLens(input, loadedIssues, from, to);
-    const accessibleIssues = input.canReadIssue
-      ? (await Promise.all(userScopedIssues.map(async (issue) => ({
-        issue,
-        allowed: await input.canReadIssue?.({
-          id: issue.id,
-          companyId: issue.companyId,
-          projectId: issue.projectId,
-          parentId: issue.parentId,
-          assigneeAgentId: issue.assigneeAgentId,
-          assigneeUserId: issue.assigneeUserId,
-          status: issue.status,
-        }),
-      })))).filter((entry) => entry.allowed).map((entry) => entry.issue)
-      : userScopedIssues;
+    const accessibleIssues = await filterReadableIssues(userScopedIssues, input.canReadIssue);
     const sortedIssues = accessibleIssues.sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
     const pagedIssues = sortedIssues.slice(offset, offset + limit);
     const issueById = new Map(pagedIssues.map((issue) => [issue.id, issue]));
@@ -519,6 +535,7 @@ export function workTimelineService(db: Db) {
         .where(
           and(
             eq(activityLog.companyId, input.companyId),
+            eq(heartbeatRuns.companyId, input.companyId),
             eq(activityLog.entityType, "issue"),
             inArray(activityLog.entityId, readableIssueIds),
             runOverlapsWindow(from, to),
