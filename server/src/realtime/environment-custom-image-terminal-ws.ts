@@ -486,6 +486,8 @@ export function createSsh2EnvironmentCustomImageSshConnector(): EnvironmentCusto
         client.connect({
           host: ssh.host,
           port: ssh.port,
+          // Daytona-style providers put the ephemeral SSH credential in the username
+          // and accept the "none" auth method; no password or key is expected here.
           username: ssh.username,
           hostHash: "sha256",
           hostVerifier: (hostKeySha256: string) => verifyHostKeySha256(hostKeySha256),
