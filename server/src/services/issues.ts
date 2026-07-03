@@ -5809,7 +5809,13 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
-    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+    checkout: async (
+      id: string,
+      agentId: string,
+      expectedStatuses: string[],
+      checkoutRunId: string | null,
+      options?: { allowReviewTakeover?: boolean },
+    ) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -5851,6 +5857,17 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
+      // Review takeover (mention-granted reviewer): may claim an issue assigned to
+      // another agent only while it sits in_review with no live checkout lock. The
+      // execution-lock condition below still applies, so an actively executing run
+      // can never be stolen.
+      const assigneeCondition = options?.allowReviewTakeover
+        ? or(
+          isNull(issues.assigneeAgentId),
+          sameRunAssigneeCondition,
+          and(eq(issues.status, "in_review"), isNull(issues.checkoutRunId)),
+        )
+        : or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition);
       const updated = await db
         .update(issues)
         .set({
@@ -5866,7 +5883,7 @@ export function issueService(db: Db) {
           and(
             eq(issues.id, id),
             inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+            assigneeCondition,
             executionLockCondition,
           ),
         )

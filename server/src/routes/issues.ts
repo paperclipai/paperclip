@@ -6897,6 +6897,34 @@ export function issueRoutes(
       });
     }
 
+    // Mention-granted review takeover: an agent explicitly routed onto this issue
+    // (agent:// mention authored by the assignee or an active user) may claim an
+    // in_review issue assigned to another agent, reassigning it to itself so the
+    // review verdict can be applied under the normal ownership rules.
+    let reviewTakeoverGranted = false;
+    if (
+      req.actor.type === "agent" &&
+      issue.status === "in_review" &&
+      issue.assigneeAgentId &&
+      issue.assigneeAgentId !== req.body.agentId
+    ) {
+      const decision = await access.decide({
+        actor: req.actor,
+        action: "issue:checkout_review",
+        resource: {
+          type: "issue",
+          companyId: issue.companyId,
+          issueId: issue.id,
+          projectId: issue.projectId ?? null,
+          parentIssueId: issue.parentId ?? null,
+          assigneeAgentId: issue.assigneeAgentId ?? null,
+          assigneeUserId: issue.assigneeUserId ?? null,
+          status: issue.status ?? null,
+        },
+      });
+      reviewTakeoverGranted = decision.allowed;
+    }
+
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
@@ -6905,7 +6933,9 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
-    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
+    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId, {
+      allowReviewTakeover: reviewTakeoverGranted,
+    });
     const actor = getActorInfo(req);
 
     await logActivity(db, {
@@ -6917,7 +6947,12 @@ export function issueRoutes(
       action: "issue.checked_out",
       entityType: "issue",
       entityId: issue.id,
-      details: { agentId: req.body.agentId },
+      details: {
+        agentId: req.body.agentId,
+        ...(reviewTakeoverGranted
+          ? { reviewTakeover: true, previousAssigneeAgentId: issue.assigneeAgentId }
+          : {}),
+      },
     });
 
     if (
