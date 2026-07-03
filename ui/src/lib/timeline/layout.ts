@@ -105,7 +105,7 @@ export interface TimelineLayout {
   issues: { key: string; label: string; color: string }[];
 }
 
-export const AXIS_H = 22;
+export const AXIS_H = 32;
 const RUNNING_STATUSES = new Set(["running", "in_progress", "queued", "pending"]);
 
 export function isRunningStatus(status: string): boolean {

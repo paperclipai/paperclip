@@ -114,11 +114,13 @@ export function Timeline() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const [zoom, setZoom] = useState<ZoomLevel>("day");
   const [zoomScale, setZoomScale] = useState<number | undefined>(undefined);
+  const [visibleRangeLabel, setVisibleRangeLabel] = useState<string>(() => zoomDescription("day"));
   const zoomTouched = useRef(false);
   const setZoomManual = (z: ZoomLevel) => {
     zoomTouched.current = true;
     setZoom(z);
     setZoomScale(undefined);
+    setVisibleRangeLabel(zoomDescription(z));
   };
   const [colorMode, setColorMode] = useState<ColorMode>("issue");
   const [lensUserId, setLensUserId] = useState<string>(EVERYONE);
@@ -187,7 +189,7 @@ export function Timeline() {
             { value: "week", label: "Week" },
           ]}
         />
-        <span>{zoomDescription(zoom)}</span>
+        <span>{visibleRangeLabel}</span>
       </label>
       <label className="flex items-center gap-2 text-xs text-muted-foreground">
         Report for
@@ -288,6 +290,7 @@ export function Timeline() {
                 zoom={zoom}
                 zoomScale={zoomScale}
                 colorMode={colorMode}
+                onVisibleRangeLabelChange={setVisibleRangeLabel}
                 onZoomScaleChange={(nextScale, nextZoom = nearestZoomForScale(nextScale)) => {
                   zoomTouched.current = true;
                   setZoomScale(nextScale);

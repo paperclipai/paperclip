@@ -9,7 +9,7 @@ import { WorkTimelineChart } from "./WorkTimelineChart";
 import { computeLayout } from "@/lib/timeline/layout";
 
 vi.mock("@/lib/router", () => ({
-  useNavigate: () => vi.fn(),
+  useLocation: () => ({ pathname: "/PAP/timeline" }),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -27,6 +27,7 @@ beforeEach(() => {
 afterEach(() => {
   flushSync(() => root.unmount());
   container.remove();
+  vi.restoreAllMocks();
 });
 
 function renderChart(
@@ -90,6 +91,16 @@ function timelineSample(): WorkTimelineResult {
 }
 
 describe("WorkTimelineChart", () => {
+  it("renders date-aware AM/PM labels on the header axis", () => {
+    renderChart(timelineSample());
+
+    const chartSvg = container.querySelector<SVGSVGElement>("svg.absolute");
+
+    expect(chartSvg?.textContent).toContain("Jul 2");
+    expect(chartSvg?.textContent).toContain("AM");
+    expect(chartSvg?.textContent).not.toContain("09:00");
+  });
+
   it("renders actor labels in a sticky gutter outside the horizontally scrolling SVG", () => {
     renderChart(timelineSample());
 
@@ -156,6 +167,9 @@ describe("WorkTimelineChart", () => {
     expect(layout.connectors).toMatchObject([
       { sourceRunId: "run-1", targetRunId: "run-2", dashed: false },
     ]);
+    const bars = new Map(layout.rows.flatMap((row) => row.bars.map((bar) => [bar.span.runId, bar])));
+    expect(layout.connectors[0].x1).toBe(bars.get("run-1")?.x2);
+    expect(layout.connectors[0].x2).toBe(bars.get("run-2")?.x1);
   });
 
   it("reserves normal wheel input for panning and uses modifier-wheel for continuous zoom", () => {
@@ -172,5 +186,44 @@ describe("WorkTimelineChart", () => {
       scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 80, ctrlKey: true, bubbles: true, cancelable: true }));
     });
     expect(onZoomScaleChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens task bars in a new company-prefixed window", () => {
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    renderChart(timelineSample());
+
+    const bar = container.querySelector<SVGGElement>("[data-run-id='run-1']")!;
+    flushSync(() => {
+      bar.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(open).toHaveBeenCalledWith("/PAP/issues/issue-1", "_blank", "noopener,noreferrer");
+  });
+
+  it("lets minimap edge handles resize the visible range and update zoom", () => {
+    const onZoomScaleChange = vi.fn();
+    renderChart(timelineSample(), { onZoomScaleChange });
+
+    const rightHandle = container.querySelector<SVGRectElement>("[data-testid='timeline-minimap-right-handle']")!;
+    const minimap = rightHandle.ownerSVGElement!;
+    vi.spyOn(minimap, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 900,
+      bottom: 54,
+      width: 900,
+      height: 54,
+      toJSON: () => ({}),
+    });
+
+    flushSync(() => {
+      rightHandle.dispatchEvent(new MouseEvent("mousedown", { clientX: 300, bubbles: true, cancelable: true }));
+      document.dispatchEvent(new MouseEvent("mousemove", { clientX: 520, bubbles: true, cancelable: true }));
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    });
+
+    expect(onZoomScaleChange).toHaveBeenCalled();
   });
 });

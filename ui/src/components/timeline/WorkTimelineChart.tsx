@@ -9,8 +9,9 @@
  * draggable brush.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "@/lib/router";
+import { useLocation } from "@/lib/router";
 import type { WorkTimelineActor, WorkTimelineResult } from "@paperclipai/shared";
+import { applyCompanyPrefix, extractCompanyPrefixFromPath } from "@/lib/company-routes";
 import {
   AXIS_H,
   actorType,
@@ -34,6 +35,7 @@ const ZOOM_DURATION_MIN: Record<ZoomLevel, number> = {
 const MIN_PX_PER_MIN = 0.08;
 const MAX_PX_PER_MIN = 12;
 const DEFAULT_VIEWPORT_W = 960;
+const MIN_MINIMAP_SELECTION_MS = 15 * 60 * 1000;
 
 function plotViewportWidth(viewportWidth: number): number {
   return Math.max(240, viewportWidth - GEOM.gutter - 24);
@@ -82,15 +84,44 @@ interface TooltipState {
 
 function fmtClock(ms: number): string {
   const d = new Date(ms);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const hasMinutes = d.getMinutes() !== 0;
+  return d.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: hasMinutes ? "2-digit" : undefined,
+    hour12: true,
+  });
 }
 
 function fmtTick(ms: number, stepMs: number): string {
   const d = new Date(ms);
+  const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
   if (stepMs >= 24 * 60 * 60 * 1000) {
-    return `${d.getMonth() + 1}/${d.getDate()}`;
+    return date;
   }
-  return fmtClock(ms);
+  return `${date}, ${fmtClock(ms)}`;
+}
+
+export function formatVisibleDurationMinutes(minutes: number): string {
+  const rounded = Math.max(1, Math.round(minutes));
+  if (rounded >= 7 * 24 * 60 && rounded % (7 * 24 * 60) === 0) {
+    const weeks = rounded / (7 * 24 * 60);
+    return `${weeks} week${weeks === 1 ? "" : "s"} visible`;
+  }
+  if (rounded >= 24 * 60 && rounded % (24 * 60) === 0) {
+    const days = rounded / (24 * 60);
+    return `${days} day${days === 1 ? "" : "s"} visible`;
+  }
+  if (rounded >= 24 * 60) {
+    const days = Math.floor(rounded / (24 * 60));
+    const hours = Math.round((rounded % (24 * 60)) / 60);
+    return `${days}d${hours > 0 ? ` ${hours}h` : ""} visible`;
+  }
+  if (rounded >= 60 && rounded % 60 === 0) {
+    const hours = rounded / 60;
+    return `${hours} hour${hours === 1 ? "" : "s"} visible`;
+  }
+  if (rounded >= 60) return `${Math.floor(rounded / 60)}h ${rounded % 60}m visible`;
+  return `${rounded} minutes visible`;
 }
 
 function truncate(text: string, n = 42): string {
@@ -140,6 +171,7 @@ export interface WorkTimelineChartProps {
   zoom: ZoomLevel;
   zoomScale?: number;
   onZoomScaleChange?: (nextScale: number, nextZoom: ZoomLevel) => void;
+  onVisibleRangeLabelChange?: (label: string) => void;
   colorMode: ColorMode;
   /** override "now" (tests / stories); defaults to Date.now(). */
   nowMs?: number;
@@ -150,10 +182,11 @@ export function WorkTimelineChart({
   zoom,
   zoomScale,
   onZoomScaleChange,
+  onVisibleRangeLabelChange,
   colorMode,
   nowMs,
 }: WorkTimelineChartProps) {
-  const navigate = useNavigate();
+  const location = useLocation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const initialWindowKeyRef = useRef<string | null>(null);
   const centerMsRef = useRef<number | null>(null);
@@ -172,6 +205,7 @@ export function WorkTimelineChart({
     () => layout.connectors.filter((c) => c.sourceRunId === hoveredRunId || c.targetRunId === hoveredRunId),
     [hoveredRunId, layout.connectors],
   );
+  const companyPrefix = extractCompanyPrefixFromPath(location.pathname);
 
   const timeToScrollLeft = (ms: number, viewportWidth: number) => {
     const x = layout.gutter + ((ms - layout.fromMs) / 60000) * layout.pxPerMinute;
@@ -206,6 +240,13 @@ export function WorkTimelineChart({
     }
   }, [data.window.from, data.window.to, layout.fromMs, layout.gutter, layout.pxPerMinute, layout.toMs, layout.width, viewportW]);
 
+  useEffect(() => {
+    if (!onVisibleRangeLabelChange) return;
+    const effectiveViewportW = viewportW || DEFAULT_VIEWPORT_W;
+    const minutes = plotViewportWidth(effectiveViewportW) / layout.pxPerMinute;
+    onVisibleRangeLabelChange(formatVisibleDurationMinutes(minutes));
+  }, [layout.pxPerMinute, onVisibleRangeLabelChange, viewportW]);
+
   const stepMs = chooseTickStepMs(layout.pxPerMinute);
   const ticks: number[] = [];
   const startTick = Math.ceil(layout.fromMs / stepMs) * stepMs;
@@ -221,7 +262,21 @@ export function WorkTimelineChart({
     return issueColor(bar.span.issueId);
   };
 
-  const openIssue = (issueId: string) => navigate(`/issues/${issueId}`);
+  const openIssue = (issueId: string) => {
+    const href = applyCompanyPrefix(`/issues/${encodeURIComponent(issueId)}`, companyPrefix);
+    window.open(href, "_blank", "noopener,noreferrer");
+  };
+
+  const updateVisibleRange = (fromMs: number, toMs: number) => {
+    if (!onZoomScaleChange) return;
+    const el = scrollRef.current;
+    const durationMs = Math.max(MIN_MINIMAP_SELECTION_MS, toMs - fromMs);
+    const centerMs = fromMs + durationMs / 2;
+    const effectiveViewportW = el?.clientWidth || viewportW || DEFAULT_VIEWPORT_W;
+    const nextScale = clampScale(plotViewportWidth(effectiveViewportW) / (durationMs / 60000));
+    centerMsRef.current = centerMs;
+    onZoomScaleChange(nextScale, nearestZoomForScale(nextScale, effectiveViewportW));
+  };
 
   const connectorHintForBar = (bar: PositionedBar): string | null => {
     const related = layout.connectors.filter((c) => c.sourceRunId === bar.span.runId || c.targetRunId === bar.span.runId);
@@ -305,7 +360,7 @@ export function WorkTimelineChart({
             return (
               <g key={`tick-${ms}`}>
                 <line x1={gx} y1={AXIS_H} x2={gx} y2={layout.height} stroke="var(--color-border)" strokeWidth={1} />
-                <text x={gx + 3} y={14} fontSize={11} fill="var(--color-muted-foreground)">
+                <text x={gx + 3} y={19} fontSize={11} fill="var(--color-muted-foreground)">
                   {fmtTick(ms, stepMs)}
                 </text>
               </g>
@@ -441,7 +496,13 @@ export function WorkTimelineChart({
         </div>
       </div>
 
-      <MiniMap layout={layout} scrollRef={scrollRef} viewportW={viewportW} scrollLeft={scrollLeft} />
+      <MiniMap
+        layout={layout}
+        scrollRef={scrollRef}
+        viewportW={viewportW}
+        scrollLeft={scrollLeft}
+        onVisibleRangeChange={updateVisibleRange}
+      />
 
       {tooltip && <Tooltip tooltip={tooltip} now={now} />}
     </div>
@@ -512,7 +573,6 @@ function Tooltip({ tooltip, now }: { tooltip: TooltipState; now: number }) {
       {tooltip.connectorHint && (
         <div className="text-muted-foreground">{tooltip.connectorHint}</div>
       )}
-      <div className="mt-1 text-foreground">click → open task</div>
     </div>
   );
 }
@@ -522,11 +582,13 @@ function MiniMap({
   scrollRef,
   viewportW,
   scrollLeft,
+  onVisibleRangeChange,
 }: {
   layout: ReturnType<typeof computeLayout>;
   scrollRef: React.RefObject<HTMLDivElement | null>;
   viewportW: number;
   scrollLeft: number;
+  onVisibleRangeChange: (fromMs: number, toMs: number) => void;
 }) {
   const W = Math.max(320, viewportW || 900);
   const H = 54;
@@ -538,16 +600,54 @@ function MiniMap({
   const rowIndex = new Map(layout.rows.map((r, i) => [r.actor.id, i]));
   const laneH = (H - 2 * pad) / Math.max(1, layout.rows.length);
 
-  const frac = layout.width > 0 ? (viewportW || W) / layout.width : 1;
-  const brushW = Math.max(24, Math.min(1, frac) * (W - 2 * pad));
-  const brushX = pad + (layout.width > 0 ? scrollLeft / layout.width : 0) * (W - 2 * pad);
+  const timeAtX = (x: number) => {
+    const ms = layout.fromMs + ((x - layout.gutter) / layout.pxPerMinute) * 60000;
+    return Math.max(layout.fromMs, Math.min(layout.toMs, ms));
+  };
+  const visibleStartMs = timeAtX(scrollLeft);
+  const visibleEndMs = timeAtX(scrollLeft + (viewportW || W));
+  const brushX = mx(visibleStartMs);
+  const brushW = Math.max(24, mx(visibleEndMs) - brushX);
 
-  const seek = (clientX: number, el: SVGSVGElement) => {
+  const msAtClientX = (clientX: number, el: SVGSVGElement) => {
     const rect = el.getBoundingClientRect();
     const f = Math.min(1, Math.max(0, (clientX - rect.left - pad) / (W - 2 * pad)));
+    return layout.fromMs + f * spanMs;
+  };
+
+  const seek = (clientX: number, el: SVGSVGElement) => {
+    const centerMs = msAtClientX(clientX, el);
     if (scrollRef.current) {
-      scrollRef.current.scrollLeft = f * layout.width - scrollRef.current.clientWidth / 2;
+      scrollRef.current.scrollLeft = layout.gutter + ((centerMs - layout.fromMs) / 60000) * layout.pxPerMinute - scrollRef.current.clientWidth / 2;
     }
+  };
+
+  const startRangeDrag = (mode: "left" | "right" | "move", event: React.MouseEvent<SVGElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const el = event.currentTarget.ownerSVGElement;
+    if (!el) return;
+    const startLeftMs = visibleStartMs;
+    const startRightMs = visibleEndMs;
+    const durationMs = Math.max(MIN_MINIMAP_SELECTION_MS, startRightMs - startLeftMs);
+
+    const move = (ev: MouseEvent) => {
+      const hitMs = msAtClientX(ev.clientX, el);
+      if (mode === "left") {
+        onVisibleRangeChange(Math.min(hitMs, startRightMs - MIN_MINIMAP_SELECTION_MS), startRightMs);
+      } else if (mode === "right") {
+        onVisibleRangeChange(startLeftMs, Math.max(hitMs, startLeftMs + MIN_MINIMAP_SELECTION_MS));
+      } else {
+        const nextFrom = Math.max(layout.fromMs, Math.min(layout.toMs - durationMs, hitMs - durationMs / 2));
+        onVisibleRangeChange(nextFrom, nextFrom + durationMs);
+      }
+    };
+    const up = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
   };
 
   return (
@@ -596,6 +696,27 @@ function MiniMap({
           opacity={0.12}
           stroke="var(--color-foreground)"
           strokeWidth={1.5}
+          onMouseDown={(e) => startRangeDrag("move", e)}
+        />
+        <rect
+          data-testid="timeline-minimap-left-handle"
+          x={brushX - 3}
+          y={1}
+          width={6}
+          height={H - 2}
+          fill="var(--color-foreground)"
+          opacity={0.55}
+          onMouseDown={(e) => startRangeDrag("left", e)}
+        />
+        <rect
+          data-testid="timeline-minimap-right-handle"
+          x={brushX + brushW - 3}
+          y={1}
+          width={6}
+          height={H - 2}
+          fill="var(--color-foreground)"
+          opacity={0.55}
+          onMouseDown={(e) => startRangeDrag("right", e)}
         />
       </svg>
     </div>
