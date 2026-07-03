@@ -1,5 +1,10 @@
 import type { AgentEnvConfig } from "./secrets.js";
-import type { McpServerHealthStatus, McpServerTransport } from "../constants.js";
+import type {
+  McpServerGovernanceStatus,
+  McpServerHealthStatus,
+  McpServerRiskLevel,
+  McpServerTransport,
+} from "../constants.js";
 
 export interface McpServer {
   id: string;
@@ -17,6 +22,15 @@ export interface McpServer {
   /** Sealed credential material (localEncryptedProvider ref); never plaintext. */
   credentialSecretRef: string | null;
   enabled: boolean;
+  /** Governance state machine; execution is denied unless "allowlisted". */
+  governanceStatus: McpServerGovernanceStatus;
+  /** Catalog-derived risk classification (recomputed on discovery). */
+  riskLevel: McpServerRiskLevel;
+  riskFactors: string[];
+  governanceUpdatedAt: Date | null;
+  /** Actor descriptor of the last transition (`user:<id>` / `agent:<id>` / `system`). */
+  governanceUpdatedBy: string | null;
+  governanceReason: string | null;
   lastHealthStatus: McpServerHealthStatus;
   lastHealthcheckAt: Date | null;
   lastDiscoveryAt: Date | null;

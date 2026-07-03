@@ -717,10 +717,10 @@
       "breakpoints": true
     },
     {
-      "idx": 112,
+      "idx": 113,
       "version": "7",
-      "when": 1781902400002,
-      "tag": "0112_company_mcp_client_enabled",
+      "when": 1781988000000,
+      "tag": "0113_mcp_server_governance",
       "breakpoints": true
     }
   ]

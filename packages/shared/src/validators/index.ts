@@ -241,6 +241,12 @@ export {
   type TestMcpServer,
 } from "./mcp-server-discovery.js";
 export {
+  mcpServerAuditEventTypeSchema,
+  transitionMcpServerGovernanceSchema,
+  mcpServerAuditLogEntrySchema,
+  type TransitionMcpServerGovernance,
+} from "./mcp-server-governance.js";
+export {
   agentMcpToolDescriptorSchema,
   agentMcpServerToolCatalogSchema,
   agentMcpToolListResponseSchema,

@@ -32,6 +32,7 @@ export { workspaceOperations } from "./workspace_operations.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { mcpServers } from "./mcp_servers.js";
 export { mcpServerCatalogSnapshots } from "./mcp_server_catalog_snapshots.js";
+export { mcpServerAuditLog } from "./mcp_server_audit_log.js";
 export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
 export { issues } from "./issues.js";

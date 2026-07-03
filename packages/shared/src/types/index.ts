@@ -240,6 +240,11 @@ export type {
   McpServerDiscoveryResult,
 } from "./mcp-server-discovery.js";
 export type {
+  McpServerAuditLogEntry,
+  TransitionMcpServerGovernanceRequest,
+  McpServerRiskClassification,
+} from "./mcp-server-governance.js";
+export type {
   AgentMcpToolDescriptor,
   AgentMcpServerToolCatalog,
   AgentMcpToolListResponse,

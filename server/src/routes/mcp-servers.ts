@@ -4,12 +4,14 @@ import {
   bindAgentMcpServerSchema,
   createMcpServerSchema,
   testMcpServerSchema,
+  transitionMcpServerGovernanceSchema,
   updateAgentMcpServerBindingSchema,
   updateMcpServerSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { agentService, logActivity, mcpServerService, secretService } from "../services/index.js";
+import { mcpServerGovernanceService } from "../services/mcp-server-governance.js";
 
 export function mcpServerRoutes(db: Db) {
   const router = Router();
@@ -17,6 +19,7 @@ export function mcpServerRoutes(db: Db) {
   const svc = mcpServerService(db, {
     secrets: secretService(db),
   });
+  const governance = mcpServerGovernanceService(db);
 
   router.get("/companies/:companyId/mcp-servers", async (req, res) => {
     assertBoard(req);
@@ -167,6 +170,59 @@ export function mcpServerRoutes(db: Db) {
     });
 
     res.status(result.ok ? 200 : 422).json(result);
+  });
+
+  // Governance: admin-only transition (board-level authz required)
+  router.post(
+    "/mcp-servers/:id/governance/transition",
+    validate(transitionMcpServerGovernanceSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const id = req.params.id as string;
+      const server = await svc.getById(id);
+      if (!server) {
+        res.status(404).json({ error: "MCP server not found" });
+        return;
+      }
+      assertCompanyAccess(req, server.companyId);
+
+      const updated = await governance.transition(
+        server.companyId,
+        id,
+        req.body,
+        { type: "user", id: req.actor.userId ?? null },
+      );
+      res.json(updated);
+    },
+  );
+
+  // Governance: audit log for a server (board-level read)
+  router.get("/mcp-servers/:id/governance/audit-log", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const server = await svc.getById(id);
+    if (!server) {
+      res.status(404).json({ error: "MCP server not found" });
+      return;
+    }
+    assertCompanyAccess(req, server.companyId);
+    const limit = Math.min(Number(req.query.limit) || 100, 500);
+    const entries = await governance.listAuditLog(server.companyId, id, limit);
+    res.json(entries);
+  });
+
+  // Governance: trigger risk reclassification (board-level)
+  router.post("/mcp-servers/:id/governance/refresh-risk", async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    const server = await svc.getById(id);
+    if (!server) {
+      res.status(404).json({ error: "MCP server not found" });
+      return;
+    }
+    assertCompanyAccess(req, server.companyId);
+    const updated = await governance.refreshRiskClassification(server.companyId, id);
+    res.json(updated);
   });
 
   router.get("/agents/:id/mcp-servers", async (req, res) => {

@@ -21,6 +21,12 @@ export const mcpServers = pgTable(
     // Sealed credential material (localEncryptedProvider ref) — never plaintext.
     credentialSecretRef: text("credential_secret_ref"),
     enabled: boolean("enabled").notNull().default(false),
+    governanceStatus: text("governance_status").notNull().default("pending"),
+    riskLevel: text("risk_level").notNull().default("unknown"),
+    riskFactors: jsonb("risk_factors").$type<string[]>().notNull().default([]),
+    governanceUpdatedAt: timestamp("governance_updated_at", { withTimezone: true }),
+    governanceUpdatedBy: text("governance_updated_by"),
+    governanceReason: text("governance_reason"),
     lastHealthStatus: text("last_health_status").notNull().default("unknown"),
     lastHealthcheckAt: timestamp("last_healthcheck_at", { withTimezone: true }),
     lastDiscoveryAt: timestamp("last_discovery_at", { withTimezone: true }),

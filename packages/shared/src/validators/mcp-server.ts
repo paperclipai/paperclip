@@ -1,11 +1,18 @@
 import { z } from "zod";
-import { MCP_SERVER_HEALTH_STATUSES, MCP_SERVER_TRANSPORTS } from "../constants.js";
+import {
+  MCP_SERVER_GOVERNANCE_STATUSES,
+  MCP_SERVER_HEALTH_STATUSES,
+  MCP_SERVER_RISK_LEVELS,
+  MCP_SERVER_TRANSPORTS,
+} from "../constants.js";
 import { envConfigSchema } from "./secret.js";
 
 const slugSchema = z.string().min(1).regex(/^[a-z0-9][a-z0-9._-]*$/);
 
 export const mcpServerTransportSchema = z.enum(MCP_SERVER_TRANSPORTS);
 export const mcpServerHealthStatusSchema = z.enum(MCP_SERVER_HEALTH_STATUSES);
+export const mcpServerGovernanceStatusSchema = z.enum(MCP_SERVER_GOVERNANCE_STATUSES);
+export const mcpServerRiskLevelSchema = z.enum(MCP_SERVER_RISK_LEVELS);
 
 export const mcpServerSchema = z.object({
   id: z.string().uuid(),
@@ -22,6 +29,12 @@ export const mcpServerSchema = z.object({
   env: envConfigSchema,
   credentialSecretRef: z.string().nullable(),
   enabled: z.boolean(),
+  governanceStatus: mcpServerGovernanceStatusSchema,
+  riskLevel: mcpServerRiskLevelSchema,
+  riskFactors: z.array(z.string()),
+  governanceUpdatedAt: z.date().nullable(),
+  governanceUpdatedBy: z.string().nullable(),
+  governanceReason: z.string().nullable(),
   lastHealthStatus: mcpServerHealthStatusSchema,
   lastHealthcheckAt: z.date().nullable(),
   lastDiscoveryAt: z.date().nullable(),

@@ -580,6 +580,26 @@ export type McpServerBindingMode = (typeof MCP_SERVER_BINDING_MODES)[number];
 export const MCP_SERVER_DISCOVERY_STATUSES = ["succeeded", "failed"] as const;
 export type McpServerDiscoveryStatus = (typeof MCP_SERVER_DISCOVERY_STATUSES)[number];
 
+/** pending → quarantine → allowlisted | revoked (port of upstream PAP-10341). */
+export const MCP_SERVER_GOVERNANCE_STATUSES = [
+  "pending",
+  "quarantine",
+  "allowlisted",
+  "revoked",
+] as const;
+export type McpServerGovernanceStatus = (typeof MCP_SERVER_GOVERNANCE_STATUSES)[number];
+
+export const MCP_SERVER_RISK_LEVELS = ["unknown", "low", "medium", "high", "critical"] as const;
+export type McpServerRiskLevel = (typeof MCP_SERVER_RISK_LEVELS)[number];
+
+export const MCP_SERVER_AUDIT_EVENT_TYPES = [
+  "governance.transition",
+  "governance.execute_allowed",
+  "governance.execute_denied",
+  "governance.risk_classified",
+] as const;
+export type McpServerAuditEventType = (typeof MCP_SERVER_AUDIT_EVENT_TYPES)[number];
+
 export const BILLING_TYPES = [
   "metered_api",
   "subscription_included",
