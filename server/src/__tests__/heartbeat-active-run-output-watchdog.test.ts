@@ -1010,4 +1010,67 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(decision.createdByRunId).toBe(managerRunId);
   });
+
+  // Patch A.3 — when the underlying heartbeat_run reaches a terminal status, open
+  // `stale_active_run_evaluation` issues for that run must be auto-cancelled so the
+  // assignee is not woken with an alert about a run that no longer exists.
+  it("auto-cancels open stale-run evaluation issues when the underlying run is cancelled", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const scanResult = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(scanResult.created).toBe(1);
+    const evaluationIssueId = scanResult.evaluationIssueIds[0]!;
+
+    const [openEvaluation] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, evaluationIssueId));
+    expect(openEvaluation?.status).toBe("todo");
+
+    await heartbeat.cancelRun(runId, "test: simulate run terminal status");
+
+    const [closedEvaluation] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, evaluationIssueId));
+    expect(closedEvaluation?.status).toBe("cancelled");
+
+    const closeComments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, evaluationIssueId));
+    const closeNoteBody = closeComments.map((row) => row.body).join("\n");
+    expect(closeNoteBody).toContain("System-cancelled");
+    expect(closeNoteBody).toContain("terminal status");
+  });
+
+  it("auto-cancel on terminal run is idempotent and only acts on the matching run", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const scanResult = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    expect(scanResult.created).toBe(1);
+    const evaluationIssueId = scanResult.evaluationIssueIds[0]!;
+
+    await heartbeat.cancelRun(runId, "first terminal transition");
+
+    // Second cancel attempt is a no-op on the already-cancelled run but must not
+    // crash the close hook or append duplicate close comments.
+    await heartbeat.cancelRun(runId, "second terminal transition (idempotent)");
+
+    const closeComments = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, evaluationIssueId));
+    expect(closeComments).toHaveLength(1);
+  });
 });
