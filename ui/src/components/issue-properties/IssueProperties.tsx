@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType }
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { issueStatusText } from "@/lib/status-colors";
 import { Link } from "@/lib/router";
-import { deriveResponsibleUser, type Issue, type IssueLabel } from "@paperclipai/shared";
+import type { Issue, IssueLabel } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../../api/access";
 import { agentsApi } from "../../api/agents";
@@ -24,7 +24,7 @@ import {
 } from "../../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../../lib/recent-projects";
 import { orderItemsBySelectedAndRecent } from "../../lib/recent-selections";
-import { formatAssigneeUserLabel } from "../../lib/assignees";
+import { formatAssigneeUserLabel, formatUserLabel } from "../../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../../lib/issue-execution-policy";
 import { formatMonitorOffset } from "../../lib/issue-monitor";
 import { extractProviderIdWithFallback } from "../../lib/model-utils";
@@ -116,7 +116,7 @@ interface IssuePropertiesProps {
   onAddSubIssue?: () => void;
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
-  /** Whether an agent run is currently in flight on this issue, so the responsible
+  /** Whether an agent run is currently in flight on this issue, so the assignee
    * picker can warn that reassigning will interrupt it. */
   hasActiveRun?: boolean;
   externalObjects?: IssueExternalObjectGroup[];
@@ -597,8 +597,8 @@ export function IssueProperties({
     <div className="w-full space-y-2 p-2">
       <p className="text-xs text-muted-foreground">
         {assignee
-          ? "This responsible agent's adapter does not expose editable task overrides."
-          : "Select a compatible responsible agent to edit these overrides."}
+          ? "This assignee's adapter does not expose editable task overrides."
+          : "Select a compatible assignee agent to edit these overrides."}
       </p>
       <button
         type="button"
@@ -612,24 +612,17 @@ export function IssueProperties({
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, userLabelMap);
+  const actualUserLabel = (userId: string | null | undefined) => formatUserLabel(userId, userLabelMap);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
-  const creatorUserLabel = userLabel(issue.createdByUserId);
-  const responsibleUser = deriveResponsibleUser(issue);
-  const responsibleUserLabel = userLabel(responsibleUser.userId);
+  const creatorUserLabel = actualUserLabel(issue.createdByUserId);
   const creatorUserProfile = issue.createdByUserId ? userProfileMap.get(issue.createdByUserId) : null;
-  const responsibleUserProfile = responsibleUser.userId ? userProfileMap.get(responsibleUser.userId) : null;
-  const createdByResponsibleUser = Boolean(
-    issue.createdByUserId
-    && responsibleUser.userId
-    && issue.createdByUserId === responsibleUser.userId,
-  );
   const selectedAssigneeValue = issue.assigneeAgentId
     ? `agent:${issue.assigneeAgentId}`
     : issue.assigneeUserId
       ? `user:${issue.assigneeUserId}`
       : "";
 
-  // --- Interrupt-handoff clarity for the responsible picker (design surface 2) ---
+  // --- Interrupt-handoff clarity for the assignee picker (design surface 2) ---
   const handoffResolvers: HandoffChipResolvers = useMemo(
     () => ({
       agentMap: new Map((agents ?? []).map((agent) => [agent.id, { name: agent.name, icon: agent.icon }])),
@@ -1333,7 +1326,7 @@ export function IssueProperties({
   );
 
   // Grouped picker options (design surface 2): a board-users section and an
-  // agents section, plus the "No responsible" reset. Agents stay recency-sorted
+  // agents section, plus the "No assignee" reset. Agents stay recency-sorted
   // within their group via `sortedAgents`.
   const userAssigneeOptions = [
     ...(currentUserId
@@ -1419,7 +1412,7 @@ export function IssueProperties({
   const visibleAgentOptions = agentAssigneeOptions.filter((option) =>
     matchesAssigneeSearch(option.label, option.searchText),
   );
-  const showNoAssigneeOption = matchesAssigneeSearch("No responsible", "");
+  const showNoAssigneeOption = matchesAssigneeSearch("No assignee", "");
   const sectionHeader = (text: string) => (
     <div className="px-2 pb-0.5 pt-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
       {text}
@@ -1450,14 +1443,14 @@ export function IssueProperties({
       ) : null}
       <input
         className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
-        placeholder="Search responsible..."
+        placeholder="Search assignees..."
         value={assigneeSearch}
         onChange={(e) => setAssigneeSearch(e.target.value)}
         autoFocus={!inline}
       />
       <div className="max-h-56 overflow-y-auto overscroll-contain">
         {showNoAssigneeOption
-          ? renderAssigneeOption({ kind: "none", value: "", label: "No responsible", searchText: "" })
+          ? renderAssigneeOption({ kind: "none", value: "", label: "No assignee", searchText: "" })
           : null}
         {visibleAgentOptions.length > 0 ? (
           <>
@@ -1908,7 +1901,7 @@ export function IssueProperties({
 
         <PropertyPicker
           inline={inline}
-          label="Responsible"
+          label="Assignee"
           open={assigneeOpen}
           onOpenChange={(open) => { setAssigneeOpen(open); if (!open) { setAssigneeSearch(""); setPendingAssignee(null); } }}
           triggerContent={assigneeTrigger}
@@ -2268,19 +2261,6 @@ export function IssueProperties({
             )}
           </PropertyRow>
         )}
-        {!createdByResponsibleUser ? (
-          <PropertyRow label="Responsible">
-            {responsibleUser.userId ? (
-              <Identity
-                name={responsibleUserLabel ?? responsibleUserProfile?.label ?? "User"}
-                avatarUrl={responsibleUserProfile?.image ?? null}
-                size="sm"
-              />
-            ) : (
-              <span className="text-sm text-muted-foreground">Unassigned</span>
-            )}
-          </PropertyRow>
-        ) : null}
         {issue.startedAt && (
           <PropertyRow label="Started">
             <span className="text-sm">{formatDateTime(issue.startedAt)}</span>

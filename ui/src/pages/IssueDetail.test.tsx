@@ -320,7 +320,7 @@ vi.mock("../components/ApprovalCard", () => ({
 }));
 
 vi.mock("../components/Identity", () => ({
-  Identity: () => <span>Identity</span>,
+  Identity: ({ name, shape }: { name: string; shape?: string }) => <span data-shape={shape ?? "circle"}>{name}</span>,
 }));
 
 vi.mock("@/components/ui/button", () => ({
@@ -1003,6 +1003,46 @@ describe("IssueDetail", () => {
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("shows assignee and actual originating user in the issue header", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      assigneeAgentId: "agent-1",
+      createdByUserId: "user-1",
+    }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ name: "CodexCoder" })]);
+    mockAccessApi.listUserDirectory.mockResolvedValue({
+      users: [
+        {
+          principalId: "user-1",
+          status: "active",
+          user: { id: "user-1", name: "Dotta", email: "dotta@example.com", image: null },
+        },
+      ],
+    });
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Assignee:");
+      expect(container.textContent).toContain("CodexCoder");
+      expect(container.textContent).toContain("Originating:");
+      expect(container.textContent).toContain("Dotta");
+      expect(container.textContent).not.toContain("You");
+      expect(container.querySelector('[title="Originating is the person or agent that created this task."]')).toBeTruthy();
+    });
   });
 
   it("does not mark the wake comment for the current live run as queued when active-run cache is stale", async () => {

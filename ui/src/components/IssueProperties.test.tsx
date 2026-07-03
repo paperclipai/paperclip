@@ -108,6 +108,10 @@ vi.mock("../lib/assignees", () => ({
     if (!userId) return null;
     return userLabelMap?.get(userId) ?? (userId === currentUserId ? "You" : "User");
   },
+  formatUserLabel: (userId: string | null | undefined, userLabelMap?: Map<string, string>) => {
+    if (!userId) return null;
+    return userLabelMap?.get(userId) ?? "User";
+  },
 }));
 
 vi.mock("./StatusIcon", () => ({
@@ -460,7 +464,7 @@ describe("IssueProperties", () => {
     document.body.innerHTML = "";
   });
 
-  it("shows originating and explicit responsible people near assignee", async () => {
+  it("shows assignee and originating without responsible wording", async () => {
     mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "CodexCoder", status: "active", adapterType: "codex_local" }]);
     const root = renderProperties(container, {
       issue: createIssue({
@@ -475,12 +479,12 @@ describe("IssueProperties", () => {
     await flush();
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Responsible");
+      expect(container.textContent).toContain("Assignee");
       expect(container.textContent).toContain("CodexCoder");
       expect(container.textContent).toContain("Originating");
       expect(container.textContent).toContain("Riley Board");
-      expect(container.textContent).toContain("Responsible");
-      expect(container.textContent).toContain("Morgan Product");
+      expect(container.textContent).not.toContain("Morgan Product");
+      expect(container.textContent).not.toContain("Responsible");
       expect(container.textContent).not.toContain("Kicked off by");
       expect(container.textContent).not.toContain("Created by");
       expect(container.querySelector('[data-shape="square"]')?.textContent).toContain("CodexCoder");
@@ -513,7 +517,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("shows unassigned responsible when no responsible human can be derived", async () => {
+  it("shows originating agent without responsible wording", async () => {
     mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "CodexCoder", status: "active", adapterType: "codex_local" }]);
     const root = renderProperties(container, {
       issue: createIssue({
@@ -530,8 +534,9 @@ describe("IssueProperties", () => {
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Originating");
       expect(container.textContent).toContain("CodexCoder");
-      expect(container.textContent).toContain("Responsible");
+      expect(container.textContent).toContain("Assignee");
       expect(container.textContent).toContain("Unassigned");
+      expect(container.textContent).not.toContain("Responsible");
       expect(container.textContent).not.toContain("Kicked off by");
       expect(container.querySelector('[data-shape="square"]')?.textContent).toContain("CodexCoder");
     });
@@ -539,7 +544,7 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("groups the responsible picker and gates a live-run reassign behind an interrupt confirm", async () => {
+  it("groups the assignee picker and gates a live-run reassign behind an interrupt confirm", async () => {
     const minimalAgent = (id: string, name: string) =>
       ({
         id,
@@ -626,7 +631,7 @@ describe("IssueProperties", () => {
     await flush();
 
     const searchInput = container.querySelector(
-      'input[placeholder="Search responsible..."]',
+      'input[placeholder="Search assignees..."]',
     ) as HTMLInputElement | null;
     expect(searchInput).not.toBeNull();
 
@@ -637,7 +642,7 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    expect(container.textContent).toContain("No responsible");
+    expect(container.textContent).toContain("No assignee");
     expect(container.textContent).not.toContain("No matches.");
 
     await act(async () => {
@@ -647,7 +652,7 @@ describe("IssueProperties", () => {
     });
     await flush();
 
-    expect(container.textContent).not.toContain("No responsible");
+    expect(container.textContent).not.toContain("No assignee");
     expect(container.textContent).toContain("No matches.");
 
     act(() => root.unmount());

@@ -18,7 +18,7 @@ import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { assigneeValueFromSelection, formatAssigneeUserLabel, suggestedCommentAssigneeValue } from "../lib/assignees";
+import { assigneeValueFromSelection, formatAssigneeUserLabel, formatUserLabel, suggestedCommentAssigneeValue } from "../lib/assignees";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
@@ -478,20 +478,54 @@ function AttributionIdentity({ actor }: { actor: AttributionActor }) {
   );
 }
 
+function LabeledAttributionIdentity({
+  label,
+  actor,
+  title,
+}: {
+  label: string;
+  actor: AttributionActor;
+  title?: string;
+}) {
+  return (
+    <span
+      className="inline-flex min-w-0 items-center gap-1.5"
+      title={title}
+    >
+      <span className="shrink-0 font-medium text-muted-foreground">{label}:</span>
+      <AttributionIdentity actor={actor} />
+    </span>
+  );
+}
+
 function IssueAttributionByline({
   issue,
   agentMap,
   userProfileMap,
   userLabelMap,
-  currentUserId,
 }: {
   issue: Issue;
   agentMap: Map<string, Agent>;
   userProfileMap: ReadonlyMap<string, import("../lib/company-members").CompanyUserProfile>;
   userLabelMap: ReadonlyMap<string, string>;
-  currentUserId: string | null;
 }) {
-  const creator: AttributionActor | null = issue.createdByAgentId
+  const assignee: AttributionActor | null = issue.assigneeAgentId
+    ? {
+        kind: "agent",
+        id: issue.assigneeAgentId,
+        name: agentMap.get(issue.assigneeAgentId)?.name ?? issue.assigneeAgentId.slice(0, 8),
+      }
+    : issue.assigneeUserId
+      ? {
+          kind: "user",
+          id: issue.assigneeUserId,
+          name: formatUserLabel(issue.assigneeUserId, userLabelMap)
+            ?? userProfileMap.get(issue.assigneeUserId)?.label
+            ?? "User",
+          avatarUrl: userProfileMap.get(issue.assigneeUserId)?.image ?? null,
+        }
+      : null;
+  const originator: AttributionActor | null = issue.createdByAgentId
     ? {
         kind: "agent",
         id: issue.createdByAgentId,
@@ -501,17 +535,24 @@ function IssueAttributionByline({
       ? {
           kind: "user",
           id: issue.createdByUserId,
-          name: formatAssigneeUserLabel(issue.createdByUserId, currentUserId, userLabelMap)
+          name: formatUserLabel(issue.createdByUserId, userLabelMap)
             ?? userProfileMap.get(issue.createdByUserId)?.label
             ?? "User",
           avatarUrl: userProfileMap.get(issue.createdByUserId)?.image ?? null,
         }
       : null;
-  if (!creator) return null;
+  if (!assignee && !originator) return null;
 
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-      <AttributionIdentity actor={creator} />
+      {assignee ? <LabeledAttributionIdentity label="Assignee" actor={assignee} /> : null}
+      {originator ? (
+        <LabeledAttributionIdentity
+          label="Originating"
+          actor={originator}
+          title="Originating is the person or agent that created this task."
+        />
+      ) : null}
     </div>
   );
 }
@@ -3623,7 +3664,7 @@ export function IssueDetail() {
   const pausedComposerHint = activePauseHold
     ? (
       issue.assigneeAgentId
-        ? `Sending this comment will wake ${agentMap.get(issue.assigneeAgentId)?.name ?? "the responsible"} for triage while the subtree remains paused.`
+        ? `Sending this comment will wake ${agentMap.get(issue.assigneeAgentId)?.name ?? "the assignee"} for triage while the subtree remains paused.`
         : "Assign an agent to wake them for triage while the subtree remains paused."
     )
     : null;
@@ -3709,8 +3750,8 @@ export function IssueDetail() {
                 </span>
                 <span className="text-xs text-amber-900/80 dark:text-amber-100/80">
                   {childIssues.length === 0
-                    ? "Task execution is held until resume. Human comments can still wake the responsible for triage."
-                    : "Root and descendant execution is held until resume. Human comments can still wake responsible agents for triage."}
+                    ? "Task execution is held until resume. Human comments can still wake the assignee for triage."
+                    : "Root and descendant execution is held until resume. Human comments can still wake assignee agents for triage."}
                 </span>
               </div>
               <div className="text-xs text-amber-900/80 dark:text-amber-100/80">
@@ -4097,7 +4138,6 @@ export function IssueDetail() {
           agentMap={agentMap}
           userProfileMap={userProfileMap}
           userLabelMap={userLabelMap}
-          currentUserId={currentUserId}
         />
 
         <InlineEditor
@@ -4514,8 +4554,8 @@ export function IssueDetail() {
                     <span className="block font-medium">Wake affected agents ({previewAffectedAgentCount})</span>
                     <span className="text-xs text-muted-foreground">
                       {previewAffectedAgentCount === 0
-                        ? "No responsible agents are eligible to wake from this preview."
-                        : "Wake responsible agents after this operation completes."}
+                        ? "No assignee agents are eligible to wake from this preview."
+                        : "Wake assignee agents after this operation completes."}
                     </span>
                   </span>
                 </label>
