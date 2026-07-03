@@ -271,7 +271,7 @@ describe("codexHomeHasUsableAuth", () => {
     }
   });
 
-  it("is true for the current Codex CLI auth.json format, which nests OAuth credentials under `tokens` (FAX-307)", async () => {
+  it("is true for the current Codex CLI auth.json format, which nests OAuth credentials under `tokens`", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-auth-nested-"));
     try {
       await fs.writeFile(
