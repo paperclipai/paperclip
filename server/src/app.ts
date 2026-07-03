@@ -62,6 +62,7 @@ import { createPluginEventBus } from "./services/plugin-event-bus.js";
 import { setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
+import { attachPluginManagedMcpServerLifecycle } from "./services/plugin-managed-mcp-servers.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
@@ -269,6 +270,11 @@ export async function createApp(
     jobStore,
   });
   const hostServiceCleanup = createPluginHostServiceCleanup(lifecycle, hostServicesDisposers);
+  // Plugin lifecycle ⇄ company MCP pool: a plugin going down force-disables
+  // its managed MCP servers; coming back restores only the auto-disabled ones.
+  if (isMcpClientEnabled()) {
+    attachPluginManagedMcpServerLifecycle(db, lifecycle);
+  }
   let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null = null;
   const loader = pluginLoader(
     db,

@@ -727,6 +727,28 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      mcpServers: {
+        managed: {
+          async get(serverKey: string, companyId: string) {
+            return callHost("mcpServers.managed.get", { serverKey, companyId });
+          },
+          async reconcile(
+            serverKey: string,
+            companyId: string,
+            options?: { credential?: string | null },
+          ) {
+            return callHost("mcpServers.managed.reconcile", { serverKey, companyId, ...options });
+          },
+          async reset(
+            serverKey: string,
+            companyId: string,
+            options?: { credential?: string | null },
+          ) {
+            return callHost("mcpServers.managed.reset", { serverKey, companyId, ...options });
+          },
+        },
+      },
+
       companies: {
         async list(input) {
           return callHost("companies.list", {

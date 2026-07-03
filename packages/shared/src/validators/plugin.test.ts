@@ -96,6 +96,69 @@ describe("plugin managed skill validators", () => {
   });
 });
 
+describe("plugin managed MCP server validators", () => {
+  const baseManifest = {
+    id: "paperclip.test-managed-mcp",
+    apiVersion: 1,
+    version: "0.1.0",
+    displayName: "Managed MCP",
+    description: "Managed MCP servers test plugin.",
+    author: "Paperclip",
+    categories: ["automation"],
+    entrypoints: { worker: "./dist/worker.js" },
+  } as const;
+  const declaration = {
+    serverKey: "linear",
+    displayName: "Linear MCP",
+    transport: "http",
+    url: "https://mcp.example.com/linear",
+  } as const;
+
+  it("accepts managed MCP servers with the mcp.servers.managed capability", () => {
+    const parsed = pluginManifestV1Schema.parse({
+      ...baseManifest,
+      capabilities: ["mcp.servers.managed"],
+      mcpServers: [declaration],
+    });
+
+    expect(parsed.mcpServers?.[0]?.serverKey).toBe("linear");
+  });
+
+  it("requires mcp.servers.managed when managed MCP servers are declared", () => {
+    const parsed = pluginManifestV1Schema.safeParse({
+      ...baseManifest,
+      capabilities: ["companies.read"],
+      mcpServers: [declaration],
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.some((issue) => issue.message.includes("mcp.servers.managed"))).toBe(true);
+  });
+
+  it("rejects stdio transports in plugin-managed MCP server declarations", () => {
+    const parsed = pluginManifestV1Schema.safeParse({
+      ...baseManifest,
+      capabilities: ["mcp.servers.managed"],
+      mcpServers: [{ ...declaration, transport: "stdio" }],
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects duplicate managed MCP server keys", () => {
+    const parsed = pluginManifestV1Schema.safeParse({
+      ...baseManifest,
+      capabilities: ["mcp.servers.managed"],
+      mcpServers: [declaration, { ...declaration, displayName: "Linear MCP (dup)" }],
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.some((issue) => issue.message.includes("Duplicate managed MCP server keys"))).toBe(true);
+  });
+});
+
 describe("plugin UI slot validators", () => {
   it("accepts route-scoped sidebar slots with a routePath", () => {
     const parsed = pluginUiSlotDeclarationSchema.parse({

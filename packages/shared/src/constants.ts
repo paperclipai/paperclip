@@ -856,6 +856,7 @@ export const PLUGIN_CAPABILITIES = [
   "projects.managed",
   "routines.managed",
   "skills.managed",
+  "mcp.servers.managed",
   "agents.pause",
   "agents.resume",
   "agents.invoke",

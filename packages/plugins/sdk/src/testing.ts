@@ -8,6 +8,8 @@ import type {
   PluginManagedAgentResolution,
   PluginManagedRoutineResolution,
   PluginManagedSkillResolution,
+  PluginManagedMCPServerResolution,
+  McpServer,
   CompanySkill,
   Company,
   Project,
@@ -1444,6 +1446,107 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             status: "reset",
             defaultDrift: null,
           } satisfies PluginManagedSkillResolution;
+        },
+      },
+    },
+    mcpServers: {
+      managed: {
+        async get(serverKey, companyId) {
+          requireCapability(manifest, capabilitySet, "mcp.servers.managed");
+          const declaration = manifest.mcpServers?.find((server) => server.serverKey === serverKey);
+          const missing = {
+            pluginKey: manifest.id,
+            resourceKind: "mcp_server",
+            resourceKey: serverKey,
+            companyId,
+            mcpServerId: null,
+            server: null,
+            status: "missing",
+            defaultDrift: null,
+          } satisfies PluginManagedMCPServerResolution;
+          if (!declaration) return missing;
+          const existingEntity = [...entities.values()].find((entity) =>
+            entity.entityType === "managed_resource"
+            && entity.scopeKind === "company"
+            && entity.scopeId === companyId
+            && entity.externalId === `${manifest.id}:mcp_server:${serverKey}`
+          );
+          const server = existingEntity?.data?.server as McpServer | undefined;
+          if (server && server.companyId === companyId) {
+            return {
+              ...missing,
+              mcpServerId: server.id,
+              server,
+              status: "resolved",
+            } satisfies PluginManagedMCPServerResolution;
+          }
+          return missing;
+        },
+        async reconcile(serverKey, companyId, options) {
+          const existing = await this.get(serverKey, companyId);
+          if (existing.server) return existing;
+          const declaration = manifest.mcpServers?.find((server) => server.serverKey === serverKey);
+          if (!declaration) return existing;
+          const now = new Date();
+          const server = {
+            id: randomUUID(),
+            companyId,
+            name: declaration.displayName,
+            slug: declaration.slug
+              ?? `plugin-${manifest.id.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}-${serverKey.replace(/[^a-z0-9._-]+/g, "-")}`,
+            description: declaration.description ?? null,
+            transport: declaration.transport,
+            command: null,
+            args: [],
+            cwd: null,
+            url: declaration.url,
+            headers: declaration.headers ?? {},
+            env: {},
+            credentialSecretRef: options?.credential ? `sealed:${randomUUID()}` : null,
+            enabled: false,
+            lastHealthStatus: "unknown",
+            lastHealthcheckAt: null,
+            lastDiscoveryAt: null,
+            lastError: null,
+            metadata: {
+              ...(declaration.metadata ?? {}),
+              pluginManaged: { pluginKey: manifest.id, resourceKey: serverKey },
+            },
+            createdByAgentId: null,
+            createdByUserId: null,
+            createdAt: now,
+            updatedAt: now,
+          } satisfies McpServer;
+          const nowIso = now.toISOString();
+          const record: PluginEntityRecord = {
+            id: randomUUID(),
+            entityType: "managed_resource",
+            scopeKind: "company",
+            scopeId: companyId,
+            externalId: `${manifest.id}:mcp_server:${serverKey}`,
+            title: declaration.displayName,
+            status: null,
+            data: { resourceKind: "mcp_server", resourceKey: serverKey, mcpServerId: server.id, server },
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          };
+          entities.set(record.id, record);
+          return {
+            pluginKey: manifest.id,
+            resourceKind: "mcp_server",
+            resourceKey: serverKey,
+            companyId,
+            mcpServerId: server.id,
+            server,
+            status: "created",
+            defaultDrift: null,
+          } satisfies PluginManagedMCPServerResolution;
+        },
+        async reset(serverKey, companyId, options) {
+          requireCapability(manifest, capabilitySet, "mcp.servers.managed");
+          const reconciled = await this.reconcile(serverKey, companyId, options);
+          if (!reconciled.server) return reconciled;
+          return { ...reconciled, status: "reset" } satisfies PluginManagedMCPServerResolution;
         },
       },
     },

@@ -34,6 +34,7 @@ import type {
   PluginManagedProjectResolution,
   PluginManagedRoutineResolution,
   PluginManagedSkillResolution,
+  PluginManagedMCPServerResolution,
   Routine,
   RoutineRun,
   Agent,
@@ -943,6 +944,20 @@ export interface WorkerToHostMethods {
   "skills.managed.reset": [
     params: { skillKey: string; companyId: string },
     result: PluginManagedSkillResolution,
+  ];
+
+  // Plugin-managed MCP servers
+  "mcpServers.managed.get": [
+    params: { serverKey: string; companyId: string },
+    result: PluginManagedMCPServerResolution,
+  ];
+  "mcpServers.managed.reconcile": [
+    params: { serverKey: string; companyId: string; credential?: string | null },
+    result: PluginManagedMCPServerResolution,
+  ];
+  "mcpServers.managed.reset": [
+    params: { serverKey: string; companyId: string; credential?: string | null },
+    result: PluginManagedMCPServerResolution,
   ];
 
   // Issues

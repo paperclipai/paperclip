@@ -345,6 +345,7 @@ export interface PaperclipPluginManifestV1 {
   projects?: PluginManagedProjectDeclaration[];
   routines?: PluginManagedRoutineDeclaration[];
   skills?: PluginManagedSkillDeclaration[];
+  mcpServers?: PluginManagedMCPServerDeclaration[];
   localFolders?: PluginLocalFolderDeclaration[];
   /** Legacy top-level launcher declarations. Prefer `ui.launchers` for new manifests. */
   launchers?: PluginLauncherDeclaration[];
@@ -395,6 +396,7 @@ Rules:
   - `projects` → `projects.managed`
   - `routines` → `routines.managed`
   - `skills` → `skills.managed`
+  - `mcpServers` → `mcp.servers.managed`
 
 ## 11. Agent Tools
 
@@ -674,6 +676,12 @@ Plugins that perform durable work should declare managed Paperclip resources rat
 - `projects` + `ctx.projects.managed.*` for stable, scoped issue/workspace ownership (`projects.managed` required)
 - `routines` + `ctx.routines.managed.*` for schedule/webhook/manual execution with issue trails (`routines.managed` required)
 - `skills` + `ctx.skills.managed.*` for reusable agent capabilities (`skills.managed` required)
+- `mcpServers` + `ctx.mcpServers.managed.*` for company-scoped MCP servers the plugin
+  manages (`mcp.servers.managed` required, host must run with the MCP client feature
+  enabled). Remote transports only (`http`/`sse`); reconciled servers are created
+  disabled and stay subject to the same company governance, per-agent bindings, and
+  tool filtering as operator-configured servers. Credentials are passed at
+  reconcile/reset time and sealed by the host — never in the manifest.
 
 The LLM Wiki plugin is the current reference for this pattern: it declares managed
 agents, projects, routines, and skills in manifest, reconciles them per company,
@@ -823,6 +831,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `projects.managed`
 - `routines.managed`
 - `skills.managed`
+- `mcp.servers.managed`
 - `agents.managed`
 - `agents.pause`
 - `agents.resume`

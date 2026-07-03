@@ -48,6 +48,8 @@ import { pluginDatabaseService } from "./plugin-database.js";
 import { pluginManagedAgentService } from "./plugin-managed-agents.js";
 import { pluginManagedRoutineService } from "./plugin-managed-routines.js";
 import { pluginManagedSkillService } from "./plugin-managed-skills.js";
+import { pluginManagedMcpServerService } from "./plugin-managed-mcp-servers.js";
+import { isMcpClientEnabled } from "../mcp-client-flag.js";
 import {
   assertConfiguredLocalFolder,
   assertWritableConfiguredLocalFolder,
@@ -554,6 +556,18 @@ export function buildHostServices(
     pluginKey,
     manifest: options.manifest,
   });
+  const managedMcpServers = pluginManagedMcpServerService(db, {
+    pluginId,
+    pluginKey,
+    manifest: options.manifest,
+  });
+  const ensureMcpClientEnabled = () => {
+    if (!isMcpClientEnabled()) {
+      throw new Error(
+        "Plugin-managed MCP servers require PAPERCLIP_MCP_CLIENT_ENABLED=true on this host",
+      );
+    }
+  };
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
@@ -1548,6 +1562,31 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         return managedSkills.reset(params.skillKey, companyId);
+      },
+    },
+
+    mcpServers: {
+      async managedGet(params) {
+        ensureMcpClientEnabled();
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedMcpServers.get(params.serverKey, companyId);
+      },
+      async managedReconcile(params) {
+        ensureMcpClientEnabled();
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedMcpServers.reconcile(params.serverKey, companyId, {
+          credential: params.credential,
+        });
+      },
+      async managedReset(params) {
+        ensureMcpClientEnabled();
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedMcpServers.reset(params.serverKey, companyId, {
+          credential: params.credential,
+        });
       },
     },
 

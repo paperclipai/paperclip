@@ -215,6 +215,13 @@ export interface HostServices {
     managedReset(params: WorkerToHostMethods["skills.managed.reset"][0]): Promise<WorkerToHostMethods["skills.managed.reset"][1]>;
   };
 
+  /** Provides `mcpServers.managed.*`. */
+  mcpServers: {
+    managedGet(params: WorkerToHostMethods["mcpServers.managed.get"][0]): Promise<WorkerToHostMethods["mcpServers.managed.get"][1]>;
+    managedReconcile(params: WorkerToHostMethods["mcpServers.managed.reconcile"][0]): Promise<WorkerToHostMethods["mcpServers.managed.reconcile"][1]>;
+    managedReset(params: WorkerToHostMethods["mcpServers.managed.reset"][0]): Promise<WorkerToHostMethods["mcpServers.managed.reset"][1]>;
+  };
+
   /** Provides issue read/write, relation, checkout, wakeup, summary, comment methods. */
   issues: {
     list(params: WorkerToHostMethods["issues.list"][0]): Promise<WorkerToHostMethods["issues.list"][1]>;
@@ -421,6 +428,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
     "skills.managed.get": "skills.managed",
     "skills.managed.reconcile": "skills.managed",
     "skills.managed.reset": "skills.managed",
+    "mcpServers.managed.get": "mcp.servers.managed",
+    "mcpServers.managed.reconcile": "mcp.servers.managed",
+    "mcpServers.managed.reset": "mcp.servers.managed",
 
   // Issues
   "issues.list": "issues.read",
@@ -788,6 +798,17 @@ export function createHostClientHandlers(
     }),
     "skills.managed.reset": gated("skills.managed.reset", async (params) => {
       return services.skills.managedReset(params);
+    }),
+
+    // Plugin-managed MCP servers
+    "mcpServers.managed.get": gated("mcpServers.managed.get", async (params) => {
+      return services.mcpServers.managedGet(params);
+    }),
+    "mcpServers.managed.reconcile": gated("mcpServers.managed.reconcile", async (params) => {
+      return services.mcpServers.managedReconcile(params);
+    }),
+    "mcpServers.managed.reset": gated("mcpServers.managed.reset", async (params) => {
+      return services.mcpServers.managedReset(params);
     }),
 
     // Issues

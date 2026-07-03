@@ -35,6 +35,7 @@ import type {
   PluginManagedProjectResolution,
   PluginManagedRoutineResolution,
   PluginManagedSkillResolution,
+  PluginManagedMCPServerResolution,
   CompanySkill,
   Routine,
   RoutineRun,
@@ -68,6 +69,8 @@ export type {
   PluginManagedSkillDeclaration,
   PluginManagedSkillFileDeclaration,
   PluginManagedSkillResolution,
+  PluginManagedMCPServerDeclaration,
+  PluginManagedMCPServerResolution,
   CompanySkill,
   Routine,
   RoutineRun,
@@ -927,6 +930,31 @@ export interface PluginSkillsClient {
     get(skillKey: string, companyId: string): Promise<PluginManagedSkillResolution>;
     reconcile(skillKey: string, companyId: string): Promise<PluginManagedSkillResolution>;
     reset(skillKey: string, companyId: string): Promise<PluginManagedSkillResolution>;
+  };
+}
+
+/**
+ * `ctx.mcpServers` — resolve and reconcile plugin-managed company MCP servers.
+ *
+ * Requires `mcp.servers.managed` capability, and the host must run with the
+ * MCP client feature enabled (`PAPERCLIP_MCP_CLIENT_ENABLED=true`).
+ * Reconciled servers are created disabled and become reachable only after
+ * company governance enables them and binds agents; credentials are passed
+ * here (never in the manifest) and sealed by the host.
+ */
+export interface PluginMcpServersClient {
+  managed: {
+    get(serverKey: string, companyId: string): Promise<PluginManagedMCPServerResolution>;
+    reconcile(
+      serverKey: string,
+      companyId: string,
+      options?: { credential?: string | null },
+    ): Promise<PluginManagedMCPServerResolution>;
+    reset(
+      serverKey: string,
+      companyId: string,
+      options?: { credential?: string | null },
+    ): Promise<PluginManagedMCPServerResolution>;
   };
 }
 
@@ -1890,6 +1918,9 @@ export interface PluginContext {
 
   /** Resolve and reconcile plugin-managed company skills. Requires `skills.managed`. */
   skills: PluginSkillsClient;
+
+  /** Resolve and reconcile plugin-managed company MCP servers. Requires `mcp.servers.managed`. */
+  mcpServers: PluginMcpServersClient;
 
   /** Read company metadata. Requires `companies.read`. */
   companies: PluginCompaniesClient;

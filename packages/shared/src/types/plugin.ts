@@ -28,6 +28,7 @@ import type {
 } from "../constants.js";
 import type { Agent } from "./agent.js";
 import type { CompanySkill } from "./company-skill.js";
+import type { McpServer } from "./mcp-server.js";
 import type { Project } from "./project.js";
 import type { Routine, RoutineTrigger, RoutineVariable } from "./routine.js";
 
@@ -252,12 +253,43 @@ export interface PluginManagedSkillDeclaration {
   files?: PluginManagedSkillFileDeclaration[];
 }
 
-export type PluginManagedResourceKind = "agent" | "project" | "routine" | "skill";
+export type PluginManagedResourceKind = "agent" | "mcp_server" | "project" | "routine" | "skill";
 
 export interface PluginManagedResourceRef {
   pluginKey?: string;
   resourceKind: PluginManagedResourceKind;
   resourceKey: string;
+}
+
+/**
+ * Declares a company-scoped MCP server that a plugin manages and can later
+ * resolve by stable key. Reconciled rows land in the same `mcp_servers`
+ * table as company-configured servers, so isolation, per-agent filtering,
+ * governance (`enabled` defaults to false), and telemetry apply identically.
+ *
+ * Only remote transports are declarable — `stdio` stays behind its own
+ * approval gate and cannot be registered by a plugin. Secret material must
+ * never appear in the manifest; pass credentials at reconcile/reset time
+ * through `ctx.mcpServers.managed.reconcile(serverKey, companyId, { credential })`,
+ * which seals them via the encrypted credential provider.
+ */
+export interface PluginManagedMCPServerDeclaration {
+  /** Stable identifier for this managed MCP server, unique within the plugin. */
+  serverKey: string;
+  /** Suggested visible server name. */
+  displayName: string;
+  /** Suggested company-unique slug. Defaults to `plugin-<pluginSlug>-<serverKey>`. */
+  slug?: string;
+  /** Suggested server description. */
+  description?: string | null;
+  /** Remote transport only; plugin-managed servers cannot declare `stdio`. */
+  transport: "http" | "sse";
+  /** MCP endpoint URL. Subject to the same SSRF guard as company-configured servers. */
+  url: string;
+  /** Static, non-secret request headers sent to the endpoint. */
+  headers?: Record<string, string>;
+  /** Plugin-specific metadata retained on the managed server row. */
+  metadata?: Record<string, unknown>;
 }
 
 export interface PluginManagedRoutineDeclaration {
@@ -339,6 +371,20 @@ export interface PluginManagedSkillResolution {
   status: "missing" | "resolved" | "created" | "relinked" | "reset";
   defaultDrift?: {
     changedFiles: string[];
+  } | null;
+}
+
+export interface PluginManagedMCPServerResolution {
+  pluginKey: string;
+  resourceKind: "mcp_server";
+  resourceKey: string;
+  companyId: string;
+  mcpServerId: string | null;
+  server: McpServer | null;
+  status: "missing" | "resolved" | "created" | "relinked" | "reset";
+  /** Declared config fields whose current values differ from the declaration. */
+  defaultDrift?: {
+    changedFields: string[];
   } | null;
 }
 
@@ -562,6 +608,8 @@ export interface PaperclipPluginManifestV1 {
   routines?: PluginManagedRoutineDeclaration[];
   /** Suggested company skills this plugin can install and resolve by stable key. */
   skills?: PluginManagedSkillDeclaration[];
+  /** Company-scoped MCP servers this plugin manages and resolves by stable key. */
+  mcpServers?: PluginManagedMCPServerDeclaration[];
   /** Trusted local folders this plugin can configure and access by stable key. */
   localFolders?: PluginLocalFolderDeclaration[];
   /**

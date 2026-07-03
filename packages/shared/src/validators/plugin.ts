@@ -270,6 +270,30 @@ export const pluginManagedSkillDeclarationSchema = z.object({
 export type PluginManagedSkillDeclarationInput = z.infer<typeof pluginManagedSkillDeclarationSchema>;
 
 /**
+ * Validates a `PluginManagedMCPServerDeclaration` — a company-scoped MCP
+ * server the plugin manages. Remote transports only (`http`/`sse`); `stdio`
+ * is gated behind its own approval flow and cannot be plugin-declared.
+ * Credentials never live in the manifest — they are passed at
+ * reconcile/reset time and sealed by the server.
+ */
+export const pluginManagedMcpServerDeclarationSchema = z.object({
+  serverKey: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._:-]*$/, {
+    message: "serverKey must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, colons, underscores, or hyphens",
+  }),
+  displayName: z.string().min(1).max(100),
+  slug: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._-]*$/, {
+    message: "slug must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, underscores, or hyphens",
+  }).optional(),
+  description: z.string().max(2000).nullable().optional(),
+  transport: z.enum(["http", "sse"]),
+  url: z.string().url().max(2000),
+  headers: z.record(z.string()).optional(),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+export type PluginManagedMcpServerDeclarationInput = z.infer<typeof pluginManagedMcpServerDeclarationSchema>;
+
+/**
  * Validates a {@link PluginUiSlotDeclaration} — a UI extension slot the plugin
  * fills with a React component. Includes `superRefine` checks for slot-specific
  * requirements such as `entityTypes` for context-sensitive slots.
@@ -645,6 +669,7 @@ export const pluginManifestV1Schema = z.object({
   projects: z.array(pluginManagedProjectDeclarationSchema).optional(),
   routines: z.array(pluginManagedRoutineDeclarationSchema).optional(),
   skills: z.array(pluginManagedSkillDeclarationSchema).optional(),
+  mcpServers: z.array(pluginManagedMcpServerDeclarationSchema).optional(),
   localFolders: z.array(pluginLocalFolderDeclarationSchema).optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   ui: z.object({
@@ -739,6 +764,16 @@ export const pluginManifestV1Schema = z.object({
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Capability 'skills.managed' is required when managed skills are declared",
+        path: ["capabilities"],
+      });
+    }
+  }
+
+  if (manifest.mcpServers && manifest.mcpServers.length > 0) {
+    if (!manifest.capabilities.includes("mcp.servers.managed")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Capability 'mcp.servers.managed' is required when managed MCP servers are declared",
         path: ["capabilities"],
       });
     }
@@ -945,6 +980,18 @@ export const pluginManifestV1Schema = z.object({
         code: z.ZodIssueCode.custom,
         message: `Duplicate managed skill keys: ${[...new Set(duplicates)].join(", ")}`,
         path: ["skills"],
+      });
+    }
+  }
+
+  if (manifest.mcpServers) {
+    const serverKeys = manifest.mcpServers.map((server) => server.serverKey);
+    const duplicates = serverKeys.filter((key, i) => serverKeys.indexOf(key) !== i);
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate managed MCP server keys: ${[...new Set(duplicates)].join(", ")}`,
+        path: ["mcpServers"],
       });
     }
   }
