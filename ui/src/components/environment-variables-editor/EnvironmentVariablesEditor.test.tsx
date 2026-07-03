@@ -155,6 +155,33 @@ describe("EnvironmentVariablesEditor", () => {
     expect(versionTag?.textContent).toBe("v2");
   });
 
+  it("keeps long secret names clear of the latest version control", () => {
+    const longSecret = makeSecret("long", {
+      name: "/paperclip-cloud/prod/provider/resend/api-key-with-a-very-long-name",
+      latestVersion: 4,
+    });
+
+    render(
+      <EnvironmentVariablesEditor
+        value={{
+          RESEND_API_KEY: { type: "secret_ref", secretId: "long", version: "latest" },
+        }}
+        secrets={[longSecret]}
+        onChange={() => {}}
+        onCreateSecret={async () => longSecret}
+      />,
+    );
+
+    const combobox = container.querySelector<HTMLElement>('[role="combobox"]')!;
+    const selectedLabel = combobox.querySelector<HTMLElement>("[title] span.truncate");
+    const versionTag = container.querySelector<HTMLButtonElement>('button[aria-label="Version"]')!;
+
+    expect(versionTag.textContent).toBe("latest");
+    expect(combobox.className).toContain("has-[>svg]:!pr-24");
+    expect(selectedLabel?.textContent).toBe(longSecret.name);
+    expect(selectedLabel?.className).toContain("flex-1");
+  });
+
   it("shows the empty state with no bindings", () => {
     render(<EnvironmentVariablesEditor value={{}} secrets={secrets} onChange={() => {}} onCreateSecret={async () => secrets[0]} />);
     expect(container.textContent).toContain("No environment variables");

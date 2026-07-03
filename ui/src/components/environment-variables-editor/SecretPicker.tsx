@@ -268,17 +268,17 @@ export function SecretPicker({
         }
         if (option.missing) {
           return (
-            <span className="inline-flex min-w-0 items-center gap-1.5 text-destructive">
+            <span className="flex w-full min-w-0 items-center gap-1.5 text-destructive">
               <KeyRound className="size-3.5 shrink-0" />
-              <span className="truncate">{option.label}</span>
+              <span className="min-w-0 flex-1 truncate">{option.label}</span>
             </span>
           );
         }
         const nonActive = option.status && option.status !== "active";
         return (
-          <span className="inline-flex min-w-0 items-center gap-1.5" title={option.title}>
+          <span className="flex w-full min-w-0 items-center gap-1.5" title={option.title}>
             <KeyRound className={cn("size-3.5 shrink-0", nonActive ? "text-amber-600" : "text-muted-foreground")} />
-            <span className="truncate">{option.label}</span>
+            <span className="min-w-0 flex-1 truncate">{option.label}</span>
             {nonActive ? <span className="text-amber-600">({option.status})</span> : null}
           </span>
         );

@@ -306,7 +306,7 @@ export function EnvironmentVariableRow({
                     }
                     triggerClassName={cn(
                       "rounded-none border-0 bg-transparent shadow-none focus-visible:ring-0",
-                      boundSecret && boundSecret.status === "active" && "pr-16",
+                      boundSecret && boundSecret.status === "active" && "pr-24 has-[>svg]:!pr-24",
                     )}
                   />
                   {boundSecret && boundSecret.status === "active" ? (

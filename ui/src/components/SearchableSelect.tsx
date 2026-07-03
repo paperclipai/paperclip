@@ -218,7 +218,7 @@ export function SearchableSelect<
           role="combobox"
           className={cn("w-full justify-between overflow-hidden", className, triggerClassName)}
         >
-          <span className={cn("min-w-0 truncate", !selectedOption && "text-muted-foreground")}>
+          <span className={cn("min-w-0 flex-1 truncate text-left", !selectedOption && "text-muted-foreground")}>
             {renderValue ? renderValue(selectedOption) : selectedOption?.label ?? placeholder}
           </span>
           <ChevronsUpDown className="ml-2 size-4 opacity-50" />

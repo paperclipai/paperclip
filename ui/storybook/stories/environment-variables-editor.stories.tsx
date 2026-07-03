@@ -38,6 +38,7 @@ const SECRETS: CompanySecret[] = [
   secret("s-github", "GITHUB_TOKEN", { latestVersion: 3 }),
   secret("s-db", "DB_CONNECTION", { latestVersion: 3 }),
   secret("s-openai", "OPENAI_API_KEY", { latestVersion: 2 }),
+  secret("s-resend-long", "/paperclip-cloud/prod/provider/resend/api-key-with-a-very-long-name", { latestVersion: 4 }),
   secret("s-legacy", "LEGACY_DEPLOY_KEY", { status: "disabled", latestVersion: 2 }),
   secret("s-archived", "OLD_STRIPE_KEY", { status: "archived", latestVersion: 4 }),
 ];
@@ -127,7 +128,16 @@ export const PickerOpen: Story = {
   ),
 };
 
-/** Frame 4 — create-secret popover (interactive: open picker → Create secret). */
+/** Frame 4 — long bound secret name truncates before the latest badge. */
+export const LongSecretName: Story = {
+  render: () => (
+    <Surface title="Long secret name">
+      <Editor initial={{ RESEND_API_KEY: { type: "secret_ref", secretId: "s-resend-long", version: "latest" } }} />
+    </Surface>
+  ),
+};
+
+/** Frame 5 — create-secret popover (interactive: open picker → Create secret). */
 export const CreateSecret: Story = {
   render: () => (
     <Surface title="Create secret" hint="Open the secret picker and choose “+ Create secret …” to open the anchored create popover (name + masked value).">
@@ -136,7 +146,7 @@ export const CreateSecret: Story = {
   ),
 };
 
-/** Frame 5 — store-as-secret popover (interactive: click the ShieldAlert on the sensitive row). */
+/** Frame 6 — store-as-secret popover (interactive: click the ShieldAlert on the sensitive row). */
 export const StoreAsSecret: Story = {
   render: () => (
     <Surface title="Store value as secret" hint="The sensitive-looking row shows a ShieldAlert “Store as secret” — click it to open the store popover (value preserved, masked). The adjacent “×” dismisses the hint and unmasks the value, keeping it as plain text.">
