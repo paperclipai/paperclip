@@ -4,11 +4,16 @@ import { Link } from "@/lib/router";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { workCyclesApi } from "../api/work-cycles";
+import { accessApi } from "../api/access";
+import { agentsApi } from "../api/agents";
+import { authApi } from "../api/auth";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
+import { formatAssigneeUserLabel } from "../lib/assignees";
+import { buildCompanyUserLabelMap } from "../lib/company-members";
 import { cn, projectUrl } from "../lib/utils";
 import { buildIssueValueWithDescendantsMap, sumIssueValuesWithDescendants } from "../lib/issue-rollups";
 import {
@@ -23,8 +28,10 @@ import {
   RefreshCw,
   Search,
   Target,
+  Users,
 } from "lucide-react";
 import type {
+  Agent,
   CreateWorkCycle,
   Issue,
   IssuePriority,
@@ -84,6 +91,22 @@ type CycleSummary = {
   progressPercent: number;
   capacityStoryPoints: number | null;
   capacityHours: number | null;
+};
+
+type CycleAssignmentRow = {
+  id: string;
+  kind: "user" | "agent" | "unassigned";
+  label: string;
+  issueCount: number;
+  openCount: number;
+  blockedCount: number;
+  storyPoints: number;
+  openStoryPoints: number;
+  estimateHours: number;
+  openEstimateHours: number;
+  actualAiSeconds: number;
+  capacityHours: number | null;
+  capacityPercent: number | null;
 };
 
 function emptyNewCycleForm(): NewCycleForm {
@@ -225,6 +248,96 @@ function getErrorMessage(error: unknown, fallback: string) {
 
 function sumIssues(issues: Issue[], getValue: (issue: Issue) => number) {
   return issues.reduce((total, issue) => total + getValue(issue), 0);
+}
+
+function ownerKeyForIssue(issue: Issue) {
+  if (issue.assigneeUserId) return `user:${issue.assigneeUserId}`;
+  if (issue.assigneeAgentId) return `agent:${issue.assigneeAgentId}`;
+  return "unassigned";
+}
+
+function ownerLabelForIssue(
+  issue: Issue,
+  agentsById: ReadonlyMap<string, Agent>,
+  currentUserId: string | null,
+  userLabelMap: ReadonlyMap<string, string>,
+) {
+  if (issue.assigneeUserId) {
+    return formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, userLabelMap) ?? "User";
+  }
+  if (issue.assigneeAgentId) {
+    return agentsById.get(issue.assigneeAgentId)?.name ?? issue.assigneeAgentId.slice(0, 8);
+  }
+  return "Unassigned";
+}
+
+function ownerKindForIssue(issue: Issue): CycleAssignmentRow["kind"] {
+  if (issue.assigneeUserId) return "user";
+  if (issue.assigneeAgentId) return "agent";
+  return "unassigned";
+}
+
+function buildCycleAssignments(args: {
+  issues: Issue[];
+  capacityHours: number | null;
+  agentsById: ReadonlyMap<string, Agent>;
+  currentUserId: string | null;
+  userLabelMap: ReadonlyMap<string, string>;
+  actualAiSecondsByIssue: ReadonlyMap<string, number>;
+}) {
+  const rowsByOwner = new Map<string, CycleAssignmentRow>();
+  for (const issue of args.issues) {
+    const ownerKey = ownerKeyForIssue(issue);
+    const row = rowsByOwner.get(ownerKey) ?? {
+      id: ownerKey,
+      kind: ownerKindForIssue(issue),
+      label: ownerLabelForIssue(issue, args.agentsById, args.currentUserId, args.userLabelMap),
+      issueCount: 0,
+      openCount: 0,
+      blockedCount: 0,
+      storyPoints: 0,
+      openStoryPoints: 0,
+      estimateHours: 0,
+      openEstimateHours: 0,
+      actualAiSeconds: 0,
+      capacityHours: null,
+      capacityPercent: null,
+    };
+
+    const points = pointsForIssue(issue);
+    const estimateHours = estimateHoursForIssue(issue);
+    const open = isOpenIssue(issue);
+    row.issueCount += 1;
+    row.storyPoints += points;
+    row.estimateHours += estimateHours;
+    row.actualAiSeconds += args.actualAiSecondsByIssue.get(issue.id) ?? actualAiSecondsForIssue(issue);
+    if (open) {
+      row.openCount += 1;
+      row.openStoryPoints += points;
+      row.openEstimateHours += estimateHours;
+    }
+    if (issue.status === "blocked") row.blockedCount += 1;
+    rowsByOwner.set(ownerKey, row);
+  }
+
+  const assignedOwnerCount = [...rowsByOwner.values()].filter((row) => row.kind !== "unassigned").length;
+  const defaultCapacityPerOwner = args.capacityHours && assignedOwnerCount > 0
+    ? args.capacityHours / assignedOwnerCount
+    : null;
+  return [...rowsByOwner.values()]
+    .map((row) => {
+      const capacityHours = row.kind === "unassigned" ? null : defaultCapacityPerOwner;
+      return {
+        ...row,
+        capacityHours,
+        capacityPercent: capacityHours ? Math.round((row.estimateHours / capacityHours) * 100) : null,
+      };
+    })
+    .sort((a, b) => {
+      if (a.kind === "unassigned" && b.kind !== "unassigned") return 1;
+      if (b.kind === "unassigned" && a.kind !== "unassigned") return -1;
+      return b.estimateHours - a.estimateHours || b.storyPoints - a.storyPoints || a.label.localeCompare(b.label);
+    });
 }
 
 function sortIssuesForCycle(issues: Issue[]) {
@@ -451,6 +564,35 @@ export function Cycles() {
     enabled: !!selectedCompanyId,
   });
 
+  const { data: session } = useQuery({
+    queryKey: queryKeys.auth.session,
+    queryFn: () => authApi.getSession(),
+  });
+
+  const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+
+  const { data: companyUserDirectory } = useQuery({
+    queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
+    queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const userLabelMap = useMemo(
+    () => buildCompanyUserLabelMap(companyUserDirectory?.users),
+    [companyUserDirectory?.users],
+  );
+
+  const { data: agents = [] } = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId!),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const agentsById = useMemo(
+    () => new Map(agents.map((agent) => [agent.id, agent])),
+    [agents],
+  );
+
   const { data: cycles = [], isLoading: cyclesLoading, error: cyclesError } = useQuery({
     queryKey: cycleListQueryKey,
     queryFn: () => workCyclesApi.list(selectedCompanyId!, {
@@ -645,6 +787,32 @@ export function Cycles() {
     openIssues: cycleAssignedOpenIssues,
     completedIssues: cycleAssignedCompletedIssues,
   };
+  const cycleAssignments = useMemo(() => buildCycleAssignments({
+    issues: selectedSummary?.issues ?? [],
+    capacityHours: selectedSummary?.capacityHours ?? null,
+    agentsById,
+    currentUserId,
+    userLabelMap,
+    actualAiSecondsByIssue: actualAiSecondsByIssueWithDescendants,
+  }), [
+    actualAiSecondsByIssueWithDescendants,
+    agentsById,
+    currentUserId,
+    selectedSummary,
+    userLabelMap,
+  ]);
+  const assignedCapacityOwners = useMemo(
+    () => cycleAssignments.filter((row) => row.kind !== "unassigned").length,
+    [cycleAssignments],
+  );
+  const teamCapacityRemaining = detailMetrics.capacityHours === null
+    ? null
+    : detailMetrics.capacityHours - detailMetrics.estimateHours;
+  const maxAssignmentHours = Math.max(
+    1,
+    detailMetrics.capacityHours ?? 0,
+    ...cycleAssignments.map((row) => row.estimateHours),
+  );
 
   const activePeerCycle = useMemo(() => {
     if (!selectedCycle || selectedCycle.status !== "planned") return null;
@@ -1143,6 +1311,102 @@ export function Cycles() {
                       <p className="mt-2 text-xs text-muted-foreground">
                         {transferOpenIssueIds.length} open issue{transferOpenIssueIds.length === 1 ? "" : "s"} ready to move.
                       </p>
+                    </div>
+                  </div>
+                ) : null}
+
+                {selectedCycle ? (
+                  <div className="mt-3 rounded-md border border-border bg-muted/20 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                          <Users className="h-4 w-4 text-muted-foreground" />
+                          Team assignment
+                        </div>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {detailMetrics.capacityHours !== null
+                            ? `${detailMetrics.capacityHours}h team capacity · ${detailMetrics.estimateHours}h committed · ${teamCapacityRemaining! >= 0 ? `${teamCapacityRemaining}h free` : `${Math.abs(teamCapacityRemaining!)}h over`}`
+                            : `${detailMetrics.estimateHours}h committed across ${cycleAssignments.length} owner${cycleAssignments.length === 1 ? "" : "s"}`}
+                        </p>
+                      </div>
+                      {detailMetrics.capacityHours !== null && assignedCapacityOwners > 0 ? (
+                        <div className="rounded-md border border-border bg-background px-2.5 py-1.5 text-right">
+                          <div className="text-[11px] text-muted-foreground">Even-share capacity</div>
+                          <div className="text-sm font-medium tabular-nums text-foreground">
+                            {Math.round(detailMetrics.capacityHours / assignedCapacityOwners)}h / owner
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-3 space-y-2">
+                      {cycleAssignments.length === 0 ? (
+                        <div className="rounded-md border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
+                          No assigned work in this cycle.
+                        </div>
+                      ) : cycleAssignments.map((row) => {
+                        const width = row.capacityHours
+                          ? Math.min(row.capacityPercent ?? 0, 100)
+                          : Math.max(6, Math.round((row.estimateHours / maxAssignmentHours) * 100));
+                        const overCapacity = row.capacityPercent !== null && row.capacityPercent > 100;
+                        return (
+                          <div
+                            key={row.id}
+                            className={cn(
+                              "rounded-md border bg-background px-3 py-2",
+                              overCapacity ? "border-destructive/40" : "border-border",
+                              row.kind === "unassigned" && "border-amber-500/30 bg-amber-500/5",
+                            )}
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <span className="truncate text-sm font-medium text-foreground">{row.label}</span>
+                                  <span className={cn(
+                                    "shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] capitalize",
+                                    row.kind === "agent"
+                                      ? "border-purple-500/30 bg-purple-500/10 text-purple-500"
+                                      : row.kind === "user"
+                                        ? "border-blue-500/30 bg-blue-500/10 text-blue-500"
+                                        : "border-amber-500/30 bg-amber-500/10 text-amber-600",
+                                  )}>
+                                    {row.kind === "agent" ? "AI" : row.kind === "user" ? "Human" : "No owner"}
+                                  </span>
+                                  {overCapacity ? (
+                                    <span className="shrink-0 rounded-full border border-destructive/30 bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive">
+                                      Over capacity
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                                  <span>{row.openCount}/{row.issueCount} open</span>
+                                  <span>{row.openStoryPoints}/{row.storyPoints} pts</span>
+                                  <span>{row.openEstimateHours}/{row.estimateHours}h open/committed</span>
+                                  {row.blockedCount > 0 ? <span>{row.blockedCount} blocked</span> : null}
+                                  {row.actualAiSeconds > 0 ? <span>{formatActualAiTime(row.actualAiSeconds)} AI</span> : null}
+                                </div>
+                              </div>
+                              <div className="shrink-0 text-right">
+                                <div className="text-sm font-medium tabular-nums text-foreground">
+                                  {row.estimateHours}h{row.capacityHours ? ` / ${Math.round(row.capacityHours)}h` : ""}
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {row.capacityPercent !== null ? `${row.capacityPercent}%` : "no capacity share"}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+                              <div
+                                className={cn(
+                                  "h-full rounded-full",
+                                  overCapacity ? "bg-destructive" : row.kind === "unassigned" ? "bg-amber-500" : "bg-emerald-500",
+                                )}
+                                style={{ width: `${width}%` }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 ) : null}
