@@ -165,6 +165,16 @@ describe("EnvironmentVariablesEditor", () => {
     expect(nameInputs()).toHaveLength(1);
   });
 
+  it("does not emit when + Add variable only creates an empty draft row", async () => {
+    const onChange = vi.fn();
+    render(<EnvironmentVariablesEditor value={{}} secrets={secrets} onChange={onChange} onCreateSecret={async () => secrets[0]} />);
+    const addButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Add variable"))!;
+    addButton.click();
+    await flush();
+    expect(nameInputs()).toHaveLength(1);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it("emits plain bindings as the value is edited", async () => {
     const onChange = vi.fn();
     render(<EnvironmentVariablesEditor value={{ FOO: { type: "plain", value: "" } }} secrets={secrets} onChange={onChange} onCreateSecret={async () => secrets[0]} />);

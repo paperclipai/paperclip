@@ -22,6 +22,35 @@ const DEFAULT_RESERVED_PREFIXES = ["PAPERCLIP_"];
 const DEFAULT_HINT =
   "Set the KEY to the env var name the process expects, for example GH_TOKEN. Choose a secret to resolve a stored value at run start. PAPERCLIP_* variables are injected automatically.";
 
+function normalizedEnvKey(value: Record<string, EnvBinding> | null | undefined): string {
+  if (!value || typeof value !== "object") return "";
+  const entries = Object.entries(value)
+    .map(([name, binding]) => {
+      if (typeof binding === "string") {
+        return [name, { type: "plain", value: binding }] as const;
+      }
+      if (binding?.type === "secret_ref") {
+        return [
+          name,
+          {
+            type: "secret_ref",
+            secretId: typeof binding.secretId === "string" ? binding.secretId : "",
+            version: typeof binding.version === "number" ? binding.version : "latest",
+          },
+        ] as const;
+      }
+      if (binding?.type === "plain") {
+        return [
+          name,
+          { type: "plain", value: typeof binding.value === "string" ? binding.value : "" },
+        ] as const;
+      }
+      return [name, { type: "plain", value: "" }] as const;
+    })
+    .sort(([left], [right]) => left.localeCompare(right));
+  return JSON.stringify(entries);
+}
+
 export interface EnvironmentVariablesEditorProps {
   value: Record<string, EnvBinding>;
   onChange: (next: Record<string, EnvBinding> | undefined) => void;
@@ -83,8 +112,11 @@ export function EnvironmentVariablesEditor({
 
   function commit(nextRows: EnvRow[]) {
     setRows(nextRows);
+    const nextValue = valueFromRows(nextRows);
+    if (normalizedEnvKey(nextValue) === normalizedEnvKey(valueRef.current)) return;
     emittingRef.current = true;
-    onChange(valueFromRows(nextRows));
+    valueRef.current = nextValue ?? {};
+    onChange(nextValue);
   }
 
   function patchRow(id: string, patch: Partial<EnvRow>) {
@@ -97,7 +129,7 @@ export function EnvironmentVariablesEditor({
 
   function addRow() {
     const row = emptyRow();
-    commit([...rows, row]);
+    setRows([...rows, row]);
     setPendingFocus({ rowId: row.id, field: "name" });
   }
 
