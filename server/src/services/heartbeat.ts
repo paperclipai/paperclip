@@ -9332,6 +9332,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await issuesSvc.update(issueId, {
           status: "blocked",
           actorAgentId: agent.id,
+          // Runtime-exhaustion parking is a system decision without a blocker issue;
+          // it is exempt from the agent blocked-disposition guard.
+          allowAgentBlockedWithoutLivePath: true,
         }).catch((err) => {
           logger.warn({ err, issueId, runId: run.id }, "failed to mark issue blocked after master runtime exhaustion");
         });
@@ -10924,6 +10927,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               await issuesSvc.update(issueId, {
                 status: "blocked",
                 actorAgentId: agent.id,
+                // Runtime-limit parking is a system decision without a blocker issue;
+                // it is exempt from the agent blocked-disposition guard.
+                allowAgentBlockedWithoutLivePath: true,
               }).catch((err) => {
                 logger.warn({ err, issueId, runId: livenessRun.id }, "failed to mark issue blocked after master runtime limit");
               });
