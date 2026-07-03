@@ -717,14 +717,22 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     });
 
     const first = await svc.importFromSource(companyId, path.join(skillDir, "SKILL.md"));
-    const second = await svc.importFromSource(companyId, path.join(skillDir, "SKILL.md"));
+    // importFromSource materializes the bundled-skill inventory into companySkills as a
+    // side effect, so the table also holds those rows; scope the idempotency assertion to
+    // the imported skill's own key rather than the whole table.
+    const importedKey = first.imported[0]?.key;
+    expect(importedKey).toBeTruthy();
+    const afterFirst = await db.select().from(companySkills);
 
-    // afterEach truncates companySkills, so every row here belongs to this test's company.
-    const rows = await db.select().from(companySkills);
-    // Second import of identical content produced no new rows (update, not a duplicate).
-    expect(rows.length).toBe(first.imported.length);
+    const second = await svc.importFromSource(companyId, path.join(skillDir, "SKILL.md"));
+    const afterSecond = await db.select().from(companySkills);
+
+    // Re-import of identical content is an in-place update, not a duplicate: the total row
+    // count is unchanged, and exactly one row corresponds to the imported skill throughout.
     expect(second.imported).toHaveLength(first.imported.length);
-    expect(rows.length).toBe(1);
+    expect(afterSecond.length).toBe(afterFirst.length);
+    expect(afterFirst.filter((row) => row.key === importedKey)).toHaveLength(1);
+    expect(afterSecond.filter((row) => row.key === importedKey)).toHaveLength(1);
   });
 
   it("bounds direct root SKILL.md imports to known support directories", async () => {
