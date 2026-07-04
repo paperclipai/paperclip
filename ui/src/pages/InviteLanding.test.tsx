@@ -680,12 +680,15 @@ describe("InviteLandingPage", () => {
           <QueryClientProvider client={queryClient}>
             <Routes>
               <Route path="/invite/:token" element={<InviteLandingPage />} />
+              <Route path="/" element={<div data-testid="company-root-redirect" />} />
             </Routes>
           </QueryClientProvider>
         </MemoryRouter>,
       );
     });
-    // Drain the bounded backoff between membership refetches.
+    // Drain the bounded backoff between membership refetches. While the cache
+    // still holds only the stale list, the page must NOT have navigated to "/"
+    // yet — navigating on a stale list is exactly the bug under test.
     for (let i = 0; i < 30; i += 1) {
       await act(async () => {
         await new Promise((resolve) => window.setTimeout(resolve, 60));
@@ -694,10 +697,17 @@ describe("InviteLandingPage", () => {
         | { companies: Array<{ id: string }> }
         | undefined;
       if (cached?.companies.some((company) => company.id === "company-1")) break;
+      expect(container.querySelector('[data-testid="company-root-redirect"]')).toBeNull();
     }
+    await flushReact();
+    await flushReact();
 
     expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
     expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
+
+    // Navigation to "/" actually fired once the joined company became readable:
+    // the MemoryRouter now renders the company root route.
+    expect(container.querySelector('[data-testid="company-root-redirect"]')).not.toBeNull();
 
     // The accept refetched the companies list more than once, waiting out the
     // lagging membership write rather than navigating on the first stale list.

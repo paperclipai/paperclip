@@ -329,14 +329,12 @@ export function InviteLandingPage() {
     // re-render: the root redirect keys off this id once the company is in the
     // list.
     setSelectedCompanyId(companyId, { source: "manual" });
-    let present = false;
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const { companies } = await queryClient.fetchQuery({
         ...companiesListQueryOptions,
         staleTime: 0,
       });
       if (companies.some((company) => company.id === companyId)) {
-        present = true;
         break;
       }
       // Short backoff for the membership write to become readable before the
@@ -350,7 +348,6 @@ export function InviteLandingPage() {
     // refetch) still lands on the right company rather than silently choosing
     // companies[0].
     navigate("/", { replace: true });
-    return present;
   };
 
   const acceptMutation = useMutation({
