@@ -99,4 +99,4 @@ console.log(`  Bundle: cli/dist/index.js (${statSync(INDEX_JS).size} bytes)`);
 console.log("  Source map: cli/dist/index.js.map\n");
 console.log("To preview:   cd cli && npm pack --dry-run");
 console.log("To publish:   cd cli && npm publish --access public");
-console.log("To restore:   node -e \"require('fs').renameSync('cli/package.dev.json','cli/package.json')\"");
+console.log("To restore:   node --input-type=module -e \"import{renameSync}from'node:fs';renameSync('cli/package.dev.json','cli/package.json')\"");
