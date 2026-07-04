@@ -117,6 +117,91 @@ describeEmbeddedPostgres("activity service", () => {
     expect(result.map((event) => event.action)).toEqual(["test.newest", "test.middle"]);
   });
 
+  it("fails closed for agent activity when the run id is not present in heartbeat_runs", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await expect(activityService(db).create({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: randomUUID(),
+      agentId,
+      runId: randomUUID(),
+    })).rejects.toMatchObject({
+      status: 401,
+      message: "Agent activity requires a valid Paperclip run id",
+    });
+
+    const persisted = await db.select().from(activityLog);
+    expect(persisted).toHaveLength(0);
+  });
+
+  it("stores agent activity with a visible run id", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "running",
+      contextSnapshot: {},
+    });
+
+    const event = await activityService(db).create({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: randomUUID(),
+      agentId,
+      runId,
+    });
+
+    expect(event).toMatchObject({ companyId, actorId: agentId, agentId, runId });
+  });
+
   it("returns compact usage and result summaries for issue runs", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

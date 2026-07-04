@@ -17,6 +17,7 @@ import {
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { classifyRunLiveness } from "./run-liveness.js";
+import { requireHeartbeatRunIdForAttributedWrite } from "./run-attribution.js";
 
 export interface ActivityFilters {
   companyId: string;
@@ -578,11 +579,18 @@ export function activityService(db: Db) {
       return [fromContext, ...fromActivity];
     },
 
-    create: (data: typeof activityLog.$inferInsert) =>
-      db
+    create: async (data: typeof activityLog.$inferInsert) => {
+      const runId = await requireHeartbeatRunIdForAttributedWrite(db, {
+        runId: data.runId,
+        companyId: data.companyId,
+        required: data.actorType === "agent" || Boolean(data.agentId),
+        label: "Agent activity",
+      });
+      return db
         .insert(activityLog)
-        .values(data)
+        .values({ ...data, runId })
         .returning()
-        .then((rows) => rows[0]),
+        .then((rows) => rows[0]);
+    },
   };
 }

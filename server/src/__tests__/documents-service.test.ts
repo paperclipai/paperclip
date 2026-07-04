@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  agents,
   companies,
   createDb,
   documentRevisions,
   documents,
+  heartbeatRuns,
   issueDocuments,
   issues,
 } from "@paperclipai/db";
@@ -40,6 +43,8 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
     await db.delete(issueDocuments);
     await db.delete(documents);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
     await db.delete(companies);
   });
 
@@ -155,6 +160,96 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
 
     expect(updated.created).toBe(false);
     expect(updated.document.body).toBe("# Updated plan");
+  });
+
+  it("fails closed for agent document revisions when the run id is not present in heartbeat_runs", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const agentId = randomUUID();
+    const companyId = await db
+      .select({ companyId: issues.companyId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]?.companyId);
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "DocAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await expect(svc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "# Detached run update",
+      baseRevisionId: (await svc.getIssueDocumentByKey(issueId, "plan"))?.latestRevisionId,
+      createdByAgentId: agentId,
+      createdByRunId: randomUUID(),
+    })).rejects.toMatchObject({
+      status: 401,
+      message: "Agent document write requires a valid Paperclip run id",
+    });
+
+    const revisions = await db
+      .select()
+      .from(documentRevisions)
+      .where(eq(documentRevisions.documentId, (await svc.getIssueDocumentByKey(issueId, "plan"))?.id ?? ""));
+    expect(revisions).toHaveLength(1);
+  });
+
+  it("stores agent document revisions with a visible run id", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const companyId = await db
+      .select({ companyId: issues.companyId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]?.companyId);
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "DocAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "running",
+      contextSnapshot: {},
+    });
+
+    const updated = await svc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "# Run-scoped update",
+      baseRevisionId: (await svc.getIssueDocumentByKey(issueId, "plan"))?.latestRevisionId,
+      createdByAgentId: agentId,
+      createdByRunId: runId,
+    });
+
+    expect(updated.created).toBe(false);
+    const revision = await db
+      .select({ createdByRunId: documentRevisions.createdByRunId })
+      .from(documentRevisions)
+      .where(eq(documentRevisions.id, updated.document.latestRevisionId))
+      .then((rows) => rows[0] ?? null);
+    expect(revision?.createdByRunId).toBe(runId);
   });
 
   it("creates a new document instead of updating a locked document when requested", async () => {

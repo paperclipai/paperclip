@@ -496,6 +496,120 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("fails closed for agent comments when the actor run id is not present in heartbeat_runs", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: agentId,
+      name: "DetachedRunCoder",
+    }));
+    const issue = await svc.create(companyId, {
+      title: "Detached run comment",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    await expect(svc.addComment(issue.id, "Comment should not be stored.", {
+      agentId,
+      runId: randomUUID(),
+    })).rejects.toMatchObject({
+      status: 401,
+      message: "Agent comment requires a valid Paperclip run id",
+    });
+
+    const persisted = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issue.id));
+    expect(persisted).toHaveLength(0);
+  });
+
+  it("stores agent comments with a visible run id", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: agentId,
+      name: "RunScopedCoder",
+    }));
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "running",
+      contextSnapshot: {},
+    });
+    const issue = await svc.create(companyId, {
+      title: "Run-scoped comment",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const comment = await svc.addComment(issue.id, "Comment has a run chain.", {
+      agentId,
+      runId,
+    });
+
+    expect(comment).toMatchObject({
+      issueId: issue.id,
+      authorAgentId: agentId,
+      createdByRunId: runId,
+      body: "Comment has a run chain.",
+    });
+
+    const persisted = await db
+      .select({ createdByRunId: issueComments.createdByRunId })
+      .from(issueComments)
+      .where(eq(issueComments.id, comment.id))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted?.createdByRunId).toBe(runId);
+  });
+
+  it("fails closed for checkout when the run id is not present in heartbeat_runs", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const agentId = randomUUID();
+    await db.insert(agents).values(agentRow(companyId, {
+      id: agentId,
+      name: "DetachedCheckoutCoder",
+    }));
+    const issue = await svc.create(companyId, {
+      title: "Detached run checkout",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+    });
+
+    await expect(svc.checkout(issue.id, agentId, ["todo"], randomUUID()))
+      .rejects.toMatchObject({
+        status: 401,
+        message: "Agent checkout requires a valid Paperclip run id",
+      });
+
+    const persisted = await db
+      .select({
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(eq(issues.id, issue.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(persisted).toMatchObject({
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+      status: "todo",
+    });
+  });
+
   it("resolves only structured same-company agent mentions", async () => {
     const companyId = await seedAssignableAgentCompany();
     const otherCompanyId = await seedAssignableAgentCompany();
@@ -3056,6 +3170,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
@@ -3594,7 +3709,6 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       runtimeConfig: {},
       permissions: {},
     });
-
     const blockerId = randomUUID();
     const dependentId = randomUUID();
     await db.insert(issues).values([
@@ -3708,6 +3822,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
   it("rejects execution when unresolved blockers remain", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
+    const checkoutRunId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
@@ -3724,6 +3839,14 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId: assigneeAgentId,
+      invocationSource: "assignment",
+      status: "running",
+      contextSnapshot: {},
     });
 
     const blockerId = randomUUID();
@@ -3746,7 +3869,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ).rejects.toMatchObject({ status: 422 });
 
     await expect(
-      svc.checkout(blockedId, assigneeAgentId, ["todo", "blocked"], null),
+      svc.checkout(blockedId, assigneeAgentId, ["todo", "blocked"], checkoutRunId),
     ).rejects.toMatchObject({ status: 422 });
   });
 

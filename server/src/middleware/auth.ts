@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { agentApiKeys, agents, authUsers, companies, companyMemberships, heartbeatRuns, instanceUserRoles } from "@paperclipai/db";
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
@@ -10,8 +10,72 @@ import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 
+const RUN_ID_VISIBILITY_ATTEMPTS = 8;
+const RUN_ID_VISIBILITY_DELAY_MS = 25;
+
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function resolveVisibleRunId(
+  db: Db,
+  runId: string | null | undefined,
+  opts: { companyId?: string | null; agentId?: string | null } = {},
+) {
+  const candidate = runId?.trim();
+  if (!candidate) return undefined;
+
+  for (let attempt = 0; attempt < RUN_ID_VISIBILITY_ATTEMPTS; attempt += 1) {
+    const row = await (() => {
+      if (opts.companyId && opts.agentId) {
+        return db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.id, candidate),
+            eq(heartbeatRuns.companyId, opts.companyId),
+            eq(heartbeatRuns.agentId, opts.agentId),
+          ))
+          .then((rows) => rows[0] ?? null);
+      }
+      if (opts.companyId) {
+        return db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.id, candidate), eq(heartbeatRuns.companyId, opts.companyId)))
+          .then((rows) => rows[0] ?? null);
+      }
+      if (opts.agentId) {
+        return db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.id, candidate), eq(heartbeatRuns.agentId, opts.agentId)))
+          .then((rows) => rows[0] ?? null);
+      }
+      return db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, candidate))
+        .then((rows) => rows[0] ?? null);
+    })();
+
+    if (row) return row.id;
+    if (attempt < RUN_ID_VISIBILITY_ATTEMPTS - 1) await sleep(RUN_ID_VISIBILITY_DELAY_MS);
+  }
+
+  logger.warn(
+    {
+      runId: candidate,
+      companyId: opts.companyId ?? null,
+      agentId: opts.agentId ?? null,
+    },
+    "Ignoring request run id because no committed heartbeat run row is visible",
+  );
+  return undefined;
 }
 
 interface ActorMiddlewareOptions {
@@ -43,7 +107,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         if (cloudTenantActor) {
           req.actor = {
             ...cloudTenantActor,
-            runId: runIdHeader ?? undefined,
+            runId: await resolveVisibleRunId(db, runIdHeader),
           };
           next();
           return;
@@ -89,14 +153,14 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             companyIds: memberships.map((row) => row.companyId),
             memberships,
             isInstanceAdmin: Boolean(roleRow),
-            runId: runIdHeader ?? undefined,
+            runId: await resolveVisibleRunId(db, runIdHeader),
             source: "session",
           };
           next();
           return;
         }
       }
-      if (runIdHeader) req.actor.runId = runIdHeader;
+      if (runIdHeader) req.actor.runId = await resolveVisibleRunId(db, runIdHeader);
       next();
       return;
     }
@@ -121,7 +185,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           memberships: access.memberships,
           isInstanceAdmin: access.isInstanceAdmin,
           keyId: boardKey.id,
-          runId: runIdHeader || undefined,
+          runId: await resolveVisibleRunId(db, runIdHeader),
           source: "board_key",
         };
         next();
@@ -164,7 +228,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         agentId: claims.sub,
         companyId: claims.company_id,
         keyId: undefined,
-        runId: runIdHeader || claims.run_id || undefined,
+        runId: await resolveVisibleRunId(db, runIdHeader || claims.run_id, {
+          companyId: claims.company_id,
+          agentId: claims.sub,
+        }),
         source: "agent_jwt",
       };
       next();
@@ -193,7 +260,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       companyId: key.companyId,
       keyId: key.id,
       keyScope: normalizeAgentApiKeyScope(key.scopeConfig),
-      runId: runIdHeader || undefined,
+      runId: await resolveVisibleRunId(db, runIdHeader, {
+        companyId: key.companyId,
+        agentId: key.agentId,
+      }),
       source: "agent_key",
     };
 

@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { requireHeartbeatRunIdForAttributedWrite } from "./run-attribution.js";
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
@@ -221,6 +222,12 @@ export function documentService(db: Db) {
         try {
           return await db.transaction(async (tx) => {
           const now = new Date();
+          const createdByRunId = await requireHeartbeatRunIdForAttributedWrite(tx, {
+            runId: input.createdByRunId,
+            companyId: issue.companyId,
+            required: Boolean(input.createdByAgentId),
+            label: "Agent document write",
+          });
           const existing = await tx
             .select({
               id: documents.id,
@@ -291,7 +298,7 @@ export function documentService(db: Db) {
                     changeSummary: input.changeSummary ?? null,
                     createdByAgentId: input.createdByAgentId ?? null,
                     createdByUserId: input.createdByUserId ?? null,
-                    createdByRunId: input.createdByRunId ?? null,
+                    createdByRunId,
                     createdAt: now,
                   })
                   .returning();
@@ -371,7 +378,7 @@ export function documentService(db: Db) {
                 changeSummary: input.changeSummary ?? null,
                 createdByAgentId: input.createdByAgentId ?? null,
                 createdByUserId: input.createdByUserId ?? null,
-                createdByRunId: input.createdByRunId ?? null,
+                createdByRunId,
                 createdAt: now,
               })
               .returning();
@@ -454,7 +461,7 @@ export function documentService(db: Db) {
               changeSummary: input.changeSummary ?? null,
               createdByAgentId: input.createdByAgentId ?? null,
               createdByUserId: input.createdByUserId ?? null,
-              createdByRunId: input.createdByRunId ?? null,
+              createdByRunId,
               createdAt: now,
             })
             .returning();

@@ -94,6 +94,7 @@ import {
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
+import { requireHeartbeatRunIdForAttributedWrite } from "./run-attribution.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -5817,12 +5818,18 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
+      const effectiveCheckoutRunId = await requireHeartbeatRunIdForAttributedWrite(db, {
+        runId: checkoutRunId,
+        companyId: issueCompany.companyId,
+        required: true,
+        label: "Agent checkout",
+      });
 
       const now = new Date();
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
       if (
         activePauseHold &&
-        !(await isTreeHoldInteractionCheckoutAllowed(issueCompany.companyId, checkoutRunId, activePauseHold))
+        !(await isTreeHoldInteractionCheckoutAllowed(issueCompany.companyId, effectiveCheckoutRunId, activePauseHold))
       ) {
         throw conflict("Issue checkout blocked by active subtree pause hold", {
           issueId: id,
@@ -5842,22 +5849,22 @@ export function issueService(db: Db) {
         throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
       }
 
-      const sameRunAssigneeCondition = checkoutRunId
+      const sameRunAssigneeCondition = effectiveCheckoutRunId
         ? and(
           eq(issues.assigneeAgentId, agentId),
-          or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, checkoutRunId)),
+          or(isNull(issues.checkoutRunId), eq(issues.checkoutRunId, effectiveCheckoutRunId)),
         )
         : and(eq(issues.assigneeAgentId, agentId), isNull(issues.checkoutRunId));
-      const executionLockCondition = checkoutRunId
-        ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
+      const executionLockCondition = effectiveCheckoutRunId
+        ? or(isNull(issues.executionRunId), eq(issues.executionRunId, effectiveCheckoutRunId))
         : isNull(issues.executionRunId);
       const updated = await db
         .update(issues)
         .set({
           assigneeAgentId: agentId,
           assigneeUserId: null,
-          checkoutRunId,
-          executionRunId: checkoutRunId,
+          checkoutRunId: effectiveCheckoutRunId,
+          executionRunId: effectiveCheckoutRunId,
           status: "in_progress",
           startedAt: now,
           updatedAt: now,
@@ -5896,14 +5903,14 @@ export function issueService(db: Db) {
         current.assigneeAgentId === agentId &&
         current.status === "in_progress" &&
         current.checkoutRunId == null &&
-        (current.executionRunId == null || current.executionRunId === checkoutRunId) &&
-        checkoutRunId
+        (current.executionRunId == null || current.executionRunId === effectiveCheckoutRunId) &&
+        effectiveCheckoutRunId
       ) {
         const adopted = await db
           .update(issues)
           .set({
-            checkoutRunId,
-            executionRunId: checkoutRunId,
+            checkoutRunId: effectiveCheckoutRunId,
+            executionRunId: effectiveCheckoutRunId,
             updatedAt: new Date(),
           })
           .where(
@@ -5912,7 +5919,7 @@ export function issueService(db: Db) {
               eq(issues.status, "in_progress"),
               eq(issues.assigneeAgentId, agentId),
               isNull(issues.checkoutRunId),
-              or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId)),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, effectiveCheckoutRunId)),
             ),
           )
           .returning()
@@ -5921,16 +5928,16 @@ export function issueService(db: Db) {
       }
 
       if (
-        checkoutRunId &&
+        effectiveCheckoutRunId &&
         current.assigneeAgentId === agentId &&
         current.status === "in_progress" &&
         current.checkoutRunId &&
-        current.checkoutRunId !== checkoutRunId
+        current.checkoutRunId !== effectiveCheckoutRunId
       ) {
         const staleAdoption = await adoptStaleCheckoutRun({
           issueId: id,
           actorAgentId: agentId,
-          actorRunId: checkoutRunId,
+          actorRunId: effectiveCheckoutRunId,
           expectedCheckoutRunId: current.checkoutRunId,
         });
         if (staleAdoption.adopted) {
@@ -5945,9 +5952,9 @@ export function issueService(db: Db) {
       // Only adopts when the caller's expectedStatuses guard still holds; preserves any existing assigneeUserId
       // and preserves the original startedAt when the issue is already in_progress.
       if (
-        checkoutRunId &&
+        effectiveCheckoutRunId &&
         current.executionRunId &&
-        current.executionRunId !== checkoutRunId &&
+        current.executionRunId !== effectiveCheckoutRunId &&
         (current.assigneeAgentId === agentId || current.assigneeAgentId == null)
       ) {
         const stale = await isTerminalOrMissingHeartbeatRun(current.executionRunId);
@@ -5955,8 +5962,8 @@ export function issueService(db: Db) {
           const now = new Date();
           const adoptionSet: Record<string, unknown> = {
             assigneeAgentId: agentId,
-            checkoutRunId,
-            executionRunId: checkoutRunId,
+            checkoutRunId: effectiveCheckoutRunId,
+            executionRunId: effectiveCheckoutRunId,
             executionAgentNameKey: null,
             executionLockedAt: now,
             status: "in_progress",
@@ -5989,7 +5996,7 @@ export function issueService(db: Db) {
       if (
         current.assigneeAgentId === agentId &&
         current.status === "in_progress" &&
-        sameRunLock(current.checkoutRunId, checkoutRunId)
+        sameRunLock(current.checkoutRunId, effectiveCheckoutRunId)
       ) {
         const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
         if (!row) throw notFound("Issue not found");
@@ -6483,6 +6490,12 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
+      const createdByRunId = await requireHeartbeatRunIdForAttributedWrite(dbOrTx, {
+        runId: actor.runId,
+        companyId: issue.companyId,
+        required: Boolean(actor.agentId),
+        label: "Agent comment",
+      });
       const [comment] = await dbOrTx
         .insert(issueComments)
         .values({
@@ -6491,7 +6504,7 @@ export function issueService(db: Db) {
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
           authorType,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId,
           body: redactedBody,
           presentation,
           metadata,

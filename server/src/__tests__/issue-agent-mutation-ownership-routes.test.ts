@@ -7,6 +7,7 @@ const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
 const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const peerAgentId = "44444444-4444-4444-8444-444444444444";
+const ceoAgentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ownerRunId = "55555555-5555-4555-8555-555555555555";
 const recoveryActionId = "77777777-7777-4777-8777-777777777777";
 
@@ -342,6 +343,16 @@ function ownerActor() {
   };
 }
 
+function ceoActor() {
+  return {
+    type: "agent",
+    agentId: ceoAgentId,
+    companyId,
+    source: "agent_jwt",
+    runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  };
+}
+
 function boardActor() {
   return {
     type: "board",
@@ -517,11 +528,13 @@ describe("agent issue mutation checkout ownership", () => {
     mockAgentService.getById.mockImplementation(async (id: string) => {
       if (id === ownerAgentId) return makeAgent(ownerAgentId);
       if (id === peerAgentId) return makeAgent(peerAgentId);
+      if (id === ceoAgentId) return makeAgent(ceoAgentId, { role: "ceo" });
       return null;
     });
     mockAgentService.list.mockResolvedValue([
       makeAgent(ownerAgentId),
       makeAgent(peerAgentId),
+      makeAgent(ceoAgentId, { role: "ceo" }),
     ]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: null });
     mockCompanyService.getById.mockResolvedValue({ id: companyId, issuePrefix: "PAP" });
@@ -911,6 +924,106 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("lets CEO reconcile-only grant add plain comments to another agent's issue", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAccessService.hasPermission.mockImplementation(async (
+      _companyId: string,
+      principalType: string,
+      principalId: string,
+      permissionKey: string,
+    ) => principalType === "agent" && principalId === ceoAgentId && permissionKey === "issues:reconcile");
+
+    const res = await request(await createApp(ceoActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "CEO reconcile comment." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "CEO reconcile comment.",
+      expect.objectContaining({ agentId: ceoAgentId }),
+      expect.objectContaining({ authorType: "agent" }),
+    );
+  });
+
+  it("denies CEO reconcile-only access without the explicit reconcile grant", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAccessService.hasPermission.mockResolvedValue(false);
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_missing_grant",
+      explanation: "Missing permission.",
+    }));
+
+    const commentRes = await request(await createApp(ceoActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "CEO role alone is not enough." });
+
+    expect(commentRes.status, JSON.stringify(commentRes.body)).toBe(403);
+    expect(commentRes.body.error).toBe("Issue is outside this actor's authorization boundary");
+
+    const patchRes = await request(await createApp(ceoActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked", comment: "CEO role alone is not enough." });
+
+    expect(patchRes.status, JSON.stringify(patchRes.body)).toBe(403);
+    expect(patchRes.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects CEO reconcile-only comment payloads that request lifecycle side effects", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "done", assigneeAgentId: ownerAgentId }));
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const res = await request(await createApp(ceoActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Do not reopen.", reopen: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("CEO reconcile grant only permits plain comments");
+    expect(res.body.details.disallowedKeys).toEqual(["reopen"]);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects CEO reconcile-only field mutation on another agent's issue", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const res = await request(await createApp(ceoActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Not allowed" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("CEO reconcile grant only permits status transitions and comments");
+    expect(res.body.details.disallowedKeys).toEqual(["title"]);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("lets CEO reconcile-only grant transition another agent's issue to done only with a sealed GRADE.md citation", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const rejected = await request(await createApp(ceoActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment: "Missing sealed grade citation." });
+
+    expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
+    expect(rejected.body.error).toBe("CEO reconcile done transitions require a sealed GRADE.md path citation in the comment");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+
+    const accepted = await request(await createApp(ceoActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "done", comment: "Sealed grade: grades/TKJ-1983-GRADE.md" });
+
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "done", actorAgentId: ceoAgentId }),
+    );
+  });
+
   it("denies cross-company agents before comment authorization is evaluated", async () => {
     const res = await request(await createApp(peerActor({ companyId: "99999999-9999-4999-8999-999999999999" })))
       .post(`/api/issues/${issueId}/comments`)
@@ -978,6 +1091,25 @@ describe("agent issue mutation checkout ownership", () => {
       companyId,
       expect.objectContaining({ createdByRunId: ownerRunId }),
     );
+  });
+
+  it("rejects agent-created work products without an authenticated run id", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: ownerAgentId,
+      companyId,
+      source: "agent_key",
+    });
+
+    const res = await request(app).post(`/api/issues/${issueId}/work-products`).send({
+      type: "artifact",
+      provider: "test",
+      title: "Artifact",
+    });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(401);
+    expect(res.body.error).toBe("Agent run id required");
+    expect(mockWorkProductService.createForIssue).not.toHaveBeenCalled();
   });
 
   it("rejects agent-created work products with a forged run id", async () => {
