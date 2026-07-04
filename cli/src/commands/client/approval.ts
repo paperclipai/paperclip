@@ -27,6 +27,12 @@ interface ApprovalDecisionOptions extends BaseClientOptions {
   decidedByUserId?: string;
 }
 
+interface ApprovalRejectOptions extends BaseClientOptions {
+  reason?: string;
+  force?: boolean;
+  decidedByUserId?: string;
+}
+
 interface ApprovalCreateOptions extends BaseClientOptions {
   companyId?: string;
   type: string;
@@ -160,15 +166,22 @@ export function registerApprovalCommands(program: Command): void {
   addCommonClientOptions(
     approval
       .command("reject")
-      .description("Reject an approval request")
+      .description(
+        "Reject an approval request.\n" +
+          "  Requires --reason so the requesting agent learns why, or an explicit --force to reject without one.",
+      )
       .argument("<approvalId>", "Approval ID")
-      .option("--decision-note <text>", "Decision note")
+      .option("--reason <text>", "Reason recorded on the approval and shown to the requesting agent")
+      .option("--force", "Reject without a reason", false)
       .option("--decided-by-user-id <id>", "Decision actor user ID")
-      .action(async (approvalId: string, opts: ApprovalDecisionOptions) => {
+      .action(async (approvalId: string, opts: ApprovalRejectOptions) => {
         try {
+          if (!opts.reason && !opts.force) {
+            throw new Error("Refusing reasonless rejection. Pass --reason <text> or use --force.");
+          }
           const ctx = resolveCommandContext(opts);
           const payload = resolveApprovalSchema.parse({
-            decisionNote: opts.decisionNote,
+            decisionNote: opts.reason,
             decidedByUserId: opts.decidedByUserId,
           });
           const updated = await ctx.api.post<Approval>(apiPath`/api/approvals/${approvalId}/reject`, payload);

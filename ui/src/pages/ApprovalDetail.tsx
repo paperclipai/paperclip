@@ -10,6 +10,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { Identity } from "../components/Identity";
 import { approvalLabel, typeIcon, defaultTypeIcon, ApprovalPayloadRenderer } from "../components/ApprovalPayload";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { RejectApprovalDialog } from "../components/RejectApprovalDialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
@@ -26,6 +27,7 @@ export function ApprovalDetail() {
   const [commentBody, setCommentBody] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [showRawPayload, setShowRawPayload] = useState(false);
+  const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
 
   const { data: approval, isLoading } = useQuery({
     queryKey: queryKeys.approvals.detail(approvalId!),
@@ -95,9 +97,10 @@ export function ApprovalDetail() {
   });
 
   const rejectMutation = useMutation({
-    mutationFn: () => approvalsApi.reject(approvalId!),
+    mutationFn: (reason?: string) => approvalsApi.reject(approvalId!, reason),
     onSuccess: () => {
       setError(null);
+      setRejectDialogOpen(false);
       refresh();
     },
     onError: (err) => setError(err instanceof Error ? err.message : "Reject failed"),
@@ -274,7 +277,7 @@ export function ApprovalDetail() {
               <Button
                 variant="destructive"
                 size="sm"
-                onClick={() => rejectMutation.mutate()}
+                onClick={() => setRejectDialogOpen(true)}
                 disabled={rejectMutation.isPending}
               >
                 Reject
@@ -363,6 +366,13 @@ export function ApprovalDetail() {
           </Button>
         </div>
       </div>
+
+      <RejectApprovalDialog
+        open={rejectDialogOpen}
+        onOpenChange={setRejectDialogOpen}
+        isPending={rejectMutation.isPending}
+        onReject={(reason) => rejectMutation.mutate(reason)}
+      />
     </div>
   );
 }
