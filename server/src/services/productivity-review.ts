@@ -138,6 +138,27 @@ function coerceDate(value: Date | string | null | undefined) {
   return value instanceof Date ? value : new Date(value);
 }
 
+function readMonitorNextCheckAt(value: unknown) {
+  if (!value || typeof value !== "object") return null;
+  const monitor = (value as { monitor?: unknown }).monitor;
+  if (!monitor || typeof monitor !== "object") return null;
+  const nextCheckAt = (monitor as { nextCheckAt?: unknown }).nextCheckAt;
+  return nextCheckAt instanceof Date || typeof nextCheckAt === "string" ? coerceDate(nextCheckAt) : null;
+}
+
+function isFutureDate(value: Date | null, now: Date) {
+  return Boolean(value && Number.isFinite(value.getTime()) && value.getTime() > now.getTime());
+}
+
+function hasFutureScheduledMonitor(issue: Pick<IssueRow, "status" | "monitorNextCheckAt" | "executionPolicy" | "executionState">, now: Date) {
+  if (issue.status !== "in_progress") return false;
+  return [
+    coerceDate(issue.monitorNextCheckAt),
+    readMonitorNextCheckAt(issue.executionPolicy),
+    readMonitorNextCheckAt(issue.executionState),
+  ].some((nextCheckAt) => isFutureDate(nextCheckAt, now));
+}
+
 function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): ProductivityReviewThresholds {
   return {
     noCommentStreakRuns: readPositiveInteger(
@@ -476,7 +497,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       : null;
 
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    const futureMonitorScheduled = hasFutureScheduledMonitor(sourceIssue, now);
+    const longActive = !futureMonitorScheduled && elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||

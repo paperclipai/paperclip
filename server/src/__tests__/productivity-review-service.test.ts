@@ -55,6 +55,9 @@ describeEmbeddedPostgres("productivity review service", () => {
     startedAt?: Date;
     parentId?: string | null;
     originKind?: string;
+    monitorNextCheckAt?: Date | null;
+    executionPolicy?: Record<string, unknown> | null;
+    executionState?: Record<string, unknown> | null;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
@@ -103,6 +106,9 @@ describeEmbeddedPostgres("productivity review service", () => {
       assigneeAgentId: coderId,
       parentId: opts?.parentId ?? null,
       originKind: opts?.originKind ?? "manual",
+      monitorNextCheckAt: opts?.monitorNextCheckAt,
+      executionPolicy: opts?.executionPolicy,
+      executionState: opts?.executionState,
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       startedAt: opts?.startedAt ?? createdAt,
@@ -358,6 +364,42 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(review?.description).toContain("Primary trigger: `long_active_duration`");
     expect(review?.priority).toBe("medium");
     expect(hold.held).toBe(false);
+  });
+
+  it.each([
+    {
+      label: "monitor_next_check_at",
+      issueFields: (nextCheckAt: Date) => ({ monitorNextCheckAt: nextCheckAt }),
+    },
+    {
+      label: "executionPolicy.monitor.nextCheckAt",
+      issueFields: (nextCheckAt: Date) => ({
+        executionPolicy: { monitor: { nextCheckAt: nextCheckAt.toISOString() } },
+      }),
+    },
+    {
+      label: "executionState.monitor.nextCheckAt",
+      issueFields: (nextCheckAt: Date) => ({
+        executionState: { monitor: { status: "scheduled", nextCheckAt: nextCheckAt.toISOString() } },
+      }),
+    },
+  ])("suppresses long-active productivity reviews for future scheduled monitors from $label", async ({ issueFields }) => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const nextCheckAt = new Date("2026-04-29T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+      ...issueFields(nextCheckAt),
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
   });
 
   it("creates a high-churn review even when every sampled run has a progress comment", async () => {
