@@ -10,6 +10,11 @@ const CODEX_TRANSIENT_UPSTREAM_RE =
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
+// Generic usage-limit variants ("You've hit your usage limit. Upgrade to Pro …") carry
+// no reset clock. Without a retryNotBefore they fall through to a generic adapter
+// failure and wake-driven retries hammer a quota that cannot succeed until it resets.
+const CODEX_USAGE_LIMIT_GENERIC_RE = /you(?:'|’)ve hit your usage limit/i;
+const CODEX_USAGE_LIMIT_DEFAULT_BACKOFF_MS = 30 * 60 * 1000;
 
 export function parseCodexJsonl(stdout: string) {
   let sessionId: string | null = null;
@@ -241,8 +246,14 @@ export function extractCodexRetryNotBefore(input: {
 }, now = new Date()): Date | null {
   const haystack = buildCodexErrorHaystack(input);
   const usageLimitMatch = haystack.match(CODEX_USAGE_LIMIT_RE);
-  if (!usageLimitMatch) return null;
-  return parseLocalClockTime(usageLimitMatch[1] ?? "", now);
+  if (usageLimitMatch) {
+    const explicit = parseLocalClockTime(usageLimitMatch[1] ?? "", now);
+    if (explicit) return explicit;
+  }
+  if (CODEX_USAGE_LIMIT_GENERIC_RE.test(haystack)) {
+    return new Date(now.getTime() + CODEX_USAGE_LIMIT_DEFAULT_BACKOFF_MS);
+  }
+  return null;
 }
 
 export function isCodexTransientUpstreamError(input: {
