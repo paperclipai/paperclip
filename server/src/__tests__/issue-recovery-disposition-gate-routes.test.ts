@@ -18,6 +18,7 @@ const issueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const companyId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const recoveryOwnerAgentId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const originalAgentId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+const tamperedOriginalAgentId = "99999999-9999-4999-8999-999999999999";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -380,6 +381,24 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.code).not.toBe("recovery_disposition_condition_c_violation");
+    });
+
+    it("rejects a closure PATCH that changes previousAssigneeAgentId", async () => {
+      mockIssueService.getById.mockResolvedValue(makeRecoveryIssue());
+      const app = await createApp(recoveryOwnerActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .set("Content-Type", "application/json")
+        .send({
+          status: "done",
+          recoveryKind: "recovery_completion",
+          previousAssigneeAgentId: tamperedOriginalAgentId,
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe("recovery_disposition_previous_assignee_mismatch");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
     });
 
     it("rejects done with measurement_bar recoveryKind", async () => {
