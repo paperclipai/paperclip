@@ -4,12 +4,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockIssueService = vi.hoisted(() => ({
+  addComment: vi.fn(),
   getAncestors: vi.fn(),
   getById: vi.fn(),
   getByIdentifier: vi.fn(async () => null),
   getComment: vi.fn(),
   getCommentCursor: vi.fn(),
+  getDependencyReadiness: vi.fn(),
   getRelationSummaries: vi.fn(),
+  listComments: vi.fn(),
   update: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
@@ -19,6 +22,9 @@ const mockIssueService = vi.hoisted(() => ({
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+  }),
+  budgetService: () => ({
+    upsertPolicy: vi.fn(async () => undefined),
   }),
   accessService: () => ({
     canUser: vi.fn(),
@@ -41,6 +47,7 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => ({
     wakeup: mockWakeup,
     reportRunActivity: vi.fn(async () => undefined),
+    cancelBudgetScopeWork: vi.fn(async () => undefined),
   }),
   getIssueContinuationSummaryDocument: vi.fn(async () => null),
   instanceSettingsService: () => ({
@@ -66,6 +73,9 @@ vi.mock("../services/index.js", () => ({
     listActiveForIssues: vi.fn(async () => new Map()),
   }),
   issueService: () => mockIssueService,
+  issueThreadInteractionService: () => ({
+    expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  }),
   issueVisibilityService: () => ({
     canSeeIssue: vi.fn(async () => true),
     filterVisibleIssues: vi.fn(async (_principal, issues) => issues),
@@ -92,7 +102,13 @@ vi.mock("../services/index.js", () => ({
   }),
 }));
 
-async function createApp() {
+async function createApp(actor: Record<string, unknown> = {
+  type: "board",
+  userId: "local-board",
+  companyIds: ["company-1"],
+  source: "local_implicit",
+  isInstanceAdmin: false,
+}) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -100,13 +116,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", issueRoutes({} as any, {} as any));
@@ -128,7 +138,13 @@ describe("issue dependency wakeups in issue routes", () => {
       latestCommentId: null,
       latestCommentAt: null,
     });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      isDependencyReady: true,
+      unresolvedBlockerCount: 0,
+      unresolvedBlockerIssueIds: [],
+    });
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
   });
@@ -280,5 +296,184 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
+  });
+
+  it("escalates an agent-blocked child lane with no unresolved blocker to the parent manager", async () => {
+    mockIssueService.getById
+      .mockResolvedValueOnce({
+        id: "child-1",
+        companyId: "company-1",
+        identifier: "PAP-201",
+        title: "QA lane",
+        description: null,
+        status: "blocked",
+        priority: "medium",
+        parentId: "parent-1",
+        assigneeAgentId: "cmo-agent",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      })
+      .mockResolvedValueOnce({
+        id: "parent-1",
+        companyId: "company-1",
+        identifier: "PAP-200",
+        title: "Parent delivery",
+        description: null,
+        status: "blocked",
+        priority: "medium",
+        parentId: null,
+        assigneeAgentId: "ceo-agent",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      });
+    mockIssueService.update.mockResolvedValue({
+      id: "child-1",
+      companyId: "company-1",
+      identifier: "PAP-201",
+      title: "QA lane",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: "parent-1",
+      assigneeAgentId: "cmo-agent",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.addComment
+      .mockResolvedValueOnce({ id: "child-comment-1", body: "QA failed; FE needs to repair the visible hero.", issueId: "child-1" })
+      .mockResolvedValueOnce({ id: "parent-comment-1", body: "Paperclip escalated a blocked child lane.", issueId: "parent-1" });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "cmo-agent",
+      companyId: "company-1",
+      source: "api_key",
+      runId: "run-1",
+    });
+    const res = await request(app)
+      .patch("/api/issues/child-1")
+      .send({ status: "blocked", comment: "QA failed; FE needs to repair the visible hero." });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockIssueService.addComment).toHaveBeenCalledWith(
+        "parent-1",
+        expect.stringContaining("Child blocked escalation: `child-1:child-comment-1`"),
+        {},
+        expect.objectContaining({
+          authorType: "system",
+          metadata: expect.objectContaining({
+            version: 1,
+            sections: expect.arrayContaining([
+              expect.objectContaining({
+                title: "Escalation",
+                rows: expect.arrayContaining([
+                  expect.objectContaining({ type: "key_value", label: "kind", value: "child_blocked_without_first_class_blocker" }),
+                  expect.objectContaining({ type: "key_value", label: "childIssueId", value: "child-1" }),
+                  expect.objectContaining({ type: "key_value", label: "sourceCommentId", value: "child-comment-1" }),
+                ]),
+              }),
+            ]),
+          }),
+        }),
+      );
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "ceo-agent",
+        expect.objectContaining({
+          reason: "child_blocked_without_first_class_blocker",
+          payload: expect.objectContaining({
+            issueId: "parent-1",
+            childIssueId: "child-1",
+            childIdentifier: "PAP-201",
+            sourceCommentId: "child-comment-1",
+          }),
+          contextSnapshot: expect.objectContaining({
+            issueId: "parent-1",
+            wakeReason: "child_blocked_without_first_class_blocker",
+            childIssueId: "child-1",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("does not escalate a blocked child lane that has a real unresolved blocker", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "child-1",
+      companyId: "company-1",
+      identifier: "PAP-211",
+      title: "QA lane",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: "parent-1",
+      assigneeAgentId: "cmo-agent",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "child-1",
+      companyId: "company-1",
+      identifier: "PAP-211",
+      title: "QA lane",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: "parent-1",
+      assigneeAgentId: "cmo-agent",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      isDependencyReady: false,
+      unresolvedBlockerCount: 1,
+      unresolvedBlockerIssueIds: ["blocker-1"],
+    });
+    mockIssueService.addComment.mockResolvedValueOnce({
+      id: "child-comment-1",
+      body: "Blocked by blocker-1.",
+      issueId: "child-1",
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "cmo-agent",
+      companyId: "company-1",
+      source: "api_key",
+      runId: "run-1",
+    });
+    const res = await request(app)
+      .patch("/api/issues/child-1")
+      .send({ status: "blocked", comment: "Blocked by blocker-1." });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockIssueService.getDependencyReadiness).toHaveBeenCalledWith("child-1");
+    });
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockWakeup).not.toHaveBeenCalledWith(
+      "ceo-agent",
+      expect.objectContaining({ reason: "child_blocked_without_first_class_blocker" }),
+    );
   });
 });

@@ -227,6 +227,52 @@ function issueAllowsAgentWakeups(issue: { workItemType?: string | null }) {
   return !isHumanControlWorkItemType(issue.workItemType);
 }
 
+const CHILD_BLOCKED_ESCALATION_MARKER = "Child blocked escalation";
+
+function buildChildBlockedEscalationMarker(input: { childIssueId: string; sourceCommentId?: string | null }) {
+  return `${CHILD_BLOCKED_ESCALATION_MARKER}: \`${input.childIssueId}:${input.sourceCommentId ?? "status"}\``;
+}
+
+function issueLabel(issue: { identifier?: string | null; id: string }) {
+  return issue.identifier ?? issue.id;
+}
+
+function buildChildBlockedEscalationComment(input: {
+  child: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    assigneeAgentId: string | null;
+  };
+  parent: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    assigneeAgentId: string | null;
+  };
+  actorAgentId: string | null;
+  childComment: { id: string; body: string } | null;
+  marker: string;
+}) {
+  const childCommentSnippet = input.childComment?.body.trim().slice(0, 700) ?? "";
+  return [
+    "Paperclip escalated a blocked child lane without a first-class blocker.",
+    "",
+    `- Parent issue: ${issueLabel(input.parent)} ${input.parent.title}`,
+    `- Child issue: ${issueLabel(input.child)} ${input.child.title}`,
+    `- Child assignee: ${input.child.assigneeAgentId ?? "unassigned"}`,
+    `- Blocking actor: ${input.actorAgentId ?? "unknown"}`,
+    "- Reason: child lane is `blocked`, but it has no unresolved `blockedByIssueIds`, so there is no automatic dependency wake path.",
+    input.childComment
+      ? `- Source child comment: \`${input.childComment.id}\`${childCommentSnippet ? `\n\n${childCommentSnippet}` : ""}`
+      : "- Source child comment: none",
+    "",
+    "Manager next action: decide the next owner/path now. Reassign the child, create or repair a real blocker issue, create a sibling follow-up lane from the parent, escalate to board/user if an outside decision is needed, or record an intentional manual resolution. Do not leave the parent waiting on a silent blocked child lane.",
+    "",
+    input.marker,
+  ].join("\n");
+}
+
 const SUCCESSFUL_RUN_HANDOFF_ACTIONS = [
   "issue.successful_run_handoff_required",
   "issue.successful_run_handoff_resolved",
@@ -3971,6 +4017,129 @@ export function issueRoutes(
               source: "comment.mention",
             },
           });
+        }
+      }
+
+      const agentLeftChildBlocked =
+        actor.actorType === "agent" &&
+        issue.parentId &&
+        issue.status === "blocked" &&
+        issueAllowsAgentWakeups(issue) &&
+        (
+          existing.status !== "blocked" ||
+          updateFields.status === "blocked" ||
+          Array.isArray(req.body.blockedByIssueIds) ||
+          Boolean(comment)
+        );
+      if (agentLeftChildBlocked) {
+        try {
+          const readiness = await svc.getDependencyReadiness(issue.id);
+          if (readiness.unresolvedBlockerCount === 0) {
+            const parent = await svc.getById(issue.parentId!);
+            if (
+              parent?.assigneeAgentId &&
+              issueAllowsAgentWakeups(parent) &&
+              !["done", "cancelled"].includes(parent.status)
+            ) {
+              const marker = buildChildBlockedEscalationMarker({
+                childIssueId: issue.id,
+                sourceCommentId: comment?.id ?? null,
+              });
+              const recentParentComments = await svc.listComments(parent.id, { order: "desc", limit: 50 });
+              const alreadyEscalated = recentParentComments.some((candidate) => candidate.body.includes(marker));
+              let escalationCommentId: string | null = null;
+              if (!alreadyEscalated) {
+                const escalationComment = await svc.addComment(
+                  parent.id,
+                  buildChildBlockedEscalationComment({
+                    child: {
+                      id: issue.id,
+                      identifier: issue.identifier,
+                      title: issue.title,
+                      assigneeAgentId: issue.assigneeAgentId,
+                    },
+                    parent: {
+                      id: parent.id,
+                      identifier: parent.identifier,
+                      title: parent.title,
+                      assigneeAgentId: parent.assigneeAgentId,
+                    },
+                    actorAgentId: actor.agentId,
+                    childComment: comment ? { id: comment.id, body: comment.body } : null,
+                    marker,
+                  }),
+                  {},
+                  {
+                    authorType: "system",
+                    metadata: {
+                      version: 1,
+                      sections: [
+                        {
+                          title: "Escalation",
+                          rows: [
+                            { type: "key_value", label: "kind", value: "child_blocked_without_first_class_blocker" },
+                            { type: "key_value", label: "childIssueId", value: issue.id },
+                            { type: "key_value", label: "childIdentifier", value: issue.identifier ?? issue.id },
+                            { type: "key_value", label: "sourceCommentId", value: comment?.id ?? "none" },
+                            { type: "key_value", label: "actorAgentId", value: actor.agentId ?? "unknown" },
+                          ],
+                        },
+                      ],
+                    },
+                  },
+                );
+                escalationCommentId = escalationComment.id;
+                await logActivity(db, {
+                  companyId: issue.companyId,
+                  actorType: "system",
+                  actorId: "system",
+                  agentId: actor.agentId,
+                  runId: actor.runId,
+                  action: "issue.child_blocked_escalated",
+                  entityType: "issue",
+                  entityId: parent.id,
+                  details: {
+                    identifier: parent.identifier,
+                    childIssueId: issue.id,
+                    childIdentifier: issue.identifier,
+                    childAssigneeAgentId: issue.assigneeAgentId,
+                    parentAssigneeAgentId: parent.assigneeAgentId,
+                    escalationCommentId,
+                    sourceCommentId: comment?.id ?? null,
+                    reason: "child_blocked_without_first_class_blocker",
+                  },
+                });
+              }
+
+              addWakeup(parent.assigneeAgentId, {
+                source: "automation",
+                triggerDetail: "system",
+                reason: "child_blocked_without_first_class_blocker",
+                payload: {
+                  issueId: parent.id,
+                  childIssueId: issue.id,
+                  childIdentifier: issue.identifier,
+                  sourceCommentId: comment?.id ?? null,
+                  escalationCommentId,
+                  mutation: "child_blocked_escalation",
+                },
+                requestedByActorType: actor.actorType,
+                requestedByActorId: actor.actorId,
+                contextSnapshot: {
+                  issueId: parent.id,
+                  taskId: parent.id,
+                  wakeReason: "child_blocked_without_first_class_blocker",
+                  source: "issue.child_blocked_escalation",
+                  childIssueId: issue.id,
+                  childIdentifier: issue.identifier,
+                  sourceCommentId: comment?.id ?? null,
+                  escalationCommentId,
+                },
+              });
+            }
+          }
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id, parentId: issue.parentId }, "failed to escalate blocked child issue");
         }
       }
 
