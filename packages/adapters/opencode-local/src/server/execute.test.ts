@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ensureRemoteOpenCodeModelConfiguredAndAvailable, stripThinkBlocks } from "./execute.js";
+import {
+  ensureRemoteOpenCodeModelConfiguredAndAvailable,
+  resolveIssueDonePollerApiUrl,
+  stripThinkBlocks,
+} from "./execute.js";
 
 describe("ensureRemoteOpenCodeModelConfiguredAndAvailable", () => {
   afterEach(() => {
@@ -99,5 +103,29 @@ describe("stripThinkBlocks", () => {
   it("is non-greedy: two think blocks do not merge into one match", () => {
     const input = "<think>A</think>KEEP<think>B</think>";
     expect(stripThinkBlocks(input)).toBe("KEEP");
+  });
+});
+
+describe("resolveIssueDonePollerApiUrl", () => {
+  it("uses the trusted runtime origin when the configured origin matches", () => {
+    expect(
+      resolveIssueDonePollerApiUrl(
+        "http://127.0.0.1:3100/custom-path",
+        "http://127.0.0.1:3100",
+      ),
+    ).toBe("http://127.0.0.1:3100");
+  });
+
+  it("rejects configured origins that do not match the trusted runtime origin", () => {
+    expect(
+      resolveIssueDonePollerApiUrl(
+        "https://attacker.example.test",
+        "http://127.0.0.1:3100",
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects invalid configured URLs", () => {
+    expect(resolveIssueDonePollerApiUrl("not a url", "http://127.0.0.1:3100")).toBeNull();
   });
 });

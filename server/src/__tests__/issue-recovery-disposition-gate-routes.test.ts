@@ -378,8 +378,36 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
         .set("Content-Type", "application/json")
         .send({ status: "done", recoveryKind: "recovery_completion" });
 
-      expect(res.status).not.toBe(422);
+      expect(res.status).toBe(200);
       expect(res.body.code).not.toBe("recovery_disposition_condition_c_violation");
+    });
+
+    it("rejects done with measurement_bar recoveryKind", async () => {
+      mockIssueService.getById.mockResolvedValue(makeRecoveryIssue());
+      const app = await createApp(recoveryOwnerActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .set("Content-Type", "application/json")
+        .send({ status: "done", recoveryKind: "measurement_bar" });
+
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe("recovery_disposition_condition_c_violation");
+      expect(res.body.details.expectedRecoveryKind).toBe("recovery_completion");
+    });
+
+    it("rejects cancelled with recovery_completion recoveryKind", async () => {
+      mockIssueService.getById.mockResolvedValue(makeRecoveryIssue());
+      const app = await createApp(recoveryOwnerActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .set("Content-Type", "application/json")
+        .send({ status: "cancelled", recoveryKind: "recovery_completion" });
+
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe("recovery_disposition_condition_c_violation");
+      expect(res.body.details.expectedRecoveryKind).toBe("measurement_bar");
     });
   });
 
@@ -403,9 +431,9 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
       expect(res.status).toBe(409);
     });
 
-    it("rejects with 4xx when actor tries to both reassign and close in one call", async () => {
+    it("rejects when actor tries to set previousAssigneeAgentId and close in one call", async () => {
       mockIssueService.getById.mockResolvedValue(
-        makeRecoveryIssue({ assigneeAgentId: originalAgentId }),
+        makeRecoveryIssue({ previousAssigneeAgentId: null }),
       );
       const app = await createApp(recoveryOwnerActor());
 
@@ -415,12 +443,11 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
         .send({
           status: "done",
           recoveryKind: "recovery_completion",
-          assigneeAgentId: recoveryOwnerAgentId,
+          previousAssigneeAgentId: originalAgentId,
         });
 
-      // Condition B is checked against the current DB state (existing.assigneeAgentId), not the patch.
-      // The checkout ownership check catches this before the recovery gate runs.
-      expect(res.status).toBe(409);
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe("recovery_disposition_condition_b_violation");
     });
   });
 
@@ -466,7 +493,7 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
         .set("Content-Type", "application/json")
         .send({ status: "cancelled", recoveryKind: "measurement_bar" });
 
-      expect(res.status).not.toBe(422);
+      expect(res.status).toBe(200);
       // Condition D only blocks "done" — "cancelled" with recoveryKind is the harness-FAIL path
       expect(res.body.code).not.toBe("recovery_disposition_condition_d_violation");
     });
