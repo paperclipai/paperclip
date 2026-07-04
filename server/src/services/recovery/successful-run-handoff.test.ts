@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as loggerModule from "../../middleware/logger.js";
 import {
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
@@ -223,6 +224,39 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "comment-driven wake already owns the next action",
     });
+  });
+
+  it("logs a structured error when a corrective handoff run is skipped", () => {
+    const loggerSpy = vi.spyOn(loggerModule.logger, "error").mockImplementation(() => loggerModule.logger);
+    const decision = decide({
+      run: {
+        ...run,
+        id: "run-2",
+        contextSnapshot: {
+          issueId: "issue-1",
+          sourceRunId: "run-2",
+          wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+          handoffRequired: true,
+        },
+      } as any,
+    });
+    expect(decision).toEqual({
+      kind: "skip",
+      reason: "source run is already a corrective handoff run",
+    });
+    expect(loggerSpy).toHaveBeenCalledTimes(1);
+    expect(loggerSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "successful_run_handoff_skipped",
+        reason: "source run is already a corrective handoff run",
+        runId: "run-2",
+        issueId: "issue-1",
+        companyId: "company-1",
+        agentId: "agent-1",
+      }),
+      "Successful run handoff skipped: source run is already corrective",
+    );
+    loggerSpy.mockRestore();
   });
 
   it("uses a stable one-attempt idempotency key", () => {

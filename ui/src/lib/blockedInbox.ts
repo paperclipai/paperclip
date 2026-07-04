@@ -9,6 +9,7 @@ export type BlockedReasonVariant =
   | "needs_decision"
   | "stalled"
   | "needs_attention"
+  | "recovery_needed"
   | "recovery_required"
   | "external_wait"
   | "owner_paused";
@@ -16,7 +17,7 @@ export type BlockedReasonVariant =
 const VARIANT_BY_REASON: Record<IssueBlockedInboxReason, BlockedReasonVariant> = {
   pending_board_decision: "needs_decision",
   pending_user_decision: "needs_decision",
-  missing_successful_run_disposition: "needs_decision",
+  missing_successful_run_disposition: "recovery_needed",
   blocked_chain_stalled: "stalled",
   blocked_by_unassigned_issue: "needs_attention",
   blocked_by_assigned_backlog_issue: "needs_attention",
@@ -32,6 +33,7 @@ export const BLOCKED_REASON_VARIANT_ORDER: BlockedReasonVariant[] = [
   "needs_decision",
   "stalled",
   "needs_attention",
+  "recovery_needed",
   "recovery_required",
   "external_wait",
   "owner_paused",
@@ -41,6 +43,7 @@ export const BLOCKED_VARIANT_LABELS: Record<BlockedReasonVariant, string> = {
   needs_decision: "Needs decision",
   stalled: "Blocked chain stalled",
   needs_attention: "Needs attention",
+  recovery_needed: "Recovery needed",
   recovery_required: "Recovery required",
   external_wait: "External wait",
   owner_paused: "Owner paused",

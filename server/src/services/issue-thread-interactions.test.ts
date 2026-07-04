@@ -212,4 +212,53 @@ describe("issueThreadInteractionService", () => {
     expect(state.interactionUpdates).toHaveLength(1);
     expect(state.issueTouches).toHaveLength(1);
   });
+
+  it("create rejects merge confirmations that point to a different repository than the issue workspace", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+
+    const db: any = {
+      select: vi.fn(() => ({
+        from() {
+          return {
+            leftJoin() {
+              return {
+                where() {
+                  return {
+                    then(callback: (rows: SelectRow[]) => unknown) {
+                      return Promise.resolve(callback([{ repoUrl: "https://github.com/Dream38pt/paperclip.git" }]));
+                    },
+                  };
+                },
+              };
+            },
+          };
+        },
+      })),
+      insert: vi.fn(),
+      update: vi.fn(),
+    };
+
+    const svc = issueThreadInteractionService(db as never);
+
+    await expect(svc.create({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+    }, {
+      kind: "request_confirmation",
+      title: "USI-56 — Livraison prête, merge ?",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: {
+        version: 1,
+        prompt: "La PR #5 est prête. Approuver le merge vers main ?",
+        acceptLabel: "Merger la PR",
+        detailsMarkdown: "[PR #5](https://github.com/Dream38pt/usine-dev-sandbox/pull/5)",
+        allowDeclineReason: true,
+      },
+    }, {
+      agentId: "agent-1",
+    })).rejects.toThrow("request_confirmation merge target repository must match the issue workspace repository");
+
+    expect(db.insert).not.toHaveBeenCalled();
+  });
+
 });
