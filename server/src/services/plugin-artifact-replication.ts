@@ -1,10 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { createReadStream, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { createGunzip } from "node:zlib";
 import { desc, lt } from "drizzle-orm";
 import { pluginArtifactGenerations } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
@@ -263,19 +264,22 @@ export function createPluginArtifactReplication(opts: {
         break;
       }
 
-      if (wonGeneration === null) {
-        throw new Error(
-          `Failed to publish plugin snapshot after ${PUBLISH_CAS_MAX_ATTEMPTS} CAS attempts (generation contention)`,
-        );
-      }
-
-      // Best-effort cleanup of objects uploaded during lost CAS races.
-      // Awaited sequentially (same never-throw discipline as GC) so the caller
-      // observes a clean store state; a failed delete is harmless.
+      // Best-effort cleanup of objects uploaded during lost CAS races. This
+      // runs BEFORE the exhaustion check on purpose: orphans were never
+      // inserted into the DB ledger, so GC cannot reach them — this loop is
+      // their only recovery path and must cover the all-attempts-failed exit
+      // too. Awaited sequentially (same never-throw discipline as GC) so the
+      // caller observes a clean store state; a failed delete is harmless.
       for (const orphanKey of orphanedKeys) {
         await provider.deleteObject({ objectKey: orphanKey }).catch((err) => {
           logger.warn({ err, objectKey: orphanKey }, "plugin artifact snapshot lost-race object cleanup failed (ignored)");
         });
+      }
+
+      if (wonGeneration === null) {
+        throw new Error(
+          `Failed to publish plugin snapshot after ${PUBLISH_CAS_MAX_ATTEMPTS} CAS attempts (generation contention)`,
+        );
       }
 
       // The local tree IS this generation now: record it and mark synced.
@@ -319,6 +323,259 @@ export function createPluginArtifactReplication(opts: {
     }
   }
 
+  /**
+   * Reject a symlink member whose target resolves outside the extraction
+   * root. Plugin trees legitimately contain RELATIVE in-tree symlinks —
+   * npm's `node_modules/.bin/*` links resolve like `../pkg/bin/tool.js` —
+   * so targets are validated by resolving them against the link's own
+   * directory rather than rejected outright for containing `..`.
+   */
+  function assertSymlinkTargetContained(entryName: string, target: string): void {
+    const reject = () => {
+      throw new Error(
+        `Plugin snapshot tarball contains symlink escaping the plugin tree: ${JSON.stringify(entryName)} -> ${JSON.stringify(target)}`,
+      );
+    };
+    if (target.length === 0 || path.posix.isAbsolute(target)) reject();
+    const linkDir = path.posix.dirname(path.posix.normalize(entryName));
+    const resolved = path.posix.normalize(path.posix.join(linkDir, target));
+    if (path.posix.isAbsolute(resolved) || resolved === ".." || resolved.startsWith("../")) reject();
+  }
+
+  /** Reject a hardlink member whose archive-relative target is absolute or traverses `..`. */
+  function assertHardlinkTargetContained(entryName: string, target: string): void {
+    if (target.length === 0 || path.posix.isAbsolute(target) || target.split("/").includes("..")) {
+      throw new Error(
+        `Plugin snapshot tarball contains hardlink with unsafe target: ${JSON.stringify(entryName)} -> ${JSON.stringify(target)}`,
+      );
+    }
+  }
+
+  /** Parse pax extended-header records (`"%d key=value\n"`), failing closed on malformed data. */
+  function parsePaxOverrides(content: Buffer): { path?: string; linkpath?: string } {
+    const overrides: { path?: string; linkpath?: string } = {};
+    let offset = 0;
+    while (offset < content.length) {
+      const space = content.indexOf(0x20, offset);
+      const lengthText = space === -1 ? "" : content.subarray(offset, space).toString("ascii");
+      const recordLength = Number.parseInt(lengthText, 10);
+      if (!/^\d+$/.test(lengthText) || !Number.isInteger(recordLength) || recordLength <= 0 || offset + recordLength > content.length) {
+        throw new Error("Plugin snapshot tarball contains an unparseable pax record");
+      }
+      const record = content.subarray(space + 1, offset + recordLength);
+      const equals = record.indexOf(0x3d);
+      if (equals === -1 || record.length === 0 || record[record.length - 1] !== 0x0a) {
+        throw new Error("Plugin snapshot tarball contains an unparseable pax record");
+      }
+      const key = record.subarray(0, equals).toString("utf8");
+      const value = record.subarray(equals + 1, record.length - 1).toString("utf8");
+      if (key === "path") overrides.path = value;
+      else if (key === "linkpath") overrides.linkpath = value;
+      offset += recordLength;
+    }
+    return overrides;
+  }
+
+  /**
+   * Walk the raw (gunzipped) tar header blocks and validate every symlink /
+   * hardlink member's target FROM THE HEADER BYTES.
+   *
+   * The host tar's listing cannot be trusted for this check: GNU tar
+   * sanitizes hard-link targets at header-decode time, so `tar -tv` prints
+   * the already-stripped target (`link to outside-file` for a raw
+   * `../outside-file`, warning only on stderr) and a listing-based guard
+   * never sees the hostile value; bsdtar prints it raw. Reading the header
+   * bytes directly is host-independent and deterministic. Handles POSIX
+   * ustar, GNU longname/longlink (`L`/`K`) overrides, and pax (`x`)
+   * `path=`/`linkpath=` overrides; anything unparseable — truncated
+   * archive, malformed pax record, oversized metadata, global pax
+   * path/linkpath overrides — fails closed. The stream is consumed
+   * incrementally (headers read, file data skipped), so memory stays
+   * bounded regardless of tree size.
+   */
+  async function assertRawLinkTargetsContained(tarPath: string): Promise<void> {
+    const source = createReadStream(tarPath);
+    const gunzip = createGunzip();
+    source.pipe(gunzip);
+    const iterator = gunzip[Symbol.asyncIterator]() as AsyncIterator<Buffer>;
+
+    // Pull-buffer over the gunzip stream: `read` returns exactly `bytes`
+    // bytes (null on clean EOF at a block boundary), `skip` discards.
+    const chunks: Buffer[] = [];
+    let buffered = 0;
+    async function fill(target: number): Promise<boolean> {
+      while (buffered < target) {
+        const { value, done } = await iterator.next();
+        if (done) return false;
+        const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+        chunks.push(chunk);
+        buffered += chunk.length;
+      }
+      return true;
+    }
+    function drain(bytes: number, collect: boolean): Buffer {
+      const parts: Buffer[] = [];
+      let needed = bytes;
+      while (needed > 0) {
+        const head = chunks[0]!;
+        if (head.length <= needed) {
+          if (collect) parts.push(head);
+          chunks.shift();
+          needed -= head.length;
+        } else {
+          if (collect) parts.push(head.subarray(0, needed));
+          chunks[0] = head.subarray(needed);
+          needed = 0;
+        }
+      }
+      buffered -= bytes;
+      if (!collect) return Buffer.alloc(0);
+      return parts.length === 1 ? parts[0]! : Buffer.concat(parts);
+    }
+    async function read(bytes: number): Promise<Buffer | null> {
+      if (!(await fill(bytes))) {
+        if (buffered === 0) return null;
+        throw new Error("Plugin snapshot tarball is truncated");
+      }
+      return drain(bytes, true);
+    }
+    async function skip(bytes: number): Promise<void> {
+      let remaining = bytes;
+      while (remaining > 0) {
+        const step = Math.min(remaining, 4 * 1024 * 1024);
+        if (!(await fill(step))) throw new Error("Plugin snapshot tarball is truncated");
+        drain(step, false);
+        remaining -= step;
+      }
+    }
+
+    const readField = (header: Buffer, offset: number, length: number): string => {
+      const slice = header.subarray(offset, offset + length);
+      const nul = slice.indexOf(0);
+      return (nul === -1 ? slice : slice.subarray(0, nul)).toString("utf8");
+    };
+    const readSize = (header: Buffer): number => {
+      const raw = header.subarray(124, 136);
+      if ((raw[0]! & 0x80) !== 0) {
+        // GNU base-256 encoding for sizes that overflow the octal field.
+        let value = raw[0]! & 0x7f;
+        for (let i = 1; i < raw.length; i += 1) value = value * 256 + raw[i]!;
+        return value;
+      }
+      const text = readField(header, 124, 12).trim();
+      if (text === "") return 0;
+      const value = Number.parseInt(text, 8);
+      if (!Number.isInteger(value) || value < 0) {
+        throw new Error(`Plugin snapshot tarball contains an entry with unparseable size ${JSON.stringify(text)}`);
+      }
+      return value;
+    };
+
+    // Longname/longlink ('L'/'K') and pax ('x') overrides apply to the NEXT
+    // member; cap their payloads — link targets and paths are never megabytes.
+    const MAX_META_BYTES = 1024 * 1024;
+    const POSIX_MAGIC = Buffer.from("ustar\0", "latin1");
+    let nameOverride: string | null = null;
+    let linkOverride: string | null = null;
+
+    try {
+      for (;;) {
+        const header = await read(512);
+        if (header === null) break; // clean EOF
+        if (header.every((byte) => byte === 0)) break; // end-of-archive marker — extraction stops here too
+
+        const typeflag = header[156] === 0 ? "0" : String.fromCharCode(header[156]!);
+        const size = readSize(header);
+        const padded = Math.ceil(size / 512) * 512;
+
+        if (typeflag === "L" || typeflag === "K" || typeflag === "x" || typeflag === "g") {
+          if (size > MAX_META_BYTES) {
+            throw new Error("Plugin snapshot tarball contains an oversized metadata entry");
+          }
+          const data = padded > 0 ? await read(padded) : Buffer.alloc(0);
+          if (data === null) throw new Error("Plugin snapshot tarball is truncated");
+          const content = data.subarray(0, size);
+          if (typeflag === "L") {
+            nameOverride = content.toString("utf8").replace(/\0+$/, "");
+          } else if (typeflag === "K") {
+            linkOverride = content.toString("utf8").replace(/\0+$/, "");
+          } else {
+            const overrides = parsePaxOverrides(content);
+            if (typeflag === "g") {
+              // A global pax path/linkpath override would rewrite every
+              // following member — never produced for plugin snapshots.
+              if (overrides.path !== undefined || overrides.linkpath !== undefined) {
+                throw new Error("Plugin snapshot tarball contains a global pax path/linkpath override");
+              }
+            } else {
+              if (overrides.path !== undefined) nameOverride = overrides.path;
+              if (overrides.linkpath !== undefined) linkOverride = overrides.linkpath;
+            }
+          }
+          continue;
+        }
+
+        let name = nameOverride ?? readField(header, 0, 100);
+        if (nameOverride === null && header.subarray(257, 263).equals(POSIX_MAGIC)) {
+          const prefix = readField(header, 345, 155);
+          if (prefix) name = `${prefix}/${name}`;
+        }
+        const linkTarget = linkOverride ?? readField(header, 157, 100);
+        nameOverride = null;
+        linkOverride = null;
+
+        if (typeflag === "2") {
+          assertSymlinkTargetContained(name, linkTarget);
+        } else if (typeflag === "1") {
+          // Hardlink targets are archive-relative member names (they point
+          // at an earlier member), not paths relative to the link's
+          // directory — validate them exactly like entry paths.
+          assertHardlinkTargetContained(name, linkTarget);
+        }
+
+        if (padded > 0) await skip(padded);
+      }
+    } finally {
+      gunzip.destroy();
+      source.destroy();
+    }
+  }
+
+  /**
+   * Reject tarball members that could escape the extraction directory:
+   * entry paths that are absolute or contain `..` components, symlink
+   * members whose target resolves above the extraction root, and hardlink
+   * members whose (archive-relative) target is absolute or traverses `..`.
+   * Modern GNU tar (>= 1.29) and bsdtar already skip unsafe member paths by
+   * default, but that is host-tar version-dependent behaviour — verify
+   * explicitly before extracting so a crafted snapshot (attacker with
+   * object-storage AND DB write access, enough to also forge a matching
+   * contentHash) can never write or point outside the plugin tree
+   * regardless of the host tar.
+   *
+   * Two complementary views: the host `tar -t` listing gives the member
+   * names exactly as the same binary's extraction would create them, and a
+   * raw header walk validates link targets, which host listings do not
+   * report faithfully (see `assertRawLinkTargetsContained`). Listing writes
+   * nothing, so scanning first is safe. maxBuffer is raised because a full
+   * npm tree lists tens of thousands of paths.
+   */
+  async function assertTarEntriesContained(tarPath: string): Promise<void> {
+    const { stdout } = await execFileAsync("tar", ["-tzf", tarPath], {
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    for (const line of stdout.split("\n")) {
+      const entry = line.trim();
+      if (!entry) continue;
+      if (path.isAbsolute(entry) || entry.split("/").includes("..")) {
+        throw new Error(
+          `Plugin snapshot tarball contains unsafe entry path: ${JSON.stringify(entry)}`,
+        );
+      }
+    }
+    await assertRawLinkTargetsContained(tarPath);
+  }
+
   async function reconcileOnce(): Promise<{ applied: boolean; generation: number | null }> {
     if (!provider) return { applied: false, generation: null };
 
@@ -360,6 +617,7 @@ export function createPluginArtifactReplication(opts: {
       await fs.rm(extractDir, { recursive: true, force: true });
       await fs.mkdir(extractDir, { recursive: true });
       await fs.writeFile(tmpTar, body);
+      await assertTarEntriesContained(tmpTar);
       await execFileAsync("tar", ["-xzf", tmpTar, "-C", extractDir]);
 
       // Atomic swap: live tree → .old-<ts> (tolerate a missing live tree),

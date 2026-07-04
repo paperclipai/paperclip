@@ -281,7 +281,7 @@ describe("POST /api/plugins/install (replication)", () => {
     // The session lock must not leak on the failure path.
     expect(heldSessionLocks.size).toBe(0);
   });
-  it("heals a failed publish on retry: already-installed same package republishes and returns 200", async () => {
+  it("heals a failed publish on retry: already-installed same package republishes, emits the live event, and returns 200", async () => {
     const replication = createReplication();
     const { app, loader } = await createApp(replication);
     const { HttpError } = await import("../errors.js");
@@ -298,6 +298,13 @@ describe("POST /api/plugins/install (replication)", () => {
     expect(res.status).toBe(200);
     expect(res.body.id).toBe(PLUGIN_ID);
     expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
+    // The original request 500'd before emitting, so the healed retry is the
+    // install's only success response — it must fire the fast reconcile
+    // trigger too, not leave peers to the periodic safety tick.
+    expect(mockPublishGlobalLiveEvent).toHaveBeenCalledWith({
+      type: "plugin.ui.updated",
+      payload: { pluginId: PLUGIN_ID, action: "installed" },
+    });
   });
 
   it("does not heal when the conflicting package differs: conflict propagates as an error", async () => {
@@ -371,6 +378,99 @@ describe("DELETE /api/plugins/:pluginId (replication)", () => {
     expect(mockPublishGlobalLiveEvent).not.toHaveBeenCalled();
     expect(heldSessionLocks.size).toBe(0);
   });
+
+  it("heals a failed publish on soft-uninstall retry: already-uninstalled row republishes, emits the live event, and returns 200", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+    const { badRequest } = await import("../errors.js");
+    const uninstalledRow = { ...pluginRow, status: "uninstalled" };
+    // The prior uninstall soft-deleted the row but its publish failed; the
+    // retry's unload rejects the already-uninstalled row before the wrapper
+    // can publish.
+    mockRegistry.getById.mockResolvedValue(uninstalledRow);
+    mockLifecycle.unload.mockRejectedValue(
+      badRequest("Plugin acme.test is already uninstalled. Use removeData=true to permanently delete it."),
+    );
+
+    const res = await request(app).delete(`/api/plugins/${PLUGIN_ID}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(PLUGIN_ID);
+    expect(res.body.status).toBe("uninstalled");
+    // The heal's whole point: the wrapper still publishes on the way out so
+    // a generation row finally records the uninstall for peers.
+    expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
+    // The original request 500'd before emitting, so the healed retry is the
+    // uninstall's only success response — it must fire the fast reconcile
+    // trigger too.
+    expect(mockPublishGlobalLiveEvent).toHaveBeenCalledWith({
+      type: "plugin.ui.updated",
+      payload: { pluginId: PLUGIN_ID, action: "uninstalled" },
+    });
+  });
+
+  it("does not heal when the row is not uninstalled: the unload error propagates without a publish", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+    mockLifecycle.unload.mockRejectedValue(new Error("worker shutdown failed"));
+
+    const res = await request(app).delete(`/api/plugins/${PLUGIN_ID}`);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("worker shutdown failed");
+    expect(replication.publishSnapshot).not.toHaveBeenCalled();
+    expect(mockPublishGlobalLiveEvent).not.toHaveBeenCalled();
+  });
+
+  it("heals a failed publish on purge retry: missing row with purge=true republishes and returns 200/null", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+    // The prior purge hard-deleted the row but its publish failed; the retry
+    // resolves no plugin at all.
+    mockRegistry.getById.mockResolvedValue(null);
+    mockRegistry.getByKey.mockResolvedValue(null);
+
+    const res = await request(app).delete(`/api/plugins/${PLUGIN_ID}?purge=true`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+    expect(mockLifecycle.unload).not.toHaveBeenCalled();
+    // Lock → reconcile (no-op) → publish, same discipline as a real mutation.
+    expect(mockTrySessionAdvisoryLock).toHaveBeenCalledWith(LOCK_URL, "plugin-install");
+    expect(replication.reconcile).toHaveBeenCalledTimes(1);
+    expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
+    expect(heldSessionLocks.size).toBe(0);
+    expect(mockPublishGlobalLiveEvent).toHaveBeenCalledWith({
+      type: "plugin.ui.updated",
+      payload: { pluginId: PLUGIN_ID, action: "uninstalled" },
+    });
+  });
+
+  it("returns 404 for a missing plugin without purge (no lock, no publish)", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+    mockRegistry.getById.mockResolvedValue(null);
+    mockRegistry.getByKey.mockResolvedValue(null);
+
+    const res = await request(app).delete(`/api/plugins/${PLUGIN_ID}`);
+
+    expect(res.status).toBe(404);
+    expect(mockTrySessionAdvisoryLock).not.toHaveBeenCalled();
+    expect(replication.publishSnapshot).not.toHaveBeenCalled();
+    expect(mockPublishGlobalLiveEvent).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for a missing plugin with purge when replication is inactive", async () => {
+    const replication = createReplication({ isActive: () => false });
+    const { app } = await createApp(replication);
+    mockRegistry.getById.mockResolvedValue(null);
+    mockRegistry.getByKey.mockResolvedValue(null);
+
+    const res = await request(app).delete(`/api/plugins/${PLUGIN_ID}?purge=true`);
+
+    expect(res.status).toBe(404);
+    expect(replication.publishSnapshot).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/plugins/:pluginId/upgrade (replication)", () => {
@@ -435,5 +535,85 @@ describe("POST /api/plugins/:pluginId/upgrade (replication)", () => {
     expect(res.status).toBe(200);
     expect(mockTrySessionAdvisoryLock).not.toHaveBeenCalled();
     expect(replication.publishSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("heals a failed publish on upgrade retry: row already at the target version republishes without re-running the upgrade, emits the live event, and returns 200", async () => {
+    const publishSnapshot = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("s3 unreachable"))
+      .mockResolvedValue({ generation: 2 });
+    const replication = createReplication({ publishSnapshot });
+    const { app } = await createApp(replication);
+
+    // Attempt 1: the upgrade applies locally but the publish fails → 500.
+    const first = await request(app)
+      .post(`/api/plugins/${PLUGIN_ID}/upgrade`)
+      .send({ version: "1.1.0" });
+    expect(first.status).toBe(500);
+    expect(first.body.error).toMatch(/snapshot replication failed/);
+    expect(mockLifecycle.upgrade).toHaveBeenCalledTimes(1);
+    expect(mockPublishGlobalLiveEvent).not.toHaveBeenCalled();
+
+    // The local mutation stuck: the registry row is now at the target version.
+    mockRegistry.getById.mockResolvedValue({ ...pluginRow, version: "1.1.0" });
+
+    // Attempt 2 (the retry the 500 asked for): the heal skips the local
+    // mutation — no second npm download — and the wrapper republishes,
+    // which is exactly the missing half.
+    const res = await request(app)
+      .post(`/api/plugins/${PLUGIN_ID}/upgrade`)
+      .send({ version: "1.1.0" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.version).toBe("1.1.0");
+    expect(mockLifecycle.upgrade).toHaveBeenCalledTimes(1); // not re-run
+    expect(publishSnapshot).toHaveBeenCalledTimes(2);
+    // The original request 500'd before emitting, so the healed retry is the
+    // upgrade's only success response — it must fire the fast reconcile
+    // trigger too.
+    expect(mockPublishGlobalLiveEvent).toHaveBeenCalledWith({
+      type: "plugin.ui.updated",
+      payload: { pluginId: PLUGIN_ID, action: "upgraded" },
+    });
+  });
+
+  it("does not heal when the row is at a different version: the upgrade runs normally", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+
+    const res = await request(app)
+      .post(`/api/plugins/${PLUGIN_ID}/upgrade`)
+      .send({ version: "1.1.0" });
+
+    expect(res.status).toBe(200);
+    expect(mockLifecycle.upgrade).toHaveBeenCalledWith(PLUGIN_ID, "1.1.0");
+    expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not heal an upgrade_pending row even at the target version: the approval flow still runs", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+    const pendingRow = { ...pluginRow, version: "1.1.0", status: "upgrade_pending" };
+    mockRegistry.getById.mockResolvedValue(pendingRow);
+    mockLifecycle.upgrade.mockResolvedValue({ ...pendingRow, status: "ready" });
+
+    const res = await request(app)
+      .post(`/api/plugins/${PLUGIN_ID}/upgrade`)
+      .send({ version: "1.1.0" });
+
+    expect(res.status).toBe(200);
+    expect(mockLifecycle.upgrade).toHaveBeenCalledWith(PLUGIN_ID, "1.1.0");
+    expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not heal an unpinned upgrade: the target is unknowable, lifecycle.upgrade runs", async () => {
+    const replication = createReplication();
+    const { app } = await createApp(replication);
+
+    const res = await request(app).post(`/api/plugins/${PLUGIN_ID}/upgrade`).send({});
+
+    expect(res.status).toBe(200);
+    expect(mockLifecycle.upgrade).toHaveBeenCalledWith(PLUGIN_ID, undefined);
+    expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
   });
 });

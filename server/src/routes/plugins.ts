@@ -1262,6 +1262,14 @@ export function pluginRoutes(
       }
 
       if (outcome.kind === "healed") {
+        // The original request mutated disk + registry but 500'd before
+        // reaching the emit below, so no `plugin.ui.updated` was ever fired
+        // for this install. This healed retry is the install's only success
+        // response — emit here too so peers get the fast event-triggered
+        // reconcile instead of waiting for the periodic safety tick.
+        if (outcome.existingPlugin) {
+          publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: outcome.existingPlugin.id, action: "installed" } });
+        }
         res.json(outcome.updated);
         return;
       }
@@ -2024,8 +2032,10 @@ export function pluginRoutes(
    * - purge: If "true", permanently delete all plugin data (hard delete)
    *          Otherwise, soft-delete with 30-day data retention
    *
-   * Response: PluginRecord (the deleted record)
-   * Errors: 404 if plugin not found, 400 for lifecycle errors
+   * Response: PluginRecord (the deleted record), or null for an idempotent
+   *           replicated purge retry (see the publish-heal branches below)
+   * Errors: 404 if plugin not found (except replicated `purge=true`, which is
+   *         idempotent), 400 for lifecycle errors
    */
   router.delete("/plugins/:pluginId", async (req, res) => {
     assertInstanceAdmin(req);
@@ -2033,20 +2043,71 @@ export function pluginRoutes(
     const purge = req.query.purge === "true";
 
     const plugin = await resolvePlugin(registry, pluginId);
-    if (!plugin) {
+    if (!plugin && !(purge && replication?.isActive())) {
       res.status(404).json({ error: "Plugin not found" });
       return;
     }
 
     try {
-      const result = await withReplicatedPluginMutation(() => lifecycle.unload(plugin.id, purge));
+      if (!plugin) {
+        // Publish-heal for purge retries (mirrors the install heal): a prior
+        // `?purge=true` hard-deleted the row and cleaned the local tree, but
+        // the snapshot publish failed (500, "retry the operation"). The
+        // retry finds no row, so without this branch it would 404 and no
+        // generation would ever record the purge — peers stay on the old
+        // snapshot and the next publish from any other replica would
+        // silently reinstate the plugin's files cluster-wide. Re-run the
+        // wrapper with a no-op mutation: reconcile no-ops (the local
+        // generation marker still equals max(generation), so the purged
+        // local tree survives) and the publish finally writes the
+        // plugin-less snapshot. A purge of an id that never existed takes
+        // the same path — an idempotent 200/null instead of a 404 is the
+        // price of healing without a tombstone.
+        await withReplicatedPluginMutation(async () => {});
+        publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId, action: "uninstalled" } });
+        res.json(null);
+        return;
+      }
+
+      const outcome = await withReplicatedPluginMutation(async () => {
+        try {
+          const record = await lifecycle.unload(plugin.id, purge);
+          return { kind: "uninstalled", record } as const;
+        } catch (err) {
+          // Publish-heal: a prior soft uninstall applied locally but its
+          // snapshot publish failed. The retry finds the row already
+          // "uninstalled" and lifecycle.unload rejects it before the wrapper
+          // can publish. Treat the retry as idempotent success — the wrapper
+          // re-publishes on the way out, which is exactly the missing half.
+          // (A `?purge=true` retry with the row still present needs no heal:
+          // lifecycle.unload hard-deletes an already-uninstalled row.)
+          if (!purge && replication?.isActive()) {
+            const current = await registry.getById(plugin.id);
+            if (current?.status === "uninstalled") {
+              return { kind: "healed", record: current } as const;
+            }
+          }
+          throw err;
+        }
+      });
+
+      if (outcome.kind === "healed") {
+        // The original request 500'd before the emit below fired, so this
+        // healed retry is the uninstall's only success response — emit here
+        // too so peers get the fast event-triggered reconcile instead of
+        // waiting for the periodic safety tick.
+        publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "uninstalled" } });
+        res.json(outcome.record);
+        return;
+      }
+
       await logPluginMutationActivity(req, "plugin.uninstalled", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
         purge,
       });
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "uninstalled" } });
-      res.json(result);
+      res.json(outcome.record);
     } catch (err) {
       if (handleReplicatedMutationError(res, err)) return;
       const message = err instanceof Error ? err.message : String(err);
@@ -2282,7 +2343,41 @@ export function pluginRoutes(
       // 2. Compare capabilities
       // 3. If new capabilities, mark as upgrade_pending
       // 4. Otherwise, transition to ready
-      const result = await withReplicatedPluginMutation(() => lifecycle.upgrade(plugin.id, version));
+      const outcome = await withReplicatedPluginMutation(async () => {
+        // Publish-heal (mirrors the install/uninstall heals): a prior upgrade
+        // applied locally but its snapshot publish failed (500, "retry the
+        // operation"). A bare retry through lifecycle.upgrade does re-run —
+        // ready → ready is a valid transition and the capability diff is
+        // empty because the row's manifest was already updated — but it
+        // re-downloads the package from npm on every retry (a hard 400 if
+        // the registry is unreachable, plausible in the same incident that
+        // failed the publish). When the row already carries the exact
+        // requested version, the local mutation is done: skip it and let the
+        // wrapper republish, which is exactly the missing half. Unpinned or
+        // range requests never heal — their target is unknowable without
+        // asking npm, so they take the normal path.
+        if (replication?.isActive() && typeof version === "string") {
+          const target = version.trim().replace(/^[=v]/, "");
+          const current = await registry.getById(plugin.id);
+          if (current && current.status === "ready" && current.version === target) {
+            return { kind: "healed", record: current } as const;
+          }
+        }
+        const record = await lifecycle.upgrade(plugin.id, version);
+        return { kind: "upgraded", record } as const;
+      });
+
+      if (outcome.kind === "healed") {
+        // The original request 500'd before the emit below fired, so this
+        // healed retry is the upgrade's only success response — emit here
+        // too so peers get the fast event-triggered reconcile instead of
+        // waiting for the periodic safety tick.
+        publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
+        res.json(outcome.record);
+        return;
+      }
+
+      const result = outcome.record;
       await logPluginMutationActivity(req, "plugin.upgraded", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
