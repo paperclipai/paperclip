@@ -28,6 +28,12 @@ export default defineConfig({
     headless: true,
     screenshot: "only-on-failure",
     trace: "on-first-retry",
+    // RES-1298: in local_trusted mode the actor middleware promotes a request
+    // to the implicit board actor only when the verb is safe or the request
+    // carries a trusted browser Origin/Referer. APIRequestContext fetches
+    // (page.request.* and the `request` fixture) don't set Origin themselves,
+    // so set it here for every spec so board mutations resolve as the board.
+    extraHTTPHeaders: { Origin: BASE_URL },
   },
   projects: [
     {

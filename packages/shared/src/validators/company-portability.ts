@@ -233,6 +233,10 @@ export const companyPortabilityExportSchema = z.object({
   selectedFiles: z.array(z.string().min(1)).optional(),
   expandReferencedSkills: z.boolean().optional(),
   sidebarOrder: portabilitySidebarOrderSchema.partial().optional(),
+  // When true, secret-shaped strings detected in the bundle are redacted in
+  // place and surfaced as warnings instead of refusing the export. Default
+  // false: any high-severity secret match aborts the export with a 422.
+  allowSecrets: z.boolean().optional(),
 });
 
 export type CompanyPortabilityExport = z.infer<typeof companyPortabilityExportSchema>;

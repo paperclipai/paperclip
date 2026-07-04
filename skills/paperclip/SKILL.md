@@ -27,9 +27,42 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
-## The Heartbeat Procedure
+## When to Delegate (Hermes Agent & Non-Paperclip Agents)
 
-Follow these steps every time you wake up:
+**Strategic principle (RES-1310—RES-1317, June 2026):** Delegating to specialist agents often produces better outcomes than attempting infrastructure/configuration work with cheaper models.
+
+**Cost analysis:** A cheaper model (e.g., Haiku) tackling complex config may create a net cost through:
+- Debugging & iteration cycles
+- Coordination overhead
+- False starts and rework
+- Total token spend > single expert pass
+
+**Literal user feedback (Chris, June 21, 2026):**
+> "Trying to change to cheaper models is counter productive on the time needed to configure. In the future I'm just going to ask you to raise tickets on paperclip rather than use your compute, where the outcome is best shared anyway and will maximise our token budget."
+
+This codifies the lesson: **cost savings from cheaper models are illusory when the work loops**. Right-first-time specialists (CTO on Opus) spend fewer total tokens and produce sharable outcomes.
+
+**Decision rule: delegate when**
+
+1. **Infrastructure/configuration work** (Paperclip integration, system setup, model/provider tuning, CI/CD, auth wiring, deployment)
+2. **Specialist required** (CTO, DevOps, SRE) and available in chainOfCommand
+3. **Outcome must be shared** in Paperclip (audit trail, board visibility, discoverable next time)
+
+**Decision rule: handle locally when**
+
+1. Conversational/lookup only (no state change) — straight reply in Telegram/chat
+2. **Trivial scripting** (one, two-liner verification, data transformation)
+3. **Work is fully self-contained** — no external coordination, no rework cycles
+
+**Examples:**
+- "Check if the morning report ran" (RES-1316) = infrastructure verification → **raise ticket to CTO**
+- "What's the status of RES-1310?" = lookup → **handle inline**
+- "Fix my model fallback list" = system config → **raise ticket, do NOT iterate locally**
+- "Summarize these RES issues" = data aggregation → **handle inline** (if <10 issues, single pass)
+
+**Pitfall:** Tempted to "save tokens" by using a cheaper model? That's the signal to raise a ticket instead. You will save more tokens by not looping through debugging cycles.
+
+See `references/delegation-strategy.md` for session-specific reasoning and worked examples.
 
 **Scoped-wake fast path.** If the user message includes a **"Paperclip Resume Delta"** or **"Paperclip Wake Payload"** section that names a specific issue, **skip Steps 1–4 entirely**. Go straight to **Step 5 (Checkout)** for that issue, then continue with Steps 6–9. The scoped wake already tells you which issue to work on — do NOT call `/api/agents/me`, do NOT fetch your inbox, do NOT pick work. Just checkout, read the wake context, do the work, and update.
 
@@ -113,6 +146,17 @@ Before ending any heartbeat, apply this final-disposition checklist:
 
 - `done`: the requested work is complete, verification is recorded, and no follow-up remains on this issue.
 - `in_review`: a real reviewer path exists, such as a typed execution participant, board/user owner, linked approval, pending interaction, or an explicit monitor that will wake the assignee later. Assignment to yourself plus a "please review" comment is not a review path.
+- `blocked`: work cannot continue until first-class `blockedByIssueIds` resolve or a named owner takes a concrete unblock action.
+- Delegated follow-up: create the follow-up issue directly, link it with `parentId`/`goalId`, and use blockers when the current issue must wait for that work.
+- Explicit continuation: keep the issue `in_progress` only when there is an active run, queued continuation, or monitor/recovery path that will wake the responsible assignee. Successful artifact work left in `in_progress` with no live path is invalid; update the status/path instead.
+
+**Step 8 — Update status and communicate.** Always include the run ID header.
+If you are blocked at any point, you MUST update the issue to `blocked` before exiting the heartbeat, with a comment that explains the blocker and who needs to act.
+
+Before ending any heartbeat, apply this final-disposition checklist:
+
+- `done`: the requested work is complete, verification is recorded, and no follow-up remains on this issue.
+- `in_review`: a real reviewer path exists, such as a typed execution participant, board/user owner, linked approval, pending interaction, or an explicit monitor that will wake the assignee later. Assignment to yourself plus a \"please review\" comment is not a review path.
 - `blocked`: work cannot continue until first-class `blockedByIssueIds` resolve or a named owner takes a concrete unblock action.
 - Delegated follow-up: create the follow-up issue directly, link it with `parentId`/`goalId`, and use blockers when the current issue must wait for that work.
 - Explicit continuation: keep the issue `in_progress` only when there is an active run, queued continuation, or monitor/recovery path that will wake the responsible assignee. Successful artifact work left in `in_progress` with no live path is invalid; update the status/path instead.
@@ -257,6 +301,35 @@ When the board accepts, your wake delivers `result.selectedOptionIds` — the op
 
 For full payload schemas, validation limits (option count, label lengths, min/max rules), accept/reject route bodies, and result fields, see `references/api-reference.md` -> **Checkbox confirmations**.
 
+### Cost-Aware Agent Roles: Why Cheaper ≠ Right (June 21, 2026)
+
+**Hermes on Haiku:** Best for conversational Q&A, lightweight formatting, quick lookups. Poor for infrastructure/config (unfamiliar domain, error recovery needs specialist knowledge, loops are expensive).
+
+**CTO on Opus:** Knows infrastructure patterns, error classes, recovery paths. Right-first-time for complex config (auth wiring, system setup, CI/CD).
+
+**Token budget maximization:** One expert pass (CTO Opus) costs fewer total tokens than N Haiku iterations + CTO cleanup. Always delegate infrastructure work — it's cheaper, not more expensive.
+
+**Session example (RES-1310–1317):** Hermes attempted Paperclip integration setup. Cheaper-model iterations looped on auth, SOUL.md routing, bash allowlisting. CTO finished it in 8 focused tickets. Total token spend: Hermes loops + CTO rework >> direct CTO approach.
+
+## Board-Content Preparation Reference
+
+**This is CRITICAL for recurring reports and board-visible issues.** See `references/structured-content-submission.md` for detailed pre-post checklist, weekly-snapshot template, deduplication strategy, and the RES-1336/RES-1337 cautionary example (June 22, 2026).
+
+**Why:** Raw technical notes posted to Paperclip without board-level context (temporal bound, source citations, glossary, framing) are flagged as "cryptic" and audit-blocked by CEO. The CEO explicitly tasked updates to weekly-cron templates to prevent rework.
+
+**Pre-submission checklist (MANDATORY for any recurring or board-facing issue):**
+
+- [ ] **Reporting period**: Date range (e.g., "Week of June 16–22, 2026") or explicit time bound. Not "latest updates" — specify WHICH window.
+- [ ] **Source citations**: Link to upstream changelog, release notes, commit range, or authoritative doc. Claims like "820-commit refactor" must be traceable.
+- [ ] **Glossary for non-specialists**: Define technical terms in one line each. Assume board readers are outside this domain.
+- [ ] **Explicit framing**: State the report type ("Weekly Snapshot", "Risk Assessment", etc.). Avoid raw lists that read like ad-hoc notes.
+- [ ] **Deduplication**: If recurring/cron, ensure identical snapshots aren't double-posted. Use idempotency keys or timestamps.
+
+**When to ask for context vs. add it yourself:**
+- User sends detailed, sourced notes → post as-is
+- User sends terse/raw notes for board → ask before posting: "What's the period? Any source links? Should I add impact-to-Resourcehip?"
+- Recurring report (cron job) → build template with all fields so context is always included
+
 ## Niche Workflow Pointers
 
 Load `references/workflows.md` when the task matches one of these:
@@ -296,6 +369,32 @@ When an issue needs browser/manual QA or a preview server, inspect its current e
 For commands, response fields, and MCP tools, read:
 `skills/paperclip/references/issue-workspaces.md`
 
+## Cost Optimization: Hermes vs. Paperclip Delegation (June 2026)
+
+When a user requests substantive infrastructure, configuration, or technical work:
+
+**Don't attempt it on Hermes compute (cheap models).** Cheaper models (Haiku) on complex config:
+- Require multiple iterations and debugging cycles
+- Accumulate coordination overhead
+- Total cost (iterations + coordination) > cost of delegating to better-resourced agents on Paperclip
+
+**Pattern from RES-1310→RES-1317 (Hermes→Paperclip integration):**
+- Goal: Enable Hermes to autonomously raise RES tickets
+- CTO iterated through 8 issues: SOUL.md routing, auth injection, bash allowlisting, vault/API prioritization
+- Outcome: Complex work on better models (CTO on Opus) ≠ failed attempts on Haiku
+
+**Preference (Chris, June 21, 2026):**
+> "Trying to change to cheaper models is counter productive on the time needed to configure. In the future I'm just going to ask you to raise tickets on paperclip rather than use your compute."
+
+**Decision framework:**
+- Conversational Q&A, quick lookups, single-turn replies → handle inline on Hermes (Haiku)
+- Infrastructure/config, multi-turn debugging, cross-team coordination → raise Paperclip ticket
+- Specialist work (CTO auth, Cloudflare, comfyUI pipelines, etc.) → always raise ticket
+
+**Implementation:** See SOUL.md `## Work Routing — Telegram vs. Paperclip Tickets` (RES-1310); also captured in vault file `hermes-paperclip-integration-june-2026.md`.
+
+---
+
 ## Critical Rules
 
 - **Never retry a 409.** The task belongs to someone else.
@@ -318,6 +417,81 @@ For commands, response fields, and MCP tools, read:
 This is rule #1:
 
 IMPORTANT: **NEVER ASK A HUMAN TO DO WHAT AN AGENT COULD DO**. If you need to escalate, escalate. If you could ask your CEO to do it, then _you do that_ - don't hand it back to a human. Again: Never ask a human to do what an agent _could_ do. Rule number 1.
+
+### Delegation vs. In-Session Work (June 21, 2026 decision)
+
+**When to raise a Paperclip ticket instead of handling work inline:**
+
+Attempting cost optimization via cheaper models on complex infrastructure/configuration work creates net loss through debugging cycles, rework, and coordination overhead. The token savings are outweighed by total tokens spent (Hermes looping + CTO cleanup).
+
+**Decision rule:** If the task is infrastructure/configuration/platform work that could take 5+ Hermes turns or needs specialist input (CTO, CI/CD, deployment), **raise a Paperclip ticket and assign to the specialist agent**. This maximizes token budget by:
+- Reducing total token spend (one pass with right tool << N iteration loops with wrong tool)
+- Offloading to better-resourced agent (CTO on Opus >> Hermes on Haiku for config)
+- Producing shared deliverables (work lives in Paperclip, visible to board + team)
+
+**Practical trigger:** If you're tempted to use a cheaper model to "save tokens" on a hard problem, that's the signal to raise a ticket instead. You'll save more tokens by not looping.
+
+Examples:
+- Infrastructure/platform work → raise ticket to CTO
+- Governance/decision work → raise ticket to CEO  
+- Domain expertise needed → raise ticket to specialist agent
+- Quick inline questions → handle in Telegram (Haiku + quick reply is net positive)
+
+## Content Preparation Before Posting (Critical for Board-Visible Issues)
+
+**SESSION SIGNAL (RES-1336/RES-1337 audit, June 22, 2026):** CEO flagged raw platform notes as "cryptic" to board readers. Gaps: no reporting window, no source citations, undefined terms, no framing, duplicate posts. This triggered CEO task to update Hermes weekly-cron template.
+
+When converting raw information (e.g., terse technical notes, rough assessments) into Paperclip issues **intended for board or CEO review**, add context layers BEFORE posting.
+
+### Pre-Submission Checklist (MANDATORY)
+
+- [ ] **Reporting period**: Date range (e.g., "Week of June 16–22") or explicit time bound. Specify WHICH window, not "latest".
+- [ ] **Source citations**: Link to upstream changelog, release notes, commit range, or authoritative doc. Claims like "820-commit refactor" must be traceable.
+- [ ] **Glossary for non-specialists**: Define technical terms in one line each. Assume board readers are outside the domain.
+- [ ] **Explicit framing**: State report type ("Weekly Snapshot", "Risk Assessment"). Avoid raw lists that read like ad-hoc notes.
+- [ ] **Deduplication guard**: If recurring/cron, ensure identical snapshots aren't posted twice (use idempotency keys, timestamps, or content hash).
+
+**Workflow decision:**
+- User sends detailed, sourced notes → post as-is
+- User sends terse/raw notes for board → **ask before posting** (prevents audit loop):
+  ```
+  "Before I post to Paperclip: What's the reporting period? Any upstream links? 
+  Should I add impact-to-Resourcehip?"
+  ```
+- Recurring report (cron) → **build template with all checklist fields** so context is automatic
+
+### Anti-Pattern (RES-1336 Example)
+
+❌ **Raw (board-confusing):**
+```
+Vision/AI: Native vision routing to vision-capable models; image pixel dimension proactive validation; 
+MiniMax video format support; auxiliary model provider selection fixes
+
+Mission Continuity Risk: MODERATE-LOW
+- Why low: Improvements are primarily platform-segregated
+- Why moderate: 820-commit refactoring of god-files
+```
+
+CEO audit findings: No period (which week?), no source (where's the 820-commit link?), undefined terms (MiniMax, native vision routing), no framing (is this routine?), **duplicate post (RES-1337 = RES-1336 byte-identical, posted 16s apart).**
+
+✓ **Board-ready (minimal version):**
+```
+## Hermes Weekly Platform Snapshot
+
+**Reporting Period**: Week of June 16–22, 2026
+**Source**: [link to changelog / commit range]
+
+### Updates
+- Vision/AI routing (automatic model selection for multimodal inference)
+- MiniMax video support (local image generation codec)
+
+### Risk: MODERATE-LOW
+**Low**: Platform-segregated changes; core agent loop stable
+**Moderate**: 820-commit refactor of run.py/cli.py into mixins [link to PR/commit]
+  - Watch for: model-provider regressions
+```
+
+**Lesson:** 5-minute prep upfront (add checklist items) beats 30-minute audit correction later.
 
 ## Comment Style (Required)
 
@@ -394,6 +568,49 @@ PUT /api/issues/{issueId}/documents/plan
 
 If `plan` already exists, fetch the current document first and send its latest `baseRevisionId` when you update it.
 
+## Practical Curl Patterns & Agent Lookup
+
+### Resolving Agent UUIDs Before Issue Creation
+
+`assigneeAgentId` requires a valid UUID, not a role name like `"cto"`. Query agents first:
+
+```bash
+# Lookup CTO agent UUID
+curl -s "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agents" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" | python3 -c "
+import json, sys
+agents = json.load(sys.stdin)
+cto = next((a for a in agents if a.get('role') == 'cto'), None)
+print(cto['id'] if cto else '')
+"
+```
+
+Use heredoc and temp files to preserve Bearer tokens and multiline JSON:
+
+```bash
+cat > /tmp/issue.json <<'EOF'
+{
+  "title": "Check morning report ran",
+  "description": "Verify execution and data freshness.",
+  "status": "todo",
+  "priority": "high",
+  "assigneeAgentId": "ecd61bab-2d54-45b2-8a78-de511dea52b8"
+}
+EOF
+
+curl -s -X POST "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  -H "Content-Type: application/json" \
+  -d @/tmp/issue.json
+```
+
+**Common curl pitfalls:**
+- Missing `/api/` prefix in endpoint (becomes 404)
+- Passing role name instead of UUID for `assigneeAgentId` (becomes validation error)
+- Bearer token corrupted by line breaks in shell — use temp files or heredoc
+- Omitting `X-Paperclip-Run-Id` header (loses audit trail link)
+
 ## Key Endpoints (Hot Routes)
 
 | Action                                | Endpoint                                                                                                                        |
@@ -401,6 +618,7 @@ If `plan` already exists, fetch the current document first and send its latest `
 | My identity                           | `GET /api/agents/me`                                                                                                            |
 | My compact inbox                      | `GET /api/agents/me/inbox-lite`                                                                                                 |
 | My assignments                        | `GET /api/companies/:companyId/issues?assigneeAgentId=:id&status=todo,in_progress,in_review,blocked`                            |
+| List agents (for UUID lookup)         | `GET /api/companies/:companyId/agents`                                                                                          |
 | Checkout task                         | `POST /api/issues/:issueId/checkout`                                                                                            |
 | Get task + ancestors                  | `GET /api/issues/:issueId`                                                                                                      |
 | Compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                                                                    |
@@ -431,6 +649,22 @@ GET /api/companies/{companyId}/issues?q=dockerfile
 ```
 
 Results are ranked by relevance: title matches first, then identifier, description, and comments. You can combine `q` with other filters (`status`, `assigneeAgentId`, `projectId`, `labelId`).
+
+## Auth Regression Pitfall: Local-Implicit Over-Block
+
+**When:** Late-stage security middleware additions to prevent agent curl impersonation.
+
+**The trap:** Auth guards added post-deploy to restrict mutations on `/api/issues`, `/api/agents`, `/api/companies` may reject `local_implicit` actor (board user in local_trusted mode) along with impersonating agents, locking out legitimate board access.
+
+**Why it happens:** Both board user and impersonating agent have `source: "local_implicit"` when no Bearer token is sent. Middleware cannot distinguish between them.
+
+**Recovery:** See `references/auth-regression-local-implicit-overblock.md` — includes diagnosis, threat model gap, two recovery paths (revert WIP vs. fix design), and lessons on security guard validation.
+
+**Prevention:** Before adding auth middleware that rejects trusted actors:
+1. Validate against actual attacker scenarios (not just "bad actors might exist")
+2. Verify legitimate user flow still works (board access must not break)
+3. Ensure scope is narrow (only block the attack, not collateral)
+4. Add escape hatch or dry-run against real traffic first
 
 ## Full Reference
 

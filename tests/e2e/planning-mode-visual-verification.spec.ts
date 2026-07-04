@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 const AGENT_NAME = "Chief of staff";
 const TASK_TITLE = "Hire your first engineer and create a hiring plan";
 
-test("captures planning mode UI for desktop and mobile", async ({ page }) => {
+test("captures planning mode UI for desktop and mobile", async ({ page, baseURL }) => {
   const timestamp = Date.now();
   const companyName = `PAP-3413-${timestamp}`;
   const screenshotDir = "test-results/planning-mode";
@@ -19,10 +19,16 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
     const req = route.request();
     const body = JSON.parse(req.postData() || "{}");
     const auth = req.headers().authorization;
-    const real = await fetch(new URL(req.url()).toString(), {
+    const real = await fetch(new URL(req.url(), baseURL).toString(), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        // RES-1298: the route handler runs in Node, not in the page, so the
+        // browser-set Origin on the intercepted request is lost. Re-issue
+        // with Origin = baseURL so local_trusted promotes us to the board
+        // actor; without it the POST bounces with 401/403 and the wizard
+        // never reaches the Review step.
+        ...(baseURL ? { Origin: baseURL } : {}),
         ...(auth ? { Authorization: auth } : {}),
       },
       body: JSON.stringify({

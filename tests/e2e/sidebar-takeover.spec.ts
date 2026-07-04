@@ -57,7 +57,13 @@ test.describe("Sidebar takeover (collapse + secondary pane)", () => {
   let prefix: string;
 
   test.beforeAll(async () => {
-    board = await pwRequest.newContext({ baseURL: BASE_URL });
+    board = await pwRequest.newContext({
+      baseURL: BASE_URL,
+      // RES-1298: local_trusted board promotion requires browser Origin/Referer
+      // on mutating verbs. pwRequest.newContext does not inherit playwright.config
+      // use.extraHTTPHeaders, so set it explicitly for this board context.
+      extraHTTPHeaders: { Origin: BASE_URL },
+    });
     const company = await createCompany(board);
     companyId = company.id;
     prefix = company.prefix;

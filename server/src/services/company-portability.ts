@@ -78,6 +78,14 @@ import {
   readPortableCatalogProvenance,
 } from "./catalog-provenance.js";
 import { normalizePortablePath } from "./portable-path.js";
+import {
+  detectSecretsInFiles,
+  detectSecretsInManifest,
+  formatMatchWarnings,
+  scrubFiles,
+  scrubManifest,
+  summarizeMatches,
+} from "./portability-secret-scrubber.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -3832,10 +3840,38 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     resolved.manifest.envInputs = dedupeEnvInputs(envInputs);
     resolved.warnings.unshift(...warnings);
 
+    const detectMatches = [
+      ...detectSecretsInManifest(resolved.manifest),
+      ...detectSecretsInFiles(finalFiles),
+    ];
+    const summary = summarizeMatches(detectMatches);
+    if (summary.highSeverity > 0 && !input.allowSecrets) {
+      const breakdown = Object.entries(summary.byPattern)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([name, count]) => `${name}=${count}`)
+        .join(", ");
+      throw unprocessable(
+        `Export refused: ${summary.highSeverity} secret-shaped value${summary.highSeverity === 1 ? "" : "s"} detected in bundle (${breakdown}). Re-run with allowSecrets to redact and continue.`,
+      );
+    }
+    let scrubbedManifest = resolved.manifest;
+    let scrubbedFiles = finalFiles;
+    if (summary.total > 0) {
+      const manifestScrub = scrubManifest(resolved.manifest);
+      const filesScrub = scrubFiles(finalFiles);
+      scrubbedManifest = manifestScrub.manifest;
+      scrubbedFiles = filesScrub.files;
+      const scrubMatches = [...manifestScrub.matches, ...filesScrub.matches];
+      resolved.warnings.push(
+        `Export scrubber redacted ${summary.total} secret-shaped value${summary.total === 1 ? "" : "s"} (severity=high) from the bundle.`,
+        ...formatMatchWarnings(scrubMatches),
+      );
+    }
+
     return {
       rootPath,
-      manifest: resolved.manifest,
-      files: finalFiles,
+      manifest: scrubbedManifest,
+      files: scrubbedFiles,
       warnings: resolved.warnings,
       paperclipExtensionPath,
     };
