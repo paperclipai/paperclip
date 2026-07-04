@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: paperclip-postgres
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - ./volumes/postgres:/var/lib/postgresql/data
+    networks:
+      - paperclip-private
+
+  paperclip:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: paperclip-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env.production
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_MIGRATION_URL: ${DATABASE_MIGRATION_URL}
+      PAPERCLIP_PUBLIC_URL: ${PAPERCLIP_PUBLIC_URL}
+      PAPERCLIP_DEPLOYMENT_MODE: ${PAPERCLIP_DEPLOYMENT_MODE}
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: ${PAPERCLIP_DEPLOYMENT_EXPOSURE}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      TRUST_PROXY: ${TRUST_PROXY}
+      PAPERCLIP_SECRETS_STRICT_MODE: ${PAPERCLIP_SECRETS_STRICT_MODE}
+      PAPERCLIP_MIGRATION_AUTO_APPLY: ${PAPERCLIP_MIGRATION_AUTO_APPLY}
+      PAPERCLIP_DB_BACKUP_ENABLED: ${PAPERCLIP_DB_BACKUP_ENABLED}
+      PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES: ${PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES}
+      PAPERCLIP_DB_BACKUP_RETENTION_DAYS: ${PAPERCLIP_DB_BACKUP_RETENTION_DAYS}
+      PAPERCLIP_HOME: /paperclip
+      PAPERCLIP_INSTANCE_ID: default
+      HOST: 0.0.0.0
+      PORT: 3100
+      SERVE_UI: "true"
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+    volumes:
+      - ./volumes/paperclip:/paperclip
+    networks:
+      - paperclip-private
+      - afiacloud-containers
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=afiacloud-containers"
+      - "traefik.http.routers.paperclip.rule=Host(`paperclip.carisinternational.com`)"
+      - "traefik.http.routers.paperclip.entrypoints=websecure"
+      - "traefik.http.routers.paperclip.tls=true"
+      - "traefik.http.routers.paperclip.tls.certresolver=letsencrypt"
+      - "traefik.http.services.paperclip.loadbalancer.server.port=3100"
+
+networks:
+  paperclip-private:
+    name: paperclip-private
+    driver: bridge
+  afiacloud-containers:
+    external: true

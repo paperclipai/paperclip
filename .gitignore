@@ -2,6 +2,7 @@ node_modules
 node_modules/
 **/node_modules
 **/node_modules/
+venv/
 dist/
 ui/storybook-static/
 .env
@@ -13,6 +14,7 @@ drizzle/meta/
 coverage/
 .DS_Store
 data/
+volumes/
 .paperclip/
 .pnpm-store/
 tmp-*
