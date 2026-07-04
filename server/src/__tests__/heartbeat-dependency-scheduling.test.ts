@@ -349,6 +349,77 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       unresolvedBlockerIssueIds: [blockerId],
     });
 
+    let finishChildBlockedEscalationRun!: () => void;
+    const childBlockedEscalationRunCanFinish = new Promise<void>((resolve) => {
+      finishChildBlockedEscalationRun = resolve;
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await childBlockedEscalationRunCanFinish;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Child blocked escalation triaged.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const childBlockedEscalationWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "child_blocked_without_first_class_blocker",
+      payload: {
+        issueId: blockedIssueId,
+        childIssueId: blockerId,
+        mutation: "child_blocked_escalation",
+      },
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        taskId: blockedIssueId,
+        wakeReason: "child_blocked_without_first_class_blocker",
+        source: "issue.child_blocked_escalation",
+        childIssueId: blockerId,
+      },
+    });
+    expect(childBlockedEscalationWake).not.toBeNull();
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: blockedIssueId,
+      authorAgentId: agentId,
+      authorType: "agent",
+      createdByRunId: childBlockedEscalationWake!.id,
+      body: "Child blocked escalation triaged.",
+    });
+    finishChildBlockedEscalationRun();
+
+    await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, childBlockedEscalationWake!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+
+    const childBlockedEscalationRun = await db
+      .select({
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, childBlockedEscalationWake!.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(childBlockedEscalationRun?.status).toBe("succeeded");
+    expect(childBlockedEscalationRun?.contextSnapshot).toMatchObject({
+      dependencyBlockedInteraction: true,
+      unresolvedBlockerIssueIds: [blockerId],
+      wakeReason: "child_blocked_without_first_class_blocker",
+      childIssueId: blockerId,
+    });
+
     let finishReadyRun!: () => void;
     const readyRunCanFinish = new Promise<void>((resolve) => {
       finishReadyRun = resolve;

@@ -179,6 +179,8 @@ const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
+const CHILD_BLOCKED_MANAGER_WAKE_REASON = "child_blocked_without_first_class_blocker";
+const CHILD_BLOCKED_MANAGER_WAKE_SOURCE = "issue.child_blocked_escalation";
 
 export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   summary: string,
@@ -1756,13 +1758,28 @@ function shouldRequireIssueCommentForWake(
     wakeReason === "issue_assigned" ||
     wakeReason === "execution_review_requested" ||
     wakeReason === "execution_approval_requested" ||
-    wakeReason === "execution_changes_requested"
+    wakeReason === "execution_changes_requested" ||
+    wakeReason === CHILD_BLOCKED_MANAGER_WAKE_REASON
+  );
+}
+
+function allowsChildBlockedManagerWake(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+) {
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  const source = readNonEmptyString(contextSnapshot?.source);
+  const childIssueId = readNonEmptyString(contextSnapshot?.childIssueId);
+  return (
+    wakeReason === CHILD_BLOCKED_MANAGER_WAKE_REASON &&
+    source === CHILD_BLOCKED_MANAGER_WAKE_SOURCE &&
+    Boolean(childIssueId)
   );
 }
 
 function allowsIssueInteractionWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
+  if (allowsChildBlockedManagerWake(contextSnapshot)) return true;
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (wakeReason === "issue_assigned" && contextSnapshot?.assignmentHandoff === true) {
     return true;
@@ -9609,8 +9626,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ).then((rows) => rows.get(issue.id) ?? null);
 
         // Blocked descendants should stay idle until the final blocker resolves.
-        // Human comment/mention wakes are the exception: they may run in a
-        // bounded interaction mode so the assignee can answer or triage.
+        // Human comment/mention wakes and structured child-blocked manager
+        // escalations are the exceptions: they may run in a bounded interaction
+        // mode so the assignee can answer or triage.
         const blockedInteractionWake =
           dependencyReadiness &&
           !dependencyReadiness.isDependencyReady &&
