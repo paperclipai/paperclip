@@ -220,6 +220,22 @@ interface IssueDonePoller {
   cancel: () => void;
 }
 
+export function resolveIssueDonePollerApiUrl(
+  configuredApiUrl: string | undefined,
+  trustedApiUrl: string | undefined,
+): string | null {
+  if (!configuredApiUrl || !trustedApiUrl) return null;
+
+  try {
+    const configured = new URL(configuredApiUrl);
+    const trusted = new URL(trustedApiUrl);
+    if (configured.origin !== trusted.origin) return null;
+    return trusted.origin;
+  } catch {
+    return null;
+  }
+}
+
 function startIssueDonePoller(
   apiUrl: string,
   authToken: string,
@@ -313,6 +329,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  const trustedPaperclipApiUrl = env.PAPERCLIP_API_URL;
   env.PAPERCLIP_RUN_ID = runId;
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -750,8 +767,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
-    if (wakeTaskId && authToken && env.PAPERCLIP_API_URL) {
-      issuePoller = startIssueDonePoller(env.PAPERCLIP_API_URL, authToken, wakeTaskId, onLog);
+    if (wakeTaskId && authToken) {
+      const issuePollerApiUrl = resolveIssueDonePollerApiUrl(
+        preparedRuntimeConfig.env.PAPERCLIP_API_URL,
+        trustedPaperclipApiUrl,
+      );
+      if (issuePollerApiUrl) {
+        issuePoller = startIssueDonePoller(issuePollerApiUrl, authToken, wakeTaskId, onLog);
+      } else {
+        await onLog(
+          "stderr",
+          "[paperclip] Skipping issue-done poller because PAPERCLIP_API_URL does not match the trusted runtime origin.\n",
+        );
+      }
     }
 
     try {

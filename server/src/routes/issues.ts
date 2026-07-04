@@ -61,6 +61,7 @@ import {
   isClosedIsolatedExecutionWorkspace,
   isUuidLike,
   MEASUREMENT_CONTEXT_LABEL_NAMES,
+  ISSUE_RECOVERY_DISPOSITION_KINDS,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompanySearchQuery,
   type CompanySearchResponse,
@@ -2696,7 +2697,12 @@ export function issueRoutes(
   }, res: Response): boolean {
     const nextStatus = typeof input.updateFields.status === "string" ? input.updateFields.status : null;
     if (nextStatus !== "done" && nextStatus !== "cancelled") return true;
-    if (!input.existing.previousAssigneeAgentId) return true;
+    const patchedPreviousAssigneeAgentId =
+      typeof input.updateFields.previousAssigneeAgentId === "string"
+        ? input.updateFields.previousAssigneeAgentId
+        : null;
+    const nextPreviousAssigneeAgentId = input.existing.previousAssigneeAgentId ?? patchedPreviousAssigneeAgentId;
+    if (!nextPreviousAssigneeAgentId || typeof nextPreviousAssigneeAgentId !== "string") return true;
 
     const actorAgentId = input.actorAgentId;
     if (!actorAgentId) {
@@ -2705,17 +2711,17 @@ export function issueRoutes(
     }
 
     // Condition B — assignee must already be the recovery owner (pre-reassigned in a prior call).
-    if (input.existing.assigneeAgentId !== actorAgentId) {
+    if (!input.existing.previousAssigneeAgentId || input.existing.assigneeAgentId !== actorAgentId) {
       res.status(422).json({
         error:
-          "Recovery owner must update assigneeAgentId to themselves before closing this issue (Condition B). " +
-          "Perform the reassignment in a separate PATCH call, then close.",
+          "Recovery owner must update assigneeAgentId and previousAssigneeAgentId before closing this issue (Condition B). " +
+          "Perform the recovery reassignment in a separate PATCH call, then close.",
         code: "recovery_disposition_condition_b_violation",
         details: {
           issueId: input.existing.id,
           currentAssigneeAgentId: input.existing.assigneeAgentId,
           actorAgentId,
-          previousAssigneeAgentId: input.existing.previousAssigneeAgentId,
+          previousAssigneeAgentId: nextPreviousAssigneeAgentId,
           securityPrinciples: ["Separation of Disposition Authority"],
         },
       });
@@ -2736,7 +2742,7 @@ export function issueRoutes(
           code: "recovery_disposition_condition_d_violation",
           details: {
             issueId: input.existing.id,
-            previousAssigneeAgentId: input.existing.previousAssigneeAgentId,
+            previousAssigneeAgentId: nextPreviousAssigneeAgentId,
             securityPrinciples: ["Separation of Disposition Authority"],
           },
         });
@@ -2754,8 +2760,33 @@ export function issueRoutes(
         code: "recovery_disposition_condition_c_violation",
         details: {
           issueId: input.existing.id,
-          previousAssigneeAgentId: input.existing.previousAssigneeAgentId,
+          previousAssigneeAgentId: nextPreviousAssigneeAgentId,
           validRecoveryKinds: ["recovery_completion", "measurement_bar"],
+          securityPrinciples: ["Separation of Disposition Authority"],
+        },
+      });
+      return false;
+    }
+
+    const expectedRecoveryKind = nextStatus === "done" ? "recovery_completion" : "measurement_bar";
+    if (
+      recoveryKind !== expectedRecoveryKind ||
+      !ISSUE_RECOVERY_DISPOSITION_KINDS.includes(recoveryKind as (typeof ISSUE_RECOVERY_DISPOSITION_KINDS)[number])
+    ) {
+      res.status(422).json({
+        error:
+          "Recovery owner supplied a recoveryKind that does not match the requested terminal status (Condition C). " +
+          "Valid pairs: done + recovery_completion, cancelled + measurement_bar.",
+        code: "recovery_disposition_condition_c_violation",
+        details: {
+          issueId: input.existing.id,
+          previousAssigneeAgentId: nextPreviousAssigneeAgentId,
+          expectedRecoveryKind,
+          suppliedRecoveryKind: recoveryKind,
+          validRecoveryKindPairs: {
+            done: "recovery_completion",
+            cancelled: "measurement_bar",
+          },
           securityPrinciples: ["Separation of Disposition Authority"],
         },
       });
