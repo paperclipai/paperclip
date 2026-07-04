@@ -132,12 +132,12 @@ describe("isCodexTransientUpstreamError", () => {
     );
   });
 
-  it("prefers the explicit reset clock over the default backoff when both are present", () => {
-    const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at 11:31 PM.";
-    const now = new Date(2026, 3, 22, 22, 29, 2);
+  it("falls back to the default backoff when the model-specific variant carries an unparseable clock", () => {
+    const errorMessage = "You've hit your usage limit for GPT-5.3-Codex-Spark. Switch to another model now, or try again at half past nine.";
+    const now = new Date("2026-07-04T17:33:00.000Z");
 
-    expect(extractCodexRetryNotBefore({ errorMessage }, now)?.getTime()).toBe(
-      new Date(2026, 3, 22, 23, 31, 0, 0).getTime(),
+    expect(extractCodexRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-07-04T18:03:00.000Z",
     );
   });
 
