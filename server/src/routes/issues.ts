@@ -232,12 +232,17 @@ function normalizeAgentAuthorityValue(value: unknown) {
 }
 
 const CHILD_BLOCKED_ESCALATION_MARKER = "Child blocked escalation";
+const CHILD_REVIEW_ESCALATION_MARKER = "Child review escalation";
 const REVIEW_REQUIRED_COMPLETION_STAGE_TYPE = "review";
 const REVIEW_REQUIRED_COMPLETION_MESSAGE =
   "This agent is configured to require review before it can mark issue work done.";
 
 function buildChildBlockedEscalationMarker(input: { childIssueId: string; sourceCommentId?: string | null }) {
   return `${CHILD_BLOCKED_ESCALATION_MARKER}: \`${input.childIssueId}:${input.sourceCommentId ?? "status"}\``;
+}
+
+function buildChildReviewEscalationMarker(input: { childIssueId: string; sourceCommentId?: string | null }) {
+  return `${CHILD_REVIEW_ESCALATION_MARKER}: \`${input.childIssueId}:${input.sourceCommentId ?? "status"}\``;
 }
 
 function issueLabel(issue: { identifier?: string | null; id: string }) {
@@ -275,6 +280,42 @@ function buildChildBlockedEscalationComment(input: {
       : "- Source child comment: none",
     "",
     "Manager next action: decide the next owner/path now. Reassign the child, create or repair a real blocker issue, create a sibling follow-up lane from the parent, escalate to board/user if an outside decision is needed, or record an intentional manual resolution. Do not leave the parent waiting on a silent blocked child lane.",
+    "",
+    input.marker,
+  ].join("\n");
+}
+
+function buildChildReviewEscalationComment(input: {
+  child: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    assigneeAgentId: string | null;
+  };
+  parent: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    assigneeAgentId: string | null;
+  };
+  actorAgentId: string | null;
+  childComment: { id: string; body: string } | null;
+  marker: string;
+}) {
+  const childCommentSnippet = input.childComment?.body.trim().slice(0, 700) ?? "";
+  return [
+    "Paperclip escalated a child review lane without a reviewer handoff.",
+    "",
+    `- Parent issue: ${issueLabel(input.parent)} ${input.parent.title}`,
+    `- Child issue: ${issueLabel(input.child)} ${input.child.title}`,
+    `- Child assignee: ${input.child.assigneeAgentId ?? "unassigned"}`,
+    `- Review actor: ${input.actorAgentId ?? "unknown"}`,
+    "- Reason: child lane is `in_review`, but it remains assigned to the same agent that is asking for manager/CEO action. That is not a live review path.",
+    input.childComment
+      ? `- Source child comment: \`${input.childComment.id}\`${childCommentSnippet ? `\n\n${childCommentSnippet}` : ""}`
+      : "- Source child comment: none",
+    "",
+    "Manager next action: take ownership of the review path now. Answer the clarification, reassign the child to the correct reviewer/worker, create a real blocker issue if outside input is required, escalate to board/user, or record an intentional manual resolution. Do not leave the parent waiting on a self-owned review lane.",
     "",
     input.marker,
   ].join("\n");
@@ -4428,6 +4469,126 @@ export function issueRoutes(
           }
         } catch (err) {
           logger.warn({ err, issueId: issue.id, parentId: issue.parentId }, "failed to escalate blocked child issue");
+        }
+      }
+
+      const agentLeftSelfOwnedChildInReview =
+        actor.actorType === "agent" &&
+        issue.parentId &&
+        issue.status === "in_review" &&
+        issue.assigneeAgentId === actor.agentId &&
+        issueAllowsAgentWakeups(issue) &&
+        (
+          existing.status !== "in_review" ||
+          updateFields.status === "in_review" ||
+          Boolean(comment)
+        );
+      if (agentLeftSelfOwnedChildInReview) {
+        try {
+          const parent = await svc.getById(issue.parentId!);
+          if (
+            parent?.assigneeAgentId &&
+            issueAllowsAgentWakeups(parent) &&
+            !["done", "cancelled"].includes(parent.status)
+          ) {
+            const marker = buildChildReviewEscalationMarker({
+              childIssueId: issue.id,
+              sourceCommentId: comment?.id ?? null,
+            });
+            const recentParentComments = await svc.listComments(parent.id, { order: "desc", limit: 50 });
+            const alreadyEscalated = recentParentComments.some((candidate) => candidate.body.includes(marker));
+            let escalationCommentId: string | null = null;
+            if (!alreadyEscalated) {
+              const escalationComment = await svc.addComment(
+                parent.id,
+                buildChildReviewEscalationComment({
+                  child: {
+                    id: issue.id,
+                    identifier: issue.identifier,
+                    title: issue.title,
+                    assigneeAgentId: issue.assigneeAgentId,
+                  },
+                  parent: {
+                    id: parent.id,
+                    identifier: parent.identifier,
+                    title: parent.title,
+                    assigneeAgentId: parent.assigneeAgentId,
+                  },
+                  actorAgentId: actor.agentId,
+                  childComment: comment ? { id: comment.id, body: comment.body } : null,
+                  marker,
+                }),
+                {},
+                {
+                  authorType: "system",
+                  metadata: {
+                    version: 1,
+                    sections: [
+                      {
+                        title: "Escalation",
+                        rows: [
+                          { type: "key_value", label: "kind", value: "child_in_review_without_reviewer_handoff" },
+                          { type: "key_value", label: "childIssueId", value: issue.id },
+                          { type: "key_value", label: "childIdentifier", value: issue.identifier ?? issue.id },
+                          { type: "key_value", label: "sourceCommentId", value: comment?.id ?? "none" },
+                          { type: "key_value", label: "actorAgentId", value: actor.agentId ?? "unknown" },
+                        ],
+                      },
+                    ],
+                  },
+                },
+              );
+              escalationCommentId = escalationComment.id;
+              await logActivity(db, {
+                companyId: issue.companyId,
+                actorType: "system",
+                actorId: "system",
+                agentId: actor.agentId,
+                runId: actor.runId,
+                action: "issue.child_review_escalated",
+                entityType: "issue",
+                entityId: parent.id,
+                details: {
+                  identifier: parent.identifier,
+                  childIssueId: issue.id,
+                  childIdentifier: issue.identifier,
+                  childAssigneeAgentId: issue.assigneeAgentId,
+                  parentAssigneeAgentId: parent.assigneeAgentId,
+                  escalationCommentId,
+                  sourceCommentId: comment?.id ?? null,
+                  reason: "child_in_review_without_reviewer_handoff",
+                },
+              });
+            }
+
+            addWakeup(parent.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "child_in_review_without_reviewer_handoff",
+              payload: {
+                issueId: parent.id,
+                childIssueId: issue.id,
+                childIdentifier: issue.identifier,
+                sourceCommentId: comment?.id ?? null,
+                escalationCommentId,
+                mutation: "child_review_escalation",
+              },
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: parent.id,
+                taskId: parent.id,
+                wakeReason: "child_in_review_without_reviewer_handoff",
+                source: "issue.child_review_escalation",
+                childIssueId: issue.id,
+                childIdentifier: issue.identifier,
+                sourceCommentId: comment?.id ?? null,
+                escalationCommentId,
+              },
+            });
+          }
+        } catch (err) {
+          logger.warn({ err, issueId: issue.id, parentId: issue.parentId }, "failed to escalate child review issue");
         }
       }
 

@@ -1735,6 +1735,7 @@ const issueListSelect = {
   workLeadDays: issues.workLeadDays,
   storyPoints: issues.storyPoints,
   estimateHours: issues.estimateHours,
+  actualHumanSeconds: issues.actualHumanSeconds,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,

@@ -233,6 +233,11 @@ function actualAiSecondsForIssue(issue: Issue): number {
   return Math.max(0, issue.actualAiSeconds);
 }
 
+function actualHumanSecondsForIssue(issue: Issue): number {
+  if (typeof issue.actualHumanSeconds !== "number" || !Number.isFinite(issue.actualHumanSeconds)) return 0;
+  return Math.max(0, issue.actualHumanSeconds);
+}
+
 function formatIssueDueDate(issue: Issue): string {
   if (!issue.dueDate) return "No due date";
   return new Date(issue.dueDate).toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -262,13 +267,17 @@ function IssuePlanningStat({
 }
 
 function IssuePlanningStrip({ issue, childIssues }: { issue: Issue; childIssues: Issue[] }) {
+  const actualHumanSecondsWithChildren = useMemo(
+    () => sumIssueValuesWithDescendants([issue], [issue, ...childIssues], actualHumanSecondsForIssue),
+    [childIssues, issue],
+  );
   const actualAiSecondsWithChildren = useMemo(
     () => sumIssueValuesWithDescendants([issue], [issue, ...childIssues], actualAiSecondsForIssue),
     [childIssues, issue],
   );
 
   return (
-    <div className="grid gap-2 border-t border-border pt-3 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="grid gap-2 border-t border-border pt-3 sm:grid-cols-2 xl:grid-cols-5">
       <IssuePlanningStat
         icon={Hash}
         label="Story points"
@@ -280,6 +289,12 @@ function IssuePlanningStrip({ issue, childIssues }: { issue: Issue; childIssues:
         label="Estimate"
         value={formatIssuePlanningHours(issue.estimateHours)}
         detail="Rough hours"
+      />
+      <IssuePlanningStat
+        icon={Clock3}
+        label="Human time"
+        value={formatIssueAiHours(actualHumanSecondsWithChildren)}
+        detail={childIssues.length > 0 ? "Including sub-issues" : "Recorded manual time"}
       />
       <IssuePlanningStat
         icon={Bot}

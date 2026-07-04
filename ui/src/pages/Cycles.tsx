@@ -87,6 +87,7 @@ type CycleSummary = {
   completedStoryPoints: number;
   estimateHours: number;
   openEstimateHours: number;
+  actualHumanSeconds: number;
   actualAiSeconds: number;
   progressPercent: number;
   capacityStoryPoints: number | null;
@@ -104,6 +105,7 @@ type CycleAssignmentRow = {
   openStoryPoints: number;
   estimateHours: number;
   openEstimateHours: number;
+  actualHumanSeconds: number;
   actualAiSeconds: number;
   capacityHours: number | null;
   capacityPercent: number | null;
@@ -142,6 +144,11 @@ function estimateHoursForIssue(issue: Issue) {
 function actualAiSecondsForIssue(issue: Issue) {
   if (typeof issue.actualAiSeconds !== "number" || !Number.isFinite(issue.actualAiSeconds)) return 0;
   return Math.max(0, issue.actualAiSeconds);
+}
+
+function actualHumanSecondsForIssue(issue: Issue) {
+  if (typeof issue.actualHumanSeconds !== "number" || !Number.isFinite(issue.actualHumanSeconds)) return 0;
+  return Math.max(0, issue.actualHumanSeconds);
 }
 
 function formatShortDate(value: string | Date | null | undefined) {
@@ -283,6 +290,7 @@ function buildCycleAssignments(args: {
   agentsById: ReadonlyMap<string, Agent>;
   currentUserId: string | null;
   userLabelMap: ReadonlyMap<string, string>;
+  actualHumanSecondsByIssue: ReadonlyMap<string, number>;
   actualAiSecondsByIssue: ReadonlyMap<string, number>;
 }) {
   const rowsByOwner = new Map<string, CycleAssignmentRow>();
@@ -299,6 +307,7 @@ function buildCycleAssignments(args: {
       openStoryPoints: 0,
       estimateHours: 0,
       openEstimateHours: 0,
+      actualHumanSeconds: 0,
       actualAiSeconds: 0,
       capacityHours: null,
       capacityPercent: null,
@@ -310,6 +319,7 @@ function buildCycleAssignments(args: {
     row.issueCount += 1;
     row.storyPoints += points;
     row.estimateHours += estimateHours;
+    row.actualHumanSeconds += args.actualHumanSecondsByIssue.get(issue.id) ?? actualHumanSecondsForIssue(issue);
     row.actualAiSeconds += args.actualAiSecondsByIssue.get(issue.id) ?? actualAiSecondsForIssue(issue);
     if (open) {
       row.openCount += 1;
@@ -388,6 +398,7 @@ function summarizeCycle(
     completedStoryPoints,
     estimateHours,
     openEstimateHours,
+    actualHumanSeconds: sumIssueValuesWithDescendants(issues, allIssues, actualHumanSecondsForIssue),
     actualAiSeconds: sumIssueValuesWithDescendants(issues, allIssues, actualAiSecondsForIssue),
     progressPercent,
     capacityStoryPoints: cycle?.capacityStoryPoints ?? null,
@@ -689,6 +700,10 @@ export function Cycles() {
   });
 
   const summaries = useMemo(() => buildCycleSummaries(cycles, issues, projects), [cycles, issues, projects]);
+  const actualHumanSecondsByIssueWithDescendants = useMemo(
+    () => buildIssueValueWithDescendantsMap(issues, actualHumanSecondsForIssue),
+    [issues],
+  );
   const actualAiSecondsByIssueWithDescendants = useMemo(
     () => buildIssueValueWithDescendantsMap(issues, actualAiSecondsForIssue),
     [issues],
@@ -737,6 +752,7 @@ export function Cycles() {
       completedStoryPoints,
       estimateHours: sumIssues(cycleAssignedIssues, estimateHoursForIssue),
       openEstimateHours: sumIssues(cycleAssignedOpenIssues, estimateHoursForIssue),
+      actualHumanSeconds: sumIssueValuesWithDescendants(cycleAssignedIssues, issues, actualHumanSecondsForIssue),
       actualAiSeconds: sumIssueValuesWithDescendants(cycleAssignedIssues, issues, actualAiSecondsForIssue),
       progressPercent: cycleAssignedIssues.length > 0
         ? clampPercent((cycleAssignedCompletedIssues.length / cycleAssignedIssues.length) * 100)
@@ -779,6 +795,7 @@ export function Cycles() {
     completedStoryPoints: totals.completedStoryPoints,
     estimateHours: totals.estimateHours,
     openEstimateHours: totals.openEstimateHours,
+    actualHumanSeconds: totals.actualHumanSeconds,
     actualAiSeconds: totals.actualAiSeconds,
     progressPercent: totals.progressPercent,
     capacityStoryPoints: null,
@@ -793,8 +810,10 @@ export function Cycles() {
     agentsById,
     currentUserId,
     userLabelMap,
+    actualHumanSecondsByIssue: actualHumanSecondsByIssueWithDescendants,
     actualAiSecondsByIssue: actualAiSecondsByIssueWithDescendants,
   }), [
+    actualHumanSecondsByIssueWithDescendants,
     actualAiSecondsByIssueWithDescendants,
     agentsById,
     currentUserId,
@@ -1210,7 +1229,7 @@ export function Cycles() {
                 ) : null}
 
                 {selectedCycle ? (
-                  <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
                     <div className="rounded-md border border-border bg-muted/20 px-3 py-2">
                       <div className="text-xs text-muted-foreground">Progress</div>
                       <div className="mt-1 flex items-baseline gap-2">
@@ -1230,6 +1249,11 @@ export function Cycles() {
                       <div className="text-xs text-muted-foreground">Estimate</div>
                       <div className="mt-1 text-lg font-semibold tabular-nums text-foreground">{detailMetrics.openEstimateHours}h</div>
                       <div className="text-xs text-muted-foreground">{detailMetrics.estimateHours}h committed</div>
+                    </div>
+                    <div className="rounded-md border border-border bg-muted/20 px-3 py-2">
+                      <div className="text-xs text-muted-foreground">Human actual</div>
+                      <div className="mt-1 text-lg font-semibold tabular-nums text-foreground">{formatActualAiTime(detailMetrics.actualHumanSeconds)}</div>
+                      <div className="text-xs text-muted-foreground">from logged human time</div>
                     </div>
                     <div className="rounded-md border border-border bg-muted/20 px-3 py-2">
                       <div className="text-xs text-muted-foreground">AI actual</div>
@@ -1383,6 +1407,7 @@ export function Cycles() {
                                   <span>{row.openStoryPoints}/{row.storyPoints} pts</span>
                                   <span>{row.openEstimateHours}/{row.estimateHours}h open/committed</span>
                                   {row.blockedCount > 0 ? <span>{row.blockedCount} blocked</span> : null}
+                                  {row.actualHumanSeconds > 0 ? <span>{formatActualAiTime(row.actualHumanSeconds)} human</span> : null}
                                   {row.actualAiSeconds > 0 ? <span>{formatActualAiTime(row.actualAiSeconds)} AI</span> : null}
                                 </div>
                               </div>
@@ -1511,6 +1536,7 @@ export function Cycles() {
                               <th className="px-3 py-2 font-medium">Priority</th>
                               <th className="px-3 py-2 font-medium">Points</th>
                               <th className="px-3 py-2 font-medium">Estimate</th>
+                              <th className="px-3 py-2 font-medium">Human Time</th>
                               <th className="px-3 py-2 font-medium">AI Time</th>
                             </tr>
                           </thead>
@@ -1575,6 +1601,9 @@ export function Cycles() {
                                       <Clock className="h-3.5 w-3.5 text-muted-foreground" />
                                       {estimateHoursForIssue(issue)}h
                                     </span>
+                                  </td>
+                                  <td className="px-3 py-3 tabular-nums text-foreground">
+                                    {formatActualAiTime(actualHumanSecondsByIssueWithDescendants.get(issue.id) ?? actualHumanSecondsForIssue(issue))}
                                   </td>
                                   <td className="px-3 py-3 tabular-nums text-foreground">
                                     {formatActualAiTime(actualAiSecondsByIssueWithDescendants.get(issue.id) ?? actualAiSecondsForIssue(issue))}

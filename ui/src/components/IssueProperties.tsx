@@ -196,6 +196,21 @@ function formatOptionalIntegerInput(value: number | null | undefined): string {
   return String(Math.max(0, Math.floor(value)));
 }
 
+function parseOptionalHoursInputToSeconds(value: string, maxHours: number): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number.parseFloat(trimmed);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.round(Math.min(maxHours, Math.max(0, parsed)) * 3600);
+}
+
+function formatHumanHoursInput(seconds: number | null | undefined): string {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds)) return "";
+  const hours = Math.max(0, seconds) / 3600;
+  if (Number.isInteger(hours)) return String(hours);
+  return hours.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
 function formatActualAiTime(seconds: number | null | undefined): string {
   const totalSeconds = typeof seconds === "number" && Number.isFinite(seconds)
     ? Math.max(0, Math.floor(seconds))
@@ -213,8 +228,14 @@ function actualAiSecondsForIssue(issue: Issue): number {
   return Math.max(0, issue.actualAiSeconds);
 }
 
+function actualHumanSecondsForIssue(issue: Issue): number {
+  if (typeof issue.actualHumanSeconds !== "number" || !Number.isFinite(issue.actualHumanSeconds)) return 0;
+  return Math.max(0, issue.actualHumanSeconds);
+}
+
 const STORY_POINTS_MAX = 1000;
 const ESTIMATE_HOURS_MAX = 10000;
+const ACTUAL_HUMAN_HOURS_MAX = 100000;
 const LEAD_DAYS_PRESETS = [0, 1, 3, 7, 14] as const;
 
 function computeStartDate(dueDate: Date | string, leadDays: number): Date {
@@ -641,11 +662,13 @@ export function IssueProperties({
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
   const [storyPointsInput, setStoryPointsInput] = useState(() => formatOptionalIntegerInput(issue.storyPoints));
   const [estimateHoursInput, setEstimateHoursInput] = useState(() => formatOptionalIntegerInput(issue.estimateHours));
+  const [actualHumanHoursInput, setActualHumanHoursInput] = useState(() => formatHumanHoursInput(issue.actualHumanSeconds));
   const [dueDateInput, setDueDateInput] = useState(() => dueDateInputValue(issue.dueDate));
   const pendingPlanningValuesRef = useRef<{
     issueId: string;
     storyPoints?: number | null;
     estimateHours?: number | null;
+    actualHumanSeconds?: number | null;
   }>({ issueId: issue.id });
 
   useEffect(() => {
@@ -654,6 +677,7 @@ export function IssueProperties({
       pendingPlanningValuesRef.current = { issueId: issue.id };
       setStoryPointsInput(formatOptionalIntegerInput(issue.storyPoints));
       setEstimateHoursInput(formatOptionalIntegerInput(issue.estimateHours));
+      setActualHumanHoursInput(formatHumanHoursInput(issue.actualHumanSeconds));
       return;
     }
 
@@ -672,7 +696,15 @@ export function IssueProperties({
     } else {
       setEstimateHoursInput(formatOptionalIntegerInput(issue.estimateHours));
     }
-  }, [issue.id, issue.storyPoints, issue.estimateHours]);
+
+    if (pending.actualHumanSeconds !== undefined) {
+      if ((issue.actualHumanSeconds ?? null) === pending.actualHumanSeconds) {
+        delete pending.actualHumanSeconds;
+      }
+    } else {
+      setActualHumanHoursInput(formatHumanHoursInput(issue.actualHumanSeconds));
+    }
+  }, [issue.id, issue.storyPoints, issue.estimateHours, issue.actualHumanSeconds]);
 
   useEffect(() => {
     setDueDateInput(dueDateInputValue(issue.dueDate));
@@ -852,10 +884,27 @@ export function IssueProperties({
     onUpdate({ estimateHours: next });
   }, [estimateHoursInput, issue.estimateHours, issue.id, onUpdate]);
 
+  const commitActualHumanHoursInput = useCallback(() => {
+    const next = parseOptionalHoursInputToSeconds(actualHumanHoursInput, ACTUAL_HUMAN_HOURS_MAX);
+    setActualHumanHoursInput(formatHumanHoursInput(next));
+    if ((issue.actualHumanSeconds ?? null) === next) return;
+    pendingPlanningValuesRef.current = {
+      ...pendingPlanningValuesRef.current,
+      issueId: issue.id,
+      actualHumanSeconds: next,
+    };
+    onUpdate({ actualHumanSeconds: next });
+  }, [actualHumanHoursInput, issue.actualHumanSeconds, issue.id, onUpdate]);
+
   const commitDueDateInput = useCallback((value: string) => {
     setDueDateInput(value);
     onUpdate({ dueDate: dueDateInputToIsoDate(value) });
   }, [onUpdate]);
+
+  const issueActualHumanSecondsWithChildren = useMemo(
+    () => sumIssueValuesWithDescendants([issue], [issue, ...(childIssues ?? [])], actualHumanSecondsForIssue),
+    [childIssues, issue],
+  );
 
   const issueActualAiSecondsWithChildren = useMemo(
     () => sumIssueValuesWithDescendants([issue], [issue, ...(childIssues ?? [])], actualAiSecondsForIssue),
@@ -2397,6 +2446,32 @@ export function IssueProperties({
               aria-label="Estimate hours"
             />
             <span className="text-xs text-muted-foreground">hours</span>
+          </PropertyRow>
+
+          <PropertyRow label="Human time">
+            <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <input
+              type="number"
+              min={0}
+              max={ACTUAL_HUMAN_HOURS_MAX}
+              step={0.25}
+              value={actualHumanHoursInput}
+              onChange={(event) => setActualHumanHoursInput(event.target.value)}
+              onBlur={commitActualHumanHoursInput}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.currentTarget.blur();
+                }
+              }}
+              className="h-7 w-20 rounded border border-border bg-background px-2 text-sm tabular-nums text-foreground outline-none transition-colors focus:border-ring focus:ring-1 focus:ring-ring"
+              placeholder="0"
+              aria-label="Actual human hours"
+            />
+            <span className="text-xs text-muted-foreground">
+              {childIssues && childIssues.length > 0
+                ? `${formatActualAiTime(issueActualHumanSecondsWithChildren)} actual incl. sub-issues`
+                : "actual hours"}
+            </span>
           </PropertyRow>
 
           <PropertyRow label="AI time">

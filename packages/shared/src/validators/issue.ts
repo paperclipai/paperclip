@@ -332,6 +332,7 @@ const createIssueBaseSchema = z.object({
   workLeadDays: z.number().int().min(0).max(365).nullable().optional(),
   storyPoints: z.number().int().min(0).max(1000).nullable().optional(),
   estimateHours: z.number().int().min(0).max(10000).nullable().optional(),
+  actualHumanSeconds: z.number().int().min(0).max(360_000_000).nullable().optional(),
   budgetLimits: z.object({
     issueTreeCents: z.number().int().nonnegative().optional().nullable(),
     childIssuesCents: z.number().int().nonnegative().optional().nullable(),

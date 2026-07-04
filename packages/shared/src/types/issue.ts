@@ -409,6 +409,7 @@ export interface Issue {
   hiddenAt: Date | null;
   storyPoints?: number | null;
   estimateHours?: number | null;
+  actualHumanSeconds?: number | null;
   labelIds?: string[];
   labels?: IssueLabel[];
   blockedBy?: IssueRelationIssueSummary[];

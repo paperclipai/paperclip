@@ -659,6 +659,106 @@ describe("issue dependency wakeups in issue routes", () => {
     );
   });
 
+  it("escalates a self-owned child review lane to the parent manager", async () => {
+    const childIssue = {
+      id: "child-1",
+      companyId: "company-1",
+      identifier: "PAP-221",
+      title: "QA lane waiting on CEO",
+      description: null,
+      status: "in_review",
+      priority: "medium",
+      parentId: "parent-1",
+      assigneeAgentId: "cmo-agent",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    };
+    mockIssueService.getById
+      .mockResolvedValueOnce(childIssue)
+      .mockResolvedValueOnce({
+        id: "parent-1",
+        companyId: "company-1",
+        identifier: "PAP-220",
+        title: "Parent delivery",
+        description: null,
+        status: "blocked",
+        priority: "medium",
+        parentId: null,
+        assigneeAgentId: "ceo-agent",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      });
+    mockIssueService.update.mockResolvedValue(childIssue);
+    mockIssueService.addComment
+      .mockResolvedValueOnce({
+        id: "child-comment-1",
+        body: "Waiting for CEO to choose the correct HubSpot list id.",
+        issueId: "child-1",
+      })
+      .mockResolvedValueOnce({ id: "parent-comment-1", body: "Paperclip escalated a child review lane.", issueId: "parent-1" });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "cmo-agent",
+      companyId: "company-1",
+      source: "api_key",
+      runId: "run-review-stall",
+    });
+    const res = await request(app)
+      .patch("/api/issues/child-1")
+      .send({ comment: "Waiting for CEO to choose the correct HubSpot list id." });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockIssueService.addComment).toHaveBeenCalledWith(
+        "parent-1",
+        expect.stringContaining("Child review escalation: `child-1:child-comment-1`"),
+        {},
+        expect.objectContaining({
+          authorType: "system",
+          metadata: expect.objectContaining({
+            version: 1,
+            sections: expect.arrayContaining([
+              expect.objectContaining({
+                title: "Escalation",
+                rows: expect.arrayContaining([
+                  expect.objectContaining({ type: "key_value", label: "kind", value: "child_in_review_without_reviewer_handoff" }),
+                  expect.objectContaining({ type: "key_value", label: "childIssueId", value: "child-1" }),
+                  expect.objectContaining({ type: "key_value", label: "sourceCommentId", value: "child-comment-1" }),
+                ]),
+              }),
+            ]),
+          }),
+        }),
+      );
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "ceo-agent",
+        expect.objectContaining({
+          reason: "child_in_review_without_reviewer_handoff",
+          payload: expect.objectContaining({
+            issueId: "parent-1",
+            childIssueId: "child-1",
+            childIdentifier: "PAP-221",
+            sourceCommentId: "child-comment-1",
+          }),
+          contextSnapshot: expect.objectContaining({
+            issueId: "parent-1",
+            wakeReason: "child_in_review_without_reviewer_handoff",
+            childIssueId: "child-1",
+          }),
+        }),
+      );
+    });
+  });
+
   it("routes explicit review-required agent completion attempts to the parent reviewer", async () => {
     const actorAgentId = "11111111-1111-4111-8111-111111111111";
     const reviewerAgentId = "22222222-2222-4222-8222-222222222222";

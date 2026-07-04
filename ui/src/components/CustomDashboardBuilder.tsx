@@ -34,6 +34,7 @@ type DashboardMetricKey =
   | "unassigned"
   | "story_points"
   | "estimate_hours"
+  | "actual_human_hours"
   | "actual_ai_hours"
   | "completion_rate";
 type DashboardWidgetScope = "all" | "human" | "ai" | "initiative";
@@ -146,6 +147,13 @@ const METRIC_DEFINITIONS: MetricDefinition[] = [
     icon: Bot,
   },
   {
+    key: "actual_human_hours",
+    label: "Human hours",
+    description: "Actual human work time.",
+    tone: "blue",
+    icon: Users,
+  },
+  {
     key: "completion_rate",
     label: "Completion",
     description: "Done work as a percentage of scoped work.",
@@ -160,6 +168,7 @@ export const DEFAULT_WORK_HUB_WIDGETS: DashboardWidgetConfig[] = [
   { id: "open-human", metric: "open_items", scope: "human", statusScope: "open", size: "compact" },
   { id: "story-points", metric: "story_points", scope: "human", statusScope: "open", size: "compact" },
   { id: "estimate-hours", metric: "estimate_hours", scope: "human", statusScope: "open", size: "compact" },
+  { id: "human-hours", metric: "actual_human_hours", scope: "human", statusScope: "all", size: "compact" },
   { id: "blocked", metric: "blocked_items", scope: "all", statusScope: "all", size: "compact" },
   { id: "initiatives", metric: "initiatives", scope: "initiative", statusScope: "all", size: "compact" },
   { id: "ai-hours", metric: "actual_ai_hours", scope: "ai", statusScope: "all", size: "compact" },
@@ -172,6 +181,7 @@ export const DEFAULT_PROJECT_DASHBOARD_WIDGETS: DashboardWidgetConfig[] = [
   { id: "project-completion", metric: "completion_rate", scope: "all", statusScope: "all", size: "compact" },
   { id: "project-points", metric: "story_points", scope: "human", statusScope: "open", size: "compact" },
   { id: "project-estimate", metric: "estimate_hours", scope: "human", statusScope: "open", size: "compact" },
+  { id: "project-human-hours", metric: "actual_human_hours", scope: "human", statusScope: "all", size: "compact" },
   { id: "project-blocked", metric: "blocked_items", scope: "all", statusScope: "all", size: "compact" },
   { id: "project-ai", metric: "ai_issues", scope: "ai", statusScope: "all", size: "compact" },
   { id: "project-due", metric: "due_this_week", scope: "all", statusScope: "open", size: "compact" },
@@ -245,6 +255,11 @@ function actualAiHours(issue: Issue): number {
   return Math.max(0, issue.actualAiSeconds / 3600);
 }
 
+function actualHumanHours(issue: Issue): number {
+  if (typeof issue.actualHumanSeconds !== "number" || !Number.isFinite(issue.actualHumanSeconds)) return 0;
+  return Math.max(0, issue.actualHumanSeconds / 3600);
+}
+
 function formatDecimal(value: number, digits = 1): string {
   if (Number.isInteger(value)) return String(value);
   return value.toFixed(digits);
@@ -308,6 +323,10 @@ function metricResult(widget: DashboardWidgetConfig, issues: Issue[]): MetricRes
   if (widget.metric === "actual_ai_hours") {
     const total = sumIssueValuesWithDescendants(scoped, issues, actualAiHours);
     return { value: formatHours(total), detail: "Recorded agent execution time, including sub-issues", tone, progress: null };
+  }
+  if (widget.metric === "actual_human_hours") {
+    const total = sumIssueValuesWithDescendants(scoped, issues, actualHumanHours);
+    return { value: formatHours(total), detail: "Recorded human work time, including sub-issues", tone, progress: null };
   }
   if (widget.metric === "completion_rate") {
     const base = allInWidgetScope.filter((issue) => widget.statusScope === "all" || statusMatches(issue, widget.statusScope));

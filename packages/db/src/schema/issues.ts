@@ -71,6 +71,7 @@ export const issues = pgTable(
     workLeadDays: integer("work_lead_days"),
     storyPoints: integer("story_points"),
     estimateHours: integer("estimate_hours"),
+    actualHumanSeconds: integer("actual_human_seconds"),
     visibility: text("visibility").notNull().default("company"),
     hiddenAt: timestamp("hidden_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

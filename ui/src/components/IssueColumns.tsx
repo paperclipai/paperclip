@@ -29,6 +29,7 @@ export const issueTrailingColumns: InboxIssueColumn[] = [
   "parent",
   "storyPoints",
   "estimateHours",
+  "actualHumanTime",
   "actualAiTime",
   "labels",
   "dueDate",
@@ -45,6 +46,7 @@ const issueColumnLabels: Record<InboxIssueColumn, string> = {
   parent: "Parent issue",
   storyPoints: "Story points",
   estimateHours: "Estimate",
+  actualHumanTime: "Human time",
   actualAiTime: "AI time",
   labels: "Tags",
   dueDate: "Due",
@@ -61,6 +63,7 @@ const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
   parent: "Parent issue identifier and title.",
   storyPoints: "Human planning points used for workload rollups.",
   estimateHours: "Rough hour estimate for human coordination.",
+  actualHumanTime: "Actual human work time entered on the issue.",
   actualAiTime: "Actual elapsed AI run time recorded from heartbeat runs.",
   labels: "Issue labels and tags.",
   dueDate: "Due date when one is set.",
@@ -81,6 +84,7 @@ function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
       if (column === "parent") return "minmax(3.5rem, 5.5rem)";
       if (column === "storyPoints") return "minmax(3.25rem, 4rem)";
       if (column === "estimateHours") return "minmax(3.5rem, 4.25rem)";
+      if (column === "actualHumanTime") return "minmax(3.75rem, 5rem)";
       if (column === "actualAiTime") return "minmax(3.75rem, 5rem)";
       if (column === "labels") return "minmax(3rem, 6rem)";
       if (column === "dueDate") return "minmax(4rem, 5rem)";
@@ -89,7 +93,7 @@ function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
     .join(" ");
 }
 
-function formatIssueAiTime(seconds: Issue["actualAiSeconds"]): string {
+function formatIssueAiTime(seconds: number | null | undefined): string {
   const totalSeconds = typeof seconds === "number" && Number.isFinite(seconds)
     ? Math.max(0, Math.floor(seconds))
     : 0;
@@ -99,6 +103,10 @@ function formatIssueAiTime(seconds: Issue["actualAiSeconds"]): string {
   if (hours <= 0) return `${Math.max(1, minutes)}m`;
   if (minutes <= 0) return `${hours}h`;
   return `${hours}h ${minutes}m`;
+}
+
+function formatIssueHumanTime(seconds: Issue["actualHumanSeconds"]): string {
+  return formatIssueAiTime(seconds);
 }
 
 function formatIssueDueDate(value: Issue["dueDate"]): {
@@ -474,6 +482,14 @@ export function InboxIssueTrailingColumns({
           return (
             <span key={column} className="min-w-0 truncate text-right text-[11px] font-semibold tabular-nums text-muted-foreground">
               {formatIssueAiTime(issue.actualAiSeconds)}
+            </span>
+          );
+        }
+
+        if (column === "actualHumanTime") {
+          return (
+            <span key={column} className="min-w-0 truncate text-right text-[11px] font-semibold tabular-nums text-muted-foreground">
+              {formatIssueHumanTime(issue.actualHumanSeconds)}
             </span>
           );
         }

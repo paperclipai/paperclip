@@ -52,6 +52,7 @@ function issue(overrides: Partial<Issue>): Issue {
     hiddenAt: null,
     storyPoints: null,
     estimateHours: null,
+    actualHumanSeconds: 0,
     actualAiSeconds: 0,
     createdAt: now,
     updatedAt: now,
@@ -160,6 +161,39 @@ describe("CustomDashboardBuilder", () => {
     });
 
     expect(host.textContent).toContain("3h");
+    expect(host.textContent).toContain("including sub-issues");
+  });
+
+  it("rolls child issue manual time into scoped human hours", () => {
+    const humanHoursWidget: DashboardWidgetConfig = {
+      id: "human-time",
+      metric: "actual_human_hours",
+      scope: "human",
+      statusScope: "all",
+      size: "compact",
+    };
+
+    act(() => {
+      root = createRoot(host);
+      root.render(
+        <CustomDashboardBuilder
+          storageKey="paperclip:test-dashboard-human-rollup"
+          title="Dashboard widgets"
+          subtitle="Customize project metrics."
+          issues={[
+            issue({ id: "parent-1", actualHumanSeconds: 1800 }),
+            issue({
+              id: "child-human-1",
+              parentId: "parent-1",
+              actualHumanSeconds: 5400,
+            }),
+          ]}
+          defaultWidgets={[humanHoursWidget]}
+        />,
+      );
+    });
+
+    expect(host.textContent).toContain("2h");
     expect(host.textContent).toContain("including sub-issues");
   });
 });
