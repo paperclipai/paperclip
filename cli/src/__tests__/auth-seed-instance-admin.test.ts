@@ -138,8 +138,11 @@ describeEmbeddedPostgres("ensureInstanceAdmin", () => {
       ensureInstanceAdmin(db, principal),
     ]);
 
-    expect(a).toBeDefined();
-    expect(b).toBeDefined();
+    // The created* flags come from RETURNING on the conflict-safe inserts,
+    // so exactly one racer reports having inserted each row — the loser's
+    // ON CONFLICT DO NOTHING no-op must not be reported as a creation.
+    expect([a.createdUser, b.createdUser].filter(Boolean)).toHaveLength(1);
+    expect([a.createdRole, b.createdRole].filter(Boolean)).toHaveLength(1);
 
     const users = await db
       .select()

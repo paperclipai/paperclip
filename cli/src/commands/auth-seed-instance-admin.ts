@@ -1,7 +1,7 @@
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { and, eq } from "drizzle-orm";
 import { createDb, authUsers, instanceUserRoles } from "@paperclipai/db";
+import { resolveDbUrl } from "../config/db.js";
 import { loadPaperclipEnvFile } from "../config/env.js";
 import { readConfig, resolveConfigPath } from "../config/store.js";
 
@@ -22,20 +22,6 @@ export interface EnsureInstanceAdminResult {
   createdUser: boolean;
   /** True when a brand new instance_admin role row was inserted. */
   createdRole: boolean;
-}
-
-function resolveDbUrl(configPath?: string, explicitDbUrl?: string): string | null {
-  if (explicitDbUrl) return explicitDbUrl;
-  const config = readConfig(configPath);
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
-  if (config?.database.mode === "postgres" && config.database.connectionString) {
-    return config.database.connectionString;
-  }
-  if (config?.database.mode === "embedded-postgres") {
-    const port = config.database.embeddedPostgresPort ?? 54329;
-    return `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
-  }
-  return null;
 }
 
 /**
@@ -64,6 +50,11 @@ export function resolveSeedPrincipal(
  * racers yield exactly one admin and one role row, and neither insert throws
  * on a concurrent duplicate.
  *
+ * The createdUser/createdRole flags come from RETURNING on the conflict-safe
+ * inserts, so they are exact even under concurrency: only the process whose
+ * insert actually landed reports created=true; a racer whose insert was a
+ * conflict no-op gets zero rows back and reports created=false.
+ *
  * Does NOT create company memberships: instance_admin bypasses company
  * scoping via authz, so no membership rows are required.
  */
@@ -76,60 +67,40 @@ export async function ensureInstanceAdmin(
 ): Promise<EnsureInstanceAdminResult> {
   const now = new Date();
 
-  const existingUser = await db
-    .select({ id: authUsers.id })
-    .from(authUsers)
-    .where(eq(authUsers.id, principal.userId))
-    .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+  // ON CONFLICT DO NOTHING on the primary key keeps this race-safe when
+  // several automation processes (e.g. per-replica init containers) run the
+  // seed concurrently: a duplicate insert is a no-op instead of a
+  // duplicate-key error that would fail the run. RETURNING yields the row
+  // only when this call actually inserted it.
+  const insertedUsers: Array<{ id: string }> = await db
+    .insert(authUsers)
+    .values({
+      id: principal.userId,
+      name: principal.name,
+      email: principal.email,
+      emailVerified: true,
+      image: null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing({ target: authUsers.id })
+    .returning({ id: authUsers.id });
+  const createdUser = insertedUsers.length > 0;
 
-  let createdUser = false;
-  if (!existingUser) {
-    // ON CONFLICT DO NOTHING on the primary key keeps this race-safe when
-    // several automation processes (e.g. per-replica init containers) run the
-    // seed concurrently: a duplicate insert is a no-op instead of a
-    // duplicate-key error that would fail the run.
-    await db
-      .insert(authUsers)
-      .values({
-        id: principal.userId,
-        name: principal.name,
-        email: principal.email,
-        emailVerified: true,
-        image: null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoNothing({ target: authUsers.id });
-    createdUser = true;
-  }
-
-  const existingRole = await db
-    .select({ id: instanceUserRoles.id })
-    .from(instanceUserRoles)
-    .where(
-      and(
-        eq(instanceUserRoles.userId, principal.userId),
-        eq(instanceUserRoles.role, INSTANCE_ADMIN_ROLE),
-      ),
-    )
-    .then((rows: Array<{ id: string }>) => rows[0] ?? null);
-
-  let createdRole = false;
-  if (!existingRole) {
-    // ON CONFLICT DO NOTHING on the unique (user_id, role) index
-    // (instance_user_roles_user_role_unique_idx) keeps concurrent seeds from
-    // racing on the same role row and failing the run.
-    await db
-      .insert(instanceUserRoles)
-      .values({
-        userId: principal.userId,
-        role: INSTANCE_ADMIN_ROLE,
-      })
-      .onConflictDoNothing({
-        target: [instanceUserRoles.userId, instanceUserRoles.role],
-      });
-    createdRole = true;
-  }
+  // ON CONFLICT DO NOTHING on the unique (user_id, role) index
+  // (instance_user_roles_user_role_unique_idx) keeps concurrent seeds from
+  // racing on the same role row and failing the run.
+  const insertedRoles: Array<{ id: string }> = await db
+    .insert(instanceUserRoles)
+    .values({
+      userId: principal.userId,
+      role: INSTANCE_ADMIN_ROLE,
+    })
+    .onConflictDoNothing({
+      target: [instanceUserRoles.userId, instanceUserRoles.role],
+    })
+    .returning({ id: instanceUserRoles.id });
+  const createdRole = insertedRoles.length > 0;
 
   return { createdUser, createdRole };
 }
@@ -140,6 +111,19 @@ export async function seedInstanceAdmin(opts: {
 }): Promise<void> {
   const configPath = resolveConfigPath(opts.config);
   loadPaperclipEnvFile(configPath);
+
+  // Mirror auth-bootstrap-ceo: seeding an instance admin only applies to
+  // authenticated deployments — local_trusted instances auto-seed their own
+  // board principal at server startup. Only enforceable when a config file is
+  // readable; headless automation that points straight at the DB via
+  // --db-url/DATABASE_URL (no config on the seeding host) proceeds as before.
+  const config = readConfig(configPath);
+  if (config && config.server.deploymentMode !== "authenticated") {
+    p.log.info(
+      "Deployment mode is local_trusted. Seeding an instance admin is only required for authenticated mode; the server auto-seeds a local board principal.",
+    );
+    return;
+  }
 
   const principal = resolveSeedPrincipal();
 
