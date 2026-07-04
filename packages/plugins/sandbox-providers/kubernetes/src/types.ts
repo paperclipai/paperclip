@@ -110,4 +110,11 @@ export interface KubernetesLeaseMetadata {
   phase: "Pending" | "Running" | "Succeeded" | "Failed";
   /** Which backend provisioned this lease. */
   backend: "sandbox-cr" | "job";
+  /**
+   * Realized workspace cwd for this lease (e.g. "/workspace"), set at lease
+   * acquisition. Lets the execution target resolve the correct cwd from the
+   * lease itself, matching the SSH/Daytona providers. Optional for backward
+   * compatibility with leases acquired before this field existed.
+   */
+  remoteCwd?: string;
 }
