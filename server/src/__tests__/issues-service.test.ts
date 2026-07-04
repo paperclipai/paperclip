@@ -306,8 +306,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         workItemType: "human_task",
         priority: "medium",
         createdAt: new Date("2026-07-01T10:00:00.000Z"),
-        completedAt: new Date("2026-07-01T13:00:00.000Z"),
-        updatedAt: new Date("2026-07-01T13:00:00.000Z"),
+        completedAt: new Date("2026-07-10T13:00:00.000Z"),
+        updatedAt: new Date("2026-07-10T13:00:00.000Z"),
       },
       {
         id: userOwnedAiIssueId,
@@ -331,6 +331,29 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         createdAt: new Date("2026-07-01T10:00:00.000Z"),
         completedAt: new Date("2026-07-01T14:00:00.000Z"),
         updatedAt: new Date("2026-07-01T14:00:00.000Z"),
+      },
+    ]);
+
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "system",
+        actorId: "test",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: humanTaskId,
+        details: { status: "done", _previous: { status: "in_review" } },
+        createdAt: new Date("2026-07-01T13:00:00.000Z"),
+      },
+      {
+        companyId,
+        actorType: "system",
+        actorId: "test",
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: humanTaskId,
+        details: { status: "done", _previous: { status: "done" } },
+        createdAt: new Date("2026-07-10T13:00:00.000Z"),
       },
     ]);
 

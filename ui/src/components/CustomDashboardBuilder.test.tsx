@@ -164,7 +164,7 @@ describe("CustomDashboardBuilder", () => {
     expect(host.textContent).toContain("including sub-issues");
   });
 
-  it("sums scoped issue lifecycle time into human hours", () => {
+  it("sums scoped human task lifecycle time into human hours", () => {
     const humanHoursWidget: DashboardWidgetConfig = {
       id: "human-time",
       metric: "actual_human_hours",
@@ -194,6 +194,47 @@ describe("CustomDashboardBuilder", () => {
     });
 
     expect(host.textContent).toContain("2h");
-    expect(host.textContent).toContain("Automatic issue lifecycle time");
+    expect(host.textContent).toContain("Automatic human task lifecycle time");
+  });
+
+  it("does not count initiative container age as human labor", () => {
+    const humanHoursWidget: DashboardWidgetConfig = {
+      id: "initiative-human-time",
+      metric: "actual_human_hours",
+      scope: "initiative",
+      statusScope: "done",
+      size: "compact",
+    };
+
+    act(() => {
+      root = createRoot(host);
+      root.render(
+        <CustomDashboardBuilder
+          storageKey="paperclip:test-dashboard-initiative-human-time"
+          title="Dashboard widgets"
+          subtitle="Customize project metrics."
+          issues={[
+            issue({
+              id: "initiative-1",
+              status: "done",
+              workItemType: "initiative",
+              assigneeUserId: null,
+              actualHumanSeconds: 7_200_000,
+            }),
+            issue({
+              id: "human-child-1",
+              parentId: "initiative-1",
+              status: "done",
+              workItemType: "human_task",
+              actualHumanSeconds: 3600,
+            }),
+          ]}
+          defaultWidgets={[humanHoursWidget]}
+        />,
+      );
+    });
+
+    expect(host.textContent).toContain("1h");
+    expect(host.textContent).not.toContain("2000h");
   });
 });

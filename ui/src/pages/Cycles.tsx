@@ -151,6 +151,15 @@ function actualHumanSecondsForIssue(issue: Issue) {
   return Math.max(0, issue.actualHumanSeconds);
 }
 
+function isHumanWorkEffortIssue(issue: Issue) {
+  if (issue.workItemType === "initiative") return false;
+  return issue.workItemType === "human_task" || Boolean(issue.assigneeUserId);
+}
+
+function actualHumanWorkSecondsForIssue(issue: Issue) {
+  return isHumanWorkEffortIssue(issue) ? actualHumanSecondsForIssue(issue) : 0;
+}
+
 function formatShortDate(value: string | Date | null | undefined) {
   if (!value) return "";
   const date = new Date(value);
@@ -319,7 +328,7 @@ function buildCycleAssignments(args: {
     row.issueCount += 1;
     row.storyPoints += points;
     row.estimateHours += estimateHours;
-    row.actualHumanSeconds += args.actualHumanSecondsByIssue.get(issue.id) ?? actualHumanSecondsForIssue(issue);
+    row.actualHumanSeconds += args.actualHumanSecondsByIssue.get(issue.id) ?? actualHumanWorkSecondsForIssue(issue);
     row.actualAiSeconds += args.actualAiSecondsByIssue.get(issue.id) ?? actualAiSecondsForIssue(issue);
     if (open) {
       row.openCount += 1;
@@ -398,7 +407,7 @@ function summarizeCycle(
     completedStoryPoints,
     estimateHours,
     openEstimateHours,
-    actualHumanSeconds: sumIssues(issues, actualHumanSecondsForIssue),
+    actualHumanSeconds: sumIssueValuesWithDescendants(issues, allIssues, actualHumanWorkSecondsForIssue),
     actualAiSeconds: sumIssueValuesWithDescendants(issues, allIssues, actualAiSecondsForIssue),
     progressPercent,
     capacityStoryPoints: cycle?.capacityStoryPoints ?? null,
@@ -701,7 +710,7 @@ export function Cycles() {
 
   const summaries = useMemo(() => buildCycleSummaries(cycles, issues, projects), [cycles, issues, projects]);
   const actualHumanSecondsByIssue = useMemo(
-    () => new Map(issues.map((issue) => [issue.id, actualHumanSecondsForIssue(issue)])),
+    () => buildIssueValueWithDescendantsMap(issues, actualHumanWorkSecondsForIssue),
     [issues],
   );
   const actualAiSecondsByIssueWithDescendants = useMemo(
@@ -752,7 +761,7 @@ export function Cycles() {
       completedStoryPoints,
       estimateHours: sumIssues(cycleAssignedIssues, estimateHoursForIssue),
       openEstimateHours: sumIssues(cycleAssignedOpenIssues, estimateHoursForIssue),
-      actualHumanSeconds: sumIssues(cycleAssignedIssues, actualHumanSecondsForIssue),
+      actualHumanSeconds: sumIssueValuesWithDescendants(cycleAssignedIssues, issues, actualHumanWorkSecondsForIssue),
       actualAiSeconds: sumIssueValuesWithDescendants(cycleAssignedIssues, issues, actualAiSecondsForIssue),
       progressPercent: cycleAssignedIssues.length > 0
         ? clampPercent((cycleAssignedCompletedIssues.length / cycleAssignedIssues.length) * 100)
@@ -1603,7 +1612,7 @@ export function Cycles() {
                                     </span>
                                   </td>
                                   <td className="px-3 py-3 tabular-nums text-foreground">
-                                    {formatActualAiTime(actualHumanSecondsByIssue.get(issue.id) ?? actualHumanSecondsForIssue(issue))}
+                                    {formatActualAiTime(actualHumanSecondsByIssue.get(issue.id) ?? actualHumanWorkSecondsForIssue(issue))}
                                   </td>
                                   <td className="px-3 py-3 tabular-nums text-foreground">
                                     {formatActualAiTime(actualAiSecondsByIssueWithDescendants.get(issue.id) ?? actualAiSecondsForIssue(issue))}

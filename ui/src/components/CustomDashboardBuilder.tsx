@@ -149,7 +149,7 @@ const METRIC_DEFINITIONS: MetricDefinition[] = [
   {
     key: "actual_human_hours",
     label: "Human hours",
-    description: "Automatic issue lifecycle time.",
+    description: "Automatic human task lifecycle time.",
     tone: "blue",
     icon: Users,
   },
@@ -260,6 +260,15 @@ function actualHumanHours(issue: Issue): number {
   return Math.max(0, issue.actualHumanSeconds / 3600);
 }
 
+function isHumanWorkEffortIssue(issue: Issue): boolean {
+  if (issue.workItemType === "initiative") return false;
+  return issue.workItemType === "human_task" || Boolean(issue.assigneeUserId);
+}
+
+function actualHumanWorkHours(issue: Issue): number {
+  return isHumanWorkEffortIssue(issue) ? actualHumanHours(issue) : 0;
+}
+
 function formatDecimal(value: number, digits = 1): string {
   if (Number.isInteger(value)) return String(value);
   return value.toFixed(digits);
@@ -325,8 +334,8 @@ function metricResult(widget: DashboardWidgetConfig, issues: Issue[]): MetricRes
     return { value: formatHours(total), detail: "Recorded agent execution time, including sub-issues", tone, progress: null };
   }
   if (widget.metric === "actual_human_hours") {
-    const total = scoped.reduce((sum, issue) => sum + actualHumanHours(issue), 0);
-    return { value: formatHours(total), detail: "Automatic issue lifecycle time", tone, progress: null };
+    const total = sumIssueValuesWithDescendants(scoped, issues, actualHumanWorkHours);
+    return { value: formatHours(total), detail: "Automatic human task lifecycle time", tone, progress: null };
   }
   if (widget.metric === "completion_rate") {
     const base = allInWidgetScope.filter((issue) => widget.statusScope === "all" || statusMatches(issue, widget.statusScope));

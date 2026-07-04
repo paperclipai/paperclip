@@ -1061,20 +1061,45 @@ async function actualHumanSecondsMapForIssues(
   const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
   if (uniqueIssueIds.length === 0) return map;
 
+  const stopAtExpr = sql<Date>`
+    CASE
+      WHEN ${issues.status} IN ('done', 'cancelled') THEN COALESCE(
+        (
+          SELECT MIN(${activityLog.createdAt})
+          FROM ${activityLog}
+          WHERE ${activityLog.companyId} = ${companyId}
+            AND ${activityLog.entityType} = 'issue'
+            AND ${activityLog.entityId} = ${issues.id}::text
+            AND ${activityLog.action} = 'issue.updated'
+            AND ${activityLog.details}->>'status' IN ('done', 'cancelled')
+            AND ${activityLog.createdAt} >= COALESCE(
+              (
+                SELECT MAX(open_activity.created_at)
+                FROM activity_log AS open_activity
+                WHERE open_activity.company_id = ${companyId}
+                  AND open_activity.entity_type = 'issue'
+                  AND open_activity.entity_id = ${issues.id}::text
+                  AND open_activity.action = 'issue.updated'
+                  AND open_activity.details->>'status' NOT IN ('done', 'cancelled')
+                  AND open_activity.created_at >= ${issues.createdAt}
+              ),
+              ${issues.createdAt}
+            )
+        ),
+        ${issues.completedAt},
+        ${issues.cancelledAt},
+        ${issues.updatedAt},
+        now()
+      )
+      ELSE now()
+    END
+  `;
+
   const lifecycleSecondsExpr = sql<number>`
     GREATEST(
       0,
       EXTRACT(EPOCH FROM (
-        COALESCE(
-          ${issues.completedAt},
-          ${issues.cancelledAt},
-          CASE
-            WHEN ${issues.status} IN ('done', 'cancelled') THEN ${issues.updatedAt}
-            ELSE now()
-          END,
-          now()
-        )
-        - ${issues.createdAt}
+        ${stopAtExpr} - ${issues.createdAt}
       ))
     )
   `;
