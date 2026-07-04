@@ -2870,9 +2870,13 @@ export function agentRoutes(
         // Preserve adapter-agnostic keys (env, cwd, etc.) from the existing config
         // when the adapter type changes. Without this, a PATCH that includes
         // adapterConfig but omits these keys would silently drop them.
+        // `paperclipSkillSync` holds the agent's desired-skill selection, which is
+        // a company-level (adapter-agnostic) choice even though it is persisted
+        // inside the per-adapter config; switching adapters must not wipe it.
         const ADAPTER_AGNOSTIC_KEYS = [
           "env", "cwd", "timeoutSec", "graceSec",
           "promptTemplate", "bootstrapPromptTemplate",
+          "paperclipSkillSync",
         ] as const;
         for (const key of ADAPTER_AGNOSTIC_KEYS) {
           if (rawEffectiveAdapterConfig[key] === undefined && existingAdapterConfig[key] !== undefined) {
