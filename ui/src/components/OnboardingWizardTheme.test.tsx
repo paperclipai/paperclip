@@ -29,6 +29,16 @@ describe("OnboardingWizard decorative panel theming", () => {
   });
 
   it("themes the decorative panel with shadcn surface tokens", () => {
-    expect(source).toContain("bg-muted text-muted-foreground");
+    // Anchor to the wrapper around <AsciiArtAnimation /> so the guard checks
+    // the decorative panel itself (the same tokens appear elsewhere in the
+    // wizard), then assert each token independently so a class reorder or a
+    // utility inserted between them cannot false-fail the test. `[^<>]`
+    // keeps the match from spanning across other JSX elements.
+    const panel = source.match(
+      /className=\{cn\(([^<>]*)\)\}\s*>\s*<AsciiArtAnimation\s*\/>/
+    );
+    expect(panel).not.toBeNull();
+    expect(panel?.[1]).toMatch(/\bbg-muted\b(?!-)/);
+    expect(panel?.[1]).toMatch(/\btext-muted-foreground\b/);
   });
 });
