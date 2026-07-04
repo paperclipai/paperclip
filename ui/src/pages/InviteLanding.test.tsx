@@ -1072,9 +1072,9 @@ describe("InviteLandingPage", () => {
 
   it("renders with theme tokens so it follows the deployer default theme instead of hardcoding dark", async () => {
     // The invite page is reached before the normal app shell. It must inherit
-    // the document theme (set by the PAPERCLIP_DEFAULT_THEME bootstrap) via
-    // shadcn theme tokens, not hardcode zinc/dark classes — otherwise a cream
-    // (light) cloud renders a dark invite page.
+    // the document theme (set by the index.html theme bootstrap) via shadcn
+    // theme tokens, not hardcode zinc/dark classes — otherwise a deployment
+    // bootstrapped to the light theme still renders a dark invite page.
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
