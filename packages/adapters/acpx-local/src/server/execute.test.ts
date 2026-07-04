@@ -1,9 +1,13 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AcpRuntimeOptions } from "acpx/runtime";
 import { createAcpxLocalExecutor } from "./execute.js";
+
+const execFileAsync = promisify(execFile);
 
 const tempRoots: string[] = [];
 
@@ -495,6 +499,55 @@ describe("acpx_local runtime skill isolation", () => {
     expect(wrapper).toContain("PAPERCLIP_RUN_ID");
     expect(wrapper).toContain("tee -a");
     expect(wrapper).toContain("exec node ./fake-acp.js");
+  });
+
+  it("drops the benign ACP nes/close cleanup RPC line from forwarded stderr but keeps it in the run log (CMOAAA-2790)", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+
+    const execute = createAcpxLocalExecutor({
+      createRuntime: () => buildRuntime() as never,
+    });
+
+    const fakeAgentPath = path.join(root, "fake-acp.sh");
+    await fs.writeFile(
+      fakeAgentPath,
+      [
+        "#!/usr/bin/env bash",
+        "echo \"Error handling request { method: 'nes/close' } { code: -32601, message: '\\\"Method not found\\\": nes/close' }\" >&2",
+        "echo \"some genuine crash: TypeError: x is not a function\" >&2",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+
+    await execute({
+      runId: "run-nes-close-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "custom",
+        agentCommand: fakeAgentPath,
+        stateDir,
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    const wrapperFile = (await fs.readdir(path.join(stateDir, "wrappers"))).find((name) => name.endsWith(".sh"));
+    const wrapperPath = path.join(stateDir, "wrappers", wrapperFile!);
+
+    const { stderr } = await execFileAsync("bash", [wrapperPath], {
+      env: { ...process.env, PAPERCLIP_RUN_ID: "run-nes-close-1" },
+    });
+
+    expect(stderr).not.toContain("nes/close");
+    expect(stderr).toContain("some genuine crash: TypeError: x is not a function");
+
+    const runLog = await fs.readFile(path.join(stateDir, "run-stderr", "run-nes-close-1.log"), "utf8");
+    expect(runLog).toContain("nes/close");
+    expect(runLog).toContain("some genuine crash: TypeError: x is not a function");
   });
 
   it("passes Paperclip env through the ACP agent wrapper instead of process.env", async () => {
