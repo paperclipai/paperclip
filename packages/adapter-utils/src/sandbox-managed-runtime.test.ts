@@ -671,6 +671,76 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(localWorkspaceDir, "README.md"), "utf8")).resolves.toBe("remote\n");
   });
 
+  it("still fails the restore when tar exits 2 (real archive error)", async () => {
+    // Negative counterpart to the exit-1 tolerance test: exit code 2 is a real
+    // tar error and must stay fatal. The tolerantTar wrapper rewrites only an
+    // exit status of exactly 1 to 0 (`[ $rc -le 1 ]`); this locks in that a
+    // future loosening (e.g. `-le 2`) breaks the safety contract visibly.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-tarexit2-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const fakeBinDir = path.join(rootDir, "fakebin");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(fakeBinDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "ws\n", "utf8");
+
+    // A `tar` shim that fails unconditionally with exit 2, activated only for
+    // the restore phase so prepare still uses the real system tar.
+    const tarShimPath = path.join(fakeBinDir, "tar");
+    await writeFile(tarShimPath, "#!/bin/sh\nexit 2\n", "utf8");
+    await chmod(tarShimPath, 0o755);
+    let tarShimActive = false;
+
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], {
+          maxBuffer: 32 * 1024 * 1024,
+          env: {
+            ...process.env,
+            PATH: tarShimActive ? `${fakeBinDir}:${process.env.PATH ?? ""}` : process.env.PATH ?? "",
+          },
+        }).catch((err: NodeJS.ErrnoException & { code?: number }) => {
+          throw new Error(`run failed with exit code ${err.code ?? "null"}`);
+        });
+      },
+    };
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    await writeFile(path.join(remoteWorkspaceDir, "README.md"), "remote\n", "utf8");
+    tarShimActive = true;
+    // The restore tar exits 2 via the shim; the script must propagate that as a
+    // non-zero exit (the `[ $rc -le 1 ]` guard fails, so the && chain aborts),
+    // and the local workspace must be left untouched.
+    await expect(prepared.restoreWorkspace()).rejects.toThrow(/run failed with exit code/);
+    await expect(readFile(path.join(localWorkspaceDir, "README.md"), "utf8")).resolves.toBe("ws\n");
+  });
+
   it("excludes transient symlinked home dirs from the asset tar while keeping required content", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-home-tmp-"));
     cleanupDirs.push(rootDir);
