@@ -96,6 +96,14 @@ function productivityReviewFingerprint(sourceIssueId: string) {
   return `productivity-review:${sourceIssueId}`;
 }
 
+function productivityReviewParentId(sourceIssue: IssueRow) {
+  return sourceIssue.parentId ?? sourceIssue.id;
+}
+
+function productivityReviewRequestDepth(sourceIssue: IssueRow) {
+  return clampIssueRequestDepth(sourceIssue.parentId ? sourceIssue.requestDepth : sourceIssue.requestDepth + 1);
+}
+
 function issueRunScopeSql(issueId: string) {
   return sql`(
     ${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}
@@ -686,7 +694,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         description: buildReviewMarkdown(evidence, opts.prefix),
         status: "todo",
         priority: evidence.trigger === "long_active_duration" ? "medium" : "high",
-        parentId: evidence.sourceIssue.id,
+        parentId: productivityReviewParentId(evidence.sourceIssue),
         projectId: evidence.sourceIssue.projectId,
         goalId: evidence.sourceIssue.goalId,
         billingCode: evidence.sourceIssue.billingCode,
@@ -695,7 +703,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
         originId: evidence.sourceIssue.id,
         originFingerprint: productivityReviewFingerprint(evidence.sourceIssue.id),
-        requestDepth: clampIssueRequestDepth(evidence.sourceIssue.requestDepth + 1),
+        requestDepth: productivityReviewRequestDepth(evidence.sourceIssue),
+        inheritExecutionWorkspaceFromIssueId: evidence.sourceIssue.id,
       });
     } catch (error) {
       const maybe = error as { code?: string; constraint?: string; message?: string };

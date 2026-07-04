@@ -469,6 +469,48 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews).toHaveLength(1);
   });
 
+  it("creates productivity reviews for execution-lane children as parent-level sibling reviews", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const parentId = randomUUID();
+    await db.insert(issues).values({
+      id: parentId,
+      companyId: seeded.companyId,
+      title: "Parent manager lane",
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: seeded.managerId,
+      issueNumber: 2,
+      identifier: `${seeded.issuePrefix}-2`,
+      createdAt: seeded.createdAt,
+      updatedAt: seeded.createdAt,
+    });
+    await db
+      .update(issues)
+      .set({ parentId, requestDepth: 1 })
+      .where(eq(issues.id, seeded.issueId));
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    expect(result.failed).toBe(0);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.originId).toBe(seeded.issueId);
+    expect(review?.parentId).toBe(parentId);
+    expect(review?.requestDepth).toBe(1);
+    expect(review?.assigneeAgentId).toBe(seeded.managerId);
+  });
+
   it("treats a recently completed review as a snooze window", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
