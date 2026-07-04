@@ -687,6 +687,13 @@
       "when": 1780534000000,
       "tag": "0097_low_trust_source_trust",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1749168000000,
+      "tag": "0098_web_push_subscriptions",
+      "breakpoints": true
     }
   ]
 }
