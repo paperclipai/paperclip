@@ -904,10 +904,20 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "environment customImage setup cleanup failed");
         });
   
-      // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-      // persisted queued work is still being driven forward.
+      // Periodically reap orphaned runs and make sure persisted queued work is
+      // still being driven forward. The staleness threshold (default 5 min) is the
+      // max wall-clock a "running" run can go without its updatedAt advancing before
+      // it is treated as orphaned and reaped. A long agent build executes as a single
+      // multi-minute sandbox exec that does NOT refresh updatedAt mid-flight, so the
+      // 5-min default reaps real in-progress builds (SIGKILL, exit 137). Make it
+      // configurable via PAPERCLIP_HEARTBEAT_REAP_STALE_MS so cloud/sandbox
+      // deployments can allow for long autonomous builds.
+      const reapStaleMs = (() => {
+        const raw = Number(process.env.PAPERCLIP_HEARTBEAT_REAP_STALE_MS);
+        return Number.isFinite(raw) && raw > 0 ? raw : 5 * 60 * 1000;
+      })();
       void heartbeat
-        .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+        .reapOrphanedRuns({ staleThresholdMs: reapStaleMs })
         .then(() => heartbeat.promoteDueScheduledRetries())
         .then(async (promotion) => {
           await heartbeat.resumeQueuedRuns();
