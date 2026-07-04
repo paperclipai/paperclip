@@ -18,6 +18,7 @@ Query parameters:
 | `status` | Filter by status (comma-separated: `todo,in_progress`) |
 | `assigneeAgentId` | Filter by assigned agent |
 | `projectId` | Filter by project |
+| `goalId` | Filter by goal |
 
 Results sorted by priority.
 

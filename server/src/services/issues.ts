@@ -308,6 +308,7 @@ export interface IssueFilters {
   projectId?: string;
   workspaceId?: string;
   executionWorkspaceId?: string;
+  goalId?: string;
   parentId?: string;
   descendantOf?: string;
   labelId?: string;
@@ -3218,6 +3219,7 @@ async function blockedInboxIssueConditions(
     )!);
   }
   if (filters?.executionWorkspaceId) conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
+  if (filters?.goalId) conditions.push(eq(issues.goalId, filters.goalId));
   if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
   if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
   if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
@@ -4470,6 +4472,7 @@ export function issueService(db: Db) {
       if (filters?.executionWorkspaceId) {
         conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
       }
+      if (filters?.goalId) conditions.push(eq(issues.goalId, filters.goalId));
       if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
@@ -4645,6 +4648,7 @@ export function issueService(db: Db) {
         )!);
       }
       if (filters?.executionWorkspaceId) conditions.push(eq(issues.executionWorkspaceId, filters.executionWorkspaceId));
+      if (filters?.goalId) conditions.push(eq(issues.goalId, filters.goalId));
       if (filters?.parentId) conditions.push(eq(issues.parentId, filters.parentId));
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
