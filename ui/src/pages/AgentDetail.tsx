@@ -3885,6 +3885,16 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           return;
         }
 
+        if (event.type === "heartbeat.run.progress") {
+          const message = asNonEmptyString(payload.message);
+          if (!message) return;
+          const phase = asNonEmptyString(payload.phase);
+          const ts = asNonEmptyString((payload as Record<string, unknown>).updatedAt) ?? event.createdAt;
+          const chunk = phase ? `[${phase}] ${message}` : message;
+          setLogLines((prev) => [...prev, { ts, stream: "system", chunk }]);
+          return;
+        }
+
         if (event.type !== "heartbeat.run.event") return;
 
         const seq = typeof payload.seq === "number" ? payload.seq : null;
