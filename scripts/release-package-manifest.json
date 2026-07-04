@@ -47,7 +47,7 @@
   {
     "dir": "packages/adapters/mistral-local",
     "name": "@paperclipai/adapter-mistral-local",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/adapters/hermes-gateway",
