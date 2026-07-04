@@ -660,12 +660,34 @@ export function pluginRoutes(
    * result alone would not catch it either. Only the disk itself is ground
    * truth for what a healed publish would spread cluster-wide.
    */
+  /**
+   * True when `packageName` is safe to embed in a filesystem path under
+   * node_modules: relative, with no empty, `.`, or `..` segments. These
+   * values normally come from registry rows and the managed package.json the
+   * server wrote itself, but a forged value (attacker with DB write access —
+   * the same threat model as the snapshot tarball guard) must fail closed
+   * instead of steering reads or cleanup outside the plugin tree.
+   */
+  function isSafePluginPackageName(packageName: string): boolean {
+    if (packageName.length === 0 || path.isAbsolute(packageName)) return false;
+    return packageName
+      .split("/")
+      .every((segment) => segment !== "" && segment !== "." && segment !== "..");
+  }
+
   async function readInstalledPackageVersion(
     packageName: string,
     packagePath?: string | null,
   ): Promise<string | null> {
-    const packageDir =
-      packagePath ?? path.join(loader.getLocalPluginDir(), "node_modules", ...packageName.split("/"));
+    // Fail closed on traversal: an unsafe name or an out-of-tree resolved
+    // directory reads nothing, so the heals treat the package as "not on
+    // disk" and take their repair path instead.
+    if (!isSafePluginPackageName(packageName)) return null;
+    const pluginDir = path.resolve(loader.getLocalPluginDir());
+    const packageDir = path.resolve(
+      packagePath ?? path.join(pluginDir, "node_modules", ...packageName.split("/")),
+    );
+    if (!packageDir.startsWith(pluginDir + path.sep)) return null;
     try {
       const raw = await readFile(path.join(packageDir, "package.json"), "utf8");
       const parsed = JSON.parse(raw) as { version?: unknown };
@@ -700,6 +722,10 @@ export function pluginRoutes(
     const livePackages = new Set(liveRows.map((row) => row.packageName));
     for (const packageName of Object.keys(dependencies)) {
       if (livePackages.has(packageName)) continue;
+      // Same fail-closed guard as readInstalledPackageVersion: a forged
+      // dependency name must not steer cleanupInstallArtifacts outside the
+      // plugin tree.
+      if (!isSafePluginPackageName(packageName)) continue;
       await loader.cleanupInstallArtifacts({
         id: packageName,
         pluginKey: packageName,
@@ -1309,7 +1335,12 @@ export function pluginRoutes(
                 const healed = await registry.getById(match.id);
                 return { kind: "healed", existingPlugin: healed, updated: healed } as const;
               }
-              const repaired = await lifecycle.upgrade(match.id, version?.trim());
+              // Repair to the version the registry row already advertises —
+              // NOT the caller's spec: an unpinned request would fetch npm's
+              // CURRENT latest, which may have moved since the original
+              // install, and the publish would spread that unintended
+              // upgrade cluster-wide.
+              const repaired = await lifecycle.upgrade(match.id, match.version ?? version?.trim());
               return { kind: "healed", existingPlugin: repaired, updated: repaired } as const;
             }
           }

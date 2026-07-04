@@ -355,7 +355,10 @@ describe("POST /api/plugins/install (replication)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.id).toBe(PLUGIN_ID);
-    expect(mockLifecycle.upgrade).toHaveBeenCalledWith(PLUGIN_ID, undefined);
+    // The repair must pin the version the registry row advertises ("1.0.0"),
+    // not pass the caller's unpinned spec through — that would fetch npm's
+    // CURRENT latest and spread an unintended upgrade cluster-wide.
+    expect(mockLifecycle.upgrade).toHaveBeenCalledWith(PLUGIN_ID, "1.0.0");
     // Repair happens inside the wrapper: reconcile → repair → publish.
     const upgradeOrder = mockLifecycle.upgrade.mock.invocationCallOrder[0]!;
     const publishOrder = replication.publishSnapshot.mock.invocationCallOrder[0]!;
@@ -525,11 +528,18 @@ describe("DELETE /api/plugins/:pluginId (replication)", () => {
     // reconcile reinstated the purged plugin's files. The managed tree's
     // package.json records every plugin the loader ever `--save`d; only
     // "@other/live-plugin" still has a live registry row.
+    // "../evil-escape" is a forged row-less entry with traversal segments —
+    // the sweep must skip it (fail closed) rather than hand it to
+    // cleanupInstallArtifacts.
     writeFileSync(
       path.join(pluginDir, "package.json"),
       JSON.stringify({
         name: "paperclip-managed-plugins",
-        dependencies: { "@acme/plugin-test": "^1.0.0", "@other/live-plugin": "^2.0.0" },
+        dependencies: {
+          "@acme/plugin-test": "^1.0.0",
+          "@other/live-plugin": "^2.0.0",
+          "../evil-escape": "^1.0.0",
+        },
       }),
     );
     mockRegistry.listInstalled.mockResolvedValue([
@@ -706,6 +716,37 @@ describe("POST /api/plugins/:pluginId/upgrade (replication)", () => {
     const upgradeOrder = mockLifecycle.upgrade.mock.invocationCallOrder[0]!;
     const publishOrder = replication.publishSnapshot.mock.invocationCallOrder[0]!;
     expect(upgradeOrder).toBeLessThan(publishOrder);
+    expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a traversal packageName in the disk check: a crafted file outside the plugin tree cannot satisfy the heal", async () => {
+    const replication = createReplication();
+    const { app, pluginDir } = await createApp(replication);
+    // A package.json OUTSIDE the plugin tree (sibling of pluginDir) carrying
+    // the target version, addressed via `..` segments in the row's
+    // packageName (forgeable only with DB write access — defense in depth,
+    // same threat model as the snapshot tarball guard). The disk check must
+    // fail closed (treat as "not installed") instead of reading it, sending
+    // the request down the repair path.
+    const evilDir = `${pluginDir}-evil`;
+    tmpPluginDirs.push(evilDir);
+    mkdirSync(evilDir, { recursive: true });
+    writeFileSync(path.join(evilDir, "package.json"), JSON.stringify({ version: "1.1.0" }));
+    const evilPackageName = `../../${path.basename(evilDir)}`;
+    mockRegistry.getById.mockResolvedValue({
+      ...pluginRow,
+      packageName: evilPackageName,
+      version: "1.1.0",
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${PLUGIN_ID}/upgrade`)
+      .send({ version: "1.1.0" });
+
+    expect(res.status).toBe(200);
+    // No heal despite row.version === target and the crafted out-of-tree
+    // file matching: lifecycle.upgrade runs instead.
+    expect(mockLifecycle.upgrade).toHaveBeenCalledWith(PLUGIN_ID, "1.1.0");
     expect(replication.publishSnapshot).toHaveBeenCalledTimes(1);
   });
 
