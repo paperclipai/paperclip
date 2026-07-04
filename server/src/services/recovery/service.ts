@@ -235,6 +235,7 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "agent_not_invokable",
   "agent_not_found",
+  "billing_limit_exhausted",
   "budget_blocked",
   "budget_exhausted",
   "issue_paused",

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  BILLING_LIMIT_ERROR_CODE,
   buildHeartbeatRunStopMetadata,
+  isBillingLimitErrorMessage,
   mergeHeartbeatRunStopMetadata,
   resolveHeartbeatRunTimeoutPolicy,
 } from "./heartbeat-stop-metadata.js";
@@ -115,6 +117,58 @@ describe("heartbeat stop metadata", () => {
       timeoutConfigured: true,
       timeoutSource: "default",
       timeoutFired: false,
+    });
+  });
+
+  describe("billing/spending-limit error detection", () => {
+    it("detects workspace monthly spending limit exhausted message", () => {
+      expect(isBillingLimitErrorMessage("workspace monthly spending limit exhausted")).toBe(true);
+      expect(isBillingLimitErrorMessage("Workspace monthly spending limit of $160 exhausted")).toBe(true);
+      expect(isBillingLimitErrorMessage("adapter_failed: workspace monthly spending limit exhausted")).toBe(true);
+    });
+
+    it("detects billing limit and credit exhaustion variants", () => {
+      expect(isBillingLimitErrorMessage("billing limit exhausted")).toBe(true);
+      expect(isBillingLimitErrorMessage("credit balance insufficient")).toBe(true);
+      expect(isBillingLimitErrorMessage("quota exhausted for this period")).toBe(true);
+      expect(isBillingLimitErrorMessage("billing threshold exceeded")).toBe(true);
+    });
+
+    it("does not false-positive on non-billing errors", () => {
+      expect(isBillingLimitErrorMessage("Adapter failed: connection refused")).toBe(false);
+      expect(isBillingLimitErrorMessage("Timed out after 45s")).toBe(false);
+      expect(isBillingLimitErrorMessage("session not found")).toBe(false);
+      expect(isBillingLimitErrorMessage(null)).toBe(false);
+      expect(isBillingLimitErrorMessage(undefined)).toBe(false);
+      expect(isBillingLimitErrorMessage("")).toBe(false);
+    });
+
+    it("classifies billing-limit failures as billing_limit_exhausted stop reason", () => {
+      expect(
+        buildHeartbeatRunStopMetadata({
+          adapterType: "opencode_local",
+          adapterConfig: {},
+          outcome: "failed",
+          errorCode: null,
+          errorMessage: "workspace monthly spending limit exhausted",
+        }).stopReason,
+      ).toBe("billing_limit_exhausted");
+    });
+
+    it("does not classify non-billing adapter failures as billing_limit_exhausted", () => {
+      expect(
+        buildHeartbeatRunStopMetadata({
+          adapterType: "opencode_local",
+          adapterConfig: {},
+          outcome: "failed",
+          errorCode: null,
+          errorMessage: "connection refused",
+        }).stopReason,
+      ).toBe("adapter_failed");
+    });
+
+    it("exports the canonical billing limit error code constant", () => {
+      expect(BILLING_LIMIT_ERROR_CODE).toBe("billing_limit_exhausted");
     });
   });
 });
