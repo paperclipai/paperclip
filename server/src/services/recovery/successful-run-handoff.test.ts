@@ -102,7 +102,6 @@ describe("successful run handoff decision", () => {
           contextSnapshot: {
             issueId: "issue-1",
             wakeReason: "source_scoped_recovery_action",
-            recoveryActionId: "recovery-action-1",
           },
         } as any,
       }),
@@ -110,8 +109,8 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "recovery action run owns its own follow-up path",
     });
-    // the recoveryActionId marker alone is enough (payloads carry it even when
-    // wakeReason is rewritten downstream)
+    // the recoveryActionId marker alone is also enough (payloads carry it even
+    // when wakeReason is rewritten downstream)
     expect(
       decide({
         run: {
