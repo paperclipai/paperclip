@@ -510,6 +510,34 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect((rows[0]?.metadata as Record<string, unknown>)?.managedSandbox).toBe(true);
   });
 
+  it("ensureManagedSandboxEnvironment fails actionably when a managed Kubernetes env occupies the slot", async () => {
+    await svc.ensureKubernetesEnvironment({ backend: "job", inCluster: true });
+
+    await expect(
+      svc.ensureManagedSandboxEnvironment({ provider: "daytona", config: {} }),
+    ).rejects.toThrow(/mutually exclusive[\s\S]*switch executionMode back to "kubernetes"/);
+  });
+
+  it("ensureKubernetesEnvironment fails actionably when a managed generic sandbox occupies the slot", async () => {
+    await svc.ensureManagedSandboxEnvironment({ provider: "daytona", config: {} });
+
+    await expect(
+      svc.ensureKubernetesEnvironment({ backend: "job", inCluster: true }),
+    ).rejects.toThrow(/mutually exclusive[\s\S]*switch executionMode back to "sandbox"/);
+  });
+
+  it("ensureManagedSandboxEnvironment reports a name collision with an unmanaged environment", async () => {
+    await svc.create({
+      name: "Paperclip Managed Sandbox",
+      driver: "sandbox",
+      config: { provider: "fake", image: "busybox", reuseLease: false },
+    });
+
+    await expect(
+      svc.ensureManagedSandboxEnvironment({ provider: "daytona", config: {} }),
+    ).rejects.toThrow(/named "Paperclip Managed Sandbox" already exists/);
+  });
+
   it("findManagedSandboxEnvironment ignores a provider-less sandbox env (treated as unconfigured)", async () => {
     // A sandbox row without a provider key is a misconfiguration; the lookup
     // must return null so the heartbeat raises the actionable
