@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documents,
@@ -1123,10 +1123,16 @@ export function issueThreadInteractionService(db: Db) {
 
     expireRequestConfirmationsSupersededByComment: async (
       issue: { id: string; companyId: string },
-      comment: { id: string; createdAt: Date | string; authorUserId?: string | null },
+      comment: { id: string; createdAt: Date | string; authorUserId?: string | null; createdByRunId?: string | null },
       actor: InteractionActor,
     ) => {
       if (!comment.authorUserId) return [];
+      // A comment authored inside a heartbeat run is machine-originated, even when the
+      // local-CLI adapter posts it under user auth (which nondeterministically sets
+      // authorUserId). Such comments must never supersede pending decision cards — only a
+      // genuine interactive human comment (no run context) should. Without this guard an
+      // agent's own on-thread SLA/heartbeat comment expires its own card. See POS-127.
+      if (comment.createdByRunId) return [];
 
       const rows = await db
         .select()
@@ -1202,6 +1208,9 @@ export function issueThreadInteractionService(db: Db) {
             eq(issueComments.companyId, issue.companyId),
             eq(issueComments.issueId, issue.id),
             isNotNull(issueComments.authorUserId),
+            // Only genuine interactive human comments (no heartbeat run context) supersede.
+            // Machine-originated comments carry createdByRunId even under user auth. See POS-127.
+            isNull(issueComments.createdByRunId),
           ))
           .orderBy(asc(issueComments.createdAt)),
       ]);
