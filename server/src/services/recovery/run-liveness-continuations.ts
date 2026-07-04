@@ -8,7 +8,19 @@ import { RECOVERY_REASON_KINDS } from "./origins.js";
 export const RUN_LIVENESS_CONTINUATION_REASON = RECOVERY_REASON_KINDS.runLivenessContinuation;
 export const DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS = 2;
 
-const ACTIONABLE_LIVENESS_STATES = new Set<RunLivenessState>(["plan_only", "empty_response"]);
+const ACTIONABLE_LIVENESS_STATES = new Set<string>(["plan_only", "empty_response"]);
+
+// Upstream-throttle exits (errorFamily transient_upstream, or the
+// upstream_throttled liveness state) must never qualify for an immediate
+// continuation: the bounded transient retry ladder owns those, and the
+// per-issue rolling-window ceiling in liveness-continuation-throttle.ts caps
+// them across source runs. Accepts a plain string so callers can probe states
+// that have not landed in the RunLivenessState union yet.
+export function isActionableLivenessStateForContinuation(
+  state: string | null | undefined,
+): state is string {
+  return state != null && ACTIONABLE_LIVENESS_STATES.has(state);
+}
 const CONTINUATION_ACTIVE_ISSUE_STATUSES = new Set(["todo", "in_progress"]);
 // A prior adapter error should not permanently suppress bounded liveness
 // continuations; the max-attempt/idempotency guards prevent unbounded retries.
@@ -22,6 +34,11 @@ type IssueRow = Pick<
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 
+export interface RunContinuationBackoff {
+  delayMs: number;
+  dueAt: Date;
+}
+
 export type RunContinuationDecision =
   | {
       kind: "enqueue";
@@ -29,6 +46,7 @@ export type RunContinuationDecision =
       idempotencyKey: string;
       payload: Record<string, unknown>;
       contextSnapshot: Record<string, unknown>;
+      backoff: RunContinuationBackoff | null;
     }
   | {
       kind: "exhausted";
@@ -92,6 +110,9 @@ export function decideRunLivenessContinuation(input: {
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
   maxAttempts?: number;
+  // Deferral schedule computed by the caller (liveness-continuation-throttle);
+  // null/omitted keeps the historical immediate-continuation behavior.
+  backoff?: RunContinuationBackoff | null;
 }): RunContinuationDecision {
   const {
     run,
@@ -105,7 +126,7 @@ export function decideRunLivenessContinuation(input: {
   } = input;
   const maxAttempts = input.maxAttempts ?? DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS;
 
-  if (!livenessState || !ACTIONABLE_LIVENESS_STATES.has(livenessState)) {
+  if (!isActionableLivenessStateForContinuation(livenessState)) {
     return { kind: "skip", reason: "liveness state is not actionable for continuation" };
   }
   if (!issue) return { kind: "skip", reason: "issue not found" };
@@ -172,6 +193,7 @@ export function decideRunLivenessContinuation(input: {
     kind: "enqueue",
     nextAttempt,
     idempotencyKey,
+    backoff: input.backoff ?? null,
     payload,
     contextSnapshot: withRecoveryModelProfileHint({
       issueId: issue.id,
