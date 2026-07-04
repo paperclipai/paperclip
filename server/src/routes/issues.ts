@@ -80,6 +80,7 @@ import {
   companyService,
   companySearchService,
   executionWorkspaceService,
+  forceReassignService,
   goalService,
   heartbeatService,
   issueApprovalService,
@@ -1291,6 +1292,7 @@ export function issueRoutes(
   const router = Router();
   const svc = issueService(db);
   const access = accessService(db);
+  const forceReassignSvc = forceReassignService(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
@@ -7227,6 +7229,115 @@ export function issueRoutes(
     });
 
     res.json(result);
+  });
+
+  router.post("/issues/:id/force-reassign", async (req, res) => {
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board access required" });
+      return;
+    }
+    if (!req.actor.userId) {
+      throw forbidden("Board user context required");
+    }
+
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    const { targetAssigneeId, reason } = req.body ?? {};
+    if (!targetAssigneeId || typeof targetAssigneeId !== "string") {
+      res.status(422).json({ error: "targetAssigneeId is required" });
+      return;
+    }
+    if (!reason || typeof reason !== "string" || !reason.trim()) {
+      res.status(422).json({ error: "reason_required", message: "A non-empty justification is required for force-reassign." });
+      return;
+    }
+    if (targetAssigneeId === req.actor.userId || targetAssigneeId === req.actor.agentId) {
+      res.status(403).json({ error: "self_assignment_not_allowed", message: "Cannot force-reassign an issue to yourself." });
+      return;
+    }
+
+    const idempotencyKey = (req.headers["idempotency-key"] as string) ?? req.header("Idempotency-Key");
+    if (!idempotencyKey || typeof idempotencyKey !== "string") {
+      res.status(422).json({ error: "Idempotency-Key header is required" });
+      return;
+    }
+
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "issue:force_reassign",
+      resource: { type: "company", companyId: existing.companyId },
+    });
+    if (!decision.allowed) {
+      res.status(403).json({ error: "Missing scope issue:force_reassign" });
+      return;
+    }
+
+    try {
+      const actorId = req.actor.userId ?? req.actor.agentId ?? "board";
+      const result = await forceReassignSvc.forceReassign({
+        issueId: id,
+        fromAssigneeId: existing.assigneeAgentId ?? "",
+        toAssigneeId: targetAssigneeId,
+        reason: reason.trim(),
+        idempotencyKey,
+        actorId,
+      });
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.force_reassign",
+        entityType: "issue",
+        entityId: id,
+        details: {
+          fromAssigneeId: existing.assigneeAgentId,
+          toAssigneeId: targetAssigneeId,
+          reason: reason.trim(),
+          wasIdempotent: result.wasIdempotent,
+        },
+      });
+
+      res.json({
+        issueId: result.issueId,
+        fromAssigneeId: result.fromAssigneeId,
+        toAssigneeId: result.toAssigneeId,
+        wasIdempotent: result.wasIdempotent,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      switch (message) {
+        case "not_found":
+          res.status(404).json({ error: "Issue not found" });
+          break;
+        case "expected_from_mismatch":
+          res.status(409).json({ error: "expected_from_mismatch", message: "The assignee has changed since the request was issued." });
+          break;
+        case "target_not_found":
+          res.status(422).json({ error: "target_not_found", message: "Target assignee does not exist in this company." });
+          break;
+        case "tenant_isolation_violation":
+          res.status(403).json({ error: "tenant_isolation_violation", message: "Target assignee belongs to a different company." });
+          break;
+        case "target_not_invokable":
+          res.status(422).json({ error: "target_not_invokable", message: "Target assignee is not in an invokable state." });
+          break;
+        case "issue_not_orphaned":
+          res.status(422).json({ error: "issue_not_orphaned", message: "This issue is not orphaned. It has a live assignee with a valid management chain." });
+          break;
+        default:
+          throw err;
+      }
+    }
   });
 
   router.get("/issues/:id/comments", async (req, res) => {
