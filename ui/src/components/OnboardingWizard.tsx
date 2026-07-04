@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
+import { useTranslation } from "@/i18n";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
@@ -100,6 +101,7 @@ function loadSavedState(): Record<string, unknown> | null {
 }
 
 export function OnboardingWizard() {
+  const { t } = useTranslation();
   const {
     onboardingOpen,
     onboardingOptions,
@@ -766,7 +768,9 @@ export function OnboardingWizard() {
             className="absolute top-4 left-4 z-10 rounded-sm p-1.5 text-muted-foreground/60 hover:text-foreground transition-colors"
           >
             <X className="h-5 w-5" />
-            <span className="sr-only">Close</span>
+            <span className="sr-only">
+              {t("app.onboardingWizard.close", { defaultValue: "Close" })}
+            </span>
           </button>
 
           {/* Step 0: Front Door — full-screen choice */}
@@ -798,7 +802,10 @@ export function OnboardingWizard() {
                     <button
                       key={s}
                       type="button"
-                      aria-label={`Step ${s}`}
+                      aria-label={t("app.onboardingWizard.stepLabel", {
+                        step: s,
+                        defaultValue: `Step ${s}`,
+                      })}
                       aria-current={s === step ? "step" : undefined}
                       disabled={!canJump}
                       onClick={() => canJump && setStep(s as Step)}
@@ -957,7 +964,7 @@ export function OnboardingWizard() {
                     className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
                     onClick={() => { setOnboardingPath(null); setStep(0); }}
                   >
-                    ← Back to start
+                    {t("app.onboardingWizard.backToStart", { defaultValue: "← Back to start" })}
                   </button>
                 </div>
               )}
@@ -970,9 +977,13 @@ export function OnboardingWizard() {
                       <Building2 className="h-5 w-5 text-muted-foreground" />
                     </div>
                     <div>
-                      <h3 className="font-medium">Name your company</h3>
+                      <h3 className="font-medium">
+                        {t("app.onboardingWizard.step1.title", { defaultValue: "Name your company" })}
+                      </h3>
                       <p className="text-xs text-muted-foreground">
-                        What should we call your company?
+                        {t("app.onboardingWizard.step1.description", {
+                          defaultValue: "What should we call your company?",
+                        })}
                       </p>
                     </div>
                   </div>
@@ -985,11 +996,11 @@ export function OnboardingWizard() {
                           : "text-muted-foreground group-focus-within:text-foreground"
                       )}
                     >
-                      Company name
+                      {t("app.onboardingWizard.step1.companyName", { defaultValue: "Company name" })}
                     </label>
                     <input
                       className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
-                      placeholder="Acme Corp"
+                      placeholder={t("app.onboardingWizard.step1.placeholder", { defaultValue: "Acme Corp" })}
                       value={companyName}
                       onChange={(e) => setCompanyName(e.target.value)}
                       onKeyDown={(e) => {
@@ -1006,7 +1017,7 @@ export function OnboardingWizard() {
                     className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
                     onClick={() => { setOnboardingPath(null); setStep(0); }}
                   >
-                    ← Back to start
+                    {t("app.onboardingWizard.backToStart", { defaultValue: "← Back to start" })}
                   </button>
                 </div>
               )}
@@ -1639,7 +1650,7 @@ export function OnboardingWizard() {
                       disabled={loading}
                     >
                       <ArrowLeft className="h-3.5 w-3.5 mr-1" />
-                      Back
+                      {t("app.onboardingWizard.navigation.back", { defaultValue: "Back" })}
                     </Button>
                   )}
                 </div>
@@ -1653,7 +1664,7 @@ export function OnboardingWizard() {
                         setStep(2);
                       }}
                     >
-                      Next
+                      {t("app.onboardingWizard.navigation.next", { defaultValue: "Next" })}
                       <ArrowRight className="h-3.5 w-3.5 ml-1" />
                     </Button>
                   )}
@@ -1677,7 +1688,7 @@ export function OnboardingWizard() {
                       disabled={!agentName.trim()}
                       onClick={() => setStep(4)}
                     >
-                      Next
+                      {t("app.onboardingWizard.navigation.next", { defaultValue: "Next" })}
                       <ArrowRight className="h-3.5 w-3.5 ml-1" />
                     </Button>
                   )}
