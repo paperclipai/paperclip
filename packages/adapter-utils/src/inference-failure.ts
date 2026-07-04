@@ -28,8 +28,10 @@ export type InferenceFailureCode =
 export interface InferenceFailureClassification {
   code: InferenceFailureCode;
   /**
-   * The concrete upstream cause text we matched on, retained verbatim for
-   * support and telemetry. This is what used to be thrown away.
+   * The concrete upstream marker text we matched on, retained for support and
+   * telemetry. Only the matched excerpt is kept, never the full
+   * errorMessage/stdout/stderr, so credential material in surrounding output
+   * (relevant for AUTH_INVALID) is not carried into telemetry.
    */
   cause: string;
 }
@@ -83,7 +85,7 @@ const CLASS_BY_ERROR_CODE: Record<string, InferenceFailureCode> = Object.fromEnt
 // Does the text look like an inference/model failure at all? Gates the whole
 // classifier so unrelated failures (git, workspace, filesystem) stay untouched.
 const INFERENCE_CONTEXT_RE =
-  /(?:virtual_key_not_found|budget\s+has\s+been\s+exceeded|max\s+budget|out\s+of\s+(?:inference\s+)?credits|insufficient\s+(?:credits|balance|funds)|payment\s+required|\b40[123]\b|\b429\b|\b5\d{2}\b|\bhttp\s*000\b|rate[-\s]?limit|too\s+many\s+requests|throttl|unauthorized|invalid[\s_]+api[\s_]?key|authentication[\s_]error|unexpected\s+server\s+error|service\s+unavailable|gateway\s+timeout|timed?\s*out|no\s+healthy\s+upstream|model\b|completion|chat\/completions|provider|upstream|bifrost|litellm|openrouter)/i;
+  /(?:virtual_key_not_found|budget\s+has\s+been\s+exceeded|max\s+budget|out\s+of\s+(?:inference\s+)?credits|insufficient\s+(?:credits|balance|funds)|payment\s+required|\b40[123]\b|\b429\b|\b5\d{2}\b|\bhttp\s*000\b|rate[-\s]?limit|too\s+many\s+requests|throttl|unauthorized|invalid[\s_]+api[\s_]?key|authentication[\s_]error|unexpected\s+server\s+error|service\s+unavailable|gateway\s+timeout|timed?\s*out|no\s+healthy\s+upstream|model\b|completion|chat\/completions|provider|upstream\s+error|bifrost|litellm|openrouter)/i;
 
 // Order matters: the most specific / most permanent classes are tested first so
 // a budget error that also carries a 4xx code resolves to OUT_OF_CREDITS.
@@ -94,7 +96,15 @@ const AUTH_INVALID_RE =
 const RATE_LIMITED_RE =
   /(?:\b429\b|rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|throttl(?:ed|ing)?)/i;
 const MODEL_UNAVAILABLE_RE =
-  /(?:\bhttp\s*000\b|\b000\b|\b504\b|gateway\s+timeout|timed?\s*out|connection\s+(?:refused|reset)|econnrefused|econnreset|no\s+healthy\s+upstream|model\s+(?:is\s+)?(?:temporarily\s+)?(?:unavailable|not\s+(?:found|served|available)|cold|overloaded)|(?:not\s+served|no\s+provider)\s+for\s+model)/i;
+  /(?:\bhttp\s*000\b|\b504\b|gateway\s+timeout|timed?\s*out|no\s+healthy\s+upstream|model\s+(?:is\s+)?(?:temporarily\s+)?(?:unavailable|not\s+(?:found|served|available)|cold|overloaded)|(?:not\s+served|no\s+provider)\s+for\s+model)/i;
+// Connection-level failures ("connection refused", ECONNRESET) are only an
+// unavailable model when the text also names an inference-shaped component;
+// on their own they are just as likely a database or webhook failure, so they
+// must not flip to a retryable MODEL_UNAVAILABLE without that context.
+const MODEL_CONNECTION_FAILURE_RE =
+  /(?:connection\s+(?:refused|reset)|econnrefused|econnreset)/i;
+const MODEL_CONNECTION_CONTEXT_RE =
+  /(?:model\b|provider|inference|completion|chat\/completions|bifrost|litellm|openrouter)/i;
 const UPSTREAM_ERROR_RE =
   /(?:\b50[023]\b|\b5\d{2}\b|internal\s+server\s+error|bad\s+gateway|service\s+unavailable|upstream\s+error|unexpected\s+server\s+error)/i;
 
@@ -117,15 +127,25 @@ export function classifyInferenceFailure(
   input: InferenceFailureInput,
 ): InferenceFailureClassification | null {
   const haystack = buildHaystack(input);
-  if (!haystack || !INFERENCE_CONTEXT_RE.test(haystack)) return null;
+  if (!haystack) return null;
+  const contextMatch = INFERENCE_CONTEXT_RE.exec(haystack);
+  if (!contextMatch) return null;
 
-  const cause = haystack;
-  if (OUT_OF_CREDITS_RE.test(haystack)) return { code: "OUT_OF_CREDITS", cause };
-  if (AUTH_INVALID_RE.test(haystack)) return { code: "AUTH_INVALID", cause };
-  if (RATE_LIMITED_RE.test(haystack)) return { code: "RATE_LIMITED", cause };
-  if (MODEL_UNAVAILABLE_RE.test(haystack)) return { code: "MODEL_UNAVAILABLE", cause };
-  if (UPSTREAM_ERROR_RE.test(haystack)) return { code: "UPSTREAM_ERROR", cause };
-  return { code: "UNKNOWN", cause };
+  const creditsMatch = OUT_OF_CREDITS_RE.exec(haystack);
+  if (creditsMatch) return { code: "OUT_OF_CREDITS", cause: creditsMatch[0] };
+  const authMatch = AUTH_INVALID_RE.exec(haystack);
+  if (authMatch) return { code: "AUTH_INVALID", cause: authMatch[0] };
+  const rateMatch = RATE_LIMITED_RE.exec(haystack);
+  if (rateMatch) return { code: "RATE_LIMITED", cause: rateMatch[0] };
+  const modelMatch = MODEL_UNAVAILABLE_RE.exec(haystack);
+  if (modelMatch) return { code: "MODEL_UNAVAILABLE", cause: modelMatch[0] };
+  const connectionMatch = MODEL_CONNECTION_FAILURE_RE.exec(haystack);
+  if (connectionMatch && MODEL_CONNECTION_CONTEXT_RE.test(haystack)) {
+    return { code: "MODEL_UNAVAILABLE", cause: connectionMatch[0] };
+  }
+  const upstreamMatch = UPSTREAM_ERROR_RE.exec(haystack);
+  if (upstreamMatch) return { code: "UPSTREAM_ERROR", cause: upstreamMatch[0] };
+  return { code: "UNKNOWN", cause: contextMatch[0] };
 }
 
 const RETRY_POLICY_BY_CLASS: Record<InferenceFailureCode, InferenceFailureRetryPolicy> = {

@@ -93,6 +93,39 @@ describe("classifyInferenceFailure", () => {
     expect(result?.code).toBe("UNKNOWN");
   });
 
+  it("does not treat a bare 000 without the http prefix as MODEL_UNAVAILABLE", () => {
+    const result = classifyInferenceFailure({
+      errorMessage: "model run wrote 000 tokens before failing",
+    });
+    expect(result?.code).toBe("UNKNOWN");
+  });
+
+  it("returns null for a connection failure without inference context", () => {
+    expect(
+      classifyInferenceFailure({
+        errorMessage: "upstream database connection refused",
+      }),
+    ).toBeNull();
+  });
+
+  it("classifies a provider connection failure as MODEL_UNAVAILABLE", () => {
+    const result = classifyInferenceFailure({
+      stderr: "openrouter: connection reset by peer while calling chat/completions",
+    });
+    expect(result?.code).toBe("MODEL_UNAVAILABLE");
+    expect(result?.cause).toContain("connection reset");
+  });
+
+  it("keeps only the matched marker as cause, never the surrounding output", () => {
+    const result = classifyInferenceFailure({
+      errorMessage: "invalid api key",
+      stderr: "request was sent with key sk-live-abc123-secret",
+    });
+    expect(result?.code).toBe("AUTH_INVALID");
+    expect(result?.cause).toBe("invalid api key");
+    expect(result?.cause).not.toContain("sk-live-abc123-secret");
+  });
+
   it("prefers the more specific class when several markers are present", () => {
     // A budget error often also carries a 4xx/5xx code; OUT_OF_CREDITS must win.
     const result = classifyInferenceFailure({
