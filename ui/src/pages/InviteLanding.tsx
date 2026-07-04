@@ -329,24 +329,31 @@ export function InviteLandingPage() {
     // re-render: the root redirect keys off this id once the company is in the
     // list.
     setSelectedCompanyId(companyId, { source: "manual" });
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const { companies } = await queryClient.fetchQuery({
-        ...companiesListQueryOptions,
-        staleTime: 0,
-      });
-      if (companies.some((company) => company.id === companyId)) {
-        break;
+    try {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const { companies } = await queryClient.fetchQuery({
+          ...companiesListQueryOptions,
+          staleTime: 0,
+        });
+        if (companies.some((company) => company.id === companyId)) {
+          break;
+        }
+        // Short backoff for the membership write to become readable before the
+        // next refetch. Skip the wait on the final attempt.
+        if (attempt < 3) {
+          await new Promise((resolve) => setTimeout(resolve, 120 * (attempt + 1)));
+        }
       }
-      // Short backoff for the membership write to become readable before the
-      // next refetch. Skip the wait on the final attempt.
-      if (attempt < 3) {
-        await new Promise((resolve) => setTimeout(resolve, 120 * (attempt + 1)));
-      }
+    } catch {
+      // A transient refetch failure must not abort the handoff: the invite was
+      // already accepted on the server, and throwing out of onSuccess would
+      // trip the mutation's onError and strand the invitee on the invite page
+      // behind a false "Failed to accept invite" error. Fall through to
+      // navigate below.
     }
-    // Navigate regardless: if the list is still lagging after the bounded
-    // retries the selection persists, so the root redirect (or a later companies
-    // refetch) still lands on the right company rather than silently choosing
-    // companies[0].
+    // Navigate regardless of a lagging list or a failed refetch: the selection
+    // persists, so the root redirect (or a later companies refetch) still lands
+    // on the right company rather than silently choosing companies[0].
     navigate("/", { replace: true });
   };
 

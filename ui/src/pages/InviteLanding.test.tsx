@@ -726,6 +726,71 @@ describe("InviteLandingPage", () => {
     });
   });
 
+  it("still redirects into the company when the post-accept companies refetch fails", async () => {
+    // The invite accept succeeded on the server, but the post-accept companies
+    // refetch hits a transient network error. Throwing out of the accept
+    // mutation's onSuccess would trip onError and pin the invitee on the invite
+    // page behind a false "Failed to accept invite" error. The handoff must
+    // swallow the refetch failure and navigate anyway: the selection is already
+    // persisted, so the root redirect recovers once the list is readable.
+    getSessionMock.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: {
+        id: "user-1",
+        name: "Jane Example",
+        email: "jane@example.com",
+        image: null,
+      },
+    });
+    // First call serves the pre-accept membership check; every post-accept
+    // refetch in the bounded retry loop fails.
+    listCompaniesMock.mockResolvedValueOnce([{ id: "own-company", name: "Existing Co" }]);
+    listCompaniesMock.mockRejectedValue(new Error("network error"));
+    acceptInviteMock.mockResolvedValue({
+      id: "join-1",
+      companyId: "company-1",
+      requestType: "human",
+      status: "approved",
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+          <QueryClientProvider client={queryClient}>
+            <Routes>
+              <Route path="/invite/:token" element={<InviteLandingPage />} />
+              <Route path="/" element={<div data-testid="company-root-redirect" />} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    for (let i = 0; i < 30; i += 1) {
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 60));
+      });
+      if (container.querySelector('[data-testid="company-root-redirect"]')) break;
+    }
+    await flushReact();
+
+    expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
+    expect(setSelectedCompanyIdMock).toHaveBeenCalledWith("company-1", { source: "manual" });
+
+    // Navigation fired despite the failing refetch, and no false accept error
+    // was shown for an invite that succeeded server-side.
+    expect(container.querySelector('[data-testid="company-root-redirect"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Failed to accept invite");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("asks unauthenticated users to sign in before completing an accepted human invite", async () => {
     getInviteMock.mockResolvedValue({
       id: "invite-1",
