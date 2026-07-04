@@ -2549,6 +2549,132 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
   });
 
+  it("wakes the parent manager when a child execution lane escalates to recovery", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    const recoveryOwnerId = randomUUID();
+    const parentManagerId = randomUUID();
+    const parentId = randomUUID();
+    const issuePrefix = await db
+      .select({ issuePrefix: companies.issuePrefix })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0]?.issuePrefix ?? "TST");
+
+    await db.insert(agents).values([
+      {
+        id: recoveryOwnerId,
+        companyId,
+        name: "ExecutionManager",
+        role: "manager",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: parentManagerId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "idle",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.update(agents).set({ reportsTo: recoveryOwnerId }).where(eq(agents.id, agentId));
+    await db.insert(issues).values({
+      id: parentId,
+      companyId,
+      title: "Parent manager lane",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: parentManagerId,
+      issueNumber: 0,
+      identifier: `${issuePrefix}-0`,
+    });
+    await db.update(issues).set({ parentId }).where(eq(issues.id, issueId));
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId,
+      relatedIssueId: parentId,
+      type: "blocks",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const action = await waitForValue(async () =>
+      db.select().from(issueRecoveryActions).where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+        ),
+      ).then((rows) => rows[0] ?? null),
+    );
+    expect(action).toMatchObject({
+      ownerAgentId: recoveryOwnerId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      attemptCount: 1,
+    });
+
+    const managerComment = await waitForValue(async () =>
+      db
+        .select()
+        .from(issueComments)
+        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, parentId)))
+        .then((rows) => rows.find((comment) => comment.body.includes(`Manager recovery wake: \`${action?.id}\``)) ?? null),
+    );
+    expect(managerComment?.body).toContain("Paperclip escalated a stranded execution lane to the manager path.");
+    expect(managerComment?.body).toContain("Route: `parent manager lane`");
+
+    const managerWake = await waitForValue(async () =>
+      db
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, parentManagerId)))
+        .then((rows) =>
+          rows.find((wakeup) => {
+            const payload = wakeup.payload as Record<string, unknown> | null;
+            return payload?.issueId === parentId &&
+              payload?.commentId === managerComment?.id &&
+              payload?.sourceIssueId === issueId &&
+              payload?.recoveryActionId === action?.id;
+          }) ?? null
+        ),
+    );
+    expect(managerWake).toMatchObject({
+      reason: "issue_commented",
+      source: "automation",
+    });
+    expect(managerWake?.status).not.toBe("skipped");
+
+    await waitForHeartbeatIdle(db);
+    const managerRun = managerWake?.runId
+      ? await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, managerWake.runId)).then((rows) => rows[0] ?? null)
+      : null;
+    expect(managerRun?.contextSnapshot).toMatchObject({
+      issueId: parentId,
+      taskId: parentId,
+      wakeReason: "issue_commented",
+      source: "issue.comment",
+      sourceIssueId: issueId,
+      recoveryActionId: action?.id,
+      managerEscalationRoute: "parent_manager",
+      dependencyBlockedInteraction: true,
+    });
+  });
+
   it("redacts error-code-only stranded recovery failures in issue copy", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",

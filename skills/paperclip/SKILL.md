@@ -94,6 +94,7 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - Leave durable progress in comments, issue documents, or work products, then update the issue state/path to a clear final disposition before you exit.
 - Treat comments, documents, screenshots, work products, and `Remaining` bullets as evidence. They are not valid liveness paths by themselves.
 - Use direct child execution lanes only from main parent issues. A parent may have at most 10 direct children. If the current issue already has `parentId`, do not create child issues or grandchildren; keep engineer, QA, fix, and review loops inside the same issue thread.
+- If a child execution lane is blocked, stranded, or needs recovery, surface that blocker/recovery state to the parent manager lane before exiting. Do not leave a parent issue silently waiting for a child lane that no longer has a live path.
 - For parent/task budget caps, use `budgetLimits` on issue create/update: `issueTreeCents` caps the parent plus all direct execution lanes; `childIssuesCents` caps execution lanes only. Defaults to lifetime windows unless `windowKind` is supplied.
 - Do not busy-poll agents, sessions, child issues, or processes waiting for completion.
 - If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
@@ -109,6 +110,7 @@ Before ending any heartbeat, apply this final-disposition checklist:
 - `in_review`: a real reviewer path exists, such as a typed execution participant, board/user owner, linked approval, pending interaction, or an explicit monitor that will wake the assignee later. Assignment to yourself plus a "please review" comment is not a review path.
 - `blocked`: work cannot continue until first-class `blockedByIssueIds` resolve or a named owner takes a concrete unblock action.
 - Delegated execution lane: only when the current issue is a main parent, create the follow-up issue directly with `parentId`/`goalId`, and use blockers when the parent must wait for that lane. If the current issue already has `parentId`, do not create another issue; report progress, QA, fixes, and blockers in the current issue.
+- Parent-manager escalation: when a delegated child lane is not terminal and no longer has a live execution path, the parent manager must be woken or explicitly notified with the child issue, recovery owner, and required unblock action.
 - Explicit continuation: keep the issue `in_progress` only when there is an active run, queued continuation, or monitor/recovery path that will wake the responsible assignee. Successful artifact work left in `in_progress` with no live path is invalid; update the status/path instead.
 
 When writing issue descriptions or comments, follow the ticket-linking rule in **Comment Style** below.

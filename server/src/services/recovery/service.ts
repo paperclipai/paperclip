@@ -1701,6 +1701,183 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
   }
 
+  async function resolveSourceScopedRecoveryManagerTarget(input: {
+    action: Awaited<ReturnType<typeof recoveryActionsSvc.upsertSourceScoped>>;
+    issue: typeof issues.$inferSelect;
+  }) {
+    const candidates: Array<{
+      issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "identifier" | "title" | "status" | "projectId" | "assigneeAgentId">;
+      managerAgentId: string;
+      route: "parent_manager" | "return_owner";
+    }> = [];
+
+    if (input.issue.parentId) {
+      const parent = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          projectId: issues.projectId,
+          assigneeAgentId: issues.assigneeAgentId,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, input.issue.companyId),
+          eq(issues.id, input.issue.parentId),
+          isNull(issues.hiddenAt),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (parent?.assigneeAgentId && !["done", "cancelled"].includes(parent.status)) {
+        candidates.push({
+          issue: parent,
+          managerAgentId: parent.assigneeAgentId,
+          route: "parent_manager",
+        });
+      }
+    } else if (
+      input.action.returnOwnerAgentId &&
+      input.action.returnOwnerAgentId !== input.action.ownerAgentId
+    ) {
+      candidates.push({
+        issue: {
+          id: input.issue.id,
+          companyId: input.issue.companyId,
+          identifier: input.issue.identifier,
+          title: input.issue.title,
+          status: input.issue.status,
+          projectId: input.issue.projectId,
+          assigneeAgentId: input.action.returnOwnerAgentId,
+        },
+        managerAgentId: input.action.returnOwnerAgentId,
+        route: "return_owner",
+      });
+    }
+
+    for (const candidate of candidates) {
+      if (candidate.managerAgentId === input.action.ownerAgentId) continue;
+      const manager = await getAgent(candidate.managerAgentId);
+      if (!manager || manager.companyId !== input.issue.companyId || !isAgentInvokable(manager)) continue;
+      const budgetBlock = await budgets.getInvocationBlock(input.issue.companyId, manager.id, {
+        issueId: candidate.issue.id,
+        projectId: candidate.issue.projectId,
+      });
+      if (budgetBlock) continue;
+      return { ...candidate, manager };
+    }
+
+    return null;
+  }
+
+  function buildManagerRecoveryEscalationComment(input: {
+    action: Awaited<ReturnType<typeof recoveryActionsSvc.upsertSourceScoped>>;
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    recoveryCause: StrandedRecoveryCause;
+    prefix: string;
+    recoveryOwner: { id: string; name: string | null } | null;
+    route: "parent_manager" | "return_owner";
+  }) {
+    const sourceIssue = issueUiLink({ identifier: input.issue.identifier, id: input.issue.id }, input.prefix);
+    const runLink = input.latestRun ? runUiLink({ id: input.latestRun.id, agentId: input.latestRun.agentId }, input.prefix) : "none";
+    const routeLabel = input.route === "parent_manager" ? "parent manager lane" : "return owner lane";
+    const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    return [
+      "Paperclip escalated a stranded execution lane to the manager path.",
+      "",
+      `- Source issue: ${sourceIssue}`,
+      `- Recovery action: \`${input.action.id}\``,
+      `- Recovery owner: ${agentUiLink(input.recoveryOwner, input.prefix)}`,
+      `- Route: \`${routeLabel}\``,
+      `- Cause: \`${input.recoveryCause}\``,
+      `- Latest run: ${runLink}`,
+      failureSummary ? `- Failure: ${failureSummary.trim()}` : "- Failure: none recorded",
+      "",
+      "Manager next action: inspect the source issue and decide how to unblock it. Reassign it, create/repair the blocker path, escalate to board if an outside decision is needed, or record an intentional manual resolution. Do not leave the child lane silently blocked.",
+      "",
+      `Manager recovery wake: \`${input.action.id}\``,
+    ].join("\n");
+  }
+
+  async function enqueueSourceScopedRecoveryManagerWake(input: {
+    action: Awaited<ReturnType<typeof recoveryActionsSvc.upsertSourceScoped>>;
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    recoveryCause: StrandedRecoveryCause;
+  }) {
+    const target = await resolveSourceScopedRecoveryManagerTarget({
+      action: input.action,
+      issue: input.issue,
+    });
+    if (!target) return;
+
+    const prefix = await getCompanyIssuePrefix(input.issue.companyId);
+    const recoveryOwner = input.action.ownerAgentId ? await getAgent(input.action.ownerAgentId) : null;
+    const marker = `Manager recovery wake: \`${input.action.id}\``;
+    const existingComment = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.companyId, input.issue.companyId),
+        eq(issueComments.issueId, target.issue.id),
+        sql`${issueComments.body} like ${`%${marker}%`}`,
+      ))
+      .orderBy(desc(issueComments.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    const comment = existingComment ?? await issuesSvc.addComment(
+      target.issue.id,
+      buildManagerRecoveryEscalationComment({
+        action: input.action,
+        issue: input.issue,
+        latestRun: input.latestRun,
+        recoveryCause: input.recoveryCause,
+        prefix,
+        recoveryOwner,
+        route: target.route,
+      }),
+      {},
+      { authorType: "system" },
+    );
+
+    await deps.enqueueWakeup(target.managerAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      idempotencyKey: `source_scoped_recovery_manager_escalation:${input.action.id}:${input.action.attemptCount}:${target.managerAgentId}`,
+      payload: {
+        issueId: target.issue.id,
+        commentId: comment.id,
+        sourceIssueId: input.issue.id,
+        recoveryActionId: input.action.id,
+        managerEscalation: true,
+      },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: {
+        issueId: target.issue.id,
+        taskId: target.issue.id,
+        commentId: comment.id,
+        wakeCommentId: comment.id,
+        wakeReason: "issue_commented",
+        source: "issue.comment",
+        recoveryActionId: input.action.id,
+        sourceIssueId: input.issue.id,
+        sourceIssueIdentifier: input.issue.identifier,
+        sourceIssueTitle: input.issue.title,
+        sourceIssueStatus: input.issue.status,
+        strandedRunId: input.latestRun?.id ?? null,
+        recoveryCause: input.recoveryCause,
+        recoveryOwnerAgentId: input.action.ownerAgentId,
+        returnOwnerAgentId: input.action.returnOwnerAgentId,
+        managerEscalationRoute: target.route,
+      },
+    });
+  }
+
   function buildRecoveryIssueInPlaceEscalationComment(input: {
     issue: typeof issues.$inferSelect;
     previousStatus: "todo" | "in_progress";
@@ -1942,6 +2119,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     await enqueueSourceScopedStrandedRecoveryWake({
       action: recoveryAction,
       issue: input.issue,
+      latestRun: input.latestRun,
+      recoveryCause,
+    });
+    await enqueueSourceScopedRecoveryManagerWake({
+      action: recoveryAction,
+      issue: updated,
       latestRun: input.latestRun,
       recoveryCause,
     });
