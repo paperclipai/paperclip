@@ -82,7 +82,7 @@
   ],
   "aggregation_constraints": {
     "cross_tenant_only_fields": ["bundle_hash", "window", "count"],
-    "forbidden_cross_tenant_fields": ["tenant_id", "agent_id", "lease_id", "source_spiiffe"],
+    "forbidden_cross_tenant_fields": ["tenant_id", "agent_id", "lease_id", "source_spiffe"],
     "enforcement": "dashboard_query_layer"
   },
   "pii_allowlist_only": true,
