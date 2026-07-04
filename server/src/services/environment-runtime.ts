@@ -235,11 +235,11 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
   timeoutMs?: number;
   // Optional live-output sink. When a driver executes in-process it can forward
   // stdout/stderr chunks here as they arrive and set `streamed: true` on its
-  // result. NOTE: for plugin-backed sandbox providers the actual execute runs
-  // in a worker behind a JSON-RPC boundary (see the `execute` impl below), and
-  // a function cannot cross that boundary — so this sink is not delivered to the
-  // worker today and those providers fall back to buffered-at-end output. The
-  // last-mile RPC forwarding of chunks (worker -> host) is a separate change.
+  // result. For plugin-backed sandbox providers, `onOutput` cannot cross the
+  // worker JSON-RPC boundary directly; instead, the sandbox driver uses
+  // `withPluginExecOutputStream` to subscribe to the worker's `ctx.streams`
+  // channel (`env-exec-output:${runId}`) and route chunks back to this sink —
+  // so streaming is fully wired end-to-end when `runId` is provided.
   onOutput?: (stream: "stdout" | "stderr", text: string) => void | Promise<void>;
   // Run correlation id. For plugin-backed sandbox providers this is forwarded
   // over the worker RPC boundary and used (with `onOutput`) to bridge live

@@ -888,6 +888,12 @@ const plugin = definePlugin({
       // Open the live-output channel around the whole wait+log-scrape region so
       // it is closed on the success and timeout paths and if the orchestrator
       // throws — no leaked channel.
+      //
+      // NOTE: on this backend `onChunk` only fires inside `streamLogs`, which
+      // runs AFTER `waitForCompletion` returns — so subscribers receive the
+      // output as post-completion chunks, not incrementally during the run.
+      // The sandbox-cr backend (pod exec above) is the only path with true
+      // live mid-run output.
       openOutputChannel();
       try {
         let status;
@@ -929,8 +935,9 @@ const plugin = definePlugin({
             async (stream, text) => {
               if (stream === "stdout") stdoutChunks.push(text);
               else stderrChunks.push(text);
-              // Forward each streamed log chunk live so the caller can tail Job
-              // output as it arrives, not only after the Job completes.
+              // Forward each log chunk to the sink as the log scrape yields it.
+              // Note: the Job has already completed at this point (see NOTE
+              // above), so these are post-completion chunks, not mid-run output.
               onChunk?.(stream, text);
             },
           );
