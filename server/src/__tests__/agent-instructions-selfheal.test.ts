@@ -169,6 +169,60 @@ describe("agent instructions self-heal (ensureManagedInstructionsMaterialized)",
     expect(result.snapshotToPersist).toBeNull();
   });
 
+  it("re-captures when a non-entry file changed even though the entry file matches", async () => {
+    const paperclipHome = await setupHome();
+    const managedRoot = managedRootFor(paperclipHome);
+    await fs.mkdir(managedRoot, { recursive: true });
+    await fs.writeFile(path.join(managedRoot, "AGENTS.md"), "# Stable persona\n", "utf8");
+    await fs.writeFile(path.join(managedRoot, "TOOLS.md"), "## hand-edited tools\n", "utf8");
+    const agent = makeManagedAgent(managedRoot);
+
+    const svc = agentInstructionsService();
+    const result = await svc.ensureManagedInstructionsMaterialized(agent, {
+      durableSnapshot: {
+        entryFile: "AGENTS.md",
+        files: {
+          "AGENTS.md": "# Stable persona\n",
+          "TOOLS.md": "## stale tools\n",
+        },
+      },
+      loadDefaults: async () => ({ "AGENTS.md": "# Default\n" }),
+    });
+
+    expect(result.status).toBe("present");
+    // The entry file is unchanged, but the TOOLS.md hand edit must still be
+    // captured so a later disk wipe does not restore the stale snapshot.
+    expect(result.snapshotToPersist).not.toBeNull();
+    expect(result.snapshotToPersist?.files["TOOLS.md"]).toBe("## hand-edited tools\n");
+    expect(result.snapshotToPersist?.files["AGENTS.md"]).toBe("# Stable persona\n");
+  });
+
+  it("re-captures when a file was added or removed relative to the durable snapshot", async () => {
+    const paperclipHome = await setupHome();
+    const managedRoot = managedRootFor(paperclipHome);
+    await fs.mkdir(managedRoot, { recursive: true });
+    await fs.writeFile(path.join(managedRoot, "AGENTS.md"), "# Stable persona\n", "utf8");
+    await fs.writeFile(path.join(managedRoot, "NEW.md"), "## brand new file\n", "utf8");
+    const agent = makeManagedAgent(managedRoot);
+
+    const svc = agentInstructionsService();
+    const result = await svc.ensureManagedInstructionsMaterialized(agent, {
+      durableSnapshot: {
+        entryFile: "AGENTS.md",
+        files: {
+          "AGENTS.md": "# Stable persona\n",
+          "REMOVED.md": "## no longer on disk\n",
+        },
+      },
+      loadDefaults: async () => ({ "AGENTS.md": "# Default\n" }),
+    });
+
+    expect(result.status).toBe("present");
+    expect(result.snapshotToPersist).not.toBeNull();
+    expect(result.snapshotToPersist?.files["NEW.md"]).toBe("## brand new file\n");
+    expect(result.snapshotToPersist?.files["REMOVED.md"]).toBeUndefined();
+  });
+
   it("is a no-op for non-managed (external) agents with a missing file", async () => {
     const paperclipHome = await setupHome();
     const missingExternal = path.join(paperclipHome, "external", "AGENTS.md");

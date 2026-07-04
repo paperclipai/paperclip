@@ -48,6 +48,13 @@ export type ManagedInstructionsSnapshot = {
 
 type EnsureManagedAgent = AgentLike & { role?: string | null };
 
+function snapshotsEqual(a: ManagedInstructionsSnapshot, b: ManagedInstructionsSnapshot): boolean {
+  if (a.entryFile !== b.entryFile) return false;
+  const aKeys = Object.keys(a.files);
+  if (aKeys.length !== Object.keys(b.files).length) return false;
+  return aKeys.every((key) => a.files[key] === b.files[key]);
+}
+
 type EnsureManagedInstructionsInput = {
   /** The durable snapshot persisted from a previous materialize/run, if any. */
   durableSnapshot?: ManagedInstructionsSnapshot | null;
@@ -833,13 +840,12 @@ export function agentInstructionsService() {
     if (entryContent !== null) {
       // Bundle is present on disk. Opportunistically capture it durably so a
       // future disk wipe can restore the exact content (including hand edits).
-      const needsCapture =
-        !durableSnapshot
-        || durableSnapshot.entryFile !== entryFile
-        || durableSnapshot.files[entryFile] !== entryContent;
-      const snapshotToPersist = needsCapture
-        ? await readManagedBundleFromDisk(managedRoot, entryFile)
-        : null;
+      // Compare the full bundle — not just the entry file — so hand edits to
+      // non-entry files (e.g. TOOLS.md) and added/removed files are captured
+      // too instead of being silently reverted by a later restore.
+      const diskSnapshot = await readManagedBundleFromDisk(managedRoot, entryFile);
+      const needsCapture = !durableSnapshot || !snapshotsEqual(durableSnapshot, diskSnapshot);
+      const snapshotToPersist = needsCapture ? diskSnapshot : null;
       return {
         status: "present",
         source: "disk",
