@@ -522,6 +522,29 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     };
   }
 
+  async function getCompanyRecoveryReviewOwnerAgentId(companyId: string) {
+    return db
+      .select({ recoveryReviewOwnerAgentId: companies.recoveryReviewOwnerAgentId })
+      .from(companies)
+      .where(eq(companies.id, companyId))
+      .then((rows) => rows[0]?.recoveryReviewOwnerAgentId ?? null);
+  }
+
+  async function isCandidateInvokable(companyId: string, sourceIssue: IssueRow, candidate: AgentRow | null) {
+    if (!candidate || candidate.companyId !== companyId || !isAgentInvokable(candidate)) return false;
+    const budgetBlock = await budgets.getInvocationBlock(companyId, candidate.id, {
+      issueId: sourceIssue.id,
+      projectId: sourceIssue.projectId ?? null,
+    });
+    return !budgetBlock;
+  }
+
+  // resolveStaleRunOwnerAgentId / resolveStrandedIssueRecoveryOwnerAgentId /
+  // resolveEscalationOwnerAgentId in recovery/service.ts implement independent
+  // owner-resolution logic for the stale_active_run_evaluation, stranded_issue_recovery,
+  // and harness_liveness_escalation origins respectively; they are not touched here
+  // and still terminate at the CEO role fallback (SAG-5859 scoped this ticket to the
+  // productivity-review origin only).
   async function resolveReviewOwnerAgentId(sourceIssue: IssueRow, sourceAgent: AgentRow) {
     const candidateIds: string[] = [];
     if (sourceAgent.reportsTo) candidateIds.push(sourceAgent.reportsTo);
@@ -541,17 +564,22 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .orderBy(sql`case when ${agents.role} = 'cto' then 0 else 1 end`, asc(agents.createdAt), asc(agents.id));
     candidateIds.push(...roleCandidates.map((agent) => agent.id));
 
+    const configuredOwnerId = await getCompanyRecoveryReviewOwnerAgentId(sourceIssue.companyId);
+
     const seen = new Set<string>();
     for (const agentId of candidateIds) {
       if (seen.has(agentId)) continue;
       seen.add(agentId);
       const candidate = await getAgent(agentId);
-      if (!candidate || candidate.companyId !== sourceIssue.companyId || !isAgentInvokable(candidate)) continue;
-      const budgetBlock = await budgets.getInvocationBlock(sourceIssue.companyId, candidate.id, {
-        issueId: sourceIssue.id,
-        projectId: sourceIssue.projectId ?? null,
-      });
-      if (!budgetBlock) return candidate.id;
+      if (!(await isCandidateInvokable(sourceIssue.companyId, sourceIssue, candidate))) continue;
+
+      if (candidate!.role === "ceo" && configuredOwnerId && configuredOwnerId !== candidate!.id) {
+        const configuredOwner = await getAgent(configuredOwnerId);
+        if (await isCandidateInvokable(sourceIssue.companyId, sourceIssue, configuredOwner)) {
+          return configuredOwner!.id;
+        }
+      }
+      return candidate!.id;
     }
     return null;
   }

@@ -113,6 +113,101 @@ describeEmbeddedPostgres("productivity review service", () => {
     return { companyId, managerId, coderId, issueId, issuePrefix, createdAt };
   }
 
+  async function seedCeoEscalationIssue(opts?: {
+    directorReportsToCeo?: boolean;
+    recoveryReviewOwnerAgentId?: string | null;
+    includeCto?: boolean;
+  }) {
+    const companyId = randomUUID();
+    const ceoId = randomUUID();
+    const directorId = randomUUID();
+    const eaId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `PR${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const createdAt = new Date("2026-04-28T10:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Escalation Review Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: ceoId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: eaId,
+        companyId,
+        name: "Executive Assistant",
+        role: "ea",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      ...(opts?.includeCto
+        ? [
+          {
+            id: randomUUID(),
+            companyId,
+            name: "CTO",
+            role: "cto",
+            status: "idle",
+            adapterType: "codex_local",
+            adapterConfig: {},
+            runtimeConfig: {},
+            permissions: {},
+          },
+        ]
+        : []),
+      {
+        id: directorId,
+        companyId,
+        name: "Engineering Director",
+        role: "engineering_director",
+        status: "idle",
+        reportsTo: opts?.directorReportsToCeo === false ? null : ceoId,
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db
+      .update(companies)
+      .set({
+        recoveryReviewOwnerAgentId:
+          opts?.recoveryReviewOwnerAgentId === undefined ? eaId : opts.recoveryReviewOwnerAgentId,
+      })
+      .where(eq(companies.id, companyId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Escalation runbook",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: directorId,
+      originKind: "manual",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      startedAt: createdAt,
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    return { companyId, ceoId, directorId, eaId, issueId, issuePrefix, createdAt };
+  }
+
   async function insertRuns(input: {
     companyId: string;
     agentId: string;
@@ -562,5 +657,115 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(result.failed).toBe(0);
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.requestDepth).toBe(MAX_ISSUE_REQUEST_DEPTH);
+  });
+
+  it("routes a Director's productivity review to the configured recovery-review owner instead of the CEO via reportsTo", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedCeoEscalationIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.directorId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.assigneeAgentId).toBe(seeded.eaId);
+  });
+
+  it("routes to the configured recovery-review owner via the role-fallback path (no reportsTo/creator/lead)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedCeoEscalationIssue({ directorReportsToCeo: false });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.directorId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.assigneeAgentId).toBe(seeded.eaId);
+  });
+
+  it("falls back to the CEO unchanged when recoveryReviewOwnerAgentId is not configured", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedCeoEscalationIssue({ recoveryReviewOwnerAgentId: null });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.directorId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.assigneeAgentId).toBe(seeded.ceoId);
+  });
+
+  it("still routes a non-CEO manager's direct report review to that manager, unaffected by the configured recovery owner", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await db
+      .update(companies)
+      .set({ recoveryReviewOwnerAgentId: seeded.coderId })
+      .where(eq(companies.id, seeded.companyId));
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.assigneeAgentId).toBe(seeded.managerId);
+  });
+
+  it("falls through to the CEO when the configured recovery-review owner is paused", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedCeoEscalationIssue();
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, seeded.eaId));
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.directorId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.assigneeAgentId).toBe(seeded.ceoId);
   });
 });

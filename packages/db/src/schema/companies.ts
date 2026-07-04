@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex } from "drizzle-orm/pg-core";
+import { type AnyPgColumn, pgTable, uuid, text, integer, timestamp, boolean, uniqueIndex } from "drizzle-orm/pg-core";
+import { agents } from "./agents.js";
 
 export const companies = pgTable(
   "companies",
@@ -26,6 +27,9 @@ export const companies = pgTable(
     feedbackDataSharingConsentByUserId: text("feedback_data_sharing_consent_by_user_id"),
     feedbackDataSharingTermsVersion: text("feedback_data_sharing_terms_version"),
     brandColor: text("brand_color"),
+    recoveryReviewOwnerAgentId: uuid("recovery_review_owner_agent_id").references(
+      (): AnyPgColumn => agents.id,
+    ),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
