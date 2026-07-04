@@ -1,4 +1,7 @@
 import type { Request } from "express";
+import { eq } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
+import { agents } from "@paperclipai/db";
 import { forbidden, unauthorized } from "../errors.js";
 
 export function assertAuthenticated(req: Request) {
@@ -11,6 +14,28 @@ export function assertBoard(req: Request) {
   if (req.actor.type !== "board") {
     throw forbidden("Board access required");
   }
+}
+
+export async function assertAgentHasCtoRoleOnCompany(
+  db: Db,
+  req: Request,
+  companyId: string,
+): Promise<{ agentId: string }> {
+  if (req.actor.type !== "agent" || !req.actor.agentId) {
+    throw forbidden("Agent authentication required");
+  }
+  const agentRecord = await db
+    .select({ id: agents.id, companyId: agents.companyId, role: agents.role })
+    .from(agents)
+    .where(eq(agents.id, req.actor.agentId))
+    .then((rows) => rows[0] ?? null);
+  if (!agentRecord || agentRecord.companyId !== companyId) {
+    throw forbidden("Agent does not belong to this company");
+  }
+  if (agentRecord.role !== "cto") {
+    throw forbidden("CTO role required");
+  }
+  return { agentId: agentRecord.id };
 }
 
 export function hasBoardOrgAccess(req: Request) {

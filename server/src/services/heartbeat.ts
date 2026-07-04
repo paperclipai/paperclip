@@ -9494,6 +9494,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.scanSilentActiveRuns(opts);
   }
 
+  // FUL-633: model-call hang recovery. Calls into the recovery service which
+  // owns the predicate + decision matrix. Returns the same shape as
+  // `scanSilentActiveRuns` for symmetry.
+  async function scanModelCallHangRecovery(opts?: {
+    now?: Date;
+    companyId?: string;
+    forceEnabled?: boolean;
+  }) {
+    return recovery.scanModelCallHangRecovery(opts);
+  }
+
   async function reconcileProductivityReviews(opts?: { now?: Date; companyId?: string }) {
     return productivityReviews.reconcileProductivityReviews(opts);
   }
@@ -9506,7 +9517,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
       "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
-    >,
+    > & { processPid?: number | null },
     now = new Date(),
   ) {
     return recovery.buildRunOutputSilence(run, now);
@@ -14176,6 +14187,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileIssueGraphLiveness,
 
     scanSilentActiveRuns,
+
+    scanModelCallHangRecovery,
 
     reconcileProductivityReviews,
 

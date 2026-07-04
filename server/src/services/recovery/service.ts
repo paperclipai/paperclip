@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import fs from "node:fs/promises";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -102,6 +103,47 @@ export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
 );
 
+// FUL-633: model-call hang watchdog + auto-cancel & retry.
+// `MODEL_CALL_HANG_GRACE_MIN` is the wall-clock delay from the `suspicious`
+// silence threshold before auto-cancel + retry fires. Default 30 min so the
+// total recovery is 1h30m (1h suspicious threshold + 30m grace).
+// Floor at 60s to keep the grace from being effectively disabled by misconfig.
+export const MODEL_CALL_HANG_GRACE_MS = Math.max(
+  60_000,
+  Number(process.env.MODEL_CALL_HANG_GRACE_MIN) * 60 * 1000 || 30 * 60 * 1000,
+);
+
+// FUL-633: `cpu_seconds / wall_clock_seconds` ratio below which a
+// silent-but-alive run is classified as a model-call hang. 5% matches the
+// canonical runbook (`~/Company Files/fullstack-forge/_ORG/devops/
+// watchdog-failure-modes.md`, mode 2).
+export const MODEL_CALL_HANG_CPU_RATIO_THRESHOLD = 0.05;
+
+// FUL-633: feature flag. When `false` (default in production), the
+// `model_call_hang` predicate still classifies runs (for observability) but
+// no auto-cancel + retry fires. Set `ENABLE_MODEL_CALL_HANG_RECOVERY=true` to
+// enable the auto-cancel + retry branch. Toggling off reverts to v1 watchdog
+// behavior (no auto-cancel).
+function readEnvBoolean(name: string): boolean {
+  const raw = process.env[name];
+  if (typeof raw !== "string") return false;
+  const normalized = raw.trim().toLowerCase();
+  if (
+    normalized === "" ||
+    normalized === "0" ||
+    normalized === "false" ||
+    normalized === "no" ||
+    normalized === "off"
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export const ENABLE_MODEL_CALL_HANG_RECOVERY = readEnvBoolean(
+  "ENABLE_MODEL_CALL_HANG_RECOVERY",
+);
+
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -158,6 +200,149 @@ type WatchdogDecisionActor =
   | { type: "agent"; agentId?: string | null; runId?: string | null }
   | { type: "none" };
 
+// FUL-633: model-call hang predicate output shape. Module-scope so the
+// predicate helpers below can be exported and unit-tested in isolation
+// against mocked `/proc/<pid>/stat` (see
+// `server/src/__tests__/model-call-hang-predicate.test.ts`).
+export type ModelCallHangEvaluation = {
+  hungProcess: boolean;
+  cpuRatio: number | null;
+  wallSeconds: number | null;
+  cpuSeconds: number | null;
+  processAlive: boolean;
+  readError: string | null;
+};
+
+export function notHungModelCallHang(): ModelCallHangEvaluation {
+  return {
+    hungProcess: false,
+    cpuRatio: null,
+    wallSeconds: null,
+    cpuSeconds: null,
+    processAlive: false,
+    readError: null,
+  };
+}
+
+// FUL-633: read utime + stime from `/proc/<pid>/stat` and compute
+// `cpu_seconds / wall_clock_seconds`. Linux-only. Returns `null` on every
+// non-Linux platform, on a missing PID, on a malformed `/proc/<pid>/stat`
+// file, or when wall-clock is too small (< 60s) for the ratio to be
+// meaningful. The 60s floor keeps the predicate from triggering on brand-new
+// processes that have not yet burned a clock tick.
+//
+// Exported so the predicate can be unit-tested in isolation against a
+// mocked `/proc/<pid>/stat` reader (`vi.mock("node:fs/promises", …)`). The
+// internal `recoveryService` callers use the same function through this
+// public surface.
+export async function readProcessCpuOverWallRatio(
+  pid: number | null | undefined,
+  processStartedAt: Date | null,
+  now: Date,
+): Promise<number | null> {
+  if (process.platform !== "linux") return null;
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return null;
+  if (!processStartedAt || Number.isNaN(processStartedAt.getTime())) return null;
+
+  const wallClockSeconds = (now.getTime() - processStartedAt.getTime()) / 1000;
+  if (wallClockSeconds < 60) return null;
+
+  let stat: string;
+  try {
+    stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+  } catch {
+    return null;
+  }
+
+  // The command field can contain spaces and parens, so split on the last `)`.
+  const lastParen = stat.lastIndexOf(")");
+  if (lastParen < 0) return null;
+  const tail = stat.slice(lastParen + 1).trimStart();
+  const fields = tail.split(/\s+/);
+  // After `)`, fields[0]=state, fields[1]=ppid, fields[2]=pgrp, ...
+  // 11=utime, 12=stime (jiffies). Require at least 13 fields to be safe.
+  if (fields.length < 13) return null;
+  const utimeJiffies = Number.parseInt(fields[11], 10);
+  const stimeJiffies = Number.parseInt(fields[12], 10);
+  if (!Number.isFinite(utimeJiffies) || !Number.isFinite(stimeJiffies)) return null;
+
+  // USER_HZ is typically 100 on Linux. We hardcode 100 (the canonical
+  // Paperclip host value); a mismatch only causes the ratio to be
+  // under-reported, never under-evaluated.
+  const clockTicksPerSecond = 100;
+  const cpuSeconds = (utimeJiffies + stimeJiffies) / clockTicksPerSecond;
+  if (!Number.isFinite(cpuSeconds) || cpuSeconds < 0) return null;
+  return cpuSeconds / wallClockSeconds;
+}
+
+// FUL-633: model-call hang predicate.
+//
+//   model_call_hang := (
+//     run.status == "running" AND
+//     run.lastOutputAt == null AND
+//     process_pid_alive(run.processPid) AND
+//     process_cpu_seconds(run.processPid) / process_wall_clock_seconds(run.processPid) < 0.05
+//   )
+//
+// The decision matrix, snooze-honor rule, and grace period are documented in
+// `~/Company Files/fullstack-forge/_ORG/devops/watchdog-failure-modes.md` (v2,
+// Mode 2) and the post-mortem on FUL-632.
+//
+// Exported for unit testing with mocked `/proc/<pid>/stat` reads.
+export async function evaluateModelCallHang(
+  run: Pick<
+    typeof heartbeatRuns.$inferSelect,
+    "status" | "lastOutputAt" | "processPid" | "processStartedAt" | "startedAt" | "createdAt"
+  >,
+  now: Date,
+): Promise<ModelCallHangEvaluation> {
+  if (run.status !== "running") return notHungModelCallHang();
+  if (run.lastOutputAt != null) return notHungModelCallHang();
+  const pid = run.processPid;
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
+    return notHungModelCallHang();
+  }
+  if (!isPidAlive(pid)) {
+    // Alive-but-gone is the dead-process branch (FUL-614); not model-call hang.
+    return notHungModelCallHang();
+  }
+  const processStartedAt =
+    run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
+  const ratio = await readProcessCpuOverWallRatio(pid, processStartedAt, now);
+  if (ratio == null) {
+    // On unsupported platforms (non-linux) or `ps` failure we deliberately do
+    // NOT classify as a hang — false positives on Mode 2 are much more
+    // expensive than missing a hang detection (the run still has
+    // `outputSilence` alarm at 1h `suspicious` / 4h `critical` regardless of
+    // this flag).
+    return {
+      hungProcess: false,
+      cpuRatio: null,
+      wallSeconds: null,
+      cpuSeconds: null,
+      processAlive: true,
+      readError: "proc_unavailable",
+    };
+  }
+  return {
+    hungProcess: ratio < MODEL_CALL_HANG_CPU_RATIO_THRESHOLD,
+    cpuRatio: ratio,
+    wallSeconds:
+      processStartedAt
+        ? (now.getTime() - processStartedAt.getTime()) / 1000
+        : null,
+    cpuSeconds:
+      processStartedAt && ratio != null
+        ? ratio *
+          ((processStartedAt
+            ? (now.getTime() - processStartedAt.getTime()) / 1000
+            : 0) || 0)
+        : null,
+    processAlive: true,
+    readError: null,
+  };
+}
+
 export type RunOutputSilenceSummary = {
   lastOutputAt: Date | null;
   lastOutputSeq: number;
@@ -171,6 +356,16 @@ export type RunOutputSilenceSummary = {
   evaluationIssueId: string | null;
   evaluationIssueIdentifier: string | null;
   evaluationIssueAssigneeAgentId: string | null;
+  // FUL-633: `true` when the run is silent *and* the child process is still alive
+  // *and* its cpu/wall ratio is below `MODEL_CALL_HANG_CPU_RATIO_THRESHOLD` —
+  // i.e. the watchdog has classified this run as a Mode 2 model-call hang (see
+  // `~/Company Files/fullstack-forge/_ORG/devops/watchdog-failure-modes.md` v2).
+  // Always populated, independent of `ENABLE_MODEL_CALL_HANG_RECOVERY`, so the
+  // agent UI can render the state without changing existing contracts.
+  hungProcess: boolean;
+  hungProcessCpuRatio: number | null;
+  hungProcessWallClockSeconds: number | null;
+  hungProcessCpuSeconds: number | null;
 };
 
 function readNonEmptyString(value: unknown): string | null {
@@ -965,6 +1160,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
   }
 
+  // FUL-633: model-call hang predicate. Implementation lives at module scope
+  // (see `evaluateModelCallHang` / `readProcessCpuOverWallRatio` /
+  // `notHungModelCallHang` / `ModelCallHangEvaluation` near the top of this
+  // file) so it can be unit-tested in isolation. The internal callers below
+  // (`buildRunOutputSilence`, `scanModelCallHangRecovery`) import the
+  // exported symbol and use it unchanged.
+
   async function latestActiveOutputQuietUntilDecision(companyId: string, runId: string, now = new Date()) {
     const [row] = await db
       .select()
@@ -1055,7 +1257,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
       "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
-    >,
+    > & { processPid?: number | null },
     now = new Date(),
   ): Promise<RunOutputSilenceSummary> {
     const [quietUntilDecision, evaluation] = await Promise.all([
@@ -1073,6 +1275,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           : (silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS
             ? "suspicious"
             : "ok";
+    // FUL-633: model-call hang signal — quiet, alive, low-CPU ratio. Composed
+    // even when `ENABLE_MODEL_CALL_HANG_RECOVERY` is off so observability is
+    // available without the auto-cancel branch firing.
+    const hangEvaluation = await evaluateModelCallHang(
+      { ...run, processPid: run.processPid ?? null },
+      now,
+    );
     return {
       lastOutputAt: run.lastOutputAt ?? null,
       lastOutputSeq: run.lastOutputSeq ?? 0,
@@ -1088,6 +1297,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       evaluationIssueId: evaluation?.id ?? null,
       evaluationIssueIdentifier: evaluation?.identifier ?? null,
       evaluationIssueAssigneeAgentId: evaluation?.assigneeAgentId ?? null,
+      hungProcess: hangEvaluation.hungProcess,
+      hungProcessCpuRatio: hangEvaluation.cpuRatio,
+      hungProcessWallClockSeconds: hangEvaluation.wallSeconds,
+      hungProcessCpuSeconds: hangEvaluation.cpuSeconds,
     };
   }
 
@@ -1943,6 +2156,497 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     return result;
   }
+
+  // FUL-633: model-call hang recovery scanner. Mirrors `scanSilentActiveRuns`
+  // but only targets mode-2 hangs (alive-but-quiet) past the configured grace.
+  // Per-run outcome is one of: `snoozed` (active watchdog decision suppresses
+  // recovery), `not_hang` (pid busy or already quiet-recovered since SELECT),
+  // `below_grace` (past `suspicious` but not yet past grace), `auto_cancelled`
+  // (auto-cancel + retry branch fired, 4 gates pass), or `escalation_filed`
+  // (structured-escalation issue created because the gates failed).
+  async function scanModelCallHangRecovery(opts?: {
+    now?: Date;
+    companyId?: string;
+    /**
+     * Test-only override for the `ENABLE_MODEL_CALL_HANG_RECOVERY` feature
+     * flag. When set, the scan runs in this call regardless of the env knob.
+     * Production callers should leave this undefined and rely on the env.
+     */
+    forceEnabled?: boolean;
+  }): Promise<{
+    enabled: boolean;
+    scanned: number;
+    autoCancelled: number;
+    escalated: number;
+    snoozed: number;
+    notHang: number;
+    belowGrace: number;
+    retryRunIds: string[];
+    escalationIssueIds: string[];
+  }> {
+    const now = opts?.now ?? new Date();
+    const isEnabled =
+      opts?.forceEnabled === true ? true : ENABLE_MODEL_CALL_HANG_RECOVERY;
+    if (!isEnabled) {
+      // No-op while the feature flag is off. The `hungProcess` classifier still
+      // runs from `buildRunOutputSilence` so observability is unaffected.
+      return {
+        enabled: false,
+        scanned: 0,
+        autoCancelled: 0,
+        escalated: 0,
+        snoozed: 0,
+        notHang: 0,
+        belowGrace: 0,
+        retryRunIds: [],
+        escalationIssueIds: [],
+      };
+    }
+
+    const candidates = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined,
+          eq(heartbeatRuns.status, "running"),
+          isNull(heartbeatRuns.lastOutputAt),
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.createdAt))
+      .limit(100);
+
+    const result = {
+      enabled: true as const,
+      scanned: candidates.length,
+      autoCancelled: 0,
+      escalated: 0,
+      snoozed: 0,
+      notHang: 0,
+      belowGrace: 0,
+      retryRunIds: [] as string[],
+      escalationIssueIds: [] as string[],
+    };
+
+    for (const run of candidates) {
+      // FUL-633 / canonical: snooze-first — never override an explicit
+      // `snoozed` watchdog decision in favour of an automated cancel.
+      const snoozedUntil = await latestActiveOutputQuietUntilDecision(
+        run.companyId,
+        run.id,
+        now,
+      );
+      if (snoozedUntil) {
+        result.snoozed += 1;
+        continue;
+      }
+
+      // Re-check the mode-2 predicate here. The SELECT picked candidates with
+      // `lastOutputAt IS NULL`, but liveness/cpu can change between SELECT and
+      // this re-check — bail when the predicate no longer holds.
+      const hang = await evaluateModelCallHang(run, now);
+      if (!hang.hungProcess) {
+        result.notHang += 1;
+        continue;
+      }
+
+      // Grace check: how long has the run been silent *without* an output
+      // event? We measure from `lastOutputAt ?? processStartedAt ?? startedAt`.
+      // Below `suspicious` + grace means the run hasn't been silent long enough
+      // to warrant a cancel; wait one more tick.
+      const silentForMs = (() => {
+        const ref =
+          run.lastOutputAt ??
+          run.processStartedAt ??
+          run.startedAt ??
+          run.createdAt ??
+          null;
+        return ref ? Math.max(0, now.getTime() - ref.getTime()) : 0;
+      })();
+      const silenceThresholdWithGrace =
+        ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + MODEL_CALL_HANG_GRACE_MS;
+      if (silentForMs < silenceThresholdWithGrace) {
+        result.belowGrace += 1;
+        continue;
+      }
+
+      const sourceIssue = await resolveStaleRunSourceIssue(run);
+      const isBoardOwned = sourceIssue
+        ? sourceIssue.assigneeUserId != null || sourceIssue.assigneeAgentId == null
+        : false;
+      const gatingPass =
+        run.invocationSource === "automation" &&
+        !isBoardOwned &&
+        run.retryOfRunId == null &&
+        (run.processLossRetryCount ?? 0) < 1;
+
+      if (gatingPass) {
+        const retriedRun = await enqueueModelCallHangRetry({
+          run,
+          sourceIssue,
+          hang,
+          now,
+        });
+        // Kill the stuck process *after* the run is finalized to "failed" — that
+        // ordering mirrors FUL-614 dead-process recovery where the kill happens
+        // first, then status update. Both orderings are safe because
+        // `evaluateModelCallHang` is the only thing that observes the pid;
+        // killing last guarantees we still see the same pid throughout.
+        await terminateModelCallHangProcess(run);
+        await appendRecoveryRunEvent(run, {
+          level: "warn",
+          message: "model_call_hang auto-cancel + retry",
+          payload: {
+            hungProcess: true,
+            cpuRatio: hang.cpuRatio,
+            wallSeconds: hang.wallSeconds,
+            cpuSeconds: hang.cpuSeconds,
+            graceMinutes: Math.round(MODEL_CALL_HANG_GRACE_MS / 60_000),
+            silentForMs,
+            suspicionThresholdMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+            retryRunId: retriedRun?.id ?? null,
+            sourceIssueId: sourceIssue?.id ?? null,
+            sourceIssueIdentifier: sourceIssue?.identifier ?? null,
+          },
+        });
+        result.autoCancelled += 1;
+        if (retriedRun) result.retryRunIds.push(retriedRun.id);
+        continue;
+      }
+
+      const escalation = await ensureModelCallHangEscalationIssue({
+        run,
+        sourceIssue,
+        hang,
+        silentForMs,
+        graceMinutes: Math.round(MODEL_CALL_HANG_GRACE_MS / 60_000),
+        now,
+      });
+      result.escalated += 1;
+      if (escalation.issueId) result.escalationIssueIds.push(escalation.issueId);
+    }
+
+    return result;
+  }
+
+  // FUL-633: enqueue a single retry sibling run when the auto-cancel branch fires.
+  // Parallel to `enqueueProcessLossRetry` (heartbeat.ts:5584) but with
+  // `wakeReason = "model_call_hang_retry"` and `retryReason = "model_call_hang"`,
+  // and crucially does NOT change the model-profile hint policy (we keep the
+  // existing profile so the retry reproduces the same model behavior; that's
+  // the conservative default until a separate PR adds profile fallback).
+  async function enqueueModelCallHangRetry(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect | null;
+    hang: ModelCallHangEvaluation;
+    now: Date;
+  }): Promise<typeof heartbeatRuns.$inferSelect | null> {
+    const { run, sourceIssue, hang, now } = input;
+    const [agent] = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, run.agentId))
+      .limit(1);
+    if (!agent) {
+      await appendRecoveryRunEvent(run, {
+        level: "warn",
+        message: "model_call_hang retry suppressed because the agent record is missing",
+        payload: { runId: run.id },
+      });
+      return null;
+    }
+
+    const invokability = await evaluateAgentInvokabilityFromDb(db, agent);
+    if (!invokability.invokable) {
+      await appendRecoveryRunEvent(run, {
+        level: "warn",
+        message: "Model-call-hang retry suppressed because the agent is not invokable",
+        payload: {
+          reason: invokability.reason,
+          invalidOrgChain: invokability.invalidOrgChain,
+          ...invokability.details,
+        },
+      });
+      return null;
+    }
+
+    const contextSnapshot = parseObject(run.contextSnapshot);
+    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const ratioDisplay =
+      hang.cpuRatio == null ? "unreadable" : hang.cpuRatio.toFixed(4);
+    const cpuDisplay =
+      hang.cpuSeconds == null ? "?" : hang.cpuSeconds.toFixed(2);
+    const wallDisplay =
+      hang.wallSeconds == null ? "?" : hang.wallSeconds.toFixed(2);
+    const failureMessage =
+      `Auto-cancelled: model_call_hang (cpu/wall=${ratioDisplay}; cpu=${cpuDisplay}s, wall=${wallDisplay}s, threshold=${MODEL_CALL_HANG_CPU_RATIO_THRESHOLD})`;
+
+    // Mark the original run as failed (mode 2) before scheduling the retry —
+    // mirrors the FUL-614 dead-process path's "fail-then-retry" ordering so
+    // re-entrant `scanModelCallHangRecovery` calls see `status != "running"`
+    // and skip the candidate. The retry is created inside a single transaction.
+    const retryRun = await db.transaction(async (tx) => {
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: "model_call_hang_retry",
+          payload: {
+            ...(issueId ? { issueId } : {}),
+            retryOfRunId: run.id,
+            reason: "model_call_hang_retry",
+          },
+          status: "queued",
+          requestedByActorType: "system",
+          requestedByActorId: null,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      const retryContextSnapshot = {
+        ...contextSnapshot,
+        retryOfRunId: run.id,
+        wakeReason: "model_call_hang_retry",
+        retryReason: "model_call_hang",
+      };
+
+      const inserted = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: run.companyId,
+          agentId: run.agentId,
+          invocationSource: "automation",
+          triggerDetail: "system",
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: retryContextSnapshot,
+          sessionIdBefore: run.sessionIdBefore ?? null,
+          retryOfRunId: run.id,
+          processLossRetryCount: (run.processLossRetryCount ?? 0) + 1,
+          updatedAt: now,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await tx
+        .update(agentWakeupRequests)
+        .set({ runId: inserted.id, updatedAt: now })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      // Finalize the original run only if it's still "running" (idempotency).
+      await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "failed",
+          error: failureMessage,
+          errorCode: "model_call_hang",
+          finishedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(heartbeatRuns.id, run.id),
+            eq(heartbeatRuns.status, "running"),
+          ),
+        );
+
+      if (issueId) {
+        await tx
+          .update(issues)
+          .set({
+            checkoutRunId: null,
+            executionRunId: inserted.id,
+            executionAgentNameKey: agent.name?.trim().toLowerCase() || null,
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, issueId),
+              eq(issues.companyId, run.companyId),
+              eq(issues.executionRunId, run.id),
+            ),
+          );
+      }
+
+      return inserted;
+    });
+
+    await logActivity(db, {
+      companyId: run.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: run.agentId,
+      runId: retryRun.id,
+      action: "heartbeat.model_call_hang_retry_queued",
+      entityType: "heartbeat_run",
+      entityId: retryRun.id,
+      details: {
+        source: "recovery.scan_model_call_hang_recovery",
+        originalRunId: run.id,
+        retryReason: "model_call_hang",
+        sourceIssueId: sourceIssue?.id ?? null,
+        cpuRatio: hang.cpuRatio,
+        cpuSeconds: hang.cpuSeconds,
+        wallSeconds: hang.wallSeconds,
+      },
+    });
+
+    return retryRun;
+  }
+
+  // FUL-633: kill the hung process. Uses the same primitive as
+  // `terminateHeartbeatRunProcess` in heartbeat.ts so behaviour matches the
+  // dead-process recovery path.
+  async function terminateModelCallHangProcess(run: typeof heartbeatRuns.$inferSelect) {
+    const pid = run.processPid ?? null;
+    const processGroupId = run.processGroupId ?? null;
+    if (typeof pid !== "number" && typeof processGroupId !== "number") return;
+    await terminateLocalService(
+      {
+        pid:
+          typeof pid === "number" && Number.isInteger(pid) && pid > 0
+            ? pid
+            : (processGroupId ?? 0),
+        processGroupId:
+          typeof processGroupId === "number" &&
+          Number.isInteger(processGroupId) &&
+          processGroupId > 0
+            ? processGroupId
+            : null,
+      },
+      { forceAfterMs: 5000 },
+    );
+  }
+
+  // FUL-633: file a structured escalation issue under the source issue when
+  // the auto-cancel branch cannot fire (board-owned source, retry already in
+  // flight, retry budget exhausted, or non-automation invocation).
+  // Idempotent: only one open `modelCallHangEscalation` issue per run at a time.
+  async function ensureModelCallHangEscalationIssue(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect | null;
+    hang: ModelCallHangEvaluation;
+    silentForMs: number;
+    graceMinutes: number;
+    now: Date;
+  }): Promise<{ issueId: string | null }> {
+    const { run, sourceIssue, hang, silentForMs, graceMinutes, now } = input;
+    const agent = await getAgent(run.agentId);
+    if (!agent) return { issueId: null };
+
+    // Reuse the existing escalation issue if one is still open for this run.
+    const [existing] = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, run.companyId),
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.modelCallHangEscalation),
+          eq(issues.originId, run.id),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .limit(1);
+
+    const silenceHours = (silentForMs / 3_600_000).toFixed(2);
+    const description = [
+      `Paperclip detected a model-call hang on this issue's active run. The auto-cancel + retry branch did **not** fire because one or more recovery gates failed.`,
+      "",
+      `- Run: \`${run.id}\` (${run.invocationSource})`,
+      `- Agent: ${agent.name} (${agent.adapterType})`,
+      `- pid: \`${run.processPid ?? "unknown"}\`, alive: \`${hang.processAlive ? "yes" : "no"}\``,
+      `- cpu/wall ratio: ${hang.cpuRatio == null ? "unreadable" : hang.cpuRatio.toFixed(4)} (threshold ${MODEL_CALL_HANG_CPU_RATIO_THRESHOLD})`,
+      `- Silent for: ${silenceHours}h (grace: ${graceMinutes}m past ${(ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS / 3_600_000).toFixed(2)}h suspicious threshold)`,
+      `- Invocation source: \`${run.invocationSource}\` (auto-cancel requires \`automation\`)`,
+      `- Source issue: ${sourceIssue ? `${sourceIssue.identifier ?? sourceIssue.id} (assigneeUserId=${sourceIssue.assigneeUserId ?? "null"}, assigneeAgentId=${sourceIssue.assigneeAgentId ?? "null"})` : "none"}`,
+      `- retryOfRunId: ${run.retryOfRunId ?? "null"} (auto-cancel requires null)`,
+      `- processLossRetryCount: ${run.processLossRetryCount ?? 0} (auto-cancel requires < 1)`,
+      "",
+      "## Next action",
+      "",
+      "Board action required: cancel the hung run via the heartbeat-run cancel endpoint and requeue the source issue, or snooze if work is intentionally quiet.",
+      "",
+      "Reference: post-mortem on [FUL-632](/FUL/issues/FUL-632), canonical runbook `~/Company Files/fullstack-forge/_ORG/devops/watchdog-failure-modes.md` (v2, Mode 2).",
+    ].join("\n");
+
+    if (existing) {
+      await issuesSvc.addComment(
+        existing.id,
+        [
+          "Model-call hang is still active; auto-cancel + retry gated on this run. Updated evidence:",
+          "",
+          `- cpu/wall ratio: ${hang.cpuRatio == null ? "unreadable" : hang.cpuRatio.toFixed(4)}`,
+          `- pid alive: ${hang.processAlive ? "yes" : "no"}`,
+          `- Silent for: ${silenceHours}h`,
+        ].join("\n"),
+        { runId: run.id },
+      );
+      return { issueId: existing.id };
+    }
+
+    const ownerAgentId = sourceIssue?.assigneeAgentId ?? agent.id;
+    let createdId: string | null = null;
+    try {
+      const escalation = await issuesSvc.create(run.companyId, {
+        title: `Cancel and recover hang-detected run ${run.id.slice(0, 8)}`,
+        description,
+        status: "todo",
+        priority: "medium",
+        parentId:
+          sourceIssue && !["done", "cancelled"].includes(sourceIssue.status)
+            ? sourceIssue.id
+            : null,
+        projectId: sourceIssue?.projectId ?? null,
+        goalId: sourceIssue?.goalId ?? null,
+        billingCode: sourceIssue?.billingCode ?? "devops-reliability",
+        assigneeAgentId: ownerAgentId,
+        assigneeUserId: null,
+        originKind: RECOVERY_ORIGIN_KINDS.modelCallHangEscalation,
+        originId: run.id,
+      });
+      createdId = escalation.id;
+    } catch (err) {
+      if (!isUniqueStaleRunEvaluationConflict(err)) {
+        logger.warn(
+          { err, runId: run.id },
+          "failed to create model_call_hang escalation issue",
+        );
+        throw err;
+      }
+    }
+
+    if (createdId) {
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: agent.id,
+        runId: run.id,
+        action: "heartbeat.model_call_hang_escalated",
+        entityType: "issue",
+        entityId: createdId,
+        details: {
+          source: "recovery.scan_model_call_hang_recovery",
+          runId: run.id,
+          cpuRatio: hang.cpuRatio,
+          silentForMs,
+          graceMinutes,
+          invocationSource: run.invocationSource,
+          sourceIssueId: sourceIssue?.id ?? null,
+          escalationIssueId: createdId,
+        },
+      });
+    }
+
+    return { issueId: createdId };
+  }
+
 
   async function recordWatchdogDecision(input: {
     runId: string;
@@ -4486,6 +5190,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     escalateStrandedAssignedIssue,
     recordWatchdogDecision,
     scanSilentActiveRuns,
+    scanModelCallHangRecovery,
     reconcileStrandedAssignedIssues,
     sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,

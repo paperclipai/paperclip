@@ -11,7 +11,54 @@ Manage encrypted secrets that agents reference in their environment configuratio
 GET /api/companies/{companyId}/secrets
 ```
 
-Returns secret metadata (not decrypted values).
+Returns secret metadata (not decrypted values). **Board-only**: this is the
+authoritative source for rotate / create / delete flows and is gated on
+`assertBoard`.
+
+## List Secrets — CTO read-only metadata scope
+
+```
+GET /api/companies/{companyId}/secrets/metadata
+```
+
+Returns secret metadata only (`id`, `name`, `key`, `provider`, `managedMode`,
+`status`, `createdAt`, `providerMetadata`, `externalRef`, `latestVersion`,
+`description`, `referenceCount`). **The `value` / `material` column in
+`company_secret_versions` is never part of this projection.**
+
+- **Auth.** Agent token with `role === "cto"` on the company. Board tokens are
+  rejected (`403 Agent authentication required`). Non-CTO agents are rejected
+  (`403 CTO role required`). The CTO cannot write to this surface; this route
+  is the read side of the additive boundary added by [FUL-609](/FUL/issues/FUL-609).
+- **Audit.** Every successful response is recorded in `activity_log` with
+  `action: "secret.metadata.read"`, `actorType: "agent"`, `actorId` = the
+  calling CTO's agent id, `details: { count, scope: "company_secrets_metadata" }`.
+- **Use case.** Feeds the weekly secret-cadence sweep ([FUL-606](/FUL/issues/FUL-606))
+  by giving the CTO a board-free read of the `local_encrypted` half of the
+  comparison.
+
+Response shape:
+
+```json
+{
+  "secrets": [
+    {
+      "id": "<paperclip-secret-uuid>",
+      "name": "anthropic-api-key",
+      "key": "anthropic_api_key",
+      "provider": "local_encrypted",
+      "managedMode": "paperclip_managed",
+      "status": "active",
+      "createdAt": "2026-05-06T14:00:00.000Z",
+      "providerMetadata": null,
+      "externalRef": null,
+      "latestVersion": 1,
+      "description": "Anthropic API key used by production",
+      "referenceCount": 2
+    }
+  ]
+}
+```
 
 ## Create Secret
 

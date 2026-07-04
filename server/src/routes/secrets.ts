@@ -11,7 +11,7 @@ import {
   updateSecretSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertAgentHasCtoRoleOnCompany, assertBoard, assertCompanyAccess } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 
@@ -267,6 +267,39 @@ export function secretRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const secrets = await svc.list(companyId);
     res.json(secrets);
+  });
+
+  router.get("/companies/:companyId/secrets/metadata", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const { agentId } = await assertAgentHasCtoRoleOnCompany(db, req, companyId);
+
+    const secrets = await svc.list(companyId);
+    const metadata = secrets.map((secret) => ({
+      id: secret.id,
+      name: secret.name,
+      key: secret.key,
+      provider: secret.provider,
+      managedMode: secret.managedMode,
+      status: secret.status,
+      createdAt: secret.createdAt,
+      providerMetadata: secret.providerMetadata ?? null,
+      externalRef: secret.externalRef ?? null,
+      latestVersion: secret.latestVersion,
+      description: secret.description ?? null,
+      referenceCount: secret.referenceCount ?? 0,
+    }));
+
+    await logActivity(db, {
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      action: "secret.metadata.read",
+      entityType: "secret",
+      entityId: companyId,
+      details: { count: metadata.length, scope: "company_secrets_metadata" },
+    });
+
+    res.json({ secrets: metadata });
   });
 
   router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {

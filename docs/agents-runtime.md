@@ -61,6 +61,31 @@ In agent runtime settings, configure heartbeat policy:
 - `wakeOnOnDemand`: allow ping-style on-demand wakeups
 - `wakeOnAutomation`: allow system automation wakeups
 
+In server environment, configure the watchdog recovery primitives that back
+the active-run output silence detection:
+
+- `MODEL_CALL_HANG_GRACE_MIN` (default `30`): grace minutes past the
+  1h `suspicious` silence threshold before the model-call hang recovery
+  branch fires. Floor is `60` seconds so a misconfigured value can't fire
+  immediately. With the default, the watch reaches 1h30m of total silence
+  before auto-cancel + retry. See
+  [`~/Company Files/fullstack-forge/_ORG/devops/watchdog-failure-modes.md`](~/Company%20Files/fullstack-forge/_ORG/devops/watchdog-failure-modes.md)
+  v2 (Mode 2) for the classification taxonomy.
+- `ENABLE_MODEL_CALL_HANG_RECOVERY` (default `false` in production,
+  `true` in local dev): feature flag for the auto-cancel + retry branch.
+  The `hungProcess` classifier still runs in `buildRunOutputSilence`
+  regardless of flag state, so the agent UI can render the watchdog state
+  even when the recovery branch is off.
+
+Recovery semantics: when the predicate fires (running + no output yet +
+child process alive + child cpu/wall ratio below 5%), and the grace window
+has elapsed, the watchdog either auto-cancels the run and enqueues a
+single retry (under four gates — automation invocation, source issue is not
+board-owned, no prior retry, retry count `< 1`) or files a structured
+escalation issue under the source issue. Snooze decisions from a reviewer
+(`snoozed`/`continue` rows in `watchdog_decisions` with `snoozedUntil > now`)
+take precedence over both branches until the snooze window passes.
+
 ## 3.3 Working directory and execution limits
 
 For local adapters, set:
