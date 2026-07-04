@@ -151,6 +151,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
+import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
@@ -2502,6 +2503,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   };
   const budgets = budgetService(db, budgetHooks);
   const recovery = recoveryService(db, { enqueueWakeup });
+  const recoveryActionsSvc = issueRecoveryActionService(db);
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
@@ -5942,6 +5944,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function resolveActiveRecoveryActionAfterExecutionClaim(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    issueId: string;
+  }) {
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        status: issues.status,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, input.run.companyId),
+        eq(issues.id, input.issueId),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (!issue || issue.executionRunId !== input.run.id) return;
+    if (["blocked", "done", "cancelled"].includes(issue.status)) return;
+
+    const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+      companyId: issue.companyId,
+      sourceIssueId: issue.id,
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: `Automatically resolved because Paperclip restored a live execution path via run ${input.run.id}.`,
+    });
+    if (!resolved) return;
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.run.agentId,
+      runId: input.run.id,
+      action: "issue.recovery_action_resolved",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        recoveryActionId: resolved.id,
+        recoveryActionStatus: resolved.status,
+        outcome: resolved.outcome,
+        sourceIssueStatus: issue.status,
+        resolutionNote: resolved.resolutionNote,
+        source: "heartbeat.execution_claim",
+      },
+    });
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -6074,6 +6129,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
           ),
         );
+      try {
+        await resolveActiveRecoveryActionAfterExecutionClaim({
+          run: claimed,
+          issueId: claimedIssueId,
+        });
+      } catch (err) {
+        logger.warn(
+          { err, runId: claimed.id, issueId: claimedIssueId },
+          "failed to auto-resolve recovery action after execution claim",
+        );
+      }
     }
 
     return claimed;

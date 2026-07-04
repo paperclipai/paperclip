@@ -1981,6 +1981,74 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("auto-resolves an active recovery action when the source issue regains a live execution run", async () => {
+    const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
+    const actionId = randomUUID();
+    await db.insert(issueRecoveryActions).values({
+      id: actionId,
+      companyId,
+      sourceIssueId: issueId,
+      recoveryIssueId: null,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      ownerUserId: null,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      cause: "stranded_assigned_issue",
+      fingerprint: `test:${issueId}`,
+      evidence: { retryReason: "issue_continuation_needed" },
+      nextAction: "Restore a live execution path.",
+      attemptCount: 1,
+      lastAttemptAt: new Date("2026-03-19T00:05:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+      },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+    });
+    expect(run).not.toBeNull();
+
+    const resolvedAction = await waitForValue(async () =>
+      db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.id, actionId))
+        .then((rows) => rows[0]?.status === "resolved" ? rows[0] : null),
+    );
+    expect(resolvedAction).toMatchObject({
+      status: "resolved",
+      outcome: "restored",
+    });
+    expect(resolvedAction?.resolutionNote).toContain(run!.id);
+
+    const activity = await waitForValue(async () =>
+      db
+        .select()
+        .from(activityLog)
+        .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.recovery_action_resolved")))
+        .then((rows) => rows[0] ?? null),
+    );
+    expect(activity?.details).toMatchObject({
+      recoveryActionId: actionId,
+      outcome: "restored",
+      source: "heartbeat.execution_claim",
+    });
+
+    await waitForRunToSettle(heartbeat, run!.id);
+  });
+
   it("does not dispatch assigned todo work with no prior run when the agent is paused", async () => {
     const { agentId, issueId } = await seedAssignedTodoNoRunFixture({ agentStatus: "paused" });
     const heartbeat = heartbeatService(db);
