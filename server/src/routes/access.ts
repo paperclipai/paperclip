@@ -2241,10 +2241,12 @@ export function resolveJoinRequestAgentManagerId(
   }
   // Bootstrap fallback: no agent has been promoted to CEO yet. Fall back to
   // the top of the reporting chain (an agent with no manager of its own) so
-  // agent join requests aren't hard-blocked until someone is made CEO.
-  const rootCandidates = candidates.filter(
-    (candidate) => candidate.reportsTo === null
-  );
+  // agent join requests aren't hard-blocked until someone is made CEO. Sort
+  // by id so the choice is stable across calls regardless of the order
+  // agents.list() happens to return rows in.
+  const rootCandidates = candidates
+    .filter((candidate) => candidate.reportsTo === null)
+    .sort((a, b) => a.id.localeCompare(b.id));
   return rootCandidates[0]?.id ?? null;
 }
 

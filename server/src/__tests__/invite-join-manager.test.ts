@@ -17,10 +17,19 @@ describe("resolveJoinRequestAgentManagerId", () => {
     expect(managerId).toBe("a1");
   });
 
-  it("falls back to the first root agent when multiple roots exist and no CEO is present", () => {
+  it("falls back to the lowest-id root agent when multiple roots exist and no CEO is present", () => {
     const managerId = resolveJoinRequestAgentManagerId([
       { id: "root-1", role: "general", reportsTo: null },
       { id: "root-2", role: "engineer", reportsTo: null },
+    ]);
+
+    expect(managerId).toBe("root-1");
+  });
+
+  it("picks the same root agent regardless of input order (deterministic across agents.list() ordering)", () => {
+    const managerId = resolveJoinRequestAgentManagerId([
+      { id: "root-2", role: "engineer", reportsTo: null },
+      { id: "root-1", role: "general", reportsTo: null },
     ]);
 
     expect(managerId).toBe("root-1");
