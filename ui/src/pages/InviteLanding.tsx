@@ -401,12 +401,8 @@ export function InviteLandingPage() {
           return;
         }
         // Non-bootstrap company invite: acceptMutation.onSuccess already cleared
-        // the pending token and invalidated caches. Navigate the newly joined
-        // user into the company, mirroring the existing-account accept path.
-        if (invite.companyId && isApprovedHumanJoinPayload(payload, showsAgentForm)) {
-          setSelectedCompanyId(invite.companyId, { source: "manual" });
-          navigate("/", { replace: true });
-        }
+        // the pending token, invalidated caches, and navigated the user.
+        // Nothing more to do here.
       } catch {
         return;
       }
