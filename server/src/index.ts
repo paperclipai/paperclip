@@ -54,6 +54,7 @@ import {
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import { resolveEnvTimeoutMs } from "./lib/env-timeout-ms.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -912,10 +913,10 @@ export async function startServer(): Promise<StartedServer> {
       // 5-min default reaps real in-progress builds (SIGKILL, exit 137). Make it
       // configurable via PAPERCLIP_HEARTBEAT_REAP_STALE_MS so cloud/sandbox
       // deployments can allow for long autonomous builds.
-      const reapStaleMs = (() => {
-        const raw = Number(process.env.PAPERCLIP_HEARTBEAT_REAP_STALE_MS);
-        return Number.isFinite(raw) && raw > 0 ? raw : 5 * 60 * 1000;
-      })();
+      const reapStaleMs = resolveEnvTimeoutMs(
+        "PAPERCLIP_HEARTBEAT_REAP_STALE_MS",
+        5 * 60 * 1000,
+      );
       void heartbeat
         .reapOrphanedRuns({ staleThresholdMs: reapStaleMs })
         .then(() => heartbeat.promoteDueScheduledRetries())

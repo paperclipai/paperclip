@@ -53,6 +53,7 @@ import type {
   InitializeParams,
 } from "@paperclipai/plugin-sdk";
 import { logger } from "../middleware/logger.js";
+import { resolveEnvTimeoutMs } from "../lib/env-timeout-ms.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -77,12 +78,11 @@ const DEFAULT_MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
 export function resolveMaxRpcTimeoutMs(
   env: Record<string, string | undefined> = process.env,
 ): number {
-  const raw = env.PAPERCLIP_PLUGIN_RPC_MAX_TIMEOUT_MS;
-  if (raw != null && raw.trim().length > 0) {
-    const parsed = Number(raw);
-    if (Number.isFinite(parsed) && parsed > 0) return Math.trunc(parsed);
-  }
-  return DEFAULT_MAX_RPC_TIMEOUT_MS;
+  return resolveEnvTimeoutMs(
+    "PAPERCLIP_PLUGIN_RPC_MAX_TIMEOUT_MS",
+    DEFAULT_MAX_RPC_TIMEOUT_MS,
+    env,
+  );
 }
 
 /** Timeout for the initialize RPC call. */
