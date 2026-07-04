@@ -30,6 +30,13 @@ const DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION =
 const KUBERNETES_PROVIDER_KEY = "kubernetes";
 /** Metadata marker for the company's managed-by-config Kubernetes sandbox environment. */
 const KUBERNETES_MANAGED_MARKER = "managedKubernetesSandbox";
+/** Metadata marker for any Paperclip-managed environment (set on managed sandbox envs). */
+const PAPERCLIP_MANAGED_MARKER = "managedByPaperclip";
+/** Metadata marker for the instance's managed-by-config generic (provider-agnostic) sandbox environment. */
+const MANAGED_SANDBOX_MARKER = "managedSandbox";
+const DEFAULT_MANAGED_SANDBOX_ENVIRONMENT_NAME = "Sandbox";
+const DEFAULT_MANAGED_SANDBOX_ENVIRONMENT_DESCRIPTION =
+  "Auto-provisioned sandbox environment for the instance execution policy (executionMode=sandbox).";
 
 /**
  * Configuration accepted by `ensureKubernetesEnvironment`. Mirrors the keys of
@@ -253,7 +260,7 @@ export function environmentService(db: Db) {
         provider: KUBERNETES_PROVIDER_KEY,
       };
       const desiredMetadata: Record<string, unknown> = {
-        managedByPaperclip: true,
+        [PAPERCLIP_MANAGED_MARKER]: true,
         [KUBERNETES_MANAGED_MARKER]: true,
       };
 
@@ -339,6 +346,110 @@ export function environmentService(db: Db) {
     },
 
     /**
+     * Provider-agnostic counterpart of `ensureKubernetesEnvironment`: idempotently
+     * ensure the instance's managed sandbox environment for an arbitrary sandbox
+     * provider (Daytona, E2B, Modal, …). Used by `executionMode=sandbox` so a
+     * deployment auto-gets the operator's configured sandbox (boot hook + lazy
+     * heartbeat provisioning) — tenants never configure cloud details. Config is
+     * refreshed in place on repeat calls (gitops-friendly); the provider plugin
+     * validates the config blob at lease time.
+     */
+    ensureManagedSandboxEnvironment: async (
+      input: { provider: string; config?: Record<string, unknown> },
+    ): Promise<Environment> => {
+      const desiredConfig: Record<string, unknown> = {
+        ...(input.config ?? {}),
+        provider: input.provider,
+      };
+      const desiredMetadata: Record<string, unknown> = {
+        [PAPERCLIP_MANAGED_MARKER]: true,
+        [MANAGED_SANDBOX_MARKER]: true,
+      };
+
+      const existing = await db
+        .select()
+        .from(environments)
+        .where(eq(environments.driver, "sandbox"))
+        .then((rows) =>
+          rows.find(
+            (row) =>
+              (row.metadata as Record<string, unknown> | null)?.[MANAGED_SANDBOX_MARKER] === true,
+          ) ?? null,
+        );
+
+      const now = new Date();
+      if (existing) {
+        const updated = await db
+          .update(environments)
+          .set({
+            config: desiredConfig,
+            metadata: { ...(existing.metadata ?? {}), ...desiredMetadata },
+            status: "active",
+            updatedAt: now,
+          })
+          .where(eq(environments.id, existing.id))
+          .returning()
+          .then((rows) => rows[0] ?? existing);
+        return toEnvironment(updated);
+      }
+
+      // The partial unique index `environments_managed_sandbox_idx` enforces
+      // "at most one Paperclip-managed sandbox row per instance" at the DB
+      // level (shared with the managed Kubernetes environment — the forcing
+      // modes are mutually exclusive). Use ON CONFLICT DO NOTHING keyed on
+      // that index so concurrent callers can race the INSERT; losers re-read
+      // the surviving row.
+      const inserted = await db
+        .insert(environments)
+        .values({
+          name: DEFAULT_MANAGED_SANDBOX_ENVIRONMENT_NAME,
+          description: DEFAULT_MANAGED_SANDBOX_ENVIRONMENT_DESCRIPTION,
+          driver: "sandbox",
+          status: "active",
+          config: desiredConfig,
+          envVars: {},
+          metadata: desiredMetadata,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoNothing({
+          target: [environments.driver],
+          where:
+            sql`${environments.driver} = 'sandbox' AND (${environments.metadata} ->> 'managedByPaperclip')::boolean = true`,
+        })
+        .returning()
+        .then((rows) => rows[0] ?? null)
+        .catch((error) => {
+          if (
+            hasConstraintName(error, "environments_name_idx")
+            || hasConstraintName(error, "environments_managed_sandbox_idx")
+          ) {
+            return null;
+          }
+          throw error;
+        });
+      if (inserted) return toEnvironment(inserted);
+
+      const winner = await db
+        .select()
+        .from(environments)
+        .where(eq(environments.driver, "sandbox"))
+        .then(
+          (rows) =>
+            rows.find(
+              (candidate) =>
+                (candidate.metadata as Record<string, unknown> | null)?.[
+                  MANAGED_SANDBOX_MARKER
+                ] === true,
+            ) ?? null,
+        );
+      if (!winner) {
+        throw new Error("Failed to ensure managed sandbox environment");
+      }
+      return toEnvironment(winner);
+    },
+
+    /**
      * Find the active managed Kubernetes sandbox environment, if one
      * exists. Read-only counterpart to `ensureKubernetesEnvironment` used by the
      * per-run execution guard (which must not silently create config-less envs).
@@ -359,6 +470,41 @@ export function environmentService(db: Db) {
           (row.metadata as Record<string, unknown> | null)?.[KUBERNETES_MANAGED_MARKER] === true,
       );
       return match ? toEnvironment(match) : null;
+    },
+
+    /**
+     * Provider-agnostic counterpart of `findKubernetesEnvironment`: the
+     * instance's active sandbox environment regardless of which provider backs
+     * it. Used by `executionMode="sandbox"` to pin runs onto whatever sandbox
+     * the operator configured (Daytona, E2B, Modal, Kubernetes, …). Prefers a
+     * Paperclip-managed environment when several exist, else the most recently
+     * updated.
+     *
+     * Only environments with a configured provider count: a provider-less
+     * sandbox row is treated as "no sandbox configured", so the heartbeat
+     * surfaces the actionable "configure a sandbox provider" error rather than
+     * pinning onto it and tripping the allowlist backstop later.
+     */
+    findManagedSandboxEnvironment: async (): Promise<Environment | null> => {
+      const rows = await db
+        .select()
+        .from(environments)
+        .where(
+          and(
+            eq(environments.driver, "sandbox"),
+            eq(environments.status, "active"),
+          ),
+        )
+        .orderBy(desc(environments.updatedAt));
+      const providerRows = rows.filter((row) => {
+        const provider = (row.config as Record<string, unknown> | null)?.provider;
+        return typeof provider === "string" && provider.length > 0;
+      });
+      if (providerRows.length === 0) return null;
+      const managed = providerRows.find(
+        (row) => (row.metadata as Record<string, unknown> | null)?.[PAPERCLIP_MANAGED_MARKER] === true,
+      );
+      return toEnvironment(managed ?? providerRows[0]!);
     },
 
     create: async (

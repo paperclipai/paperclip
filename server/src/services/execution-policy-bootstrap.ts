@@ -26,10 +26,27 @@ import { parseAdapterRegistryEnv } from "./adapter-registry-bootstrap.js";
 
 export type ExecutionPolicyBootstrapEnv = Record<string, string | undefined>;
 
-export interface ExecutionPolicyBootstrap {
-  executionMode: Extract<InstanceExecutionMode, "kubernetes">;
-  kubernetesConfig: KubernetesEnvironmentConfigInput;
-}
+/**
+ * Parsed forced-execution bootstrap.
+ *
+ * - `kubernetes`: provider-pinned; carries the managed Kubernetes config so the
+ *   boot hook can provision the managed k8s environment.
+ * - `sandbox`: provider-agnostic; optionally carries a default sandbox provider
+ *   (+ config) so the boot hook can provision the managed sandbox environment.
+ */
+export type ExecutionPolicyBootstrap =
+  | {
+      executionMode: Extract<InstanceExecutionMode, "kubernetes">;
+      kubernetesConfig: KubernetesEnvironmentConfigInput;
+    }
+  | {
+      executionMode: Extract<InstanceExecutionMode, "sandbox">;
+      // When set, the instance's managed sandbox environment is auto-provisioned
+      // (mirrors the Kubernetes path) so a deployment just works with no manual
+      // environment setup. When absent, the operator manages sandbox
+      // environments manually and the setting is merely persisted.
+      sandbox?: { provider: string; config: Record<string, unknown> };
+    };
 
 function parseBool(value: string | undefined): boolean | undefined {
   if (value === undefined) return undefined;
@@ -72,9 +89,37 @@ export function parseExecutionPolicyBootstrapEnv(
 ): ExecutionPolicyBootstrap | null {
   const raw = env.PAPERCLIP_EXECUTION_MODE?.trim();
   if (!raw || raw === "any") return null;
+  if (raw === "sandbox") {
+    // Provider-agnostic. If the operator names a default provider, the managed
+    // sandbox environment is auto-provisioned (at boot and lazily on first
+    // heartbeat, mirroring the Kubernetes path) so a deployment just works
+    // without manual environment setup. Without a provider, the setting is
+    // persisted and operators manage sandbox environments themselves.
+    const provider = env.PAPERCLIP_SANDBOX_PROVIDER?.trim();
+    if (!provider) return { executionMode: "sandbox" };
+    let config: Record<string, unknown> = {};
+    const rawConfig = env.PAPERCLIP_SANDBOX_CONFIG?.trim();
+    if (rawConfig) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawConfig);
+      } catch (err) {
+        throw new Error(
+          `PAPERCLIP_SANDBOX_CONFIG must be valid JSON (got a parse error: ${
+            err instanceof Error ? err.message : String(err)
+          }).`,
+        );
+      }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new Error("PAPERCLIP_SANDBOX_CONFIG must be a JSON object.");
+      }
+      config = parsed as Record<string, unknown>;
+    }
+    return { executionMode: "sandbox", sandbox: { provider, config } };
+  }
   if (raw !== "kubernetes") {
     throw new Error(
-      `PAPERCLIP_EXECUTION_MODE must be "kubernetes" or "any" (got "${raw}").`,
+      `PAPERCLIP_EXECUTION_MODE must be "kubernetes", "sandbox", or "any" (got "${raw}").`,
     );
   }
 
@@ -133,8 +178,15 @@ export function parseExecutionPolicyBootstrapEnv(
 
 /**
  * Apply the parsed bootstrap to the database: persist `executionMode` into
- * instance settings and ensure a configured Kubernetes environment for every
- * company. Idempotent; safe to call on every boot.
+ * instance settings and, for the Kubernetes mode, ensure a configured
+ * Kubernetes environment for every company. Idempotent; safe to call on every
+ * boot.
+ *
+ * For `executionMode=sandbox` the instance's managed sandbox environment is
+ * ensured when a default provider is configured (`PAPERCLIP_SANDBOX_PROVIDER`);
+ * without one we only persist the setting — the operator configures their
+ * sandbox provider through the normal environment flow and the per-run
+ * heartbeat guard enforces the policy either way.
  */
 export async function applyExecutionPolicyBootstrap(
   db: Db,
@@ -144,6 +196,39 @@ export async function applyExecutionPolicyBootstrap(
   const environments = environmentService(db);
 
   await instanceSettings.updateGeneral({ executionMode: bootstrap.executionMode });
+
+  if (bootstrap.executionMode === "sandbox") {
+    if (!bootstrap.sandbox) {
+      logger.info(
+        { executionMode: bootstrap.executionMode },
+        "applied provider-agnostic sandbox execution policy (no default provider; configure a sandbox environment manually)",
+      );
+      return { executionMode: bootstrap.executionMode, companiesConfigured: 0 };
+    }
+    // Environments are instance-scoped, so a single managed sandbox environment
+    // covers every company. If it cannot be ensured we refuse to start (the
+    // per-run heartbeat guard would fail every run anyway).
+    try {
+      await environments.ensureManagedSandboxEnvironment(bootstrap.sandbox);
+    } catch (err) {
+      logger.error(
+        { err, provider: bootstrap.sandbox.provider },
+        "failed to ensure managed sandbox environment during execution-policy bootstrap",
+      );
+      throw new Error(
+        `execution-policy bootstrap: failed to ensure the managed sandbox environment under executionMode=sandbox (provider=${bootstrap.sandbox.provider}); refusing to start`,
+        { cause: err },
+      );
+    }
+    logger.info(
+      {
+        executionMode: bootstrap.executionMode,
+        provider: bootstrap.sandbox.provider,
+      },
+      "applied forced sandbox execution policy",
+    );
+    return { executionMode: bootstrap.executionMode, companiesConfigured: 1 };
+  }
 
   const companyIds = await instanceSettings.listCompanyIds();
   let configured = 0;

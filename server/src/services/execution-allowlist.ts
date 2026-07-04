@@ -24,11 +24,16 @@ export const KUBERNETES_PROVIDER_KEY = "kubernetes" as const;
  *
  * - `"any"` / absent: unrestricted — any environment driver is allowed (the
  *   default, preserves single-tenant / local-trusted behavior).
- * - `"kubernetes"`: force the Kubernetes sandbox provider; deny local, ssh, and
- *   any non-kubernetes sandbox provider.
+ * - `"sandbox"`: force *some* sandbox-provider environment (any provider —
+ *   Kubernetes, Daytona, E2B, Modal, …); deny local, ssh, and in-process
+ *   execution. Provider-agnostic, for cloud instances whose sandbox is not
+ *   Kubernetes.
+ * - `"kubernetes"`: stricter, provider-pinned variant of `"sandbox"` — force
+ *   the Kubernetes sandbox provider specifically and deny every other driver,
+ *   including non-Kubernetes sandbox providers.
  */
 export interface ExecutionPolicy {
-  executionMode?: "kubernetes" | "any";
+  executionMode?: "kubernetes" | "sandbox" | "any";
 }
 
 /**
@@ -50,9 +55,30 @@ export type ExecutionAllowlistDecision =
       deniedProvider: string | null;
     };
 
-/** True when the policy forces all execution onto the Kubernetes sandbox. */
+/** True when the policy pins all execution to the Kubernetes sandbox provider specifically. */
 export function isExecutionForcedToKubernetes(policy: ExecutionPolicy | null | undefined): boolean {
   return policy?.executionMode === "kubernetes";
+}
+
+/** True when the policy forces some (provider-agnostic) sandbox provider, but not a specific one. */
+export function isExecutionForcedToSandbox(policy: ExecutionPolicy | null | undefined): boolean {
+  return policy?.executionMode === "sandbox";
+}
+
+/**
+ * True when the policy forces a sandbox tier of any kind (`"sandbox"` or the
+ * provider-pinned `"kubernetes"`) — i.e. local/ssh/in-process execution is
+ * refused. Use this to decide whether the heartbeat should override selection
+ * onto a sandbox environment; use the more specific predicates above to pick
+ * *which* environment to pin to.
+ */
+export function isExecutionForcedToSandboxTier(policy: ExecutionPolicy | null | undefined): boolean {
+  return isExecutionForcedToSandbox(policy) || isExecutionForcedToKubernetes(policy);
+}
+
+/** True iff the candidate is any core `sandbox` driver backed by a provider. */
+export function isSandboxProviderEnvironment(candidate: ExecutionEnvironmentCandidate): boolean {
+  return candidate.driver === "sandbox" && typeof candidate.provider === "string" && candidate.provider.length > 0;
 }
 
 /**
@@ -68,35 +94,59 @@ export function isKubernetesSandboxEnvironment(
 /**
  * Decide whether the candidate environment may run under the given policy.
  *
- * When `executionMode === "kubernetes"`, ONLY a `sandbox_provider` driver with
- * provider/driverKey "kubernetes" is allowed; a `local` driver (or any non-k8s
- * sandbox provider, or ssh, or plugin) is DENIED. Otherwise everything is
- * allowed.
+ * - `executionMode === "kubernetes"`: ONLY a `sandbox` driver with provider
+ *   "kubernetes" is allowed; everything else (local, ssh, plugin, or any
+ *   non-Kubernetes sandbox provider) is DENIED.
+ * - `executionMode === "sandbox"`: ANY `sandbox` driver backed by a provider is
+ *   allowed; local, ssh, and in-process execution are DENIED.
+ * - otherwise: everything is allowed.
  */
 export function evaluateExecutionAllowlist(
   policy: ExecutionPolicy | null | undefined,
   candidate: ExecutionEnvironmentCandidate,
 ): ExecutionAllowlistDecision {
-  if (!isExecutionForcedToKubernetes(policy)) {
-    return { allowed: true };
-  }
-
-  if (isKubernetesSandboxEnvironment(candidate)) {
+  if (!isExecutionForcedToSandboxTier(policy)) {
     return { allowed: true };
   }
 
   const provider = candidate.provider ?? null;
+
+  if (isExecutionForcedToKubernetes(policy)) {
+    if (isKubernetesSandboxEnvironment(candidate)) {
+      return { allowed: true };
+    }
+    const target =
+      candidate.driver === "sandbox"
+        ? `sandbox provider "${provider ?? "(none)"}"`
+        : `"${candidate.driver}" driver`;
+    return {
+      allowed: false,
+      reason:
+        `Instance execution policy requires the Kubernetes sandbox provider ` +
+        `(executionMode=kubernetes), but the resolved environment uses the ${target}. ` +
+        `Untrusted execution on a non-Kubernetes environment is refused.`,
+      deniedDriver: candidate.driver,
+      deniedProvider: provider,
+    };
+  }
+
+  // executionMode === "sandbox": any sandbox provider is acceptable.
+  if (isSandboxProviderEnvironment(candidate)) {
+    return { allowed: true };
+  }
+
+  // A `sandbox` driver with no provider is the likeliest misconfiguration, so
+  // name that distinctly instead of blaming the (correct) driver.
   const target =
     candidate.driver === "sandbox"
-      ? `sandbox provider "${provider ?? "(none)"}"`
+      ? `sandbox driver with no configured provider`
       : `"${candidate.driver}" driver`;
-
   return {
     allowed: false,
     reason:
-      `Instance execution policy requires the Kubernetes sandbox provider ` +
-      `(executionMode=kubernetes), but the resolved environment uses the ${target}. ` +
-      `Untrusted execution on a non-Kubernetes environment is refused.`,
+      `Instance execution policy requires a sandbox-provider environment ` +
+      `(executionMode=sandbox), but the resolved environment uses the ${target}. ` +
+      `Untrusted execution outside a sandbox is refused.`,
     deniedDriver: candidate.driver,
     deniedProvider: provider,
   };
