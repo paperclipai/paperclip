@@ -12763,11 +12763,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // Fresh timestamp: a concurrent on-demand wake may have re-pulled
       // scheduledRetryAt a few ms later than promoteNow, and promotion's
       // lte(scheduledRetryAt, now) guard must still see the retry as due.
+      // Callers own the startNextQueuedRunForAgent kick after this returns.
       const promotion = await promoteScheduledRetryRun(pulled, new Date());
-      if (promotion.outcome === "promoted") {
-        await startNextQueuedRunForAgent(agent.id);
-        return promotion.run;
-      }
+      if (promotion.outcome === "promoted") return promotion.run;
       if (promotion.run) return promotion.run;
       return rereadRun();
     };
@@ -13568,7 +13566,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       const promotedRun = await promoteScheduledRetryForOnDemandWake(mergedRun);
-      return promotedRun ?? mergedRun;
+      if (promotedRun) {
+        await startNextQueuedRunForAgent(agent.id);
+        return promotedRun;
+      }
+      return mergedRun;
     }
 
     const queueOutcome = await db.transaction(async (tx) => {
