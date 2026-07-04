@@ -228,6 +228,9 @@ function issueAllowsAgentWakeups(issue: { workItemType?: string | null }) {
 }
 
 const CHILD_BLOCKED_ESCALATION_MARKER = "Child blocked escalation";
+const REVIEW_REQUIRED_COMPLETION_STAGE_TYPE = "review";
+const REVIEW_REQUIRED_COMPLETION_MESSAGE =
+  "This agent is configured to require review before it can mark issue work done.";
 
 function buildChildBlockedEscalationMarker(input: { childIssueId: string; sourceCommentId?: string | null }) {
   return `${CHILD_BLOCKED_ESCALATION_MARKER}: \`${input.childIssueId}:${input.sourceCommentId ?? "status"}\``;
@@ -288,6 +291,68 @@ const ISSUE_WORKSPACE_AUDIT_FIELDS = new Set([
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function normalizeAuthorityToken(value: unknown) {
+  const token = readNonEmptyString(value);
+  return token ? token.toLowerCase().replace(/[\s-]+/g, "_") : null;
+}
+
+function recordRequiresReviewBeforeDone(record: Record<string, unknown> | null): boolean {
+  if (!record) return false;
+  if (
+    readBoolean(record.reviewRequiredBeforeDone) === true ||
+    readBoolean(record.requiresReviewBeforeDone) === true ||
+    readBoolean(record.paperclipReviewRequiredBeforeDone) === true ||
+    readBoolean(record.canCloseWithoutReview) === false ||
+    readBoolean(record.mayCloseWithoutReview) === false
+  ) {
+    return true;
+  }
+
+  const authorityTokens = [
+    record.completionAuthority,
+    record.issueCompletionAuthority,
+    record.finalDispositionAuthority,
+    record.closureAuthority,
+    record.authorityLevel,
+    record.trustLevel,
+  ].map(normalizeAuthorityToken);
+  if (authorityTokens.some((token) => token === "review_required" || token === "restricted" || token === "low_trust")) {
+    return true;
+  }
+
+  return [
+    record.authority,
+    record.executionAuthority,
+    record.completion,
+    record.issueCompletion,
+    record.finalDisposition,
+    record.reviewPolicy,
+  ].some((nested) => recordRequiresReviewBeforeDone(readRecord(nested)));
+}
+
+function agentConfigRequiresReviewBeforeDone(agent: unknown): boolean {
+  const record = readRecord(agent);
+  if (!record) return false;
+  return [
+    record.metadata,
+    record.runtimeConfig,
+    // Keep permissions as a supported read path for raw agent rows/tests, but do
+    // not infer review gating from modelProfile. Cheap model routing is a cost
+    // choice, not an authority/trust signal.
+    record.permissions,
+  ].some((candidate) => recordRequiresReviewBeforeDone(readRecord(candidate)));
 }
 
 function hasIssueWorkspaceAuditChange(previous: Record<string, unknown>) {
@@ -1281,6 +1346,157 @@ export function issueRoutes(
       throw forbidden("Missing permission: tasks:assign");
     }
     throw unauthorized();
+  }
+
+  async function actorRunRequiresReviewBeforeDone(input: {
+    actor: ReturnType<typeof getActorInfo>;
+    companyId: string;
+  }) {
+    if (!input.actor.runId || !input.actor.agentId) return false;
+    const run = await heartbeat.getRun(input.actor.runId).catch((err) => {
+      logger.warn({ err, runId: input.actor.runId }, "failed to inspect run authority context");
+      return null;
+    });
+    const runRecord = readRecord(run);
+    if (!runRecord) return false;
+    if (readNonEmptyString(runRecord.companyId) !== input.companyId) return false;
+    if (readNonEmptyString(runRecord.agentId) !== input.actor.agentId) return false;
+    return recordRequiresReviewBeforeDone(readRecord(runRecord.contextSnapshot));
+  }
+
+  async function resolveReviewRequiredCompletionReviewer(input: {
+    existing: {
+      id: string;
+      companyId: string;
+      parentId?: string | null;
+      assigneeAgentId?: string | null;
+      createdByAgentId?: string | null;
+    };
+    actorAgentId: string;
+    actorAgent: unknown;
+  }): Promise<{ agentId: string; source: string } | null> {
+    const parentId = readNonEmptyString(input.existing.parentId);
+    if (parentId) {
+      const parent = await svc.getById(parentId);
+      if (parent?.companyId === input.existing.companyId) {
+        const parentAssigneeAgentId = readNonEmptyString(parent.assigneeAgentId);
+        if (parentAssigneeAgentId && parentAssigneeAgentId !== input.actorAgentId) {
+          return { agentId: parentAssigneeAgentId, source: "parent_assignee" };
+        }
+        const parentCreatorAgentId = readNonEmptyString(parent.createdByAgentId);
+        if (parentCreatorAgentId && parentCreatorAgentId !== input.actorAgentId) {
+          return { agentId: parentCreatorAgentId, source: "parent_creator" };
+        }
+      }
+    }
+
+    const actorAgentRecord = readRecord(input.actorAgent);
+    const reportsTo = readNonEmptyString(actorAgentRecord?.reportsTo);
+    if (reportsTo && reportsTo !== input.actorAgentId) {
+      return { agentId: reportsTo, source: "reports_to" };
+    }
+
+    const creatorAgentId = readNonEmptyString(input.existing.createdByAgentId);
+    if (creatorAgentId && creatorAgentId !== input.actorAgentId) {
+      return { agentId: creatorAgentId, source: "issue_creator" };
+    }
+
+    const currentAssigneeAgentId = readNonEmptyString(input.existing.assigneeAgentId);
+    if (currentAssigneeAgentId && currentAssigneeAgentId !== input.actorAgentId) {
+      return { agentId: currentAssigneeAgentId, source: "current_assignee" };
+    }
+
+    return null;
+  }
+
+  function buildReviewRequiredCompletionExecutionState(input: {
+    issueExecutionState: unknown;
+    actorAgentId: string;
+    reviewerAgentId: string;
+  }) {
+    const previousState = parseIssueExecutionState(input.issueExecutionState);
+    return {
+      status: "pending",
+      currentStageId: randomUUID(),
+      currentStageIndex: 0,
+      currentStageType: REVIEW_REQUIRED_COMPLETION_STAGE_TYPE,
+      currentParticipant: { type: "agent", agentId: input.reviewerAgentId, userId: null },
+      returnAssignee: { type: "agent", agentId: input.actorAgentId, userId: null },
+      reviewRequest: {
+        instructions: [
+          REVIEW_REQUIRED_COMPLETION_MESSAGE,
+          "Verify the work evidence, approve by marking the issue done if it is acceptable, or request changes/reassign if it is not.",
+        ].join(" "),
+      },
+      completedStageIds: previousState?.completedStageIds ?? [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+      monitor: previousState?.monitor ?? null,
+    };
+  }
+
+  async function applyReviewRequiredCompletionGate(input: {
+    existing: {
+      id: string;
+      companyId: string;
+      status: string;
+      parentId?: string | null;
+      assigneeAgentId?: string | null;
+      assigneeUserId?: string | null;
+      createdByAgentId?: string | null;
+      executionState?: unknown;
+      workItemType?: string | null;
+    };
+    updateFields: Record<string, unknown>;
+    actor: ReturnType<typeof getActorInfo>;
+  }): Promise<{ actorAgentId: string; reviewerAgentId: string; reviewerSource: string } | null> {
+    const nextStatus = typeof input.updateFields.status === "string"
+      ? input.updateFields.status
+      : input.existing.status;
+    if (input.actor.actorType !== "agent" || !input.actor.agentId || nextStatus !== "done") return null;
+    if (input.existing.status === "done" || isHumanControlWorkItemType(input.existing.workItemType)) return null;
+
+    const actorAgent = await agentsSvc.getById(input.actor.agentId);
+    const requiresReview =
+      agentConfigRequiresReviewBeforeDone(actorAgent) ||
+      await actorRunRequiresReviewBeforeDone({
+        actor: input.actor,
+        companyId: input.existing.companyId,
+      });
+    if (!requiresReview) return null;
+
+    const reviewer = await resolveReviewRequiredCompletionReviewer({
+      existing: input.existing,
+      actorAgentId: input.actor.agentId,
+      actorAgent,
+    });
+    if (!reviewer) {
+      throw unprocessable("Review-required agent cannot mark issue done without a reviewer path", {
+        code: "review_required_before_done",
+        missing: "reviewer_agent",
+        validReviewerPaths: [
+          "parent_assignee_agent",
+          "agent_reports_to",
+          "issue_creator_agent",
+          "different_current_assignee_agent",
+        ],
+      });
+    }
+
+    input.updateFields.status = "in_review";
+    input.updateFields.assigneeAgentId = reviewer.agentId;
+    input.updateFields.assigneeUserId = null;
+    input.updateFields.executionState = buildReviewRequiredCompletionExecutionState({
+      issueExecutionState: input.existing.executionState,
+      actorAgentId: input.actor.agentId,
+      reviewerAgentId: reviewer.agentId,
+    });
+
+    return {
+      actorAgentId: input.actor.agentId,
+      reviewerAgentId: reviewer.agentId,
+      reviewerSource: reviewer.source,
+    };
   }
 
   function requireAgentRunId(req: Request, res: Response) {
@@ -3358,6 +3574,12 @@ export function issueRoutes(
       }
     }
 
+    const reviewRequiredCompletionGate = await applyReviewRequiredCompletionGate({
+      existing,
+      updateFields,
+      actor,
+    });
+
     await assertAgentInReviewReviewPath({
       existing,
       updateFields,
@@ -3379,7 +3601,7 @@ export function issueRoutes(
       !!existing.createdByUserId &&
       nextAssigneeUserId === existing.createdByUserId;
 
-    if (assigneeWillChange && !transition.workflowControlledAssignment) {
+    if (assigneeWillChange && !transition.workflowControlledAssignment && !reviewRequiredCompletionGate) {
       if (!isAgentReturningIssueToCreator) {
         await assertCanAssignTasks(req, existing.companyId);
       }
@@ -3599,6 +3821,7 @@ export function issueRoutes(
         ...(interruptedRunId ? { interruptedRunId } : {}),
         ...(cancelledStatusRunId ? { cancelledStatusRunId } : {}),
         ...(workspaceChange ? { workspaceChange } : {}),
+        ...(reviewRequiredCompletionGate ? { reviewRequiredCompletionGate } : {}),
         _previous: hasFieldChanges ? previous : undefined,
         ...summarizeIssueReferenceActivityDetails(
           updateReferenceDiff

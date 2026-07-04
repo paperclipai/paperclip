@@ -3,8 +3,13 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
+const mockHeartbeatGetRun = vi.hoisted(() => vi.fn(async () => null));
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
+  assertCheckoutOwner: vi.fn(),
   getAncestors: vi.fn(),
   getById: vi.fn(),
   getByIdentifier: vi.fn(async () => null),
@@ -30,9 +35,7 @@ vi.mock("../services/index.js", () => ({
     canUser: vi.fn(),
     hasPermission: vi.fn(),
   }),
-  agentService: () => ({
-    getById: vi.fn(),
-  }),
+  agentService: () => mockAgentService,
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
   }),
@@ -46,6 +49,7 @@ vi.mock("../services/index.js", () => ({
   }),
   heartbeatService: () => ({
     wakeup: mockWakeup,
+    getRun: mockHeartbeatGetRun,
     reportRunActivity: vi.fn(async () => undefined),
     cancelBudgetScopeWork: vi.fn(async () => undefined),
   }),
@@ -147,6 +151,9 @@ describe("issue dependency wakeups in issue routes", () => {
     mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockAgentService.getById.mockResolvedValue(null);
+    mockHeartbeatGetRun.mockResolvedValue(null);
   });
 
   it("wakes dependents when the final blocker transitions to done", async () => {
@@ -474,6 +481,186 @@ describe("issue dependency wakeups in issue routes", () => {
     expect(mockWakeup).not.toHaveBeenCalledWith(
       "ceo-agent",
       expect.objectContaining({ reason: "child_blocked_without_first_class_blocker" }),
+    );
+  });
+
+  it("routes explicit review-required agent completion attempts to the parent reviewer", async () => {
+    const actorAgentId = "11111111-1111-4111-8111-111111111111";
+    const reviewerAgentId = "22222222-2222-4222-8222-222222222222";
+    const existingIssue = {
+      id: "child-1",
+      companyId: "company-1",
+      identifier: "PAP-301",
+      title: "Restricted implementation lane",
+      description: null,
+      status: "in_progress",
+      priority: "medium",
+      parentId: "parent-1",
+      assigneeAgentId: actorAgentId,
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      executionState: null,
+      labels: [],
+      labelIds: [],
+    };
+    mockAgentService.getById.mockResolvedValue({
+      id: actorAgentId,
+      companyId: "company-1",
+      role: "engineer",
+      reportsTo: null,
+      adapterType: "codex-local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      metadata: { reviewRequiredBeforeDone: true },
+      permissions: {},
+    });
+    mockIssueService.getById
+      .mockResolvedValueOnce(existingIssue)
+      .mockResolvedValueOnce({
+        id: "parent-1",
+        companyId: "company-1",
+        identifier: "PAP-300",
+        title: "Parent delivery",
+        description: null,
+        status: "blocked",
+        priority: "medium",
+        parentId: null,
+        assigneeAgentId: reviewerAgentId,
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      });
+    mockIssueService.update.mockImplementation(async (_id, patch) => ({
+      ...existingIssue,
+      ...patch,
+      status: patch.status,
+      assigneeAgentId: patch.assigneeAgentId,
+      assigneeUserId: patch.assigneeUserId,
+    }));
+
+    const app = await createApp({
+      type: "agent",
+      agentId: actorAgentId,
+      companyId: "company-1",
+      source: "api_key",
+      runId: "run-review-required",
+    });
+    const res = await request(app)
+      .patch("/api/issues/child-1")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "child-1",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: reviewerAgentId,
+        assigneeUserId: null,
+        executionState: expect.objectContaining({
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: reviewerAgentId, userId: null },
+          returnAssignee: { type: "agent", agentId: actorAgentId, userId: null },
+          reviewRequest: expect.objectContaining({
+            instructions: expect.stringContaining("require review before it can mark issue work done"),
+          }),
+        }),
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledWith(
+        reviewerAgentId,
+        expect.objectContaining({
+          reason: "execution_review_requested",
+          payload: expect.objectContaining({
+            issueId: "child-1",
+          }),
+          contextSnapshot: expect.objectContaining({
+            issueId: "child-1",
+            executionStage: expect.objectContaining({
+              wakeRole: "reviewer",
+              currentParticipant: expect.objectContaining({ agentId: reviewerAgentId }),
+            }),
+          }),
+        }),
+      );
+    });
+  });
+
+  it("does not treat cheap model routing as review-required completion authority", async () => {
+    const actorAgentId = "33333333-3333-4333-8333-333333333333";
+    mockAgentService.getById.mockResolvedValue({
+      id: actorAgentId,
+      companyId: "company-1",
+      role: "engineer",
+      reportsTo: null,
+      adapterType: "codex-local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      metadata: {},
+      permissions: {},
+    });
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-302",
+      title: "Cheap model route work",
+      description: null,
+      status: "in_progress",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: actorAgentId,
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      assigneeAdapterOverrides: { modelProfile: "cheap" },
+      executionWorkspaceId: null,
+      executionState: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockImplementation(async (_id, patch) => ({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-302",
+      title: "Cheap model route work",
+      description: null,
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: actorAgentId,
+      assigneeUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+      ...patch,
+    }));
+
+    const app = await createApp({
+      type: "agent",
+      agentId: actorAgentId,
+      companyId: "company-1",
+      source: "api_key",
+      runId: "run-cheap-model",
+    });
+    const res = await request(app).patch("/api/issues/issue-1").send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "issue-1",
+      expect.objectContaining({
+        status: "done",
+      }),
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "issue-1",
+      expect.objectContaining({
+        status: "in_review",
+      }),
     );
   });
 });
