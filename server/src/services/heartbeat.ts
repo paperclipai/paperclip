@@ -821,6 +821,7 @@ const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
 ]);
 export { MAX_TURN_CONTINUATION_RETRY_REASON };
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
+export const ISSUE_ASSIGNED_WAKE_REASON = "issue_assigned";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
 const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
@@ -3590,7 +3591,7 @@ export function decideSessionCompactionTrigger(
   ) {
     return { reason: "no open issues for agent", triggeredBy: "t3" };
   }
-  if (policy.rotateOnNewIssueWake && wakeReason === "issue_assigned") {
+  if (policy.rotateOnNewIssueWake && wakeReason === ISSUE_ASSIGNED_WAKE_REASON) {
     return { reason: "wake triggered by new issue assignment", triggeredBy: "t4" };
   }
   return null;
@@ -11613,6 +11614,7 @@ export function heartbeatService(
     continuationSummaryBody?: string | null;
     wakeReason?: string | null;
     openIssuesCount?: number | null;
+    policy?: SessionCompactionPolicy;
   }): Promise<SessionCompactionDecision> {
     const { agent, sessionId, issueId } = input;
     if (!sessionId) {
@@ -11625,7 +11627,7 @@ export function heartbeatService(
       };
     }
 
-    const policy = parseSessionCompactionPolicy(agent);
+    const policy = input.policy ?? parseSessionCompactionPolicy(agent);
     if (!policy.enabled || !hasSessionCompactionThresholds(policy)) {
       return {
         rotate: false,
