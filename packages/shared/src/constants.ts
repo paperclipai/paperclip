@@ -78,7 +78,20 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
-export const MODEL_PROFILE_KEYS = ["cheap"] as const;
+export const MODEL_PROFILE_KEYS = [
+  "cheap",
+  "code-evidence",
+  "routine-summary",
+  "final-quality-gate",
+  "routine-QA",
+  "security-architecture",
+  "style-summary",
+  "brand-policy-fallback",
+  "complex-routing",
+  "implementation-state-evidence",
+  "schema-evidence",
+  "migration-diff-prep",
+] as const;
 export type ModelProfileKey = (typeof MODEL_PROFILE_KEYS)[number];
 
 export const AGENT_ICON_NAMES = [

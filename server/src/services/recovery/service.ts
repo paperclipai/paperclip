@@ -2892,6 +2892,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      if ((issue.executionPolicy as Record<string, unknown> | null)?.permanentWatcher === true) {
+        result.skipped += 1;
+        continue;
+      }
+
       const agent = await getAgent(agentId);
       const agentInvokable = agent && agent.companyId === issue.companyId
         ? await isAgentInvokable(agent)
@@ -3114,6 +3119,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
       if (handoffEvidence) {
         if (!handoffEvidence.exhausted) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const handoffPolicy = (issue.executionPolicy as Record<string, unknown> | null)?.successfulRunHandoff;
+        if (handoffPolicy && (handoffPolicy as Record<string, unknown>).required === false) {
           result.skipped += 1;
           continue;
         }
