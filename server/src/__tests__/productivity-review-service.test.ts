@@ -23,6 +23,7 @@ import {
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
   productivityReviewService,
 } from "../services/productivity-review.ts";
+import { applyReviewOwnerDelegation } from "../services/review-owner-delegation.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -55,9 +56,15 @@ describeEmbeddedPostgres("productivity review service", () => {
     startedAt?: Date;
     parentId?: string | null;
     originKind?: string;
+    managerRole?: string;
+    productivityReviewDelegateAgentId?: string | null;
+    delegateStatus?: string;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
+    const delegateId = opts?.productivityReviewDelegateAgentId === undefined
+      ? null
+      : opts.productivityReviewDelegateAgentId ?? randomUUID();
     const coderId = randomUUID();
     const issueId = randomUUID();
     const issuePrefix = `PR${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
@@ -68,13 +75,14 @@ describeEmbeddedPostgres("productivity review service", () => {
       name: "Productivity Review Co",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+      productivityReviewDelegateAgentId: delegateId,
     });
-    await db.insert(agents).values([
+    const agentRows: Array<typeof agents.$inferInsert> = [
       {
         id: managerId,
         companyId,
         name: "CTO",
-        role: "cto",
+        role: opts?.managerRole ?? "cto",
         status: "idle",
         adapterType: "codex_local",
         adapterConfig: {},
@@ -93,7 +101,21 @@ describeEmbeddedPostgres("productivity review service", () => {
         runtimeConfig: {},
         permissions: {},
       },
-    ]);
+    ];
+    if (delegateId) {
+      agentRows.push({
+        id: delegateId,
+        companyId,
+        name: "Executive Assistant",
+        role: "operations",
+        status: opts?.delegateStatus ?? "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+    }
+    await db.insert(agents).values(agentRows);
     await db.insert(issues).values({
       id: issueId,
       companyId,
@@ -110,7 +132,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       updatedAt: createdAt,
     });
 
-    return { companyId, managerId, coderId, issueId, issuePrefix, createdAt };
+    return { companyId, managerId, delegateId, coderId, issueId, issuePrefix, createdAt };
   }
 
   async function insertRuns(input: {
@@ -208,6 +230,73 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
 
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
+  });
+
+  it("delegates CEO-owned productivity reviews to the configured invokable company delegate", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      managerRole: "ceo",
+      productivityReviewDelegateAgentId: null,
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews[0]?.assigneeAgentId).toBe(seeded.delegateId);
+  });
+
+  it("leaves CEO review owners unchanged when no delegate is configured", async () => {
+    const seeded = await seedAssignedIssue({ managerRole: "ceo" });
+
+    await expect(
+      applyReviewOwnerDelegation(db, {
+        companyId: seeded.companyId,
+        resolvedOwnerAgentId: seeded.managerId,
+        issueId: seeded.issueId,
+      }),
+    ).resolves.toBe(seeded.managerId);
+  });
+
+  it("falls back to CEO when the configured delegate is not invokable", async () => {
+    const seeded = await seedAssignedIssue({
+      managerRole: "ceo",
+      productivityReviewDelegateAgentId: null,
+      delegateStatus: "paused",
+    });
+
+    await expect(
+      applyReviewOwnerDelegation(db, {
+        companyId: seeded.companyId,
+        resolvedOwnerAgentId: seeded.managerId,
+        issueId: seeded.issueId,
+      }),
+    ).resolves.toBe(seeded.managerId);
+  });
+
+  it("does not redirect non-CEO review owners", async () => {
+    const seeded = await seedAssignedIssue({
+      managerRole: "cto",
+      productivityReviewDelegateAgentId: null,
+    });
+
+    await expect(
+      applyReviewOwnerDelegation(db, {
+        companyId: seeded.companyId,
+        resolvedOwnerAgentId: seeded.managerId,
+        issueId: seeded.issueId,
+      }),
+    ).resolves.toBe(seeded.managerId);
   });
 
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
