@@ -236,7 +236,7 @@ describeEmbedded("heartbeat executor batch claims", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
-  it("releaseExecutorClaims returns claimed runs to queued, keeping the attempt count", async () => {
+  it("releaseExecutorClaims returns claimed runs to queued, restoring the attempt count", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const { runId } = await seedQueuedRun({ companyId, agentId });
 
@@ -253,13 +253,16 @@ describeEmbedded("heartbeat executor batch claims", () => {
     expect(run?.claimedBy).toBeNull();
     expect(run?.claimedAt).toBeNull();
     expect(run?.executorHeartbeatAt).toBeNull();
-    expect(run?.claimAttempts).toBe(1); // release keeps the consumed attempt
+    // Drain is not claim churn: a run that happens to be in flight at
+    // shutdown must not creep toward the claim-attempt escalation bound
+    // across rolling deploys.
+    expect(run?.claimAttempts).toBe(0);
 
     // Released runs are claimable again.
     const reclaimed = await replicaB.claimRunsForExecution(1);
     expect(reclaimed).toEqual([runId]);
     expect((await getRunRow(runId))?.claimedBy).toBe("replica-b");
-    expect((await getRunRow(runId))?.claimAttempts).toBe(2);
+    expect((await getRunRow(runId))?.claimAttempts).toBe(1);
   });
 
   it("heartbeatExecutorClaims re-stamps only claims owned by the caller", async () => {

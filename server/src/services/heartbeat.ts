@@ -9078,16 +9078,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const survivors: string[] = [];
     const companyAgentsByCompany = new Map<string, AgentOrgRow[]>();
 
-    for (const [agentId, agentRuns] of byAgent) {
+    const processAgentClaims = async (agentId: string, agentRuns: Array<typeof heartbeatRuns.$inferSelect>) => {
       let pending: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const run of agentRuns) {
         if (run.claimAttempts > MAX_RUN_CLAIM_ATTEMPTS) {
-          await escalateClaimAttemptsExhausted(run);
+          await escalateClaimAttemptsExhausted(run, claimReplicaId);
         } else {
           pending.push(run);
         }
       }
-      if (pending.length === 0) continue;
+      if (pending.length === 0) return;
 
       const agent = await getAgent(agentId);
       if (agent) {
@@ -9108,7 +9108,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               await releaseClaimedRunToQueue(run.id, claimReplicaId, { restoreAttempt: true });
             }
           }
-          continue;
+          return;
         }
 
         // Per-agent concurrency: countRunningRunsForAgent already includes
@@ -9161,6 +9161,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         await finalizeClaimedRun(run);
         survivors.push(run.id);
+      }
+    };
+
+    for (const [agentId, agentRuns] of byAgent) {
+      try {
+        await processAgentClaims(agentId, agentRuns);
+      } catch (error) {
+        // A throw mid-validation (e.g. a transient DB error) must not strand
+        // the rest of this agent's batch as claimed-but-not-executing rows
+        // until the reaper's staleness window elapses. Release everything the
+        // pass did not finish: rows already escalated / cancelled / released
+        // are terminal or re-queued so the ownership-guarded release is a
+        // no-op for them, and finalized survivors are skipped explicitly.
+        // The claim attempt is intentionally NOT restored — a run whose
+        // validation throws deterministically must still hit the
+        // MAX_RUN_CLAIM_ATTEMPTS escalation instead of looping forever.
+        logger.error(
+          { error, agentId, runIds: agentRuns.map((run) => run.id) },
+          "executor claim validation failed; releasing unprocessed claims back to the queue",
+        );
+        for (const run of agentRuns) {
+          if (survivors.includes(run.id)) continue;
+          try {
+            await releaseClaimedRunToQueue(run.id, claimReplicaId);
+          } catch (releaseError) {
+            logger.error(
+              { error: releaseError, runId: run.id },
+              "failed to release claimed run after validation error; the reaper will recover it",
+            );
+          }
+        }
       }
     }
 
@@ -9217,7 +9248,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
   }
 
-  /** Drain path: return this replica's still-running claims to the queue. */
+  /**
+   * Drain path: return this replica's still-running claims to the queue.
+   * The claim attempt is restored — a run that happens to be in flight at
+   * shutdown (e.g. rolling deploys with runs longer than the drain timeout)
+   * is not claim churn and must not creep toward MAX_RUN_CLAIM_ATTEMPTS.
+   */
   async function releaseExecutorClaims(runIds: string[], claimReplicaId: string = replicaId) {
     if (runIds.length === 0) return;
     await db
@@ -9227,6 +9263,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         claimedBy: null,
         claimedAt: null,
         executorHeartbeatAt: null,
+        claimAttempts: sql`GREATEST(${heartbeatRuns.claimAttempts} - 1, 0)`,
         updatedAt: new Date(),
       })
       .where(
@@ -9244,7 +9281,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
    * (without the local-process handling, which cannot apply to a run that
    * never started executing).
    */
-  async function escalateClaimAttemptsExhausted(run: typeof heartbeatRuns.$inferSelect) {
+  async function escalateClaimAttemptsExhausted(
+    run: typeof heartbeatRuns.$inferSelect,
+    claimReplicaId: string = replicaId,
+  ) {
     const message = `Run was claimed ${run.claimAttempts} times without executing; failing instead of re-queueing`;
     logger.error(
       { runId: run.id, agentId: run.agentId, claimAttempts: run.claimAttempts },
@@ -9252,26 +9292,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
     const agent = await getAgent(run.agentId);
     const now = new Date();
-    let finalizedRun = await setRunStatus(run.id, "failed", {
-      error: message,
-      errorCode: "claim_attempts_exhausted",
-      finishedAt: now,
-      ...(agent
-        ? {
-            resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
-              resultJson: parseObject(run.resultJson),
-              errorCode: "claim_attempts_exhausted",
-              errorMessage: message,
-            }),
-          }
-        : {}),
-    });
+    // Ownership guard, like every other batch-claim transition: only fail the
+    // row while it is still OUR claim. If the reaper (or anything else)
+    // already moved it, that transition's error/metadata and side effects
+    // stand — do not overwrite them.
+    const finalizedRun = await setRunStatus(
+      run.id,
+      "failed",
+      {
+        error: message,
+        errorCode: "claim_attempts_exhausted",
+        finishedAt: now,
+        ...(agent
+          ? {
+              resultJson: mergeRunStopMetadataForAgent(agent, "failed", {
+                resultJson: parseObject(run.resultJson),
+                errorCode: "claim_attempts_exhausted",
+                errorMessage: message,
+              }),
+            }
+          : {}),
+      },
+      { status: "running", claimedBy: claimReplicaId },
+    );
+    if (!finalizedRun) return;
     await setWakeupStatus(run.wakeupRequestId, "failed", {
       finishedAt: now,
       error: message,
     });
-    if (!finalizedRun) finalizedRun = await getRun(run.id);
-    if (!finalizedRun) return;
     await releaseEnvironmentLeasesForRun({
       runId: finalizedRun.id,
       companyId: finalizedRun.companyId,

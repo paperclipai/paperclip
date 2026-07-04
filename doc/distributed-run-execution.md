@@ -55,7 +55,9 @@ pipeline's recovery design already assumes this).
   20s for in-flight runs, then releases the rest back to `queued` — the
   reaper is only the crash path. Draining happens *before* leadership
   resign, so a departing leader hands over a queue that already reflects
-  its releases.
+  its releases. Drained releases restore `claim_attempts`: being in flight
+  at shutdown is not claim churn, so repeated rolling deploys never creep a
+  healthy long run toward the claim-attempt escalation bound.
 
 ## Configuration
 
