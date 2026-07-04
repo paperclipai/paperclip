@@ -323,7 +323,8 @@ function tarExcludeFlags(exclude: string[] | undefined): string {
   return ["._*", ...(exclude ?? [])].map((entry) => `--exclude ${shellQuote(entry)}`).join(" ");
 }
 
-function createRemoteTarballFromDirectoryCommand(input: {
+// Exported for tests (not part of the package's public index surface).
+export function createRemoteTarballFromDirectoryCommand(input: {
   remoteDir: string;
   archivePath: string;
   exclude?: string[];
@@ -342,8 +343,11 @@ function createRemoteTarballFromDirectoryCommand(input: {
     // mid-archive, hard-failing the whole restore. --ignore-failed-read makes it
     // a best-effort archive of whatever is readable. The flag is
     // GNU/busybox-only (BSD tar rejects it), so gate it on a capability probe ->
-    // portable across GNU, BSD, and busybox tars.
-    `__pc_ifr=""; case "$(tar --help 2>&1)" in *--ignore-failed-read*) __pc_ifr=--ignore-failed-read;; esac`,
+    // portable across GNU, BSD, and busybox tars. The probe is wrapped in a
+    // { ...; } group command so its internal ";" does not terminate the
+    // surrounding "&&" chain (a bare ";" would make the tar step run even when
+    // an earlier step such as `cd` failed, fabricating an empty archive).
+    `{ __pc_ifr=""; case "$(tar --help 2>&1)" in *--ignore-failed-read*) __pc_ifr=--ignore-failed-read;; esac; }`,
     `if [ "$#" -eq 0 ]; then ` +
       `dd if=/dev/zero of=${shellQuote(input.archivePath)} bs=1024 count=1; ` +
       `else tar $__pc_ifr -cf ${shellQuote(input.archivePath)} ${tarExcludeFlags(input.exclude)} -- "$@"; fi`,
