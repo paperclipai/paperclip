@@ -717,6 +717,13 @@
       "breakpoints": true
     },
     {
+      "idx": 112,
+      "version": "7",
+      "when": 1781945200000,
+      "tag": "0112_company_mcp_client_enabled",
+      "breakpoints": true
+    },
+    {
       "idx": 113,
       "version": "7",
       "when": 1781988000000,
