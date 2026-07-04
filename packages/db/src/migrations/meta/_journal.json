@@ -897,6 +897,13 @@
       "when": 1782526500000,
       "tag": "0127_environment_custom_images_instance_scoped",
       "breakpoints": true
+    },
+    {
+      "idx": 128,
+      "version": "7",
+      "when": 1783036800000,
+      "tag": "0128_monthly_token_cap",
+      "breakpoints": true
     }
   ]
 }

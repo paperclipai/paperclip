@@ -3798,6 +3798,17 @@ export function mergeCoalescedContextSnapshot(
   if (existing.forceFreshSession === true || incoming.forceFreshSession === true) {
     merged.forceFreshSession = true;
   }
+  // Preserve issue_blockers_resolved: it represents a state transition that must
+  // not be silently overwritten by a lower-priority coalesced wake (e.g. a comment
+  // mention arriving while the blockers-resolved run is still queued). Without this
+  // guard the heartbeat starts with issue_comment_mentioned context and never
+  // performs the blocked-to-todo transition, leaving the issue stuck.
+  if (
+    existing.wakeReason === "issue_blockers_resolved" &&
+    merged.wakeReason !== "issue_blockers_resolved"
+  ) {
+    merged.wakeReason = "issue_blockers_resolved";
+  }
   const mergedCommentIds = mergeWakeCommentIds(existing, incoming);
   if (mergedCommentIds.length > 0) {
     const latestCommentId = mergedCommentIds[mergedCommentIds.length - 1];
@@ -13185,6 +13196,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
+          const isBlockersResolvedWake = reason === "issue_blockers_resolved";
+          if (isBlockersResolvedWake) {
+            // This should not happen: the blocker just went done, but the readiness
+            // check still sees unresolved blockers — a stale read / fan-out race.
+            // Persist a distinguishable row so it appears in queue history and is
+            // never invisible, and emit a warning so the occurrence is observable.
+            logger.warn(
+              { issueId, agentId, unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds },
+              "issue_blockers_resolved wake skipped — possible fan-out race (stale dependency readiness)",
+            );
+            await tx.insert(agentWakeupRequests).values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "issue_blockers_resolved_skipped_stale_readiness",
+              payload: {
+                ...(payload ?? {}),
+                issueId,
+                unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
+              },
+              status: "skipped",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              finishedAt: new Date(),
+            });
+            return { kind: "skipped" as const };
+          }
           await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,

@@ -22,6 +22,7 @@ import { timeAgo } from "../lib/timeAgo";
 import { cn, formatCents } from "../lib/utils";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
+import { TokenUsageWidget } from "../components/TokenUsageWidget";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import type { Agent, Issue } from "@paperclipai/shared";
@@ -312,6 +313,8 @@ export function Dashboard() {
             className="grid gap-4 md:grid-cols-2"
             itemClassName="rounded-lg border bg-card p-4 shadow-sm"
           />
+
+          <TokenUsageWidget companyId={selectedCompanyId!} />
 
           <div className="grid md:grid-cols-2 gap-4">
             {/* Recent Activity */}

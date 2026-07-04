@@ -1325,6 +1325,18 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/agents/{agentId}/token-cap/reset",
+  tags: ["agents"],
+  summary: "Reset an agent monthly token cap",
+  request: {
+    params: z.object({ agentId: z.string() }),
+    body: jsonBody(z.object({ recoverIssueId: z.string().min(1) })),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/agents/{id}/task-sessions",
   tags: ["agents"],
@@ -2384,6 +2396,15 @@ for (const segment of costSummaryPaths) {
     responses: { 200: r.ok(), 401: r.unauthorized },
   });
 }
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/agents/token-usage",
+  tags: ["costs"],
+  summary: "List agent token usage",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
 
 registry.registerPath({
   method: "post",
