@@ -9,7 +9,7 @@ import {
   getEnforcedPatterns,
   loadRegistrationRecord,
   validateRegistrationTemplates,
-} from "../services/alert-template-registration.ts";
+} from "../services/alert-template-registration.js";
 
 const EXPECTED_PATTERNS = ["ssn", "email", "credit_card", "freeform_string_unbound"];
 
