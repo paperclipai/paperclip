@@ -39,11 +39,9 @@ self.addEventListener("notificationclick", (event) => {
       .then((clients) => {
         const match = clients.find((c) => c.url.includes(self.location.origin));
         if (match) {
-          match.focus();
-          match.navigate(url);
-        } else {
-          self.clients.openWindow(url);
+          return match.focus().then((client) => client.navigate(url));
         }
+        return self.clients.openWindow(url);
       })
   );
 });
