@@ -4,7 +4,8 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Card, CardContent } from "@/components/ui/card";
 
 export function PushNotificationSection() {
-  const { state, isToggling, enable, disable } = usePushNotifications();
+  const { state, isToggling, subscriptions, enable, disable } = usePushNotifications();
+  const currentEndpoint = state.status === "subscribed" ? state.endpoint : null;
 
   return (
     <div className="space-y-3">
@@ -52,24 +53,65 @@ export function PushNotificationSection() {
               <span>{state.message}</span>
             </div>
           ) : (
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 min-w-0">
-                <Bell className="h-4 w-4 text-muted-foreground shrink-0" />
-                <div className="space-y-0.5 min-w-0">
-                  <p className="text-sm font-medium">Enable push notifications</p>
-                  <p className="text-xs text-muted-foreground">
-                    {state.status === "subscribed"
-                      ? "This device is subscribed and will receive alerts."
-                      : "This device will not receive push alerts."}
-                  </p>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Bell className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <div className="space-y-0.5 min-w-0">
+                    <p className="text-sm font-medium">Enable push notifications</p>
+                    <p className="text-xs text-muted-foreground">
+                      {state.status === "subscribed"
+                        ? "This device is subscribed and will receive alerts."
+                        : "This device will not receive push alerts."}
+                    </p>
+                  </div>
                 </div>
+                <ToggleSwitch
+                  checked={state.status === "subscribed"}
+                  onCheckedChange={state.status === "subscribed" ? disable : enable}
+                  disabled={isToggling}
+                  aria-label="Toggle push notifications"
+                />
               </div>
-              <ToggleSwitch
-                checked={state.status === "subscribed"}
-                onCheckedChange={state.status === "subscribed" ? disable : enable}
-                disabled={isToggling}
-                aria-label="Toggle push notifications"
-              />
+              <div className="border-t pt-3">
+                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  <Smartphone className="h-3.5 w-3.5" />
+                  Subscribed devices
+                </div>
+                {subscriptions.length === 0 ? (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    No devices are subscribed yet.
+                  </p>
+                ) : (
+                  <ul className="mt-2 divide-y">
+                    {subscriptions.map((subscription) => {
+                      const isCurrent = subscription.endpoint === currentEndpoint;
+                      return (
+                        <li
+                          key={subscription.id}
+                          className="flex items-start justify-between gap-3 py-2 first:pt-0 last:pb-0"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="truncate text-sm font-medium">
+                                {subscription.deviceLabel || "Unnamed device"}
+                              </p>
+                              {isCurrent ? (
+                                <span className="rounded-sm border px-1.5 py-0.5 text-[11px] leading-none text-muted-foreground">
+                                  This device
+                                </span>
+                              ) : null}
+                            </div>
+                            <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                              Added {new Date(subscription.createdAt).toLocaleDateString()}
+                            </p>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
             </div>
           )}
         </CardContent>

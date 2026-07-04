@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { pushApi } from "@/api/push";
+import { pushApi, type PushSubscriptionRecord } from "@/api/push";
 
 function urlBase64ToUint8Array(base64String: string): ArrayBuffer {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -22,35 +22,62 @@ export type PushState =
 export function usePushNotifications() {
   const [state, setState] = useState<PushState>({ status: "loading" });
   const [isToggling, setIsToggling] = useState(false);
+  const [subscriptions, setSubscriptions] = useState<PushSubscriptionRecord[]>([]);
+
+  const refreshSubscriptions = useCallback(async () => {
+    const result = await pushApi.listSubscriptions();
+    setSubscriptions(result.subscriptions);
+    return result.subscriptions;
+  }, []);
 
   useEffect(() => {
-    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-      setState({ status: "unsupported" });
-      return;
-    }
-    if (!window.isSecureContext) {
-      setState({ status: "insecure" });
-      return;
-    }
+    let cancelled = false;
 
-    navigator.serviceWorker.ready
-      .then(async (reg) => {
+    async function load() {
+      try {
+        const serverSubscriptions = await refreshSubscriptions();
+
+        if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+          if (!cancelled) setState({ status: "unsupported" });
+          return;
+        }
+        if (!window.isSecureContext) {
+          if (!cancelled) setState({ status: "insecure" });
+          return;
+        }
+
+        const reg = await navigator.serviceWorker.ready;
         const existing = await reg.pushManager.getSubscription();
+        if (cancelled) return;
         if (existing) {
-          setState({ status: "subscribed", endpoint: existing.endpoint });
+          const existsOnServer = serverSubscriptions.some((sub) => sub.endpoint === existing.endpoint);
+          if (existsOnServer) {
+            setState({ status: "subscribed", endpoint: existing.endpoint });
+          } else {
+            await existing.unsubscribe();
+            if (!cancelled) setState({ status: "unsubscribed" });
+          }
         } else if (Notification.permission === "denied") {
           setState({ status: "denied" });
         } else {
           setState({ status: "unsubscribed" });
         }
-      })
-      .catch((err) => {
-        setState({
-          status: "error",
-          message: err instanceof Error ? err.message : "Failed to read push state",
-        });
-      });
-  }, []);
+      } catch (err) {
+        if (!cancelled) {
+          setState({
+            status: "error",
+            message: err instanceof Error ? err.message : "Failed to read push state",
+          });
+        }
+      }
+    }
+
+    void load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshSubscriptions]);
 
   const enable = useCallback(async () => {
     if (isToggling) return;
@@ -75,14 +102,20 @@ export function usePushNotifications() {
 
       const json = sub.toJSON();
       const keys = json.keys ?? {};
-      await pushApi.subscribe({
-        endpoint: sub.endpoint,
-        p256dh: keys.p256dh ?? "",
-        auth: keys.auth ?? "",
-        deviceLabel: navigator.userAgent.slice(0, 120),
-      });
+      try {
+        await pushApi.subscribe({
+          endpoint: sub.endpoint,
+          p256dh: keys.p256dh ?? "",
+          auth: keys.auth ?? "",
+          deviceLabel: navigator.userAgent.slice(0, 120),
+        });
+      } catch (err) {
+        await sub.unsubscribe().catch(() => undefined);
+        throw err;
+      }
 
       setState({ status: "subscribed", endpoint: sub.endpoint });
+      await refreshSubscriptions();
     } catch (err) {
       setState({
         status: "error",
@@ -99,11 +132,18 @@ export function usePushNotifications() {
     try {
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.getSubscription();
+      const endpoint = sub?.endpoint ?? (state.status === "subscribed" ? state.endpoint : undefined);
       if (sub) {
-        await pushApi.unsubscribe(sub.endpoint);
-        await sub.unsubscribe();
+        const unsubscribed = await sub.unsubscribe();
+        if (!unsubscribed) {
+          throw new Error("Browser failed to unsubscribe this device");
+        }
+      }
+      if (endpoint) {
+        await pushApi.unsubscribe(endpoint);
       }
       setState({ status: "unsubscribed" });
+      await refreshSubscriptions();
     } catch (err) {
       setState({
         status: "error",
@@ -112,7 +152,7 @@ export function usePushNotifications() {
     } finally {
       setIsToggling(false);
     }
-  }, [isToggling]);
+  }, [isToggling, refreshSubscriptions, state]);
 
-  return { state, isToggling, enable, disable };
+  return { state, isToggling, subscriptions, refreshSubscriptions, enable, disable };
 }
