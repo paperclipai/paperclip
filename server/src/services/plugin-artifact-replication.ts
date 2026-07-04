@@ -322,6 +322,32 @@ export function createPluginArtifactReplication(opts: {
     }
   }
 
+  /**
+   * Reject tarball entries that could escape the extraction directory
+   * (absolute paths or `..` path components). Modern GNU tar (>= 1.29) and
+   * bsdtar already skip such members by default, but that is host-tar
+   * version-dependent behaviour — verify the member list explicitly before
+   * extracting so a crafted snapshot (attacker with object-storage AND DB
+   * write access, enough to also forge a matching contentHash) can never
+   * write outside the plugin tree regardless of the host tar. Listing
+   * (`tar -t`) writes nothing, so scanning first is safe. maxBuffer is
+   * raised because a full npm tree lists tens of thousands of paths.
+   */
+  async function assertTarEntriesContained(tarPath: string): Promise<void> {
+    const { stdout } = await execFileAsync("tar", ["-tzf", tarPath], {
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    for (const line of stdout.split("\n")) {
+      const entry = line.trim();
+      if (!entry) continue;
+      if (path.isAbsolute(entry) || entry.split("/").includes("..")) {
+        throw new Error(
+          `Plugin snapshot tarball contains unsafe entry path: ${JSON.stringify(entry)}`,
+        );
+      }
+    }
+  }
+
   async function reconcileOnce(): Promise<{ applied: boolean; generation: number | null }> {
     if (!provider) return { applied: false, generation: null };
 
@@ -363,6 +389,7 @@ export function createPluginArtifactReplication(opts: {
       await fs.rm(extractDir, { recursive: true, force: true });
       await fs.mkdir(extractDir, { recursive: true });
       await fs.writeFile(tmpTar, body);
+      await assertTarEntriesContained(tmpTar);
       await execFileAsync("tar", ["-xzf", tmpTar, "-C", extractDir]);
 
       // Atomic swap: live tree → .old-<ts> (tolerate a missing live tree),

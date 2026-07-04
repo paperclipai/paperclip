@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { gzipSync } from "node:zlib";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { createDb, pluginArtifactGenerations, type Db } from "@paperclipai/db";
@@ -31,6 +32,36 @@ async function collectObject(provider: StorageProvider, objectKey: string): Prom
 
 function sha256Hex(body: Buffer): string {
   return createHash("sha256").update(body).digest("hex");
+}
+
+/**
+ * Minimal ustar archive builder for hostile-entry tests: system tar strips
+ * `../` from member names on create, so the header bytes are forged by hand.
+ */
+function buildTarball(entries: Array<{ name: string; content: string }>): Buffer {
+  const blocks: Buffer[] = [];
+  for (const { name, content } of entries) {
+    const body = Buffer.from(content);
+    const header = Buffer.alloc(512);
+    header.write(name, 0, 100, "utf8");
+    header.write("0000644\0", 100); // mode
+    header.write("0000000\0", 108); // uid
+    header.write("0000000\0", 116); // gid
+    header.write(`${body.length.toString(8).padStart(11, "0")}\0`, 124); // size
+    header.write("00000000000\0", 136); // mtime
+    header.write("        ", 148); // chksum field is spaces while summing
+    header.write("0", 156); // typeflag: regular file
+    header.write("ustar\0", 257); // magic
+    header.write("00", 263); // version
+    let checksum = 0;
+    for (const byte of header) checksum += byte;
+    header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148);
+    blocks.push(header, body);
+    const pad = body.length % 512;
+    if (pad) blocks.push(Buffer.alloc(512 - pad));
+  }
+  blocks.push(Buffer.alloc(1024)); // end-of-archive marker
+  return Buffer.concat(blocks);
 }
 
 describeEmbedded("plugin artifact replication", () => {
@@ -179,6 +210,43 @@ describeEmbedded("plugin artifact replication", () => {
     await expect(reconciler.reconcile()).rejects.toThrow();
     expect(await fs.readFile(path.join(dirB2, "canary.txt"), "utf8")).toBe("still here");
     await expect(fs.access(path.join(dirB2, MARKER))).rejects.toThrow();
+    expect(reconciler.isSynced()).toBe(false);
+  });
+
+  it("reconcile rejects a snapshot tarball containing a path-traversal entry without extracting it", async () => {
+    // Attacker model: object-storage AND ledger write access — the row's
+    // contentHash matches the hostile object, so the integrity check alone
+    // cannot catch it; only the entry-path validation can.
+    const escapeName = `../escape-canary-${Date.now()}.txt`;
+    const evilTar = gzipSync(
+      buildTarball([
+        { name: "./legit.txt", content: "legit" },
+        { name: escapeName, content: "pwned" },
+      ]),
+    );
+    await provider.putObject({
+      objectKey: "plugin-snapshots/gen-1.tgz",
+      body: evilTar,
+      contentType: "application/gzip",
+      contentLength: evilTar.length,
+    });
+    await dbA.insert(pluginArtifactGenerations).values({
+      generation: 1,
+      storageKey: "plugin-snapshots/gen-1.tgz",
+      contentHash: sha256Hex(evilTar),
+      createdBy: "attacker",
+    });
+
+    await fs.writeFile(path.join(dirB, "canary.txt"), "still here");
+    const reconciler = makeService(dbB, dirB, "replica-b");
+
+    await expect(reconciler.reconcile()).rejects.toThrow(/unsafe entry path/);
+
+    // Nothing escaped the extraction dir (its parent would have received the file).
+    await expect(fs.access(path.resolve(`${dirB}.tmp-1`, escapeName))).rejects.toThrow();
+    // Local tree untouched, marker absent, replica not marked synced.
+    expect(await fs.readFile(path.join(dirB, "canary.txt"), "utf8")).toBe("still here");
+    await expect(fs.access(path.join(dirB, MARKER))).rejects.toThrow();
     expect(reconciler.isSynced()).toBe(false);
   });
 
