@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -15,7 +15,15 @@ function createMemoryProvider() {
     id: "s3",
     async putObject(input) {
       calls.put++;
-      objects.set(input.objectKey, Buffer.from(input.body));
+      if (Buffer.isBuffer(input.body)) {
+        objects.set(input.objectKey, Buffer.from(input.body));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of input.body) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      objects.set(input.objectKey, Buffer.concat(chunks));
     },
     async getObject(input) {
       calls.get++;
@@ -112,6 +120,30 @@ describe("createDurableRunLogStore", () => {
     const tail = await store.read(handle, { offset: total - 3, limitBytes: 100 });
     expect(Buffer.byteLength(tail.content, "utf8")).toBe(3);
     expect(tail.nextOffset).toBeUndefined();
+  });
+
+  it("falls back to S3 when the local file vanishes between stat() and open (TOCTOU race)", async () => {
+    const { provider } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider, keyPrefix: "run-logs" } });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "raced-line", ts: "t1" });
+    await store.finalize(handle);
+    // Delete the local file DURING stat(), i.e. after it reports the file
+    // present but before createReadStream opens it -> the open hits ENOENT.
+    const realStat = fs.stat.bind(fs);
+    const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (target, ...rest) => {
+      const result = await realStat(target as Parameters<typeof realStat>[0], ...(rest as []));
+      if (String(target).endsWith(".ndjson")) {
+        await fs.rm(target as string, { force: true });
+      }
+      return result;
+    });
+    try {
+      const res = await store.read(handle);
+      expect(res.content).toContain("raced-line");
+    } finally {
+      statSpy.mockRestore();
+    }
   });
 
   it("throws notFound when neither local nor S3 has the log (pre-S3 run after a roll)", async () => {
