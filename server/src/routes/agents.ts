@@ -241,6 +241,7 @@ export function agentRoutes(
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
+  const issuesSvc = issueService(db);
   const environmentsSvc = environmentService(db);
   const environmentRuntime = environmentRuntimeService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
@@ -3222,12 +3223,31 @@ export function agentRoutes(
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     }
 
-    const boardProvidedContextSnapshot =
-      req.actor.type === "agent"
-        ? {}
-        : req.body.contextSnapshot && typeof req.body.contextSnapshot === "object" && !Array.isArray(req.body.contextSnapshot)
-          ? req.body.contextSnapshot
-          : {};
+    const payloadRecord = asRecord(req.body.payload);
+    const providedContextSnapshot = asRecord(req.body.contextSnapshot);
+    let callerProvidedContextSnapshot: Record<string, unknown> = {};
+    if (providedContextSnapshot && req.actor.type !== "agent") {
+      callerProvidedContextSnapshot = providedContextSnapshot;
+    } else if (providedContextSnapshot && req.actor.type === "agent") {
+      const contextIssueId = asNonEmptyString(providedContextSnapshot.issueId) ?? asNonEmptyString(payloadRecord?.issueId);
+      const contextChildIssueId = asNonEmptyString(providedContextSnapshot.childIssueId) ?? asNonEmptyString(payloadRecord?.childIssueId);
+      const safeChildBlockedManagerWake =
+        req.body.reason === "child_blocked_without_first_class_blocker" &&
+        asNonEmptyString(providedContextSnapshot.wakeReason) === "child_blocked_without_first_class_blocker" &&
+        asNonEmptyString(providedContextSnapshot.source) === "issue.child_blocked_escalation" &&
+        asNonEmptyString(payloadRecord?.mutation) === "child_blocked_escalation" &&
+        Boolean(contextIssueId) &&
+        Boolean(contextChildIssueId);
+      if (safeChildBlockedManagerWake && contextIssueId && contextChildIssueId) {
+        const [contextIssue, contextChildIssue] = await Promise.all([
+          issuesSvc.getById(contextIssueId),
+          issuesSvc.getById(contextChildIssueId),
+        ]);
+        if (contextIssue?.assigneeAgentId === id && contextChildIssue?.parentId === contextIssueId) {
+          callerProvidedContextSnapshot = providedContextSnapshot;
+        }
+      }
+    }
 
     const run = await heartbeat.wakeup(id, {
       source: opts.source,
@@ -3242,7 +3262,7 @@ export function agentRoutes(
       // wedged ghost run. Scoped to the explicit retry reason + a human board actor.
       forceClearStaleExecution: req.body.reason === "retry_failed_run" && req.actor.type !== "agent",
       contextSnapshot: {
-        ...boardProvidedContextSnapshot,
+        ...callerProvidedContextSnapshot,
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
         forceFreshSession: req.body.forceFreshSession === true,
