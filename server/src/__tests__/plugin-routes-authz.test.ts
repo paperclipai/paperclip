@@ -350,7 +350,7 @@ describe.sequential("plugin install and upgrade authz", () => {
 
   it("allows instance admins to read plugin config", async () => {
     readyPlugin();
-    mockRegistry.getConfig = vi.fn().mockResolvedValue({ configJson: { foo: "bar" } });
+    mockRegistry.getConfig.mockResolvedValue({ configJson: { foo: "bar" } });
 
     const { app } = await createApp({
       type: "board",
