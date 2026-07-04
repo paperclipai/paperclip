@@ -2728,6 +2728,25 @@ export function issueRoutes(
       return false;
     }
 
+    if (
+      patchedPreviousAssigneeAgentId &&
+      patchedPreviousAssigneeAgentId !== input.existing.previousAssigneeAgentId
+    ) {
+      res.status(422).json({
+        error:
+          "Recovery owner cannot change previousAssigneeAgentId while closing a recovery-reassigned issue. " +
+          "The original assignee audit field is immutable during terminal disposition.",
+        code: "recovery_disposition_previous_assignee_mismatch",
+        details: {
+          issueId: input.existing.id,
+          previousAssigneeAgentId: input.existing.previousAssigneeAgentId,
+          suppliedPreviousAssigneeAgentId: patchedPreviousAssigneeAgentId,
+          securityPrinciples: ["Separation of Disposition Authority"],
+        },
+      });
+      return false;
+    }
+
     // Condition D — canary/bake-off/measurement issues may not be completed by a recovery owner.
     if (nextStatus === "done") {
       const measurementLabels = MEASUREMENT_CONTEXT_LABEL_NAMES as readonly string[];
