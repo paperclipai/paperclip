@@ -19,14 +19,17 @@ const isWindows = process.platform === "win32";
 
 /**
  * Reject characters that remain dangerous inside a double-quoted `cmd.exe`
- * argument: `%` (environment-variable expansion), `"` (ends the quoted span),
- * and control characters (can smuggle in additional commands). Spaces and
- * shell metacharacters such as `^ & | < >` are inert once double-quoted.
+ * argument: `%` (environment-variable expansion), `!` (delayed expansion —
+ * `!VAR!` is substituted even inside double quotes on hosts where delayed
+ * expansion is enabled by default via the Command Processor registry key),
+ * `"` (ends the quoted span), and control characters (can smuggle in
+ * additional commands). Spaces and shell metacharacters such as `^ & | < >`
+ * are inert once double-quoted.
  */
 function assertSafeWindowsArg(arg: string): void {
   for (const ch of arg) {
     const code = ch.codePointAt(0) ?? 0;
-    if (ch === '"' || ch === "%" || code < 0x20 || code === 0x7f) {
+    if (ch === '"' || ch === "%" || ch === "!" || code < 0x20 || code === 0x7f) {
       throw new Error(`Unsafe npm argument rejected: ${JSON.stringify(arg)}`);
     }
   }

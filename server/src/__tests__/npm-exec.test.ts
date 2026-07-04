@@ -28,8 +28,9 @@ describe("npm-exec Windows argument safety", () => {
   });
 
   it("rejects characters that break out of a double-quoted cmd.exe argument", () => {
-    // `%` enables env-var expansion, `"` ends the quoted span.
-    for (const arg of ["pkg%PATH%", 'a"b']) {
+    // `%` enables env-var expansion, `!` enables delayed expansion (when the
+    // Command Processor registry default is set), `"` ends the quoted span.
+    for (const arg of ["pkg%PATH%", "pkg!PATH!", 'a"b']) {
       expect(() => assertSafeWindowsArg(arg)).toThrow(/Unsafe npm argument/);
     }
     // Control characters (NUL, tab, LF, CR, US, DEL) can smuggle commands.
