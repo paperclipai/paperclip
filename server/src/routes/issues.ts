@@ -227,6 +227,10 @@ function issueAllowsAgentWakeups(issue: { workItemType?: string | null }) {
   return !isHumanControlWorkItemType(issue.workItemType);
 }
 
+function normalizeAgentAuthorityValue(value: unknown) {
+  return typeof value === "string" ? value.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
+}
+
 const CHILD_BLOCKED_ESCALATION_MARKER = "Child blocked escalation";
 const REVIEW_REQUIRED_COMPLETION_STAGE_TYPE = "review";
 const REVIEW_REQUIRED_COMPLETION_MESSAGE =
@@ -1329,6 +1333,41 @@ export function issueRoutes(
     return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
   }
 
+  function canMutateCoordinationLane(agent: {
+    name?: string | null;
+    permissions: Record<string, unknown> | null | undefined;
+    role: string;
+    title?: string | null;
+  }) {
+    if (canCreateAgentsLegacy(agent)) return true;
+    const role = normalizeAgentAuthorityValue(agent.role);
+    if (/^c[a-z]+o$/.test(role)) return true;
+    if (
+      role === "execution_manager" ||
+      role === "executionmanager" ||
+      role === "orchestrator" ||
+      role === "operations_manager"
+    ) {
+      return true;
+    }
+
+    const name = normalizeAgentAuthorityValue(agent.name);
+    const title = normalizeAgentAuthorityValue(agent.title);
+    return name.includes("execution_manager") || title.includes("execution_manager");
+  }
+
+  async function isCoordinationLaneIssue(issue: {
+    id: string;
+    companyId: string;
+    parentId?: string | null;
+    workItemType?: string | null;
+  }) {
+    if (isHumanControlWorkItemType(issue.workItemType)) return true;
+    if (issue.parentId) return false;
+    const directChildren = await svc.list(issue.companyId, { parentId: issue.id });
+    return directChildren.length > 0;
+  }
+
   async function assertCanAssignTasks(req: Request, companyId: string) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
@@ -1542,13 +1581,39 @@ export function issueRoutes(
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId: string | null;
+      parentId?: string | null;
+      workItemType?: string | null;
+    },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
       return false;
+    }
+    if (await isCoordinationLaneIssue(issue)) {
+      const actorAgent = await agentsSvc.getById(actorAgentId);
+      if (!actorAgent || actorAgent.companyId !== issue.companyId || !canMutateCoordinationLane(actorAgent)) {
+        res.status(403).json({
+          error: "Worker agents cannot mutate parent or coordination lanes",
+          details: {
+            code: "worker_coordination_lane_forbidden",
+            issueId: issue.id,
+            actorAgentId,
+            parentId: issue.parentId ?? null,
+            workItemType: issue.workItemType ?? null,
+            allowedPath:
+              "Post updates in the assigned child lane and wake or mention the parent manager or ExecutionManager.",
+            securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+          },
+        });
+        return false;
+      }
     }
     if (issue.assigneeAgentId === null) {
       return true;

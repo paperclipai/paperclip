@@ -6,6 +6,11 @@ const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockHeartbeatGetRun = vi.hoisted(() => vi.fn(async () => null));
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  list: vi.fn(),
+}));
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(),
+  hasPermission: vi.fn(),
 }));
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -17,6 +22,7 @@ const mockIssueService = vi.hoisted(() => ({
   getCommentCursor: vi.fn(),
   getDependencyReadiness: vi.fn(),
   getRelationSummaries: vi.fn(),
+  list: vi.fn(),
   listComments: vi.fn(),
   update: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
@@ -31,10 +37,7 @@ vi.mock("../services/index.js", () => ({
   budgetService: () => ({
     upsertPolicy: vi.fn(async () => undefined),
   }),
-  accessService: () => ({
-    canUser: vi.fn(),
-    hasPermission: vi.fn(),
-  }),
+  accessService: () => mockAccessService,
   agentService: () => mockAgentService,
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
@@ -148,12 +151,184 @@ describe("issue dependency wakeups in issue routes", () => {
       unresolvedBlockerIssueIds: [],
     });
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.list.mockResolvedValue([]);
     mockIssueService.listComments.mockResolvedValue([]);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockAgentService.getById.mockResolvedValue(null);
+    mockAgentService.list.mockResolvedValue([]);
+    mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.hasPermission.mockResolvedValue(false);
     mockHeartbeatGetRun.mockResolvedValue(null);
+  });
+
+  it("blocks worker agents from commenting on parent coordination lanes", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAgentService.getById.mockResolvedValue({
+      id: "worker-agent",
+      companyId: "company-1",
+      name: "FoundingEngineer-Codex",
+      role: "engineer",
+      title: "Founding Engineer",
+      permissions: {},
+      runtimeConfig: {},
+      metadata: {},
+    });
+    mockIssueService.getById.mockResolvedValue({
+      id: "parent-1",
+      companyId: "company-1",
+      identifier: "PAP-401",
+      title: "Parent coordination lane",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      workItemType: "ai_task",
+      assigneeAgentId: "ceo-agent",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "child-1",
+        companyId: "company-1",
+        identifier: "PAP-402",
+        title: "Worker lane",
+        parentId: "parent-1",
+        assigneeAgentId: "worker-agent",
+      },
+    ]);
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "worker-agent",
+      companyId: "company-1",
+      source: "api_key",
+    });
+    const res = await request(app)
+      .post("/api/issues/parent-1/comments")
+      .send({ body: "Posting worker progress on the parent lane." });
+
+    expect(res.status).toBe(403);
+    expect(res.body.details).toMatchObject({
+      code: "worker_coordination_lane_forbidden",
+      issueId: "parent-1",
+      actorAgentId: "worker-agent",
+    });
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("allows worker agents to comment in their assigned child lane", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "child-1",
+      companyId: "company-1",
+      identifier: "PAP-402",
+      title: "Worker lane",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: "parent-1",
+      workItemType: "ai_task",
+      assigneeAgentId: "worker-agent",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "child-1",
+      body: "Work update stays in the worker lane.",
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "worker-agent",
+      companyId: "company-1",
+      source: "api_key",
+    });
+    const res = await request(app)
+      .post("/api/issues/child-1/comments")
+      .send({ body: "Work update stays in the worker lane." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "child-1",
+      "Work update stays in the worker lane.",
+      expect.objectContaining({ agentId: "worker-agent" }),
+      expect.objectContaining({ authorType: "agent" }),
+    );
+  });
+
+  it("allows C-level agents to comment on parent coordination lanes", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "ceo-agent",
+      companyId: "company-1",
+      name: "CEO-Codex",
+      role: "ceo",
+      title: "CEO",
+      permissions: {},
+      runtimeConfig: {},
+      metadata: {},
+    });
+    mockIssueService.getById.mockResolvedValue({
+      id: "parent-1",
+      companyId: "company-1",
+      identifier: "PAP-401",
+      title: "Parent coordination lane",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: null,
+      workItemType: "ai_task",
+      assigneeAgentId: "ceo-agent",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.list.mockResolvedValue([
+      {
+        id: "child-1",
+        companyId: "company-1",
+        identifier: "PAP-402",
+        title: "Worker lane",
+        parentId: "parent-1",
+        assigneeAgentId: "worker-agent",
+      },
+    ]);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "parent-1",
+      body: "Coordinator update on the parent lane.",
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "ceo-agent",
+      companyId: "company-1",
+      source: "api_key",
+    });
+    const res = await request(app)
+      .post("/api/issues/parent-1/comments")
+      .send({ body: "Coordinator update on the parent lane." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "parent-1",
+      "Coordinator update on the parent lane.",
+      expect.objectContaining({ agentId: "ceo-agent" }),
+      expect.objectContaining({ authorType: "agent" }),
+    );
   });
 
   it("wakes dependents when the final blocker transitions to done", async () => {
