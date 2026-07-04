@@ -398,7 +398,7 @@ function summarizeCycle(
     completedStoryPoints,
     estimateHours,
     openEstimateHours,
-    actualHumanSeconds: sumIssueValuesWithDescendants(issues, allIssues, actualHumanSecondsForIssue),
+    actualHumanSeconds: sumIssues(issues, actualHumanSecondsForIssue),
     actualAiSeconds: sumIssueValuesWithDescendants(issues, allIssues, actualAiSecondsForIssue),
     progressPercent,
     capacityStoryPoints: cycle?.capacityStoryPoints ?? null,
@@ -700,8 +700,8 @@ export function Cycles() {
   });
 
   const summaries = useMemo(() => buildCycleSummaries(cycles, issues, projects), [cycles, issues, projects]);
-  const actualHumanSecondsByIssueWithDescendants = useMemo(
-    () => buildIssueValueWithDescendantsMap(issues, actualHumanSecondsForIssue),
+  const actualHumanSecondsByIssue = useMemo(
+    () => new Map(issues.map((issue) => [issue.id, actualHumanSecondsForIssue(issue)])),
     [issues],
   );
   const actualAiSecondsByIssueWithDescendants = useMemo(
@@ -752,7 +752,7 @@ export function Cycles() {
       completedStoryPoints,
       estimateHours: sumIssues(cycleAssignedIssues, estimateHoursForIssue),
       openEstimateHours: sumIssues(cycleAssignedOpenIssues, estimateHoursForIssue),
-      actualHumanSeconds: sumIssueValuesWithDescendants(cycleAssignedIssues, issues, actualHumanSecondsForIssue),
+      actualHumanSeconds: sumIssues(cycleAssignedIssues, actualHumanSecondsForIssue),
       actualAiSeconds: sumIssueValuesWithDescendants(cycleAssignedIssues, issues, actualAiSecondsForIssue),
       progressPercent: cycleAssignedIssues.length > 0
         ? clampPercent((cycleAssignedCompletedIssues.length / cycleAssignedIssues.length) * 100)
@@ -810,10 +810,10 @@ export function Cycles() {
     agentsById,
     currentUserId,
     userLabelMap,
-    actualHumanSecondsByIssue: actualHumanSecondsByIssueWithDescendants,
+    actualHumanSecondsByIssue,
     actualAiSecondsByIssue: actualAiSecondsByIssueWithDescendants,
   }), [
-    actualHumanSecondsByIssueWithDescendants,
+    actualHumanSecondsByIssue,
     actualAiSecondsByIssueWithDescendants,
     agentsById,
     currentUserId,
@@ -1253,7 +1253,7 @@ export function Cycles() {
                     <div className="rounded-md border border-border bg-muted/20 px-3 py-2">
                       <div className="text-xs text-muted-foreground">Human actual</div>
                       <div className="mt-1 text-lg font-semibold tabular-nums text-foreground">{formatActualAiTime(detailMetrics.actualHumanSeconds)}</div>
-                      <div className="text-xs text-muted-foreground">from logged human time</div>
+                      <div className="text-xs text-muted-foreground">from issue lifecycle time</div>
                     </div>
                     <div className="rounded-md border border-border bg-muted/20 px-3 py-2">
                       <div className="text-xs text-muted-foreground">AI actual</div>
@@ -1603,7 +1603,7 @@ export function Cycles() {
                                     </span>
                                   </td>
                                   <td className="px-3 py-3 tabular-nums text-foreground">
-                                    {formatActualAiTime(actualHumanSecondsByIssueWithDescendants.get(issue.id) ?? actualHumanSecondsForIssue(issue))}
+                                    {formatActualAiTime(actualHumanSecondsByIssue.get(issue.id) ?? actualHumanSecondsForIssue(issue))}
                                   </td>
                                   <td className="px-3 py-3 tabular-nums text-foreground">
                                     {formatActualAiTime(actualAiSecondsByIssueWithDescendants.get(issue.id) ?? actualAiSecondsForIssue(issue))}

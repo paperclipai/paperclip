@@ -149,7 +149,7 @@ const METRIC_DEFINITIONS: MetricDefinition[] = [
   {
     key: "actual_human_hours",
     label: "Human hours",
-    description: "Actual human work time.",
+    description: "Automatic issue lifecycle time.",
     tone: "blue",
     icon: Users,
   },
@@ -325,8 +325,8 @@ function metricResult(widget: DashboardWidgetConfig, issues: Issue[]): MetricRes
     return { value: formatHours(total), detail: "Recorded agent execution time, including sub-issues", tone, progress: null };
   }
   if (widget.metric === "actual_human_hours") {
-    const total = sumIssueValuesWithDescendants(scoped, issues, actualHumanHours);
-    return { value: formatHours(total), detail: "Recorded human work time, including sub-issues", tone, progress: null };
+    const total = scoped.reduce((sum, issue) => sum + actualHumanHours(issue), 0);
+    return { value: formatHours(total), detail: "Automatic issue lifecycle time", tone, progress: null };
   }
   if (widget.metric === "completion_rate") {
     const base = allInWidgetScope.filter((issue) => widget.statusScope === "all" || statusMatches(issue, widget.statusScope));

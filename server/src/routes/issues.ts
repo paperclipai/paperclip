@@ -1983,6 +1983,21 @@ export function issueRoutes(
     return { project, goal: null };
   }
 
+  async function withAutomaticHumanSeconds<T extends { id: string; companyId: string }>(issue: T) {
+    if (typeof svc.actualHumanSecondsMapForIssues !== "function") {
+      const existingHumanSeconds = (issue as T & { actualHumanSeconds?: unknown }).actualHumanSeconds;
+      return {
+        ...issue,
+        actualHumanSeconds: typeof existingHumanSeconds === "number" ? existingHumanSeconds : 0,
+      };
+    }
+    const actualHumanSecondsByIssueId = await svc.actualHumanSecondsMapForIssues(issue.companyId, [issue.id]);
+    return {
+      ...issue,
+      actualHumanSeconds: actualHumanSecondsByIssueId.get(issue.id) ?? 0,
+    };
+  }
+
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
   router.param("id", async (req, res, next, rawId) => {
     try {
@@ -2368,6 +2383,7 @@ export function issueRoutes(
       scheduledRetry,
       activeRecoveryAction,
       actualAiSecondsByIssueId,
+      actualHumanSecondsByIssueId,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -2381,6 +2397,7 @@ export function issueRoutes(
       svc.getCurrentScheduledRetry(issue.id),
       recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
       svc.actualAiSecondsMapForIssues(issue.companyId, [issue.id]),
+      svc.actualHumanSecondsMapForIssues(issue.companyId, [issue.id]),
     ]);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
@@ -2408,6 +2425,7 @@ export function issueRoutes(
       scheduledRetry,
       activeRecoveryAction,
       actualAiSeconds: actualAiSecondsByIssueId.get(issue.id) ?? 0,
+      actualHumanSeconds: actualHumanSecondsByIssueId.get(issue.id) ?? 0,
       blockedBy: relationsWithRecoveryActions.blockedBy,
       blocks: relationsWithRecoveryActions.blocks,
       relatedWork: referenceSummary,
@@ -3338,8 +3356,9 @@ export function issueRoutes(
       requestedByActorId: actor.actorId,
     });
 
+    const issueResponse = await withAutomaticHumanSeconds(issue);
     res.status(201).json({
-      ...issue,
+      ...issueResponse,
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
     });
@@ -3430,7 +3449,7 @@ export function issueRoutes(
       requestedByActorId: actor.actorId,
     });
 
-    res.status(201).json(issue);
+    res.status(201).json(await withAutomaticHumanSeconds(issue));
   });
 
   router.post("/issues/:id/monitor/check-now", async (req, res) => {
@@ -4692,7 +4711,7 @@ export function issueRoutes(
       }
     })();
 
-    res.json({ ...issueResponse, comment });
+    res.json({ ...(await withAutomaticHumanSeconds(issueResponse)), comment });
   });
 
   router.post(
@@ -4859,7 +4878,7 @@ export function issueRoutes(
       entityId: issue.id,
     });
 
-    res.json(issue);
+    res.json(await withAutomaticHumanSeconds(issue));
   });
 
   router.post("/issues/:id/checkout", validate(checkoutIssueSchema), async (req, res) => {

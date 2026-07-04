@@ -267,10 +267,7 @@ function IssuePlanningStat({
 }
 
 function IssuePlanningStrip({ issue, childIssues }: { issue: Issue; childIssues: Issue[] }) {
-  const actualHumanSecondsWithChildren = useMemo(
-    () => sumIssueValuesWithDescendants([issue], [issue, ...childIssues], actualHumanSecondsForIssue),
-    [childIssues, issue],
-  );
+  const actualHumanSeconds = actualHumanSecondsForIssue(issue);
   const actualAiSecondsWithChildren = useMemo(
     () => sumIssueValuesWithDescendants([issue], [issue, ...childIssues], actualAiSecondsForIssue),
     [childIssues, issue],
@@ -293,8 +290,8 @@ function IssuePlanningStrip({ issue, childIssues }: { issue: Issue; childIssues:
       <IssuePlanningStat
         icon={Clock3}
         label="Human time"
-        value={formatIssueAiHours(actualHumanSecondsWithChildren)}
-        detail={childIssues.length > 0 ? "Including sub-issues" : "Recorded manual time"}
+        value={formatIssueAiHours(actualHumanSeconds)}
+        detail="Created to done/now"
       />
       <IssuePlanningStat
         icon={Bot}

@@ -63,7 +63,7 @@ const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
   parent: "Parent issue identifier and title.",
   storyPoints: "Human planning points used for workload rollups.",
   estimateHours: "Rough hour estimate for human coordination.",
-  actualHumanTime: "Actual human work time entered on the issue.",
+  actualHumanTime: "Automatic time from issue creation to done, cancelled, or now.",
   actualAiTime: "Actual elapsed AI run time recorded from heartbeat runs.",
   labels: "Issue labels and tags.",
   dueDate: "Due date when one is set.",

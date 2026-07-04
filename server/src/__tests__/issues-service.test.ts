@@ -283,6 +283,65 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(resultIds.has(excludedIssueId)).toBe(false);
   });
 
+  it("calculates automatic human lifecycle seconds from issue creation to terminal state", async () => {
+    const companyId = randomUUID();
+    const prefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const humanTaskId = randomUUID();
+    const userOwnedAiIssueId = randomUUID();
+    const aiOnlyIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: prefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: humanTaskId,
+        companyId,
+        title: "Human task",
+        status: "done",
+        workItemType: "human_task",
+        priority: "medium",
+        createdAt: new Date("2026-07-01T10:00:00.000Z"),
+        completedAt: new Date("2026-07-01T13:00:00.000Z"),
+        updatedAt: new Date("2026-07-01T13:00:00.000Z"),
+      },
+      {
+        id: userOwnedAiIssueId,
+        companyId,
+        title: "User-owned AI issue",
+        status: "cancelled",
+        workItemType: "ai_task",
+        priority: "medium",
+        assigneeUserId: "user-1",
+        createdAt: new Date("2026-07-01T10:00:00.000Z"),
+        cancelledAt: new Date("2026-07-01T11:00:00.000Z"),
+        updatedAt: new Date("2026-07-01T11:00:00.000Z"),
+      },
+      {
+        id: aiOnlyIssueId,
+        companyId,
+        title: "AI only issue",
+        status: "done",
+        workItemType: "ai_task",
+        priority: "medium",
+        createdAt: new Date("2026-07-01T10:00:00.000Z"),
+        completedAt: new Date("2026-07-01T14:00:00.000Z"),
+        updatedAt: new Date("2026-07-01T14:00:00.000Z"),
+      },
+    ]);
+
+    const result = await svc.list(companyId, {});
+    const byId = new Map(result.map((issue) => [issue.id, issue]));
+
+    expect(byId.get(humanTaskId)?.actualHumanSeconds).toBe(10_800);
+    expect(byId.get(userOwnedAiIssueId)?.actualHumanSeconds).toBe(3_600);
+    expect(byId.get(aiOnlyIssueId)?.actualHumanSeconds).toBe(14_400);
+  });
+
   it("filters issue lists by one or more work item types", async () => {
     const companyId = randomUUID();
 

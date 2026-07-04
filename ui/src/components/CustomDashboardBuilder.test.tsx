@@ -164,7 +164,7 @@ describe("CustomDashboardBuilder", () => {
     expect(host.textContent).toContain("including sub-issues");
   });
 
-  it("rolls child issue manual time into scoped human hours", () => {
+  it("sums scoped issue lifecycle time into human hours", () => {
     const humanHoursWidget: DashboardWidgetConfig = {
       id: "human-time",
       metric: "actual_human_hours",
@@ -194,6 +194,6 @@ describe("CustomDashboardBuilder", () => {
     });
 
     expect(host.textContent).toContain("2h");
-    expect(host.textContent).toContain("including sub-issues");
+    expect(host.textContent).toContain("Automatic issue lifecycle time");
   });
 });

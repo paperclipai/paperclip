@@ -1052,6 +1052,55 @@ async function actualAiSecondsMapForIssues(
   return map;
 }
 
+async function actualHumanSecondsMapForIssues(
+  dbOrTx: any,
+  companyId: string,
+  issueIds: string[],
+): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  const uniqueIssueIds = [...new Set(issueIds.filter(Boolean))];
+  if (uniqueIssueIds.length === 0) return map;
+
+  const lifecycleSecondsExpr = sql<number>`
+    GREATEST(
+      0,
+      EXTRACT(EPOCH FROM (
+        COALESCE(
+          ${issues.completedAt},
+          ${issues.cancelledAt},
+          CASE
+            WHEN ${issues.status} IN ('done', 'cancelled') THEN ${issues.updatedAt}
+            ELSE now()
+          END,
+          now()
+        )
+        - ${issues.createdAt}
+      ))
+    )
+  `;
+
+  for (const issueIdChunk of chunkList(uniqueIssueIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    const rows = await dbOrTx
+      .select({
+        issueId: issues.id,
+        seconds: sql<number>`COALESCE(${lifecycleSecondsExpr}, 0)::int`,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          inArray(issues.id, issueIdChunk),
+        ),
+      );
+
+    for (const row of rows) {
+      map.set(row.issueId, Number(row.seconds ?? 0));
+    }
+  }
+
+  return map;
+}
+
 function createIssueBlockerAttention(input: Partial<IssueBlockerAttention> = {}): IssueBlockerAttention {
   return {
     state: input.state ?? "none",
@@ -2648,6 +2697,8 @@ export function issueService(db: Db) {
     clearExecutionRunIfTerminal,
     actualAiSecondsMapForIssues: (companyId: string, issueIds: string[]) =>
       actualAiSecondsMapForIssues(db, companyId, issueIds),
+    actualHumanSecondsMapForIssues: (companyId: string, issueIds: string[]) =>
+      actualHumanSecondsMapForIssues(db, companyId, issueIds),
 
     list: async (companyId: string, filters?: IssueFilters) => {
       const requestedWorkItemType = filters?.workItemType?.trim() ?? "";
@@ -2848,7 +2899,14 @@ export function issueService(db: Db) {
       }
 
       const issueIds = withRuns.map((row) => row.id);
-      const [statsRows, readRows, lastActivityRows, blockedByMap, actualAiSecondsByIssueId] = await Promise.all([
+      const [
+        statsRows,
+        readRows,
+        lastActivityRows,
+        blockedByMap,
+        actualAiSecondsByIssueId,
+        actualHumanSecondsByIssueId,
+      ] = await Promise.all([
         contextUserId
           ? userCommentStatsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
@@ -2860,6 +2918,7 @@ export function issueService(db: Db) {
           ? blockedByMapForIssues(db, companyId, issueIds)
           : Promise.resolve(new Map<string, IssueRelationIssueSummary[]>()),
         actualAiSecondsMapForIssues(db, companyId, issueIds),
+        actualHumanSecondsMapForIssues(db, companyId, issueIds),
       ]);
       const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
       const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
@@ -2879,6 +2938,7 @@ export function issueService(db: Db) {
           return {
             ...row,
             actualAiSeconds: actualAiSecondsByIssueId.get(row.id) ?? 0,
+            actualHumanSeconds: actualHumanSecondsByIssueId.get(row.id) ?? 0,
             ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
             lastActivityAt,
             ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
@@ -2901,6 +2961,7 @@ export function issueService(db: Db) {
         return {
           ...row,
           actualAiSeconds: actualAiSecondsByIssueId.get(row.id) ?? 0,
+          actualHumanSeconds: actualHumanSecondsByIssueId.get(row.id) ?? 0,
           ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
           lastActivityAt,
           ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
