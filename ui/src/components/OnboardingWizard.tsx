@@ -2155,7 +2155,7 @@ function OnboardingWizardInner({
               name + mission steps) */}
           <div
             className={cn(
-              "hidden md:block overflow-hidden bg-(--hex-1d1d1d) transition-(--tp-width-opacity) duration-500 ease-in-out",
+              "hidden md:block overflow-hidden bg-muted text-muted-foreground transition-(--tp-width-opacity) duration-500 ease-in-out",
               step === 1 || step === 2 ? "w-1/2 opacity-100" : "w-0 opacity-0"
             )}
           >
