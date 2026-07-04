@@ -5953,6 +5953,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         id: issues.id,
         companyId: issues.companyId,
         identifier: issues.identifier,
+        parentId: issues.parentId,
         status: issues.status,
         executionRunId: issues.executionRunId,
       })
@@ -5965,34 +5966,80 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
 
     if (!issue || issue.executionRunId !== input.run.id) return;
-    if (["blocked", "done", "cancelled"].includes(issue.status)) return;
+    if (["done", "cancelled"].includes(issue.status)) return;
+    if (!["blocked", "done", "cancelled"].includes(issue.status)) {
+      const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+        companyId: issue.companyId,
+        sourceIssueId: issue.id,
+        status: "resolved",
+        outcome: "restored",
+        resolutionNote: `Automatically resolved because Paperclip restored a live execution path via run ${input.run.id}.`,
+      });
+      if (resolved) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: input.run.agentId,
+          runId: input.run.id,
+          action: "issue.recovery_action_resolved",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            identifier: issue.identifier,
+            recoveryActionId: resolved.id,
+            recoveryActionStatus: resolved.status,
+            outcome: resolved.outcome,
+            sourceIssueStatus: issue.status,
+            resolutionNote: resolved.resolutionNote,
+            source: "heartbeat.execution_claim",
+          },
+        });
+      }
+    }
 
-    const resolved = await recoveryActionsSvc.resolveActiveForIssue({
-      companyId: issue.companyId,
-      sourceIssueId: issue.id,
+    if (!issue.parentId) return;
+    const parent = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.parentId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!parent || ["done", "cancelled"].includes(parent.status)) return;
+
+    const resolvedParent = await recoveryActionsSvc.resolveActiveForIssue({
+      companyId: parent.companyId,
+      sourceIssueId: parent.id,
       status: "resolved",
       outcome: "restored",
-      resolutionNote: `Automatically resolved because Paperclip restored a live execution path via run ${input.run.id}.`,
+      resolutionNote: `Automatically resolved because child issue ${issue.identifier ?? issue.id} restored a live execution path via run ${input.run.id}.`,
     });
-    if (!resolved) return;
+    if (!resolvedParent) return;
 
     await logActivity(db, {
-      companyId: issue.companyId,
+      companyId: parent.companyId,
       actorType: "system",
       actorId: "system",
       agentId: input.run.agentId,
       runId: input.run.id,
       action: "issue.recovery_action_resolved",
       entityType: "issue",
-      entityId: issue.id,
+      entityId: parent.id,
       details: {
-        identifier: issue.identifier,
-        recoveryActionId: resolved.id,
-        recoveryActionStatus: resolved.status,
-        outcome: resolved.outcome,
-        sourceIssueStatus: issue.status,
-        resolutionNote: resolved.resolutionNote,
-        source: "heartbeat.execution_claim",
+        identifier: parent.identifier,
+        recoveryActionId: resolvedParent.id,
+        recoveryActionStatus: resolvedParent.status,
+        outcome: resolvedParent.outcome,
+        sourceIssueStatus: parent.status,
+        childIssueId: issue.id,
+        childIdentifier: issue.identifier,
+        resolutionNote: resolvedParent.resolutionNote,
+        source: "heartbeat.child_execution_claim",
       },
     });
   }
