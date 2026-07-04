@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import type { Request, RequestHandler } from "express";
+import type { Request, Response, RequestHandler } from "express";
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentApiKeys, agents, authUsers, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
@@ -14,6 +14,17 @@ function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
 }
 
+// Any request that presents an `Authorization: Bearer …` header but fails
+// every credential lookup (board key, agent API key, agent JWT) is an
+// EXPLICIT failed authentication attempt. In `local_trusted` mode the
+// pre-Bearer default `req.actor` is `{ type: "board", userId: "local-board",
+// isInstanceAdmin: true }`, so falling through to `next()` on a bad Bearer
+// silently promotes the failed caller to full board access. Return 401 on
+// every such branch so the fallthrough can't happen.
+function rejectInvalidBearer(res: Response) {
+  res.status(401).json({ error: "Unauthorized", reason: "invalid_or_missing_bearer" });
+}
+
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
@@ -21,7 +32,7 @@ interface ActorMiddlewareOptions {
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
-  return async (req, _res, next) => {
+  return async (req, res, next) => {
     req.actor =
       opts.deploymentMode === "local_trusted"
         ? {
@@ -103,7 +114,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     const token = authHeader.slice("bearer ".length).trim();
     if (!token) {
-      next();
+      // Bearer header present but empty token — explicit failed auth. See
+      // rejectInvalidBearer for why we can't fall through in local_trusted.
+      rejectInvalidBearer(res);
       return;
     }
 
@@ -139,7 +152,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     if (!key) {
       const claims = verifyLocalAgentJwt(token);
       if (!claims) {
-        next();
+        // Bearer present but not a board key, not an agent API key, and JWT
+        // signature/format is invalid.
+        rejectInvalidBearer(res);
         return;
       }
 
@@ -150,12 +165,16 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         .then((rows) => rows[0] ?? null);
 
       if (!agentRecord || agentRecord.companyId !== claims.company_id) {
-        next();
+        // JWT verified but the agent row is missing or the JWT's company
+        // claim doesn't match the persisted agent row.
+        rejectInvalidBearer(res);
         return;
       }
 
       if (agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-        next();
+        // JWT verified but the agent has been terminated or hasn't been
+        // approved. Do not grant board access.
+        rejectInvalidBearer(res);
         return;
       }
 
@@ -183,7 +202,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!agentRecord || agentRecord.status === "terminated" || agentRecord.status === "pending_approval") {
-      next();
+      // API-key row exists but the agent it points to is missing, terminated,
+      // or unapproved. Same silent-fallthrough hole as the JWT branch above.
+      rejectInvalidBearer(res);
       return;
     }
 
