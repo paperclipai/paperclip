@@ -40,7 +40,7 @@ describe("npm-exec Windows argument safety", () => {
     }
   });
 
-  it("quotes non-flag tokens but passes flags through verbatim", () => {
+  it("double-quotes every argument, flags included", () => {
     const line = buildWindowsCommandLine([
       "install",
       "@scope/pkg@1.2.3",
@@ -49,8 +49,15 @@ describe("npm-exec Windows argument safety", () => {
       "--ignore-scripts",
     ]);
     expect(line).toBe(
-      'npm.cmd "install" "@scope/pkg@1.2.3" --prefix "C:\\plugins dir" --ignore-scripts',
+      'npm.cmd "install" "@scope/pkg@1.2.3" "--prefix" "C:\\plugins dir" "--ignore-scripts"',
     );
+  });
+
+  it("neutralizes cmd.exe metacharacters in combined --flag=value arguments", () => {
+    // A hostile value in flag position must end up inside double quotes, where
+    // `&` is inert, instead of being passed verbatim to cmd.exe.
+    const line = buildWindowsCommandLine(["install", "--prefix=C:\\x & calc"]);
+    expect(line).toBe('npm.cmd "install" "--prefix=C:\\x & calc"');
   });
 
   it("refuses to build a command line containing an injection attempt", () => {

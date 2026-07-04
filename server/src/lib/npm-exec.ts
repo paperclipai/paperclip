@@ -12,8 +12,8 @@ const isWindows = process.platform === "win32";
  * npm must be invoked through a shell. A shell re-parses its command line, so
  * to keep the long-standing "no shell injection from package name/version"
  * guarantee we (a) reject arguments containing characters that stay dangerous
- * inside a double-quoted `cmd.exe` string and (b) wrap every non-flag argument
- * in double quotes. On non-Windows platforms we keep using `execFile` with an
+ * inside a double-quoted `cmd.exe` string and (b) wrap every argument in
+ * double quotes. On non-Windows platforms we keep using `execFile` with an
  * argument vector and no shell, which is injection-safe by construction.
  */
 
@@ -38,16 +38,18 @@ function assertSafeWindowsArg(arg: string): void {
 /**
  * Build the `cmd.exe` command line used to invoke `npm.cmd` on Windows.
  * Every argument is validated first (so control or shell-significant characters
- * can never reach cmd.exe in any position). Flags — arguments starting with `-`
- * — are then passed verbatim; all other arguments (package specs, paths) are
- * double-quoted so they cannot inject additional shell commands.
+ * can never reach cmd.exe in any position) and then double-quoted — including
+ * flags. Quoting flags is transparent to npm (`"--save"` parses identically to
+ * `--save` under Windows argv rules) and means cmd.exe metacharacters such as
+ * `& | < > ^ ( )` are inert in every position, so shell safety does not depend
+ * on callers keeping `--flag=value` values code-controlled.
  */
 function buildWindowsCommandLine(args: string[]): string {
   return ["npm.cmd"]
     .concat(
       args.map((arg) => {
         assertSafeWindowsArg(arg);
-        return arg.startsWith("-") ? arg : `"${arg}"`;
+        return `"${arg}"`;
       }),
     )
     .join(" ");
@@ -62,14 +64,14 @@ export interface RunNpmOptions {
  * Run an `npm` subcommand cross-platform.
  *
  * `args` is the full npm argument vector (e.g. `["install", spec, "--save"]`).
- * Every argument is validated for shell-dangerous characters before reaching a
- * shell on Windows. Arguments that begin with `-` are treated as trusted npm
- * flags and passed verbatim (not quoted); all other arguments are double-quoted.
+ * On Windows every argument is validated for shell-dangerous characters and
+ * double-quoted (flags included) before reaching cmd.exe, so no argument can
+ * inject additional shell commands regardless of its position.
  *
- * CONTRACT: callers must keep flags code-controlled. Do not pass an untrusted
- * value that can begin with `-` in flag position — npm would interpret it as a
- * flag (an argument-injection that quoting cannot prevent). Untrusted package
- * specs/paths are safe: they are quoted and cannot break out of the command.
+ * CONTRACT: do not pass an untrusted value that can begin with `-` — npm would
+ * interpret it as a flag (an npm-level argument-injection that shell quoting
+ * cannot prevent). Untrusted package specs/paths are safe: they are quoted and
+ * cannot break out of the command.
  */
 export async function runNpm(args: string[], options: RunNpmOptions = {}) {
   if (!isWindows) {
