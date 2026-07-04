@@ -3222,6 +3222,13 @@ export function agentRoutes(
       await assertBoardCanManageAgentsForCompany(req, agent.companyId);
     }
 
+    const boardProvidedContextSnapshot =
+      req.actor.type === "agent"
+        ? {}
+        : req.body.contextSnapshot && typeof req.body.contextSnapshot === "object" && !Array.isArray(req.body.contextSnapshot)
+          ? req.body.contextSnapshot
+          : {};
+
     const run = await heartbeat.wakeup(id, {
       source: opts.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
@@ -3235,6 +3242,7 @@ export function agentRoutes(
       // wedged ghost run. Scoped to the explicit retry reason + a human board actor.
       forceClearStaleExecution: req.body.reason === "retry_failed_run" && req.actor.type !== "agent",
       contextSnapshot: {
+        ...boardProvidedContextSnapshot,
         triggeredBy: req.actor.type,
         actorId: req.actor.type === "agent" ? req.actor.agentId : req.actor.userId,
         forceFreshSession: req.body.forceFreshSession === true,
