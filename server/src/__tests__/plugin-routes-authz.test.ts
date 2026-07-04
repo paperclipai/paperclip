@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
   getByKey: vi.fn(),
+  getConfig: vi.fn(),
   upsertConfig: vi.fn(),
   getCompanySettings: vi.fn(),
   upsertCompanySettings: vi.fn(),
@@ -330,6 +331,39 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(res.status).toBe(422);
     expect(res.body.error).toMatch(/secret references are disabled/i);
     expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("rejects plugin config reads for non-admin board users", async () => {
+    const { app } = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyA],
+    });
+
+    const res = await request(app).get(`/api/plugins/${pluginId}/config`);
+
+    expect(res.status).toBe(403);
+    expect(mockRegistry.getById).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("allows instance admins to read plugin config", async () => {
+    readyPlugin();
+    mockRegistry.getConfig = vi.fn().mockResolvedValue({ configJson: { foo: "bar" } });
+
+    const { app } = await createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [],
+    });
+
+    const res = await request(app).get(`/api/plugins/${pluginId}/config`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ configJson: { foo: "bar" } });
   }, 20_000);
 
   it("allows instance admins to upgrade plugins", async () => {
