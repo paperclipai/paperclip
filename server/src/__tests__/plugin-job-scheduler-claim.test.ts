@@ -17,7 +17,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import { createDb, plugins, pluginJobs, pluginJobRuns, type Db } from "@paperclipai/db";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
@@ -86,6 +86,9 @@ describeEmbedded("plugin job scheduler — atomic schedule-slot claim", () => {
   let dbA: Db;
   let dbB: Db;
 
+  /** Job IDs seeded by the current test — paused in afterEach (see below). */
+  const seededJobIds: string[] = [];
+
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-plugin-job-claim-");
     dbA = createDb(tempDb.connectionString);
@@ -94,6 +97,19 @@ describeEmbedded("plugin job scheduler — atomic schedule-slot claim", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  // tick() scans the WHOLE plugin_jobs table (it has no per-test scoping),
+  // and every test here shares one embedded database. Pause each test's jobs
+  // on the way out so a job left due — or re-due — by one test can never be
+  // picked up by a later test's tick and consume its concurrency slots.
+  afterEach(async () => {
+    if (seededJobIds.length === 0) return;
+    await dbA
+      .update(pluginJobs)
+      .set({ status: "paused" })
+      .where(inArray(pluginJobs.id, seededJobIds));
+    seededJobIds.length = 0;
   });
 
   /** Seed one plugin + one active job whose nextRunAt is in the past. */
@@ -118,11 +134,20 @@ describeEmbedded("plugin job scheduler — atomic schedule-slot claim", () => {
       id: jobId,
       pluginId,
       jobKey: "claim-test",
-      schedule: "* * * * *",
+      // Yearly cron (midnight Jan 1), NOT `* * * * *`: the slot claim advances
+      // nextRunAt to the schedule's next occurrence, and with an every-minute
+      // cron an already-dispatched job becomes due AGAIN as soon as the wall
+      // clock crosses a minute boundary mid-suite. Since tick() scans the whole
+      // shared table, such re-due jobs from earlier tests then eat a later
+      // test's maxConcurrentJobs slots (observed CI flake). A yearly schedule
+      // parks claimed slots ~a year out, so within the suite a job is due only
+      // when a test explicitly sets nextRunAt into the past.
+      schedule: "0 0 1 1 *",
       status: "active",
       nextRunAt: seededNextRunAt,
     });
 
+    seededJobIds.push(jobId);
     return { jobId, seededNextRunAt };
   }
 
