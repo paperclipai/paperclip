@@ -5,6 +5,8 @@ node_modules/
 dist/
 ui/storybook-static/
 .env
+.env.production
+.run/
 *.tsbuildinfo
 drizzle/meta/
 .vite/
@@ -15,6 +17,7 @@ data/
 .pnpm-store/
 tmp-*
 cli/tmp/
+DEPLOY.md
 
 # Scratch/seed scripts (but not scripts/ dir)
 check-*.mjs
