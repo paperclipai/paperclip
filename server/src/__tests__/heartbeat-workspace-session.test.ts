@@ -1166,6 +1166,8 @@ describe("effective run execution workspace config freshness", () => {
           executionWorkspaceId: "workspace-old",
           workspaceConfigFreshnessAction: "replace",
           requestedReuseExisting: true,
+          replacementWorkspaceRealized: false,
+          remediation: expect.stringContaining("restore/provision logs"),
         }),
       },
     });
@@ -1217,6 +1219,8 @@ describe("effective run execution workspace config freshness", () => {
           executionWorkspaceId: "workspace-old",
           workspaceConfigFreshnessAction: "create",
           requestedReuseExisting: true,
+          replacementWorkspaceRealized: false,
+          remediation: expect.stringContaining("clear the issue's reuse_existing workspace binding"),
         }),
       },
     });
@@ -1247,6 +1251,8 @@ describe("effective run execution workspace config freshness", () => {
           reason: "inherited_workspace_reuse_unavailable",
           workspaceConfigFreshnessAction: "reuse",
           requestedReuseExisting: true,
+          replacementWorkspaceRealized: false,
+          remediation: expect.stringContaining("clear the issue's reuse_existing workspace binding"),
         }),
       },
     });
