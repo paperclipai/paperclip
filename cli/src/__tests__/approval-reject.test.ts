@@ -73,4 +73,73 @@ describe("approval reject command", () => {
     expect(url).toBe(`http://localhost:3100/api/approvals/${APPROVAL_ID}/reject`);
     expect(JSON.parse(String(init.body))).toEqual({});
   });
+
+  it("still accepts --decision-note for backward compatibility with existing scripts", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: APPROVAL_ID, status: "rejected" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runCommand(["approval", "reject", APPROVAL_ID, "--decision-note", "Duplicate of an existing hire"]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`http://localhost:3100/api/approvals/${APPROVAL_ID}/reject`);
+    expect(JSON.parse(String(init.body))).toEqual({ decisionNote: "Duplicate of an existing hire" });
+  });
+
+  it("prefers --reason and warns when --reason and --decision-note disagree", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: APPROVAL_ID, status: "rejected" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await runCommand([
+      "approval",
+      "reject",
+      APPROVAL_ID,
+      "--reason",
+      "Reason wins",
+      "--decision-note",
+      "Different note",
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`http://localhost:3100/api/approvals/${APPROVAL_ID}/reject`);
+    expect(JSON.parse(String(init.body))).toEqual({ decisionNote: "Reason wins" });
+    expect(String(warnSpy.mock.calls[0]?.[0])).toContain("Both --reason and --decision-note");
+  });
+
+  it("uses the matching value without warning when --reason and --decision-note agree", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: APPROVAL_ID, status: "rejected" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await runCommand([
+      "approval",
+      "reject",
+      APPROVAL_ID,
+      "--reason",
+      "Same reason",
+      "--decision-note",
+      "Same reason",
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(String(init.body))).toEqual({ decisionNote: "Same reason" });
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses reasonless rejection when neither alias is given even with unrelated flags", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+      throw new Error(`exit:${code ?? 0}`);
+    }) as typeof process.exit);
+
+    await expect(
+      runCommand(["approval", "reject", APPROVAL_ID, "--decided-by-user-id", "user-1"]),
+    ).rejects.toThrow("exit:1");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
