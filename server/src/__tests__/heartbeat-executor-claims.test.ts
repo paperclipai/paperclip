@@ -395,6 +395,68 @@ describeEmbedded("heartbeat executor batch claims", () => {
       expect(await cancelEventCount(runId)).toBe(0);
     });
 
+    it("the daily-cap gate's cancel honours the queued-only guard against a freshly claimed run", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const { runId, wakeupRequestId } = await seedQueuedRun({ companyId, agentId, withWakeup: true });
+
+      const staleSnapshot = await getRunRow(runId);
+      expect(staleSnapshot?.status).toBe("queued");
+
+      const claimed = await replicaB.claimRunsForExecution(1);
+      expect(claimed).toEqual([runId]);
+
+      // The daily cap flips between the sweep's snapshot and its validation.
+      await dbA
+        .update(agents)
+        .set({ runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 50, maxDailyRuns: 0 } } })
+        .where(eq(agents.id, agentId));
+
+      const validation = await replicaA.validateQueuedRunForClaim(staleSnapshot!, undefined, {
+        cancelOnlyIf: { status: "queued" },
+      });
+      expect(validation).toEqual({ ok: false, outcome: "unchanged" });
+
+      // Replica B's claim survives with none of the daily-cap side effects.
+      const run = await getRunRow(runId);
+      expect(run?.status).toBe("running");
+      expect(run?.claimedBy).toBe("replica-b");
+      expect(run?.error).toBeNull();
+
+      const wakeup = await dbA
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId!))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeup?.status).toBe("claimed");
+      expect(await cancelEventCount(runId)).toBe(0);
+    });
+
+    it("a genuinely queued daily-capped run is still cancelled through the guard", async () => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const { runId, wakeupRequestId } = await seedQueuedRun({ companyId, agentId, withWakeup: true });
+      await dbA
+        .update(agents)
+        .set({ runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 50, maxDailyRuns: 0 } } })
+        .where(eq(agents.id, agentId));
+
+      const snapshot = await getRunRow(runId);
+      const validation = await replicaA.validateQueuedRunForClaim(snapshot!, undefined, {
+        cancelOnlyIf: { status: "queued" },
+      });
+      expect(validation).toEqual({ ok: false, outcome: "cancelled" });
+
+      const run = await getRunRow(runId);
+      expect(run?.status).toBe("cancelled");
+      expect(run?.errorCode).toBe("heartbeat.daily_run_limit");
+
+      const wakeup = await dbA
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId!))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeup?.status).toBe("skipped");
+    });
+
     it("post-claim validation does not cancel a run another executor now owns", async () => {
       const { companyId, agentId } = await seedCompanyAndAgent();
       const { runId } = await seedQueuedRun({ companyId, agentId });

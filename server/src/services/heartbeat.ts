@@ -8654,25 +8654,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function cancelQueuedRunForHeartbeatDailyCap(
     run: typeof heartbeatRuns.$inferSelect,
     dailyCapBlock: NonNullable<Awaited<ReturnType<typeof getHeartbeatDailyCapBlock>>>,
+    onlyIf?: RunCancelGuard,
   ) {
     const now = new Date();
     const reason = "Cancelled because the agent reached a per-day heartbeat budget cap before adapter invocation";
-    const cancelled = await setRunStatus(run.id, "cancelled", {
-      finishedAt: now,
-      error: reason,
-      errorCode: dailyCapBlock.reason,
-      resultJson: {
-        ...parseObject(run.resultJson),
-        stopReason: dailyCapBlock.reason,
-        observed: dailyCapBlock.observed,
-        limit: dailyCapBlock.limit,
-        effectiveTimeoutSec: 0,
-        timeoutConfigured: false,
-        timeoutSource: "heartbeat_daily_cap_gate",
-        timeoutFired: false,
+    const cancelled = await setRunStatus(
+      run.id,
+      "cancelled",
+      {
+        finishedAt: now,
+        error: reason,
+        errorCode: dailyCapBlock.reason,
+        resultJson: {
+          ...parseObject(run.resultJson),
+          stopReason: dailyCapBlock.reason,
+          observed: dailyCapBlock.observed,
+          limit: dailyCapBlock.limit,
+          effectiveTimeoutSec: 0,
+          timeoutConfigured: false,
+          timeoutSource: "heartbeat_daily_cap_gate",
+          timeoutFired: false,
+        },
       },
-    });
-    if (!cancelled) return null;
+      onlyIf,
+    );
+    if (!cancelled) {
+      logger.debug({ runId: run.id }, "daily-cap cancel skipped: run moved concurrently");
+      return null;
+    }
 
     await setWakeupStatus(run.wakeupRequestId, "skipped", {
       finishedAt: now,
@@ -8850,7 +8859,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       checkCostCap: true,
     });
     if (dailyCapBlock) {
-      const cancelled = await cancelQueuedRunForHeartbeatDailyCap(run, dailyCapBlock);
+      const cancelled = await cancelQueuedRunForHeartbeatDailyCap(run, dailyCapBlock, cancelOnlyIf);
       return { ok: false, outcome: cancelled ? "cancelled" : "unchanged" };
     }
 
