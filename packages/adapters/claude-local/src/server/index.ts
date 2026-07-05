@@ -9,6 +9,14 @@ export {
   isClaudeUnknownSessionError,
 } from "./parse.js";
 export {
+  buildClaudeMcpAllowedToolPatterns,
+  buildClaudeMcpConfigDocument,
+  parseResolvedMcpServers,
+  prepareClaudeMcpConfigFile,
+  type PreparedClaudeMcpConfig,
+  type ResolvedMcpServerEntry,
+} from "./mcp-config.js";
+export {
   hasNonEmptyEnvValue,
   isBedrockAuth,
   isDeepSeekGateway,

@@ -46,6 +46,13 @@ import {
   sanitizeChildEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_CURSOR_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
+import {
+  parseResolvedMcpServers,
+  prepareCursorAgentHomeMcpConfig,
+  prepareCursorMcpConfigAsset,
+  removeCursorAgentHomeMcpConfig,
+  type PreparedCursorMcpConfigAsset,
+} from "./mcp-config.js";
 import { parseCursorJsonl, isCursorUnknownSessionError } from "./parse.js";
 import { prepareCursorSandboxCommand } from "./remote-command.js";
 import { normalizeCursorStreamLine } from "../shared/stream.js";
@@ -350,9 +357,53 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let remoteRuntimeRootDir: string | null = null;
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
+  // External MCP servers: the heartbeat layer hands us `config.mcpServers`
+  // already resolved (secret refs -> plaintext). Cursor only reads MCP config
+  // from $HOME/.cursor/mcp.json, so local runs with MCP servers switch the
+  // child HOME to an isolated per-agent home (never the user's real ~/.cursor)
+  // and re-provision skills there; remote runs ship the mcp.json alongside the
+  // other runtime assets into the managed remote home.
+  const resolvedMcpServers = parseResolvedMcpServers(config.mcpServers);
+  const mcpServerNames = Object.keys(resolvedMcpServers);
+  let localMcpConfigAsset: PreparedCursorMcpConfigAsset | null = null;
+  if (mcpServerNames.length > 0) {
+    await onLog(
+      "stdout",
+      `[paperclip] Injecting ${mcpServerNames.length} external MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) via per-agent Cursor mcp.json with --approve-mcps.\n`,
+    );
+    if (!executionTargetIsRemote) {
+      const mcpAgentHome = await prepareCursorAgentHomeMcpConfig({
+        agentId: agent.id,
+        servers: resolvedMcpServers,
+      });
+      env.HOME = mcpAgentHome;
+      if (process.platform === "win32") {
+        env.USERPROFILE = mcpAgentHome;
+      }
+      await ensureCursorSkillsInjected(onLog, {
+        skillsEntries: cursorSkillEntries.filter((entry) => desiredCursorSkillNames.includes(entry.key)),
+        skillsHome: path.join(mcpAgentHome, ".cursor", "skills"),
+      });
+    }
+  } else if (!executionTargetIsRemote) {
+    // No MCP servers this run: drop any stale per-agent mcp.json left behind by
+    // a prior run (last server removed / adapter switched) so its plaintext
+    // secrets don't linger. No-op when the file was never written.
+    const removed = await removeCursorAgentHomeMcpConfig({ agentId: agent.id });
+    if (removed) {
+      await onLog(
+        "stdout",
+        "[paperclip] Removed stale per-agent Cursor mcp.json (no external MCP servers configured).\n",
+      );
+    }
+  }
+
   if (executionTargetIsRemote) {
     try {
       localSkillsDir = await buildCursorSkillsDir(config);
+      if (mcpServerNames.length > 0) {
+        localMcpConfigAsset = await prepareCursorMcpConfigAsset(resolvedMcpServers);
+      }
       await onLog(
         "stdout",
         `[paperclip] Syncing workspace and Cursor runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
@@ -365,11 +416,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         workspaceLocalDir: cwd,
         installCommand: SANDBOX_INSTALL_COMMAND,
         detectCommand: command,
-        assets: [{
-          key: "skills",
-          localDir: localSkillsDir,
-          followSymlinks: true,
-        }],
+        assets: [
+          {
+            key: "skills",
+            localDir: localSkillsDir,
+            followSymlinks: true,
+          },
+          ...(localMcpConfigAsset
+            ? [{
+              key: "mcp-config",
+              localDir: localMcpConfigAsset.localDir,
+              followSymlinks: false,
+            }]
+            : []),
+        ],
       });
       restoreRemoteWorkspace = () => preparedExecutionTargetRuntime.restoreWorkspace();
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
@@ -409,10 +469,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           { cwd, env, timeoutSec, graceSec, onLog },
         );
       }
+      if (localMcpConfigAsset && !managedHome) {
+        // Non-managed (SSH) remote: remoteHomeDir is the real user's $HOME, so
+        // copying mcp.json there would clobber their own ~/.cursor/mcp.json and
+        // leave plaintext secrets on the persistent host with no cleanup. Skip
+        // the copy — external MCP servers need a managed-home (sandbox) target.
+        await onLog(
+          "stderr",
+          "[paperclip] Skipping external MCP server injection: remote execution requires a managed-home (sandbox) target so the user's real ~/.cursor/mcp.json is not overwritten with secrets. Configure a sandbox target to use MCP servers remotely.\n",
+        );
+      } else if (remoteHomeDir && localMcpConfigAsset && preparedExecutionTargetRuntime.assetDirs["mcp-config"]) {
+        const remoteMcpConfigPath = path.posix.join(remoteHomeDir, ".cursor", localMcpConfigAsset.fileName);
+        const remoteMcpAssetPath = path.posix.join(
+          preparedExecutionTargetRuntime.assetDirs["mcp-config"],
+          localMcpConfigAsset.fileName,
+        );
+        await runAdapterExecutionTargetShellCommand(
+          runId,
+          executionTarget,
+          `mkdir -p ${JSON.stringify(path.posix.dirname(remoteMcpConfigPath))} && cp ${JSON.stringify(remoteMcpAssetPath)} ${JSON.stringify(remoteMcpConfigPath)} && chmod 600 ${JSON.stringify(remoteMcpConfigPath)}`,
+          { cwd, env, timeoutSec, graceSec, onLog },
+        );
+      }
     } catch (error) {
       await Promise.allSettled([
         restoreRemoteWorkspace?.(),
         localSkillsDir ? fs.rm(localSkillsDir, { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
+        localMcpConfigAsset ? localMcpConfigAsset.cleanup() : Promise.resolve(),
       ]);
       throw error;
     }
@@ -518,6 +601,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       notes.push("Auto-added --yolo to bypass interactive prompts.");
     }
     notes.push("Prompt is piped to Cursor via stdin.");
+    if (mcpServerNames.length > 0) {
+      notes.push(
+        `Injected ${mcpServerNames.length} external MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) via per-agent Cursor home mcp.json with --approve-mcps.`,
+      );
+    }
     const sandboxCommand = finalSandboxCommand ?? initialSandboxCommand;
     if (sandboxCommand?.addedPathEntry) {
       notes.push(`Remote sandbox runs prepend ${sandboxCommand.addedPathEntry} to PATH.`);
@@ -584,6 +672,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (model) args.push("--model", model);
     if (mode) args.push("--mode", mode);
     if (autoTrustEnabled) args.push("--yolo");
+    // Headless print mode only uses MCP servers when both the trust bypass
+    // and --approve-mcps are present.
+    if (mcpServerNames.length > 0) args.push("--approve-mcps");
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
   };
@@ -753,6 +844,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     if (localSkillsDir) {
       await fs.rm(localSkillsDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+    if (localMcpConfigAsset) {
+      // The staged mcp.json holds resolved secrets — remove it after the run.
+      await localMcpConfigAsset.cleanup();
     }
   }
 }

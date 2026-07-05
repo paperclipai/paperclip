@@ -134,6 +134,25 @@ export {
 } from "./agent.js";
 
 export {
+  MCP_SERVER_NAME_RE,
+  mcpServerNameSchema,
+  mcpServerAuthSchema,
+  mcpServerBearerAuthSchema,
+  mcpServerOauthAuthSchema,
+  mcpStdioServerSchema,
+  mcpHttpServerSchema,
+  mcpSseServerSchema,
+  mcpServerConfigSchema,
+  mcpServersConfigSchema,
+  updateAgentMcpServersSchema,
+  upsertAgentMcpServerSchema,
+  type McpServerConfigInput,
+  type McpServersConfigInput,
+  type UpdateAgentMcpServers,
+  type UpsertAgentMcpServer,
+} from "./mcp.js";
+
+export {
   createProjectSchema,
   updateProjectSchema,
   createProjectWorkspaceSchema,

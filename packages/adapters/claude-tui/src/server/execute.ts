@@ -32,10 +32,13 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  buildClaudeMcpAllowedToolPatterns,
   describeClaudeFailure,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
   parseClaudeStreamJson,
+  parseResolvedMcpServers,
+  prepareClaudeMcpConfigFile,
   resolveClaudeGatewayAttribution,
   resolveGatewayCostUsd,
   resolveGatewayModelOverride,
@@ -54,9 +57,18 @@ const SANDBOX_ALLOWED_TOOLS =
 function buildPermissionArgs(input: {
   dangerouslySkipPermissions: boolean;
   targetIsSandbox: boolean;
+  mcpToolPatterns?: string[];
 }): string[] {
-  if (!input.dangerouslySkipPermissions) return [];
-  if (input.targetIsSandbox) return ["--allowedTools", SANDBOX_ALLOWED_TOOLS];
+  const mcpPatterns = input.mcpToolPatterns ?? [];
+  if (!input.dangerouslySkipPermissions) {
+    return mcpPatterns.length > 0 ? ["--allowedTools", mcpPatterns.join(" ")] : [];
+  }
+  if (input.targetIsSandbox) {
+    const allowed = mcpPatterns.length > 0
+      ? `${SANDBOX_ALLOWED_TOOLS} ${mcpPatterns.join(" ")}`
+      : SANDBOX_ALLOWED_TOOLS;
+    return ["--allowedTools", allowed];
+  }
   return ["--dangerously-skip-permissions"];
 }
 
@@ -241,6 +253,31 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     heartbeatPromptChars: renderedPrompt.length,
   };
 
+  // ---- external MCP servers --------------------------------------------------
+  // config.mcpServers arrives pre-resolved (secret refs -> plaintext) from the
+  // heartbeat layer. claude-p forwards unknown flags (--mcp-config,
+  // --strict-mcp-config, --allowedTools) to the child `claude`, so injection
+  // matches claude_local. Remote TUI runs are not supported yet: the config
+  // file only exists on the local host.
+  const resolvedMcpServers = executionTargetIsRemote ? {} : parseResolvedMcpServers(config.mcpServers);
+  const mcpServerNames = Object.keys(resolvedMcpServers);
+  if (executionTargetIsRemote && Object.keys(parseResolvedMcpServers(config.mcpServers)).length > 0) {
+    await onLog(
+      "stderr",
+      "[paperclip] External MCP servers are not yet injected for remote claude_tui executions; skipping.\n",
+    );
+  }
+  const preparedMcpConfig = mcpServerNames.length > 0
+    ? await prepareClaudeMcpConfigFile({ runId, servers: resolvedMcpServers })
+    : null;
+  const mcpToolPatterns = buildClaudeMcpAllowedToolPatterns(resolvedMcpServers);
+  if (preparedMcpConfig) {
+    await onLog(
+      "stdout",
+      `[paperclip] Injecting ${mcpServerNames.length} external MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) via --mcp-config.\n`,
+    );
+  }
+
   // ---- claude-p argument builder -------------------------------------------
   // NOTE: claude-p rejects `--print`/`-p` (it emulates print mode itself) and
   // reads the prompt from stdin when no positional arg is given. Unknown flags
@@ -255,7 +292,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       String(claudePTimeoutSec),
     ];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
-    args.push(...buildPermissionArgs({ dangerouslySkipPermissions, targetIsSandbox: executionTargetIsSandbox }));
+    args.push(...buildPermissionArgs({ dangerouslySkipPermissions, targetIsSandbox: executionTargetIsSandbox, mcpToolPatterns }));
+    if (preparedMcpConfig) {
+      args.push("--mcp-config", preparedMcpConfig.localFilePath);
+      args.push("--strict-mcp-config");
+    }
     const effectiveModel = resolveGatewayModelOverride(model, effectiveEnv) ?? model;
     if (effectiveModel) args.push("--model", effectiveModel);
     if (effort) args.push("--effort", effort);
@@ -412,20 +453,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
-  const initial = await runAttempt(sessionId ?? null);
-  if (
-    sessionId &&
-    !initial.proc.timedOut &&
-    (initial.proc.exitCode ?? 0) !== 0 &&
-    initial.parsed &&
-    isClaudeUnknownSessionError(initial.parsed)
-  ) {
-    await onLog(
-      "stdout",
-      `[paperclip] claude-p resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
-    );
-    const retry = await runAttempt(null);
-    return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+  try {
+    const initial = await runAttempt(sessionId ?? null);
+    if (
+      sessionId &&
+      !initial.proc.timedOut &&
+      (initial.proc.exitCode ?? 0) !== 0 &&
+      initial.parsed &&
+      isClaudeUnknownSessionError(initial.parsed)
+    ) {
+      await onLog(
+        "stdout",
+        `[paperclip] claude-p resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+      );
+      const retry = await runAttempt(null);
+      return toAdapterResult(retry, { fallbackSessionId: null, clearSessionOnMissingSession: true });
+    }
+    return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
+  } finally {
+    if (preparedMcpConfig) {
+      // The mcp config file holds resolved secrets — remove it after the run.
+      await preparedMcpConfig.cleanup();
+    }
   }
-  return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
 }

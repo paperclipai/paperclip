@@ -30,12 +30,18 @@ function isWorktreeMode(env: NodeJS.ProcessEnv): boolean {
 export function resolveManagedCodexHomeDir(
   env: NodeJS.ProcessEnv,
   companyId?: string,
+  agentId?: string,
 ): string {
   const instanceRoot = resolvePaperclipInstanceRootForAdapter({
     homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
     instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
     env,
   });
+  // agentId opts into a per-agent home (used when injecting per-agent MCP
+  // servers so [mcp_servers.*] tables never leak to the company's other agents).
+  if (companyId && agentId) {
+    return path.resolve(instanceRoot, "companies", companyId, "agents", agentId, "codex-home");
+  }
   return companyId
     ? path.resolve(instanceRoot, "companies", companyId, "codex-home")
     : path.resolve(instanceRoot, "codex-home");
@@ -111,9 +117,13 @@ export async function prepareManagedCodexHome(
   env: NodeJS.ProcessEnv,
   onLog: AdapterExecutionContext["onLog"],
   companyId?: string,
-  options: { apiKey?: string | null } = {},
+  options: { apiKey?: string | null; agentId?: string | null } = {},
 ): Promise<string> {
-  const targetHome = resolveManagedCodexHomeDir(env, companyId);
+  const targetHome = resolveManagedCodexHomeDir(
+    env,
+    companyId,
+    nonEmpty(options.agentId ?? undefined) ?? undefined,
+  );
   const apiKey = nonEmpty(options.apiKey ?? undefined);
 
   const sourceHome = resolveSharedCodexHomeDir(env);

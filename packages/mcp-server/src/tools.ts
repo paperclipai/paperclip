@@ -6,6 +6,8 @@ import {
   createApprovalSchema,
   createIssueInputSchema,
   issueThreadInteractionContinuationPolicySchema,
+  mcpServerConfigSchema,
+  mcpServerNameSchema,
   requestConfirmationPayloadSchema,
   suggestTasksPayloadSchema,
   updateIssueSchema,
@@ -261,6 +263,39 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         const qs = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
         return client.requestJson("GET", `/agents/${encodeURIComponent(agentId)}${qs}`);
       },
+    ),
+    makeTool(
+      "paperclipListMcpServers",
+      "List the external MCP servers configured for an agent (defaults to the current agent). Secret values are redacted; secret references are shown as-is.",
+      z.object({ agentId: agentIdOptional }),
+      async ({ agentId }) =>
+        client.requestJson("GET", `/agents/${encodeURIComponent(client.resolveAgentId(agentId))}/mcp-servers`),
+    ),
+    makeTool(
+      "paperclipAddMcpServer",
+      "Add or replace one external MCP server on an agent (defaults to the current agent). " +
+        "Takes effect on the agent's next run. Transports: stdio (command/args/env), http or sse (url/headers). " +
+        "Never inline API keys — reference a company secret with {\"type\":\"secret_ref\",\"secretId\":\"<uuid>\"} " +
+        "in env values, header values, or auth {type:\"bearer\",token:{...}}.",
+      z.object({
+        agentId: agentIdOptional,
+        name: mcpServerNameSchema,
+        server: mcpServerConfigSchema,
+      }),
+      async ({ agentId, name, server }) =>
+        client.requestJson("POST", `/agents/${encodeURIComponent(client.resolveAgentId(agentId))}/mcp-servers`, {
+          body: { name, server },
+        }),
+    ),
+    makeTool(
+      "paperclipRemoveMcpServer",
+      "Remove one external MCP server from an agent (defaults to the current agent)",
+      z.object({ agentId: agentIdOptional, name: mcpServerNameSchema }),
+      async ({ agentId, name }) =>
+        client.requestJson(
+          "DELETE",
+          `/agents/${encodeURIComponent(client.resolveAgentId(agentId))}/mcp-servers/${encodeURIComponent(name)}`,
+        ),
     ),
     makeTool(
       "paperclipListIssues",

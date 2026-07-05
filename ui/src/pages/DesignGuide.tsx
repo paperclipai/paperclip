@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { CompanySecret, McpServersConfig } from "@paperclipai/shared";
 import {
   BookOpen,
   Bot,
@@ -124,6 +125,7 @@ import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
+import { McpServersEditor } from "@/components/McpServersEditor";
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -170,6 +172,74 @@ function Swatch({ name, cssVar }: { name: string; cssVar: string }) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  MCP servers editor mock data                                       */
+/* ------------------------------------------------------------------ */
+
+function mockSecret(id: string, name: string, latestVersion: number): CompanySecret {
+  return {
+    id,
+    companyId: "demo-company",
+    key: name,
+    name,
+    provider: "local_encrypted",
+    status: "active",
+    managedMode: "paperclip_managed",
+    externalRef: null,
+    providerConfigId: null,
+    providerMetadata: null,
+    latestVersion,
+    description: null,
+    lastResolvedAt: null,
+    lastRotatedAt: null,
+    deletedAt: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    createdAt: new Date("2026-01-15T00:00:00Z"),
+    updatedAt: new Date("2026-01-15T00:00:00Z"),
+  };
+}
+
+const mockMcpSecrets: CompanySecret[] = [
+  mockSecret("00000000-0000-4000-8000-000000000001", "github_token", 3),
+  mockSecret("00000000-0000-4000-8000-000000000002", "linear_api_key", 1),
+];
+
+const initialMockMcpServers: McpServersConfig = {
+  github: {
+    transport: "stdio",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-github"],
+    env: {
+      GITHUB_TOKEN: {
+        type: "secret_ref",
+        secretId: "00000000-0000-4000-8000-000000000001",
+        version: "latest",
+      },
+    },
+  },
+  linear: {
+    transport: "http",
+    url: "https://mcp.linear.app/mcp",
+    auth: { type: "bearer", token: { type: "plain", value: "***REDACTED***" } },
+  },
+  sentry: {
+    transport: "http",
+    url: "https://mcp.sentry.dev/mcp",
+    auth: { type: "oauth", secretId: "00000000-0000-4000-8000-000000000003" },
+  },
+  notion: {
+    transport: "sse",
+    url: "https://mcp.notion.com/sse",
+    auth: { type: "oauth", secretId: null },
+  },
+  docs: {
+    transport: "sse",
+    url: "https://docs.example.com/sse",
+    enabled: false,
+  },
+};
+
+/* ------------------------------------------------------------------ */
 /*  Page                                                               */
 /* ------------------------------------------------------------------ */
 
@@ -188,6 +258,9 @@ export function DesignGuide() {
     { key: "status", label: "Status", value: "Active" },
     { key: "priority", label: "Priority", value: "High" },
   ]);
+  const [mcpServers, setMcpServers] = useState<McpServersConfig | undefined>(
+    initialMockMcpServers,
+  );
 
   return (
     <div className="space-y-10 max-w-4xl">
@@ -225,7 +298,7 @@ export function DesignGuide() {
               {[
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
                 "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
-                "PropertiesPanel", "Sidebar", "CommandPalette",
+                "PropertiesPanel", "Sidebar", "CommandPalette", "McpServersEditor",
               ].map((name) => (
                 <Badge key={name} variant="ghost" className="font-mono text-[10px]">
                   {name}
@@ -1242,6 +1315,36 @@ export function DesignGuide() {
             </tbody>
           </table>
         </div>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  MCP SERVERS EDITOR                                           */}
+      {/* ============================================================ */}
+      <Section title="MCP Servers Editor">
+        <p className="text-sm text-muted-foreground">
+          Per-agent external MCP server management. Controlled component over an{" "}
+          <code className="font-mono text-xs">McpServersConfig</code> record — used inside
+          AgentConfigForm&apos;s overlay dirty-tracking. Env, header, and bearer token values reuse
+          the plain-vs-secret binding pattern from EnvVarEditor; redacted plain values render as
+          locked placeholders that must be re-entered to change (edit the{" "}
+          <span className="font-mono text-xs">linear</span> server to see it). Remote servers
+          with brokered OAuth show connection state:{" "}
+          <span className="font-mono text-xs">sentry</span> is connected (Reconnect),{" "}
+          <span className="font-mono text-xs">notion</span> is not (Connect).
+        </p>
+        <SubSection title="Interactive (mock data)">
+          <div className="max-w-2xl">
+            <McpServersEditor
+              value={mcpServers}
+              secrets={mockMcpSecrets}
+              onCreateSecret={async (name) => mockSecret(crypto.randomUUID(), name, 1)}
+              onChange={setMcpServers}
+              onStartOauth={async () => {
+                /* no-op in the showcase; AgentConfigForm wires agentsApi.startMcpOauth */
+              }}
+            />
+          </div>
+        </SubSection>
       </Section>
 
       {/* ============================================================ */}
