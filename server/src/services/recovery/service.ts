@@ -1960,11 +1960,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     // Separate, narrowly-scoped query for the "born stranded" process-loss-retry defect:
     // a run enqueueProcessLossRetry spawned has no scheduledRetry/monitor/watchdog of its
     // own, so without this it would only ever surface via the generic sweep above, gated
-    // on the full 1h ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS. Filtering by wakeReason at
-    // the SQL level (rather than lowering the generic query's threshold) keeps this from
-    // competing with genericCandidates' own `.limit(100)` against ordinary long-running,
-    // healthily-quiet work -- this set is expected to be small (only actual process-loss
-    // retries) even on a busy fleet.
+    // on the full 1h ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS. Filtering by wakeReason/
+    // retryReason at the SQL level (rather than lowering the generic query's threshold)
+    // keeps this from competing with genericCandidates' own `.limit(100)` against ordinary
+    // long-running, healthily-quiet work -- this set is expected to be small (only actual
+    // process-loss retries) even on a busy fleet.
     const processLossRetrySuspicionBefore = new Date(now.getTime() - PROCESS_LOST_RETRY_OUTPUT_SUSPICION_THRESHOLD_MS);
     const processLossRetryCandidates = await db
       .select()
