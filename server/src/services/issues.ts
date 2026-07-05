@@ -21,6 +21,7 @@ import {
   issueAttachments,
   issueInboxArchives,
   issueLabels,
+  issueProjects,
   issueWatchdogs,
   issuePlanDecompositions,
   issueRecoveryActions,
@@ -462,6 +463,7 @@ type IssueUserContextInput = {
 };
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
+type IssueProjectWriter = Pick<Db, "select" | "insert" | "update" | "delete">;
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
@@ -478,6 +480,148 @@ type IssueChildCreateInput = IssueCreateInput & {
   actorAgentId?: string | null;
   actorUserId?: string | null;
 };
+
+export const MAX_ISSUE_PROJECTS = 8;
+
+function dedupeIssueProjectIds(projectIds: readonly string[]) {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const projectId of projectIds) {
+    if (seen.has(projectId)) continue;
+    seen.add(projectId);
+    deduped.push(projectId);
+  }
+  return deduped;
+}
+
+async function validateIssueProjectIds(
+  tx: IssueProjectWriter,
+  companyId: string,
+  projectIds: readonly string[],
+) {
+  if (projectIds.length === 0) return;
+  const rows = await tx
+    .select({
+      id: projects.id,
+      companyId: projects.companyId,
+      archivedAt: projects.archivedAt,
+    })
+    .from(projects)
+    .where(inArray(projects.id, [...projectIds]));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  for (const projectId of projectIds) {
+    const project = byId.get(projectId);
+    if (!project) {
+      throw unprocessable("One or more projects are invalid for this issue");
+    }
+    if (project.companyId !== companyId) {
+      throw unprocessable("Issue projects must belong to the same company as the issue");
+    }
+    if (project.archivedAt) {
+      throw unprocessable("Archived projects cannot be attached to issues");
+    }
+  }
+}
+
+export async function setIssueProjects(
+  tx: IssueProjectWriter,
+  issueId: string,
+  projectIds: readonly string[],
+) {
+  const dedupedProjectIds = dedupeIssueProjectIds(projectIds);
+  if (dedupedProjectIds.length > MAX_ISSUE_PROJECTS) {
+    throw unprocessable(`Issues can belong to at most ${MAX_ISSUE_PROJECTS} projects`);
+  }
+
+  const issue = await tx
+    .select({ id: issues.id, companyId: issues.companyId })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .then((rows) => rows[0] ?? null);
+  if (!issue) throw notFound("Issue not found");
+
+  await validateIssueProjectIds(tx, issue.companyId, dedupedProjectIds);
+
+  await tx
+    .update(issueProjects)
+    .set({ isPrimary: false })
+    .where(eq(issueProjects.issueId, issueId));
+
+  if (dedupedProjectIds.length === 0) {
+    await tx.delete(issueProjects).where(eq(issueProjects.issueId, issueId));
+    await tx.update(issues).set({ projectId: null, updatedAt: new Date() }).where(eq(issues.id, issueId));
+    return { issueId, projectIds: [], primaryProjectId: null };
+  }
+
+  await tx
+    .delete(issueProjects)
+    .where(and(eq(issueProjects.issueId, issueId), notInArray(issueProjects.projectId, dedupedProjectIds)));
+
+  const createdAtBase = Date.now();
+  await tx
+    .insert(issueProjects)
+    .values(
+      dedupedProjectIds.map((projectId, index) => ({
+        issueId,
+        projectId,
+        companyId: issue.companyId,
+        isPrimary: index === 0,
+        createdAt: new Date(createdAtBase + index),
+      })),
+    )
+    .onConflictDoUpdate({
+      target: [issueProjects.issueId, issueProjects.projectId],
+      set: {
+        companyId: issue.companyId,
+        isPrimary: sql`excluded.is_primary`,
+      },
+    });
+
+  const primaryProjectId = dedupedProjectIds[0] ?? null;
+  await tx.update(issues).set({ projectId: primaryProjectId, updatedAt: new Date() }).where(eq(issues.id, issueId));
+  return { issueId, projectIds: dedupedProjectIds, primaryProjectId };
+}
+
+export async function promoteIssueProjectsAfterProjectRemoval(
+  tx: IssueProjectWriter,
+  projectId: string,
+) {
+  const primaryIssueRows = await tx
+    .select({ issueId: issues.id })
+    .from(issues)
+    .where(eq(issues.projectId, projectId));
+
+  await tx.delete(issueProjects).where(eq(issueProjects.projectId, projectId));
+
+  for (const row of primaryIssueRows) {
+    const replacement = await tx
+      .select({ projectId: issueProjects.projectId })
+      .from(issueProjects)
+      .where(eq(issueProjects.issueId, row.issueId))
+      .orderBy(asc(issueProjects.createdAt), asc(issueProjects.projectId))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    await tx
+      .update(issueProjects)
+      .set({ isPrimary: false })
+      .where(eq(issueProjects.issueId, row.issueId));
+
+    if (replacement) {
+      await tx
+        .update(issueProjects)
+        .set({ isPrimary: true })
+        .where(and(eq(issueProjects.issueId, row.issueId), eq(issueProjects.projectId, replacement.projectId)));
+    }
+
+    await tx
+      .update(issues)
+      .set({ projectId: replacement?.projectId ?? null, updatedAt: new Date() })
+      .where(eq(issues.id, row.issueId));
+  }
+
+  return primaryIssueRows.length;
+}
 type AcceptedPlanDecompositionInput = {
   acceptedPlanRevisionId: string;
   children: IssueChildCreateInput[];
@@ -5550,6 +5694,9 @@ export function issueService(db: Db) {
         );
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        if (issue.projectId) {
+          await setIssueProjects(tx, issue.id, [issue.projectId]);
+        }
         if (watchdog) {
           await upsertIssueWatchdogForIssue(tx, companyId, issue.id, {
             agentId: watchdog.agentId,
@@ -5748,6 +5895,9 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        if (issueData.projectId !== undefined || patch.projectId !== undefined) {
+          await setIssueProjects(tx, updated.id, updated.projectId ? [updated.projectId] : []);
+        }
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
@@ -5819,6 +5969,8 @@ export function issueService(db: Db) {
 
       return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
     },
+
+    setProjects: async (id: string, projectIds: string[]) => db.transaction((tx) => setIssueProjects(tx, id, projectIds)),
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {
       const rows = await db

@@ -171,6 +171,71 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
   );
 
   it(
+    "replays migration 0128 safely and keeps issue project backfill idempotent",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const issueProjectsHash = await migrationHash("0128_issue_projects.sql");
+      const companyId = "10000000-0000-4000-8000-000000000001";
+      const projectId = "20000000-0000-4000-8000-000000000001";
+      const issueId = "30000000-0000-4000-8000-000000000001";
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix")
+          VALUES ('${companyId}', 'Paperclip', 'PAP')
+        `);
+        await sql.unsafe(`
+          INSERT INTO "projects" ("id", "company_id", "name", "status")
+          VALUES ('${projectId}', '${companyId}', 'Core', 'in_progress')
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issues" ("id", "company_id", "project_id", "title", "status", "priority")
+          VALUES ('${issueId}', '${companyId}', '${projectId}', 'Backfill me', 'todo', 'medium')
+        `);
+        await sql.unsafe(`DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${issueProjectsHash}'`);
+      } finally {
+        await sql.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const sqlAfterFirstReplay = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const rows = await sqlAfterFirstReplay.unsafe<{ issue_id: string; project_id: string; is_primary: boolean }[]>(`
+          SELECT "issue_id", "project_id", "is_primary"
+          FROM "issue_projects"
+          WHERE "issue_id" = '${issueId}'
+        `);
+        expect(rows).toEqual([{ issue_id: issueId, project_id: projectId, is_primary: true }]);
+        await sqlAfterFirstReplay.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${issueProjectsHash}'`,
+        );
+      } finally {
+        await sqlAfterFirstReplay.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const sqlAfterSecondReplay = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const rows = await sqlAfterSecondReplay.unsafe<{ count: string; primary_count: string }[]>(`
+          SELECT count(*)::text, count(*) FILTER (WHERE "is_primary")::text AS "primary_count"
+          FROM "issue_projects"
+          WHERE "issue_id" = '${issueId}' AND "project_id" = '${projectId}'
+        `);
+        expect(rows[0]).toEqual({ count: "1", primary_count: "1" });
+      } finally {
+        await sqlAfterSecondReplay.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
     "replays migration 0046 safely when document revision columns already exist",
     async () => {
       const connectionString = await createTempDatabase();
