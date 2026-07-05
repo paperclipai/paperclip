@@ -1467,6 +1467,12 @@ export function Inbox() {
     queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId) });
   };
 
+  const inboxIssueQueryKeys = () => [
+    [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions"],
+    [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions"],
+    queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId!),
+  ];
+
   const archiveIssueMutation = useMutation({
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
     onMutate: async (id) => {
@@ -1474,11 +1480,7 @@ export function Inbox() {
       setArchivingIssueIds((prev) => new Set(prev).add(id));
 
       // Cancel in-flight refetches so they don't overwrite our optimistic update
-      const queryKeys_ = [
-        [...queryKeys.issues.listMineByMe(selectedCompanyId!), "with-routine-executions"],
-        [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "with-routine-executions"],
-        queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId!),
-      ];
+      const queryKeys_ = inboxIssueQueryKeys();
       await Promise.all(queryKeys_.map((qk) => queryClient.cancelQueries({ queryKey: qk })));
 
       // Snapshot previous data for rollback
@@ -1549,8 +1551,30 @@ export function Inbox() {
 
   const markReadMutation = useMutation({
     mutationFn: (id: string) => issuesApi.markRead(id),
-    onMutate: (id) => {
+    onMutate: async (id) => {
       setFadingOutIssues((prev) => new Set(prev).add(id));
+
+      // Optimistically flip isUnreadForMe so the dot never pops back while
+      // waiting on the server roundtrip + refetch.
+      const queryKeys_ = inboxIssueQueryKeys();
+      await Promise.all(queryKeys_.map((qk) => queryClient.cancelQueries({ queryKey: qk })));
+      const previousData = queryKeys_.map((qk) => [qk, queryClient.getQueryData(qk)] as const);
+      for (const qk of queryKeys_) {
+        queryClient.setQueryData(qk, (old: unknown) => {
+          if (!Array.isArray(old)) return old;
+          return old.map((issue: { id: string; isUnreadForMe?: boolean }) =>
+            issue.id === id ? { ...issue, isUnreadForMe: false } : issue,
+          );
+        });
+      }
+      return { previousData };
+    },
+    onError: (_err, _id, context) => {
+      if (context?.previousData) {
+        for (const [qk, data] of context.previousData) {
+          queryClient.setQueryData(qk, data);
+        }
+      }
     },
     onSuccess: () => {
       invalidateInboxIssueQueries();
@@ -1570,12 +1594,32 @@ export function Inbox() {
     mutationFn: async (issueIds: string[]) => {
       await Promise.all(issueIds.map((issueId) => issuesApi.markRead(issueId)));
     },
-    onMutate: (issueIds) => {
+    onMutate: async (issueIds) => {
       setFadingOutIssues((prev) => {
         const next = new Set(prev);
         for (const issueId of issueIds) next.add(issueId);
         return next;
       });
+      const idSet = new Set(issueIds);
+      const queryKeys_ = inboxIssueQueryKeys();
+      await Promise.all(queryKeys_.map((qk) => queryClient.cancelQueries({ queryKey: qk })));
+      const previousData = queryKeys_.map((qk) => [qk, queryClient.getQueryData(qk)] as const);
+      for (const qk of queryKeys_) {
+        queryClient.setQueryData(qk, (old: unknown) => {
+          if (!Array.isArray(old)) return old;
+          return old.map((issue: { id: string; isUnreadForMe?: boolean }) =>
+            idSet.has(issue.id) ? { ...issue, isUnreadForMe: false } : issue,
+          );
+        });
+      }
+      return { previousData };
+    },
+    onError: (_err, _ids, context) => {
+      if (context?.previousData) {
+        for (const [qk, data] of context.previousData) {
+          queryClient.setQueryData(qk, data);
+        }
+      }
     },
     onSuccess: () => {
       invalidateInboxIssueQueries();
@@ -1593,6 +1637,27 @@ export function Inbox() {
 
   const markUnreadMutation = useMutation({
     mutationFn: (id: string) => issuesApi.markUnread(id),
+    onMutate: async (id) => {
+      const queryKeys_ = inboxIssueQueryKeys();
+      await Promise.all(queryKeys_.map((qk) => queryClient.cancelQueries({ queryKey: qk })));
+      const previousData = queryKeys_.map((qk) => [qk, queryClient.getQueryData(qk)] as const);
+      for (const qk of queryKeys_) {
+        queryClient.setQueryData(qk, (old: unknown) => {
+          if (!Array.isArray(old)) return old;
+          return old.map((issue: { id: string; isUnreadForMe?: boolean }) =>
+            issue.id === id ? { ...issue, isUnreadForMe: true } : issue,
+          );
+        });
+      }
+      return { previousData };
+    },
+    onError: (_err, _id, context) => {
+      if (context?.previousData) {
+        for (const [qk, data] of context.previousData) {
+          queryClient.setQueryData(qk, data);
+        }
+      }
+    },
     onSuccess: () => {
       invalidateInboxIssueQueries();
     },
@@ -2371,7 +2436,10 @@ export function Inbox() {
                         ) : undefined
                       }
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}
-                      onMarkRead={() => markReadMutation.mutate(issue.id)}
+                      onMarkRead={() => {
+                        if (fadingOutIssues.has(issue.id)) return; // already in flight
+                        markReadMutation.mutate(issue.id);
+                      }}
                       onArchive={allowArchive ? () => archiveIssueMutation.mutate(issue.id) : undefined}
                       archiveDisabled={isArchiving || archiveIssueMutation.isPending}
                       desktopTrailing={
