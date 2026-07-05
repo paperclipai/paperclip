@@ -288,6 +288,8 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+export const OPENCLAW_GATEWAY_DISPATCH_RETRY_DELAYS_MS = [5_000, 15_000, 45_000] as const;
+const OPENCLAW_GATEWAY_DISPATCH_RETRY_ERROR_CODE = "openclaw_gateway_request_failed";
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
@@ -372,6 +374,62 @@ function readHeartbeatRunErrorFamily(
     return "transient_upstream";
   }
   return null;
+}
+
+export function parseOpenClawGatewayDispatchRetryDelaysMs(value: unknown): number[] {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return [...OPENCLAW_GATEWAY_DISPATCH_RETRY_DELAYS_MS];
+  }
+  const parsed = value
+    .split(",")
+    .map((part) => Number(part.trim()))
+    .filter((delayMs) => Number.isFinite(delayMs) && delayMs >= 0)
+    .map((delayMs) => Math.floor(delayMs));
+  return parsed.length > 0 ? parsed : [...OPENCLAW_GATEWAY_DISPATCH_RETRY_DELAYS_MS];
+}
+
+export function isOpenClawGatewayDispatchRetryableResult(
+  agent: Pick<typeof agents.$inferSelect, "adapterType">,
+  result: Pick<AdapterExecutionResult, "exitCode" | "timedOut" | "errorCode" | "errorMessage">,
+) {
+  if (agent.adapterType !== "openclaw_gateway") return false;
+  if ((result.exitCode ?? 0) === 0 && !result.timedOut && !result.errorMessage) return false;
+  return result.errorCode === OPENCLAW_GATEWAY_DISPATCH_RETRY_ERROR_CODE;
+}
+
+function sleepMs(delayMs: number) {
+  if (delayMs <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+export async function executeOpenClawGatewayDispatchWithRetry<T extends Pick<AdapterExecutionResult, "exitCode" | "timedOut" | "errorCode" | "errorMessage">>(args: {
+  agent: Pick<typeof agents.$inferSelect, "adapterType">;
+  execute: () => Promise<T>;
+  retryDelaysMs?: number[];
+  onRetry?: (event: {
+    delayMs: number;
+    retryAttempt: number;
+    maxRetryAttempts: number;
+    result: T;
+  }) => Promise<void> | void;
+}) {
+  const retryDelaysMs = args.retryDelaysMs ?? [...OPENCLAW_GATEWAY_DISPATCH_RETRY_DELAYS_MS];
+  let result = await args.execute();
+  if (!isOpenClawGatewayDispatchRetryableResult(args.agent, result)) return result;
+
+  for (let retryIndex = 0; retryIndex < retryDelaysMs.length; retryIndex += 1) {
+    const delayMs = retryDelaysMs[retryIndex] ?? 0;
+    await args.onRetry?.({
+      delayMs,
+      retryAttempt: retryIndex + 1,
+      maxRetryAttempts: retryDelaysMs.length,
+      result,
+    });
+    await sleepMs(delayMs);
+    result = await args.execute();
+    if (!isOpenClawGatewayDispatchRetryableResult(args.agent, result)) break;
+  }
+  return result;
 }
 
 function isMaxTurnExhaustionRun(
@@ -11578,34 +11636,56 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
+      const executeAdapter = () => adapter.execute({
+        runId: run.id,
+        agent,
+        runtime: runtimeForAdapter,
+        config: runtimeConfig,
+        context,
+        runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
+        executionTarget,
+        executionTransport: remoteExecution
+          ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
+          : undefined,
+        onLog,
+        onMeta: onAdapterMeta,
+        onRuntimeProgress: async (progress) => {
+          await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
+        },
+        onSpawn: async (meta) => {
+          await persistRunProcessMetadata(run.id, {
+            pid: meta.pid,
+            processGroupId:
+              "processGroupId" in meta && typeof meta.processGroupId === "number"
+                ? meta.processGroupId
+                : null,
+            startedAt: meta.startedAt,
+          });
+        },
+        authToken: authToken ?? undefined,
+      });
       try {
-        adapterResult = await adapter.execute({
-          runId: run.id,
+        adapterResult = await executeOpenClawGatewayDispatchWithRetry({
           agent,
-          runtime: runtimeForAdapter,
-          config: runtimeConfig,
-          context,
-          runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
-          executionTarget,
-          executionTransport: remoteExecution
-            ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
-            : undefined,
-          onLog,
-          onMeta: onAdapterMeta,
-          onRuntimeProgress: async (progress) => {
-            await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
-          },
-          onSpawn: async (meta) => {
-            await persistRunProcessMetadata(run.id, {
-              pid: meta.pid,
-              processGroupId:
-                "processGroupId" in meta && typeof meta.processGroupId === "number"
-                  ? meta.processGroupId
-                  : null,
-              startedAt: meta.startedAt,
+          execute: executeAdapter,
+          retryDelaysMs: parseOpenClawGatewayDispatchRetryDelaysMs(
+            process.env.PAPERCLIP_OPENCLAW_GATEWAY_DISPATCH_RETRY_DELAYS_MS,
+          ),
+          onRetry: async ({ delayMs, retryAttempt, maxRetryAttempts, result }) => {
+            await appendRunEvent(currentRun, seq++, {
+              eventType: "adapter.retry",
+              stream: "system",
+              level: "warn",
+              message: `OpenClaw gateway request failed; retrying dispatch ${retryAttempt}/${maxRetryAttempts} after ${delayMs}ms`,
+              payload: {
+                adapterType: agent.adapterType,
+                errorCode: result.errorCode ?? null,
+                delayMs,
+                retryAttempt,
+                maxRetryAttempts,
+              },
             });
           },
-          authToken: authToken ?? undefined,
         });
         // Adapter returned cleanly, which means its workspace-restore finally
         // block also ran without throwing. Record the workspace_finalize
