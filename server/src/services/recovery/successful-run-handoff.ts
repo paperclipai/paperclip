@@ -45,7 +45,15 @@ export function isIdempotentFinishSuccessfulRunHandoffWakeStatus(status: string)
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
-  "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId" | "executionState"
+  | "id"
+  | "companyId"
+  | "identifier"
+  | "title"
+  | "status"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "executionState"
+  | "originKind"
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
@@ -374,6 +382,18 @@ export function decideSuccessfulRunHandoff(input: {
   if (issue.assigneeUserId) return { kind: "skip", reason: "issue is human-owned" };
   if (issue.status !== "in_progress") return { kind: "skip", reason: `issue status ${issue.status} is a valid disposition` };
   if (issue.executionState) return { kind: "skip", reason: "issue has execution policy state" };
+  if (issue.originKind?.startsWith("plugin:")) {
+    // A plugin (e.g. a graph/workflow engine) owns this issue's lifecycle and may
+    // legitimately hold it at `in_progress` for a long time — e.g. an anchor issue
+    // parked at a fan-out node waiting on spawned child issues. This generic
+    // handoff recovery has no way to know that, so it repeatedly nags the agent
+    // for a "disposition" it has no valid way to give: the agent's own status
+    // change gets reverted by the plugin's own enforcement on the next event,
+    // which re-triggers this exact recovery again — an unbounded, real-cost
+    // retry loop with no possible resolution. Leave plugin-managed issues to the
+    // plugin's own recovery/enforcement path instead.
+    return { kind: "skip", reason: "issue lifecycle is owned by a plugin" };
+  }
   if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
     return { kind: "skip", reason: `agent status ${agent.status} is not invokable` };
   }

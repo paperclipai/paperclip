@@ -101,6 +101,22 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("does not queue when a plugin owns the issue's lifecycle", () => {
+    expect(decide({ issue: { ...issue, originKind: "plugin:paperclip.workflow-engine" } as any })).toEqual({
+      kind: "skip",
+      reason: "issue lifecycle is owned by a plugin",
+    });
+    expect(decide({ issue: { ...issue, originKind: "plugin:paperclip.workflow-engine:advance" } as any })).toEqual({
+      kind: "skip",
+      reason: "issue lifecycle is owned by a plugin",
+    });
+  });
+
+  it("still queues for non-plugin origin kinds", () => {
+    expect(decide({ issue: { ...issue, originKind: "manual" } as any }).kind).toBe("enqueue");
+    expect(decide({ issue: { ...issue, originKind: null } as any }).kind).toBe("enqueue");
+  });
+
   it("does not queue when a successful run records an accepted next-action path", () => {
     expect(decide({ issue: { ...issue, status: "in_review" } as any })).toEqual({
       kind: "skip",
