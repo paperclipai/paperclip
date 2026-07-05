@@ -294,6 +294,50 @@ retry — don't `--force-with-lease` or otherwise paper over an auth issue.
 Record the PR URL on the task (PATCH the task description or comment).
 The Coordinator picks up the URL on its next sweep.
 
+## Advisory smoke check (non-blocking, targeted)
+
+After Landing (the PR is open and confirmed), OPTIONALLY run the `bevy-rpg`
+headless smoke harness (`--smoke`, see the repo's `docs/SMOKE_TESTING.md`). It
+boots the real game headless on a software Vulkan adapter and catches boot-path
+panics that `cargo test --lib` never exercises — the lib unit tests run under
+`MinimalPlugins` and never initialize real system access, asset loading, or world
+generation, so query-conflict (B0001), missing-resource, and worldgen panics slip
+straight through the normal gate.
+
+This is **advisory and non-blocking**: it NEVER fails the task, NEVER writes the
+verify sentinel, and runs only *after* the PR already exists. Its only possible
+output is a best-effort PR comment.
+
+**Run it only when the task's changed files can affect the boot path** — i.e.
+`git diff --name-only main..HEAD` hits `src/main.rs`, `src/plugins/`, world/
+local-map generation, or system/observer schedule registration. Skip it for
+data-only, UI-copy, or leaf-logic changes: the run costs a `cargo run` bin build,
+and a task that cannot touch the boot path gains nothing from it.
+
+```sh
+# Runs AFTER Landing, in the task worktree. Non-blocking (`|| true`, own log).
+( cd "$WORKTREE" && env -u DISPLAY -u WAYLAND_DISPLAY WGPU_ADAPTER_NAME=llvmpipe \
+    CARGO_INCREMENTAL=0 cargo run --bin rust-bevy-rpg -- --smoke \
+    > "/tmp/smoke-{task-id}.log" 2>&1; echo "smoke exit $?" >> "/tmp/smoke-{task-id}.log" ) || true
+```
+
+**Baseline awareness — do NOT cry wolf.** `main` currently has a *known* boot-panic
+backlog (see the repo's `docs/SMOKE_TESTING.md`; the head is
+`determine_spawn_location_system` at `character_loading.rs:589`). Until that backlog
+is cleared, an unchanged `--smoke` on `main` exits non-zero on its own. Therefore:
+
+- If the smoke panic matches the documented backlog head, that is the **known
+  baseline** — do NOT comment, do NOT escalate. It is not this task's regression.
+- Comment on the PR (`gh pr comment`) ONLY if smoke **regresses past the baseline**:
+  it reaches a *different/earlier* panic than the documented head, or it reaches
+  `InGame` and then panics. That signals the task introduced a new boot-path panic
+  and the operator should look before merging.
+
+Once the `docs/SMOKE_TESTING.md` backlog is fully cleared and `--smoke` exits 0 on
+`main`, promote this to an every-task **blocking** gate by appending
+`&& env … cargo run --bin rust-bevy-rpg -- --smoke` to the detached verify chain
+(§Cargo discipline rule 5) so a boot panic fails the task like any other gate.
+
 ## Standards
 
 **Zero warnings. No exceptions.** Fix every warning clippy reports. "Pre-existing" is not an excuse — if clippy warns, you fix it. Another agent introducing a warning does not make it allowable. Never suppress with `#[allow]`.
