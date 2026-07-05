@@ -18,6 +18,30 @@ export function shouldResetScrollOnNavigation(params: {
   return hasSidebarScrollResetState(state);
 }
 
+// Remembers the `#main-content` scroll offset per browser-history entry so a
+// back/forward (POP) navigation can be restored to where the user left off.
+// `#main-content` is a single element that survives route changes, so without
+// this the offset from the page we navigated away from (e.g. a deep
+// issue-detail scroll) bleeds into the page we return to (e.g. the inbox).
+export class NavigationScrollMemory {
+  private positions = new Map<string, number>();
+
+  remember(key: string, scrollTop: number): void {
+    this.positions.set(key, Math.max(0, scrollTop));
+  }
+
+  recall(key: string): number {
+    return this.positions.get(key) ?? 0;
+  }
+}
+
+export function applyMainContentScrollTop(mainElement: HTMLElement | null, scrollTop: number): void {
+  if (!mainElement) return;
+  mainElement.scrollTo?.({ top: scrollTop, left: 0, behavior: "auto" });
+  mainElement.scrollTop = scrollTop;
+  mainElement.scrollLeft = 0;
+}
+
 export function resetNavigationScroll(mainElement: HTMLElement | null): void {
   mainElement?.scrollTo?.({ top: 0, left: 0, behavior: "auto" });
 

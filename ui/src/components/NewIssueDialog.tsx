@@ -16,10 +16,16 @@ import { assetsApi } from "../api/assets";
 import { buildCompanyUserInlineOptions, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
 import { orderReusableExecutionWorkspaces } from "../lib/reusable-execution-workspaces";
+import {
+  defaultExecutionWorkspaceModeForProject,
+  defaultProjectWorkspaceIdForProject,
+  issueExecutionWorkspaceModeForExistingWorkspace,
+} from "../lib/project-workspace-defaults";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
 import { buildExecutionPolicy } from "../lib/issue-execution-policy";
+import { isIssueWorkMode, nextWorkMode, workModeMetaFor, workModeMetaList } from "../lib/work-mode-meta";
 import { useToastActions } from "../context/ToastContext";
 import {
   assigneeValueFromSelection,
@@ -43,9 +49,8 @@ import {
   MoreHorizontal,
   ChevronRight,
   ChevronDown,
+  Check,
   CircleDot,
-  ClipboardList,
-  Hammer,
   Minus,
   ArrowUp,
   ArrowDown,
@@ -61,15 +66,17 @@ import {
   Eye,
   ShieldAlert,
   ShieldCheck,
+  ScanEye,
 } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "../lib/utils";
 import { extractProviderIdWithFallback } from "../lib/model-utils";
-import { issueStatusText, issueStatusTextClassic, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
-import { useConferenceRoomChatEnabled } from "../hooks/useConferenceRoomChatEnabled";
+import { issueStatusText, issueStatusTextDefault, priorityColor, priorityColorDefault } from "../lib/status-colors";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { AgentIcon } from "./AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getTrustPreset } from "../lib/trust-policy-ui";
+import { ReusableExecutionWorkspaceSelect } from "./ReusableExecutionWorkspaceSelect";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -84,6 +91,8 @@ interface IssueDraft {
   assigneeValue: string;
   reviewerValue: string;
   approverValue: string;
+  watchdogAgentId?: string;
+  watchdogInstructions?: string;
   assigneeId?: string;
   projectId: string;
   projectWorkspaceId?: string;
@@ -138,23 +147,6 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "max", label: "Max" },
   ],
 } as const;
-
-function isIssueWorkMode(value: unknown): value is IssueWorkMode {
-  return value === "standard" || value === "planning";
-}
-
-// "Agent mode"/"Plan mode" relabels ship behind the Conference Room Chat flag
-// (PAP-132/PAP-139); OFF keeps master's "Standard"/"Planning".
-function issueWorkModeOptions(conferenceRoomChat: boolean): ReadonlyArray<{
-  value: IssueWorkMode;
-  label: string;
-  icon: typeof Hammer;
-}> {
-  return [
-    { value: "standard", label: conferenceRoomChat ? "Agent mode" : "Standard", icon: Hammer },
-    { value: "planning", label: conferenceRoomChat ? "Plan mode" : "Planning", icon: ClipboardList },
-  ];
-}
 
 function loadDraft(): IssueDraft | null {
   try {
@@ -227,12 +219,8 @@ function formatFileSize(file: File) {
   return `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// PAP-75 brand hues ship behind the Conference Room Chat flag (PAP-139); OFF
-// keeps master's palette (`issueStatusTextClassic`).
-function buildStatusOptions(
-  conferenceRoomChat: boolean,
-): ReadonlyArray<{ value: string; label: string; color: string; description?: string }> {
-  const palette = conferenceRoomChat ? issueStatusText : issueStatusTextClassic;
+function buildStatusOptions(): ReadonlyArray<{ value: string; label: string; color: string; description?: string }> {
+  const palette = issueStatusText;
   return [
     {
       value: "backlog",
@@ -264,26 +252,6 @@ const EXECUTION_WORKSPACE_MODES = [
   { value: "isolated_workspace", label: "New isolated workspace" },
   { value: "reuse_existing", label: "Reuse existing workspace" },
 ] as const;
-
-function defaultProjectWorkspaceIdForProject(project: { workspaces?: Array<{ id: string; isPrimary: boolean }>; executionWorkspacePolicy?: { defaultProjectWorkspaceId?: string | null } | null } | null | undefined) {
-  if (!project) return "";
-  return project.executionWorkspacePolicy?.defaultProjectWorkspaceId
-    ?? project.workspaces?.find((workspace) => workspace.isPrimary)?.id
-    ?? project.workspaces?.[0]?.id
-    ?? "";
-}
-
-function defaultExecutionWorkspaceModeForProject(project: { executionWorkspacePolicy?: { enabled?: boolean; defaultMode?: string | null } | null } | null | undefined) {
-  const defaultMode = project?.executionWorkspacePolicy?.enabled ? project.executionWorkspacePolicy.defaultMode : null;
-  if (
-    defaultMode === "isolated_workspace" ||
-    defaultMode === "operator_branch" ||
-    defaultMode === "adapter_default"
-  ) {
-    return defaultMode === "adapter_default" ? "agent_default" : defaultMode;
-  }
-  return "shared_workspace";
-}
 
 function defaultExecutionWorkspaceModeForIssueDefaults(
   defaults: {
@@ -405,23 +373,11 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
   );
 });
 
-function issueExecutionWorkspaceModeForExistingWorkspace(mode: string | null | undefined) {
-  if (mode === "isolated_workspace" || mode === "operator_branch" || mode === "shared_workspace") {
-    return mode;
-  }
-  if (mode === "adapter_managed" || mode === "cloud_sandbox") {
-    return "agent_default";
-  }
-  return "shared_workspace";
-}
-
 export function NewIssueDialog() {
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
   const { companies, selectedCompanyId, selectedCompany } = useCompany();
-  // Conference Room Chat flag (PAP-139): selects work-mode labels + status hues.
-  const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
-  const workModeOptions = useMemo(() => issueWorkModeOptions(conferenceRoomChatEnabled), [conferenceRoomChatEnabled]);
-  const statuses = useMemo(() => buildStatusOptions(conferenceRoomChatEnabled), [conferenceRoomChatEnabled]);
+  const workModeOptions = useMemo(() => workModeMetaList(), []);
+  const statuses = useMemo(() => buildStatusOptions(), []);
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [title, setTitle] = useState("");
@@ -437,6 +393,10 @@ export function NewIssueDialog() {
   const [approverValue, setApproverValue] = useState("");
   const [showReviewerRow, setShowReviewerRow] = useState(false);
   const [showApproverRow, setShowApproverRow] = useState(false);
+  const [watchdogAgentId, setWatchdogAgentId] = useState("");
+  const [watchdogInstructions, setWatchdogInstructions] = useState("");
+  const [showWatchdogRow, setShowWatchdogRow] = useState(false);
+  const [watchdogEditorOpen, setWatchdogEditorOpen] = useState(false);
   const [participantMenuOpen, setParticipantMenuOpen] = useState(false);
   const [projectId, setProjectId] = useState("");
   const [projectWorkspaceId, setProjectWorkspaceId] = useState("");
@@ -486,7 +446,11 @@ export function NewIssueDialog() {
     queryFn: () => projectsApi.list(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
-  const { data: reusableExecutionWorkspaces } = useQuery({
+  const {
+    data: reusableExecutionWorkspaces,
+    isLoading: reusableExecutionWorkspacesLoading,
+    isError: reusableExecutionWorkspacesError,
+  } = useQuery({
     queryKey: queryKeys.executionWorkspaces.summaryList(effectiveCompanyId!, {
       projectId,
       projectWorkspaceId: projectWorkspaceId || undefined,
@@ -667,6 +631,8 @@ export function NewIssueDialog() {
       assigneeValue,
       reviewerValue,
       approverValue,
+      watchdogAgentId,
+      watchdogInstructions,
       projectId,
       projectWorkspaceId,
       assigneeModelLane,
@@ -685,6 +651,8 @@ export function NewIssueDialog() {
     assigneeValue,
     reviewerValue,
     approverValue,
+    watchdogAgentId,
+    watchdogInstructions,
     projectId,
     projectWorkspaceId,
     assigneeModelOverride,
@@ -721,6 +689,8 @@ export function NewIssueDialog() {
     assigneeValue,
     reviewerValue,
     approverValue,
+    watchdogAgentId,
+    watchdogInstructions,
     projectId,
     projectWorkspaceId,
     assigneeModelLane,
@@ -786,6 +756,9 @@ export function NewIssueDialog() {
       setApproverValue("");
       setShowReviewerRow(false);
       setShowApproverRow(false);
+      setWatchdogAgentId("");
+      setWatchdogInstructions("");
+      setShowWatchdogRow(false);
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
@@ -814,6 +787,9 @@ export function NewIssueDialog() {
       setApproverValue(draft.approverValue ?? "");
       setShowReviewerRow(!!(draft.reviewerValue));
       setShowApproverRow(!!(draft.approverValue));
+      setWatchdogAgentId(draft.watchdogAgentId ?? "");
+      setWatchdogInstructions(draft.watchdogInstructions ?? "");
+      setShowWatchdogRow(!!(draft.watchdogAgentId));
       setProjectId(restoredProjectId);
       setProjectWorkspaceId(
         hasExplicitProjectWorkspaceId
@@ -856,6 +832,9 @@ export function NewIssueDialog() {
       setApproverValue("");
       setShowReviewerRow(false);
       setShowApproverRow(false);
+      setWatchdogAgentId("");
+      setWatchdogInstructions("");
+      setShowWatchdogRow(false);
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
@@ -913,6 +892,9 @@ export function NewIssueDialog() {
     setApproverValue("");
     setShowReviewerRow(false);
     setShowApproverRow(false);
+    setWatchdogAgentId("");
+    setWatchdogInstructions("");
+    setShowWatchdogRow(false);
     setProjectId("");
     setProjectWorkspaceId("");
     setAssigneeOptionsOpen(false);
@@ -941,6 +923,9 @@ export function NewIssueDialog() {
     setApproverValue("");
     setShowReviewerRow(false);
     setShowApproverRow(false);
+    setWatchdogAgentId("");
+    setWatchdogInstructions("");
+    setShowWatchdogRow(false);
     setProjectId("");
     setProjectWorkspaceId("");
     setAssigneeModelLane("primary");
@@ -979,7 +964,7 @@ export function NewIssueDialog() {
       experimentalSettings?.enableIsolatedWorkspaces === true
         ? selectedProject?.executionWorkspacePolicy ?? null
         : null;
-    const selectedReusableExecutionWorkspace = deduplicatedReusableWorkspaces.find(
+    const selectedReusableExecutionWorkspace = selectableReusableWorkspaces.find(
       (workspace) => workspace.id === selectedExecutionWorkspaceId,
     );
     const requestedExecutionWorkspaceMode =
@@ -1014,10 +999,18 @@ export function NewIssueDialog() {
         : {}),
       ...(executionWorkspaceSettings ? { executionWorkspaceSettings } : {}),
       ...(executionPolicy ? { executionPolicy } : {}),
+      ...(taskWatchdogsEnabled && watchdogAgentId
+        ? { watchdog: { agentId: watchdogAgentId, instructions: watchdogInstructions.trim() || null } }
+        : {}),
     });
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
+    if ((e.metaKey || e.ctrlKey) && e.code === "Period") {
+      e.preventDefault();
+      setWorkMode((current) => nextWorkMode(current));
+      return;
+    }
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       handleSubmit();
@@ -1100,10 +1093,9 @@ export function NewIssueDialog() {
       ? currentProject?.executionWorkspacePolicy ?? null
       : null;
   const currentProjectSupportsExecutionWorkspace = Boolean(currentProjectExecutionWorkspacePolicy?.enabled);
-  const deduplicatedReusableWorkspaces = useMemo(() => {
-    return orderReusableExecutionWorkspaces(reusableExecutionWorkspaces ?? []);
-  }, [reusableExecutionWorkspaces]);
-  const selectedReusableExecutionWorkspace = deduplicatedReusableWorkspaces.find(
+  const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
+  const selectableReusableWorkspaces = reusableExecutionWorkspaces ?? [];
+  const selectedReusableExecutionWorkspace = selectableReusableWorkspaces.find(
     (workspace) => workspace.id === selectedExecutionWorkspaceId,
   );
   const isUsingParentExecutionWorkspace = isSubIssueMode && parentExecutionWorkspaceId
@@ -1147,6 +1139,19 @@ export function NewIssueDialog() {
       })),
     ],
     [agents, companyMembers?.users, currentUserId, recentAssigneeIds],
+  );
+  const watchdogAgentOptions = useMemo<InlineEntityOption[]>(
+    () =>
+      sortAgentsByRecency((agents ?? []).filter(isAgentTaskTarget), recentAssigneeIds).map((agent) => ({
+        id: agent.id,
+        label: agent.name,
+        searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
+      })),
+    [agents, recentAssigneeIds],
+  );
+  const selectedWatchdogAgent = useMemo(
+    () => (watchdogAgentId ? (agents ?? []).find((agent) => agent.id === watchdogAgentId) ?? null : null),
+    [agents, watchdogAgentId],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>
@@ -1209,7 +1214,7 @@ export function NewIssueDialog() {
     },
     [assigneeAdapterModels],
   );
-  const currentWorkMode = workModeOptions[workMode === "planning" ? 1 : 0]!;
+  const currentWorkMode = workModeMetaFor(workMode);
   const CurrentWorkModeIcon = currentWorkMode.icon;
 
   return (
@@ -1460,7 +1465,7 @@ export function NewIssueDialog() {
                   <button
                     type="button"
                     className="inline-flex items-center justify-center rounded-md p-1 text-muted-foreground hover:bg-accent/50 transition-colors"
-                    title="Add reviewer or approver"
+                    title={taskWatchdogsEnabled ? "Add reviewer, approver, or watchdog" : "Add reviewer or approver"}
                   >
                     <MoreHorizontal className="h-4 w-4" />
                   </button>
@@ -1494,6 +1499,29 @@ export function NewIssueDialog() {
                     <ShieldCheck className="h-3 w-3" />
                     Approver
                   </button>
+                  {taskWatchdogsEnabled && (
+                    <button
+                      className={cn(
+                        "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                        showWatchdogRow && "bg-accent",
+                      )}
+                      onClick={() => {
+                        if (showWatchdogRow) {
+                          setShowWatchdogRow(false);
+                          setWatchdogAgentId("");
+                          setWatchdogInstructions("");
+                          setWatchdogEditorOpen(false);
+                        } else {
+                          setShowWatchdogRow(true);
+                          setWatchdogEditorOpen(true);
+                        }
+                        setParticipantMenuOpen(false);
+                      }}
+                    >
+                      <ScanEye className="h-3 w-3" />
+                      Watchdog
+                    </button>
+                  )}
                 </PopoverContent>
               </Popover>
               </div>
@@ -1588,6 +1616,96 @@ export function NewIssueDialog() {
                 />
               </div>
             )}
+
+            {/* Watchdog row */}
+            {taskWatchdogsEnabled && showWatchdogRow && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground mt-1">
+                <span className="w-6 shrink-0 flex items-center justify-center"><ScanEye className="h-3.5 w-3.5" /></span>
+                <Popover open={watchdogEditorOpen} onOpenChange={setWatchdogEditorOpen}>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors min-w-0"
+                      title="Configure watchdog"
+                    >
+                      {selectedWatchdogAgent ? (
+                        <>
+                          <AgentIcon icon={selectedWatchdogAgent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <span className="truncate text-foreground">{selectedWatchdogAgent.name}</span>
+                          {watchdogInstructions.trim() ? (
+                            <span className="truncate text-muted-foreground">· {watchdogInstructions.trim()}</span>
+                          ) : null}
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">Set watchdog</span>
+                      )}
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-80 p-3 space-y-3" align="start">
+                    <div className="space-y-1.5">
+                      <div className="text-xs font-medium text-foreground">Watchdog agent</div>
+                      <InlineEntitySelector
+                        value={watchdogAgentId}
+                        options={watchdogAgentOptions}
+                        placeholder="Select agent"
+                        noneLabel="No watchdog agent"
+                        searchPlaceholder="Search agents..."
+                        emptyMessage="No agents found."
+                        onChange={setWatchdogAgentId}
+                        renderTriggerValue={(option) =>
+                          option ? (
+                            <>
+                              {selectedWatchdogAgent ? (
+                                <AgentIcon icon={selectedWatchdogAgent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              ) : null}
+                              <span className="truncate">{option.label}</span>
+                            </>
+                          ) : (
+                            <span className="text-muted-foreground">Select agent</span>
+                          )
+                        }
+                        renderOption={(option) => {
+                          const agent = (agents ?? []).find((a) => a.id === option.id);
+                          return (
+                            <>
+                              {agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                              <span className="truncate">{option.label}</span>
+                            </>
+                          );
+                        }}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <div className="text-xs font-medium text-foreground">Instructions <span className="font-normal text-muted-foreground">(optional)</span></div>
+                      <Textarea
+                        value={watchdogInstructions}
+                        onChange={(event) => setWatchdogInstructions(event.target.value)}
+                        placeholder="What should the watchdog watch for and how should it keep work moving?"
+                        rows={4}
+                        className="text-xs"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <button
+                        type="button"
+                        className="text-xs text-muted-foreground hover:text-destructive transition-colors"
+                        onClick={() => {
+                          setWatchdogAgentId("");
+                          setWatchdogInstructions("");
+                          setShowWatchdogRow(false);
+                          setWatchdogEditorOpen(false);
+                        }}
+                      >
+                        Remove
+                      </button>
+                      <Button type="button" size="sm" className="h-7 text-xs" onClick={() => setWatchdogEditorOpen(false)}>
+                        Done
+                      </Button>
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              </div>
+            )}
           </div>
 
           {isSubIssueMode ? (
@@ -1631,18 +1749,14 @@ export function NewIssueDialog() {
                 ))}
               </select>
               {executionWorkspaceMode === "reuse_existing" && (
-                <select
-                  className="w-full rounded border border-border bg-transparent px-2 py-1.5 text-xs outline-none"
+                <ReusableExecutionWorkspaceSelect
                   value={selectedExecutionWorkspaceId}
-                  onChange={(e) => setSelectedExecutionWorkspaceId(e.target.value)}
-                >
-                  <option value="">Choose an existing workspace</option>
-                  {deduplicatedReusableWorkspaces.map((workspace) => (
-                    <option key={workspace.id} value={workspace.id}>
-                      {workspace.name} · {workspace.status} · {workspace.branchName ?? workspace.cwd ?? workspace.id.slice(0, 8)}
-                    </option>
-                  ))}
-                </select>
+                  workspaces={selectableReusableWorkspaces}
+                  onValueChange={(workspaceId) => setSelectedExecutionWorkspaceId(workspaceId)}
+                  loading={reusableExecutionWorkspacesLoading}
+                  error={reusableExecutionWorkspacesError}
+                  disablePortal
+                />
               )}
               {executionWorkspaceMode === "reuse_existing" && selectedReusableExecutionWorkspace && (
                 <div className="text-[11px] text-muted-foreground">
@@ -1956,15 +2070,14 @@ export function NewIssueDialog() {
               <button
                 type="button"
                 data-issue-work-mode-chip={workMode}
+                aria-keyshortcuts="Meta+Period Control+Period"
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors",
-                  workMode === "planning"
-                    ? "border-amber-500/60 bg-amber-500/15 text-amber-800 hover:bg-amber-500/25 dark:border-amber-500/50 dark:bg-amber-500/15 dark:text-amber-200 dark:hover:bg-amber-500/25"
-                    : "border-border text-muted-foreground hover:bg-accent/50",
+                  currentWorkMode.classes.chip,
                 )}
               >
                 <CurrentWorkModeIcon className="h-3 w-3" />
-                {currentWorkMode.label}
+                {currentWorkMode.shortLabel}
               </button>
             </PopoverTrigger>
             <PopoverContent className="w-36 p-1" align="start">
@@ -1977,7 +2090,7 @@ export function NewIssueDialog() {
                     className={cn(
                       "flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50",
                       option.value === workMode && "bg-accent",
-                      option.value === "planning" && "text-amber-700 dark:text-amber-300",
+                      option.classes.menuItem,
                     )}
                     onClick={() => {
                       setWorkMode(option.value);
@@ -1986,6 +2099,7 @@ export function NewIssueDialog() {
                   >
                     <Icon className="h-3 w-3" />
                     {option.label}
+                    {option.value === workMode ? <Check className="ml-auto h-3 w-3" aria-hidden /> : null}
                   </button>
                 );
               })}

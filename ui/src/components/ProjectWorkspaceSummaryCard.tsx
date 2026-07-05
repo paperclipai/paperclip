@@ -1,9 +1,9 @@
 import { Link } from "@/lib/router";
-import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { CopyText } from "./CopyText";
 import { IssuesQuicklook } from "./IssuesQuicklook";
-import type { ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
+import type { ProjectWorkspaceLinkedIssue, ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Copy, ExternalLink, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
@@ -45,7 +45,7 @@ export function ProjectWorkspaceSummaryCard({
   onCloseWorkspace,
 }: ProjectWorkspaceSummaryCardProps) {
   const visibleIssues = summary.issues.slice(0, 4);
-  const hiddenIssueCount = Math.max(summary.issues.length - visibleIssues.length, 0);
+  const hiddenIssueCount = Math.max(summary.linkedIssueCount - visibleIssues.length, 0);
   const workspaceHref =
     summary.kind === "project_workspace"
       ? projectWorkspaceUrl({ id: projectRef, urlKey: projectRef }, summary.workspaceId)
@@ -249,7 +249,7 @@ export function ProjectWorkspaceSummaryCard({
   );
 }
 
-function IssuePill({ issue }: { issue: Issue }) {
+function IssuePill({ issue }: { issue: ProjectWorkspaceLinkedIssue }) {
   return (
     <IssuesQuicklook issue={issue}>
       <Link

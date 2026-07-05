@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-06-04T19:57:14.020Z",
+  "generatedAt": "2026-06-26T18:26:43.763Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -102,11 +102,73 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4649,
-          "sha256": "2ff61e12dfaa4cf8cc548529fd176f55f1b1f5292ff9dd3eb2cb331417ab5e4e"
+          "sizeBytes": 4938,
+          "sha256": "9c52a44a30ec8d306119da51bf298e9e3e6c382a9a9559ffd3054bf5e0c75f36"
         }
       ],
-      "contentHash": "sha256:4fb46a4bcefad4fd46fae48c433ee497112509a8e19fb8a7745ead44d219b498"
+      "contentHash": "sha256:487c3116eead89fef4f71c984329c41836bd69951b7ef9ed8736c69435e02438"
+    },
+    {
+      "id": "paperclipai:bundled:product:paperclip-capsules",
+      "key": "paperclipai/bundled/product/paperclip-capsules",
+      "kind": "bundled",
+      "category": "product",
+      "slug": "paperclip-capsules",
+      "name": "paperclip-capsules",
+      "description": "Generate, implement, or review Paperclip capsule visuals. Use when the user asks for Paperclip capsule art, capsule banks, agent capsule visuals, heartbeat status capsules, capsule identicons, capsule graphic-generator output, or validation of Paperclip capsule brand usage.",
+      "path": "catalog/bundled/product/paperclip-capsules",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "designer",
+        "product",
+        "engineer",
+        "marketing"
+      ],
+      "requires": [],
+      "tags": [
+        "paperclip",
+        "brand",
+        "capsules",
+        "agents",
+        "visual-design",
+        "hyperframes"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 5930,
+          "sha256": "eda40e8f29cae07c2ce8ad1cef3406eae243dbbf52069a85cfb56fe7999a25ff"
+        },
+        {
+          "path": "references/generator-workflows.md",
+          "kind": "reference",
+          "sizeBytes": 4356,
+          "sha256": "b5f72e5b6683e8f93f2d852e84c2cc19e6ab438b250bf777dfb2480dd4f6e1b6"
+        },
+        {
+          "path": "references/hero-capsule-bank.md",
+          "kind": "reference",
+          "sizeBytes": 5981,
+          "sha256": "ec3d34113aa7bb527560d1eb4d8ab7667c73e18284c85a2019122743a767525a"
+        },
+        {
+          "path": "references/identicon-prototyper.md",
+          "kind": "reference",
+          "sizeBytes": 6669,
+          "sha256": "0b19419efa1396a402097decabe24ea9ae649678569449c8ce855e0678df6bfe"
+        },
+        {
+          "path": "references/individual-status-capsules.md",
+          "kind": "reference",
+          "sizeBytes": 5031,
+          "sha256": "be1f2eccf96b4d2deefe45b3bc1dd0a3597278472c2ffedadc43c57161e9103d"
+        }
+      ],
+      "contentHash": "sha256:e8f502f9556103bd575bb664a9d21b1004869990802e639a188a720012116909"
     },
     {
       "id": "paperclipai:bundled:product:wireframe",

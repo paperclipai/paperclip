@@ -302,23 +302,32 @@ describe("issue attachment routes", () => {
     });
   });
 
-  it("rejects unsupported upload content types before storing the file", async () => {
+  it("accepts arbitrary upload content types while preserving the stored MIME type", async () => {
     const storage = createStorageService();
     mockIssueService.getById.mockResolvedValue({
       id: "11111111-1111-4111-8111-111111111111",
       companyId: "company-1",
       identifier: "PAP-1",
     });
+    mockIssueService.createAttachment.mockResolvedValue(makeAttachment("application/x-msdownload", "payload.exe"));
 
     const app = await createApp(storage);
     const res = await request(app)
       .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
       .attach("file", Buffer.from("exe"), { filename: "payload.exe", contentType: "application/x-msdownload" });
 
-    expect(res.status).toBe(422);
-    expect(res.body.error).toBe("Unsupported attachment content type: application/x-msdownload");
-    expect(storage.__calls.putFile).toBeUndefined();
-    expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
+    expect(res.status).toBe(201);
+    expect(storage.__calls.putFile).toMatchObject({
+      contentType: "application/x-msdownload",
+      originalFilename: "payload.exe",
+    });
+    expect(mockIssueService.createAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        contentType: "application/x-msdownload",
+        originalFilename: "payload.exe",
+      }),
+    );
+    expect(res.body.contentType).toBe("application/x-msdownload");
   });
 
   it("enforces the process-level issue attachment limit even when the company limit allows more", async () => {
@@ -380,6 +389,22 @@ describe("issue attachment routes", () => {
       undefined,
       'attachment; filename="report.html"',
     ]).toContain(res.headers["content-disposition"]);
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+  });
+
+  it("serves arbitrary binary attachments as downloads with nosniff", async () => {
+    const storage = createStorageService();
+    mockIssueService.getAttachmentById.mockResolvedValue(makeAttachment("application/x-msdownload", "payload.exe"));
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .get("/api/attachments/attachment-1/content")
+      .buffer(true)
+      .parse(parseBinaryResponse);
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("application/x-msdownload");
+    expect(res.headers["content-disposition"]).toBe('attachment; filename="payload.exe"');
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
   });
 
