@@ -25,6 +25,15 @@ describe("shouldAutoCheckoutIssueForWake", () => {
     ).toBe(true);
   });
 
+  it("still auto-checkouts a blocked issue when its own dependency was restored", () => {
+    expect(
+      shouldAutoCheckoutIssueForWake({
+        ...baseInput(),
+        contextSnapshot: { wakeReason: "issue_blockers_restored" },
+      }),
+    ).toBe(true);
+  });
+
   it("still auto-checkouts a todo issue on an issue_children_completed wake", () => {
     expect(
       shouldAutoCheckoutIssueForWake({
