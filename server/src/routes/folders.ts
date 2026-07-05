@@ -71,6 +71,25 @@ export function folderRoutes(db: Db) {
     res.json(updated);
   });
 
+  router.post("/companies/:companyId/folders/items/move", validate(moveFolderItemSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const moved = await svc.moveItem(companyId, req.body);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "folder.item_moved",
+      entityType: req.body.kind === "routine" ? "routine" : "company_skill",
+      entityId: moved.itemId,
+      details: { kind: moved.kind, folderId: moved.folderId },
+    });
+    res.json(moved);
+  });
+
   router.post("/companies/:companyId/folders/:folderId/move", validate(moveFolderSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     const folderId = req.params.folderId as string;
@@ -93,25 +112,6 @@ export function folderRoutes(db: Db) {
       details: { kind: updated.kind, position: updated.position },
     });
     res.json(updated);
-  });
-
-  router.post("/companies/:companyId/folders/items/move", validate(moveFolderItemSchema), async (req, res) => {
-    const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const moved = await svc.moveItem(companyId, req.body);
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "folder.item_moved",
-      entityType: req.body.kind === "routine" ? "routine" : "company_skill",
-      entityId: moved.itemId,
-      details: { kind: moved.kind, folderId: moved.folderId },
-    });
-    res.json(moved);
   });
 
   router.delete("/companies/:companyId/folders/:folderId", async (req, res) => {
