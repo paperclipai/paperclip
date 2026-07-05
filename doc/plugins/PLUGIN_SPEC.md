@@ -374,6 +374,8 @@ export interface PaperclipPluginManifestV1 {
       entityTypes?: Array<"project" | "issue" | "agent" | "goal" | "run">;
       /** For page and companySettingsPage: single route segment */
       routePath?: string;
+      /** For dashboardWidget: "top" renders above the host dashboard content */
+      placement?: "default" | "top";
     }>;
   };
 }

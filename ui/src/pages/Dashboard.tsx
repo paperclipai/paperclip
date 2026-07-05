@@ -237,6 +237,15 @@ export function Dashboard() {
             </div>
           ) : null}
 
+          <PluginSlotOutlet
+            slotTypes={["dashboardWidget"]}
+            placement="top"
+            context={{ companyId: selectedCompanyId }}
+            className="grid gap-4 md:grid-cols-2"
+            itemClassName="rounded-lg border bg-card p-4 shadow-sm"
+            errorBehavior="hidden"
+          />
+
           <div className="grid grid-cols-2 xl:grid-cols-4 gap-1 sm:gap-2">
             <MetricCard
               icon={Bot}
@@ -308,6 +317,7 @@ export function Dashboard() {
 
           <PluginSlotOutlet
             slotTypes={["dashboardWidget"]}
+            placement="default"
             context={{ companyId: selectedCompanyId }}
             className="grid gap-4 md:grid-cols-2"
             itemClassName="rounded-lg border bg-card p-4 shadow-sm"

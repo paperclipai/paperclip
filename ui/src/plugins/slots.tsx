@@ -35,6 +35,7 @@ import type {
   PluginLauncherDeclaration,
   PluginUiSlotDeclaration,
   PluginUiSlotEntityType,
+  PluginUiSlotPlacement,
   PluginUiSlotType,
 } from "@paperclipai/shared";
 import { pluginsApi, type PluginUiContribution } from "@/api/plugins";
@@ -109,6 +110,8 @@ export type RegisteredPluginComponent =
 type SlotFilters = {
   slotTypes: PluginUiSlotType[];
   entityType?: PluginUiSlotEntityType | null;
+  /** When set, only slots whose placement (default `"default"`) matches are returned. */
+  placement?: PluginUiSlotPlacement | null;
   companyId?: string | null;
   enabled?: boolean;
 };
@@ -657,6 +660,7 @@ export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
     for (const contribution of data ?? []) {
       for (const slot of contribution.slots) {
         if (!allowedTypes.has(slot.type)) continue;
+        if (filters.placement && (slot.placement ?? "default") !== filters.placement) continue;
         if (requiresEntityType(slot.type)) {
           if (!filters.entityType) continue;
           if (!slot.entityTypes?.includes(filters.entityType)) continue;
@@ -679,7 +683,7 @@ export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
       return a.displayName.localeCompare(b.displayName);
     });
     return rows;
-  }, [data, filters.entityType, slotTypesKey]);
+  }, [data, filters.entityType, filters.placement, slotTypesKey]);
 
   // Consider loading until both query and module imports are done.
   const modulesLoaded = data ? aggregateLoadState(data) === "loaded" : true;
@@ -880,9 +884,17 @@ type PluginSlotOutletProps = {
   slotTypes: PluginUiSlotType[];
   context: PluginSlotContext;
   entityType?: PluginUiSlotEntityType | null;
+  /** When set, only slots whose placement (default `"default"`) matches are rendered. */
+  placement?: PluginUiSlotPlacement | null;
   className?: string;
   itemClassName?: string;
   errorClassName?: string;
+  /**
+   * Whether contribution-load failures render an inline error banner.
+   * Use `"hidden"` when another outlet on the same page already surfaces
+   * the error, so a single failure is not reported twice.
+   */
+  errorBehavior?: "visible" | "hidden";
   missingBehavior?: "hidden" | "placeholder";
 };
 
@@ -890,18 +902,22 @@ export function PluginSlotOutlet({
   slotTypes,
   context,
   entityType,
+  placement,
   className,
   itemClassName,
   errorClassName,
+  errorBehavior = "visible",
   missingBehavior = "hidden",
 }: PluginSlotOutletProps) {
   const { slots, errorMessage } = usePluginSlots({
     slotTypes,
     entityType,
+    placement,
     companyId: context.companyId,
   });
 
   if (errorMessage) {
+    if (errorBehavior === "hidden") return null;
     return (
       <div className={cn("rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1 text-xs text-destructive", errorClassName)}>
         Plugin extensions unavailable: {errorMessage}

@@ -97,6 +97,7 @@ export type {
   PluginCapability,
   PluginUiSlotType,
   PluginUiSlotEntityType,
+  PluginUiSlotPlacement,
   PluginLauncherPlacementZone,
   PluginLauncherAction,
   PluginLauncherBounds,

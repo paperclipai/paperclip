@@ -252,7 +252,7 @@ Replaces the auto-generated JSON Schema settings form with a custom React compon
 
 #### `dashboardWidget`
 
-A card or section rendered on the main dashboard. Use this for at-a-glance metrics, status indicators, or summary views that surface plugin data alongside core Paperclip information. Receives `PluginWidgetProps` with `context.companyId` set to the active company. Requires the `ui.dashboardWidget.register` capability.
+A card or section rendered on the main dashboard. Use this for at-a-glance metrics, status indicators, or summary views that surface plugin data alongside core Paperclip information. Receives `PluginWidgetProps` with `context.companyId` set to the active company. Requires the `ui.dashboardWidget.register` capability. By default the widget renders below the host chart grid; declare `placement: "top"` on the slot to render it above the host dashboard content instead.
 
 #### `detailTab`
 
