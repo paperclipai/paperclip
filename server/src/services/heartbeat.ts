@@ -5384,6 +5384,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     ].join("\n");
   }
 
+  function issueMonitorBoardFallbackComment(input: {
+    issue: IssueMonitorDispatchRow;
+    scheduledAtIso: string;
+    nextAttemptCount: number;
+  }) {
+    const label = formatIssueIdentifierLink(input.issue.identifier, input.issue.id);
+    return [
+      `Paperclip escalated the scheduled monitor check for ${label} to the board because the issue has no agent assignee to wake.`,
+      "",
+      `- Scheduled check time: ${input.scheduledAtIso}`,
+      `- Attempt count: ${input.nextAttemptCount}`,
+      ...(input.issue.monitorNotes ? [`- Monitor notes: ${input.issue.monitorNotes}`] : []),
+      "",
+      "Next action: complete the check manually, or assign an agent and reschedule the monitor if more checks are needed.",
+    ].join("\n");
+  }
+
   async function findOpenIssueMonitorRecoveryIssue(claimed: IssueMonitorDispatchRow) {
     return db
       .select()
@@ -5486,7 +5503,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return;
     }
 
-    if (input.recoveryPolicy === "escalate_to_board") {
+    // wake_owner with no agent assignee has nobody to wake; degrade to the
+    // board escalation path instead of failing the recovery.
+    const boardFallback = input.recoveryPolicy === "wake_owner" && !input.claimed.assigneeAgentId;
+    if (input.recoveryPolicy === "escalate_to_board" || boardFallback) {
       await db.insert(issueComments).values({
         companyId: input.claimed.companyId,
         issueId: input.claimed.id,
@@ -5507,7 +5527,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         action: "issue.monitor_escalated_to_board",
         entityType: "issue",
         entityId: input.claimed.id,
-        details,
+        details: boardFallback ? { ...details, boardFallback: true } : details,
       });
       return;
     }
@@ -5634,7 +5654,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       activitySource: "manual" | "scheduled";
     },
   ) {
-    if (!claimed.assigneeAgentId || !claimed.monitorNextCheckAt) {
+    if (!claimed.monitorNextCheckAt) {
       throw conflict("Issue monitor is not ready to dispatch");
     }
 
@@ -5667,6 +5687,55 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         runId: input.runId,
         activitySource: input.activitySource,
       });
+    }
+
+    if (!claimed.assigneeAgentId) {
+      // Assignee-scheduled monitor firing with no agent assignee: fall back to a
+      // board-visible breadcrumb instead of silently dead-lettering the check.
+      await db.insert(issueComments).values({
+        companyId: claimed.companyId,
+        issueId: claimed.id,
+        body: issueMonitorBoardFallbackComment({
+          issue: claimed,
+          scheduledAtIso,
+          nextAttemptCount,
+        }),
+      });
+
+      await db
+        .update(issues)
+        .set({
+          ...buildIssueMonitorTriggeredPatch({
+            issue: claimed,
+            policy,
+            triggeredAt: input.now,
+          }),
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, claimed.id));
+
+      await logActivity(db, {
+        companyId: claimed.companyId,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        agentId: input.agentId,
+        runId: input.runId,
+        action: "issue.monitor_triggered",
+        entityType: "issue",
+        entityId: claimed.id,
+        details: {
+          identifier: claimed.identifier,
+          nextCheckAt: scheduledAtIso,
+          lastTriggeredAt: input.now.toISOString(),
+          attemptCount: nextAttemptCount,
+          notes: claimed.monitorNotes ?? null,
+          ...monitorMetadata,
+          boardFallback: true,
+          source: input.activitySource,
+        },
+      });
+
+      return { outcome: "triggered" as const, boardFallback: true };
     }
 
     try {
@@ -5816,7 +5885,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!issue.monitorNextCheckAt) {
       throw conflict("Issue has no scheduled monitor");
     }
-    if (!issue.assigneeAgentId || issue.assigneeUserId) {
+    if (issue.assigneeUserId) {
       throw conflict("Issue monitor requires an agent assignee");
     }
     if (!["in_progress", "in_review"].includes(issue.status)) {
@@ -5836,7 +5905,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             eq(issues.id, issueId),
             sql`${issues.monitorNextCheckAt} is not null`,
             isNull(issues.assigneeUserId),
-            sql`${issues.assigneeAgentId} is not null`,
             inArray(issues.status, ["in_progress", "in_review"]),
             or(
               isNull(issues.monitorWakeRequestedAt),
@@ -5878,7 +5946,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           sql`${issues.monitorNextCheckAt} is not null`,
           lte(issues.monitorNextCheckAt, now),
           isNull(issues.assigneeUserId),
-          sql`${issues.assigneeAgentId} is not null`,
           inArray(issues.status, ["in_progress", "in_review"]),
           or(
             isNull(issues.monitorWakeRequestedAt),
@@ -5906,7 +5973,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               sql`${issues.monitorNextCheckAt} is not null`,
               lte(issues.monitorNextCheckAt, now),
               isNull(issues.assigneeUserId),
-              sql`${issues.assigneeAgentId} is not null`,
               inArray(issues.status, ["in_progress", "in_review"]),
               or(
                 isNull(issues.monitorWakeRequestedAt),
