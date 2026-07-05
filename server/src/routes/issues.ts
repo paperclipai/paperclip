@@ -3190,6 +3190,71 @@ export function issueRoutes(
     return { project, goal: null };
   }
 
+  async function buildHeartbeatContextProjects(input: {
+    issue: {
+      companyId: string;
+      projectId: string | null;
+      projects?: Array<{
+        id: string;
+        name: string;
+        color?: string | null;
+        icon?: string | null;
+        isPrimary: boolean;
+      }> | null;
+    };
+    primaryProject: { id: string; name: string } | null;
+  }) {
+    const memberships = input.issue.projects?.length
+      ? input.issue.projects
+      : input.primaryProject
+        ? [{
+            id: input.primaryProject.id,
+            name: input.primaryProject.name,
+            color: null,
+            icon: null,
+            isPrimary: true,
+          }]
+        : [];
+    if (memberships.length === 0) return [];
+
+    const projectIds = memberships.map((project) => project.id);
+    const workspaceRows = await db
+      .select({
+        id: projectWorkspaces.id,
+        projectId: projectWorkspaces.projectId,
+        cwd: projectWorkspaces.cwd,
+        repoUrl: projectWorkspaces.repoUrl,
+        repoRef: projectWorkspaces.repoRef,
+      })
+      .from(projectWorkspaces)
+      .where(and(
+        eq(projectWorkspaces.companyId, input.issue.companyId),
+        inArray(projectWorkspaces.projectId, projectIds),
+        eq(projectWorkspaces.isPrimary, true),
+      ))
+      .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
+    const workspaceByProjectId = new Map(workspaceRows.map((workspace) => [workspace.projectId, workspace]));
+
+    return memberships.map((project) => {
+      const workspace = workspaceByProjectId.get(project.id) ?? null;
+      return {
+        id: project.id,
+        name: project.name,
+        color: project.color ?? null,
+        icon: project.icon ?? null,
+        isPrimary: project.isPrimary,
+        workspace: workspace
+          ? {
+              id: workspace.id,
+              cwd: workspace.cwd ?? null,
+              repoUrl: workspace.repoUrl ?? null,
+              repoRef: workspace.repoRef ?? null,
+            }
+          : null,
+      };
+    });
+  }
+
   // Resolve issue identifiers (e.g. "PAP-39") to UUIDs for all /issues/:id routes
   router.param("id", async (req, res, next, rawId) => {
     try {
@@ -3636,6 +3701,10 @@ export function issueRoutes(
       issueWorkMode: issue.workMode,
       includeForIssueComment: wakeCommentId !== null,
     });
+    const heartbeatProjects = await buildHeartbeatContextProjects({
+      issue,
+      primaryProject: project ? { id: project.id, name: project.name } : null,
+    });
 
     res.json({
       issue: {
@@ -3676,6 +3745,7 @@ export function issueRoutes(
             targetDate: project.targetDate,
           }
         : null,
+      projects: heartbeatProjects,
       goal: goal
         ? {
             id: goal.id,

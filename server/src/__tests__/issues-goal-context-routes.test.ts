@@ -92,6 +92,13 @@ const mockWorkProductService = vi.hoisted(() => ({
 }));
 
 const mockEnvironmentService = vi.hoisted(() => ({}));
+let mockProjectWorkspaceRows: Array<{
+  id: string;
+  projectId: string;
+  cwd: string | null;
+  repoUrl: string | null;
+  repoRef: string | null;
+}> = [];
 
 const mockDb = vi.hoisted(() => ({
   select: vi.fn(),
@@ -170,6 +177,15 @@ const legacyProjectLinkedIssue = {
   executionWorkspaceId: null,
   labels: [],
   labelIds: [],
+  projects: [
+    {
+      id: "22222222-2222-4222-8222-222222222222",
+      name: "Onboarding",
+      color: null,
+      icon: null,
+      isPrimary: true,
+    },
+  ],
 };
 
 const projectGoal = {
@@ -211,15 +227,21 @@ describe.sequential("issue goal context routes", () => {
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
-    const emptyQuery: any = {};
-    emptyQuery.from = vi.fn(() => emptyQuery);
-    emptyQuery.innerJoin = vi.fn(() => emptyQuery);
-    emptyQuery.where = vi.fn(() => emptyQuery);
-    emptyQuery.orderBy = vi.fn(() => emptyQuery);
-    emptyQuery.limit = vi.fn(async () => []);
-    emptyQuery.then = (resolve: (rows: unknown[]) => unknown, reject?: (error: unknown) => unknown) =>
-      Promise.resolve([]).then(resolve, reject);
-    mockDb.select.mockReturnValue(emptyQuery);
+    mockProjectWorkspaceRows = [];
+    mockDb.select.mockImplementation((selection?: Record<string, unknown>) => {
+      const rows = selection && "cwd" in selection && "repoUrl" in selection
+        ? mockProjectWorkspaceRows
+        : [];
+      const query: any = {};
+      query.from = vi.fn(() => query);
+      query.innerJoin = vi.fn(() => query);
+      query.where = vi.fn(() => query);
+      query.orderBy = vi.fn(() => query);
+      query.limit = vi.fn(async () => rows);
+      query.then = (resolve: (value: unknown[]) => unknown, reject?: (error: unknown) => unknown) =>
+        Promise.resolve(rows).then(resolve, reject);
+      return query;
+    });
     mockDb.execute.mockResolvedValue([]);
     mockProjectService.getById.mockResolvedValue({
       id: legacyProjectLinkedIssue.projectId,
@@ -295,6 +317,70 @@ describe.sequential("issue goal context routes", () => {
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
     expect(res.body.attachments).toEqual([]);
+  });
+
+  it("surfaces primary-first project workspace summaries from GET /issues/:id/heartbeat-context", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...legacyProjectLinkedIssue,
+      projects: [
+        {
+          id: "22222222-2222-4222-8222-222222222222",
+          name: "Onboarding",
+          color: null,
+          icon: null,
+          isPrimary: true,
+        },
+        {
+          id: "55555555-5555-4555-8555-555555555555",
+          name: "Marketing Site",
+          color: "#0ea5e9",
+          icon: "megaphone",
+          isPrimary: false,
+        },
+      ],
+    });
+    mockProjectWorkspaceRows = [
+      {
+        id: "workspace-primary",
+        projectId: "22222222-2222-4222-8222-222222222222",
+        cwd: "/srv/paperclip/home/paperclipai/paperclip",
+        repoUrl: "https://github.com/paperclipai/paperclip.git",
+        repoRef: "origin/master",
+      },
+    ];
+
+    const res = await request(createApp()).get(
+      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.project).toEqual(expect.objectContaining({
+      id: "22222222-2222-4222-8222-222222222222",
+      name: "Onboarding",
+    }));
+    expect(res.body.projects).toEqual([
+      {
+        id: "22222222-2222-4222-8222-222222222222",
+        name: "Onboarding",
+        color: null,
+        icon: null,
+        isPrimary: true,
+        workspace: {
+          id: "workspace-primary",
+          cwd: "/srv/paperclip/home/paperclipai/paperclip",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+          repoRef: "origin/master",
+        },
+      },
+      {
+        id: "55555555-5555-4555-8555-555555555555",
+        name: "Marketing Site",
+        color: "#0ea5e9",
+        icon: "megaphone",
+        isPrimary: false,
+        workspace: null,
+      },
+    ]);
   });
 
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {
