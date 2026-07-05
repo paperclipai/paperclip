@@ -419,12 +419,16 @@ export async function executeOpenClawGatewayDispatchWithRetry<T extends Pick<Ada
 
   for (let retryIndex = 0; retryIndex < retryDelaysMs.length; retryIndex += 1) {
     const delayMs = retryDelaysMs[retryIndex] ?? 0;
-    await args.onRetry?.({
-      delayMs,
-      retryAttempt: retryIndex + 1,
-      maxRetryAttempts: retryDelaysMs.length,
-      result,
-    });
+    try {
+      await args.onRetry?.({
+        delayMs,
+        retryAttempt: retryIndex + 1,
+        maxRetryAttempts: retryDelaysMs.length,
+        result,
+      });
+    } catch {
+      // Non-fatal: continue the dispatch retry even if recording retry telemetry fails.
+    }
     await sleepMs(delayMs);
     result = await args.execute();
     if (!isOpenClawGatewayDispatchRetryableResult(args.agent, result)) break;

@@ -89,6 +89,36 @@ describe("heartbeat OpenClaw gateway dispatch retry", () => {
     ]);
   });
 
+  it("continues retrying when retry telemetry callback fails", async () => {
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        timedOut: false,
+        errorCode: "openclaw_gateway_request_failed",
+        errorMessage: "gateway request failed",
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        timedOut: false,
+        errorCode: null,
+        errorMessage: null,
+        summary: "Recovered even though retry telemetry failed.",
+      });
+
+    const result = await executeOpenClawGatewayDispatchWithRetry({
+      agent: { adapterType: "openclaw_gateway" },
+      execute,
+      retryDelaysMs: [0],
+      onRetry: () => {
+        throw new Error("telemetry write failed");
+      },
+    });
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(result.exitCode).toBe(0);
+  });
+
   it("stops after all OpenClaw gateway dispatch retries are exhausted", async () => {
     const execute = vi.fn().mockResolvedValue({
       exitCode: 1,
