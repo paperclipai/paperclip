@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 set -Eeuo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -205,7 +205,12 @@ CLAUDE_EOF
 
   log "Claude Code CLI berhasil dikonfigurasi di $claude_settings_file"
 }
+EOF
     chmod 600 "$claude_settings_file"
+    log "Claude Code CLI settings.json telah dikonfigurasi."
+  fi
+}
+
 install_codex_cli() {
   log "Memastikan OpenAI Codex CLI terpasang dan terkonfigurasi..."
   local codex_config_dir="${HOME}/.codex"
@@ -263,6 +268,42 @@ CODEX_CONFIG_EOF
 
   log "OpenAI Codex CLI berhasil dikonfigurasi di $codex_config_dir"
 }
+EOF
+)
+    if [[ ! -f "$codex_auth_file" ]] || [[ "$(cat "$codex_auth_file")" != "$expected_auth_content" ]]; then
+      log "Membuat/memperbarui OpenAI Codex CLI auth.json..."
+      echo "$expected_auth_content" > "$codex_auth_file"
+      chmod 600 "$codex_auth_file"
+    else
+      log "OpenAI Codex CLI auth.json sudah terkonfigurasi dengan benar."
+    fi
+
+    local expected_config_content
+    expected_config_content=$(cat <<EOF
+model_provider = "openmodel"
+model = "deepseek-v4-flash"
+model_reasoning_effort = "high"
+disable_response_storage = true
+preferred_auth_method = "apikey"
+
+[model_providers.openmodel]
+name = "openmodel"
+base_url = "${ANTHROPIC_BASE_URL}"
+wire_api = "responses"
+EOF
+)
+    if [[ ! -f "$codex_config_file" ]] || [[ "$(cat "$codex_config_file")" != "$expected_config_content" ]]; then
+      log "Membuat/memperbarui OpenAI Codex CLI config.toml..."
+      echo "$expected_config_content" > "$codex_config_file"
+      chmod 600 "$codex_config_file"
+    else
+      log "OpenAI Codex CLI config.toml sudah terkonfigurasi dengan benar."
+    fi
+    log "OpenAI Codex CLI telah dikonfigurasi."
+  fi
+}
+
+
 detect_docker_cmd() {
   if docker info >/dev/null 2>&1; then
     DOCKER_CMD=(docker)

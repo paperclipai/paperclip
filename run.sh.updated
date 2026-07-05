@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+﻿#!/usr/bin/env bash
 set -Eeuo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -165,47 +165,39 @@ install_claude_cli() {
     if command_exists sudo; then
       run_root npm install -g @anthropic-ai/claude-code || die "Gagal menginstall Claude Code CLI."
     else
-      npm install -g @anthropic-ai/claude-code || die "Gagal menginstall Claude Code CLI."
+      npm install -g @anthropic-ai/claude-code || die "Gagal menginstall Claude Code CLI. Coba jalankan dengan sudo."
     fi
-    log "Claude Code CLI berhasil diinstall."
   else
     log "Claude Code CLI sudah terpasang."
   fi
 
-  # Ensure config directory exists
-  if [[ ! -d "$claude_config_dir" ]]; then
-    log "Membuat direktori konfigurasi Claude: $claude_config_dir"
-    mkdir -p "$claude_config_dir" || die "Gagal membuat direktori $claude_config_dir"
-  fi
-
-  # Generate settings.json from environment variables
-  log "Membuat/memperbarui settings.json dari variabel environment..."
-  
-  # Validate required env vars
-  [[ -z "${ANTHROPIC_API_KEY:-}" ]] && die "ANTHROPIC_API_KEY tidak diset di .env"
-  [[ -z "${ANTHROPIC_BASE_URL:-}" ]] && die "ANTHROPIC_BASE_URL tidak diset di .env"
-
-  cat > "$claude_settings_file" <<CLAUDE_EOF
+  # Create/update settings.json
+  if [[ -z "$ANTHROPIC_API_KEY" ]]; then
+    warn "ANTHROPIC_API_KEY tidak ditemukan di .env. Claude Code CLI tidak akan dikonfigurasi."
+  else
+    mkdir -p "$claude_config_dir"
+    cat > "$claude_settings_file" <<EOF
 {
-  "env": {
-    "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
-    "ANTHROPIC_BASE_URL": "${ANTHROPIC_BASE_URL}",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "${ANTHROPIC_DEFAULT_OPUS_MODEL:-deepseek-v4-flash}",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "${ANTHROPIC_DEFAULT_SONNET_MODEL:-deepseek-v4-flash}",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "${ANTHROPIC_DEFAULT_HAIKU_MODEL:-deepseek-v4-flash}"
-  },
-  "permissions": {
-    "allow": [],
-    "deny": []
-  },
-  "apiKeyHelper": "echo '${ANTHROPIC_API_KEY}'"
+    "env": {
+        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
+        "ANTHROPIC_BASE_URL": "${ANTHROPIC_BASE_URL}",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-flash",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash"
+    },
+    "permissions": {
+        "allow": [],
+        "deny": []
+    },
+    "apiKeyHelper": "echo '${ANTHROPIC_API_KEY}'"
 }
-CLAUDE_EOF
-
-  log "Claude Code CLI berhasil dikonfigurasi di $claude_settings_file"
-}
+EOF
     chmod 600 "$claude_settings_file"
+    log "Claude Code CLI settings.json telah dikonfigurasi."
+  fi
+}
+
 install_codex_cli() {
   log "Memastikan OpenAI Codex CLI terpasang dan terkonfigurasi..."
   local codex_config_dir="${HOME}/.codex"
@@ -218,51 +210,59 @@ install_codex_cli() {
     if command_exists sudo; then
       run_root npm install -g @openai/codex || die "Gagal menginstall OpenAI Codex CLI."
     else
-      npm install -g @openai/codex || die "Gagal menginstall OpenAI Codex CLI."
+      npm install -g @openai/codex || die "Gagal menginstall OpenAI Codex CLI. Coba jalankan dengan sudo."
     fi
-    log "OpenAI Codex CLI berhasil diinstall."
   else
     log "OpenAI Codex CLI sudah terpasang."
   fi
 
-  # Ensure config directory exists (recreate if stale)
-  if [[ -d "$codex_config_dir" ]]; then
-    log "Direktori konfigurasi Codex sudah ada, akan diperbarui jika perlu."
+  # Create/update auth.json and config.toml idempotently
+  if [[ -z "$OPENAI_API_KEY" ]]; then
+    warn "OPENAI_API_KEY tidak ditemukan di .env. OpenAI Codex CLI tidak akan dikonfigurasi."
   else
-    log "Membuat direktori konfigurasi Codex: $codex_config_dir"
-    mkdir -p "$codex_config_dir" || die "Gagal membuat direktori $codex_config_dir"
-  fi
+    mkdir -p "$codex_config_dir"
 
-  # Generate auth.json from environment variables
-  log "Membuat/memperbarui auth.json dari variabel environment..."
-  
-  # Validate required env vars
-  [[ -z "${OPENAI_API_KEY:-}" ]] && die "OPENAI_API_KEY tidak diset di .env"
-
-  cat > "$codex_auth_file" <<CODEX_AUTH_EOF
+    local expected_auth_content
+    expected_auth_content=$(cat <<EOF
 {
   "OPENAI_API_KEY": "${OPENAI_API_KEY}"
 }
-CODEX_AUTH_EOF
+EOF
+)
+    if [[ ! -f "$codex_auth_file" ]] || [[ "$(cat "$codex_auth_file")" != "$expected_auth_content" ]]; then
+      log "Membuat/memperbarui OpenAI Codex CLI auth.json..."
+      echo "$expected_auth_content" > "$codex_auth_file"
+      chmod 600 "$codex_auth_file"
+    else
+      log "OpenAI Codex CLI auth.json sudah terkonfigurasi dengan benar."
+    fi
 
-  # Generate config.toml from environment variables
-  log "Membuat/memperbarui config.toml dari variabel environment..."
-
-  cat > "$codex_config_file" <<CODEX_CONFIG_EOF
-model_provider = "${CODEX_MODEL_PROVIDER:-openmodel}"
-model = "${CODEX_MODEL:-deepseek-v4-flash}"
-model_reasoning_effort = "${CODEX_MODEL_REASONING_EFFORT:-high}"
-disable_response_storage = ${CODEX_DISABLE_RESPONSE_STORAGE:-true}
-preferred_auth_method = "${CODEX_PREFERRED_AUTH_METHOD:-apikey}"
+    local expected_config_content
+    expected_config_content=$(cat <<EOF
+model_provider = "openmodel"
+model = "deepseek-v4-flash"
+model_reasoning_effort = "high"
+disable_response_storage = true
+preferred_auth_method = "apikey"
 
 [model_providers.openmodel]
 name = "openmodel"
-base_url = "${CODEX_OPENMODEL_BASE_URL:-https://api.openmodel.ai/v1}"
+base_url = "${ANTHROPIC_BASE_URL}"
 wire_api = "responses"
-CODEX_CONFIG_EOF
-
-  log "OpenAI Codex CLI berhasil dikonfigurasi di $codex_config_dir"
+EOF
+)
+    if [[ ! -f "$codex_config_file" ]] || [[ "$(cat "$codex_config_file")" != "$expected_config_content" ]]; then
+      log "Membuat/memperbarui OpenAI Codex CLI config.toml..."
+      echo "$expected_config_content" > "$codex_config_file"
+      chmod 600 "$codex_config_file"
+    else
+      log "OpenAI Codex CLI config.toml sudah terkonfigurasi dengan benar."
+    fi
+    log "OpenAI Codex CLI telah dikonfigurasi."
+  fi
 }
+
+
 detect_docker_cmd() {
   if docker info >/dev/null 2>&1; then
     DOCKER_CMD=(docker)
