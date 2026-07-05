@@ -2881,7 +2881,6 @@ function canonicalizeDesiredPaperclipSkillReference(
 
 export function resolvePaperclipDesiredSkillNames(
   config: Record<string, unknown>,
-  availableEntries: Array<{ key: string; runtimeName?: string | null }>,
   availableEntries: Array<{ key: string; runtimeName?: string | null; required?: boolean; managerOnly?: boolean }>,
   agentRole: string | null = null,
 ): string[] {
