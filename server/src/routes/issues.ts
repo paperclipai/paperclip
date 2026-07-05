@@ -13,6 +13,7 @@ import {
   issueComments,
   issueDocuments,
   issueExecutionDecisions,
+  issueRecoveryActions,
   issueRelations,
   issues as issueRows,
   issueWorkProducts,
@@ -24,6 +25,7 @@ import {
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  addIssueRecoveryActionCommentSchema,
   acceptIssueThreadInteractionSchema,
   attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
@@ -3813,6 +3815,98 @@ export function issueRoutes(
     res.json({
       active,
       actions: active ? [active] : [],
+    });
+  });
+
+  router.post("/issues/:id/recovery-actions/comment", validate(addIssueRecoveryActionCommentSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+    if (!activeRecoveryAction) {
+      res.status(404).json({ error: "Active recovery action not found" });
+      return;
+    }
+    if (req.actor.type === "agent") {
+      const actorAgentId = req.actor.agentId;
+      if (!actorAgentId) {
+        res.status(403).json({ error: "Agent authentication required" });
+        return;
+      }
+      if (activeRecoveryAction.ownerAgentId !== actorAgentId) {
+        res.status(403).json({
+          error: "Agent is not the owner of this recovery action",
+          details: {
+            issueId: issue.id,
+            recoveryActionId: activeRecoveryAction.id,
+            actorAgentId,
+            recoveryOwnerAgentId: activeRecoveryAction.ownerAgentId,
+            securityPrinciples: ["Least Privilege", "Complete Mediation"],
+          },
+        });
+        return;
+      }
+    } else if (activeRecoveryAction.ownerType === "agent") {
+      // User/board actors cannot post follow-up comments on agent-owned recovery actions.
+      res.status(403).json({
+        error: "Recovery action is owned by an agent; only the owner agent may post follow-up comments",
+        details: {
+          issueId: issue.id,
+          recoveryActionId: activeRecoveryAction.id,
+          recoveryOwnerAgentId: activeRecoveryAction.ownerAgentId,
+        },
+      });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    const result = await db.transaction(async (tx) => {
+      const comment = await svc.addComment(
+        issue.id,
+        req.body.body,
+        {
+          agentId: actor.agentId ?? undefined,
+          userId: actor.actorType === "user" ? actor.actorId : undefined,
+          runId: actor.runId,
+        },
+        undefined,
+        tx,
+      );
+      const updatedAction = await recoveryActionsSvc.bumpFollowupAttempt(
+        {
+          companyId: issue.companyId,
+          sourceIssueId: issue.id,
+          actionId: activeRecoveryAction.id,
+        },
+        tx,
+      );
+      return { comment, action: updatedAction };
+    });
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.recovery_action_followup_comment",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        recoveryActionId: result.action?.id ?? activeRecoveryAction.id,
+        commentId: result.comment.id,
+      },
+    });
+
+    res.status(201).json({
+      issueId: issue.id,
+      recoveryActionId: result.action?.id ?? activeRecoveryAction.id,
+      comment: result.comment,
     });
   });
 

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issueRecoveryActions } from "@paperclipai/db";
 import type {
@@ -44,6 +44,13 @@ export type ResolveIssueRecoveryActionInput = {
   status: Extract<IssueRecoveryActionStatus, "resolved" | "cancelled">;
   outcome: IssueRecoveryActionOutcome;
   resolutionNote?: string | null;
+};
+
+export type BumpFollowupAttemptInput = {
+  companyId: string;
+  sourceIssueId: string;
+  actionId?: string | null;
+  lastAttemptAt?: Date | null;
 };
 
 function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
@@ -286,10 +293,47 @@ export function issueRecoveryActionService(db: Db) {
     return updated ? toReadModel(updated) : null;
   }
 
+  async function bumpFollowupAttempt(
+    input: BumpFollowupAttemptInput,
+    dbOrTx: DbOrTransaction = db,
+  ): Promise<IssueRecoveryAction | null> {
+    const now = new Date();
+    const predicates = [
+      eq(issueRecoveryActions.companyId, input.companyId),
+      eq(issueRecoveryActions.sourceIssueId, input.sourceIssueId),
+      inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+    ];
+    if (input.actionId) {
+      predicates.push(eq(issueRecoveryActions.id, input.actionId));
+    }
+
+    const existing = await dbOrTx
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(and(...predicates))
+      .orderBy(desc(issueRecoveryActions.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!existing) return null;
+
+    const [updated] = await dbOrTx
+      .update(issueRecoveryActions)
+      .set({
+        attemptCount: sql`${issueRecoveryActions.attemptCount} + 1`,
+        lastAttemptAt: input.lastAttemptAt ?? now,
+        updatedAt: now,
+      })
+      .where(eq(issueRecoveryActions.id, existing.id))
+      .returning();
+
+    return updated ? toReadModel(updated) : null;
+  }
+
   return {
     getActiveForIssue,
     listActiveForIssues,
     resolveActiveForIssue,
     upsertSourceScoped,
+    bumpFollowupAttempt,
   };
 }

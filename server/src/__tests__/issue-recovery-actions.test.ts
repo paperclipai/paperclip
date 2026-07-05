@@ -1272,4 +1272,101 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
   });
+
+  it("allows the recovery owner to post a follow-up comment via the recovery-actions endpoint", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:follow-up-comment",
+      evidence: { latestIssueStatus: "in_progress" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "manual" },
+    });
+    const runId = randomUUID();
+    const app = createApp({
+      type: "agent",
+      agentId: managerId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+    await seedHeartbeatRun({
+      companyId,
+      agentId: managerId,
+      runId,
+      issueId: sourceIssueId,
+    });
+
+    const initialAction = await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId);
+    const initialLastAttemptAt = initialAction?.lastAttemptAt ?? null;
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const response = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/comment`)
+      .send({ body: "Recovery follow-up: attempting to restore a live execution path." })
+      .expect(201);
+
+    expect(response.body).toMatchObject({
+      issueId: sourceIssueId,
+      recoveryActionId: action.id,
+      comment: { body: "Recovery follow-up: attempting to restore a live execution path." },
+    });
+    expect(response.body.comment.id).toBeTruthy();
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toMatchObject({
+      authorAgentId: managerId,
+      authorType: "agent",
+      body: "Recovery follow-up: attempting to restore a live execution path.",
+    });
+
+    const updatedAction = await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId);
+    expect(updatedAction?.attemptCount).toBe(initialAction!.attemptCount + 1);
+    expect(updatedAction?.lastAttemptAt).not.toBeNull();
+    if (initialLastAttemptAt) {
+      expect(updatedAction!.lastAttemptAt!.getTime()).toBeGreaterThan(initialLastAttemptAt.getTime());
+    }
+  });
+
+  it("rejects peer-agent follow-up comments on a recovery action they do not own", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:peer-follow-up",
+      evidence: { latestIssueStatus: "in_progress" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "manual" },
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: coderId,
+      companyId,
+      runId: randomUUID(),
+      source: "agent_jwt",
+    });
+
+    const response = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/comment`)
+      .send({ body: "Peer agent trying to post follow-up." })
+      .expect(403);
+
+    expect(response.body.error).toContain("recovery action");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssueId));
+    expect(comments).toHaveLength(0);
+  });
 });
