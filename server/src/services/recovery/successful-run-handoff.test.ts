@@ -9,6 +9,7 @@ import {
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
+  isPluginManagedIssueLifecycle,
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,
 } from "./successful-run-handoff.js";
@@ -115,6 +116,19 @@ describe("successful run handoff decision", () => {
   it("still queues for non-plugin origin kinds", () => {
     expect(decide({ issue: { ...issue, originKind: "manual" } as any }).kind).toBe("enqueue");
     expect(decide({ issue: { ...issue, originKind: null } as any }).kind).toBe("enqueue");
+  });
+
+  describe("isPluginManagedIssueLifecycle", () => {
+    it("is true for any plugin: prefixed origin kind", () => {
+      expect(isPluginManagedIssueLifecycle({ originKind: "plugin:paperclip.workflow-engine" })).toBe(true);
+      expect(isPluginManagedIssueLifecycle({ originKind: "plugin:paperclip.workflow-engine:advance" })).toBe(true);
+    });
+
+    it("is false for non-plugin or missing origin kinds", () => {
+      expect(isPluginManagedIssueLifecycle({ originKind: "manual" })).toBe(false);
+      expect(isPluginManagedIssueLifecycle({ originKind: null })).toBe(false);
+      expect(isPluginManagedIssueLifecycle({})).toBe(false);
+    });
   });
 
   it("does not queue when a successful run records an accepted next-action path", () => {
