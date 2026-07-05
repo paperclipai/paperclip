@@ -626,6 +626,31 @@ DB backups are not full instance filesystem backups. For full local disaster
 recovery, also back up local storage files and the local encrypted secrets key if
 those providers are enabled.
 
+## Process-Loss Retry Liveness Backstop
+
+When a heartbeat run's child process dies (host/container restart, OOM, supervisor
+recycle), `reapOrphanedRuns` fails the run with `errorCode = process_lost` and
+`enqueueProcessLossRetry` spawns one replacement run automatically. That replacement
+run has no `scheduledRetry`/monitor/watchdog of its own — if the same event that killed
+the original run also took out other agents on the fleet, nothing would otherwise
+notice a retry that came up dead until the generic silent-active-run sweep's full
+suspicion window elapsed (see "Automatic DB Backups" above for the DB-backup timer,
+which runs on a similar ~hourly cadence but is a separate, unrelated mechanism from
+this reap/retry path).
+
+`scanSilentActiveRuns` now applies a much shorter, dedicated suspicion threshold to
+runs it identifies as a process-loss retry (`retryOfRunId` set, `wakeReason` /
+`retryReason` of `process_lost_retry` / `process_lost`) and flags them critical
+immediately rather than waiting for the generic 4h critical bar — surfacing a genuinely
+dead retry as owner-assigned recovery work in minutes instead of up to an hour. A retry
+that is actually producing output is left alone exactly like any other healthy run;
+only its own silence past the shorter threshold ever flags it.
+
+- `PROCESS_LOST_RETRY_OUTPUT_SUSPICION_THRESHOLD_MS` (exported from
+  `server/src/services/recovery/service.ts`, currently `10 * 60 * 1000` / 10 minutes) —
+  not yet environment-configurable; adjust the constant directly if your deployment's
+  healthy quiet-gap profile needs a different value.
+
 ## Secrets in Dev
 
 Agent env vars now support secret references. By default, secret values are stored with local encryption and only secret refs are persisted in agent config.

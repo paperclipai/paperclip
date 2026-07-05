@@ -22,6 +22,7 @@ import {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+  PROCESS_LOST_RETRY_OUTPUT_SUSPICION_THRESHOLD_MS,
   heartbeatService,
 } from "../services/heartbeat.ts";
 import { recoveryService } from "../services/recovery/service.ts";
@@ -131,12 +132,14 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     sourceStatus?: "in_progress" | "done" | "cancelled";
     sourceOriginKind?: string;
     sameRunTerminalEvidence?: "activity" | "comment";
+    isProcessLossRetry?: boolean;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
     const issueId = randomUUID();
     const runId = randomUUID();
+    const priorRunId = randomUUID();
     const issuePrefix = `W${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const startedAt = new Date(opts.now.getTime() - opts.ageMs);
     const lastOutputAt = opts.withOutput ? new Date(opts.now.getTime() - 5 * 60 * 1000) : null;
@@ -189,6 +192,24 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       updatedAt: startedAt,
       createdAt: startedAt,
     });
+    if (opts.isProcessLossRetry) {
+      // retryOfRunId is a self-referencing FK -- seed the predecessor run that
+      // heartbeat.ts's enqueueProcessLossRetry would have failed with errorCode
+      // "process_lost" before spawning this retry.
+      await db.insert(heartbeatRuns).values({
+        id: priorRunId,
+        companyId,
+        agentId: coderId,
+        status: "failed",
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        startedAt: new Date(startedAt.getTime() - 60_000),
+        finishedAt: new Date(startedAt.getTime() - 1000),
+        errorCode: "process_lost",
+        error: "Process lost -- child pid 4242 is no longer running; retrying once",
+        contextSnapshot: { issueId },
+      });
+    }
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
@@ -201,7 +222,11 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       lastOutputAt,
       lastOutputSeq: opts.withOutput ? 3 : 0,
       lastOutputStream: opts.withOutput ? "stdout" : null,
-      contextSnapshot: { issueId },
+      retryOfRunId: opts.isProcessLossRetry ? priorRunId : null,
+      processLossRetryCount: opts.isProcessLossRetry ? 1 : 0,
+      contextSnapshot: opts.isProcessLossRetry
+        ? { issueId, retryOfRunId: priorRunId, wakeReason: "process_lost_retry", retryReason: "process_lost" }
+        : { issueId },
       stdoutExcerpt: "OPENAI_API_KEY=sk-test-secret-value should not leak",
       logBytes: 0,
     });
@@ -342,6 +367,67 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     const [source] = await db.select().from(issues).where(eq(issues.id, issueId));
     expect(source?.status).not.toBe("blocked");
+  });
+
+  it("flags a silent process-loss-retry run as critical after its own short threshold, well before the generic 1h suspicion bar", async () => {
+    // Regression for the "born stranded" retry defect: heartbeat.ts's enqueueProcessLossRetry
+    // spawns a replacement run with no scheduledRetry/monitor/watchdog of its own. Previously
+    // the only backstop was this generic sweep gated on the full 1h
+    // ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS -- if the same fleet-wide event that killed the
+    // original run also took out sibling agents, nothing was left to notice a dead retry for
+    // up to an hour. A process-loss-retry run must now be caught (and flagged critical
+    // immediately, not just "suspicious") once it crosses the much shorter
+    // PROCESS_LOST_RETRY_OUTPUT_SUSPICION_THRESHOLD_MS.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, runId } = await seedRunningRun({
+      now,
+      ageMs: PROCESS_LOST_RETRY_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      isProcessLossRetry: true,
+    });
+    // Sanity: this age is well inside the generic suspicion window, so a pre-fix build would
+    // not have scanned this run at all (0 activity is exactly the reported symptom).
+    expect(PROCESS_LOST_RETRY_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000).toBeLessThan(ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS);
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(1);
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation).toMatchObject({
+      priority: "high",
+      assigneeAgentId: managerId,
+      originId: runId,
+    });
+    expect(evaluation?.description).toContain("automatic retry after a process-loss failure");
+    expect(evaluation?.description).toContain("process-loss-retry suspicion after");
+  });
+
+  it("leaves a process-loss-retry run alone while it is still producing fresh output", async () => {
+    // The flip side of the fix above: a genuinely healthy process-loss retry (alive and
+    // climbing lastOutputSeq) must not be swept just because it is a retry. Only silence
+    // past its own threshold should ever flag it -- a false-positive class real fleets have
+    // hit before, where a retry's natural quiet gaps between tool calls looked like death in
+    // a single snapshot.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId } = await seedRunningRun({
+      now,
+      ageMs: PROCESS_LOST_RETRY_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      isProcessLossRetry: true,
+      withOutput: true,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ scanned: 0, created: 0 });
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
   });
 
   it("emits the source-issue escalation comment only once across repeated critical scans", async () => {
