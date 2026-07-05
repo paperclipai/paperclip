@@ -1372,6 +1372,71 @@ export async function syncDirectoryToSsh(input: {
   }
 }
 
+const SSH_TEMP_DIR_PREFIXES = ["paperclip-ssh-sync-back-", "paperclip-ssh-bundle-"];
+const STALE_SSH_TEMP_DIR_MAX_AGE_MS = 60 * 60 * 1000;
+const SSH_SYNC_BACK_MIN_FREE_BYTES = 1024 * 1024 * 1024;
+
+// A crashed process (OOM kill, ENOSPC mid-copy, host reboot, SIGKILL) never
+// reaches the `finally` blocks below, so its staging dir is orphaned in
+// os.tmpdir() forever. Sweeping stale dirs on every sync-back call is
+// self-healing without needing a separate reaper daemon.
+export async function reapStaleSshTempDirs(options?: {
+  tmpRoot?: string;
+  maxAgeMs?: number;
+}): Promise<void> {
+  const tmpRoot = options?.tmpRoot ?? os.tmpdir();
+  const cutoff = Date.now() - (options?.maxAgeMs ?? STALE_SSH_TEMP_DIR_MAX_AGE_MS);
+
+  let entries: string[];
+  try {
+    entries = await fs.readdir(tmpRoot);
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!SSH_TEMP_DIR_PREFIXES.some((prefix) => entry.startsWith(prefix))) continue;
+    const entryPath = path.join(tmpRoot, entry);
+    try {
+      const stat = await fs.stat(entryPath);
+      if (!stat.isDirectory() || stat.mtimeMs > cutoff) continue;
+      await fs.rm(entryPath, { recursive: true, force: true });
+    } catch {
+      // Best-effort: another process may be actively using or already
+      // removing this entry. Never let reaping block a sync-back.
+    }
+  }
+}
+
+// Fails fast with a clear error before starting the copy, instead of dying
+// mid-copy with a raw ENOSPC that also leaves a partial staging dir behind.
+export async function ensureSshSyncBackDiskHeadroom(options?: {
+  targetDir?: string;
+  minFreeBytes?: number;
+}): Promise<void> {
+  const targetDir = options?.targetDir ?? os.tmpdir();
+  const minFreeBytes = options?.minFreeBytes ?? SSH_SYNC_BACK_MIN_FREE_BYTES;
+
+  let stats: Awaited<ReturnType<typeof fs.statfs>>;
+  try {
+    stats = await fs.statfs(targetDir);
+  } catch {
+    // statfs isn't supported on every platform/filesystem; don't block the
+    // sync-back over a check that can't be performed.
+    return;
+  }
+
+  const freeBytes = stats.bsize * stats.bavail;
+  if (freeBytes < minFreeBytes) {
+    const freeMb = (freeBytes / (1024 * 1024)).toFixed(0);
+    const minMb = (minFreeBytes / (1024 * 1024)).toFixed(0);
+    throw new Error(
+      `Insufficient disk space at ${targetDir} for SSH sync-back: ${freeMb} MB free, need at least ${minMb} MB. ` +
+        "Clear space in the temp directory before retrying.",
+    );
+  }
+}
+
 export async function syncDirectoryFromSsh(input: {
   spec: SshRemoteExecutionSpec;
   remoteDir: string;
@@ -1381,6 +1446,8 @@ export async function syncDirectoryFromSsh(input: {
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
 }): Promise<void> {
+  await reapStaleSshTempDirs();
+  await ensureSshSyncBackDiskHeadroom();
   const auth = await createSshAuthArgs(input.spec);
   const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-sync-back-"));
   const remoteTarScript = [
