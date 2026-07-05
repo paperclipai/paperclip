@@ -604,6 +604,26 @@ export function Routines() {
     if (folderSelection === "unfiled") return visibleRoutines.filter((routine) => !routine.folderId);
     return visibleRoutines.filter((routine) => routine.folderId === folderSelection);
   }, [folderSelection, routineViewState.groupBy, visibleRoutines]);
+  // Rail counts reflect the page's visible scope (archived hidden), not raw DB
+  // counts (ux-spec §5.3).
+  const railFolderResult = useMemo(() => {
+    if (!routineFolders) return routineFolders;
+    const counts = new Map<string, number>();
+    let unfiled = 0;
+    for (const routine of visibleRoutines) {
+      if (routine.folderId) counts.set(routine.folderId, (counts.get(routine.folderId) ?? 0) + 1);
+      else unfiled += 1;
+    }
+    return {
+      ...routineFolders,
+      allCount: visibleRoutines.length,
+      unfiledCount: unfiled,
+      folders: routineFolders.folders.map((folder) => ({
+        ...folder,
+        itemCount: counts.get(folder.id) ?? 0,
+      })),
+    };
+  }, [routineFolders, visibleRoutines]);
   const sortedRoutines = useMemo(
     () => sortRoutines(folderFilteredRoutines, routineViewState.sortField, routineViewState.sortDir),
     [folderFilteredRoutines, routineViewState.sortDir, routineViewState.sortField],
@@ -834,7 +854,7 @@ export function Routines() {
           {routineViewState.groupBy === "folder" ? (
             <div className="md:hidden">
               <FolderChip
-                result={routineFolders}
+                result={railFolderResult}
                 selection={folderSelection}
                 allLabel="All routines"
                 onClick={() => setMobileFoldersOpen(true)}
@@ -1144,7 +1164,7 @@ export function Routines() {
         <div className={cn(showFolderRail && "flex gap-4")}>
           {showFolderRail ? (
             <FolderRail
-              result={routineFolders}
+              result={railFolderResult}
               selection={folderSelection}
               allLabel="All routines"
               itemLabelPlural="routines"
@@ -1320,7 +1340,7 @@ export function Routines() {
       <MobileFolderSheet
         open={mobileFoldersOpen}
         onOpenChange={setMobileFoldersOpen}
-        result={routineFolders}
+        result={railFolderResult}
         selection={folderSelection}
         allLabel="All routines"
         itemLabelPlural="Routines"
