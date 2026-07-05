@@ -33,6 +33,10 @@ const mode = process.argv[2] === "watch" ? "watch" : "dev";
 const cliArgs = process.argv.slice(3);
 const scanIntervalMs = 1500;
 const autoRestartPollIntervalMs = 2500;
+const autoRestartDebounceMs = Math.max(
+  0,
+  Number.parseInt(process.env.PAPERCLIP_DEV_AUTO_RESTART_DEBOUNCE_MS ?? "30000", 10) || 30_000,
+);
 const gracefulShutdownTimeoutMs = 10_000;
 const changedPathSampleLimit = 5;
 const devServerStatusFilePath = path.join(repoRoot, ".paperclip", "dev-server-status.json");
@@ -592,6 +596,9 @@ async function maybeAutoRestartChild() {
   const manualRestartRequested = consumeDevServerRestartRequest();
   if (!manualRestartRequested && dirtyPaths.size === 0 && pendingMigrations.length === 0) return;
 
+  const dirtyAgeMs = lastChangedAt ? Date.now() - Date.parse(lastChangedAt) : Number.POSITIVE_INFINITY;
+  if (!manualRestartRequested && dirtyAgeMs < autoRestartDebounceMs) return;
+
   restartInFlight = true;
   let health: { devServer?: { enabled?: boolean; autoRestartEnabled?: boolean; activeRunCount?: number } } | null = null;
   try {
@@ -616,6 +623,8 @@ async function maybeAutoRestartChild() {
   }
 
   try {
+    const restartReasons = [...dirtyPaths].sort().slice(0, changedPathSampleLimit).join(", ") || "pending migrations";
+    console.log(`[paperclip] auto-restart SIGTERM origin: dev-runner dirty=${dirtyPaths.size} pendingMigrations=${pendingMigrations.length} sample=${restartReasons}`);
     await maybePreflightMigrations({
       autoApply: true,
       interactive: false,
