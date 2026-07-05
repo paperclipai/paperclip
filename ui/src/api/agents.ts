@@ -12,6 +12,7 @@ import type {
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
+  AgentMcpServersSnapshot,
   McpServerConfig,
   McpServersConfig,
 } from "@paperclipai/shared";
@@ -303,6 +304,12 @@ export const agentsApi = {
       agentPath(id, companyId, `/mcp-servers/${encodeURIComponent(name)}/oauth/start`),
       {},
     ),
+  getMcpServerRefs: (id: string, companyId?: string) =>
+    api.get<AgentMcpServersSnapshot>(agentPath(id, companyId, "/mcp-server-refs")),
+  putMcpServerRefs: (id: string, desiredMcpServers: string[], companyId?: string) =>
+    api.put<AgentMcpServersSnapshot>(agentPath(id, companyId, "/mcp-server-refs"), {
+      desiredMcpServers,
+    }),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
   loginWithCodex: (id: string, companyId?: string) =>

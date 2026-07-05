@@ -276,6 +276,13 @@ export type {
   SecretVersionStatus,
 } from "./secrets.js";
 export type {
+  CompanyMcpServer,
+  CompanyMcpServerListItem,
+  CompanyMcpServerDetail,
+  CompanyMcpServerUsageAgent,
+  AgentMcpServersSnapshot,
+} from "./company-mcp-server.js";
+export type {
   McpTransport,
   McpServerAuth,
   McpServerBearerAuth,

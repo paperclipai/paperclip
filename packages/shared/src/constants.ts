@@ -491,6 +491,7 @@ export const SECRET_BINDING_TARGET_TYPES = [
   "issue",
   "run",
   "system",
+  "mcp_server",
 ] as const;
 export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
 

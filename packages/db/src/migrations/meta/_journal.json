@@ -743,6 +743,13 @@
       "when": 1783219200000,
       "tag": "0105_issue_human_time",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "7",
+      "when": 1783305600000,
+      "tag": "0106_company_mcp_servers",
+      "breakpoints": true
     }
   ]
 }

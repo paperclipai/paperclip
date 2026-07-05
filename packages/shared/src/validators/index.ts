@@ -134,6 +134,15 @@ export {
 } from "./agent.js";
 
 export {
+  companyMcpServerCreateSchema,
+  companyMcpServerUpdateSchema,
+  agentMcpServersSyncSchema,
+  type CompanyMcpServerCreate,
+  type CompanyMcpServerUpdate,
+  type AgentMcpServersSync,
+} from "./company-mcp-server.js";
+
+export {
   MCP_SERVER_NAME_RE,
   mcpServerNameSchema,
   mcpServerAuthSchema,

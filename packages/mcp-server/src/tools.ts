@@ -298,6 +298,27 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
         ),
     ),
     makeTool(
+      "paperclipListCompanyMcpServers",
+      "List the company's shared MCP server library (name, transport, description, whether OAuth is connected, and how many agents use each). Enable them per agent with paperclipSyncAgentMcpServers.",
+      z.object({ companyId: companyIdOptional }),
+      async ({ companyId }) =>
+        client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/mcp-servers`),
+    ),
+    makeTool(
+      "paperclipSyncAgentMcpServers",
+      "Replace which company-library MCP servers an agent has enabled (defaults to the current agent). Pass the FULL desired list of server names — names not included are disabled. Takes effect on the agent's next run.",
+      z.object({
+        agentId: agentIdOptional,
+        desiredMcpServers: z.array(mcpServerNameSchema).max(32),
+      }),
+      async ({ agentId, desiredMcpServers }) =>
+        client.requestJson(
+          "PUT",
+          `/agents/${encodeURIComponent(client.resolveAgentId(agentId))}/mcp-server-refs`,
+          { body: { desiredMcpServers } },
+        ),
+    ),
+    makeTool(
       "paperclipListIssues",
       "List issues for a company with optional filters",
       listIssuesSchema,
