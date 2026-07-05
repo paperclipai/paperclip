@@ -513,8 +513,8 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     [membershipMutation.isPending, membershipMutation.variables],
   );
 
-  // Starred agents pin to their own group at the top of the section (name order),
-  // and are deduped out of the active/recent subset so no agent appears twice.
+  // Starred agents pin to the top of the section (name order), and are deduped
+  // out of the active/recent subset so no agent appears twice.
   const starredAgentIdSet = useMemo(
     () => new Set(starredResourceIds(membershipsQuery.data, "agent")),
     [membershipsQuery.data],
@@ -569,21 +569,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
         onRadioValueChange: persistSortMode,
       }}
     >
-      {starredAgents.length > 0 ? (
-        <>
-          {!rail ? (
-            <p className="px-3 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70">
-              Starred
-            </p>
-          ) : null}
-          {starredAgents.map((agent: Agent) => renderAgentRow(agent, true))}
-          {!rail && dedupedDisplayedAgents.length > 0 ? (
-            <p className="px-3 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70">
-              Recently active
-            </p>
-          ) : null}
-        </>
-      ) : null}
+      {starredAgents.map((agent: Agent) => renderAgentRow(agent, true))}
       {dedupedDisplayedAgents.map((agent: Agent) => renderAgentRow(agent, false))}
       {showSeeAllLink && (() => {
         const seeAllLink = (

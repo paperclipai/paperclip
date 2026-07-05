@@ -329,7 +329,7 @@ describe("SidebarAgents", () => {
     expect(container.querySelector('button[aria-label="Agents section actions"]')).toBeNull();
   });
 
-  it("pins starred agents in a group and dedupes them from the recent list", async () => {
+  it("pins starred agents at the top without subheadings and dedupes them from the recent list", async () => {
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({ id: "agent-a", name: "Alpha", urlKey: "alpha" }),
       makeAgent({ id: "agent-b", name: "Bravo", urlKey: "bravo" }),
@@ -346,8 +346,9 @@ describe("SidebarAgents", () => {
 
     await renderSidebarAgents();
 
-    expect(container.textContent).toContain("Starred");
-    // Bravo is starred → shown once in the starred group, deduped from recent.
+    expect(container.textContent).not.toContain("Starred");
+    expect(container.textContent).not.toContain("Recently active");
+    // Bravo is starred -> shown once at the top, deduped from recent.
     const labels = agentLinkLabels(container);
     expect(labels.filter((label) => label === "Bravo")).toHaveLength(1);
     expect(labels).toContain("Alpha");
