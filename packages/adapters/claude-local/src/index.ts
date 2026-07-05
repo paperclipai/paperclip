@@ -12,6 +12,7 @@ export const models = [
   { id: "claude-opus-5", label: "Claude Opus 5" },
   { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
   { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
+  { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
   { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
@@ -23,7 +24,7 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
     label: "Cheap",
     description: "Use Claude Sonnet as the lower-cost Claude Code lane while preserving the agent's primary model.",
     adapterConfig: {
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-5",
       effort: "low",
     },
     source: "adapter_default",
