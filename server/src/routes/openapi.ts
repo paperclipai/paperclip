@@ -146,6 +146,7 @@ import {
   finishToolAppSchema,
   reconnectToolAppSchema,
   updateToolConnectionSchema,
+  toolConnectionTestCallSchema,
   createToolPolicySchema,
   duplicateToolPolicySchema,
   createToolProfileBindingForProfileSchema,
@@ -163,6 +164,7 @@ import {
   unbindToolProfileBindingSchema,
   importMcpJsonSchema,
   toolPolicyTestRequestSchema,
+  createToolMcpGatewaySchema,
 } from "@paperclipai/shared";
 
 type JsonSchema = Record<string, unknown>;
@@ -595,6 +597,10 @@ const PUBLIC_OPERATIONS = new Set([
   "GET /api/invites/{token}/test-resolution",
   "POST /api/invites/{token}/accept",
   "POST /api/join-requests/{requestId}/claim-api-key",
+  "GET /api/mcp/gateways/{gatewayPublicId}",
+  "POST /api/mcp/gateways/{gatewayPublicId}",
+  "GET /api/tool-gateway/gateways/{gatewayId}/mcp",
+  "POST /api/tool-gateway/gateways/{gatewayId}/mcp",
 ]);
 
 const BOARD_ONLY_PREFIXES = [
@@ -673,6 +679,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/tool-connections/{connectionId}/catalog/refresh",
   "GET /api/tool-connections/{connectionId}/catalog",
   "GET /api/tool-connections/{connectionId}/activity",
+  "GET /api/tool-connections/{connectionId}/test-agents",
+  "POST /api/tool-connections/{connectionId}/test-calls",
+  "GET /api/tool-connections/{connectionId}/test-calls/{actionRequestId}",
   "POST /api/tools/oauth/{connectionId}/start",
   "GET /api/tools/oauth/callback",
   "GET /api/companies/{companyId}/tools/profiles",
@@ -707,6 +716,11 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/tools/stdio-templates/{templateId}/disable",
   "POST /api/companies/{companyId}/tools/mcp/import-json",
   "POST /api/companies/{companyId}/tools/policy/test",
+  "GET /api/companies/{companyId}/tools/gateways",
+  "POST /api/companies/{companyId}/tools/gateways",
+  "PATCH /api/tool-gateway/gateways/{gatewayId}",
+  "POST /api/tool-gateway/gateways/{gatewayId}/tokens",
+  "POST /api/tool-gateway/gateway-tokens/{tokenId}/revoke",
   "POST /api/tool-gateway/action-requests/{id}/approve",
   "POST /api/tool-gateway/action-requests/{id}/decline",
 ]);
@@ -767,6 +781,8 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/tools/applications",
   "POST /api/companies/{companyId}/tools/connections",
   "POST /api/companies/{companyId}/tools/action-requests/{actionRequestId}/trust-rule",
+  "POST /api/companies/{companyId}/tools/gateways",
+  "POST /api/tool-gateway/gateways/{gatewayId}/tokens",
   "POST /api/tool-gateway/sessions",
 ]);
 
@@ -5097,6 +5113,30 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/test-agents",
+  tags: ["tool-access"],
+  summary: "List agents available for tool connection test calls",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/test-calls",
+  tags: ["tool-access"],
+  summary: "Run a tool connection test call",
+  body: toolConnectionTestCallSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable, 501: r.ok() },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/test-calls/{actionRequestId}",
+  tags: ["tool-access"],
+  summary: "Get a tool connection test call status",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 501: r.ok() },
+});
+
+registerCurrentRoute({
   method: "post",
   path: "/api/tools/oauth/{connectionId}/start",
   tags: ["tool-access"],
@@ -5386,6 +5426,86 @@ const toolGatewayCallSchema = z.object({
 const toolGatewayCompanyQuerySchema = z.object({
   companyId: z.string().optional(),
 });
+const toolGatewayCompanyBodySchema = z.object({
+  companyId: z.string(),
+}).passthrough();
+
+const mcpGatewayProtocolSchema = z.record(z.unknown());
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/mcp/gateways/{gatewayPublicId}",
+  tags: ["tool-gateway"],
+  summary: "Describe a public MCP gateway endpoint",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/mcp/gateways/{gatewayPublicId}",
+  tags: ["tool-gateway"],
+  summary: "Handle MCP gateway protocol requests by public id",
+  body: mcpGatewayProtocolSchema,
+  responses: { 200: r.ok(), 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 429: r.ok() },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/tools/gateways",
+  tags: ["tool-gateway"],
+  summary: "List named MCP gateways",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/gateways",
+  tags: ["tool-gateway"],
+  summary: "Create a named MCP gateway",
+  body: createToolMcpGatewaySchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/tool-gateway/gateways/{gatewayId}",
+  tags: ["tool-gateway"],
+  summary: "Update a named MCP gateway",
+  body: toolGatewayCompanyBodySchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-gateway/gateways/{gatewayId}/tokens",
+  tags: ["tool-gateway"],
+  summary: "Create a named MCP gateway token",
+  body: toolGatewayCompanyBodySchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-gateway/gateway-tokens/{tokenId}/revoke",
+  tags: ["tool-gateway"],
+  summary: "Revoke a named MCP gateway token",
+  body: toolGatewayCompanyQuerySchema.required({ companyId: true }),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-gateway/gateways/{gatewayId}/mcp",
+  tags: ["tool-gateway"],
+  summary: "Describe a named MCP gateway endpoint",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-gateway/gateways/{gatewayId}/mcp",
+  tags: ["tool-gateway"],
+  summary: "Handle named MCP gateway protocol requests",
+  body: mcpGatewayProtocolSchema,
+  responses: { 200: r.ok(), 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 429: r.ok() },
+});
 
 registerCurrentRoute({
   method: "post",
@@ -5394,6 +5514,15 @@ registerCurrentRoute({
   summary: "Create a tool gateway session",
   body: toolGatewaySessionSchema,
   responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-gateway/sessions/{sessionId}/revoke",
+  tags: ["tool-gateway"],
+  summary: "Revoke a tool gateway session",
+  body: toolGatewayCompanyQuerySchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registerCurrentRoute({

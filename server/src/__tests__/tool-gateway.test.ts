@@ -2566,6 +2566,164 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     expect(listWithHeaderToken.status).toBe(200);
   });
 
+  it("revokes a gateway session through the authenticated route and audits without token values", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+    });
+    const app = createGatewayRouteApp(db, gateway, {
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      companyIds: [company.id],
+      memberships: [{ companyId: company.id, membershipRole: "operator", status: "active" }],
+      isInstanceAdmin: false,
+    });
+
+    const beforeRevoke = await request(app)
+      .get("/api/tool-gateway/tools")
+      .set("x-paperclip-tool-gateway-token", session.token);
+    expect(beforeRevoke.status).toBe(200);
+
+    const revoked = await request(app)
+      .post(`/api/tool-gateway/sessions/${session.id}/revoke`)
+      .send({ companyId: company.id });
+    expect(revoked.status).toBe(200);
+    expect(revoked.body).toEqual({
+      sessionId: session.id,
+      revokedAt: expect.any(String),
+    });
+    expect(JSON.stringify(revoked.body)).not.toContain(session.token);
+
+    const afterRevoke = await request(app)
+      .get("/api/tool-gateway/tools")
+      .set("x-paperclip-tool-gateway-token", session.token);
+    expect(afterRevoke.status).toBe(401);
+    expect(afterRevoke.body.reasonCode).toBe("session_revoked");
+
+    const [activity] = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "tool_gateway.session_revoked"));
+    expect(activity).toMatchObject({
+      companyId: company.id,
+      actorType: "user",
+      actorId: "board-user",
+      agentId: agent.id,
+      runId: run.id,
+    });
+    expect(activity.details).toMatchObject({
+      gatewaySessionId: session.id,
+      reasonCode: "session_revoked",
+      previousRevokedAt: null,
+    });
+
+    const [accessAudit] = await db
+      .select()
+      .from(toolAccessAuditEvents)
+      .where(eq(toolAccessAuditEvents.action, "session_revoked"));
+    expect(accessAudit).toMatchObject({
+      companyId: company.id,
+      actorType: "user",
+      actorId: "board-user",
+      action: "session_revoked",
+      outcome: "success",
+      reasonCode: "session_revoked",
+    });
+    const serializedAudits = JSON.stringify({ activity, accessAudit });
+    expect(serializedAudits).not.toContain(session.token);
+  });
+
+  it("denies wrong-company gateway session revocation without revoking the session", async () => {
+    const company = await createCompany(db);
+    const otherCompany = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+    });
+    const app = createGatewayRouteApp(db, gateway, {
+      type: "board",
+      userId: "other-board-user",
+      source: "session",
+      companyIds: [otherCompany.id],
+      memberships: [{ companyId: otherCompany.id, membershipRole: "operator", status: "active" }],
+      isInstanceAdmin: false,
+    });
+
+    const revoked = await request(app)
+      .post(`/api/tool-gateway/sessions/${session.id}/revoke`)
+      .send({ companyId: otherCompany.id });
+    expect(revoked.status).toBe(404);
+    expect(revoked.body.reasonCode).toBe("session_not_found");
+
+    const stillActive = await request(app)
+      .get("/api/tool-gateway/tools")
+      .set("x-paperclip-tool-gateway-token", session.token);
+    expect(stillActive.status).toBe(200);
+
+    const revokedRows = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "tool_gateway.session_revoked"));
+    expect(revokedRows).toHaveLength(0);
+  });
+
+  it("scopes agent gateway session revocation to the authenticated run", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { run: otherRun } = await createIssueAndRun(db, company.id, agent.id);
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+    });
+    const otherRunSession = await gateway.createSession({
+      companyId: company.id,
+      agentId: agent.id,
+      runId: otherRun.id,
+    });
+    const app = createGatewayRouteApp(db, gateway, {
+      type: "agent",
+      companyId: company.id,
+      agentId: agent.id,
+      runId: run.id,
+      source: "agent_jwt",
+    });
+
+    const wrongRun = await request(app)
+      .post(`/api/tool-gateway/sessions/${otherRunSession.id}/revoke`)
+      .send();
+    expect(wrongRun.status).toBe(403);
+    expect(wrongRun.body.reasonCode).toBe("session_scope_mismatch");
+
+    const otherRunStillActive = await request(app)
+      .get("/api/tool-gateway/tools")
+      .set("x-paperclip-tool-gateway-token", otherRunSession.token);
+    expect(otherRunStillActive.status).toBe(200);
+
+    const ownRun = await request(app)
+      .post(`/api/tool-gateway/sessions/${session.id}/revoke`)
+      .send();
+    expect(ownRun.status).toBe(200);
+
+    const ownRunDenied = await request(app)
+      .get("/api/tool-gateway/tools")
+      .set("x-paperclip-tool-gateway-token", session.token);
+    expect(ownRunDenied.status).toBe(401);
+    expect(ownRunDenied.body.reasonCode).toBe("session_revoked");
+  });
+
   it("denies agent actors from runtime control and raw gateway audit routes", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

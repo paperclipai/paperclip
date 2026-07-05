@@ -15,6 +15,7 @@ import { accessService } from "../services/index.js";
 
 const TOOL_GATEWAY_ACTIONS = [
   "tool_gateway.session_created",
+  "tool_gateway.session_revoked",
   "tool_gateway.session_rejected",
   "tool_gateway.discovery",
   "tool_gateway.call_allowed",
@@ -406,6 +407,43 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         expiresAt: session.expiresAt.toISOString(),
         toolsUrl: "/api/tool-gateway/tools",
         callUrl: "/api/tool-gateway/tools/call",
+      });
+    } catch (err) {
+      sendGatewayError(res, err);
+    }
+  });
+
+  router.post("/tool-gateway/sessions/:sessionId/revoke", async (req, res) => {
+    try {
+      assertBoardOrAgent(req);
+      const actor = getActorInfo(req);
+      const body = (req.body ?? {}) as { companyId?: string };
+      const companyId = req.actor.type === "agent" ? req.actor.companyId : body.companyId;
+      if (!companyId) {
+        res.status(400).json({ error: "companyId is required" });
+        return;
+      }
+      assertCompanyAccess(req, companyId);
+      if (req.actor.type === "agent" && !req.actor.agentId) {
+        throw forbidden("Agent authentication required");
+      }
+
+      const revoked = await toolGateway.revokeSession({
+        companyId,
+        sessionId: req.params.sessionId,
+        actor: {
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+        },
+        agentScope: req.actor.type === "agent"
+          ? { agentId: req.actor.agentId!, runId: req.actor.runId ?? null }
+          : null,
+      });
+      res.json({
+        sessionId: revoked.id,
+        revokedAt: revoked.revokedAt.toISOString(),
       });
     } catch (err) {
       sendGatewayError(res, err);

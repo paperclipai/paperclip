@@ -1060,7 +1060,9 @@ export function createToolGatewayService(
     const dedicatedAuditAction =
       input.action === "tool_gateway.discovery"
         ? "discovery"
-        : input.action === "tool_gateway.call_allowed" || input.action === "tool_gateway.session_created"
+        : input.action === "tool_gateway.session_revoked"
+          ? "session_revoked"
+          : input.action === "tool_gateway.call_allowed" || input.action === "tool_gateway.session_created"
           ? "policy_decision"
           : input.action === "tool_gateway.call_completed"
             ? "call_completed"
@@ -1070,7 +1072,9 @@ export function createToolGatewayService(
                 ? "call_failed"
                 : "call_failed";
     const dedicatedOutcome =
-      input.action === "tool_gateway.call_denied" || input.action === "tool_gateway.session_rejected"
+      input.action === "tool_gateway.session_revoked"
+        ? "success"
+        : input.action === "tool_gateway.call_denied" || input.action === "tool_gateway.session_rejected"
         ? "denied"
         : input.action === "tool_gateway.call_deferred"
           ? "timeout"
@@ -5303,17 +5307,60 @@ export function createToolGatewayService(
       }
     },
 
-    async revokeSession(input: { companyId: string; sessionId: string; revokedAt?: Date }) {
+    async revokeSession(input: {
+      companyId: string;
+      sessionId: string;
+      revokedAt?: Date;
+      actor?: {
+        actorType?: LogActivityInput["actorType"];
+        actorId?: string;
+        agentId?: string | null;
+        runId?: string | null;
+      };
+      agentScope?: { agentId: string; runId?: string | null } | null;
+    }) {
       const now = input.revokedAt ?? new Date();
+      const [existing] = await db
+        .select()
+        .from(toolGatewaySessions)
+        .where(and(eq(toolGatewaySessions.companyId, input.companyId), eq(toolGatewaySessions.id, input.sessionId)))
+        .limit(1);
+      if (!existing) {
+        throw new ToolGatewayHttpError(404, "Tool gateway session not found", "session_not_found");
+      }
+      if (input.agentScope) {
+        const runMatches = input.agentScope.runId ? existing.runId === input.agentScope.runId : true;
+        if (existing.agentId !== input.agentScope.agentId || !runMatches) {
+          throw new ToolGatewayHttpError(
+            403,
+            "Tool gateway session is outside the authenticated agent scope",
+            "session_scope_mismatch",
+          );
+        }
+      }
       const [session] = await db
         .update(toolGatewaySessions)
         .set({ revokedAt: now, updatedAt: now })
         .where(and(eq(toolGatewaySessions.companyId, input.companyId), eq(toolGatewaySessions.id, input.sessionId)))
         .returning();
-      if (!session) {
-        throw new ToolGatewayHttpError(404, "Tool gateway session not found", "session_not_found");
-      }
-      return gatewaySessionFromRow(session);
+      const sessionView = gatewaySessionFromRow(session!);
+      await writeAudit({
+        session: sessionView,
+        companyId: sessionView.companyId,
+        agentId: sessionView.agentId,
+        runId: sessionView.runId,
+        issueId: sessionView.issueId,
+        actorType: input.actor?.actorType,
+        actorId: input.actor?.actorId,
+        action: "tool_gateway.session_revoked",
+        details: {
+          decision: "revoke",
+          reasonCode: "session_revoked",
+          revokedAt: now.toISOString(),
+          previousRevokedAt: existing.revokedAt?.toISOString() ?? null,
+        },
+      });
+      return { ...sessionView, revokedAt: session!.revokedAt ?? now };
     },
 
     async cleanupExpiredSessions(input: { now?: Date } = {}) {

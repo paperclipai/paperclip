@@ -983,6 +983,7 @@ export const TOOL_AUDIT_EVENT_TYPES = [
   "call_denied",
   "approval_requested",
   "approval_resolved",
+  "session_revoked",
   "trust_rule_created",
   "trust_rule_revoked",
   "trust_rule_used",
