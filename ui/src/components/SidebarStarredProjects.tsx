@@ -98,12 +98,9 @@ export function SidebarStarredProjects() {
   // Don't render anything until memberships load — no skeleton flash in the nav.
   if (!membershipsQuery.isSuccess) return null;
 
-  // Quiet empty-state placeholder under Projects (hidden in the collapsed rail).
+  // Empty starred groups should not add a placeholder row or extra sidebar spacing.
   if (starredProjects.length === 0) {
-    if (rail) return null;
-    return (
-      <p className="px-3 py-1 pl-8 text-[12px] text-muted-foreground/70">No starred projects yet</p>
-    );
+    return null;
   }
 
   return (

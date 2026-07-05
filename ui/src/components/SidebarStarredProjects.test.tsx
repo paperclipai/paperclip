@@ -176,12 +176,12 @@ describe("SidebarStarredProjects", () => {
     expect(document.body.querySelector('button[aria-label="Unstar Bravo"]')).not.toBeNull();
   });
 
-  it("shows a quiet empty placeholder when nothing is starred", async () => {
+  it("renders nothing when no projects are starred", async () => {
     mockProjectsApi.list.mockResolvedValue([makeProject({ id: "project-a", name: "Alpha" })]);
 
     await render();
 
-    expect(container.textContent).toContain("No starred projects yet");
+    expect(container.textContent).not.toContain("No starred projects yet");
     expect(projectLinkLabels(container)).toEqual([]);
   });
 });
