@@ -2815,6 +2815,26 @@ registry.registerPath({
   responses: { 204: r.noContent, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
+// ─── Research documents ──────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/research-documents",
+  tags: ["issues"],
+  summary: "List research documents for a company",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/research-documents/{documentId}",
+  tags: ["issues"],
+  summary: "Get a research document with its full body",
+  request: { params: z.object({ companyId: z.string(), documentId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
 // ─── Instance settings ────────────────────────────────────────────────────────
 
 registry.registerPath({

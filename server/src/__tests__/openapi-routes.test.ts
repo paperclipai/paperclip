@@ -32,6 +32,7 @@ const apiPrefixes: Record<string, string> = {
   "health.ts": "/api/health",
   "inbox-dismissals.ts": "/api",
   "issue-favourites.ts": "/api",
+  "research-documents.ts": "/api",
   "instance-database-backups.ts": "/api",
   "instance-settings.ts": "/api",
   "issues.ts": "/api",

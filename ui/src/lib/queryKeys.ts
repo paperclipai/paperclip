@@ -48,6 +48,9 @@ export const queryKeys = {
   issueFavourites: {
     list: (companyId: string) => ["issue-favourites", companyId] as const,
   },
+  researchDocuments: {
+    list: (companyId: string) => ["research-documents", companyId] as const,
+  },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
     mentionPool: (companyId: string) => ["issues", companyId, "mention-pool"] as const,

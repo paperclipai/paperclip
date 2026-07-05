@@ -827,6 +827,8 @@ export type {
   SidebarOrderPreference,
   InboxDismissal,
   IssueFavourite,
+  ResearchDocument,
+  ResearchDocumentDetail,
   AccessUserProfile,
   CompanyMemberRecord,
   CompanyMembersResponse,

@@ -14,6 +14,7 @@ import {
   GitBranch,
   Package,
   Star,
+  Microscope,
   Settings,
   FolderOpen,
   PanelLeftClose,
@@ -180,6 +181,7 @@ export function Sidebar() {
         <SidebarSection label="Work">
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
           <SidebarNavItem to="/favourites" label="Favourites" icon={Star} />
+          <SidebarNavItem to="/research" label="Research" icon={Microscope} />
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           {showPipelines ? (
             <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
