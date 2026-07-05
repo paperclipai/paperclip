@@ -2251,7 +2251,10 @@ export function issueRoutes(
     if (!actorAgentId) return null;
     if (!issue.assigneeAgentId || issue.assigneeAgentId === actorAgentId) return null;
     try {
-      const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+      // Boundary pre-check uses issue:read: the evidence grant must stay inside
+      // the caller's authorization boundary, but cannot hinge on issue:mutate,
+      // which peer agents are denied by definition on another agent's issue.
+      const boundaryDecision = await decideIssueAccess(req, issue, "issue:read");
       if (!boundaryDecision.allowed) return null;
       const link = await svc.findCrossAssigneeEvidenceLink({
         companyId: issue.companyId,

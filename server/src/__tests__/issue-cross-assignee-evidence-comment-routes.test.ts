@@ -235,12 +235,30 @@ describe("cross-assignee evidence comments", () => {
     registerRouteMocks();
     vi.clearAllMocks();
 
-    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
-      allowed: input.action === "issue:mutate" || input.action === "issue:read",
-      action: input.action,
-      reason: "allow_explicit_grant",
-      explanation: "Allowed by test default.",
-    }));
+    mockAccessService.decide.mockImplementation(async (input: {
+      action: string;
+      actor?: { agentId?: string | null };
+      resource?: { assigneeAgentId?: string | null };
+    }) => {
+      if (input.action === "issue:comment") {
+        // Mirror master's issue:comment semantics: assignee (or unassigned
+        // issues) allowed, peer agents denied unless a mention grant applies.
+        const assigneeAgentId = input.resource?.assigneeAgentId ?? null;
+        const allowed = !assigneeAgentId || assigneeAgentId === input.actor?.agentId;
+        return {
+          allowed,
+          action: input.action,
+          reason: allowed ? "allow_self" : "deny_missing_grant",
+          explanation: allowed ? "Allowed by test default." : "Denied by test default.",
+        };
+      }
+      return {
+        allowed: input.action === "issue:mutate" || input.action === "issue:read",
+        action: input.action,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by test default.",
+      };
+    });
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAgentService.getById.mockImplementation(async (id: string) => {
@@ -358,8 +376,8 @@ describe("cross-assignee evidence comments", () => {
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "no relationship to this issue" });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(409);
-    expect(res.body.error).toBe("Issue is checked out by another agent");
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
@@ -371,7 +389,7 @@ describe("cross-assignee evidence comments", () => {
       .send({ body: "no relationship to this issue" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
