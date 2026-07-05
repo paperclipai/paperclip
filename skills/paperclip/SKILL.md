@@ -27,6 +27,8 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 Paperclip uses a two-level execution topology: one main parent issue plus direct child execution lanes only. Read `references/ai-factory-sop.md` before delegating, decomposing work, or creating issues.
 
+Every delegated child issue must carry an **execution contract** — the objective, source-of-truth, constraints, acceptance checks, and manager reasoning the executor works from and QA reviews against. Read `references/execution-contract.md` before delegating work, starting delegated work, or QA-reviewing delegated work. Missing required context is a blocker, not permission to invent.
+
 ## The Heartbeat Procedure
 
 Follow these steps every time you wake up:
@@ -78,6 +80,8 @@ Use comments incrementally:
 - use the full `GET /api/issues/{issueId}/comments` route only when cold-starting or when incremental isn't enough
 
 Read enough ancestor/comment context to understand _why_ the task exists and what changed. Do not reflexively reload the whole thread on every heartbeat.
+
+**Executor preflight (delegated work).** If this issue is an execution lane (has `parentId`) and you are starting deliverable work on it, run the preflight checklist in `references/execution-contract.md` first: the issue must have an execution contract, its source-of-truth must be reachable, and block-if-missing items must be present. If preflight fails, set the issue `blocked` naming exactly what is missing — do not build from assumptions.
 
 **Execution-policy review/approval wakes.** If the issue is `in_review` with `executionState`, inspect `currentStageType`, `currentParticipant`, `returnAssignee`, and `lastDecisionOutcome`.
 
@@ -145,6 +149,8 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 - `cancelled` — intentionally abandoned, not to be resumed.
 
 **Step 9 — Delegate if needed.** If the current issue is a main parent, create direct child execution lanes with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. Do not create child issues from an execution lane that already has `parentId`. When a sibling lane needs to stay on the same code change, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
+
+Every child issue you create MUST embed an execution contract in its description (`## Execution Contract` section — schema in `references/execution-contract.md`). Externalize your reasoning into it: source-of-truth links, must-not-change constraints, acceptance checks, and why the work matters. Delegation without a contract is invalid — if you cannot fill the required fields, the work is not ready to delegate.
 
 Optional parent budget guard:
 
@@ -252,6 +258,8 @@ For commands, response fields, and MCP tools, read:
 - **Start actionable work before planning-only closure.** Do concrete work in the same heartbeat unless the task asks for a plan or review only.
 - **Leave a next action.** Every progress comment should make clear what is complete, what remains, and who owns the next step.
 - **AI Factory SOP: no recursive sub-issues.** Create bounded direct child execution lanes only from main parent issues and rely on Paperclip wake events or comments for completion. Execution lanes must never create child issues or grandchildren.
+- **Execution contracts on every delegation.** Child issues you create carry a contract; delegated work you pick up gets a preflight check; QA reviews against the contract, and fails work that solves the wrong problem no matter how polished. Missing context is a blocker, not permission to invent. See `references/execution-contract.md`.
+- **Repeated failures become durable fixes.** When work fails or needs rework, classify the incident and route the fix to the right layer (agent prompt, company skill, or a root-skill/orchestration change request) per `references/governance.md`. Do not only fix the task; fix the mechanism.
 - **Preserve workspace continuity for follow-ups.** Direct child lanes inherit execution workspace from `parentId` server-side. For sibling lanes or non-child follow-ups on the same checkout/worktree, send `inheritExecutionWorkspaceFromIssueId` explicitly.
 - **Never cancel cross-team tasks.** Reassign to your manager with a comment.
 - **Use first-class blockers** (`blockedByIssueIds`) rather than free-text "blocked by X" comments.
@@ -322,8 +330,6 @@ If the issue identifier is available, prefer the document deep link over a plain
 If you're asked to make a plan, _do not mark the issue as done_. When the plan is ready for review, leave the issue in `in_review` and make the reviewer/decision path explicit. If the requester specifically asked to take the issue back, reassign it to that user; otherwise keep the assignee in place so the accepted confirmation can wake the right agent.
 
 If the plan needs explicit approval before implementation, update the `plan` document, create a `request_confirmation` issue-thread interaction bound to the latest plan revision, then update the source issue to `in_review` with a comment that links the plan and names the pending confirmation. This is a deliberate waiting path, not an abandoned productive run. Wait for acceptance before creating implementation lanes. See `references/api-reference.md` for the interaction payload.
-
-When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
 
 When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
 
