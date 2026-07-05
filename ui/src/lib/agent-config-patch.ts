@@ -27,6 +27,10 @@ const ADAPTER_AGNOSTIC_KEYS = [
   "timeoutSec",
   "graceSec",
   "bootstrapPromptTemplate",
+  // Desired-skill selection is a company-level, adapter-agnostic choice even
+  // though it is persisted inside the per-adapter config; keep it when the
+  // adapter type changes so switching adapters does not wipe the agent's skills.
+  "paperclipSkillSync",
 ] as const;
 
 function omitUndefinedEntries(value: Record<string, unknown>) {

@@ -152,6 +152,7 @@ async function seedRunTarget(db: Db, repoRoot: string) {
     name: "Acme",
     issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
     status: "active",
+    defaultResponsibleUserId: "responsible-user",
     createdAt: new Date(),
     updatedAt: new Date(),
   });

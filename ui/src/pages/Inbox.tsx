@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
+import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { approvalsApi } from "../api/approvals";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
@@ -2198,7 +2198,7 @@ export function Inbox() {
                     {([
                       ["none", "None"],
                       ["type", "Type"],
-                      ["assignee", "Assignee"],
+                      ["assignee", "Responsible"],
                       ["project", "Project"],
                       ...(isolatedWorkspacesEnabled ? ([["workspace", "Workspace"]] as const) : []),
                     ] as const).map(([value, label]) => (
@@ -2382,6 +2382,10 @@ export function Inbox() {
                   const assigneeUserProfile = issue.assigneeUserId
                     ? companyUserProfileMap.get(issue.assigneeUserId) ?? null
                     : null;
+                  const originatingActor = deriveOriginatingActor(issue);
+                  const originatingUserId = originatingActor?.kind === "user" ? originatingActor.id : null;
+                  const originatingViaAgentId =
+                    originatingActor?.kind === "user" ? originatingActor.viaAgentId ?? null : null;
                   const isLive = liveIssueIds.has(issue.id);
                   const loadedSubtreeLiveCount = subtreeLiveCounts.get(issue.id) ?? 0;
                   const liveDescendantCount = resolveIssueLiveDescendantCount(issue, loadedSubtreeLiveCount);
@@ -2488,6 +2492,10 @@ export function Inbox() {
                               ?? null
                             }
                             assigneeUserAvatarUrl={assigneeUserProfile?.image ?? null}
+                            creatorAgentName={agentName(issue.createdByAgentId)}
+                            creatorUserName={originatingUserId ? (companyUserProfileMap.get(originatingUserId)?.label ?? null) : null}
+                            creatorUserAvatarUrl={originatingUserId ? (companyUserProfileMap.get(originatingUserId)?.image ?? null) : null}
+                            viaAgentName={originatingViaAgentId ? agentName(originatingViaAgentId) : null}
                             currentUserId={currentUserId}
                             parentIdentifier={issue.parentId ? (issueById.get(issue.parentId)?.identifier ?? null) : null}
                             parentTitle={issue.parentId ? (issueById.get(issue.parentId)?.title ?? null) : null}

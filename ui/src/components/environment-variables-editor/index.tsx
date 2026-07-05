@@ -9,8 +9,8 @@ import {
   type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
-import { AlertCircle, KeyRound, Plus, RotateCcw, Save } from "lucide-react";
-import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
+import { AlertCircle, KeyRound, Plus, RotateCcw, Save, UserRound } from "lucide-react";
+import type { CompanySecret, EnvBinding, UserSecretDefinition } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useOptionalToastActions } from "@/context/ToastContext";
@@ -19,6 +19,7 @@ import { parseDotenv } from "./parse-dotenv";
 import {
   computeDuplicateNames,
   computeRowHealth,
+  computeUserSecretRowHealth,
   emptyRow,
   envKeyFromSecretName,
   rowsFromValue,
@@ -47,6 +48,17 @@ function normalizedEnvKey(value: Record<string, EnvBinding> | null | undefined):
             type: "secret_ref",
             secretId: typeof binding.secretId === "string" ? binding.secretId : "",
             version: typeof binding.version === "number" ? binding.version : "latest",
+          },
+        ] as const;
+      }
+      if (binding?.type === "user_secret_ref") {
+        return [
+          name,
+          {
+            type: "user_secret_ref",
+            key: typeof binding.key === "string" ? binding.key : "",
+            version: typeof binding.version === "number" ? binding.version : "latest",
+            required: binding.required !== false,
           },
         ] as const;
       }
@@ -84,6 +96,8 @@ function rowDirtyFields(row: EnvRow, committedRow: EnvRow | undefined): Environm
       row.source !== committedRow.source ||
       row.textValue !== committedRow.textValue ||
       row.secretId !== committedRow.secretId ||
+      row.userSecretKey !== committedRow.userSecretKey ||
+      row.required !== committedRow.required ||
       row.version !== committedRow.version,
   };
 }
@@ -92,6 +106,11 @@ export interface EnvironmentVariablesEditorProps {
   value: Record<string, EnvBinding>;
   onChange: (next: Record<string, EnvBinding> | undefined) => void;
   secrets: readonly CompanySecret[];
+  /**
+   * Optional company user-secret definitions. When present, the "User secret"
+   * source becomes a picker; otherwise operators can type the definition key.
+   */
+  userSecretDefinitions?: readonly UserSecretDefinition[];
   onCreateSecret: (name: string, value: string) => Promise<CompanySecret>;
   /** Optional "Recently used" picker group + quick-bind chips. */
   recentlyUsedSecrets?: readonly CompanySecret[];
@@ -115,6 +134,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   value,
   onChange,
   secrets,
+  userSecretDefinitions,
   onCreateSecret,
   recentlyUsedSecrets,
   disabled,
@@ -284,6 +304,8 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
         existing.textValue = pairValue;
         existing.secretId = "";
         existing.sensitiveDismissed = false;
+        existing.userSecretKey = "";
+        existing.required = true;
       } else {
         working.push({ ...emptyRow(), name: key, textValue: pairValue });
       }
@@ -297,7 +319,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     const next = rows.map((row) => ({ ...row }));
     const trailing = next[next.length - 1];
     let target: EnvRow;
-    if (trailing && !trailing.name && !trailing.textValue && !trailing.secretId) {
+    if (trailing && !trailing.name && !trailing.textValue && !trailing.secretId && !trailing.userSecretKey) {
       target = trailing;
     } else {
       target = emptyRow();
@@ -326,8 +348,15 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   const duplicateNames = useMemo(() => computeDuplicateNames(rows), [rows]);
 
   const attentionCount = useMemo(
-    () => rows.reduce((count, row) => (computeRowHealth(row, secrets) ? count + 1 : count), 0),
-    [rows, secrets],
+    () =>
+      rows.reduce(
+        (count, row) =>
+          computeRowHealth(row, secrets) || computeUserSecretRowHealth(row, userSecretDefinitions)
+            ? count + 1
+            : count,
+        0,
+      ),
+    [rows, secrets, userSecretDefinitions],
   );
 
   const quickBind = useMemo(() => {
@@ -372,6 +401,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
                 row={row}
                 isLast={index === rows.length - 1}
                 secrets={secrets}
+                userSecretDefinitions={userSecretDefinitions}
                 recentlyUsedSecrets={recentlyUsedSecrets}
                 disabled={disabled}
                 nameIssue={issue}
@@ -459,6 +489,15 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
       ) : null}
 
       {hint ? <p className="text-[11px] text-muted-foreground/70">{hint}</p> : null}
+      {rows.some((row) => row.source === "user_secret" && row.userSecretKey) ? (
+        <p className="inline-flex items-start gap-1 text-[11px] text-muted-foreground/70">
+          <UserRound className="mt-0.5 size-3 shrink-0" />
+          <span>
+            User secrets resolve from the user responsible for the run. Required bindings fail until that user
+            sets their value under Secrets → My secrets.
+          </span>
+        </p>
+      ) : null}
       </div>
     </TooltipProvider>
   );

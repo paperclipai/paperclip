@@ -7,6 +7,7 @@ import {
   agentWakeupRequests,
   budgetPolicies,
   companies,
+  companyMemberships,
   costEvents,
   createDb,
   executionWorkspaces,
@@ -215,6 +216,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     const workspaceState = opts.workspaceState ?? "none";
     const companyId = randomUUID();
     const agentId = randomUUID();
+    const ownerUserId = randomUUID();
     const blockedIssueId = randomUUID();
     const blockerIssueId = randomUUID();
     const projectId = randomUUID();
@@ -227,6 +229,13 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       name: "Paperclip",
       issuePrefix,
       requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: ownerUserId,
+      membershipRole: "owner",
+      status: "active",
     });
     await db.insert(agents).values({
       id: agentId,

@@ -52,6 +52,11 @@ import {
   createSecretSchema,
   updateSecretSchema,
   rotateSecretSchema,
+  rotateUserSecretValueSchema,
+  createUserSecretDefinitionSchema,
+  updateUserSecretDefinitionSchema,
+  createUserSecretValueSchema,
+  updateUserSecretValueSchema,
   // Approval
   createApprovalSchema,
   resolveApprovalSchema,
@@ -672,6 +677,16 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/secret-provider-configs/{id}",
   "POST /api/secret-provider-configs/{id}/default",
   "POST /api/secret-provider-configs/{id}/health",
+  "GET /api/companies/{companyId}/user-secret-definitions",
+  "POST /api/companies/{companyId}/user-secret-definitions",
+  "PATCH /api/companies/{companyId}/user-secret-definitions/{definitionId}",
+  "DELETE /api/companies/{companyId}/user-secret-definitions/{definitionId}",
+  "GET /api/companies/{companyId}/user-secret-definitions/{definitionId}/coverage",
+  "GET /api/companies/{companyId}/me/user-secrets",
+  "POST /api/companies/{companyId}/me/user-secrets",
+  "PATCH /api/companies/{companyId}/me/user-secrets/{secretId}",
+  "POST /api/companies/{companyId}/me/user-secrets/{secretId}/rotate",
+  "DELETE /api/companies/{companyId}/me/user-secrets/{secretId}",
   "POST /api/companies/{companyId}/secrets/remote-import",
   "POST /api/companies/{companyId}/secrets/remote-import/preview",
   "GET /api/secrets/{id}/usage",
@@ -732,6 +747,8 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/routines",
   "POST /api/routines/{id}/triggers",
   "POST /api/companies/{companyId}/secrets",
+  "POST /api/companies/{companyId}/user-secret-definitions",
+  "POST /api/companies/{companyId}/me/user-secrets",
   "POST /api/companies/{companyId}/skills",
   "POST /api/companies/{companyId}/skills/import",
   "POST /api/join-requests/{requestId}/claim-api-key",
@@ -2254,6 +2271,111 @@ registry.registerPath({
   summary: "Delete a secret",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/user-secret-definitions",
+  tags: ["secrets"],
+  summary: "List user secret definitions",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/user-secret-definitions",
+  tags: ["secrets"],
+  summary: "Create a user secret definition",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createUserSecretDefinitionSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/companies/{companyId}/user-secret-definitions/{definitionId}",
+  tags: ["secrets"],
+  summary: "Update a user secret definition",
+  request: {
+    params: z.object({ companyId: z.string(), definitionId: z.string() }),
+    body: jsonBody(updateUserSecretDefinitionSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/user-secret-definitions/{definitionId}",
+  tags: ["secrets"],
+  summary: "Delete a user secret definition",
+  request: { params: z.object({ companyId: z.string(), definitionId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/user-secret-definitions/{definitionId}/coverage",
+  tags: ["secrets"],
+  summary: "Get user secret definition coverage",
+  request: { params: z.object({ companyId: z.string(), definitionId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/me/user-secrets",
+  tags: ["secrets"],
+  summary: "List my user secret values",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/me/user-secrets",
+  tags: ["secrets"],
+  summary: "Create my user secret value",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(createUserSecretValueSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/companies/{companyId}/me/user-secrets/{secretId}",
+  tags: ["secrets"],
+  summary: "Update my user secret value",
+  request: {
+    params: z.object({ companyId: z.string(), secretId: z.string() }),
+    body: jsonBody(updateUserSecretValueSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/me/user-secrets/{secretId}/rotate",
+  tags: ["secrets"],
+  summary: "Rotate my user secret value",
+  request: {
+    params: z.object({ companyId: z.string(), secretId: z.string() }),
+    body: jsonBody(rotateUserSecretValueSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/me/user-secrets/{secretId}",
+  tags: ["secrets"],
+  summary: "Delete my user secret value",
+  request: { params: z.object({ companyId: z.string(), secretId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 // ─── Approvals ───────────────────────────────────────────────────────────────

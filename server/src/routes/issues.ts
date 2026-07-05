@@ -129,6 +129,7 @@ import { executionWorkspaceService as executionWorkspaceServiceDirect } from "..
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { readAcceptedPlanConfirmationTarget } from "../services/issues.js";
+import { authorizationDeniedDetails } from "../services/authorization.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -395,6 +396,89 @@ function readNonEmptyString(value: unknown): string | null {
 
 function readObject(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function hasOwn(record: Record<string, unknown>, key: string) {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+async function auditAgentIssueCreateAttributionSpoof(input: {
+  db: Db;
+  req: Request;
+  companyId: string;
+  entityId?: string | null;
+  surface: string;
+  field: "responsibleUserId" | "createdByUserId";
+  action: "rejected" | "stripped";
+  requestedValue: string | null;
+}) {
+  const actor = getActorInfo(input.req);
+  await logActivity(input.db, {
+    companyId: input.companyId,
+    actorType: actor.actorType,
+    actorId: actor.actorId,
+    agentId: actor.agentId,
+    runId: actor.runId,
+    action: input.action === "rejected"
+      ? "issue.attribution_spoof_rejected"
+      : "issue.attribution_spoof_stripped",
+    entityType: input.entityId ? "issue" : "company",
+    entityId: input.entityId ?? input.companyId,
+    details: {
+      surface: input.surface,
+      field: input.field,
+      requestedValue: input.requestedValue,
+      derivedFrom: "authenticated_actor",
+    },
+  });
+}
+
+async function sanitizeIssueCreateAttribution<T extends object>(
+  db: Db,
+  req: Request,
+  res: Response,
+  companyId: string,
+  input: T,
+  options: { surface: string; entityId?: string | null },
+) {
+  const sanitized = { ...input } as T & Record<string, unknown>;
+  if (req.actor.type !== "agent") return sanitized;
+
+  if (hasOwn(sanitized, "responsibleUserId") && sanitized.responsibleUserId != null) {
+    await auditAgentIssueCreateAttributionSpoof({
+      db,
+      req,
+      companyId,
+      entityId: options.entityId,
+      surface: options.surface,
+      field: "responsibleUserId",
+      action: "rejected",
+      requestedValue: readNonEmptyString(sanitized.responsibleUserId),
+    });
+    res.status(422).json({ error: "Agent-created issues cannot set responsibleUserId" });
+    return null;
+  }
+
+  if (hasOwn(sanitized, "createdByUserId") && sanitized.createdByUserId != null) {
+    await auditAgentIssueCreateAttributionSpoof({
+      db,
+      req,
+      companyId,
+      entityId: options.entityId,
+      surface: options.surface,
+      field: "createdByUserId",
+      action: "stripped",
+      requestedValue: readNonEmptyString(sanitized.createdByUserId),
+    });
+    delete sanitized.createdByUserId;
+  }
+
+  delete sanitized.responsibleUserId;
+  return sanitized;
+}
+
+function authenticatedActorResponsibleUserId(req: Request) {
+  return req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
 }
 
 function readPlanConfirmationTargetForIssue(payload: unknown, issueId: string) {
@@ -817,7 +901,7 @@ async function assertCanManageIssueMonitor(
     resource: { type: "company", companyId },
   });
   if (!runtimeDecision.allowed) {
-    throw forbidden(runtimeDecision.explanation);
+    throw forbidden(runtimeDecision.explanation, authorizationDeniedDetails(runtimeDecision));
   }
   if (req.actor.type === "agent" && req.actor.agentId && req.actor.agentId === assigneeAgentId) return;
   throw forbidden("Only the assignee agent or a board user can manage issue monitors");
@@ -1974,7 +2058,7 @@ export function issueRoutes(
       scope: assignmentScope ?? null,
     });
     if (decision.allowed) return;
-    throw forbidden(decision.explanation);
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
   function isTaskBridgeKeyActor(req: Request) {
@@ -5168,7 +5252,11 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     if (await assertLowTrustControlPlaneDenied(req, res, companyId, null)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    const { watchdogDiscovery: rawWatchdogDiscovery, ...rawCreateBody } = req.body;
+    const sanitizedBody = await sanitizeIssueCreateAttribution(db, req, res, companyId, req.body, {
+      surface: "issues.create",
+    });
+    if (!sanitizedBody) return;
+    const { watchdogDiscovery: rawWatchdogDiscovery, ...rawCreateBody } = sanitizedBody;
     const watchdogDiscovery = normalizeWatchdogDiscovery(rawWatchdogDiscovery);
     const watchdogProductBugFollowUp = await resolveTaskWatchdogProductBugFollowUp(
       req,
@@ -5278,6 +5366,9 @@ export function issueRoutes(
       ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      actorRunId: actor.runId,
+      actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+      trustExplicitResponsibleUserId: actor.actorType === "user",
       watchdogActorRunId: actor.runId,
     });
     await issueReferencesSvc.syncIssue(issue.id);
@@ -5394,12 +5485,17 @@ export function issueRoutes(
     if (!(await assertTaskWatchdogCreateIssueAllowed(req, res, parent.companyId, parent))) return;
     if (await assertLowTrustControlPlaneDenied(req, res, parent.companyId, parent)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
+    const sanitizedBody = await sanitizeIssueCreateAttribution(db, req, res, parent.companyId, req.body, {
+      surface: "issues.children.create",
+      entityId: parent.id,
+    });
+    if (!sanitizedBody) return;
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       parent.companyId,
-      req.body.assigneeAgentId as string | null | undefined,
+      sanitizedBody.assigneeAgentId as string | null | undefined,
     );
     const createBody = {
-      ...req.body,
+      ...sanitizedBody,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
@@ -5410,7 +5506,7 @@ export function issueRoutes(
       assigneeUserId: createBody.assigneeUserId ?? null,
     };
     await assertTaskBridgeCreateAllowed(req, parent.companyId, childAssignmentScope);
-    if (req.body.assigneeAgentId || req.body.assigneeUserId) {
+    if (sanitizedBody.assigneeAgentId || sanitizedBody.assigneeUserId) {
       await assertCanAssignTasks(req, parent.companyId, childAssignmentScope);
     }
     await assertIssueEnvironmentSelection(parent.companyId, createBody.executionWorkspaceSettings?.environmentId);
@@ -5446,6 +5542,9 @@ export function issueRoutes(
       ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      actorRunId: actor.runId,
+      actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+      trustExplicitResponsibleUserId: actor.actorType === "user",
       actorAgentId: actor.agentId,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
       watchdogActorRunId: actor.runId,
@@ -5567,12 +5666,17 @@ export function issueRoutes(
 
     const requestedChildren = [];
     for (const child of req.body.children as Array<typeof req.body.children[number]>) {
+      const sanitizedChild = await sanitizeIssueCreateAttribution(db, req, res, sourceIssue.companyId, child, {
+        surface: "issues.accepted_plan_decomposition",
+        entityId: sourceIssue.id,
+      });
+      if (!sanitizedChild) return;
       const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
         sourceIssue.companyId,
-        child.assigneeAgentId as string | null | undefined,
+        sanitizedChild.assigneeAgentId as string | null | undefined,
       );
       const childBody = {
-        ...child,
+        ...sanitizedChild,
         ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
       };
       requestedChildren.push(childBody);
@@ -5611,6 +5715,9 @@ export function issueRoutes(
         ...(sourceTrust ? { sourceTrust } : {}),
         createdByAgentId: actor.agentId,
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        actorRunId: actor.runId,
+        actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
+        trustExplicitResponsibleUserId: actor.actorType === "user",
         actorAgentId: actor.agentId,
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
       });

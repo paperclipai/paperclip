@@ -347,7 +347,7 @@ function TaskTreeNode({
         {hasMetadata ? (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {hasExplicitAssignee ? (
-              <TaskField label="Assignee" value={assigneeLabel} />
+              <TaskField label="Responsible" value={assigneeLabel} />
             ) : null}
             {node.task.billingCode ? (
               <TaskField label="Billing" value={node.task.billingCode} />
@@ -1947,7 +1947,7 @@ export function IssueThreadInteractionCard({
                 <ListChecks className="h-3.5 w-3.5" />
                 {interaction.continuationPolicy === "wake_assignee_on_accept"
                   ? "Wakes on confirm"
-                  : "Wakes assignee"}
+                  : "Wakes responsible"}
               </span>
             ) : null}
           </div>

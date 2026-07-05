@@ -267,6 +267,9 @@ const DESIGN_GUIDE_SECRETS: CompanySecret[] = [
   {
     id: "dg-github",
     companyId: "dg",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
     key: "github_token",
     name: "GITHUB_TOKEN",
     provider: "local_encrypted",
@@ -288,6 +291,9 @@ const DESIGN_GUIDE_SECRETS: CompanySecret[] = [
   {
     id: "dg-db",
     companyId: "dg",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
     key: "db_connection",
     name: "DB_CONNECTION",
     provider: "local_encrypted",
@@ -1112,7 +1118,7 @@ export function DesignGuide() {
             }
             identifier="PAP-001"
             title="Implement authentication flow"
-            subtitle="Assigned to Agent Alpha"
+            subtitle="Responsible: Agent Alpha"
             trailing={<IssueStatusBadge status="in_progress" />}
             onClick={() => {}}
           />
@@ -1418,7 +1424,7 @@ export function DesignGuide() {
             <PriorityIcon priority="high" />
           </div>
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Assignee</span>
+            <span className="text-xs text-muted-foreground">Responsible</span>
             <div className="flex items-center gap-1.5">
               <Avatar size="sm"><AvatarFallback>A</AvatarFallback></Avatar>
               <span className="text-xs">Agent Alpha</span>

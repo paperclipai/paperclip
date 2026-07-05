@@ -190,6 +190,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
     });
     await db.insert(agents).values({

@@ -158,6 +158,7 @@ export async function createApp(
   },
 ) {
   const app = express();
+  app.locals.paperclipDb = db;
   const captureRawBody = (req: express.Request, _res: express.Response, buf: Buffer) => {
     (req as unknown as { rawBody: Buffer }).rawBody = buf;
   };

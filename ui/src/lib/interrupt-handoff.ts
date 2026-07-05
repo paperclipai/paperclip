@@ -248,7 +248,7 @@ export function computeComposerHandoffPreview(
     return {
       kind: "clear_assignee",
       tone: "neutral",
-      text: "Clear assignee — no agent will be notified",
+      text: "Clear responsible — no agent will be notified",
     };
   }
 
@@ -298,7 +298,7 @@ export function classifyAssigneeHandoff(
   opts: { agentName?: string | null; interruptedRunAttached?: boolean } = {},
 ): AssigneeHandoffInfo {
   if (to.agentId) {
-    const who = opts.agentName ?? "the assigned agent";
+    const who = opts.agentName ?? "the responsible agent";
     const suffix = opts.interruptedRunAttached ? " (interrupted run attached)" : "";
     return { kind: "agent_wake", wakeText: `queued for ${who}${suffix}` };
   }
@@ -310,7 +310,7 @@ export function classifyAssigneeHandoff(
   }
   return {
     kind: "unassigned",
-    wakeText: "not created — no agent selected. Mention @agent or pick an assignee to dispatch.",
+    wakeText: "not created — no agent selected. Mention @agent or pick a responsible to dispatch.",
   };
 }
 
@@ -328,7 +328,7 @@ export interface ReassignInterruptCopy {
 }
 
 /**
- * Copy for the assignee picker's live-run states: a banner warning that an
+ * Copy for the responsible picker's live-run states: a banner warning that an
  * in-flight run will be interrupted, and the confirm step shown when the
  * operator picks a *different* target mid-run. Naming the running agent keeps
  * the interrupt consequence concrete instead of a bare "are you sure".
@@ -336,7 +336,7 @@ export interface ReassignInterruptCopy {
 export function describeReassignInterrupt(opts: { runningAgentName?: string | null } = {}): ReassignInterruptCopy {
   const who = opts.runningAgentName?.trim() || "An agent";
   return {
-    banner: `${who} is running — changing the assignee will interrupt this run.`,
+    banner: `${who} is running — changing the responsible will interrupt this run.`,
     confirmTitle: "Interrupt the current run?",
     confirmAction: "Interrupt & assign",
     cancelAction: "Cancel",
@@ -386,9 +386,9 @@ const PAUSE_BUCKET_LABEL: Record<PauseAffectsBucketKey, string> = {
 const PAUSE_BUCKET_DETAIL: Record<PauseAffectsBucketKey, string> = {
   live_runs: "interrupted now, re-queued when you resume",
   queued_wakes: "held — they won't start until you resume",
-  agent_owned: "assigned to an agent; no run is live",
+  agent_owned: "responsible agent; no run is live",
   human_owned: "owned by a board user; pausing won't notify them",
-  static: "no assignee; nothing was going to run",
+  static: "no responsible; nothing was going to run",
 };
 
 /**

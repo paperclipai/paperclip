@@ -45,7 +45,7 @@ import {
   isCodexUnknownSessionError,
 } from "./parse.js";
 import {
-  codexHomeHasUsableAuth,
+  evaluateCodexCredentialReadiness,
   isManagedCodexHomePath,
   pathExists,
   prepareManagedCodexHome,
@@ -402,12 +402,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // with OPENAI_API_KEY="" the provider rejects every request with
   // "401 Missing bearer"; fail fast with a clear adapter error instead of
   // emitting unauthenticated calls. External overrides manage their own auth.
-  const effectiveHomeIsManaged = configuredCodexHome == null || configuredHomeIsManaged;
-  if (
-    effectiveHomeIsManaged &&
-    !configuredOpenAiApiKey &&
-    !(await codexHomeHasUsableAuth(effectiveCodexHome))
-  ) {
+  // This is the execute-time backstop for the control plane's pre-dispatch
+  // configuration-incomplete gate (see server heartbeat) — both decide
+  // readiness through the same `evaluateCodexCredentialReadiness` predicate, so
+  // they cannot drift.
+  const credentialReadiness = await evaluateCodexCredentialReadiness({
+    env: process.env,
+    companyId: agent.companyId,
+    configuredCodexHome,
+    configuredApiKey: configuredOpenAiApiKey,
+  });
+  if (credentialReadiness.managed && !credentialReadiness.ready) {
     throw new Error(
       `no Codex credentials provisioned for managed home "${effectiveCodexHome}" ` +
         `(no usable auth.json and OPENAI_API_KEY is empty). ` +

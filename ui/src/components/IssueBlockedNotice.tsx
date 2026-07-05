@@ -236,7 +236,7 @@ export function IssueBlockedNotice({
                   </span>
                 ) : null}
                 <span className="rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 text-amber-900 dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100">
-                  Corrective wake queued for {agentName ?? "the assignee"}
+                  Corrective wake queued for {agentName ?? "the responsible"}
                 </span>
               </div>
               {successfulRunHandoff.detectedProgressSummary ? (
@@ -263,8 +263,8 @@ export function IssueBlockedNotice({
                     ? stalledLeafBlockers.length > 1
                       ? <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled reviews below or remove them as blockers.</>
                       : <>Work on this task is blocked by {blockerLabel}, but the chain is stalled in review without a clear next step. Resolve the stalled review below or remove it as a blocker.</>
-                    : <>Work on this task is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still wake the assignee for questions or triage.</>
-                  : <>Work on this task is blocked until it is moved back to todo. Comments still wake the assignee for questions or triage.</>}
+                    : <>Work on this task is blocked by {blockerLabel} until {blockers.length === 1 ? "it is" : "they are"} complete. Comments still wake the responsible for questions or triage.</>
+                  : <>Work on this task is blocked until it is moved back to todo. Comments still wake the responsible for questions or triage.</>}
               </p>
               {blockers.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5">

@@ -15,6 +15,7 @@ import {
   documents,
   goals,
   heartbeatRuns,
+  routineRuns,
   executionWorkspaces,
   issueApprovals,
   issueAttachments,
@@ -142,6 +143,60 @@ function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+async function resolveResponsibleUserIdForIssueCreate(
+  reader: DbReader,
+  companyId: string,
+  input: {
+    explicitResponsibleUserId?: string | null;
+    createdByUserId?: string | null;
+    parentId?: string | null;
+    originKind?: string | null;
+    originRunId?: string | null;
+    actorRunId?: string | null;
+    actorResponsibleUserId?: string | null;
+    trustExplicitResponsibleUserId?: boolean;
+  },
+) {
+  const explicitResponsibleUserId = readStringFromRecord(input, "explicitResponsibleUserId");
+  if (explicitResponsibleUserId && input.trustExplicitResponsibleUserId === true) return explicitResponsibleUserId;
+
+  if (input.originKind === "routine_execution" && input.originRunId) {
+    const routineRun = await reader
+      .select({ responsibleUserId: routineRuns.responsibleUserId })
+      .from(routineRuns)
+      .where(and(eq(routineRuns.companyId, companyId), eq(routineRuns.id, input.originRunId)))
+      .then((rows) => rows[0] ?? null);
+    if (routineRun?.responsibleUserId) return routineRun.responsibleUserId;
+  }
+
+  const actorResponsibleUserId = readStringFromRecord(input, "actorResponsibleUserId");
+  if (actorResponsibleUserId) return actorResponsibleUserId;
+
+  if (input.actorRunId) {
+    const actorRun = await reader
+      .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, input.actorRunId)))
+      .then((rows) => rows[0] ?? null);
+    if (actorRun?.responsibleUserId) return actorRun.responsibleUserId;
+  }
+
+  if (input.parentId) {
+    const parent = await reader
+      .select({
+        responsibleUserId: issues.responsibleUserId,
+        createdByUserId: issues.createdByUserId,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, input.parentId)))
+      .then((rows) => rows[0] ?? null);
+    if (parent?.responsibleUserId) return parent.responsibleUserId;
+    if (parent?.createdByUserId) return parent.createdByUserId;
+  }
+
+  return input.createdByUserId ?? null;
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -413,6 +468,9 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   inheritExecutionWorkspaceFromIssueId?: string | null;
   watchdog?: { agentId: string; instructions?: string | null } | null;
   watchdogActorRunId?: string | null;
+  actorRunId?: string | null;
+  actorResponsibleUserId?: string | null;
+  trustExplicitResponsibleUserId?: boolean;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -2217,6 +2275,7 @@ const issueListSelect = {
   executionLockedAt: issues.executionLockedAt,
   createdByAgentId: issues.createdByAgentId,
   createdByUserId: issues.createdByUserId,
+  responsibleUserId: issues.responsibleUserId,
   issueNumber: issues.issueNumber,
   identifier: issues.identifier,
   originKind: issues.originKind,
@@ -4982,6 +5041,8 @@ export function issueService(db: Db) {
         parentId: parent.id,
         projectId: issueData.projectId ?? parent.projectId,
         goalId: issueData.goalId ?? parent.goalId,
+        actorResponsibleUserId: issueData.actorResponsibleUserId ?? null,
+        trustExplicitResponsibleUserId: issueData.trustExplicitResponsibleUserId === true,
         requestDepth: clampIssueRequestDepth(
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
@@ -5291,6 +5352,9 @@ export function issueService(db: Db) {
         inheritExecutionWorkspaceFromIssueId,
         watchdog,
         watchdogActorRunId,
+        actorRunId,
+        actorResponsibleUserId,
+        trustExplicitResponsibleUserId,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -5436,9 +5500,20 @@ export function issueService(db: Db) {
 
         const issueNumber = company.issueCounter;
         const identifier = `${company.issuePrefix}-${issueNumber}`;
+        const responsibleUserId = await resolveResponsibleUserIdForIssueCreate(tx, companyId, {
+          explicitResponsibleUserId: issueData.responsibleUserId ?? null,
+          createdByUserId: issueData.createdByUserId ?? null,
+          parentId: issueData.parentId ?? null,
+          originKind: issueData.originKind ?? "manual",
+          originRunId: issueData.originRunId ?? null,
+          actorRunId: actorRunId ?? null,
+          actorResponsibleUserId: actorResponsibleUserId ?? null,
+          trustExplicitResponsibleUserId: trustExplicitResponsibleUserId === true,
+        });
 
         const values = {
           ...issueData,
+          responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",
           goalId: resolveIssueGoalId({

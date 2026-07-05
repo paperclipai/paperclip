@@ -4050,14 +4050,14 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
             ref={reassignTriggerRef}
             value={reassignTarget}
             options={reassignOptions}
-            placeholder="Assignee"
-            noneLabel="No assignee"
-            searchPlaceholder="Search assignees..."
-            emptyMessage="No assignees found."
+            placeholder="Responsible"
+            noneLabel="No responsible"
+            searchPlaceholder="Search responsible..."
+            emptyMessage="No responsible found."
             onChange={setReassignTarget}
             className="h-8 text-xs"
             renderTriggerValue={(option) => {
-              if (!option) return <span className="text-muted-foreground">Assignee</span>;
+              if (!option) return <span className="text-muted-foreground">Responsible</span>;
               const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
               const agent = agentId ? agentMap?.get(agentId) : null;
               return (
@@ -4102,10 +4102,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
           }}
         >
           <AlertDialogHeader>
-            <AlertDialogTitle>No assignee selected</AlertDialogTitle>
+            <AlertDialogTitle>No responsible selected</AlertDialogTitle>
             <AlertDialogDescription>
               This comment will be posted without an assignee, so no agent will be woken
-              to act on it. Go back to pick an assignee, or send anyway.
+              to act on it. Go back to pick a responsible, or send anyway.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

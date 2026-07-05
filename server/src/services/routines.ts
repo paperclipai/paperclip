@@ -3,6 +3,8 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, ne, not, or, sql }
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companies,
+  companyMemberships,
   companySecretBindings,
   companySecretVersions,
   companySecrets,
@@ -80,6 +82,45 @@ const WEEKDAY_INDEX: Record<string, number> = {
   Fri: 5,
   Sat: 6,
 };
+
+async function resolveCompanyDefaultResponsibleUserId(db: Db, companyId: string) {
+  const company = await db
+    .select({ defaultResponsibleUserId: companies.defaultResponsibleUserId })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .then((rows) => rows[0] ?? null);
+  if (company?.defaultResponsibleUserId) return company.defaultResponsibleUserId;
+
+  const owner = await db
+    .select({ userId: companyMemberships.principalId })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.status, "active"),
+        eq(companyMemberships.membershipRole, "owner"),
+      ),
+    )
+    .orderBy(asc(companyMemberships.createdAt), asc(companyMemberships.id))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return owner?.userId ?? null;
+}
+
+async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorUserId: string | null | undefined, parentIssueId?: string | null) {
+  if (actorUserId) return actorUserId;
+  if (parentIssueId) {
+    const parent = await db
+      .select({ responsibleUserId: issues.responsibleUserId, createdByUserId: issues.createdByUserId })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, parentIssueId)))
+      .then((rows) => rows[0] ?? null);
+    if (parent?.responsibleUserId) return parent.responsibleUserId;
+    if (parent?.createdByUserId) return parent.createdByUserId;
+  }
+  return resolveCompanyDefaultResponsibleUserId(db, companyId);
+}
 
 type Actor = { agentId?: string | null; userId?: string | null; runId?: string | null };
 type RoutineRow = typeof routines.$inferSelect;
@@ -452,6 +493,7 @@ function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSna
     catchUpPolicy: routine.catchUpPolicy as RoutineRevisionSnapshotV1["routine"]["catchUpPolicy"],
     variables: routine.variables ?? [],
     env: routine.env ?? null,
+    responsibleUserId: routine.responsibleUserId ?? null,
   };
 }
 
@@ -819,6 +861,7 @@ export function routineService(
         createdByAgentId: actor.agentId ?? null,
         createdByUserId: actor.userId ?? null,
         createdByRunId: actor.runId ?? null,
+        responsibleUserId: snapshot.routine.responsibleUserId ?? null,
         createdAt: now,
       })
       .returning();
@@ -1136,6 +1179,7 @@ export function routineService(
           completedAt: triggeredAt,
           linkedIssueId: null,
           routineRevisionId: input.routine.latestRevisionId,
+          responsibleUserId: input.routine.responsibleUserId ?? null,
         })
         .returning();
       await updateRoutineTouchedState({
@@ -1485,6 +1529,26 @@ export function routineService(
 
       const triggeredAt = new Date();
       const manualRunnerUserId = input.source === "manual" ? input.actor?.userId ?? null : null;
+      const latestRevisionResponsibleUserId = input.routine.latestRevisionId
+        ? await txDb
+            .select({
+              responsibleUserId: routineRevisions.responsibleUserId,
+              snapshot: routineRevisions.snapshot,
+            })
+            .from(routineRevisions)
+            .where(and(
+              eq(routineRevisions.companyId, input.routine.companyId),
+              eq(routineRevisions.routineId, input.routine.id),
+              eq(routineRevisions.id, input.routine.latestRevisionId),
+            ))
+            .then((rows) => {
+              const row = rows[0] ?? null;
+              const snapshot = row?.snapshot as RoutineRevisionSnapshotV1 | undefined;
+              return row?.responsibleUserId ?? snapshot?.routine.responsibleUserId ?? null;
+            })
+        : null;
+      const responsibleUserId =
+        manualRunnerUserId ?? latestRevisionResponsibleUserId ?? input.routine.responsibleUserId ?? null;
       const [createdRun] = await txDb
         .insert(routineRuns)
         .values({
@@ -1498,6 +1562,7 @@ export function routineService(
           triggerPayload,
           dispatchFingerprint,
           routineRevisionId: input.routine.latestRevisionId,
+          responsibleUserId,
         })
         .returning();
 
@@ -1551,6 +1616,8 @@ export function routineService(
             assigneeAgentId,
             createdByAgentId: input.source === "manual" ? input.actor?.agentId ?? null : null,
             createdByUserId: manualRunnerUserId,
+            responsibleUserId,
+            trustExplicitResponsibleUserId: true,
             originKind: issueOriginKind,
             originId: issueOriginId,
             originRunId: createdRun.id,
@@ -1842,6 +1909,10 @@ export function routineService(
       );
       assertRoutineVariableDefinitions(variables);
       const status = normalizeDraftRoutineStatus(input.status, input.assigneeAgentId);
+      const responsibleUserId = await resolveRoutineResponsibleUserId(db, companyId, actor.userId, input.parentIssueId ?? null);
+      if (!responsibleUserId) {
+        throw unprocessable("Routine requires a responsible user");
+      }
       const createdRoutine = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         const [created] = await txDb
@@ -1860,6 +1931,7 @@ export function routineService(
             catchUpPolicy: input.catchUpPolicy,
             variables,
             env,
+            responsibleUserId,
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             updatedByAgentId: actor.agentId ?? null,
@@ -1930,6 +2002,15 @@ export function routineService(
       if (enabledScheduleTriggers) {
         assertScheduleCompatibleVariables(nextVariables);
       }
+      const responsibleUserId = await resolveRoutineResponsibleUserId(
+        db,
+        existing.companyId,
+        actor.userId,
+        patch.parentIssueId === undefined ? existing.parentIssueId : patch.parentIssueId,
+      );
+      if (!responsibleUserId) {
+        throw unprocessable("Routine requires a responsible user");
+      }
       const updatedRoutine = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         await tx.execute(sql`select id from ${routines} where ${routines.id} = ${id} for update`);
@@ -1960,6 +2041,7 @@ export function routineService(
           catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
           variables: nextVariables,
           env: nextEnv,
+          responsibleUserId: locked.responsibleUserId ?? responsibleUserId,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
@@ -2009,6 +2091,7 @@ export function routineService(
             catchUpPolicy: candidate.catchUpPolicy,
             variables: candidate.variables,
             env: candidate.env,
+            responsibleUserId: candidate.responsibleUserId,
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
             updatedAt: new Date(),

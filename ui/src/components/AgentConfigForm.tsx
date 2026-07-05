@@ -221,6 +221,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => secretsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
+  // User-secret definitions power the "User secret" env binding source. Requires
+  // secret-admin; non-admins simply get the free-text key fallback in the editor.
+  const { data: userSecretDefinitions = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.secrets.userDefinitions(selectedCompanyId)
+      : ["user-secret-definitions", "none"],
+    queryFn: () => secretsApi.listUserSecretDefinitions(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+    retry: false,
+  });
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -1380,6 +1390,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       )
                   }
                   secrets={availableSecrets}
+                  userSecretDefinitions={userSecretDefinitions}
                   onCreateSecret={async (name, value) => {
                     const created = await createSecret.mutateAsync({ name, value });
                     return created;
