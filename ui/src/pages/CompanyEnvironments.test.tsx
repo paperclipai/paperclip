@@ -673,7 +673,7 @@ describe("CompanyEnvironments — test provider button", () => {
     await waitForAssertion(() => {
       expect(getOpenDialog()?.textContent).toContain("Configure image");
     });
-    expect(mockEnvironmentsApi.customImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1");
+    expect(mockEnvironmentsApi.customImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
     await act(async () => click(findButton(document.body, "Cancel")));
     await waitForAssertion(() => expect(getOpenDialog()).toBeNull());
 
@@ -1037,6 +1037,7 @@ describe("CompanyEnvironments — test provider button", () => {
 
     expect(mockEnvironmentsApi.startCustomImageSetupSession).toHaveBeenCalledWith(
       "env-1",
+      "company-1",
       { templateId: "template-active" },
     );
     await waitForAssertion(() => {
