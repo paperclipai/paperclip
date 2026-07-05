@@ -679,6 +679,24 @@ export const toolRateLimitCounters = pgTable(
   ],
 );
 
+export const toolRuntimeMetricCounters = pgTable(
+  "tool_runtime_metric_counters",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    metric: text("metric").notNull(),
+    bucketStartAt: timestamp("bucket_start_at", { withTimezone: true }).notNull(),
+    count: integer("count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("tool_runtime_metric_counters_company_metric_idx").on(table.companyId, table.metric, table.bucketStartAt),
+    uniqueIndex("tool_runtime_metric_counters_bucket_uq").on(table.companyId, table.metric, table.bucketStartAt),
+    sql`CONSTRAINT tool_runtime_metric_counters_count_nonnegative CHECK (${table.count} >= 0)`,
+  ],
+);
+
 export const toolAccessAuditEvents = pgTable(
   "tool_access_audit_events",
   {

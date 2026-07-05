@@ -100,6 +100,7 @@ export {
   toolMcpGatewayTokens,
   toolPolicies,
   toolRuntimeSlots,
+  toolRuntimeMetricCounters,
   toolStdioCommandTemplates,
   toolGatewaySessions,
   toolInvocations,

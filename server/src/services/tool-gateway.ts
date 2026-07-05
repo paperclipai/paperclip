@@ -61,6 +61,7 @@ import {
   type ToolRuntimeSupervisorOptions,
   type ToolRuntimeSlotView,
 } from "./tool-runtime-supervisor.js";
+import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
 import {
   canonicalToolArguments,
   readSignedToolArgumentsPayload,
@@ -1081,37 +1082,42 @@ export function createToolGatewayService(
           : input.action === "tool_gateway.call_failed"
             ? "failure"
             : "success";
-    await db.insert(toolAccessAuditEvents).values({
-      companyId: input.companyId,
-      gatewayId: input.session?.gatewayId ?? (typeof input.details.gatewayId === "string" && uuidPattern.test(input.details.gatewayId) ? input.details.gatewayId : null),
-      gatewayTokenId: input.session?.gatewayTokenId && uuidPattern.test(input.session.gatewayTokenId)
-        ? input.session.gatewayTokenId
-        : typeof input.details.gatewayTokenId === "string" && uuidPattern.test(input.details.gatewayTokenId)
-          ? input.details.gatewayTokenId
-          : null,
-      gatewayPublicId: typeof input.details.gatewayPublicId === "string" ? input.details.gatewayPublicId : null,
-      clientName: typeof input.details.clientName === "string" ? input.details.clientName : null,
-      correlationId: typeof input.details.correlationId === "string" ? input.details.correlationId : null,
-      connectionId: typeof input.details.connectionId === "string" ? input.details.connectionId : null,
-      catalogEntryId: typeof input.details.catalogEntryId === "string" ? input.details.catalogEntryId : null,
-      actorType: input.actorType ?? input.session?.actorType ?? (input.agentId ? "agent" : "system"),
-      actorId: input.actorId ?? input.session?.actorId ?? input.agentId ?? input.session?.gatewayTokenId ?? input.companyId,
-      action: dedicatedAuditAction,
-      outcome: dedicatedOutcome,
-      reasonCode: typeof input.details.reasonCode === "string" ? input.details.reasonCode : null,
-      details: {
-        source: input.action,
-        agentId: input.agentId,
-        issueId: input.issueId,
-        runId: input.runId,
-        gatewaySessionId: input.session?.id ?? null,
-        gatewayId: input.session?.gatewayId ?? null,
-        gatewayPublicId: input.session?.gatewayPublicId ?? null,
-        gatewayName: input.session?.gatewayName ?? null,
-        gatewayTokenId: input.session?.gatewayTokenId ?? null,
-        ...input.details,
-      },
-    });
+    try {
+      await db.insert(toolAccessAuditEvents).values({
+        companyId: input.companyId,
+        gatewayId: input.session?.gatewayId ?? (typeof input.details.gatewayId === "string" && uuidPattern.test(input.details.gatewayId) ? input.details.gatewayId : null),
+        gatewayTokenId: input.session?.gatewayTokenId && uuidPattern.test(input.session.gatewayTokenId)
+          ? input.session.gatewayTokenId
+          : typeof input.details.gatewayTokenId === "string" && uuidPattern.test(input.details.gatewayTokenId)
+            ? input.details.gatewayTokenId
+            : null,
+        gatewayPublicId: typeof input.details.gatewayPublicId === "string" ? input.details.gatewayPublicId : null,
+        clientName: typeof input.details.clientName === "string" ? input.details.clientName : null,
+        correlationId: typeof input.details.correlationId === "string" ? input.details.correlationId : null,
+        connectionId: typeof input.details.connectionId === "string" ? input.details.connectionId : null,
+        catalogEntryId: typeof input.details.catalogEntryId === "string" ? input.details.catalogEntryId : null,
+        actorType: input.actorType ?? input.session?.actorType ?? (input.agentId ? "agent" : "system"),
+        actorId: input.actorId ?? input.session?.actorId ?? input.agentId ?? input.session?.gatewayTokenId ?? input.companyId,
+        action: dedicatedAuditAction,
+        outcome: dedicatedOutcome,
+        reasonCode: typeof input.details.reasonCode === "string" ? input.details.reasonCode : null,
+        details: {
+          source: input.action,
+          agentId: input.agentId,
+          issueId: input.issueId,
+          runId: input.runId,
+          gatewaySessionId: input.session?.id ?? null,
+          gatewayId: input.session?.gatewayId ?? null,
+          gatewayPublicId: input.session?.gatewayPublicId ?? null,
+          gatewayName: input.session?.gatewayName ?? null,
+          gatewayTokenId: input.session?.gatewayTokenId ?? null,
+          ...input.details,
+        },
+      });
+    } catch (error) {
+      await recordToolRuntimeAuditWriteFailure(db, input.companyId);
+      throw error;
+    }
 
     const entityType = input.issueId ? "issue" : input.session?.gatewayId ? "tool_mcp_gateway" : "agent";
     const entityId = input.issueId ?? input.session?.gatewayId ?? input.agentId ?? input.companyId;

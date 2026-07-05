@@ -527,7 +527,7 @@ export interface ToolRuntimeMetricSnapshot {
   averageToolLatencyMsLastHour: number | null;
   p95ToolLatencyMsLastHour: number | null;
   missingSecretFailuresLastHour: number;
-  auditWriteFailuresLastHour: number | null;
+  auditWriteFailuresLastHour: number;
   activeConnections: number;
   disabledConnections: number;
   degradedConnections: number;

@@ -43,6 +43,7 @@ import type {
 import { toolPolicyConditionsSchema } from "@paperclipai/shared";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
 import { narrowestScopeBindings, profileIdsInBindingOrder } from "./tool-profile-binding-precedence.js";
+import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
 
 type ToolAccessContext = {
   companyId: string;
@@ -1256,67 +1257,72 @@ export function toolAccessPolicyService(db: Db) {
       riskLevel: input.request.riskLevel ?? null,
     };
     const runId = "runId" in ctx ? ctx.runId : ctx.heartbeatRunId;
-    const [legacyAuditEvent] = await db.insert(toolAccessAuditEvents).values({
-      companyId: input.companyId,
-      connectionId: ctx.connectionId,
-      catalogEntryId: ctx.catalogEntryId,
-      actorType: ctx.actorType,
-      actorId: ctx.actorId,
-      action: `tool_access.${eventType}`,
-      outcome: accessDecision.allowed ? "success" : "denied",
-      reasonCode: accessDecision.reasonCode,
-      details: {
+    try {
+      const [legacyAuditEvent] = await db.insert(toolAccessAuditEvents).values({
+        companyId: input.companyId,
+        connectionId: ctx.connectionId,
+        catalogEntryId: ctx.catalogEntryId,
+        actorType: ctx.actorType,
+        actorId: ctx.actorId,
+        action: `tool_access.${eventType}`,
+        outcome: accessDecision.allowed ? "success" : "denied",
+        reasonCode: accessDecision.reasonCode,
+        details: {
+          decision: accessDecision.decision,
+          matchedPolicyIds: accessDecision.matchedPolicyIds,
+          effectiveProfileIds: accessDecision.effectiveProfileIds,
+          applicationId: ctx.applicationId,
+          applicationKey: ctx.applicationKey,
+          providerType: ctx.providerType,
+          upstreamToolName: ctx.upstreamToolName,
+          agentId: ctx.agentId,
+          issueId: ctx.issueId,
+          runId,
+          toolName: ctx.toolName,
+          riskLevel: ctx.riskLevel,
+          argumentsSummary: redaction.summary,
+          redactionPlan: redaction.redactionPlan,
+          policyExplanation: accessDecision.policyExplanation ?? null,
+          rateLimitState: accessDecision.rateLimitState ?? null,
+        },
+      }).returning();
+      const [toolCallEvent] = await db.insert(toolCallEvents).values({
+        companyId: input.companyId,
+        eventType: eventType as typeof toolCallEvents.$inferInsert["eventType"],
+        actorType: ctx.actorType,
+        actorId: ctx.actorId,
+        agentId: ctx.agentId,
+        runId,
+        issueId: ctx.issueId,
+        applicationId: ctx.applicationId,
+        connectionId: ctx.connectionId,
+        catalogEntryId: ctx.catalogEntryId,
+        toolName: ctx.toolName,
         decision: accessDecision.decision,
         matchedPolicyIds: accessDecision.matchedPolicyIds,
-        effectiveProfileIds: accessDecision.effectiveProfileIds,
-        applicationId: ctx.applicationId,
-        applicationKey: ctx.applicationKey,
-        providerType: ctx.providerType,
-        upstreamToolName: ctx.upstreamToolName,
-        agentId: ctx.agentId,
-        issueId: ctx.issueId,
-        runId,
-        toolName: ctx.toolName,
-        riskLevel: ctx.riskLevel,
+        reasonCode: accessDecision.reasonCode,
+        outcome: auditOutcome(accessDecision),
         argumentsSummary: redaction.summary,
+        requestHash: redaction.summary.sha256 ?? null,
+        requestSummary: redaction.summary,
         redactionPlan: redaction.redactionPlan,
-        policyExplanation: accessDecision.policyExplanation ?? null,
         rateLimitState: accessDecision.rateLimitState ?? null,
-      },
-    }).returning();
-    const [toolCallEvent] = await db.insert(toolCallEvents).values({
-      companyId: input.companyId,
-      eventType: eventType as typeof toolCallEvents.$inferInsert["eventType"],
-      actorType: ctx.actorType,
-      actorId: ctx.actorId,
-      agentId: ctx.agentId,
-      runId,
-      issueId: ctx.issueId,
-      applicationId: ctx.applicationId,
-      connectionId: ctx.connectionId,
-      catalogEntryId: ctx.catalogEntryId,
-      toolName: ctx.toolName,
-      decision: accessDecision.decision,
-      matchedPolicyIds: accessDecision.matchedPolicyIds,
-      reasonCode: accessDecision.reasonCode,
-      outcome: auditOutcome(accessDecision),
-      argumentsSummary: redaction.summary,
-      requestHash: redaction.summary.sha256 ?? null,
-      requestSummary: redaction.summary,
-      redactionPlan: redaction.redactionPlan,
-      rateLimitState: accessDecision.rateLimitState ?? null,
-      metadata: {
-        legacyAuditEventId: legacyAuditEvent.id,
-        effectiveProfileIds: accessDecision.effectiveProfileIds,
-        explanation: accessDecision.explanation,
-        policyExplanation: accessDecision.policyExplanation ?? null,
-        providerType: ctx.providerType,
-        applicationKey: ctx.applicationKey,
-        upstreamToolName: ctx.upstreamToolName,
-        riskLevel: ctx.riskLevel,
-      },
-    }).returning();
-    return { legacyAuditEvent, toolCallEvent };
+        metadata: {
+          legacyAuditEventId: legacyAuditEvent.id,
+          effectiveProfileIds: accessDecision.effectiveProfileIds,
+          explanation: accessDecision.explanation,
+          policyExplanation: accessDecision.policyExplanation ?? null,
+          providerType: ctx.providerType,
+          applicationKey: ctx.applicationKey,
+          upstreamToolName: ctx.upstreamToolName,
+          riskLevel: ctx.riskLevel,
+        },
+      }).returning();
+      return { legacyAuditEvent, toolCallEvent };
+    } catch (error) {
+      await recordToolRuntimeAuditWriteFailure(db, input.companyId);
+      throw error;
+    }
   }
 
   async function recordInvocation(input: ToolAccessDecisionInput, accessDecision: ToolAccessDecision) {

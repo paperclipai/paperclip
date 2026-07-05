@@ -31,7 +31,7 @@ Metrics surfaced there include:
 - Tool-call health: call count, timeout count/rate, failure count/rate, average latency, p95 latency.
 - Connection health: active, disabled, degraded, `remote_http`, and `local_stdio` connection counts.
 - Secret failures: missing-secret failures in the last hour.
-- Audit write failures: listed as `not_instrumented` until a durable audit-write-failure counter lands.
+- Audit write failures: durable `audit_write_failed` counter increments whenever MCP audit-event persistence fails.
 
 ## Alerts
 
@@ -145,6 +145,5 @@ Recovery is complete when stuck-slot alerts clear, timeout/error rates return be
 Automated coverage includes:
 
 - A synthetic degraded runtime-health scenario in `server/src/__tests__/tool-access-service.test.ts` that creates a stale running slot, degraded connection, timeout event, capacity deferral, and restart suppression.
+- A durable audit-write failure scenario in `server/src/__tests__/tool-access-service.test.ts` that verifies `mcp_runtime_audit_write_failures` fires from the counter path.
 - A gateway runtime recovery scenario in `server/src/__tests__/tool-gateway.test.ts` that recovers a stuck local stdio slot before reuse.
-
-Known gap: audit write failures are recommended as a production alert but do not yet have a durable failure counter. Until that lands, treat database write errors around tool access audit paths as a control-plane incident.

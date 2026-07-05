@@ -27,6 +27,7 @@ import {
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
+  toolRuntimeMetricCounters,
   toolRuntimeSlots,
 } from "@paperclipai/db";
 import type {
@@ -102,6 +103,7 @@ import { secretService } from "./secrets.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { readSignedToolArgumentsPayload } from "./tool-content-guards.js";
 import { narrowestScopeBindings, profileIdsInBindingOrder } from "./tool-profile-binding-precedence.js";
+import { recordToolRuntimeAuditWriteFailure, TOOL_RUNTIME_AUDIT_WRITE_FAILURE_METRIC } from "./tool-runtime-metrics.js";
 import { createToolRuntimeSupervisor, ToolRuntimeSupervisorError } from "./tool-runtime-supervisor.js";
 
 type ActorInfo = {
@@ -1268,17 +1270,22 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     details?: Record<string, unknown>;
     actor?: ActorInfo;
   }) {
-    await db.insert(toolAccessAuditEvents).values({
-      companyId: input.companyId,
-      connectionId: input.connectionId ?? null,
-      catalogEntryId: input.catalogEntryId ?? null,
-      actorType: input.actor?.actorType ?? "system",
-      actorId: input.actor?.actorId ?? null,
-      action: input.action,
-      outcome: input.outcome,
-      reasonCode: input.reasonCode ?? null,
-      details: input.details ?? {},
-    });
+    try {
+      await db.insert(toolAccessAuditEvents).values({
+        companyId: input.companyId,
+        connectionId: input.connectionId ?? null,
+        catalogEntryId: input.catalogEntryId ?? null,
+        actorType: input.actor?.actorType ?? "system",
+        actorId: input.actor?.actorId ?? null,
+        action: input.action,
+        outcome: input.outcome,
+        reasonCode: input.reasonCode ?? null,
+        details: input.details ?? {},
+      });
+    } catch (error) {
+      await recordToolRuntimeAuditWriteFailure(db, input.companyId);
+      throw error;
+    }
   }
 
   function runtimeAlert(input: ToolRuntimeAlertRecommendation): ToolRuntimeAlertRecommendation {
@@ -1298,7 +1305,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     degradedConnections: number;
     disabledConnections: number;
     missingSecretFailures: number;
-    auditWriteFailures: number | null;
+    auditWriteFailures: number;
   }): ToolRuntimeAlertRecommendation[] {
     const runbookSection = "doc/MCP-RUNTIME-OPERATIONS.md";
     const timeoutSeverity =
@@ -1398,11 +1405,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       runtimeAlert({
         name: "mcp_runtime_audit_write_failures",
         severity: "critical",
-        status: input.auditWriteFailures === null ? "not_instrumented" : input.auditWriteFailures > 0 ? "firing" : "ok",
+        status: input.auditWriteFailures > 0 ? "firing" : "ok",
         threshold: "Any audit write failure.",
-        observed: input.auditWriteFailures === null
-          ? "Not instrumented as a durable counter yet."
-          : `${input.auditWriteFailures} audit write failure(s) in 1 hour.`,
+        observed: `${input.auditWriteFailures} audit write failure(s) in 1 hour.`,
         description: "Tool gateway audit writes failed, reducing incident traceability.",
         firstResponderAction: "Treat as a control-plane incident: check database writes, activity log writes, and retry only after audit durability is restored.",
         runbookSection,
@@ -1414,7 +1419,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const generatedAt = now();
     const windowStartedAt = new Date(generatedAt.getTime() - 60 * 60 * 1000);
     const stuckSlotMs = 5 * 60 * 1000;
-    const [slots, connections, auditRows, callEvents] = await Promise.all([
+    const [slots, connections, auditRows, callEvents, auditWriteFailureCounterRows] = await Promise.all([
       db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.companyId, companyId)),
       db.select().from(toolConnections).where(eq(toolConnections.companyId, companyId)),
       db
@@ -1427,6 +1432,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         .from(toolCallEvents)
         .where(and(eq(toolCallEvents.companyId, companyId), gte(toolCallEvents.createdAt, windowStartedAt)))
         .orderBy(desc(toolCallEvents.createdAt)),
+      db
+        .select({ count: sql<number>`coalesce(sum(${toolRuntimeMetricCounters.count}), 0)::int` })
+        .from(toolRuntimeMetricCounters)
+        .where(and(
+          eq(toolRuntimeMetricCounters.companyId, companyId),
+          eq(toolRuntimeMetricCounters.metric, TOOL_RUNTIME_AUDIT_WRITE_FAILURE_METRIC),
+          gte(toolRuntimeMetricCounters.bucketStartAt, windowStartedAt),
+        )),
     ]);
     const activeSlots = slots.filter((slot) => slot.status === "starting" || slot.status === "running" || slot.status === "idle");
     const staleActiveSlots = activeSlots.filter((slot) => {
@@ -1463,11 +1476,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       row.reasonCode === "missing_secret"
       || row.outcome === "failure" && row.reasonCode?.includes("secret")
     ).length;
-    const auditWriteFailures = auditRows.filter((row) =>
+    const legacyAuditWriteFailures = auditRows.filter((row) =>
       row.action === "runtime_audit_write_failed"
       || row.reasonCode === "audit_write_failed"
     ).length;
-    const auditWriteFailuresMetric = auditWriteFailures > 0 ? auditWriteFailures : null;
+    const auditWriteFailuresMetric = Number(auditWriteFailureCounterRows[0]?.count ?? 0) + legacyAuditWriteFailures;
     const enabledPathConnections = connections.filter((connection) =>
       connection.status === "active"
       && connection.enabled

@@ -58,7 +58,7 @@ There is no downgrade path that preserves audit history. If you must roll back, 
 
 (See [MCP-ACCESS-GOVERNANCE.md#known-limitations](./MCP-ACCESS-GOVERNANCE.md#known-limitations) for the canonical list. The deltas worth calling out in the release note:)
 
-- Audit-write failure counter is not durable yet. The `mcp_runtime_audit_write_failures` alert is recommended but not wired to a durable counter; treat any DB write error in audit paths as a control-plane incident in the meantime.
+- Audit-write failures use a durable runtime metric counter. Treat a firing `mcp_runtime_audit_write_failures` alert as a control-plane incident until audit durability is restored.
 - No CLI surface for tool access in v1. Use the UI or REST API.
 - No bulk catalog review — each quarantined entry is reviewed one at a time.
 - Trust rules match exact argument shapes only. Pattern-based trust rules are post-v1.

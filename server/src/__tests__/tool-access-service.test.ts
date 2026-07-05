@@ -27,6 +27,7 @@ import {
   toolProfileBindings,
   toolProfileEntries,
   toolProfiles,
+  toolRuntimeMetricCounters,
   toolRuntimeSlots,
   toolStdioCommandTemplates,
 } from "@paperclipai/db";
@@ -244,6 +245,7 @@ describeEmbeddedPostgres("tool access service", () => {
     await db.delete(toolInvocations);
     await db.delete(toolAccessAuditEvents);
     await db.delete(issueThreadInteractions);
+    await db.delete(toolRuntimeMetricCounters);
     await db.delete(toolRuntimeSlots);
     await db.delete(toolStdioCommandTemplates);
     await db.delete(toolProfileBindings);
@@ -4720,6 +4722,7 @@ describeEmbeddedPostgres("tool access service", () => {
       timeoutRateLastHour: 50,
       degradedConnections: 1,
       localStdioConnections: 1,
+      auditWriteFailuresLastHour: 0,
     });
     expect(health.alerts.map((alert) => alert.name)).toEqual(
       expect.arrayContaining([
@@ -4729,7 +4732,32 @@ describeEmbeddedPostgres("tool access service", () => {
       ]),
     );
     expect(health.recommendations.find((alert) => alert.name === "mcp_runtime_audit_write_failures"))
-      .toMatchObject({ status: "not_instrumented" });
+      .toMatchObject({ status: "ok", observed: "0 audit write failure(s) in 1 hour." });
+  });
+
+  it("fires runtime health from the durable audit-write failure counter", async () => {
+    const company = await createCompany(db);
+    const generatedAt = new Date("2026-06-06T00:00:00.000Z");
+    const service = toolAccessService(db, { now: () => generatedAt });
+
+    await db.insert(toolRuntimeMetricCounters).values({
+      companyId: company.id,
+      metric: "audit_write_failed",
+      bucketStartAt: new Date(generatedAt.getTime() - 5 * 60 * 1000),
+      count: 2,
+      createdAt: generatedAt,
+      updatedAt: generatedAt,
+    });
+
+    const health = await service.getRuntimeHealth(company.id);
+
+    expect(health.metrics.auditWriteFailuresLastHour).toBe(2);
+    expect(health.alerts.find((alert) => alert.name === "mcp_runtime_audit_write_failures"))
+      .toMatchObject({
+        severity: "critical",
+        status: "firing",
+        observed: "2 audit write failure(s) in 1 hour.",
+      });
   });
 
   it("does not degrade runtime health for draft or not-enabled setup connections", async () => {
