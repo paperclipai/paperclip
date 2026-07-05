@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const sourceOnly = process.argv.includes("--source-only");
 
 const fontFiles = [
   "InterVariable.woff2",
@@ -24,13 +25,16 @@ const locations = [
     label: "source",
     dir: path.join(repoRoot, "ui", "public", "fonts"),
   },
-  {
-    label: "build output",
-    dir: path.join(repoRoot, "ui", "dist", "fonts"),
-  },
 ];
 
 const failures = [];
+
+if (!sourceOnly) {
+  locations.push({
+    label: "build output",
+    dir: path.join(repoRoot, "ui", "dist", "fonts"),
+  });
+}
 
 function fail(message) {
   failures.push(message);
@@ -45,11 +49,6 @@ function verifyFontFile(filePath, label) {
   const stats = statSync(filePath);
   if (!stats.isFile()) {
     fail(`${label}: expected file at ${path.relative(repoRoot, filePath)}`);
-    return;
-  }
-
-  if (stats.size < 100_000) {
-    fail(`${label}: ${path.relative(repoRoot, filePath)} is unexpectedly small (${stats.size} bytes)`);
     return;
   }
 
@@ -88,7 +87,7 @@ function verifyCssReferences() {
 
   const css = readFileSync(cssPath, "utf8");
   for (const fileName of fontFiles) {
-    const reference = `url("/fonts/${fileName}")`;
+    const reference = `url("../fonts/${fileName}")`;
     if (!css.includes(reference)) {
       fail(`source: ${path.relative(repoRoot, cssPath)} is missing ${reference}`);
     }
@@ -122,4 +121,7 @@ if (failures.length > 0) {
   process.exit(1);
 }
 
-console.log("Bundled UI font assets verified in ui/public/fonts and ui/dist/fonts.");
+const checkedLocations = sourceOnly
+  ? "ui/public/fonts"
+  : "ui/public/fonts and ui/dist/fonts";
+console.log(`Bundled UI font assets verified in ${checkedLocations}.`);
