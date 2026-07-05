@@ -17,9 +17,12 @@ import type {
   AgentEnvConfig,
   CompanySecretBindingTarget,
   EnvBinding,
+  McpServersConfig,
   RemoteSecretImportCandidate,
   RemoteSecretImportConflict,
   RemoteSecretImportRowResult,
+  ResolvedMcpServer,
+  ResolvedMcpServers,
   SecretBindingTargetType,
   SecretProvider,
   SecretProviderConfigHealthResponse,
@@ -32,6 +35,7 @@ import {
   deriveProjectUrlKey,
   envBindingSchema,
   isUuidLike,
+  mcpServersConfigSchema,
   normalizeAgentUrlKey,
   secretProviderConfigPayloadSchema,
   updateSecretProviderConfigSchema,
@@ -631,16 +635,131 @@ export function secretService(db: Db) {
     return normalized;
   }
 
+  /**
+   * Canonicalize a single MCP binding value (env entry, header value, or
+   * bearer token): plain strings become {type:"plain"}, secret_refs are
+   * verified to belong to the company, and redacted placeholders are refused.
+   * When strictMode is on, sensitive keys must use secret references.
+   */
+  async function normalizeMcpBinding(
+    companyId: string,
+    rawBinding: unknown,
+    fieldPath: string,
+    keyForSensitivity: string,
+    opts?: { strictMode?: boolean },
+  ): Promise<EnvBinding> {
+    const parsed = envBindingSchema.safeParse(rawBinding);
+    if (!parsed.success) {
+      throw unprocessable(`Invalid binding for ${fieldPath}`);
+    }
+    const binding = canonicalizeBinding(parsed.data as EnvBinding);
+    if (binding.type === "plain") {
+      if (binding.value === REDACTED_SENTINEL) {
+        throw unprocessable(`Refusing to persist redacted placeholder for ${fieldPath}`);
+      }
+      if (
+        opts?.strictMode &&
+        isSensitiveEnvKey(keyForSensitivity) &&
+        binding.value.trim().length > 0
+      ) {
+        throw unprocessable(
+          `Strict secret mode requires secret references for sensitive MCP field: ${fieldPath}`,
+        );
+      }
+      return binding;
+    }
+    await assertSecretInCompany(companyId, binding.secretId);
+    return {
+      type: "secret_ref",
+      secretId: binding.secretId,
+      version: binding.version,
+    };
+  }
+
+  /**
+   * Normalize `adapterConfig.mcpServers` for persistence. Validates the whole
+   * record against the shared schema, then canonicalizes every secret-bearing
+   * value (stdio env, remote headers, bearer auth tokens) the same way
+   * adapterConfig.env is normalized.
+   */
+  async function normalizeMcpServersConfig(
+    companyId: string,
+    value: unknown,
+    opts?: { strictMode?: boolean },
+  ): Promise<McpServersConfig> {
+    const parsed = mcpServersConfigSchema.safeParse(value);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      const where = issue?.path?.length ? ` at mcpServers.${issue.path.join(".")}` : "";
+      throw unprocessable(`Invalid MCP server config${where}: ${issue?.message ?? "invalid"}`);
+    }
+
+    const normalized: McpServersConfig = {};
+    for (const [name, server] of Object.entries(parsed.data)) {
+      if (server.transport === "stdio") {
+        const env: Record<string, EnvBinding> = {};
+        for (const [key, rawBinding] of Object.entries(server.env ?? {})) {
+          env[key] = await normalizeMcpBinding(
+            companyId,
+            rawBinding,
+            `mcpServers.${name}.env.${key}`,
+            key,
+            opts,
+          );
+        }
+        normalized[name] = { ...server, env };
+        continue;
+      }
+
+      const headers: Record<string, EnvBinding> = {};
+      for (const [key, rawBinding] of Object.entries(server.headers ?? {})) {
+        headers[key] = await normalizeMcpBinding(
+          companyId,
+          rawBinding,
+          `mcpServers.${name}.headers.${key}`,
+          key,
+          opts,
+        );
+      }
+      let auth = server.auth;
+      if (auth?.type === "bearer") {
+        auth = {
+          ...auth,
+          token: await normalizeMcpBinding(
+            companyId,
+            auth.token,
+            `mcpServers.${name}.auth.token`,
+            "auth_token",
+            opts,
+          ),
+        };
+      } else if (auth?.type === "oauth" && auth.secretId) {
+        await assertSecretInCompany(companyId, auth.secretId);
+      }
+      normalized[name] = { ...server, headers, ...(auth ? { auth } : {}) };
+    }
+    return normalized;
+  }
+
   async function normalizeAdapterConfigForPersistenceInternal(
     companyId: string,
     adapterConfig: Record<string, unknown>,
     opts?: { strictMode?: boolean },
   ) {
     const normalized = { ...adapterConfig };
-    if (!Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
-      return normalized;
+    if (Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
+      normalized.env = await normalizeEnvConfig(companyId, adapterConfig.env, opts);
     }
-    normalized.env = await normalizeEnvConfig(companyId, adapterConfig.env, opts);
+    if (
+      Object.prototype.hasOwnProperty.call(adapterConfig, "mcpServers") &&
+      adapterConfig.mcpServers !== undefined
+    ) {
+      normalized.mcpServers = await normalizeMcpServersConfig(
+        companyId,
+        adapterConfig.mcpServers,
+        opts,
+      );
+    }
     return normalized;
   }
 
@@ -1990,6 +2109,89 @@ export function secretService(db: Db) {
       return normalizedRefs;
     },
 
+    /**
+     * Reconcile company_secret_bindings rows for an agent's MCP servers.
+     * Collects every secret_ref inside mcpServers.<name>.{env.*,headers.*,auth.token,auth.secretId}
+     * and replace-sets all bindings under the `mcpServers.` configPath prefix,
+     * leaving the sibling `env.*` bindings untouched.
+     */
+    syncMcpBindingsForTarget: async (
+      companyId: string,
+      target: { targetType: SecretBindingTargetType; targetId: string },
+      mcpServersValue: unknown,
+    ) => {
+      const record = asRecord(mcpServersValue) ?? {};
+      const refs: Array<{
+        secretId: string;
+        configPath: string;
+        versionSelector: SecretVersionSelector;
+      }> = [];
+
+      const collect = async (rawBinding: unknown, configPath: string) => {
+        const parsed = envBindingSchema.safeParse(rawBinding);
+        if (!parsed.success) return;
+        const binding = canonicalizeBinding(parsed.data as EnvBinding);
+        if (binding.type !== "secret_ref") return;
+        await assertSecretInCompany(companyId, binding.secretId);
+        refs.push({
+          secretId: binding.secretId,
+          configPath,
+          versionSelector: binding.version,
+        });
+      };
+
+      for (const [name, rawServer] of Object.entries(record)) {
+        const server = asRecord(rawServer);
+        if (!server) continue;
+        for (const [key, rawBinding] of Object.entries(asRecord(server.env) ?? {})) {
+          await collect(rawBinding, `mcpServers.${name}.env.${key}`);
+        }
+        for (const [key, rawBinding] of Object.entries(asRecord(server.headers) ?? {})) {
+          await collect(rawBinding, `mcpServers.${name}.headers.${key}`);
+        }
+        const auth = asRecord(server.auth);
+        if (auth?.type === "bearer") {
+          await collect(auth.token, `mcpServers.${name}.auth.token`);
+        } else if (auth?.type === "oauth" && typeof auth.secretId === "string" && auth.secretId) {
+          await assertSecretInCompany(companyId, auth.secretId);
+          refs.push({
+            secretId: auth.secretId,
+            configPath: `mcpServers.${name}.auth.secretId`,
+            versionSelector:
+              auth.version === "latest" || typeof auth.version === "number"
+                ? (auth.version as SecretVersionSelector)
+                : "latest",
+          });
+        }
+      }
+
+      await db.transaction(async (tx) => {
+        await tx
+          .delete(companySecretBindings)
+          .where(
+            and(
+              eq(companySecretBindings.companyId, companyId),
+              eq(companySecretBindings.targetType, target.targetType),
+              eq(companySecretBindings.targetId, target.targetId),
+              like(companySecretBindings.configPath, "mcpServers.%"),
+            ),
+          );
+        if (refs.length === 0) return;
+        await tx.insert(companySecretBindings).values(
+          refs.map((ref) => ({
+            companyId,
+            secretId: ref.secretId,
+            targetType: target.targetType,
+            targetId: target.targetId,
+            configPath: ref.configPath,
+            versionSelector: String(ref.versionSelector),
+            required: true,
+          })),
+        );
+      });
+      return refs;
+    },
+
     syncEnvBindingsForTarget: async (
       companyId: string,
       target: { targetType: SecretBindingTargetType; targetId: string; pathPrefix?: string },
@@ -2097,6 +2299,12 @@ export function secretService(db: Db) {
       opts?: { strictMode?: boolean },
     ) => normalizeAdapterConfigForPersistenceInternal(companyId, adapterConfig, opts),
 
+    normalizeMcpServersForPersistence: async (
+      companyId: string,
+      mcpServersValue: unknown,
+      opts?: { strictMode?: boolean },
+    ) => normalizeMcpServersConfig(companyId, mcpServersValue, opts),
+
     normalizeEnvBindingsForPersistence: async (
       companyId: string,
       envValue: unknown,
@@ -2165,40 +2373,160 @@ export function secretService(db: Db) {
       const resolved = { ...adapterConfig };
       const secretKeys = new Set<string>();
       const manifest: RuntimeSecretManifestEntry[] = [];
-      if (!Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
-        return { config: resolved, secretKeys, manifest };
-      }
-      const record = asRecord(adapterConfig.env);
-      if (!record) {
-        resolved.env = {};
-        return { config: resolved, secretKeys, manifest };
-      }
-      const env: Record<string, string> = {};
-      for (const [key, rawBinding] of Object.entries(record)) {
-        if (!ENV_KEY_RE.test(key)) {
-          throw unprocessable(`Invalid environment variable name: ${key}`);
-        }
+
+      const resolveBinding = async (
+        rawBinding: unknown,
+        configPath: string,
+        fieldLabel: string,
+      ): Promise<{ value: string; fromSecret: boolean }> => {
         const parsed = envBindingSchema.safeParse(rawBinding);
         if (!parsed.success) {
-          throw unprocessable(`Invalid environment binding for key: ${key}`);
+          throw unprocessable(`Invalid binding for ${fieldLabel}`);
         }
         const binding = canonicalizeBinding(parsed.data as EnvBinding);
         if (binding.type === "plain") {
-          env[key] = binding.value;
+          return { value: binding.value, fromSecret: false };
+        }
+        const secretResolution = await resolveSecretValueInternal(
+          companyId,
+          binding.secretId,
+          binding.version,
+          context ? { ...context, configPath } : undefined,
+        );
+        manifest.push(secretResolution.manifestEntry);
+        return { value: secretResolution.value, fromSecret: true };
+      };
+
+      if (Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
+        const record = asRecord(adapterConfig.env);
+        if (!record) {
+          resolved.env = {};
         } else {
-          const secretResolution = await resolveSecretValueInternal(
-            companyId,
-            binding.secretId,
-            binding.version,
-            context ? { ...context, configPath: `env.${key}` } : undefined,
-          );
-          env[key] = secretResolution.value;
-          manifest.push(secretResolution.manifestEntry);
-          secretKeys.add(key);
+          const env: Record<string, string> = {};
+          for (const [key, rawBinding] of Object.entries(record)) {
+            if (!ENV_KEY_RE.test(key)) {
+              throw unprocessable(`Invalid environment variable name: ${key}`);
+            }
+            const resolution = await resolveBinding(rawBinding, `env.${key}`, `key: ${key}`);
+            env[key] = resolution.value;
+            if (resolution.fromSecret) secretKeys.add(key);
+          }
+          resolved.env = env;
         }
       }
-      resolved.env = env;
+
+      // Resolve mcpServers into the runtime shape adapters consume: every
+      // binding becomes a plaintext string, disabled servers are dropped, and
+      // oauth auth becomes an Authorization bearer header. Adapters must treat
+      // the result as sensitive (0600 files in per-agent dirs, never logged).
+      if (
+        Object.prototype.hasOwnProperty.call(adapterConfig, "mcpServers") &&
+        adapterConfig.mcpServers !== undefined
+      ) {
+        const record = asRecord(adapterConfig.mcpServers);
+        const resolvedServers: ResolvedMcpServers = {};
+        for (const [name, rawServer] of Object.entries(record ?? {})) {
+          const server = asRecord(rawServer);
+          if (!server) continue;
+          if (server.enabled === false) continue;
+          const timeoutMs = typeof server.timeoutMs === "number" ? server.timeoutMs : undefined;
+          const allowedTools = Array.isArray(server.allowedTools)
+            ? server.allowedTools.filter((tool): tool is string => typeof tool === "string")
+            : undefined;
+
+          if (server.transport === "stdio") {
+            const env: Record<string, string> = {};
+            for (const [key, rawBinding] of Object.entries(asRecord(server.env) ?? {})) {
+              const resolution = await resolveBinding(
+                rawBinding,
+                `mcpServers.${name}.env.${key}`,
+                `mcpServers.${name}.env.${key}`,
+              );
+              env[key] = resolution.value;
+            }
+            const entry: ResolvedMcpServer = {
+              transport: "stdio",
+              command: typeof server.command === "string" ? server.command : "",
+              args: Array.isArray(server.args)
+                ? server.args.filter((arg): arg is string => typeof arg === "string")
+                : [],
+              env,
+              ...(typeof server.cwd === "string" && server.cwd ? { cwd: server.cwd } : {}),
+              ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+              ...(allowedTools !== undefined ? { allowedTools } : {}),
+            };
+            if (!entry.command) continue;
+            resolvedServers[name] = entry;
+            continue;
+          }
+
+          if (server.transport !== "http" && server.transport !== "sse") continue;
+          const url = typeof server.url === "string" ? server.url : "";
+          if (!url) continue;
+          const headers: Record<string, string> = {};
+          for (const [key, rawBinding] of Object.entries(asRecord(server.headers) ?? {})) {
+            const resolution = await resolveBinding(
+              rawBinding,
+              `mcpServers.${name}.headers.${key}`,
+              `mcpServers.${name}.headers.${key}`,
+            );
+            headers[key] = resolution.value;
+          }
+          const auth = asRecord(server.auth);
+          if (auth?.type === "bearer") {
+            const resolution = await resolveBinding(
+              auth.token,
+              `mcpServers.${name}.auth.token`,
+              `mcpServers.${name}.auth.token`,
+            );
+            if (resolution.value) headers.Authorization = `Bearer ${resolution.value}`;
+          } else if (auth?.type === "oauth" && typeof auth.secretId === "string" && auth.secretId) {
+            const version =
+              auth.version === "latest" || typeof auth.version === "number"
+                ? (auth.version as SecretVersionSelector)
+                : "latest";
+            const secretResolution = await resolveSecretValueInternal(
+              companyId,
+              auth.secretId,
+              version,
+              context ? { ...context, configPath: `mcpServers.${name}.auth.secretId` } : undefined,
+            );
+            manifest.push(secretResolution.manifestEntry);
+            const token = extractOauthAccessToken(secretResolution.value);
+            if (token) headers.Authorization = `Bearer ${token}`;
+          }
+          resolvedServers[name] = {
+            transport: server.transport,
+            url,
+            headers,
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+            ...(allowedTools !== undefined ? { allowedTools } : {}),
+          };
+        }
+        resolved.mcpServers = resolvedServers;
+      }
+
       return { config: resolved, secretKeys, manifest };
     },
   };
+}
+
+/**
+ * OAuth-brokered MCP secrets store either a raw access token or a JSON payload
+ * ({ accessToken | access_token, refreshToken, expiresAt, ... }) written by the
+ * OAuth broker. Accept both so a manually-pasted token also works.
+ */
+function extractOauthAccessToken(secretValue: string): string {
+  const trimmed = secretValue.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+      const token = parsed.accessToken ?? parsed.access_token;
+      if (typeof token === "string" && token.trim()) return token.trim();
+    } catch {
+      // fall through to raw value
+    }
+  }
+  return trimmed;
 }

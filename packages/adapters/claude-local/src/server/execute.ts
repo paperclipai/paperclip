@@ -57,6 +57,11 @@ import {
   isClaudeUnknownSessionError,
 } from "./parse.js";
 import { prepareClaudeConfigSeed } from "./claude-config.js";
+import {
+  buildClaudeMcpAllowedToolPatterns,
+  parseResolvedMcpServers,
+  prepareClaudeMcpConfigFile,
+} from "./mcp-config.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
@@ -449,8 +454,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const claudeConfigSeedDir = useManagedRemoteClaudeConfig
     ? await prepareClaudeConfigSeed(process.env, onLog, agent.companyId)
     : null;
+  // External MCP servers: the heartbeat layer hands us `config.mcpServers`
+  // already resolved (secret refs -> plaintext). Write the run-scoped
+  // .mcp.json before remote asset sync so it ships with the runtime assets.
+  const resolvedMcpServers = parseResolvedMcpServers(config.mcpServers);
+  const mcpServerNames = Object.keys(resolvedMcpServers);
+  const preparedMcpConfig = mcpServerNames.length > 0
+    ? await prepareClaudeMcpConfigFile({ runId, servers: resolvedMcpServers })
+    : null;
+  const mcpToolPatterns = buildClaudeMcpAllowedToolPatterns(resolvedMcpServers);
+  if (preparedMcpConfig) {
+    await onLog(
+      "stdout",
+      `[paperclip] Injecting ${mcpServerNames.length} external MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) via --mcp-config.\n`,
+    );
+  }
+  // Once the MCP config file (which holds resolved secrets) exists, any throw
+  // before the main try/finally would leak it on disk. Guard the remote asset
+  // sync — the dominant I/O throw source (dead target, network drop) — so the
+  // file is removed on failure.
+  const cleanupMcpOnThrow = async <T>(work: Promise<T>): Promise<T> => {
+    try {
+      return await work;
+    } catch (err) {
+      if (preparedMcpConfig) await preparedMcpConfig.cleanup();
+      throw err;
+    }
+  };
   const preparedExecutionTargetRuntime = executionTargetIsRemote
-    ? await (async () => {
+    ? await cleanupMcpOnThrow((async () => {
         await onLog(
           "stdout",
           `[paperclip] Syncing workspace and Claude runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
@@ -476,9 +508,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 followSymlinks: true,
               }]
               : []),
+            ...(preparedMcpConfig
+              ? [{
+                key: "mcp-config",
+                localDir: preparedMcpConfig.localDir,
+                followSymlinks: false,
+              }]
+              : []),
           ],
         });
-      })()
+      })())
     : null;
   if (preparedExecutionTargetRuntime?.workspaceRemoteDir) {
     effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir;
@@ -515,6 +554,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const remoteClaudeRuntimeRoot = executionTargetIsRemote
     ? preparedExecutionTargetRuntime?.runtimeRootDir ??
       path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "claude")
+    : null;
+  const effectiveMcpConfigPath = preparedMcpConfig
+    ? executionTargetIsRemote
+      ? path.posix.join(
+          preparedExecutionTargetRuntime?.assetDirs["mcp-config"] ??
+            path.posix.join(remoteClaudeRuntimeRoot ?? ".paperclip-runtime/claude", "mcp-config"),
+          preparedMcpConfig.fileName,
+        )
+      : preparedMcpConfig.localFilePath
     : null;
   const remoteClaudeConfigSeedDir = claudeConfigSeedDir && remoteClaudeRuntimeRoot
     ? preparedExecutionTargetRuntime?.assetDirs["config-seed"] ??
@@ -658,7 +706,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     args.push(...buildClaudeExecutionPermissionArgs({
       dangerouslySkipPermissions,
       targetIsSandbox: executionTargetIsSandbox,
+      mcpToolPatterns,
     }));
+    if (effectiveMcpConfigPath) {
+      // --strict-mcp-config makes the injected servers the ONLY servers for
+      // this run (ignores project/user/plugin scopes) so per-agent MCP config
+      // never leaks between agents sharing a machine.
+      args.push("--mcp-config", effectiveMcpConfigPath);
+      args.push("--strict-mcp-config");
+    }
     if (chrome) args.push("--chrome");
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
     // (e.g. "us.anthropic.*" or ARN). Anthropic-style IDs like "claude-opus-4-6" are invalid
@@ -711,6 +767,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (dangerouslySkipPermissions && executionTargetIsSandbox) {
       commandNotes.push(
         "Using a broad --allowedTools whitelist for sandbox execution because Claude rejects --dangerously-skip-permissions under root/sudo.",
+      );
+    }
+    if (effectiveMcpConfigPath) {
+      commandNotes.push(
+        `Injected ${mcpServerNames.length} external MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) via --mcp-config with --strict-mcp-config.`,
       );
     }
     if (attemptInstructionsFilePath && !resumeSessionId) {
@@ -955,15 +1016,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
-    if (paperclipBridge) {
-      await paperclipBridge.stop();
-    }
-    if (restoreRemoteWorkspace) {
-      await onLog(
-        "stdout",
-        `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-      );
-      await restoreRemoteWorkspace();
-    }
+    // Run cleanups independently so a failing bridge/workspace restore can't
+    // skip removal of the MCP config file (which holds resolved secrets).
+    await Promise.allSettled([
+      paperclipBridge?.stop(),
+      restoreRemoteWorkspace
+        ? onLog(
+            "stdout",
+            `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+          ).then(() => restoreRemoteWorkspace())
+        : undefined,
+      // The mcp config file holds resolved secrets — remove it after the run.
+      preparedMcpConfig?.cleanup(),
+    ]);
   }
 }

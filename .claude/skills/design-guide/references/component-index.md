@@ -282,6 +282,28 @@ All follow the property row pattern: `text-xs text-muted-foreground` label on le
 **File:** `AgentConfigForm.tsx`
 **Usage:** Full agent creation/editing form with adapter type selection.
 
+### EnvVarEditor
+
+**File:** `EnvVarEditor.tsx`
+**Props:** `value: Record<string, EnvBinding>`, `secrets: CompanySecret[]`, `onCreateSecret`, `onChange`
+**Usage:** Key/value environment variable rows with the plain-vs-secret binding picker. Supports sealing plain values into company secrets.
+
+### McpServersEditor
+
+**File:** `McpServersEditor.tsx`
+**Exports:** `McpServersEditor`, `MCP_CAPABLE_ADAPTER_TYPES`
+**Props:** `value: McpServersConfig | null | undefined`, `secrets: CompanySecret[]`, `onCreateSecret`, `onChange: (next: McpServersConfig | undefined) => void`, `onStartOauth?: (serverName: string) => Promise<void>`
+**Usage:** Controlled editor for per-agent external MCP servers (`adapterConfig.mcpServers`). Lists servers with transport badge + enabled toggle, inline add/edit form with transport-conditional fields (stdio: command/args/env; http/sse: url/headers/bearer or brokered OAuth auth). Reuses the EnvVarEditor plain-vs-secret binding pattern; redacted plain values render as locked placeholders that must be re-entered. OAuth servers show a Connected badge + Reconnect ghost button, or a Connect button, when `onStartOauth` is wired (AgentConfigForm wires `agentsApi.startMcpOauth` + `window.open`).
+
+```tsx
+<McpServersEditor
+  value={mcpServers}
+  secrets={secrets}
+  onCreateSecret={createSecret}
+  onChange={(next) => mark("adapterConfig", "mcpServers", next)}
+/>
+```
+
 ---
 
 ## Utilities & Hooks

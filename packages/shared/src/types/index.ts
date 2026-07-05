@@ -276,6 +276,20 @@ export type {
   SecretVersionStatus,
 } from "./secrets.js";
 export type {
+  McpTransport,
+  McpServerAuth,
+  McpServerBearerAuth,
+  McpServerOauthAuth,
+  McpStdioServerConfig,
+  McpRemoteServerConfig,
+  McpServerConfig,
+  McpServersConfig,
+  ResolvedMcpStdioServer,
+  ResolvedMcpRemoteServer,
+  ResolvedMcpServer,
+  ResolvedMcpServers,
+} from "./mcp.js";
+export type {
   Routine,
   RoutineManagedByPlugin,
   RoutineVariable,

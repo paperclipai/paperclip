@@ -49,6 +49,13 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
+  ensureGeminiWorkspaceGitExclude,
+  parseResolvedMcpServers,
+  prepareGeminiMcpSettingsAsset,
+  stripGeminiWorkspaceMcpSettings,
+  syncGeminiWorkspaceMcpSettings,
+} from "./mcp-config.js";
+import {
   describeGeminiFailure,
   detectGeminiAuthRequired,
   isGeminiTurnLimitResult,
@@ -211,6 +218,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await ensureGeminiSkillsInjected(onLog, geminiSkillEntries, desiredGeminiSkillNames);
   }
 
+  // External MCP servers: the heartbeat layer hands us `config.mcpServers`
+  // already resolved (secret refs -> plaintext). Gemini reads MCP servers from
+  // settings.json, so merge them into the per-agent workspace settings file
+  // for local runs (remote runs ship a settings asset into the managed home).
+  const resolvedMcpServers = parseResolvedMcpServers(config.mcpServers);
+  const mcpServerNames = Object.keys(resolvedMcpServers);
+  if (!executionTargetIsRemote) {
+    // Keep the secret-bearing settings file out of the git tree before writing
+    // it, so `git add -A` mid-run can't stage live tokens. Only when injecting.
+    if (mcpServerNames.length > 0) {
+      await ensureGeminiWorkspaceGitExclude({ cwd }).catch(() => undefined);
+    }
+    const mcpSync = await syncGeminiWorkspaceMcpSettings({ cwd, servers: resolvedMcpServers });
+    if (mcpSync && mcpServerNames.length > 0) {
+      await onLog(
+        "stdout",
+        `[paperclip] Injecting ${mcpServerNames.length} external MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) via workspace .gemini/settings.json.\n`,
+      );
+    }
+  }
+
   const envConfig = parseObject(config.env);
   const hasExplicitApiKey =
     typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
@@ -262,7 +290,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     executionTargetIsRemote,
     executionCwd: effectiveExecutionCwd,
   });
-  if (executionTargetIsRemote && typeof env.GEMINI_CLI_TRUST_WORKSPACE !== "string") {
+  // Folder-trust can block workspace settings + MCP connections in headless
+  // runs, so also trust the workspace when MCP servers are injected locally.
+  if (
+    (executionTargetIsRemote || mcpServerNames.length > 0) &&
+    typeof env.GEMINI_CLI_TRUST_WORKSPACE !== "string"
+  ) {
     env.GEMINI_CLI_TRUST_WORKSPACE = "true";
   }
   if (!hasExplicitApiKey && authToken) {
@@ -314,12 +347,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
   let remoteSkillsDir: string | null = null;
   let localSkillsDir: string | null = null;
+  let preparedMcpSettings: Awaited<ReturnType<typeof prepareGeminiMcpSettingsAsset>> | null = null;
   let remoteRuntimeRootDir: string | null = null;
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
   if (executionTargetIsRemote) {
     try {
       localSkillsDir = await buildGeminiSkillsDir(config);
+      if (mcpServerNames.length > 0) {
+        preparedMcpSettings = await prepareGeminiMcpSettingsAsset({ servers: resolvedMcpServers });
+      }
       await onLog(
         "stdout",
         `[paperclip] Syncing workspace and Gemini runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
@@ -332,11 +369,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         workspaceLocalDir: cwd,
         installCommand: SANDBOX_INSTALL_COMMAND,
         detectCommand: command,
-        assets: [{
-          key: "skills",
-          localDir: localSkillsDir,
-          followSymlinks: true,
-        }],
+        assets: [
+          {
+            key: "skills",
+            localDir: localSkillsDir,
+            followSymlinks: true,
+          },
+          ...(preparedMcpSettings
+            ? [{
+              key: "mcp-settings",
+              localDir: preparedMcpSettings.localDir,
+              followSymlinks: false,
+            }]
+            : []),
+        ],
       });
       restoreRemoteWorkspace = () => preparedExecutionTargetRuntime.restoreWorkspace();
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
@@ -376,10 +422,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           { cwd, env, timeoutSec, graceSec, onLog },
         );
       }
+      if (preparedMcpSettings && !managedHome) {
+        // Non-managed (SSH) remote: remoteHomeDir is the real user's $HOME, so
+        // copying settings.json there would clobber their own
+        // ~/.gemini/settings.json and leave plaintext secrets on the persistent
+        // host with no cleanup. Skip the copy — external MCP servers need a
+        // managed-home (sandbox) target.
+        await onLog(
+          "stderr",
+          "[paperclip] Skipping external MCP server injection: remote execution requires a managed-home (sandbox) target so the user's real ~/.gemini/settings.json is not overwritten with secrets. Configure a sandbox target to use MCP servers remotely.\n",
+        );
+      } else if (remoteHomeDir && preparedMcpSettings && preparedExecutionTargetRuntime.assetDirs["mcp-settings"]) {
+        const remoteMcpSettingsPath = path.posix.join(remoteHomeDir, ".gemini", "settings.json");
+        const remoteMcpAssetPath = path.posix.join(
+          preparedExecutionTargetRuntime.assetDirs["mcp-settings"],
+          preparedMcpSettings.fileName,
+        );
+        await runAdapterExecutionTargetShellCommand(
+          runId,
+          executionTarget,
+          `mkdir -p ${JSON.stringify(path.posix.dirname(remoteMcpSettingsPath))} && cp ${JSON.stringify(remoteMcpAssetPath)} ${JSON.stringify(remoteMcpSettingsPath)} && chmod 600 ${JSON.stringify(remoteMcpSettingsPath)}`,
+          { cwd, env, timeoutSec, graceSec, onLog },
+        );
+        await onLog(
+          "stdout",
+          `[paperclip] Injecting ${mcpServerNames.length} external MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) via remote ~/.gemini/settings.json.\n`,
+        );
+      }
     } catch (error) {
       await Promise.allSettled([
         restoreRemoteWorkspace?.(),
         localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
+        preparedMcpSettings?.cleanup(),
       ]);
       throw error;
     }
@@ -449,6 +523,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     notes.push("Added --approval-mode yolo for unattended execution.");
     if (executionTargetIsRemote) {
       notes.push("Set GEMINI_CLI_TRUST_WORKSPACE=true for remote headless execution.");
+    }
+    if (mcpServerNames.length > 0) {
+      notes.push(
+        `Injected ${mcpServerNames.length} external MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) into ${executionTargetIsRemote ? "the remote home" : "the workspace"} .gemini/settings.json with trust=true.`,
+      );
+      if (!executionTargetIsRemote) {
+        notes.push("Set GEMINI_CLI_TRUST_WORKSPACE=true so injected MCP servers load in headless runs.");
+      }
     }
     if (!instructionsFilePath) return notes;
     if (instructionsPrefix.length > 0) {
@@ -671,6 +753,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       paperclipBridge?.stop(),
       restoreRemoteWorkspace?.(),
       localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
+      // The synced settings asset holds resolved secrets — remove it after the run.
+      preparedMcpSettings?.cleanup(),
+      // Local runs wrote resolved secrets into <cwd>/.gemini/settings.json — strip
+      // the managed entries so plaintext exists on disk only during the run. The
+      // start-of-run sentinel strip stays as a crash-recovery path. No-op for a
+      // user-owned settings.json (no sentinel key).
+      !executionTargetIsRemote
+        ? stripGeminiWorkspaceMcpSettings({ cwd }).catch(() => undefined)
+        : Promise.resolve(),
     ]);
   }
 }

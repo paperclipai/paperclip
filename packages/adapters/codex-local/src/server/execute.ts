@@ -60,6 +60,11 @@ import {
 } from "./codex-home.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
+import {
+  configTomlHasManagedMcpSection,
+  injectCodexMcpServersIntoConfigToml,
+  parseResolvedMcpServers,
+} from "./mcp-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -500,13 +505,24 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? envConfig.OPENAI_API_KEY.trim()
       : null;
   const usingConfiguredCodexOAuthHome = configuredCodexHome !== null && configuredOpenAiApiKey === null;
+  // External MCP servers: the heartbeat layer hands us `config.mcpServers`
+  // fully resolved (secret refs -> plaintext). The managed home is always
+  // per-agent for this adapter (regardless of MCP presence) so $CODEX_HOME is
+  // stable when the first/last MCP server is toggled — moving the home would
+  // strand prior session rollouts and silently lose resume history. Injected
+  // [mcp_servers.*] tables therefore also stay per-agent, invisible to the
+  // company's other agents.
+  const resolvedMcpServers = parseResolvedMcpServers(config.mcpServers);
+  const mcpServerNames = Object.keys(resolvedMcpServers);
+  const mcpAgentId = agent.id;
   const preparedManagedCodexHome =
     configuredCodexHome
       ? null
       : await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
           apiKey: configuredOpenAiApiKey,
+          agentId: mcpAgentId,
         });
-  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
+  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId, mcpAgentId);
   const effectiveCodexHome = configuredCodexHome ?? preparedManagedCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
   if (configuredCodexHome && configuredOpenAiApiKey) {
@@ -532,6 +548,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       desiredSkillNames,
     },
   );
+  // Merge [mcp_servers.*] tables into the (per-agent) Codex home's config.toml
+  // before any remote asset sync so the merged file ships with the home asset.
+  // Remote-header secrets ride only in mcpSpawnEnv (referenced by env var NAME
+  // from the TOML) — never log or onMeta these values.
+  let mcpSpawnEnv: Record<string, string> = {};
+  if (mcpServerNames.length > 0) {
+    const injected = await injectCodexMcpServersIntoConfigToml({
+      codexHome: effectiveCodexHome,
+      servers: resolvedMcpServers,
+    });
+    mcpSpawnEnv = injected.spawnEnv;
+    await onLog(
+      "stdout",
+      `[paperclip] Injecting ${mcpServerNames.length} external MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) into Codex config.toml.\n`,
+    );
+  } else if (await configTomlHasManagedMcpSection(effectiveCodexHome)) {
+    // The last MCP server was removed (or the adapter was switched): drop the
+    // stale paperclip-managed section so plaintext stdio env no longer lingers
+    // in the per-agent config.toml. Only runs when a marker section exists, so
+    // a never-had-MCP home stays untouched.
+    await injectCodexMcpServersIntoConfigToml({
+      codexHome: effectiveCodexHome,
+      servers: {},
+    });
+    await onLog(
+      "stdout",
+      "[paperclip] Removed stale paperclip-managed MCP servers from Codex config.toml.\n",
+    );
+  }
   const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
     executionTarget,
     asNumber(config.timeoutSec, 3600),
@@ -711,6 +756,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     includeRuntimeKeys: ["HOME"],
     resolvedCommand,
   });
+  // MCP header secrets are merged into the spawn env AFTER loggedEnv is built
+  // so their values never reach onMeta; config.toml references them by NAME.
+  Object.assign(env, mcpSpawnEnv);
 
   const runtimeSessionParams = parseObject(runtime.sessionParams);
   const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
@@ -839,6 +887,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (executionTargetIsSandbox) {
     commandNotes.push(
       "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
+    );
+  }
+  if (mcpServerNames.length > 0) {
+    commandNotes.push(
+      `Injected ${mcpServerNames.length} external MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) into $CODEX_HOME/config.toml using a per-agent Codex home.`,
     );
   }
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);

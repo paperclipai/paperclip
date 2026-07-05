@@ -62,6 +62,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
+import { mcpOauthService } from "./mcp-oauth.js";
 import {
   hasAlternateCredentialOfType,
   isCredentialFailure,
@@ -2501,6 +2502,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
+  const mcpOauthSvc = mcpOauthService(db);
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -7406,6 +7408,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
+    // Refresh any expiring brokered OAuth tokens for external MCP servers
+    // BEFORE secret resolution so the run gets a fresh bearer token. Failures
+    // never block the run.
+    await mcpOauthSvc.refreshExpiringTokensForAgent({
+      id: agent.id,
+      companyId: agent.companyId,
+      adapterConfig: executionRunConfig,
+    });
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
       agentId: agent.id,

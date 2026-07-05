@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import { buildOpenCodeMcpConfig, type ResolvedMcpServerEntry } from "./mcp-config.js";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
@@ -35,6 +36,8 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
+  /** Resolved external MCP servers to inline into the runtime opencode.json. */
+  mcpServers?: Record<string, ResolvedMcpServerEntry>;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
   if (!skipPermissions) {
@@ -81,14 +84,23 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const existingPermission = isPlainObject(existingConfig.permission)
     ? existingConfig.permission
     : {};
+  const mcpServers = input.mcpServers ?? {};
+  const mcpServerNames = Object.keys(mcpServers);
+  const existingMcp = isPlainObject(existingConfig.mcp) ? existingConfig.mcp : {};
   const nextConfig = {
     ...existingConfig,
     permission: {
       ...existingPermission,
       external_directory: "allow",
     },
+    ...(mcpServerNames.length > 0
+      ? { mcp: { ...existingMcp, ...buildOpenCodeMcpConfig(mcpServers) } }
+      : {}),
   };
   await fs.writeFile(runtimeConfigPath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf8");
+  // The runtime config may inline resolved MCP secrets (env/headers) — keep it
+  // owner-only for the lifetime of the run.
+  await fs.chmod(runtimeConfigPath, 0o600).catch(() => undefined);
 
   return {
     env: {
@@ -97,6 +109,11 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     },
     notes: [
       "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
+      ...(mcpServerNames.length > 0
+        ? [
+            `Injected ${mcpServerNames.length} external MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) into the runtime opencode.json.`,
+          ]
+        : []),
     ],
     cleanup: async () => {
       await fs.rm(runtimeConfigHome, { recursive: true, force: true });

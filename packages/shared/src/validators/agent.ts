@@ -7,6 +7,7 @@ import {
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
+import { mcpServersConfigSchema } from "./mcp.js";
 
 export const agentPermissionsSchema = z.object({
   canCreateAgents: z.boolean().optional().default(false),
@@ -33,14 +34,28 @@ export type UpsertAgentInstructionsFile = z.infer<typeof upsertAgentInstructions
 
 const adapterConfigSchema = z.record(z.unknown()).superRefine((value, ctx) => {
   const envValue = value.env;
-  if (envValue === undefined) return;
-  const parsed = envConfigSchema.safeParse(envValue);
-  if (!parsed.success) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "adapterConfig.env must be a map of valid env bindings",
-      path: ["env"],
-    });
+  if (envValue !== undefined) {
+    const parsed = envConfigSchema.safeParse(envValue);
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "adapterConfig.env must be a map of valid env bindings",
+        path: ["env"],
+      });
+    }
+  }
+  const mcpServersValue = value.mcpServers;
+  if (mcpServersValue !== undefined) {
+    const parsed = mcpServersConfigSchema.safeParse(mcpServersValue);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues.slice(0, 10)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: issue.message,
+          path: ["mcpServers", ...issue.path],
+        });
+      }
+    }
   }
 });
 

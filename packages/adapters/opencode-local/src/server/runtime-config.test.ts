@@ -65,6 +65,49 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await expect(fs.access(prepared.env.XDG_CONFIG_HOME)).rejects.toThrow();
   });
 
+  it("merges resolved MCP servers into the runtime config mcp record", async () => {
+    const configHome = await makeConfigHome({
+      mcp: {
+        preexisting: { type: "remote", url: "https://existing.example.com/mcp" },
+      },
+    });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      mcpServers: {
+        files: {
+          transport: "stdio",
+          command: "npx",
+          args: ["-y", "some-mcp"],
+          env: { API_KEY: "resolved-secret" },
+        },
+      },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig.mcp).toEqual({
+      preexisting: { type: "remote", url: "https://existing.example.com/mcp" },
+      files: {
+        type: "local",
+        command: ["npx", "-y", "some-mcp"],
+        environment: { API_KEY: "resolved-secret" },
+        enabled: true,
+      },
+    });
+    expect(prepared.notes.some((note) => note.includes("(files)"))).toBe(true);
+    expect(prepared.notes.join("\n")).not.toContain("resolved-secret");
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+  });
+
   it("respects explicit opt-out", async () => {
     const configHome = await makeConfigHome();
     const prepared = await prepareOpenCodeRuntimeConfig({

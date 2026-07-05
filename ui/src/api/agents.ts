@@ -12,6 +12,8 @@ import type {
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
+  McpServerConfig,
+  McpServersConfig,
 } from "@paperclipai/shared";
 import type {
   AdapterModelProfileDefinition,
@@ -281,6 +283,26 @@ export const agentsApi = {
     data: AgentWakeRequest,
     companyId?: string,
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
+  getMcpServers: (id: string, companyId?: string) =>
+    api.get<{ mcpServers: McpServersConfig }>(agentPath(id, companyId, "/mcp-servers")),
+  putMcpServers: (id: string, mcpServers: McpServersConfig, companyId?: string) =>
+    api.put<{ mcpServers: McpServersConfig }>(agentPath(id, companyId, "/mcp-servers"), {
+      mcpServers,
+    }),
+  upsertMcpServer: (id: string, name: string, server: McpServerConfig, companyId?: string) =>
+    api.post<{ mcpServers: McpServersConfig }>(agentPath(id, companyId, "/mcp-servers"), {
+      name,
+      server,
+    }),
+  removeMcpServer: (id: string, name: string, companyId?: string) =>
+    api.delete<{ mcpServers: McpServersConfig }>(
+      agentPath(id, companyId, `/mcp-servers/${encodeURIComponent(name)}`),
+    ),
+  startMcpOauth: (id: string, name: string, companyId?: string) =>
+    api.post<{ authorizeUrl: string }>(
+      agentPath(id, companyId, `/mcp-servers/${encodeURIComponent(name)}/oauth/start`),
+      {},
+    ),
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
   loginWithCodex: (id: string, companyId?: string) =>

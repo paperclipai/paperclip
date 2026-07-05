@@ -26,6 +26,8 @@ import {
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
   updateAgentSchema,
+  updateAgentMcpServersSchema,
+  upsertAgentMcpServerSchema,
   supportedEnvironmentDriversForAdapter,
 } from "@paperclipai/shared";
 import {
@@ -68,6 +70,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import { secretService } from "../services/secrets.js";
+import { mcpOauthService } from "../services/mcp-oauth.js";
 import {
   detectAdapterModel,
   findActiveServerAdapter,
@@ -252,6 +255,7 @@ export function agentRoutes(
   const recovery = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
+  const mcpOauthSvc = mcpOauthService(db);
   const credentialsSvc = credentialService(db);
   const instructions = agentInstructionsService();
   const companySkills = companySkillService(db);
@@ -2844,6 +2848,10 @@ export function agentRoutes(
         const ADAPTER_AGNOSTIC_KEYS = [
           "env", "cwd", "timeoutSec", "graceSec",
           "promptTemplate", "bootstrapPromptTemplate",
+          // MCP servers are cross-adapter; preserve them across an adapter-type
+          // switch so switching runtimes doesn't silently drop the agent's
+          // external MCP config (and delete its secret bindings).
+          "mcpServers",
         ] as const;
         for (const key of ADAPTER_AGNOSTIC_KEYS) {
           if (rawEffectiveAdapterConfig[key] === undefined && existingAdapterConfig[key] !== undefined) {
@@ -2925,6 +2933,11 @@ export function agentRoutes(
         { targetType: "agent", targetId: agent.id },
         agentEnv,
       );
+      await secretsSvc.syncMcpBindingsForTarget?.(
+        agent.companyId,
+        { targetType: "agent", targetId: agent.id },
+        asRecord(agent.adapterConfig)?.mcpServers,
+      );
     }
 
     if (requestedCredentialIds !== null) {
@@ -2953,6 +2966,332 @@ export function agentRoutes(
     });
 
     res.json({ ...agent, credentials });
+  });
+
+  // ---- External MCP servers (per-agent) -----------------------------------
+  // Sub-resource over adapterConfig.mcpServers. Auth uses assertCanUpdateAgent
+  // so agents can self-manage their own MCP servers (via the Paperclip MCP
+  // server tools) in addition to board users.
+
+  /**
+   * Redact plain secret-bearing values for API responses; secret_refs pass
+   * through. Generic sanitization flattens the whole `auth` object (its key
+   * matches the sensitive-key pattern), so a safe structural summary is
+   * rebuilt from the original: the UI needs auth type + OAuth connection
+   * status, never token material.
+   */
+  function sanitizeMcpServersForResponse(mcpServers: unknown): Record<string, unknown> {
+    const record = asRecord(mcpServers) ?? {};
+    const sanitized = (redactEventPayload(record) ?? {}) as Record<string, unknown>;
+    for (const [name, rawServer] of Object.entries(record)) {
+      const originalAuth = asRecord(asRecord(rawServer)?.auth);
+      const sanitizedServer = asRecord(sanitized[name]);
+      if (!originalAuth || !sanitizedServer) continue;
+      if (originalAuth.type === "oauth") {
+        sanitizedServer.auth = {
+          type: "oauth",
+          secretId: typeof originalAuth.secretId === "string" ? originalAuth.secretId : null,
+          connected: typeof originalAuth.secretId === "string" && originalAuth.secretId.length > 0,
+        };
+      } else if (originalAuth.type === "bearer") {
+        const token = asRecord(originalAuth.token);
+        sanitizedServer.auth = {
+          type: "bearer",
+          token:
+            token?.type === "secret_ref" && typeof token.secretId === "string"
+              ? { type: "secret_ref", secretId: token.secretId, ...(token.version !== undefined ? { version: token.version } : {}) }
+              : { type: "plain", value: "***REDACTED***" },
+        };
+      }
+    }
+    return sanitized;
+  }
+
+  async function persistAgentMcpServers(input: {
+    req: Request;
+    existing: NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
+    nextMcpServers: Record<string, unknown>;
+    action: string;
+    details: Record<string, unknown>;
+  }) {
+    const { req, existing } = input;
+    const normalizedMcpServers = await secretsSvc.normalizeMcpServersForPersistence(
+      existing.companyId,
+      input.nextMcpServers,
+      { strictMode: strictSecretsMode },
+    );
+    const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
+    const nextAdapterConfig = { ...existingAdapterConfig, mcpServers: normalizedMcpServers };
+
+    const actor = getActorInfo(req);
+    const agent = await svc.update(existing.id, { adapterConfig: nextAdapterConfig }, {
+      recordRevision: {
+        createdByAgentId: actor.agentId,
+        createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+        source: "patch",
+      },
+    });
+    if (!agent) return null;
+
+    await secretsSvc.syncMcpBindingsForTarget?.(
+      agent.companyId,
+      { targetType: "agent", targetId: agent.id },
+      normalizedMcpServers,
+    );
+
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: input.action,
+      entityType: "agent",
+      entityId: agent.id,
+      details: input.details,
+    });
+
+    return agent;
+  }
+
+  router.get("/agents/:id/mcp-servers", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanReadAgent(req, existing);
+    res.json({
+      mcpServers: sanitizeMcpServersForResponse(asRecord(existing.adapterConfig)?.mcpServers),
+    });
+  });
+
+  router.put(
+    "/agents/:id/mcp-servers",
+    validate(updateAgentMcpServersSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await svc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      await assertCanUpdateAgent(req, existing);
+
+      const { mcpServers } = req.body as { mcpServers: Record<string, unknown> };
+      const agent = await persistAgentMcpServers({
+        req,
+        existing,
+        nextMcpServers: mcpServers,
+        action: "agent.mcp_servers.replaced",
+        details: { servers: Object.keys(mcpServers) },
+      });
+      if (!agent) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      res.json({
+        mcpServers: sanitizeMcpServersForResponse(asRecord(agent.adapterConfig)?.mcpServers),
+      });
+    },
+  );
+
+  router.post(
+    "/agents/:id/mcp-servers",
+    validate(upsertAgentMcpServerSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await svc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      await assertCanUpdateAgent(req, existing);
+
+      const { name, server } = req.body as { name: string; server: Record<string, unknown> };
+      const currentMcpServers = asRecord(asRecord(existing.adapterConfig)?.mcpServers) ?? {};
+      const agent = await persistAgentMcpServers({
+        req,
+        existing,
+        nextMcpServers: { ...currentMcpServers, [name]: server },
+        action: "agent.mcp_server.upserted",
+        details: { server: name, transport: (server as { transport?: unknown }).transport },
+      });
+      if (!agent) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      res.json({
+        mcpServers: sanitizeMcpServersForResponse(asRecord(agent.adapterConfig)?.mcpServers),
+      });
+    },
+  );
+
+  router.delete("/agents/:id/mcp-servers/:name", async (req, res) => {
+    const id = req.params.id as string;
+    const name = req.params.name as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanUpdateAgent(req, existing);
+
+    const currentMcpServers = asRecord(asRecord(existing.adapterConfig)?.mcpServers) ?? {};
+    if (!Object.prototype.hasOwnProperty.call(currentMcpServers, name)) {
+      res.status(404).json({ error: `MCP server not found: ${name}` });
+      return;
+    }
+    const nextMcpServers = { ...currentMcpServers };
+    delete nextMcpServers[name];
+    const agent = await persistAgentMcpServers({
+      req,
+      existing,
+      nextMcpServers,
+      action: "agent.mcp_server.removed",
+      details: { server: name },
+    });
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    res.json({
+      mcpServers: sanitizeMcpServersForResponse(asRecord(agent.adapterConfig)?.mcpServers),
+    });
+  });
+
+  // ---- Brokered OAuth for remote MCP servers -------------------------------
+
+  function mcpOauthRedirectUri(req: Request): string {
+    const forwardedProto = req.header("x-forwarded-proto");
+    const proto = forwardedProto?.split(",")[0]?.trim() || req.protocol || "http";
+    const host = req.header("x-forwarded-host")?.split(",")[0]?.trim() || req.header("host");
+    if (!host) throw unprocessable("Could not determine the server's public URL for OAuth redirect");
+    return `${proto}://${host}/api/mcp-oauth/callback`;
+  }
+
+  router.post("/agents/:id/mcp-servers/:name/oauth/start", async (req, res) => {
+    const id = req.params.id as string;
+    const name = req.params.name as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanUpdateAgent(req, existing);
+
+    const mcpServers = asRecord(asRecord(existing.adapterConfig)?.mcpServers) ?? {};
+    const server = asRecord(mcpServers[name]);
+    if (!server) {
+      res.status(404).json({ error: `MCP server not found: ${name}` });
+      return;
+    }
+    const serverUrl = typeof server.url === "string" ? server.url : "";
+    if (server.transport !== "http" && server.transport !== "sse") {
+      res.status(422).json({ error: "OAuth is only supported for http/sse MCP servers" });
+      return;
+    }
+    if (!serverUrl) {
+      res.status(422).json({ error: "MCP server has no URL" });
+      return;
+    }
+
+    const { authorizeUrl } = await mcpOauthSvc.startAuthorization({
+      companyId: existing.companyId,
+      agentId: existing.id,
+      serverName: name,
+      serverUrl,
+      redirectUri: mcpOauthRedirectUri(req),
+    });
+
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "agent.mcp_server.oauth_started",
+      entityType: "agent",
+      entityId: existing.id,
+      details: { server: name },
+    });
+
+    res.json({ authorizeUrl });
+  });
+
+  // Browser redirect target for the OAuth authorization-code flow. The state
+  // token is the credential here (unguessable, 10-minute TTL, single use);
+  // the browser may or may not carry a Paperclip session.
+  router.get("/mcp-oauth/callback", async (req, res) => {
+    const state = typeof req.query.state === "string" ? req.query.state : "";
+    const code = typeof req.query.code === "string" ? req.query.code : "";
+    const oauthError = typeof req.query.error === "string" ? req.query.error : "";
+
+    // The message may include attacker-influenced text (the `error` query
+    // param, an OAuth server's error body). HTML-escape every interpolated
+    // value and forbid content sniffing so this same-origin page can't be
+    // turned into reflected XSS against the board user's session.
+    const escapeHtml = (value: string) =>
+      value
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    const respondHtml = (status: number, title: string, message: string) => {
+      const safeTitle = escapeHtml(title);
+      const safeMessage = escapeHtml(message);
+      res
+        .status(status)
+        .type("html")
+        .set("X-Content-Type-Options", "nosniff")
+        .set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+        .send(
+          `<!doctype html><html><head><title>${safeTitle}</title></head>` +
+            `<body style="font-family: system-ui, sans-serif; display: grid; place-items: center; min-height: 90vh;">` +
+            `<div style="text-align: center; max-width: 32rem;">` +
+            `<h1 style="font-size: 1.25rem;">${safeTitle}</h1>` +
+            `<p style="color: #555;">${safeMessage}</p>` +
+            `</div></body></html>`,
+        );
+    };
+
+    if (oauthError) {
+      respondHtml(400, "Connection failed", `The authorization server reported: ${oauthError}`);
+      return;
+    }
+    if (!state || !code) {
+      respondHtml(400, "Connection failed", "Missing state or code in the OAuth callback.");
+      return;
+    }
+
+    try {
+      const actor = req.actor.type === "board"
+        ? { userId: req.actor.userId ?? null }
+        : req.actor.type === "agent"
+          ? { agentId: req.actor.agentId ?? null }
+          : undefined;
+      const result = await mcpOauthSvc.handleCallback({ state, code, actor });
+      await logActivity(db, {
+        companyId: (await svc.getById(result.agentId))?.companyId ?? "",
+        actorType: actor?.userId ? "user" : "system",
+        actorId: actor?.userId ?? "system",
+        action: "agent.mcp_server.oauth_connected",
+        entityType: "agent",
+        entityId: result.agentId,
+        details: { server: result.serverName },
+      });
+      respondHtml(
+        200,
+        "MCP server connected",
+        `"${result.serverName}" is now authorized. You can close this window — the agent will use it on its next run.`,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      respondHtml(400, "Connection failed", message);
+    }
   });
 
   router.post("/agents/:id/pause", async (req, res) => {

@@ -24,6 +24,7 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
+  asBoolean,
   asString,
   asNumber,
   asStringArray,
@@ -52,6 +53,7 @@ import {
   requireOpenCodeModelId,
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
+import { parseResolvedMcpServers } from "./mcp-config.js";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
@@ -298,7 +300,37 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  // External MCP servers: the heartbeat layer hands us `config.mcpServers`
+  // already resolved (secret refs -> plaintext). They are inlined into the
+  // per-run temp opencode.json (0600, removed after the run), which requires
+  // the managed runtime config path (dangerouslySkipPermissions=true).
+  const resolvedMcpServers = parseResolvedMcpServers(config.mcpServers);
+  const mcpServerNames = Object.keys(resolvedMcpServers);
+  const usesManagedRuntimeConfig = asBoolean(config.dangerouslySkipPermissions, true);
+  const injectMcpServers = mcpServerNames.length > 0 && usesManagedRuntimeConfig;
+  if (mcpServerNames.length > 0 && !usesManagedRuntimeConfig) {
+    await onLog(
+      "stderr",
+      `[paperclip] Skipping external MCP server injection (${mcpServerNames.join(", ")}): it requires the managed runtime config path (dangerouslySkipPermissions=true) so the shared ~/.config/opencode is never modified.\n`,
+    );
+  }
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+    env,
+    config,
+    ...(injectMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+  });
+  if (injectMcpServers) {
+    await onLog(
+      "stdout",
+      `[paperclip] Injecting ${mcpServerNames.length} external MCP server${mcpServerNames.length === 1 ? "" : "s"} (${mcpServerNames.join(", ")}) via the runtime opencode.json.\n`,
+    );
+    if (Object.values(resolvedMcpServers).some((server) => server.allowedTools && server.allowedTools.length > 0)) {
+      await onLog(
+        "stderr",
+        "[paperclip] Note: per-server allowedTools are not enforced for OpenCode; all tools from injected MCP servers are available.\n",
+      );
+    }
+  }
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   try {

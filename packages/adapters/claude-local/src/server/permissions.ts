@@ -34,10 +34,23 @@ export function buildClaudeProbePermissionArgs(input: {
 export function buildClaudeExecutionPermissionArgs(input: {
   dangerouslySkipPermissions: boolean;
   targetIsSandbox: boolean;
+  /**
+   * `mcp__<server>__*` / `mcp__<server>__<tool>` patterns for this run's
+   * injected external MCP servers. MCP tool calls are NOT auto-approved in
+   * non-interactive (--print) mode, so they must be pre-approved via
+   * --allowedTools wherever --dangerously-skip-permissions is not in effect.
+   */
+  mcpToolPatterns?: string[];
 }): string[] {
-  if (!input.dangerouslySkipPermissions) return [];
+  const mcpPatterns = input.mcpToolPatterns ?? [];
+  if (!input.dangerouslySkipPermissions) {
+    return mcpPatterns.length > 0 ? ["--allowedTools", mcpPatterns.join(" ")] : [];
+  }
   if (input.targetIsSandbox) {
-    return ["--allowedTools", SANDBOX_ALLOWED_TOOLS];
+    const allowed = mcpPatterns.length > 0
+      ? `${SANDBOX_ALLOWED_TOOLS} ${mcpPatterns.join(" ")}`
+      : SANDBOX_ALLOWED_TOOLS;
+    return ["--allowedTools", allowed];
   }
   return ["--dangerously-skip-permissions"];
 }
