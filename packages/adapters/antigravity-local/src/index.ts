@@ -44,7 +44,7 @@ Use when:
 - You want Paperclip skills injected locally without polluting the global environment
 
 Don't use when:
-- You need webhook-style external invocation (use http or openclaw_gateway)
+- You need webhook-style external invocation (use http  or openclaw_gateway)
 - You only need a one-shot script without an AI coding agent loop (use process)
 - Antigravity CLI is not installed on the machine that runs Paperclip
 
