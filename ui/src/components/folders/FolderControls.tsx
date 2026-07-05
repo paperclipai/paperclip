@@ -7,6 +7,7 @@ import {
   Plus,
   Search,
   Trash2,
+  X,
 } from "lucide-react";
 import type { FolderKind, FolderListItem, FolderListResult } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
@@ -220,68 +221,22 @@ export function FolderRail({
       ) : (
         <div className="space-y-0.5">
           {renderVirtualRow("all", allLabel, result?.allCount ?? 0, <FolderIcon className="h-3.5 w-3.5" />)}
-          {folders.map((folder) => {
-            const active = selection === folder.id;
-            const isRenaming = renamingFolderId === folder.id;
-            return (
-              <div
-                key={folder.id}
-                className={cn(
-                  "group grid grid-cols-[1rem_minmax(0,1fr)_auto_auto] items-center gap-2 rounded-md px-2 py-1 text-sm transition-colors hover:bg-accent/40",
-                  active ? "bg-accent/60 text-foreground" : "text-muted-foreground",
-                )}
-              >
-                <span className="h-4 w-4" />
-                <button
-                  type="button"
-                  className="flex min-w-0 items-center gap-2 text-left"
-                  aria-current={active ? "page" : undefined}
-                  onClick={() => onSelect(folder.id)}
-                  onDoubleClick={() => startRename(folder)}
-                >
-                  <FolderSwatch color={folder.color} />
-                  {isRenaming ? (
-                    <input
-                      value={renameDraft}
-                      onChange={(event) => setRenameDraft(event.target.value)}
-                      onClick={(event) => event.stopPropagation()}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") commitRename(folder);
-                        if (event.key === "Escape") setRenamingFolderId(null);
-                      }}
-                      onBlur={() => commitRename(folder)}
-                      className="h-6 min-w-0 flex-1 rounded-sm border border-border bg-background px-1 text-sm outline-none"
-                      autoFocus
-                    />
-                  ) : (
-                    <span className="truncate">{folder.name}</span>
-                  )}
-                </button>
-                <span className="text-xs text-muted-foreground">{folder.itemCount}</span>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="h-6 w-6 opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
-                      aria-label={`Folder actions for ${folder.name}`}
-                    >
-                      <MoreHorizontal className="h-3.5 w-3.5" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => startRename(folder)}>Rename</DropdownMenuItem>
-                    <DropdownMenuItem onSelect={() => onEdit(folder)}>Edit color</DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem variant="destructive" onSelect={() => onDelete(folder)}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            );
-          })}
+          {folders.map((folder) => (
+            <FolderRailItem
+              key={folder.id}
+              folder={folder}
+              active={selection === folder.id}
+              renaming={renamingFolderId === folder.id}
+              renameDraft={renameDraft}
+              onRenameDraftChange={setRenameDraft}
+              onRenameCommit={() => commitRename(folder)}
+              onRenameCancel={() => setRenamingFolderId(null)}
+              onSelect={() => onSelect(folder.id)}
+              onStartRename={() => startRename(folder)}
+              onEdit={() => onEdit(folder)}
+              onDelete={() => onDelete(folder)}
+            />
+          ))}
           <div className="px-2 pb-1 pt-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             System
           </div>
@@ -289,6 +244,143 @@ export function FolderRail({
         </div>
       )}
     </nav>
+  );
+}
+
+/**
+ * One selectable rail row. The leading 1rem grid column is the reserved
+ * disclosure/indent slot so nested folders can slot in later without relayout
+ * (ux-spec §3.1/§3.2 "nesting-ready").
+ */
+export function FolderRailItem({
+  folder,
+  active,
+  renaming,
+  renameDraft,
+  onRenameDraftChange,
+  onRenameCommit,
+  onRenameCancel,
+  onSelect,
+  onStartRename,
+  onEdit,
+  onDelete,
+}: {
+  folder: FolderListItem;
+  active: boolean;
+  renaming: boolean;
+  renameDraft: string;
+  onRenameDraftChange: (value: string) => void;
+  onRenameCommit: () => void;
+  onRenameCancel: () => void;
+  onSelect: () => void;
+  onStartRename: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div
+      className={cn(
+        "group grid grid-cols-[1rem_minmax(0,1fr)_auto_auto] items-center gap-2 rounded-md px-2 py-1 text-sm transition-colors hover:bg-accent/40",
+        active ? "bg-accent/60 text-foreground" : "text-muted-foreground",
+      )}
+    >
+      <span className="h-4 w-4" />
+      <button
+        type="button"
+        className="flex min-w-0 items-center gap-2 text-left"
+        aria-current={active ? "page" : undefined}
+        onClick={onSelect}
+        onDoubleClick={onStartRename}
+      >
+        <FolderSwatch color={folder.color} />
+        {renaming ? (
+          <input
+            value={renameDraft}
+            onChange={(event) => onRenameDraftChange(event.target.value)}
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") onRenameCommit();
+              if (event.key === "Escape") onRenameCancel();
+            }}
+            onBlur={onRenameCommit}
+            className="h-6 min-w-0 flex-1 rounded-sm border border-border bg-background px-1 text-sm outline-none"
+            autoFocus
+          />
+        ) : (
+          <span className="truncate">{folder.name}</span>
+        )}
+      </button>
+      <span className="text-xs text-muted-foreground">{folder.itemCount}</span>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="h-6 w-6 opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
+            aria-label={`Folder actions for ${folder.name}`}
+          >
+            <MoreHorizontal className="h-3.5 w-3.5" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onSelect={onStartRename}>Rename</DropdownMenuItem>
+          <DropdownMenuItem onSelect={onEdit}>Edit color</DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem variant="destructive" onSelect={onDelete}>
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
+/**
+ * Dismissible nudge shown when items exist but no folders do (ux-spec §6.3).
+ * Dismissal persists per storage key.
+ */
+export function AllUnfiledBanner({
+  storageKey,
+  itemLabelPlural,
+  onCreateFolder,
+}: {
+  storageKey: string;
+  itemLabelPlural: string;
+  onCreateFolder: () => void;
+}) {
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return window.localStorage.getItem(storageKey) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  if (dismissed) return null;
+
+  function dismiss() {
+    setDismissed(true);
+    try {
+      window.localStorage.setItem(storageKey, "1");
+    } catch {
+      // Ignore storage failures; the banner just reappears next visit.
+    }
+  }
+
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+      <FolderIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 text-muted-foreground">
+        Group these {itemLabelPlural} into folders to keep things tidy.
+      </span>
+      <Button size="sm" variant="outline" onClick={onCreateFolder}>
+        Create your first folder
+      </Button>
+      <Button size="icon-sm" variant="ghost" aria-label="Dismiss folder suggestion" onClick={dismiss}>
+        <X className="h-3.5 w-3.5" />
+      </Button>
+    </div>
   );
 }
 

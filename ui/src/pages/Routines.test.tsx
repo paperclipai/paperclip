@@ -286,6 +286,7 @@ function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
     triggers: [],
     lastRun: null,
     activeIssue: null,
+    folderId: null,
     ...overrides,
   };
 }
@@ -578,7 +579,6 @@ describe("Routines page", () => {
       }),
     ]);
     issuesListMock.mockResolvedValue([]);
-
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: {
@@ -608,6 +608,99 @@ describe("Routines page", () => {
 
     await act(async () => {
       root.unmount();
+    });
+  });
+
+  it("filters to Unfiled and shows the empty-folder state with a create CTA", async () => {
+    foldersListMock.mockResolvedValue({
+      kind: "routine",
+      allCount: 2,
+      unfiledCount: 1,
+      folders: [
+        {
+          id: "folder-reporting",
+          companyId: "company-1",
+          kind: "routine",
+          name: "Reporting",
+          color: "#6366f1",
+          position: 0,
+          itemCount: 1,
+          createdAt: new Date("2026-07-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-07-01T00:00:00.000Z"),
+        },
+        {
+          id: "folder-empty",
+          companyId: "company-1",
+          kind: "routine",
+          name: "Empty folder",
+          color: null,
+          position: 1,
+          itemCount: 0,
+          createdAt: new Date("2026-07-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-07-01T00:00:00.000Z"),
+        },
+      ],
+    });
+    routinesListMock.mockResolvedValue([
+      createRoutine({ id: "routine-1", title: "Filed digest", folderId: "folder-reporting" }),
+      createRoutine({ id: "routine-2", title: "Loose routine", folderId: null }),
+    ]);
+    issuesListMock.mockResolvedValue([]);
+
+    currentSearch = "folder=unfiled";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Routines />
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Loose routine"); attempts += 1) {
+      await act(async () => {
+        await flush();
+      });
+    }
+
+    // Unfiled filter: only the folderless routine renders; the rail still lists folders.
+    expect(container.textContent).toContain("Loose routine");
+    expect(container.textContent).not.toContain("Filed digest");
+    expect(container.textContent).toContain("Reporting");
+    expect(container.textContent).toContain("Empty folder");
+
+    await act(async () => {
+      root.unmount();
+    });
+
+    // Remount filtered to the empty folder: empty state + create-into-folder CTA.
+    currentSearch = "folder=folder-empty";
+    const secondRoot = createRoot(container);
+    await act(async () => {
+      secondRoot.render(
+        <QueryClientProvider client={queryClient}>
+          <Routines />
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("This folder is empty"); attempts += 1) {
+      await act(async () => {
+        await flush();
+      });
+    }
+
+    expect(container.textContent).toContain("This folder is empty");
+    expect(container.textContent).toContain("New routine in this folder");
+
+    await act(async () => {
+      secondRoot.unmount();
     });
   });
 

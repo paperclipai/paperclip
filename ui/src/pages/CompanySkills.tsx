@@ -92,11 +92,13 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import {
+  AllUnfiledBanner,
   BulkBar,
   DeleteFolderDialog,
   FolderChip,
   FolderFormDialog,
   FolderRail,
+  FolderSwatch,
   MobileFolderSheet,
   MoveToMenu,
   folderSearchValue,
@@ -755,6 +757,7 @@ function SkillCard({
   folders,
   selected = false,
   selectMode = false,
+  showFolderBadge = false,
   onOpen,
   onSelectChange,
   onMove,
@@ -764,11 +767,16 @@ function SkillCard({
   folders?: FolderListItem[];
   selected?: boolean;
   selectMode?: boolean;
+  /** Show the card's folder so search results reveal where an item lives (user story 5). */
+  showFolderBadge?: boolean;
   onOpen: (card: DiscoveryCard) => void;
   onSelectChange?: (card: DiscoveryCard, selected: boolean) => void;
   onMove?: (card: DiscoveryCard, folderId: string | null) => void;
   onCreateFolderAndMove?: (card: DiscoveryCard) => void;
 }) {
+  const badgeFolder = showFolderBadge && card.installed
+    ? (card.folderId ? folders?.find((folder) => folder.id === card.folderId) ?? null : null)
+    : undefined;
   return (
     <div
       onClick={() => onOpen(card)}
@@ -804,6 +812,12 @@ function SkillCard({
           <div className="truncate text-xs text-muted-foreground">
             by {card.author}{card.version ? ` · ${card.version}` : ""}
           </div>
+          {badgeFolder !== undefined ? (
+            <div className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+              <FolderSwatch color={badgeFolder?.color} className="h-2 w-2" />
+              <span className="truncate">{badgeFolder ? badgeFolder.name : "Unfiled"}</span>
+            </div>
+          ) : null}
         </div>
         {/* Where the skill came from (PAP-10907 E); native title gives a hover hint. */}
         {(() => {
@@ -981,6 +995,7 @@ export function DiscoveryGrid({
   onCreateFolderAndMoveSelected,
   onClearSelected,
   onOpenMobileFolders,
+  folderNudgeStorageKey,
 }: {
   tab: DiscoveryTab;
   tabCounts: Record<DiscoveryTab, number>;
@@ -1023,6 +1038,8 @@ export function DiscoveryGrid({
   onCreateFolderAndMoveSelected?: () => void;
   onClearSelected?: () => void;
   onOpenMobileFolders?: () => void;
+  /** When set and no folders exist yet, show the dismissible all-unfiled nudge (ux-spec §6.3). */
+  folderNudgeStorageKey?: string;
 }) {
   // Source filter (github / skills.sh / local / …) lives in the grid so it
   // narrows whatever the parent already filtered by tab/category/search (PAP-10907 E).
@@ -1258,6 +1275,13 @@ export function DiscoveryGrid({
         {/* Grid body */}
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {scanStatus ? <p className="mb-3 text-xs text-muted-foreground">{scanStatus}</p> : null}
+          {folderNudgeStorageKey && onCreateFolder && folderResult && folderResult.folders.length === 0 && !loading && cards.length > 0 ? (
+            <AllUnfiledBanner
+              storageKey={folderNudgeStorageKey}
+              itemLabelPlural="skills"
+              onCreateFolder={onCreateFolder}
+            />
+          ) : null}
           {selectMode && onMoveSelected && onCreateFolderAndMoveSelected && onClearSelected ? (
             <div className="mb-3">
               <BulkBar
@@ -1325,6 +1349,7 @@ export function DiscoveryGrid({
                     folders={folderResult?.folders}
                     selected={selectedSkillIds.includes(card.skillId ?? "")}
                     selectMode={selectMode}
+                    showFolderBadge={Boolean(folderResult && search.trim())}
                     onOpen={onOpenCard}
                     onSelectChange={onSelectCard}
                     onMove={onMoveCard}
@@ -4236,17 +4261,20 @@ export function CompanySkills() {
       .map(([slug, count]) => ({ slug, count }))
       .sort((a, b) => b.count - a.count || a.slug.localeCompare(b.slug));
   }, [discoveryTabCards]);
+  const discoverySearchActive = discoverySearch.trim().length > 0;
   const visibleDiscoveryCards = useMemo(() => {
     const filtered = discoveryTabCards.filter((card) => {
       if (discoveryCategory && !card.categories.includes(discoveryCategory)) return false;
-      if (discoveryTab === "installed") {
+      // Search spans all folders (user story 5): the folder filter only
+      // narrows when the user is browsing, never when searching.
+      if (discoveryTab === "installed" && !discoverySearchActive) {
         if (folderSelection === "unfiled" && card.folderId) return false;
         if (folderSelection !== "all" && folderSelection !== "unfiled" && card.folderId !== folderSelection) return false;
       }
       return discoveryMatchesSearch(card, discoverySearch.trim());
     });
     return sortDiscoveryCards(filtered, discoverySort, discoveryTab !== "bundled");
-  }, [discoveryTabCards, discoveryCategory, discoverySearch, discoverySort, discoveryTab, folderSelection]);
+  }, [discoveryTabCards, discoveryCategory, discoverySearch, discoverySearchActive, discoverySort, discoveryTab, folderSelection]);
 
   const selectedCatalogSkill = catalogDetailQuery.data
     ?? (catalogListQuery.data ?? []).find((entry) => entry.id === selectedCatalogRef || entry.key === selectedCatalogRef)
@@ -4861,13 +4889,19 @@ export function CompanySkills() {
           } : undefined}
           onMoveCard={showInstalledFolders ? (card, folderId) => {
             if (!card.skillId) return;
-            moveSkillToFolder.mutate({ itemId: card.skillId, folderId });
+            const skillId = card.skillId;
+            const previousFolderId = card.folderId ?? null;
+            moveSkillToFolder.mutate({ itemId: skillId, folderId });
             pushToast({
               tone: "success",
               title: "Skill moved",
               body: folderId
-                ? `Moved to ${skillFolderResult?.folders.find((folder) => folder.id === folderId)?.name ?? "folder"}.`
-                : "Moved to Unfiled.",
+                ? `Moved "${card.name}" to ${skillFolderResult?.folders.find((folder) => folder.id === folderId)?.name ?? "folder"}.`
+                : `Moved "${card.name}" to Unfiled.`,
+              action: {
+                label: "Undo",
+                onClick: () => moveSkillToFolder.mutate({ itemId: skillId, folderId: previousFolderId }),
+              },
             });
           } : undefined}
           onCreateFolderAndMoveCard={showInstalledFolders ? (card) => {
@@ -4876,6 +4910,7 @@ export function CompanySkills() {
           onMoveSelected={showInstalledFolders ? (folderId) => void moveSelectedSkills(folderId) : undefined}
           onCreateFolderAndMoveSelected={showInstalledFolders ? () => openCreateFolder(selectedSkillIds) : undefined}
           onClearSelected={showInstalledFolders ? () => setSelectedSkillIds([]) : undefined}
+          folderNudgeStorageKey={showInstalledFolders ? `paperclip:skills-folder-nudge:${selectedCompanyId ?? "none"}` : undefined}
         />
       ) : activeView === "installed" && selectedSkillId ? (
         <SkillDetailPage
