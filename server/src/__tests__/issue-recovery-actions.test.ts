@@ -1272,4 +1272,96 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
   });
+
+  it("sets timeoutAt for routine execution recovery actions", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+
+    // Create a routine execution issue
+    const routineIssue = await db
+      .update(issues)
+      .set({
+        originKind: "routine_execution",
+      })
+      .where(eq(issues.id, sourceIssueId))
+      .returning()
+      .then((rows) => rows[0]);
+
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const now = new Date();
+
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded:fingerprint",
+      evidence: {},
+      nextAction: "Routine execution instance auto-resolved on timeout.",
+      wakePolicy: { type: "no_wake", reason: "routine_execution_auto_timeout" },
+      maxAttempts: 1,
+      timeoutAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+    });
+
+    expect(action.timeoutAt).not.toBeNull();
+    expect(action.maxAttempts).toBe(1);
+    expect(action.timeoutAt?.getTime()).toBeGreaterThan(now.getTime());
+
+    // Should be approximately 24 hours from now (within 1 minute)
+    const diffMs = action.timeoutAt!.getTime() - now.getTime();
+    const expectedDiffMs = 24 * 60 * 60 * 1000;
+    expect(Math.abs(diffMs - expectedDiffMs)).toBeLessThan(60 * 1000);
+  });
+
+  it("resolves timed-out routine recovery actions", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+
+    // Create a routine execution issue
+    await db
+      .update(issues)
+      .set({
+        originKind: "routine_execution",
+      })
+      .where(eq(issues.id, sourceIssueId));
+
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const now = new Date();
+    const pastTimeout = new Date(now.getTime() - 1000); // 1 second in the past
+
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "stranded_assigned_issue",
+      fingerprint: "stranded:fingerprint",
+      evidence: {},
+      nextAction: "Routine execution instance auto-resolved on timeout.",
+      wakePolicy: { type: "no_wake", reason: "routine_execution_auto_timeout" },
+      maxAttempts: 1,
+      timeoutAt: pastTimeout,
+    });
+
+    // Verify the action is active before resolution
+    expect(action.status).toBe("active");
+    expect(action.timeoutAt).toEqual(pastTimeout);
+
+    // Resolve the timed-out action
+    const resolved = await recoveryActionSvc.resolveActiveForIssue({
+      companyId,
+      sourceIssueId,
+      actionId: action.id,
+      status: "cancelled",
+      outcome: "auto_resolved",
+      resolutionNote: "Recovery action timed out.",
+    });
+
+    // Verify the action is now cancelled
+    expect(resolved).not.toBeNull();
+    expect(resolved?.status).toBe("cancelled");
+    expect(resolved?.outcome).toBe("auto_resolved");
+    expect(resolved?.resolutionNote).toBe("Recovery action timed out.");
+  });
 });

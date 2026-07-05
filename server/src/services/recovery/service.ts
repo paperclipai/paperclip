@@ -2133,6 +2133,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (issue.assigneeAgentId) {
       const assignee = await getAgent(issue.assigneeAgentId);
       if (assignee?.reportsTo) candidateIds.push(assignee.reportsTo);
+      candidateIds.push(issue.assigneeAgentId);
     }
     if (issue.createdByAgentId) {
       const creator = await getAgent(issue.createdByAgentId);
@@ -2146,7 +2147,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(and(eq(agents.companyId, issue.companyId), inArray(agents.role, ["cto", "ceo"])))
       .orderBy(sql`case when ${agents.role} = 'cto' then 0 else 1 end`, asc(agents.createdAt));
     candidateIds.push(...roleCandidates.map((agent) => agent.id));
-    if (issue.assigneeAgentId) candidateIds.push(issue.assigneeAgentId);
 
     const seen = new Set<string>();
     for (const agentId of candidateIds) {
@@ -2416,6 +2416,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       input.recoveryOwnerAgentId,
     );
     const now = new Date();
+
+    // For routine execution instances, set a 24-hour timeout and maxAttempts=1
+    const isRoutineExecution = input.issue.originKind === "routine_execution";
+    const timeoutAt = isRoutineExecution ? new Date(now.getTime() + 24 * 60 * 60 * 1000) : null;
+    const maxAttempts = isRoutineExecution ? 1 : null;
+
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
       sourceIssueId: input.issue.id,
@@ -2447,6 +2453,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           ? "Bind the missing secret(s) named in the run failure to the agent/project/routine env before resuming adapter execution."
         : recoveryCause === "execution_review_participant_recovery"
           ? "Repair the failed review participant path, restore the source issue to in_review with a live reviewer, or record an intentional manual resolution."
+        : isRoutineExecution
+          ? "Routine execution instance auto-resolved on timeout. This issue will be cancelled if no action is taken."
         : "Restore a live execution path, fix the runtime/adapter failure, or record an intentional manual resolution.",
       wakePolicy: recoveryCause === "workspace_validation_failed" || recoveryCause === "configuration_incomplete"
         ? {
@@ -2454,6 +2462,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           reason: recoveryCause,
           ownerAgentId,
         }
+        : isRoutineExecution
+          ? {
+            type: "no_wake",
+            reason: "routine_execution_auto_timeout",
+          }
         : ownerAgentId
         ? {
           type: "wake_owner",
@@ -2465,7 +2478,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           reason: "no_invokable_recovery_owner",
         },
       monitorPolicy: null,
-      maxAttempts: null,
+      maxAttempts,
+      timeoutAt,
       lastAttemptAt: now,
     });
 
@@ -2916,6 +2930,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // SPC-17118: long-lived deliberate in_progress anchors (e.g. multi-day gate
+      // monitors) can opt out of stranded-recovery entirely via
+      // executionPolicy.recoverySuppressed. Without this, the recovery system
+      // enqueues continuations between daily heartbeats and eventually escalates to
+      // blocked when the same issue keeps re-exiting in_progress with no completion
+      // criterion.
+      if (parseObject(issue.executionPolicy).recoverySuppressed === true) {
         result.skipped += 1;
         continue;
       }
@@ -4372,6 +4397,100 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   // Backstop sweeper: clears stale lock columns on issues whose checkoutRunId
+  // Resolves timed-out recovery actions for routine execution instances.
+  // Routine instances are ephemeral and should auto-cleanup if not picked up by
+  // their assigned recovery owner within the timeout window (24h).
+  async function resolveTimedOutRoutineRecoveryActions() {
+    const result = {
+      resolved: 0,
+      actionIds: [] as string[],
+      issueIds: [] as string[],
+    };
+
+    const now = new Date();
+
+    // Find active recovery actions that have timed out (timeoutAt is not null and timeoutAt <= now)
+    const timedOutActions = await db
+      .select({
+        id: issueRecoveryActions.id,
+        sourceIssueId: issueRecoveryActions.sourceIssueId,
+        companyId: issueRecoveryActions.companyId,
+      })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          sql`${issueRecoveryActions.timeoutAt} IS NOT NULL AND ${issueRecoveryActions.timeoutAt} <= NOW()`,
+        ),
+      );
+
+    for (const action of timedOutActions) {
+      const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+        companyId: action.companyId,
+        sourceIssueId: action.sourceIssueId,
+        actionId: action.id,
+        status: "cancelled",
+        outcome: "auto_resolved",
+        resolutionNote: "Recovery action timed out. Routine execution instance auto-resolved.",
+      });
+
+      if (!resolved) continue;
+
+      result.resolved += 1;
+      result.actionIds.push(action.id);
+      result.issueIds.push(action.sourceIssueId);
+
+      // Update the source issue to cancelled status
+      const sourceIssue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, action.sourceIssueId))
+        .then((rows) => rows[0] ?? null);
+
+      if (sourceIssue) {
+        await issuesSvc.update(action.sourceIssueId, {
+          status: "cancelled",
+        });
+
+        await logActivity(db, {
+          companyId: action.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: null,
+          runId: null,
+          action: "issue.recovery_action_timeout",
+          entityType: "issue",
+          entityId: action.sourceIssueId,
+          details: {
+            recoveryActionId: action.id,
+            previousStatus: sourceIssue.status,
+            newStatus: "cancelled",
+            timeoutAt: resolved.timeoutAt,
+          },
+        });
+
+        await deps.commentOnIssue({
+          issueId: action.sourceIssueId,
+          authorType: "system",
+          body: `Recovery action timed out. Routine execution instance auto-resolved.\n\nRecovery action: \`${action.id}\``,
+          metadata: {
+            recoveryActionId: action.id,
+            outcome: "auto_resolved",
+          },
+        });
+      }
+    }
+
+    if (result.resolved > 0) {
+      logger.warn(
+        { resolved: result.resolved, actionIds: result.actionIds, issueIds: result.issueIds },
+        "resolved timed-out routine recovery actions",
+      );
+    }
+
+    return result;
+  }
+
   // or executionRunId points at a heartbeat_runs row that is either missing or
   // in a terminal status. Provides self-heal for stale locks that fell outside
   // releaseIssueExecutionAndPromote / clearCheckoutRunIfTerminal / adoption.
@@ -4487,6 +4606,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    resolveTimedOutRoutineRecoveryActions,
     sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileIssueGraphLiveness,
