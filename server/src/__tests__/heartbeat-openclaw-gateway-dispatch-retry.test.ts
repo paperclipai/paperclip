@@ -164,6 +164,7 @@ describeEmbeddedPostgres("heartbeat OpenClaw gateway dispatch retry", () => {
       title: "Gateway-backed issue",
       status: "in_progress",
       priority: "high",
+      responsibleUserId: "responsible-user",
       assigneeAgentId: agentId,
     });
     await db.insert(agentWakeupRequests).values({
@@ -184,7 +185,7 @@ describeEmbeddedPostgres("heartbeat OpenClaw gateway dispatch retry", () => {
       triggerDetail: "system",
       status: "queued",
       wakeupRequestId,
-      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned", responsibleUserId: "responsible-user" },
     });
     await db.update(agentWakeupRequests).set({ runId }).where(eq(agentWakeupRequests.id, wakeupRequestId));
     await db
