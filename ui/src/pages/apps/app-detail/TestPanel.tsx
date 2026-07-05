@@ -571,9 +571,15 @@ function ActionRow({
   decision: ToolConnectionTestDecision;
   agent: ToolConnectionTestAgent;
 } & RowSharedProps) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(() => Boolean(loadStoredAskFirstOutcome(shared.connectionId, entry, agent)));
   const title = entry.title ?? entry.toolName;
   const sub = actionSubLine(entry);
+
+  useEffect(() => {
+    if (loadStoredAskFirstOutcome(shared.connectionId, entry, agent)) {
+      setOpen(true);
+    }
+  }, [shared.connectionId, entry, agent]);
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -612,6 +618,50 @@ type RunOutcome = {
   ranAt: Date;
 };
 
+function testOutcomeStorageKey(connectionId: string, entry: ToolCatalogEntry, agentId: string): string {
+  return `paperclip:test-call:${connectionId}:${agentId}:${entry.id}:${entry.toolName}`;
+}
+
+function loadStoredAskFirstOutcome(connectionId: string, entry: ToolCatalogEntry, agent: ToolConnectionTestAgent): RunOutcome | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(testOutcomeStorageKey(connectionId, entry, agent.id));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as {
+      result?: ToolConnectionTestCallResult;
+      agentName?: string;
+      durationMs?: number;
+      ranAt?: string;
+    };
+    if (!parsed.result || parsed.result.decision !== "ask_first" || typeof parsed.result.actionRequestId !== "string") {
+      return null;
+    }
+    return {
+      result: parsed.result,
+      agentName: parsed.agentName || agent.name,
+      durationMs: typeof parsed.durationMs === "number" ? parsed.durationMs : 0,
+      ranAt: parsed.ranAt ? new Date(parsed.ranAt) : new Date(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function storeAskFirstOutcome(connectionId: string, entry: ToolCatalogEntry, agentId: string, outcome: RunOutcome | null) {
+  if (typeof window === "undefined") return;
+  const key = testOutcomeStorageKey(connectionId, entry, agentId);
+  try {
+    if (!outcome || outcome.result.decision !== "ask_first") {
+      window.sessionStorage.removeItem(key);
+      return;
+    }
+    window.sessionStorage.setItem(key, JSON.stringify({ ...outcome, ranAt: outcome.ranAt.toISOString() }));
+  } catch {
+    // Session storage is only a same-tab convenience. If it is unavailable, the
+    // request is still visible in Review and the backend lifecycle remains intact.
+  }
+}
+
 /** Fold optional fields behind the JsonSchemaForm "More options" disclosure. */
 function splitRequiredOptional(schema: JsonSchemaNode): JsonSchemaNode {
   const required = new Set(schema.required ?? []);
@@ -649,7 +699,9 @@ function ActionTester({
   const formSchema = useMemo(() => splitRequiredOptional(rawSchema), [rawSchema]);
   const [values, setValues] = useState<Record<string, unknown>>(() => getDefaultValues(rawSchema));
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [outcome, setOutcome] = useState<RunOutcome | null>(null);
+  const [outcome, setOutcome] = useState<RunOutcome | null>(() =>
+    loadStoredAskFirstOutcome(connectionId, entry, agent)
+  );
 
   // Running card state — keep the spinner visible ≥200ms (anti-flicker).
   const [running, setRunning] = useState(false);
@@ -679,8 +731,10 @@ function ActionTester({
       const durationMs = Date.now() - startedAtRef.current;
       const finish = () => {
         if (cancelledRef.current) return;
+        const nextOutcome = { result, agentName: agent.name, durationMs, ranAt: new Date() };
         setRunning(false);
-        setOutcome({ result, agentName: agent.name, durationMs, ranAt: new Date() });
+        setOutcome(nextOutcome);
+        storeAskFirstOutcome(connectionId, entry, agent.id, nextOutcome);
         queryClient.invalidateQueries({ queryKey: queryKeys.tools.connectionActivity(connectionId) });
         if (selectedCompanyId) {
           queryClient.invalidateQueries({ queryKey: queryKeys.tools.actionRequests(selectedCompanyId, "pending") });
@@ -714,6 +768,7 @@ function ActionTester({
     cancelledRef.current = true;
     setRunning(false);
     setOutcome(null);
+    storeAskFirstOutcome(connectionId, entry, agent.id, null);
     setErrors({});
     setValues(getDefaultValues(rawSchema));
   };

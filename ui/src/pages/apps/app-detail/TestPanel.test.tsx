@@ -208,11 +208,13 @@ beforeEach(() => {
     resolvedAt: null,
     durationMs: null,
   });
+  window.sessionStorage.clear();
 });
 
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  window.sessionStorage.clear();
 });
 
 describe("TestPanel", () => {
@@ -319,6 +321,30 @@ describe("TestPanel", () => {
     expect(container.textContent).toContain("Waiting ·");
     const reviewLink = [...container.querySelectorAll("a")].find((a) => a.textContent?.includes("Open Review tab"));
     expect(reviewLink?.getAttribute("href")).toBe("/apps/conn-1/review");
+  });
+
+  it("restores the ask-first card after leaving and returning to the Test tab", async () => {
+    runTestCallMock.mockResolvedValue({ decision: "ask_first", invocationId: "inv-2", actionRequestId: "req-1" });
+    await act(async () => renderPanel());
+    await flushReact();
+
+    const trigger = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Append a row"));
+    await act(async () => trigger!.click());
+    await flushReact();
+    await fillFormField("sheet-123");
+    await clickByText("Run");
+    await settle();
+    expect(container.textContent).toContain("Sent for your OK.");
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => renderPanel());
+    await flushReact();
+
+    expect(runTestCallMock).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Sent for your OK.");
+    expect(container.textContent).toContain("spreadsheetId: sheet-123");
+    expect(container.textContent).toContain("Cancel this request");
   });
 
   it("shows 'Approved · running' while an approved ask-first call is executing", async () => {

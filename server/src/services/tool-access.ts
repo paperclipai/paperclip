@@ -258,25 +258,25 @@ const APPROVED_STDIO_TEMPLATES: Record<string, {
     tools: [
       {
         name: "list_spreadsheets",
-        description: "List connected spreadsheets.",
+        description: "List the Google Sheets spreadsheets configured in this connection allowlist.",
         inputSchema: { type: "object", properties: {} },
         annotations: { readOnlyHint: true },
       },
       {
         name: "get_spreadsheet_info",
-        description: "Get spreadsheet and tab details.",
+        description: "Get spreadsheet metadata and sheet tab information for an allowlisted spreadsheet.",
         inputSchema: GOOGLE_SHEETS_SPREADSHEET_SCHEMA,
         annotations: { readOnlyHint: true },
       },
       {
         name: "read_values",
-        description: "Read values from a sheet range.",
+        description: "Read cell values from an allowlisted spreadsheet range.",
         inputSchema: GOOGLE_SHEETS_RANGE_SCHEMA,
         annotations: { readOnlyHint: true },
       },
       {
         name: "search_rows",
-        description: "Search rows in a sheet range.",
+        description: "Search rows in an allowlisted spreadsheet range.",
         inputSchema: {
           type: "object",
           properties: {
@@ -292,19 +292,19 @@ const APPROVED_STDIO_TEMPLATES: Record<string, {
       },
       {
         name: "append_rows",
-        description: "Add rows to a sheet.",
+        description: "Append rows to an allowlisted spreadsheet range.",
         inputSchema: GOOGLE_SHEETS_WRITE_VALUES_SCHEMA,
         annotations: { readOnlyHint: false },
       },
       {
         name: "update_values",
-        description: "Update values in a sheet range.",
+        description: "Update values in an allowlisted spreadsheet range.",
         inputSchema: GOOGLE_SHEETS_WRITE_VALUES_SCHEMA,
         annotations: { readOnlyHint: false },
       },
       {
         name: "add_sheet_tab",
-        description: "Add a tab to a spreadsheet.",
+        description: "Add a sheet tab to an allowlisted spreadsheet.",
         inputSchema: {
           type: "object",
           properties: {
@@ -319,13 +319,13 @@ const APPROVED_STDIO_TEMPLATES: Record<string, {
       },
       {
         name: "clear_values",
-        description: "Clear values from a sheet range.",
+        description: "Clear values in an allowlisted spreadsheet range.",
         inputSchema: GOOGLE_SHEETS_RANGE_SCHEMA,
         annotations: { destructiveHint: true },
       },
       {
         name: "delete_rows",
-        description: "Delete rows from a sheet.",
+        description: "Delete rows from an allowlisted spreadsheet tab.",
         inputSchema: {
           type: "object",
           properties: {

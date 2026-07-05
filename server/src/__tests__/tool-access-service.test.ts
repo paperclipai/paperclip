@@ -911,6 +911,55 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(invocation).toMatchObject({ status: "succeeded", approvalState: "approved" });
   });
 
+  it("creates a fresh ask-first request when the Test tab reruns the same side-effecting action", async () => {
+    const company = await createCompany(db);
+    const userId = `tool-tester-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, ["tools:use"]);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: `Ask first ${randomUUID()}`,
+      policyType: "require_approval",
+      priority: 100,
+      selectors: { connectionId: connection.id },
+    });
+    const gateway = createToolGatewayService(db, { toolActionSigningSecret: "test-secret" });
+    const app = createRouteApp(db, boardSessionActor(company.id, "operator", userId), gateway);
+    const body = { agentId: agent.id, toolName: "send_email", parameters: { to: "a@example.com", body: "hi" } };
+
+    const first = await request(app)
+      .post(`/api/tool-connections/${connection.id}/test-calls`)
+      .send(body)
+      .expect(200);
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(mcpHttpResponse({
+      jsonrpc: "2.0",
+      id: "paperclip-tool-test",
+      result: { content: [{ type: "text", text: "sent" }] },
+    }));
+    await gateway.approveActionRequest({
+      companyId: company.id,
+      actionRequestId: first.body.actionRequestId as string,
+      actor: { userId },
+    });
+
+    const second = await request(app)
+      .post(`/api/tool-connections/${connection.id}/test-calls`)
+      .send(body)
+      .expect(200);
+
+    expect(second.body).toMatchObject({ decision: "ask_first", actionRequestId: expect.any(String) });
+    expect(second.body.actionRequestId).not.toBe(first.body.actionRequestId);
+
+    const requests = await db
+      .select()
+      .from(toolActionRequests)
+      .where(eq(toolActionRequests.companyId, company.id));
+    expect(requests).toHaveLength(2);
+    expect(requests.map((row) => row.status).sort()).toEqual(["approved", "pending"]);
+  });
+
   it("reports a denied ask-first test call as denied without running the tool", async () => {
     const company = await createCompany(db);
     const userId = `tool-tester-${randomUUID()}`;
@@ -1907,6 +1956,18 @@ describeEmbeddedPostgres("tool access service", () => {
       configValues: { allowedSpreadsheetIds: ["sheet-with-inputs"] },
     }, { actorType: "user", actorId: "board" });
 
+    const descriptions = Object.fromEntries(connect.catalog.map((entry) => [entry.toolName, entry.description]));
+    expect(descriptions).toMatchObject({
+      list_spreadsheets: "List the Google Sheets spreadsheets configured in this connection allowlist.",
+      get_spreadsheet_info: "Get spreadsheet metadata and sheet tab information for an allowlisted spreadsheet.",
+      read_values: "Read cell values from an allowlisted spreadsheet range.",
+      search_rows: "Search rows in an allowlisted spreadsheet range.",
+      append_rows: "Append rows to an allowlisted spreadsheet range.",
+      update_values: "Update values in an allowlisted spreadsheet range.",
+      add_sheet_tab: "Add a sheet tab to an allowlisted spreadsheet.",
+      clear_values: "Clear values in an allowlisted spreadsheet range.",
+      delete_rows: "Delete rows from an allowlisted spreadsheet tab.",
+    });
     expect(connect.catalog.find((entry) => entry.toolName === "read_values")?.inputSchema).toMatchObject({
       type: "object",
       properties: {

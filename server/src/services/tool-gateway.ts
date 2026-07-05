@@ -4203,6 +4203,7 @@ export function createToolGatewayService(
         actorId: input.userId,
         tool,
         parameters: requestedParameters,
+        idempotencyKey: `test-call:${randomUUID()}`,
         consumeRateLimit: true,
       });
       const accessDecision = await policyService.decide(decisionInput);
