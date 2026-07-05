@@ -18,9 +18,13 @@ describe("shouldTrackDevServerPath", () => {
     expect(shouldTrackDevServerPath("packages/shared/tests/helpers.ts")).toBe(false);
     expect(shouldTrackDevServerPath("packages/shared/test/helpers.ts")).toBe(false);
     expect(shouldTrackDevServerPath("vitest.config.ts")).toBe(false);
+    expect(shouldTrackDevServerPath("server/artifacts/session/run.json")).toBe(false);
+    expect(shouldTrackDevServerPath("server/docs/generated/report.md")).toBe(false);
+    expect(shouldTrackDevServerPath("server/logs/paperclip.log")).toBe(false);
+    expect(shouldTrackDevServerPath("server/team-state/kuromi.json")).toBe(false);
   });
 
-  it("keeps runtime paths restart-relevant", () => {
+  it("keeps source paths restart-relevant", () => {
     expect(shouldTrackDevServerPath("server/src/routes/health.ts")).toBe(true);
     expect(shouldTrackDevServerPath("packages/shared/src/index.ts")).toBe(true);
     expect(shouldTrackDevServerPath("server/src/testing/runtime.ts")).toBe(true);
