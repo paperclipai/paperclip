@@ -209,8 +209,12 @@ The helper script:
 
 - checks that the package does not already exist on npm
 - builds the target package unless `--skip-build` is passed
-- runs `npm pack --dry-run` in the package directory
-- only runs the real `npm publish --access public` when `--publish --otp <code>` is provided
+- runs `pnpm publish <package-dir> --dry-run --no-git-checks --access public` from the repo root
+- only runs the real `pnpm publish <package-dir> --no-git-checks --access public` when `--publish --otp <code>` is provided
+
+The helper intentionally uses `pnpm publish` instead of `npm publish` so workspace
+dependencies and `publishConfig` export fields are normalized before the package
+is sent to the registry.
 
 For the real `--publish` step, the maintainer machine must already be authenticated to npm.
 If `npm whoami` returns `401`, first run `npm logout --registry=https://registry.npmjs.org/` to clear any stale local auth, then run `npm login` or `npm adduser` locally as an npm org member, and finally rerun the helper.

@@ -41,6 +41,7 @@ export const issues = pgTable(
     executionLockedAt: timestamp("execution_locked_at", { withTimezone: true }),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id),
     createdByUserId: text("created_by_user_id"),
+    responsibleUserId: text("responsible_user_id"),
     issueNumber: integer("issue_number"),
     identifier: text("identifier"),
     originKind: text("origin_kind").notNull().default("manual"),
@@ -82,6 +83,7 @@ export const issues = pgTable(
       table.assigneeUserId,
       table.status,
     ),
+    responsibleUserIdx: index("issues_company_responsible_user_idx").on(table.companyId, table.responsibleUserId),
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
     projectIdx: index("issues_company_project_idx").on(table.companyId, table.projectId),
     originIdx: index("issues_company_origin_idx").on(table.companyId, table.originKind, table.originId),
@@ -121,6 +123,14 @@ export const issues = pgTable(
       .on(table.companyId, table.originKind, table.originId)
       .where(
         sql`${table.originKind} = 'stale_active_run_evaluation'
+          and ${table.originId} is not null
+          and ${table.hiddenAt} is null
+          and ${table.status} not in ('done', 'cancelled')`,
+      ),
+    activeTaskWatchdogIdx: uniqueIndex("issues_active_task_watchdog_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(
+        sql`${table.originKind} = 'task_watchdog'
           and ${table.originId} is not null
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,

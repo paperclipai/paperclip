@@ -4,8 +4,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   budgetPolicies,
   companies,
+  companyMemberships,
   costEvents,
   createDb,
   executionWorkspaces,
@@ -16,6 +18,7 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -61,6 +64,7 @@ vi.mock("../adapters/index.ts", async () => {
 
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { issueService } from "../services/issues.ts";
 import { runningProcesses } from "../adapters/index.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -206,6 +210,125 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     return { companyId, managerId, coderId, blockedIssueId, blockerIssueId };
   }
 
+  async function seedResolvedDependencyBackstopFixture(opts: {
+    workspaceState?: "none" | "not_finalized" | "finalized";
+  } = {}) {
+    const workspaceState = opts.workspaceState ?? "none";
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const ownerUserId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const issuePrefix = `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: ownerUserId,
+      membershipRole: "owner",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Priya",
+      role: "engineer",
+      status: "idle",
+      adapterType: "test_adapter",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    if (workspaceState !== "none") {
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Synthetic dependency project",
+        status: "in_progress",
+      });
+      await db.insert(projectWorkspaces).values({
+        id: projectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Synthetic workspace",
+        sourceType: "git_worktree",
+      });
+      await db.insert(executionWorkspaces).values({
+        id: executionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Synthetic execution workspace",
+        providerType: "git_worktree",
+      });
+    }
+
+    await db.insert(issues).values([
+      {
+        id: blockedIssueId,
+        companyId,
+        projectId: workspaceState === "none" ? null : projectId,
+        title: "Synthetic blocked dependent",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      },
+      {
+        id: blockerIssueId,
+        companyId,
+        projectId: workspaceState === "none" ? null : projectId,
+        title: "Synthetic completed blocker",
+        status: "done",
+        priority: "medium",
+        executionWorkspaceId: workspaceState === "none" ? null : executionWorkspaceId,
+        issueNumber: 2,
+        identifier: `${issuePrefix}-2`,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    if (workspaceState === "not_finalized") {
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        issueId: blockerIssueId,
+        phase: "adapter_execute",
+        status: "succeeded",
+        startedAt: new Date(Date.now() - 60_000),
+      });
+    } else if (workspaceState === "finalized") {
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId,
+        issueId: blockerIssueId,
+        phase: "workspace_finalize",
+        status: "succeeded",
+        startedAt: new Date(),
+      });
+    }
+
+    return { companyId, agentId, blockedIssueId, blockerIssueId, executionWorkspaceId };
+  }
+
   it("keeps liveness findings advisory when auto recovery is disabled", async () => {
     await instanceSettingsService(db).updateExperimental({
       enableIssueGraphLivenessAutoRecovery: false,
@@ -225,6 +348,178 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
     expect(escalations).toHaveLength(0);
+  });
+
+  it("heals a blocked dependent whose done blocker has no workspace finalize obligation", async () => {
+    await enableAutoRecovery();
+    const { companyId, agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.dependencyWakesHealed).toBe(1);
+    expect(result.dependencyWakeIssueIds).toEqual([blockedIssueId]);
+    expect(result.escalationsCreated).toBe(0);
+
+    const wake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .orderBy(agentWakeupRequests.requestedAt)
+      .then((rows) => rows[0] ?? null);
+
+    expect(wake?.reason).toBe("issue_blockers_resolved");
+    expect(wake?.idempotencyKey).toBe(`issue_blockers_resolved:${blockedIssueId}:${blockerIssueId}`);
+    expect(["queued", "claimed", "completed"]).toContain(wake?.status);
+
+    const events = await db
+      .select({ action: activityLog.action, entityId: activityLog.entityId, details: activityLog.details })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "issue.blockers_resolved_wake_emitted")));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ entityId: blockedIssueId });
+  });
+
+  it("waits for workspace finalize before healing a resolved blocked dependent", async () => {
+    await enableAutoRecovery();
+    const { companyId, agentId, blockedIssueId, blockerIssueId, executionWorkspaceId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "not_finalized" });
+    const heartbeat = heartbeatService(db);
+
+    const beforeFinalize = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(beforeFinalize.findings).toBe(0);
+    expect(beforeFinalize.dependencyWakesHealed).toBe(0);
+    expect(beforeFinalize.dependencyWakeNotReadySkipped).toBe(1);
+
+    const wakesBeforeFinalize = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakesBeforeFinalize).toHaveLength(0);
+
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerIssueId,
+      phase: "workspace_finalize",
+      status: "succeeded",
+      startedAt: new Date(),
+    });
+
+    const afterFinalize = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(afterFinalize.dependencyWakesHealed).toBe(1);
+    expect(afterFinalize.dependencyWakeIssueIds).toEqual([blockedIssueId]);
+
+    const wake = await db
+      .select({
+        reason: agentWakeupRequests.reason,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId))
+      .orderBy(agentWakeupRequests.requestedAt)
+      .then((rows) => rows[0] ?? null);
+    expect(wake).toMatchObject({
+      reason: "issue_blockers_resolved",
+      idempotencyKey: `issue_blockers_resolved:${blockedIssueId}:${blockerIssueId}`,
+    });
+  });
+
+  it("does not duplicate an existing dependency wake keyed to any resolved blocker", async () => {
+    await enableAutoRecovery();
+    const { companyId, agentId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const secondBlockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: secondBlockerIssueId,
+      companyId,
+      title: "Second completed blocker",
+      status: "done",
+      priority: "medium",
+      issueNumber: 3,
+      identifier: "R-MULTI-3",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: secondBlockerIssueId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const readiness = await issueService(db).getDependencyReadiness(blockedIssueId);
+    const blockerIdNotUsedByBackstop = readiness.blockerIssueIds.find((id) => id !== blockerIssueId);
+    if (!blockerIdNotUsedByBackstop) {
+      throw new Error("Expected a second blocker id in dependency readiness");
+    }
+    expect(blockerIdNotUsedByBackstop).toBe(secondBlockerIssueId);
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: {
+        issueId: blockedIssueId,
+        resolvedBlockerIssueId: blockerIdNotUsedByBackstop,
+      },
+      status: "queued",
+      idempotencyKey: `issue_blockers_resolved:${blockedIssueId}:${blockerIdNotUsedByBackstop}`,
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.dependencyWakesHealed).toBe(0);
+    expect(result.dependencyWakeExistingSkipped).toBe(1);
+
+    const wakes = await db
+      .select({
+        id: agentWakeupRequests.id,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")));
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.idempotencyKey).toBe(
+      `issue_blockers_resolved:${blockedIssueId}:${blockerIdNotUsedByBackstop}`,
+    );
+  });
+
+  it("counts null dependency wake returns as deferred instead of enqueue failures", async () => {
+    await enableAutoRecovery();
+    const { companyId, agentId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await db
+      .update(agents)
+      .set({
+        runtimeConfig: { heartbeat: { wakeOnDemand: false, maxConcurrentRuns: 1 } },
+      })
+      .where(eq(agents.id, agentId));
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.dependencyWakesHealed).toBe(0);
+    expect(result.dependencyWakeDeferredOrFailed).toBe(1);
+    expect(result.dependencyWakeEnqueueFailed).toBe(0);
+
+    const skippedWake = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)))
+      .then((rows) => rows[0] ?? null);
+    expect(skippedWake).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.wakeOnDemand.disabled",
+    });
   });
 
   it("does not create recovery issues outside the configured lookback window", async () => {

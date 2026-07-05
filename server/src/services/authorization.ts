@@ -1,22 +1,25 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  authUsers,
   companyMemberships,
   heartbeatRuns,
   instanceUserRoles,
+  issueComments,
   issues,
   principalPermissionGrants,
   projects,
 } from "@paperclipai/db";
-import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, type LowTrustBoundary } from "@paperclipai/shared";
+import type { AgentApiKeyScope, PermissionKey, PrincipalType, TaskBridgeAgentKeyScope } from "@paperclipai/shared";
+import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
   resolveCoreTrustPreset,
   type TrustPresetResolution,
 } from "./trust-preset-resolver.js";
+import { logger } from "../middleware/logger.js";
 
 export type AuthorizationActor =
   {
@@ -24,10 +27,15 @@ export type AuthorizationActor =
     userId?: string | null;
     companyIds?: string[];
     memberships?: Array<{ companyId: string; membershipRole?: string | null; status?: string }>;
+    onBehalfOfMemberships?: Array<{ companyId: string; membershipRole?: string | null; status?: string }>;
     isInstanceAdmin?: boolean;
+    ignoreInstanceAdmin?: boolean;
     agentId?: string | null;
     companyId?: string | null;
+    keyId?: string | null;
+    keyScope?: AgentApiKeyScope | null;
     runId?: string | null;
+    onBehalfOfUserId?: string | null;
     source?:
       | "local_implicit"
       | "session"
@@ -45,6 +53,7 @@ export type AuthorizationAction =
   | "agent:read"
   | "agent:wake"
   | "company_scope:read"
+  | "issue:comment"
   | "issue:mutate"
   | "issue:read"
   | "project:read"
@@ -63,6 +72,8 @@ export type AuthorizationResource =
       parentIssueId?: string | null;
       assigneeAgentId?: string | null;
       assigneeUserId?: string | null;
+      originKind?: string | null;
+      originId?: string | null;
       status?: string | null;
     };
 
@@ -70,12 +81,14 @@ export type AuthorizationDecision = {
   allowed: boolean;
   action: AuthorizationAction;
   explanation: string;
+  code?: "RESPONSIBLE_USER_UNAUTHORIZED" | "RESPONSIBLE_USER_UNAVAILABLE";
   reason:
     | "allow_low_trust_boundary"
     | "allow_local_board"
     | "allow_instance_admin"
     | "allow_explicit_grant"
     | "allow_legacy_agent_creator"
+    | "allow_issue_mention_grant"
     | "allow_self"
     | "allow_company_agent"
     | "allow_company_member"
@@ -118,7 +131,7 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
   ) {
     return null;
   }
-  if (action === "issue:mutate") return null;
+  if (action === "issue:comment" || action === "issue:mutate") return null;
   return action;
 }
 
@@ -207,6 +220,8 @@ type IssueAuthorizationRow = {
   assigneeUserId: string | null;
   status: string;
   executionPolicy: unknown;
+  originKind: string | null;
+  originId: string | null;
 };
 
 function evaluateAuthorizationPolicyForAssignment(
@@ -397,6 +412,61 @@ function deny(input: Omit<AuthorizationDecision, "allowed">): AuthorizationDecis
   return { ...input, allowed: false };
 }
 
+type ResponsibleUserSnapshot = {
+  userId: string;
+  companyId: string;
+  userExists: boolean;
+  activeMembership: { companyId: string; membershipRole?: string | null; status?: string } | null;
+};
+
+type ResponsibleUserActorWithMemo = AuthorizationActor & {
+  __responsibleUserSnapshotMemo?: Map<string, Promise<ResponsibleUserSnapshot>>;
+};
+
+const responsibleUserSnapshotCache = new Map<
+  string,
+  { expiresAt: number; promise: Promise<ResponsibleUserSnapshot> }
+>();
+
+function responsibleUserSnapshotTtlMs() {
+  const raw = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_CACHE_TTL_MS?.trim();
+  if (!raw) return 5_000;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 5_000;
+}
+
+export function responsibleUserAuthzShadowMode() {
+  const mode = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_MODE?.trim().toLowerCase();
+  const shadow = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_SHADOW?.trim().toLowerCase();
+  return mode === "shadow" || shadow === "1" || shadow === "true" || shadow === "yes";
+}
+
+function activeActorMembership(
+  memberships: Array<{ companyId: string; membershipRole?: string | null; status?: string }> | null | undefined,
+  companyId: string,
+) {
+  return memberships?.find((membership) => membership.companyId === companyId && membership.status === "active") ?? null;
+}
+
+function activeResponsibleUserCanAuthorizeIssueAction(
+  action: AuthorizationAction,
+  membership: ResponsibleUserSnapshot["activeMembership"],
+) {
+  return Boolean(
+    membership &&
+    membership.status === "active" &&
+    membership.membershipRole !== "viewer" &&
+    (action === "issue:comment" || action === "issue:mutate")
+  );
+}
+
+export function authorizationDeniedDetails(decision: AuthorizationDecision) {
+  return {
+    ...(decision.code ? { code: decision.code } : {}),
+    reason: decision.reason,
+  };
+}
+
 export function authorizationService(db: Db) {
   async function isInstanceAdmin(userId: string | null | undefined): Promise<boolean> {
     if (!userId) return false;
@@ -429,6 +499,82 @@ export function authorizationService(db: Db) {
         ),
       )
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function loadResponsibleUserSnapshot(companyId: string, userId: string): Promise<ResponsibleUserSnapshot> {
+    const [user, membership] = await Promise.all([
+      db
+        .select({ id: authUsers.id })
+        .from(authUsers)
+        .where(eq(authUsers.id, userId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          companyId: companyMemberships.companyId,
+          membershipRole: companyMemberships.membershipRole,
+          status: companyMemberships.status,
+        })
+        .from(companyMemberships)
+        .where(
+          and(
+            eq(companyMemberships.companyId, companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, userId),
+            eq(companyMemberships.status, "active"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null),
+    ]);
+    return {
+      userId,
+      companyId,
+      userExists: Boolean(user),
+      activeMembership: user ? membership : null,
+    };
+  }
+
+  function getResponsibleUserSnapshot(input: {
+    actor: AuthorizationActor;
+    companyId: string;
+    userId: string;
+  }): Promise<ResponsibleUserSnapshot> {
+    const actorWithMemo = input.actor as ResponsibleUserActorWithMemo;
+    const key = `${input.companyId}:${input.userId}`;
+    actorWithMemo.__responsibleUserSnapshotMemo ??= new Map();
+    const requestMemo = actorWithMemo.__responsibleUserSnapshotMemo.get(key);
+    if (requestMemo) return requestMemo;
+
+    const actorMembership = activeActorMembership(input.actor.onBehalfOfMemberships, input.companyId);
+    if (actorMembership) {
+      const promise = Promise.resolve({
+        userId: input.userId,
+        companyId: input.companyId,
+        userExists: true,
+        activeMembership: actorMembership,
+      });
+      actorWithMemo.__responsibleUserSnapshotMemo.set(key, promise);
+      return promise;
+    }
+
+    const now = Date.now();
+    const cached = responsibleUserSnapshotCache.get(key);
+    if (cached && cached.expiresAt > now) {
+      actorWithMemo.__responsibleUserSnapshotMemo.set(key, cached.promise);
+      return cached.promise;
+    }
+
+    const ttlMs = responsibleUserSnapshotTtlMs();
+    const promise = loadResponsibleUserSnapshot(input.companyId, input.userId);
+    if (ttlMs > 0) {
+      responsibleUserSnapshotCache.set(key, { expiresAt: now + ttlMs, promise });
+      promise.catch(() => {
+        if (responsibleUserSnapshotCache.get(key)?.promise === promise) {
+          responsibleUserSnapshotCache.delete(key);
+        }
+      });
+    }
+    actorWithMemo.__responsibleUserSnapshotMemo.set(key, promise);
+    return promise;
   }
 
   async function findGrant(
@@ -546,6 +692,8 @@ export function authorizationService(db: Db) {
         assigneeUserId: issues.assigneeUserId,
         status: issues.status,
         executionPolicy: issues.executionPolicy,
+        originKind: issues.originKind,
+        originId: issues.originId,
       })
       .from(issues)
       .where(eq(issues.id, issueId))
@@ -753,13 +901,27 @@ export function authorizationService(db: Db) {
         : lowTrustDeny("Project is outside this low-trust boundary.");
     }
 
-    if (input.action === "issue:read" || input.action === "issue:mutate") {
+    if (input.action === "issue:comment" || input.action === "issue:read" || input.action === "issue:mutate") {
       if (input.resource.type !== "issue") {
         return lowTrustDeny("Low-trust issue access is missing an issue resource.");
       }
-      return await issueResourceWithinLowTrustBoundary(boundary, input.resource)
-        ? lowTrustAllow("Allowed inside the low-trust issue boundary.")
-        : lowTrustDeny("Issue is outside this low-trust boundary.");
+      if (await issueResourceWithinLowTrustBoundary(boundary, input.resource)) {
+        return lowTrustAllow("Allowed inside the low-trust issue boundary.");
+      }
+      if (
+        input.action !== "issue:mutate" &&
+        input.resource.issueId &&
+        await agentHasMentionGrantOnIssue({
+          action: input.action,
+          companyId: boundary.companyId,
+          issueId: input.resource.issueId,
+          issueAssigneeAgentId: input.resource.assigneeAgentId ?? null,
+          actorAgentId: input.actorAgentId,
+        })
+      ) {
+        return allowIssueMentionGrant(input.action);
+      }
+      return lowTrustDeny("Issue is outside this low-trust boundary.");
     }
 
     if (input.action === "tasks:assign") {
@@ -782,6 +944,130 @@ export function authorizationService(db: Db) {
     }
 
     return null;
+  }
+
+  function taskBridgeScopeIds(
+    scope: TaskBridgeAgentKeyScope,
+    singularKey: "projectId" | "parentIssueId",
+    pluralKey: "projectIds" | "parentIssueIds",
+  ) {
+    return [
+      ...(typeof scope[singularKey] === "string" ? [scope[singularKey]] : []),
+      ...(Array.isArray(scope[pluralKey]) ? scope[pluralKey] : []),
+    ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  }
+
+  async function parentIssueMatchesTaskBridgeBoundary(
+    parentIssueId: string | null | undefined,
+    companyId: string,
+    allowedParentIssueIds: string[],
+  ) {
+    if (!parentIssueId || allowedParentIssueIds.length === 0) return false;
+    if (allowedParentIssueIds.includes(parentIssueId)) return true;
+    for (const rootIssueId of allowedParentIssueIds) {
+      if (await issueIdIsDescendantOf(parentIssueId, rootIssueId, companyId)) return true;
+    }
+    return false;
+  }
+
+  async function issueMatchesTaskBridgeCreateBoundary(
+    scope: TaskBridgeAgentKeyScope,
+    resource: Extract<AuthorizationResource, { type: "issue" }>,
+  ) {
+    const allowedProjectIds = taskBridgeScopeIds(scope, "projectId", "projectIds");
+    const allowedParentIssueIds = taskBridgeScopeIds(scope, "parentIssueId", "parentIssueIds");
+    if (resource.projectId && allowedProjectIds.includes(resource.projectId)) return true;
+    if (await parentIssueMatchesTaskBridgeBoundary(resource.parentIssueId, resource.companyId, allowedParentIssueIds)) {
+      return true;
+    }
+    if (resource.parentIssueId && allowedProjectIds.length > 0) {
+      const parent = await loadIssue(resource.parentIssueId);
+      if (parent?.companyId === resource.companyId && parent.projectId && allowedProjectIds.includes(parent.projectId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async function issueMatchesTaskBridgeWriteBoundary(input: {
+    actorAgentId: string;
+    keyId: string;
+    resource: Extract<AuthorizationResource, { type: "issue" }>;
+  }) {
+    const issue = input.resource.issueId ? await loadIssue(input.resource.issueId) : null;
+    const assigneeAgentId = issue?.assigneeAgentId ?? input.resource.assigneeAgentId ?? null;
+    if (assigneeAgentId === input.actorAgentId) return true;
+    const originKind = issue?.originKind ?? input.resource.originKind ?? null;
+    const originId = issue?.originId ?? input.resource.originId ?? null;
+    return originKind === "task_bridge" && originId === input.keyId;
+  }
+
+  async function decideTaskBridgeAccess(input: {
+    actorAgentId: string;
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+    scope: TaskBridgeAgentKeyScope;
+    keyId: string;
+  }): Promise<AuthorizationDecision | null> {
+    const denyBridge = (explanation: string) =>
+      deny({
+        action: input.action,
+        reason: "deny_scope",
+        explanation,
+      });
+    const allowBridge = (explanation: string) =>
+      allow({
+        action: input.action,
+        reason: "allow_explicit_grant",
+        explanation,
+      });
+
+    if (
+      input.action === "company_scope:read" ||
+      input.action === "agent:read" ||
+      input.action === "agent:wake" ||
+      input.action === "project:read" ||
+      input.action === "runtime:manage" ||
+      input.action === "secrets:read"
+    ) {
+      return denyBridge("Task bridge keys cannot use company-wide, peer-agent, project, runtime, or secret APIs.");
+    }
+
+    if (input.action === "tasks:assign") {
+      if (input.resource.type !== "issue") {
+        return denyBridge("Task bridge assignment requires an issue resource.");
+      }
+      if (!(await issueMatchesTaskBridgeCreateBoundary(input.scope, input.resource))) {
+        return denyBridge("Task bridge key is outside its approved parent or project boundary.");
+      }
+      if (input.resource.assigneeUserId) {
+        return denyBridge("Task bridge keys cannot assign work to board users.");
+      }
+      const allowedAssigneeAgentIds = input.scope.allowedAssigneeAgentIds ?? [];
+      if (
+        input.resource.assigneeAgentId &&
+        input.resource.assigneeAgentId !== input.actorAgentId &&
+        !allowedAssigneeAgentIds.includes(input.resource.assigneeAgentId)
+      ) {
+        return denyBridge("Task bridge key cannot assign work to that agent.");
+      }
+      return allowBridge("Allowed by task bridge create boundary.");
+    }
+
+    if (input.action === "issue:read" || input.action === "issue:comment" || input.action === "issue:mutate") {
+      if (input.resource.type !== "issue") {
+        return denyBridge("Task bridge issue access requires an issue resource.");
+      }
+      return await issueMatchesTaskBridgeWriteBoundary({
+        actorAgentId: input.actorAgentId,
+        keyId: input.keyId,
+        resource: input.resource,
+      })
+        ? allowBridge("Allowed for bridge-created or assigned issue.")
+        : denyBridge("Task bridge key can only access assigned or bridge-created issues.");
+    }
+
+    return denyBridge("Task bridge key cannot use this API action.");
   }
 
   async function assignmentTargetIsInCompany(resource: AuthorizationResource) {
@@ -850,7 +1136,94 @@ export function authorizationService(db: Db) {
     return isAgentInSubtree(db, companyId, managerAgentId, assigneeAgentId);
   }
 
-  async function decide(input: {
+  function commentAuthorCanGrantIssueMention(input: {
+    mentionedAgentId: string;
+    issueAssigneeAgentId: string | null;
+    authorAgentId: string | null;
+    authorUserId: string | null;
+    activeAuthorUserIds: Set<string>;
+  }) {
+    if (input.authorAgentId) {
+      if (input.authorAgentId === input.mentionedAgentId) return false;
+      return input.issueAssigneeAgentId === input.authorAgentId;
+    }
+    if (input.authorUserId) {
+      return input.activeAuthorUserIds.has(input.authorUserId);
+    }
+    return false;
+  }
+
+  async function agentHasMentionGrantOnIssue(input: {
+    action: AuthorizationAction;
+    companyId: string;
+    issueId: string;
+    issueAssigneeAgentId: string | null;
+    actorAgentId: string;
+  }) {
+    const rows = await db
+      .select({
+        id: issueComments.id,
+        body: issueComments.body,
+        authorAgentId: issueComments.authorAgentId,
+        authorUserId: issueComments.authorUserId,
+      })
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.companyId, input.companyId),
+        eq(issueComments.issueId, input.issueId),
+        isNull(issueComments.deletedAt),
+        sql`${issueComments.body} LIKE ${"%agent://" + input.actorAgentId + "%"}`,
+      ));
+
+    const mentionRows = rows.filter((row) => extractAgentMentionIds(row.body).includes(input.actorAgentId));
+    const authorUserIds = [...new Set(mentionRows.flatMap((row) => row.authorUserId ? [row.authorUserId] : []))];
+    const activeAuthorUserIds = new Set(
+      authorUserIds.length === 0
+        ? []
+        : await db
+          .select({ principalId: companyMemberships.principalId })
+          .from(companyMemberships)
+          .where(and(
+            eq(companyMemberships.companyId, input.companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.status, "active"),
+            inArray(companyMemberships.principalId, authorUserIds),
+          ))
+          .then((memberships) => memberships.map((membership) => membership.principalId)),
+    );
+
+    for (const row of mentionRows) {
+      const authorCanGrant = commentAuthorCanGrantIssueMention({
+        mentionedAgentId: input.actorAgentId,
+        issueAssigneeAgentId: input.issueAssigneeAgentId,
+        authorAgentId: row.authorAgentId,
+        authorUserId: row.authorUserId,
+        activeAuthorUserIds,
+      });
+      if (authorCanGrant) {
+        logger.info({
+          actorAgentId: input.actorAgentId,
+          issueId: input.issueId,
+          companyId: input.companyId,
+          commentId: row.id,
+          grantedAction: input.action,
+          grant: "issue_mention_comment",
+        }, "authorized issue mention-scoped comment grant");
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function allowIssueMentionGrant(action: AuthorizationAction): AuthorizationDecision {
+    return allow({
+      action,
+      reason: "allow_issue_mention_grant",
+      explanation: "Allowed by a mention-scoped issue comment grant.",
+    });
+  }
+
+  async function decideBase(input: {
     actor: AuthorizationActor;
     action: AuthorizationAction;
     resource: AuthorizationResource;
@@ -927,6 +1300,7 @@ export function authorizationService(db: Db) {
       // elevated — not even via stale instance_admin rows left behind by
       // deployments that ran the pre-hardening cloud_tenant path.
       if (
+        !input.actor.ignoreInstanceAdmin &&
         input.actor.source !== "cloud_tenant" &&
         (input.actor.isInstanceAdmin || await isInstanceAdmin(input.actor.userId))
       ) {
@@ -956,7 +1330,10 @@ export function authorizationService(db: Db) {
               explanation: "Allowed by active cloud tenant company membership.",
             });
           }
-          if (input.action === "issue:mutate" && membership.membershipRole !== "viewer") {
+          if (
+            (input.action === "issue:comment" || input.action === "issue:mutate") &&
+            membership.membershipRole !== "viewer"
+          ) {
             return allow({
               action: input.action,
               reason: "allow_company_member",
@@ -1075,6 +1452,25 @@ export function authorizationService(db: Db) {
       });
     }
 
+    if (input.actor.source === "agent_key" && input.actor.keyScope?.kind === "task_bridge") {
+      const keyId = input.actor.keyId ?? null;
+      if (!keyId) {
+        return deny({
+          action: input.action,
+          reason: "deny_scope",
+          explanation: "Task bridge key context is missing.",
+        });
+      }
+      const taskBridgeDecision = await decideTaskBridgeAccess({
+        actorAgentId,
+        action: input.action,
+        resource: input.resource,
+        scope: input.actor.keyScope,
+        keyId,
+      });
+      if (taskBridgeDecision) return taskBridgeDecision;
+    }
+
     const lowTrustDecision = await decideLowTrustAccess({
       actorAgentId,
       action: input.action,
@@ -1092,6 +1488,7 @@ export function authorizationService(db: Db) {
         input.action === "agent:read" ||
         input.action === "agent:wake" ||
         input.action === "company_scope:read" ||
+        input.action === "issue:comment" ||
         input.action === "issue:read" ||
         input.action === "project:read" ||
         input.action === "runtime:manage" ||
@@ -1154,7 +1551,7 @@ export function authorizationService(db: Db) {
       });
     }
 
-    if (input.action === "issue:mutate") {
+    if (input.action === "issue:comment" || input.action === "issue:mutate") {
       const resource = input.resource.type === "issue" ? input.resource : null;
       if (resource?.assigneeAgentId === actorAgentId) {
         return allow({
@@ -1169,6 +1566,19 @@ export function authorizationService(db: Db) {
           reason: "allow_company_agent",
           explanation: "Allowed because the issue has no agent assignee.",
         });
+      }
+      if (
+        input.action === "issue:comment" &&
+        resource?.issueId &&
+        await agentHasMentionGrantOnIssue({
+          action: input.action,
+          companyId,
+          issueId: resource.issueId,
+          issueAssigneeAgentId: resource.assigneeAgentId ?? null,
+          actorAgentId,
+        })
+      ) {
+        return allowIssueMentionGrant(input.action);
       }
     }
     if (
@@ -1229,6 +1639,95 @@ export function authorizationService(db: Db) {
         ? `Missing permission: ${permissionKey}.`
         : `No agent permission mapping exists for ${input.action}.`,
     });
+  }
+
+  async function applyResponsibleUserIntersection(
+    input: {
+      actor: AuthorizationActor;
+      action: AuthorizationAction;
+      resource: AuthorizationResource;
+      scope?: Record<string, unknown> | null;
+    },
+    agentDecision: AuthorizationDecision,
+  ): Promise<AuthorizationDecision> {
+    const responsibleUserId = input.actor.onBehalfOfUserId?.trim();
+    if (input.actor.type !== "agent" || !responsibleUserId || !agentDecision.allowed) {
+      return agentDecision;
+    }
+
+    const companyId = companyIdForResource(input.resource);
+    const snapshot = await getResponsibleUserSnapshot({
+      actor: input.actor,
+      companyId,
+      userId: responsibleUserId,
+    });
+    const denyCode: AuthorizationDecision["code"] =
+      snapshot.userExists && snapshot.activeMembership
+        ? "RESPONSIBLE_USER_UNAUTHORIZED"
+        : "RESPONSIBLE_USER_UNAVAILABLE";
+
+    const userDecision = snapshot.userExists && snapshot.activeMembership
+      ? await decideBase({
+          ...input,
+          actor: {
+            type: "board",
+            userId: responsibleUserId,
+            companyIds: [companyId],
+            memberships: [snapshot.activeMembership],
+            isInstanceAdmin: false,
+            ignoreInstanceAdmin: true,
+            source: "session",
+          },
+        })
+      : deny({
+          action: input.action,
+          reason: "deny_missing_membership",
+          explanation: `Responsible user ${responsibleUserId} is unavailable for company ${companyId}.`,
+        });
+
+    if (
+      !userDecision.allowed &&
+      userDecision.reason === "deny_unsupported_action" &&
+      activeResponsibleUserCanAuthorizeIssueAction(input.action, snapshot.activeMembership)
+    ) {
+      return agentDecision;
+    }
+
+    if (userDecision.allowed) return agentDecision;
+
+    const denied = deny({
+      action: input.action,
+      reason: userDecision.reason,
+      code: denyCode,
+      explanation:
+        denyCode === "RESPONSIBLE_USER_UNAVAILABLE"
+          ? `Responsible user ${responsibleUserId} is unavailable for company ${companyId}.`
+          : `Responsible user ${responsibleUserId} is not authorized for ${input.action}: ${userDecision.explanation}`,
+      grant: userDecision.grant,
+    });
+
+    logger.warn({
+      authzMode: responsibleUserAuthzShadowMode() ? "shadow" : "enforce",
+      code: denied.code,
+      reason: userDecision.reason,
+      action: input.action,
+      resourceType: input.resource.type,
+      companyId,
+      actorAgentId: input.actor.agentId ?? null,
+      responsibleUserId,
+    }, "responsible-user authorization intersection denied");
+
+    return responsibleUserAuthzShadowMode() ? agentDecision : denied;
+  }
+
+  async function decide(input: {
+    actor: AuthorizationActor;
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+    scope?: Record<string, unknown> | null;
+  }): Promise<AuthorizationDecision> {
+    const agentDecision = await decideBase(input);
+    return applyResponsibleUserIntersection(input, agentDecision);
   }
 
   return {

@@ -53,6 +53,15 @@ import type {
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentStartInteractiveSetupParams,
+  PluginEnvironmentInteractiveSetupSession,
+  PluginEnvironmentGetInteractiveSetupParams,
+  PluginEnvironmentCaptureTemplateParams,
+  PluginEnvironmentCaptureTemplateResult,
+  PluginEnvironmentCancelInteractiveSetupParams,
+  PluginEnvironmentCancelInteractiveSetupResult,
+  PluginEnvironmentDeleteTemplateParams,
+  PluginEnvironmentDeleteTemplateResult,
   PluginEnvironmentLease,
   PluginEnvironmentProbeParams,
   PluginEnvironmentProbeResult,
@@ -62,6 +71,12 @@ import type {
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
+  DetectExternalObjectsParams,
+  DetectExternalObjectsResult,
+  ResolveExternalObjectParams,
+  PluginExternalObjectResolveResult,
+  RefreshExternalObjectsParams,
+  RefreshExternalObjectsResult,
 } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
@@ -243,6 +258,39 @@ export interface PluginDefinition {
    * access, capabilities, and checkout policy.
    */
   onApiRequest?(input: PluginApiRequestInput): Promise<PluginApiResponse>;
+
+  /**
+   * Called when Paperclip scans issue/comment/document content and asks this
+   * plugin whether any sanitized URL candidates belong to its external object
+   * providers. The host has already stripped URL userinfo, query strings, and
+   * fragments unless provider-safe identity components were explicitly hashed.
+   *
+   * Requires `external.objects.detect`.
+   */
+  onDetectExternalObjects?(
+    params: DetectExternalObjectsParams,
+  ): Promise<DetectExternalObjectsResult>;
+
+  /**
+   * Called when Paperclip needs the current normalized status for one external
+   * object owned by a manifest-declared provider.
+   *
+   * Requires `external.objects.read`.
+   */
+  onResolveExternalObject?(
+    params: ResolveExternalObjectParams,
+  ): Promise<PluginExternalObjectResolveResult>;
+
+  /**
+   * Optional batch resolver used by providers that can refresh many objects
+   * more efficiently than individual `onResolveExternalObject` calls.
+   *
+   * Requires `external.objects.refresh`.
+   */
+  onRefreshExternalObjects?(
+    params: RefreshExternalObjectsParams,
+  ): Promise<RefreshExternalObjectsResult>;
+
   /**
    * Called to validate provider-specific configuration for a plugin-hosted
    * environment driver.
@@ -285,6 +333,31 @@ export interface PluginDefinition {
   onEnvironmentExecute?(
     params: PluginEnvironmentExecuteParams,
   ): Promise<PluginEnvironmentExecuteResult>;
+
+  /** Called to start an interactive setup sandbox and return redacted connection metadata. */
+  onEnvironmentStartInteractiveSetup?(
+    params: PluginEnvironmentStartInteractiveSetupParams,
+  ): Promise<PluginEnvironmentInteractiveSetupSession>;
+
+  /** Called to read setup status and, when authorized, a one-time connection payload. */
+  onEnvironmentGetInteractiveSetup?(
+    params: PluginEnvironmentGetInteractiveSetupParams,
+  ): Promise<PluginEnvironmentInteractiveSetupSession>;
+
+  /** Called to capture a reusable provider template from a live setup sandbox. */
+  onEnvironmentCaptureTemplate?(
+    params: PluginEnvironmentCaptureTemplateParams,
+  ): Promise<PluginEnvironmentCaptureTemplateResult>;
+
+  /** Called to cancel and clean up a setup sandbox without promoting a template. */
+  onEnvironmentCancelInteractiveSetup?(
+    params: PluginEnvironmentCancelInteractiveSetupParams,
+  ): Promise<PluginEnvironmentCancelInteractiveSetupResult>;
+
+  /** Called for optional best-effort cleanup of a captured provider template. */
+  onEnvironmentDeleteTemplate?(
+    params: PluginEnvironmentDeleteTemplateParams,
+  ): Promise<PluginEnvironmentDeleteTemplateResult>;
 }
 
 // ---------------------------------------------------------------------------

@@ -381,7 +381,7 @@ export function BoardChat() {
   }, [selectedCompanyId]);
 
   // The onboarding wizard renders as an overlay above an already-mounted
-  // Conference Room (sidebar "Create new team..." path). Holding the reveal
+  // Conference Room (sidebar "Create new company..." path). Holding the reveal
   // timer while it's open guarantees the dots window can't burn off behind
   // the wizard before the user ever sees the chat (PAP-134).
   const { onboardingOpen } = useDialogState();

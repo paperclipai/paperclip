@@ -173,6 +173,28 @@ describe.sequential("POST /companies/:companyId/openclaw/invite-prompt", () => {
     expect(res.body.error).toContain("Only CEO agents");
   });
 
+  it("rejects CEO agent callers outside the target company scope", async () => {
+    const db = createDbStub();
+    const app = createApp(
+      {
+        type: "agent",
+        agentId: "agent-1",
+        companyId: "company-2",
+        source: "agent_key",
+      },
+      db,
+    );
+
+    const res = await request(app)
+      .post("/api/companies/company-1/openclaw/invite-prompt")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("another company");
+    expect(mockAgentService.getById).not.toHaveBeenCalled();
+    expect((db as any).__insertValues).not.toHaveBeenCalled();
+  });
+
   it("allows CEO agent callers and creates an agent-only invite", async () => {
     const db = createDbStub([companyBranding], [logoAsset]);
     mockAgentService.getById.mockResolvedValue({

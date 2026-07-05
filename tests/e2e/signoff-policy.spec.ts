@@ -99,6 +99,12 @@ async function agentCheckoutAndPatch(
   patchData: Record<string, unknown>,
 ) {
   const runId = await invokeHeartbeat(board, agent.agentId);
+  const directPatchRes = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
+    headers: { "X-Paperclip-Run-Id": runId },
+    data: patchData,
+  });
+  if (directPatchRes.ok()) return directPatchRes;
+
   // Checkout (sets executionRunId so PATCH is allowed)
   const checkoutRes = await agent.request.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
     headers: { "X-Paperclip-Run-Id": runId },

@@ -264,8 +264,6 @@ describe.sequential("agent skill routes", () => {
         key: "paperclipai/paperclip/paperclip",
         runtimeName: "paperclip",
         source: "/tmp/paperclip",
-        required: true,
-        requiredReason: "required",
       },
     ]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(

@@ -27,11 +27,19 @@ const mockCompanySkillService = vi.hoisted(() => ({
   deleteComment: vi.fn(),
   importFromSource: vi.fn(),
   installFromCatalog: vi.fn(),
+  createLocalSkill: vi.fn(),
+  updateSkill: vi.fn(),
+  updateFile: vi.fn(),
+  scanProjectWorkspaces: vi.fn(),
   deleteSkill: vi.fn(),
+  auditSkill: vi.fn(),
+  getById: vi.fn(),
+  installUpdate: vi.fn(),
+  resetSkill: vi.fn(),
 }));
 
 const mockCatalogService = vi.hoisted(() => ({
-  listCatalogSkills: vi.fn(),
+  listCatalogSkillsOrEmpty: vi.fn(),
   getCatalogSkillOrThrow: vi.fn(),
   readCatalogSkillFile: vi.fn(),
 }));
@@ -115,6 +123,7 @@ describe("company skill mutation permissions", () => {
       imported: [],
       warnings: [],
     });
+    mockCatalogService.listCatalogSkillsOrEmpty.mockReturnValue([]);
     mockCompanySkillService.list.mockResolvedValue([]);
     mockCompanySkillService.categoryCounts.mockResolvedValue([]);
     mockCompanySkillService.detail.mockResolvedValue(null);
@@ -255,12 +264,97 @@ describe("company skill mutation permissions", () => {
       },
       warnings: [],
     });
+    mockCompanySkillService.createLocalSkill.mockResolvedValue({
+      id: "skill-1",
+      companyId: "company-1",
+      key: "company/company-1/review",
+      slug: "review",
+      name: "Review",
+      description: null,
+      markdown: "# Review",
+      sourceType: "local_path",
+      sourceLocator: "/tmp/review",
+      sourceRef: null,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      iconUrl: null,
+      color: null,
+      tagline: null,
+      authorName: null,
+      homepageUrl: null,
+      categories: [],
+      sharingScope: "company",
+      publicShareToken: null,
+      forkedFromSkillId: null,
+      forkedFromCompanyId: null,
+      starCount: 0,
+      installCount: 1,
+      forkCount: 0,
+      currentVersionId: null,
+      metadata: null,
+      createdAt: new Date("2026-05-26T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-26T00:00:00.000Z"),
+    });
+    mockCompanySkillService.updateSkill.mockResolvedValue({
+      id: "skill-1",
+      slug: "review",
+      categories: ["memory", "review"],
+      sharingScope: "company",
+    });
+    mockCompanySkillService.updateFile.mockResolvedValue({
+      skillId: "skill-1",
+      path: "SKILL.md",
+      kind: "skill",
+      content: "# Review",
+      language: "markdown",
+      markdown: true,
+      editable: true,
+    });
+    mockCompanySkillService.scanProjectWorkspaces.mockResolvedValue({
+      scannedProjects: 0,
+      scannedWorkspaces: 0,
+      discovered: 0,
+      imported: [],
+      updated: [],
+      skipped: [],
+      conflicts: [],
+      warnings: [],
+    });
     mockCompanySkillService.deleteSkill.mockResolvedValue({
       id: "skill-1",
       slug: "find-skills",
       name: "Find Skills",
     });
-    mockCatalogService.listCatalogSkills.mockReturnValue([]);
+    mockCompanySkillService.auditSkill.mockResolvedValue({
+      skillId: "skill-1",
+      installedHash: "sha256:abc",
+      originHash: "sha256:abc",
+      verdict: "pass",
+      codes: [],
+      findings: [],
+      scannedAt: "2026-05-26T00:00:00.000Z",
+      scanVersion: "1",
+    });
+    mockCompanySkillService.getById.mockResolvedValue({
+      id: "skill-1",
+      slug: "review",
+      sourceRef: "sha256:abc",
+      metadata: { originHash: "sha256:abc" },
+    });
+    mockCompanySkillService.installUpdate.mockResolvedValue({
+      id: "skill-1",
+      slug: "review",
+      sourceRef: "sha256:def",
+      metadata: { originHash: "sha256:def" },
+    });
+    mockCompanySkillService.resetSkill.mockResolvedValue({
+      id: "skill-1",
+      slug: "review",
+      sourceRef: "sha256:def",
+      metadata: { originHash: "sha256:def" },
+    });
+    mockCatalogService.listCatalogSkillsOrEmpty.mockReturnValue([]);
     mockCatalogService.getCatalogSkillOrThrow.mockReturnValue({
       id: "paperclipai:bundled:software-development:review",
       key: "paperclipai/bundled/software-development/review",
@@ -311,8 +405,76 @@ describe("company skill mutation permissions", () => {
     });
   });
 
+  it("allows board users with skills:create to create, import, install, update, delete, audit, and reset company skills", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    await request(app)
+      .post("/api/companies/company-1/skills")
+      .send({ name: "Review", slug: "review", markdown: "# Review" })
+      .expect(201);
+    await request(app)
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "https://github.com/vercel-labs/agent-browser" })
+      .expect(201);
+    await request(app)
+      .post("/api/companies/company-1/skills/install-catalog")
+      .send({ catalogSkillId: "paperclipai:bundled:software-development:review" })
+      .expect(201);
+    await request(app)
+      .patch("/api/companies/company-1/skills/skill-1")
+      .send({ description: "Updated" })
+      .expect(200);
+    await request(app)
+      .delete("/api/companies/company-1/skills/skill-1")
+      .expect(200);
+    await request(app)
+      .post("/api/companies/company-1/skills/skill-1/audit")
+      .send({})
+      .expect(200);
+    await request(app)
+      .post("/api/companies/company-1/skills/skill-1/reset")
+      .send({})
+      .expect(200);
+
+    expect(mockAccessService.canUser).toHaveBeenCalledWith("company-1", "board-user", "skills:create");
+    expect(mockAccessService.canUser).not.toHaveBeenCalledWith("company-1", "board-user", "agents:create");
+    expect(mockCompanySkillService.createLocalSkill).toHaveBeenCalled();
+    expect(mockCompanySkillService.importFromSource).toHaveBeenCalled();
+    expect(mockCompanySkillService.installFromCatalog).toHaveBeenCalled();
+    expect(mockCompanySkillService.updateSkill).toHaveBeenCalled();
+    expect(mockCompanySkillService.deleteSkill).toHaveBeenCalled();
+    expect(mockCompanySkillService.auditSkill).toHaveBeenCalled();
+    expect(mockCompanySkillService.resetSkill).toHaveBeenCalled();
+  });
+
+  it("blocks board users without skills:create from mutating company skills", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "https://github.com/vercel-labs/agent-browser" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Missing permission: skills:create");
+    expect(mockAccessService.canUser).toHaveBeenCalledWith("company-1", "board-user", "skills:create");
+    expect(mockAccessService.canUser).not.toHaveBeenCalledWith("company-1", "board-user", "agents:create");
+    expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
+  });
+
   it("serves catalog listing without mutating company skills", async () => {
-    mockCatalogService.listCatalogSkills.mockReturnValue([
+    mockCatalogService.listCatalogSkillsOrEmpty.mockReturnValue([
       {
         id: "paperclipai:bundled:software-development:review",
         key: "paperclipai/bundled/software-development/review",
@@ -344,7 +506,7 @@ describe("company skill mutation permissions", () => {
       .get("/api/skills/catalog?kind=bundled&q=review");
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockCatalogService.listCatalogSkills).toHaveBeenCalledWith({ kind: "bundled", q: "review" });
+    expect(mockCatalogService.listCatalogSkillsOrEmpty).toHaveBeenCalledWith({ kind: "bundled", q: "review" });
     expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
     expect(mockCompanySkillService.installFromCatalog).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
@@ -360,7 +522,7 @@ describe("company skill mutation permissions", () => {
     expect(list.status, JSON.stringify(list.body)).toBe(401);
     expect(detail.status, JSON.stringify(detail.body)).toBe(401);
     expect(file.status, JSON.stringify(file.body)).toBe(401);
-    expect(mockCatalogService.listCatalogSkills).not.toHaveBeenCalled();
+    expect(mockCatalogService.listCatalogSkillsOrEmpty).not.toHaveBeenCalled();
     expect(mockCatalogService.getCatalogSkillOrThrow).not.toHaveBeenCalled();
     expect(mockCatalogService.readCatalogSkillFile).not.toHaveBeenCalled();
   });
@@ -552,11 +714,11 @@ describe("company skill mutation permissions", () => {
     });
   });
 
-  it("blocks same-company agents without management permission from mutating company skills", async () => {
+  it("blocks same-company agents with skill creation disabled from mutating company skills", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
-      permissions: {},
+      permissions: { canCreateSkills: false },
     });
 
     const res = await request(await createApp({
@@ -569,6 +731,9 @@ describe("company skill mutation permissions", () => {
       .send({ source: "https://github.com/vercel-labs/agent-browser" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Missing permission: skills:create");
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith("company-1", "agent", "agent-1", "skills:create");
+    expect(mockAccessService.hasPermission).not.toHaveBeenCalledWith("company-1", "agent", "agent-1", "agents:create");
     expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
   });
 
@@ -576,7 +741,7 @@ describe("company skill mutation permissions", () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
-      permissions: { canCreateAgents: true },
+      permissions: { canCreateSkills: true },
     });
 
     const res = await request(await createApp({
@@ -607,6 +772,38 @@ describe("company skill mutation permissions", () => {
 
     await request(app).get("/api/companies/company-1/skills/categories").expect(200);
     expect(mockCompanySkillService.categoryCounts).toHaveBeenCalledWith("company-1");
+  });
+
+  it("accepts category updates and logs the skill mutation", async () => {
+    const app = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1/skills/skill-1")
+      .send({ categories: ["memory", "review"], sharingScope: "company" })
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      id: "skill-1",
+      categories: ["memory", "review"],
+      sharingScope: "company",
+    });
+    expect(mockCompanySkillService.updateSkill).toHaveBeenCalledWith("company-1", "skill-1", {
+      categories: ["memory", "review"],
+      sharingScope: "company",
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId: "company-1",
+      actorType: "user",
+      actorId: "user-1",
+      action: "company.skill_updated",
+      entityType: "company_skill",
+      entityId: "skill-1",
+      details: {
+        slug: "review",
+        categories: ["memory", "review"],
+        sharingScope: "company",
+      },
+    }));
   });
 
   it("creates skill versions and logs the mutation", async () => {
@@ -674,11 +871,11 @@ describe("company skill mutation permissions", () => {
     });
   });
 
-  it("allows agents with canCreateAgents to mutate company skills", async () => {
+  it("allows agents with canCreateSkills to mutate company skills", async () => {
     mockAgentService.getById.mockResolvedValue({
       id: "agent-1",
       companyId: "company-1",
-      permissions: { canCreateAgents: true },
+      permissions: { canCreateSkills: true },
     });
 
     const res = await request(await createApp({
@@ -695,6 +892,91 @@ describe("company skill mutation permissions", () => {
       "company-1",
       "https://github.com/vercel-labs/agent-browser",
     );
+  });
+
+  it("allows same-company agents with missing skill creation permission to mutate company skills", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: {},
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "https://github.com/vercel-labs/agent-browser" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockCompanySkillService.importFromSource).toHaveBeenCalledWith(
+      "company-1",
+      "https://github.com/vercel-labs/agent-browser",
+    );
+  });
+
+  it("allows agents with explicit skills:create grants to mutate company skills", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: { canCreateSkills: false },
+    });
+    mockAccessService.hasPermission.mockImplementation(async (
+      _companyId: string,
+      _principalType: string,
+      _principalId: string,
+      key: string,
+    ) => {
+      return key === "skills:create";
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "https://github.com/vercel-labs/agent-browser" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith("company-1", "agent", "agent-1", "skills:create");
+    expect(mockCompanySkillService.importFromSource).toHaveBeenCalledWith(
+      "company-1",
+      "https://github.com/vercel-labs/agent-browser",
+    );
+  });
+
+  it("does not allow explicit agents:create grants to mutate company skills", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: { canCreateSkills: false },
+    });
+    mockAccessService.hasPermission.mockImplementation(async (
+      _companyId: string,
+      _principalType: string,
+      _principalId: string,
+      key: string,
+    ) => {
+      return key === "agents:create";
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "https://github.com/vercel-labs/agent-browser" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Missing permission: skills:create");
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith("company-1", "agent", "agent-1", "skills:create");
+    expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
   });
 
   it("returns a blocking error when attempting to delete a skill still used by agents", async () => {

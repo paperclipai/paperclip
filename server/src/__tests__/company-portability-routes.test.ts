@@ -118,6 +118,7 @@ async function createApp(actor: Record<string, unknown>) {
 }
 
 const companyId = "11111111-1111-4111-8111-111111111111";
+const otherCompanyId = "22222222-2222-4222-8222-222222222222";
 const ceoAgentId = "ceo-agent";
 const engineerAgentId = "engineer-agent";
 
@@ -241,6 +242,24 @@ describe.sequential("company portability routes", () => {
     expect(mockCompanyPortabilityService.previewExport).not.toHaveBeenCalled();
   });
 
+  it.sequential("rejects non-CEO export preview callers before validating request shape", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: engineerAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/exports/preview`)
+      .send({ agents: [123] });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only CEO agents");
+    expect(mockCompanyPortabilityService.previewExport).not.toHaveBeenCalled();
+  });
+
   it.sequential("rejects non-CEO agents from legacy and CEO-safe export bundle routes", async () => {
     const app = await createApp({
       type: "agent",
@@ -325,6 +344,30 @@ describe.sequential("company portability routes", () => {
     expect(mockCompanyPortabilityService.exportBundle).toHaveBeenCalledTimes(2);
   });
 
+  it.sequential("rejects CEO agents from exporting another company before services run", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: ceoAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    for (const path of [
+      `/api/companies/${otherCompanyId}/export`,
+      `/api/companies/${otherCompanyId}/exports`,
+      `/api/companies/${otherCompanyId}/exports/preview`,
+    ]) {
+      const res = await request(app).post(path).send(exportRequest);
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("another company");
+    }
+    expect(mockCompanyPortabilityService.exportBundle).not.toHaveBeenCalled();
+    expect(mockCompanyPortabilityService.previewExport).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it.sequential("rejects replace collision strategy on CEO-safe import routes", async () => {
     const app = await createApp({
       type: "agent",
@@ -348,6 +391,58 @@ describe.sequential("company portability routes", () => {
     expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
   });
 
+  it.sequential("rejects CEO agents from previewing or applying imports against another route company", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: ceoAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    for (const path of [
+      `/api/companies/${otherCompanyId}/imports/preview`,
+      `/api/companies/${otherCompanyId}/imports/apply`,
+    ]) {
+      const res = await request(app).post(path).send({
+        ...importRequest,
+        target: { mode: "existing_company", companyId: otherCompanyId },
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("another company");
+    }
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it.sequential("rejects CEO-safe import bodies that target a different company than the route", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: ceoAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    for (const path of [
+      `/api/companies/${companyId}/imports/preview`,
+      `/api/companies/${companyId}/imports/apply`,
+    ]) {
+      const res = await request(app).post(path).send({
+        ...importRequest,
+        target: { mode: "existing_company", companyId: otherCompanyId },
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("only target the route company");
+    }
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it.sequential("keeps global import preview routes board-only", async () => {
     const app = await createApp({
       type: "agent",
@@ -368,6 +463,24 @@ describe.sequential("company portability routes", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Board access required");
+  });
+
+  it.sequential("keeps global import preview board-only before validating request shape", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: engineerAgentId,
+      companyId: "11111111-1111-4111-8111-111111111111",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/import/preview")
+      .send({ target: { mode: "existing_company", companyId: "not-a-uuid" } });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Board access required");
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
   });
 
   it.sequential("requires instance admin for new-company import preview", async () => {
@@ -433,6 +546,24 @@ describe.sequential("company portability routes", () => {
         target: { mode: "existing_company", companyId: "11111111-1111-4111-8111-111111111111" },
         collisionStrategy: "rename",
       });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only CEO agents");
+    expect(mockCompanyPortabilityService.previewImport).not.toHaveBeenCalled();
+  });
+
+  it.sequential("rejects non-CEO import preview callers before validating request shape", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: engineerAgentId,
+      companyId: "11111111-1111-4111-8111-111111111111",
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post("/api/companies/11111111-1111-4111-8111-111111111111/imports/preview")
+      .send({ target: { mode: "existing_company", companyId: "not-a-uuid" } });
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Only CEO agents");

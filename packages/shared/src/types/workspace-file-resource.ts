@@ -34,7 +34,7 @@ export interface ResolvedWorkspaceResource {
   denialReason?: string | null;
   capabilities: {
     preview: boolean;
-    download: false;
+    download: boolean;
     listChildren: boolean;
   };
 }
@@ -61,10 +61,10 @@ export interface WorkspaceFileListFileItem {
   contentType?: string | null;
   byteSize?: number | null;
   modifiedAt?: string | null;
-  previewKind: Exclude<WorkspaceFilePreviewKind, "unsupported">;
+  previewKind: WorkspaceFilePreviewKind;
   capabilities: {
-    preview: true;
-    download: false;
+    preview: boolean;
+    download: true;
     listChildren: false;
   };
 }

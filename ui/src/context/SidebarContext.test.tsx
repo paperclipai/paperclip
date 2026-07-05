@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarProvider, useSidebar } from "./SidebarContext";
@@ -12,6 +12,10 @@ const COLLAPSED_STORAGE_KEY = "paperclip.sidebar.collapsed";
 
 // Mutable media state driving the matchMedia mock.
 const mediaState = { mobile: false, hoverFine: true };
+
+function act(callback: () => void) {
+  flushSync(callback);
+}
 
 function setViewport({ mobile, hoverFine }: { mobile?: boolean; hoverFine?: boolean }) {
   if (typeof mobile === "boolean") mediaState.mobile = mobile;
@@ -246,6 +250,42 @@ describe("SidebarContext", () => {
       active = renderProvider();
       expect(capturedValue?.collapsed).toBe(true);
       act(() => capturedValue?.setPeeking(true));
+      expect(capturedValue?.peeking).toBe(false);
+    });
+
+    // iPadOS Safari keeps the hover/pointer media query false even with a
+    // trackpad attached (PAP-10725); a real cursor still emits "mouse" pointer
+    // events, which must unlock peek at runtime.
+    it("peeks once a mouse-type pointer event is seen (iPad + trackpad)", () => {
+      localStorage.setItem(COLLAPSED_STORAGE_KEY, "1");
+      setViewport({ mobile: false, hoverFine: false });
+      active = renderProvider();
+      expect(capturedValue?.collapsed).toBe(true);
+
+      // No cursor seen yet → peek stays gated despite the media query.
+      act(() => capturedValue?.setPeeking(true));
+      expect(capturedValue?.peeking).toBe(false);
+
+      // A trackpad/mouse moves: a "mouse" pointer event unlocks peek.
+      act(() => {
+        const e = new Event("pointermove");
+        (e as unknown as { pointerType: string }).pointerType = "mouse";
+        window.dispatchEvent(e);
+      });
+      expect(capturedValue?.peeking).toBe(true);
+    });
+
+    it("ignores touch pointer events (touch-only stays gated)", () => {
+      localStorage.setItem(COLLAPSED_STORAGE_KEY, "1");
+      setViewport({ mobile: false, hoverFine: false });
+      active = renderProvider();
+
+      act(() => capturedValue?.setPeeking(true));
+      act(() => {
+        const e = new Event("pointerover");
+        (e as unknown as { pointerType: string }).pointerType = "touch";
+        window.dispatchEvent(e);
+      });
       expect(capturedValue?.peeking).toBe(false);
     });
   });

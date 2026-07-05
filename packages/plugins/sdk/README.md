@@ -341,6 +341,10 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `telemetry.track` |
 | | `database.namespace.migrate` |
 | | `database.namespace.write` |
+| | `external.objects.detect` |
+| | `external.objects.read` |
+| | `external.objects.write` |
+| | `external.objects.refresh` |
 | **Instance** | `instance.settings.register` |
 | | `plugin.state.read` |
 | | `plugin.state.write` |
@@ -371,6 +375,42 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `ui.action.register` |
 
 Full list in code: import `PLUGIN_CAPABILITIES` from `@paperclipai/plugin-sdk`.
+
+### External Object Reference Providers
+
+Trusted connector plugins can declare generic external object providers in the
+manifest. The host owns URL scanning, sanitized canonical URLs, core storage,
+normalized status rendering, and issue/comment/document write durability. The
+plugin only identifies provider-owned objects and resolves board-safe status
+metadata.
+
+```ts
+objectReferences: [
+  {
+    providerKey: "mocktracker",
+    displayName: "Mock Tracker",
+    objectTypes: ["ticket"],
+    urlPatterns: ["https://mock.example/tickets/:id"],
+    refreshPolicy: { defaultTtlSeconds: 300, staleAfterSeconds: 1800 },
+  },
+],
+capabilities: ["external.objects.detect", "external.objects.read"],
+```
+
+Implement `onDetectExternalObjects()` to map sanitized URL candidates to
+`providerKey`, `objectType`, provider-stable `externalId`, and optional display
+metadata such as `displayKey`/`iconKey`. Implement `onResolveExternalObject()`
+to return a normalized snapshot with `statusCategory`, `statusTone`,
+`statusLabel`, optional `statusIconKey`, board-safe `data`, and freshness
+metadata. Slow or failing plugins are isolated: Paperclip logs the failure and
+continues saving the source issue, comment, or document.
+
+MVP security posture: provider plugins are trusted installs. Manifest
+capabilities gate host APIs and provider invocation paths, but they are not a
+sandbox boundary for untrusted marketplace code. Plugin UI is same-origin
+JavaScript and must not be mounted inline in markdown; inline external-object
+rendering uses host-owned metadata only. Treat untrusted providers as future work
+that requires worker sandboxing plus isolated plugin UI.
 
 ### Restricted Database Namespace
 

@@ -174,10 +174,20 @@ up separately when you need full instance disaster recovery.
 
 Paperclip stores secret metadata and versions in:
 
+- `user_secret_definitions`
+- `user_secret_declarations`
 - `company_secrets`
 - `company_secret_versions`
 - `company_secret_bindings`
 - `secret_access_events`
+
+Company secrets use `company_secrets.scope = 'company'` and are bound directly
+through `company_secret_bindings`. User-specific secrets reuse the same provider
+and version storage, but each value is a `company_secrets.scope = 'user'` row
+with `owner_user_id` and `user_secret_definition_id` set. Definitions describe
+the reusable company-level slot, declarations record where `user_secret_ref`
+bindings are required, and the concrete value is selected later for the
+responsible user.
 
 Secret-aware env bindings are supported by agents, projects, and routines. Routine env lives in `routines.env`, is captured in `routine_revisions.snapshot`, and routine dispatches store `routine_runs.routine_revision_id` so runtime secret resolution uses the env snapshot that existed when the run was created. Routine secret refs bind with `target_type = 'routine'`, `target_id = routines.id`, and `config_path` values under `env.*`.
 
@@ -188,6 +198,10 @@ For local/default installs, the active provider is `local_encrypted`:
 - CLI config location: `~/.paperclip/instances/default/config.json` under `secrets.localEncrypted.keyFilePath`.
 - Backup/restore requires both the database metadata and the local master key file; either artifact alone is insufficient.
 - The server best-effort enforces `0600` key file permissions and provider health reports permission warnings.
+- User-scoped values use the same local encrypted provider path. Database
+  backups preserve definitions, declarations, owner metadata, version metadata,
+  and access events, but restored user-scoped values are decryptable only when
+  the matching local master key is restored with the database.
 
 Optional overrides:
 

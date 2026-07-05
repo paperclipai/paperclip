@@ -6,6 +6,7 @@ import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
   updateExecutionWorkspaceSchema,
+  workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
@@ -30,14 +31,19 @@ import {
 } from "./workspace-command-authz.js";
 import { assertCanManageExecutionWorkspaceRuntimeServices } from "./workspace-runtime-service-authz.js";
 import { appendWithCap } from "../adapters/utils.js";
+import { environmentRuntimeService } from "../services/environment-runtime.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 
-export function executionWorkspaceRoutes(db: Db) {
+export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
   const router = Router();
   const svc = executionWorkspaceService(db);
   const access = accessService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
+  const environmentRuntime = environmentRuntimeService(db, {
+    pluginWorkerManager: opts.pluginWorkerManager,
+  });
 
   async function assertExecutionWorkspaceReadAllowed(req: Request, res: Response, companyId: string) {
     const decision = await access.decide({
@@ -76,6 +82,24 @@ export function executionWorkspaceRoutes(db: Db) {
       ? await svc.listSummaries(companyId, filters)
       : await svc.list(companyId, filters);
     res.json(workspaces);
+  });
+
+  router.get("/companies/:companyId/workspace-overview", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertExecutionWorkspaceReadAllowed(req, res, companyId))) return;
+
+    const parsed = workspaceOverviewQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(422).json({
+        error: "Invalid workspace overview query",
+        details: parsed.error.flatten(),
+      });
+      return;
+    }
+
+    const overview = await svc.listOverview(companyId, parsed.data);
+    res.json(overview);
   });
 
   router.get("/execution-workspaces/:id", async (req, res) => {
@@ -537,6 +561,12 @@ export function executionWorkspaceRoutes(db: Db) {
         return;
       }
       workspace = archivedWorkspace;
+
+      await environmentRuntime.destroyReusableSandboxLeases({
+        companyId: existing.companyId,
+        executionWorkspaceId: existing.id,
+        failureReason: "execution_workspace_closed",
+      });
 
       if (existing.mode === "shared_workspace") {
         await db

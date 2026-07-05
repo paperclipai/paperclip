@@ -409,6 +409,8 @@ Paperclip ships with opt-in OpenTelemetry auto-instrumentation for the server (t
 
 Paperclip collects anonymous usage telemetry to help us understand how the product is used and improve it. No personal information, issue content, prompts, file paths, or secrets are ever collected. Private repository references are hashed with a per-install salt before being sent.
 
+Contributors changing emitted telemetry events should follow the [Telemetry Data Contract](packages/shared/src/telemetry/README.md).
+
 Telemetry is **enabled by default** and can be disabled with any of the following:
 
 | Method               | How                                                     |

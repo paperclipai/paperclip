@@ -54,6 +54,11 @@ vi.mock("../adapters/index.js", () => ({
     execute: adapterExecute,
     supportsLocalAgentJwt: false,
   }),
+  findActiveServerAdapter: () => ({
+    type: "codex_local",
+    execute: adapterExecute,
+    supportsLocalAgentJwt: false,
+  }),
   listAdapterModelProfiles: async () => [],
   runningProcesses: new Map(),
 }));
@@ -114,9 +119,17 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
     await db.delete(documents);
     await db.delete(agentTaskSessions);
     await db.delete(executionWorkspaces);
-    await db.delete(activityLog);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await db.delete(activityLog);
+      await db.delete(heartbeatRunEvents);
+      try {
+        await db.delete(heartbeatRuns);
+        break;
+      } catch (error) {
+        if (attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
     await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(projectWorkspaces);
@@ -203,6 +216,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       name: "Acme",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       status: "active",
+      defaultResponsibleUserId: "responsible-user",
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -261,6 +275,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       status: "in_progress",
       workMode: "planning",
       priority: "medium",
+      responsibleUserId: "responsible-user",
       assigneeAgentId: agentId,
       identifier: "PAP-9122",
       executionWorkspaceId: sharedExecutionWorkspaceId,
@@ -376,6 +391,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       name: "Acme",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       status: "active",
+      defaultResponsibleUserId: "responsible-user",
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -420,6 +436,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
         status: "in_progress",
         workMode: "planning",
         priority: "medium",
+        responsibleUserId: "responsible-user",
         assigneeAgentId: agentId,
         identifier: "PAP-9301",
         createdAt: new Date(),
@@ -434,6 +451,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
         status: "in_progress",
         workMode: "planning",
         priority: "medium",
+        responsibleUserId: "responsible-user",
         assigneeAgentId: agentId,
         identifier: "PAP-9302",
         createdAt: new Date(),
@@ -532,6 +550,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       name: "Acme",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       status: "active",
+      defaultResponsibleUserId: "responsible-user",
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -576,6 +595,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
         status: "in_progress",
         workMode: "standard",
         priority: "medium",
+        responsibleUserId: "responsible-user",
         assigneeAgentId: agentId,
         identifier: "PAP-9401",
         createdAt: new Date(),
@@ -590,6 +610,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
         status: "in_progress",
         workMode: "planning",
         priority: "medium",
+        responsibleUserId: "responsible-user",
         assigneeAgentId: agentId,
         identifier: "PAP-9402",
         createdAt: new Date(),
@@ -689,6 +710,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       name: "Acme",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       status: "active",
+      defaultResponsibleUserId: "responsible-user",
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -732,6 +754,7 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       status: "in_progress",
       workMode: "planning",
       priority: "medium",
+      responsibleUserId: "responsible-user",
       assigneeAgentId: agentId,
       identifier: "PAP-9303",
       createdAt: new Date(),

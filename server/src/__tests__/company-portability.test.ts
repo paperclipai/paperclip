@@ -1537,7 +1537,7 @@ describe("company portability", () => {
           },
         },
       }),
-      { strictMode: false },
+      { strictMode: false, adapterType: "codex_local" },
     );
     expect(agentSvc.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
       adapterConfig: expect.objectContaining({
@@ -3490,7 +3490,7 @@ describe("company portability", () => {
     expect(secretSvc.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith(
       "company-imported",
       expect.anything(),
-      { strictMode: false },
+      { strictMode: false, adapterType: "claude_local" },
     );
     expect(agentSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       adapterType: "claude_local",
@@ -3559,7 +3559,7 @@ describe("company portability", () => {
         model: "gpt-5.4",
         extraArgs: ["--skip-git-repo-check"],
       }),
-      { strictMode: false },
+      { strictMode: false, adapterType: "codex_local" },
     );
     expect(agentSvc.update).toHaveBeenCalledWith("agent-1", expect.objectContaining({
       adapterType: "codex_local",
