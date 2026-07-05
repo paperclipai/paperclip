@@ -339,11 +339,34 @@ export function secretService(db: Db) {
       consumerId: context.consumerId,
       configPath: context.configPath,
     });
-    if (!binding) {
-      throw unprocessable(
-        `Secret is not bound to ${context.consumerType}:${context.consumerId} at ${context.configPath}`,
-      );
+    if (binding) return;
+
+    // Company MCP library: catalog server secrets are bound to the catalog
+    // entry (targetType "mcp_server"), not to each agent. At run time the
+    // heartbeat expands enabled catalog servers into the agent's config, so an
+    // agent consumer resolving a mcpServers.* path is legitimate whenever a
+    // catalog binding exists for the same company + secret + path. The catalog
+    // is company-shared by design (any agent may enable a library server), and
+    // creating catalog bindings requires the agents:create permission.
+    if (context.consumerType === "agent" && context.configPath.startsWith("mcpServers.")) {
+      const catalogBinding = await db
+        .select()
+        .from(companySecretBindings)
+        .where(
+          and(
+            eq(companySecretBindings.companyId, companyId),
+            eq(companySecretBindings.secretId, secretId),
+            eq(companySecretBindings.targetType, "mcp_server"),
+            eq(companySecretBindings.configPath, context.configPath),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (catalogBinding) return;
     }
+
+    throw unprocessable(
+      `Secret is not bound to ${context.consumerType}:${context.consumerId} at ${context.configPath}`,
+    );
   }
 
   async function recordAccessEvent(input: {

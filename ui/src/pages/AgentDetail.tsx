@@ -3483,8 +3483,8 @@ export function AgentMcpServersTab({
           )}
 
           <p className="border-t border-border pt-4 text-xs text-muted-foreground">
-            Servers added here are shared company-wide. Per-agent overrides live in Configuration →
-            MCP Servers.
+            MCP servers are shared from the company library — manage them under MCP in the
+            sidebar. Ticked servers are injected into this agent&apos;s runtime on its next run.
           </p>
         </>
       )}
