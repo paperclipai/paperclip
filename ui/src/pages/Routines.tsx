@@ -50,6 +50,7 @@ import { Tabs, TabsContent } from "@/components/ui/tabs";
 import type { RoutineListItem, RoutineVariable } from "@paperclipai/shared";
 import type { FolderListItem } from "@paperclipai/shared";
 import {
+  AllUnfiledBanner,
   BulkBar,
   DeleteFolderDialog,
   FolderChip,
@@ -1170,6 +1171,13 @@ export function Routines() {
               )}
             </div>
           ) : null}
+          {routineViewState.groupBy === "folder" && !hasRoutineFolders && !foldersLoading && visibleRoutines.length > 0 ? (
+            <AllUnfiledBanner
+              storageKey={`paperclip:routines-folder-nudge:${selectedCompanyId ?? "none"}`}
+              itemLabelPlural="routines"
+              onCreateFolder={() => openCreateFolder()}
+            />
+          ) : null}
           {selectMode ? (
             <BulkBar
               selectedCount={selectedRoutineIds.length}
@@ -1257,13 +1265,18 @@ export function Routines() {
                               folders={routineFolders?.folders ?? []}
                               currentFolderId={routine.folderId ?? null}
                               onMove={(folderId) => {
+                                const previousFolderId = routine.folderId ?? null;
                                 moveRoutineToFolder.mutate({ itemId: routine.id, folderId });
                                 pushToast({
                                   title: "Routine moved",
                                   body: folderId
-                                    ? `Moved to ${routineFolders?.folders.find((folder) => folder.id === folderId)?.name ?? "folder"}.`
-                                    : "Moved to Unfiled.",
+                                    ? `Moved "${routine.title}" to ${routineFolders?.folders.find((folder) => folder.id === folderId)?.name ?? "folder"}.`
+                                    : `Moved "${routine.title}" to Unfiled.`,
                                   tone: "success",
+                                  action: {
+                                    label: "Undo",
+                                    onClick: () => moveRoutineToFolder.mutate({ itemId: routine.id, folderId: previousFolderId }),
+                                  },
                                 });
                               }}
                               onCreateAndMove={() => openCreateFolder([routine.id])}
