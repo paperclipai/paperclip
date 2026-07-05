@@ -188,6 +188,17 @@ describe("ChatComposer", () => {
     act(() => root.unmount());
   });
 
+  it('tone="ask" is reflected on the container', () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(<Harness tone="ask" />);
+    });
+    const box = container.querySelector('[data-testid="chat-composer"]');
+    expect(box?.getAttribute("data-tone")).toBe("ask");
+    expect(box?.className).toContain("sky");
+    act(() => root.unmount());
+  });
+
   it('defaults to the opaque "card" surface', () => {
     // PAP-131: surface is opt-in — existing adopters keep the bg-card box.
     const root = createRoot(container);

@@ -5,7 +5,7 @@ import { AlertCircle, KeyRound } from "lucide-react";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import { Secrets } from "@/pages/Secrets";
 import { SecretBindingPicker, type SecretBindingValue } from "@/components/SecretBindingPicker";
-import { EnvVarEditor } from "@/components/EnvVarEditor";
+import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useCompany } from "@/context/CompanyContext";
@@ -139,7 +139,7 @@ export const EnvEditorWithSecrets: Story = {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <EnvVarEditor
+            <EnvironmentVariablesEditor
               value={env}
               secrets={storybookSecrets as CompanySecret[]}
               onCreateSecret={async (name, value) => ({
