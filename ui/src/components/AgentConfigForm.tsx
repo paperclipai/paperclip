@@ -7,7 +7,6 @@ import type {
   CredentialType,
   EnvBinding,
   Environment,
-  McpServersConfig,
 } from "@paperclipai/shared";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
@@ -55,7 +54,6 @@ import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
 import { EnvVarEditor } from "./EnvVarEditor";
-import { McpServersEditor, MCP_CAPABLE_ADAPTER_TYPES } from "./McpServersEditor";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
 import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -124,7 +122,6 @@ const emptyOverlay: AgentConfigOverlay = {
 const EMPTY_ENV: Record<string, EnvBinding> = {};
 
 /** Stable empty object used as fallback for missing MCP server config. */
-const EMPTY_MCP_SERVERS: McpServersConfig = {};
 
 function isOverlayDirty(o: AgentConfigOverlay): boolean {
   return (
@@ -1482,67 +1479,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
       )}
 
-      {/* ---- MCP Servers ---- */}
-      {/* TODO(create-mode): supporting MCP servers at agent-create time requires
-          extending CreateConfigValues in @paperclipai/adapter-utils; edit mode only for now. */}
-      {!isCreate && MCP_CAPABLE_ADAPTER_TYPES.has(adapterType) && (
-        <div className={cn(!cards && "border-b border-border")}>
-          {cards
-            ? <h3 className="text-sm font-medium mb-3">MCP Servers</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">MCP Servers</div>
-          }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-            <McpServersEditor
-              value={eff(
-                "adapterConfig",
-                "mcpServers",
-                (config.mcpServers ?? EMPTY_MCP_SERVERS) as McpServersConfig,
-              )}
-              secrets={availableSecrets}
-              onCreateSecret={async (name, value) => {
-                const created = await createSecret.mutateAsync({ name, value });
-                return created;
-              }}
-              onChange={(mcpServers) => mark("adapterConfig", "mcpServers", mcpServers)}
-              onStartOauth={async (serverName, server) => {
-                // The OAuth broker reads the agent's PERSISTED config, but the
-                // server may only exist in the unsaved form overlay (or have
-                // unsaved edits). Persist this one server first so Connect is
-                // a single click instead of a save-then-connect dance. The
-                // editor passes its current value for the name; fall back to
-                // the overlay for older call sites.
-                const currentServers = eff(
-                  "adapterConfig",
-                  "mcpServers",
-                  (config.mcpServers ?? EMPTY_MCP_SERVERS) as McpServersConfig,
-                ) as McpServersConfig | undefined;
-                const serverToPersist = server ?? currentServers?.[serverName];
-                if (!serverToPersist) {
-                  throw new Error(`MCP server "${serverName}" not found in the form`);
-                }
-                await agentsApi.upsertMcpServer(
-                  props.agent.id,
-                  serverName,
-                  serverToPersist,
-                  selectedCompanyId ?? undefined,
-                );
-                const { authorizeUrl } = await agentsApi.startMcpOauth(
-                  props.agent.id,
-                  serverName,
-                  selectedCompanyId ?? undefined,
-                );
-                window.open(authorizeUrl, "_blank", "noopener");
-                queryClient.invalidateQueries({
-                  queryKey: queryKeys.agents.mcpServers(props.agent.id),
-                });
-                queryClient.invalidateQueries({
-                  queryKey: queryKeys.agents.detail(props.agent.id),
-                });
-              }}
-            />
-          </div>
-        </div>
-      )}
+      {/* MCP servers are managed through the company library (/mcp) and the
+          agent's MCP tab. Per-agent inline overrides (adapterConfig.mcpServers)
+          remain supported via the API. */}
 
       {/* ---- Run Policy ---- */}
       {isCreate && showCreateRunPolicySection ? (

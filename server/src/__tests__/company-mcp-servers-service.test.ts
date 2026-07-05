@@ -255,6 +255,61 @@ describeEmbeddedPostgres("companyMcpServerService", () => {
     expect(snapshot.missing).toEqual(["ghost"]);
   });
 
+  it("catalog-bound secrets resolve at run time under an agent consumer", async () => {
+    // Regression: catalog secrets are bound to the mcp_server target, but the
+    // heartbeat resolves the expanded config under the AGENT consumer — this
+    // used to fail with "Secret is not bound to agent:<id> at mcpServers...".
+    const companyId = await seedCompany();
+    const svc = companyMcpServerService(db);
+    const secrets = secretService(db);
+    const tokenSecret = await secrets.create(companyId, {
+      name: `oauth-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: JSON.stringify({ accessToken: "at-run" }),
+    });
+    await svc.create(companyId, {
+      name: "linear",
+      config: {
+        transport: "http",
+        url: "https://mcp.linear.app/mcp",
+        auth: { type: "oauth", secretId: tokenSecret.id },
+      },
+    });
+    const agentId = await seedAgent(companyId, ["linear"]);
+
+    const expanded = await svc.expandAgentMcpServers(companyId, { mcpServerRefs: ["linear"] });
+    const { config } = await secrets.resolveAdapterConfigForRuntime(companyId, expanded, {
+      consumerType: "agent",
+      consumerId: agentId,
+      actorType: "agent",
+      actorId: agentId,
+    });
+    const servers = config.mcpServers as Record<string, { headers: Record<string, string> }>;
+    expect(servers.linear.headers.Authorization).toBe("Bearer at-run");
+
+    // A secret with NO binding anywhere still fails under an agent consumer.
+    const unbound = await secrets.create(companyId, {
+      name: `unbound-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "nope",
+    });
+    await expect(
+      secrets.resolveAdapterConfigForRuntime(
+        companyId,
+        {
+          mcpServers: {
+            rogue: {
+              transport: "http",
+              url: "https://rogue.example.com/mcp",
+              headers: { Authorization: { type: "secret_ref", secretId: unbound.id } },
+            },
+          },
+        },
+        { consumerType: "agent", consumerId: agentId, actorType: "agent", actorId: agentId },
+      ),
+    ).rejects.toThrow(/not bound/i);
+  });
+
   it("update with stale oauth secretId null preserves the connected secret", async () => {
     const companyId = await seedCompany();
     const svc = companyMcpServerService(db);
