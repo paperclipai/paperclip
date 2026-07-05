@@ -526,10 +526,7 @@ EOF
 }
 
 compose() {
-  export PROJECT_DIR HOST_UID HOST_GID
-  HOST_UID="$(id -u)"
-  HOST_GID="$(id -g)"
-
+  export PROJECT_DIR
   "${DOCKER_CMD[@]}" compose \
     --project-name "$COMPOSE_PROJECT_NAME" \
     --file "$COMPOSE_FILE" \
@@ -598,6 +595,10 @@ deploy_paperclip() {
   log "Memulai deployment Paperclip service..."
   ensure_env_file
   load_env_file
+
+  export HOST_UID="$(id -u)"
+  export HOST_GID="$(id -g)"
+
   ensure_runtime_dirs
   ensure_compose_file
   ensure_port_available
