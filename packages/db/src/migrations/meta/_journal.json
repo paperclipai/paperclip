@@ -981,6 +981,13 @@
       "when": 1782527700000,
       "tag": "0139_mcp_gateway_contract_expansion",
       "breakpoints": true
+    },
+    {
+      "idx": 140,
+      "version": "7",
+      "when": 1782527800000,
+      "tag": "0140_environment_custom_image_company_scope_repair",
+      "breakpoints": true
     }
   ]
 }
