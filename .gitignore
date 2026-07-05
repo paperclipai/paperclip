@@ -20,6 +20,7 @@ volumes/
 tmp-*
 cli/tmp/
 DEPLOY.md
+DEPLOYMENT-INSTRUCTIONS.md
 
 # Scratch/seed scripts (but not scripts/ dir)
 check-*.mjs
