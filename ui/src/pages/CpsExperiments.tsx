@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, BarChart3, Clock, Database, FileJson, FlaskConical, HardDrive, Lightbulb, ListChecks, ListOrdered, ShieldCheck, Tag } from "lucide-react";
-import type { CpsExperimentEntry } from "@paperclipai/shared";
+import { AlertTriangle, BarChart3, CheckCircle2, ChevronDown, Clock, Database, FileJson, FileText, FlaskConical, HardDrive, KeyRound, Lightbulb, ListChecks, ListOrdered, MessagesSquare, ShieldCheck, Tag, X } from "lucide-react";
+import type { CpsExperimentEntry, CpsExperimentOverview } from "@paperclipai/shared";
 import { cpsExperimentsApi } from "../api/cps-experiments";
+import { VerdictOverview, GateBar, MetricBars, EquityCurve } from "../components/cps/CpsCharts";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
+import { Link } from "@/lib/router";
 
 type FeedbackDraft = {
   label: string;
@@ -41,6 +44,27 @@ const STAGE_SEGMENT_STYLES: Record<string, string> = {
   skipped: "bg-slate-400",
   pending: "bg-muted",
 };
+
+// Entry kinds grouped into operator-meaningful tabs: real strategies, paper/idea
+// intakes, and internal system runs (autonomous bundles, scaffolds, evals).
+const KIND_GROUPS = [
+  { key: "strategies", label: "Strategies", kinds: new Set(["strategy_experiment", "local_proxy_validation", "shadow_ledger"]) },
+  { key: "papers", label: "Papers & ideas", kinds: new Set(["idea_intake", "paper_repair"]) },
+] as const;
+
+function groupOfKind(kind: string): string {
+  for (const group of KIND_GROUPS) {
+    if (group.kinds.has(kind)) return group.key;
+  }
+  return "system";
+}
+
+const VIEWABLE_EXTS = new Set(["json", "jsonl", "txt", "md", "csv", "log", "yaml", "yml", "py", "toml", "cfg", "ini", "html"]);
+
+function isViewableFile(name: string): boolean {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return VIEWABLE_EXTS.has(ext);
+}
 
 function stageStatusMap(progress: CpsExperimentEntry["progress"]): Record<string, { status: string; blocker?: Record<string, unknown> | null }> {
   const out: Record<string, { status: string; blocker?: Record<string, unknown> | null }> = {};
@@ -134,13 +158,274 @@ function nextActionPrompt(entry: CpsExperimentEntry): string | null {
   return scalar(next?.prompt);
 }
 
-function CountCard({ label, value, tone = "default" }: { label: string; value: number | string; tone?: "default" | "danger" | "warn" | "ok" }) {
+function HeroStat({ label, value, tone = "default" }: { label: string; value: number | string; tone?: "default" | "danger" | "warn" | "ok" }) {
   const toneClass = tone === "danger" ? "text-rose-300" : tone === "warn" ? "text-amber-200" : tone === "ok" ? "text-emerald-300" : "text-white";
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/10 p-4 text-center">
-      <div className={`text-3xl font-semibold ${toneClass}`}>{value}</div>
-      <div className="text-xs uppercase tracking-wide text-slate-300">{label}</div>
+    <span className="inline-flex items-baseline gap-1.5 rounded-lg bg-white/10 px-2.5 py-1">
+      <span className={`font-mono text-sm font-semibold tabular-nums ${toneClass}`}>{value}</span>
+      <span className="text-[10px] uppercase tracking-wide text-slate-300">{label}</span>
+    </span>
+  );
+}
+
+// ---- Artifact file viewer (modal) ----
+
+function CsvTable({ text }: { text: string }) {
+  const lines = text.split("\n").filter((line) => line.trim().length > 0);
+  const header = (lines[0] ?? "").split(",");
+  const rows = lines.slice(1, 101).map((line) => line.split(","));
+  const more = lines.length - 1 - rows.length;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left text-[11px]">
+        <thead>
+          <tr className="border-b border-border">
+            {header.map((cell, i) => <th key={i} className="whitespace-nowrap px-2 py-1.5 font-mono font-semibold text-muted-foreground">{cell}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, ri) => (
+            <tr key={ri} className="border-b border-border/40">
+              {row.map((cell, ci) => <td key={ci} className="whitespace-nowrap px-2 py-1 font-mono text-foreground/90">{cell}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {more > 0 ? <div className="px-2 py-1.5 text-[11px] text-muted-foreground">… {more} more rows (download the artifact for the full file)</div> : null}
     </div>
+  );
+}
+
+function FileViewerModal({ companyId, experimentId, name, onClose }: { companyId: string; experimentId: string; name: string; onClose: () => void }) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["cps-file", companyId, experimentId, name],
+    queryFn: () => cpsExperimentsApi.file(companyId, experimentId, name),
+    staleTime: 5 * 60_000,
+  });
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  let body: ReactNode;
+  if (isLoading) {
+    body = <div className="h-48 animate-pulse rounded-lg bg-muted/40" />;
+  } else if (error || !data) {
+    body = <div className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">Could not load this file: {error instanceof Error ? error.message : "not available"}</div>;
+  } else if (data.contentType === "csv") {
+    body = <CsvTable text={data.content} />;
+  } else if (data.contentType === "json") {
+    let pretty = data.content;
+    try { pretty = JSON.stringify(JSON.parse(data.content), null, 2); } catch { /* show raw */ }
+    body = <pre className="whitespace-pre-wrap break-words text-[11px] leading-5 text-foreground/90">{pretty}</pre>;
+  } else {
+    body = <pre className="whitespace-pre-wrap break-words text-[11px] leading-5 text-foreground/90">{data.content}</pre>;
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-border p-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="font-mono text-sm font-semibold text-foreground">{name}</span>
+              {data ? <span className="text-[11px] text-muted-foreground">{fmtBytes(data.bytes)}</span> : null}
+              {data?.truncated ? <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">truncated to 512KB</span> : null}
+            </div>
+            {data ? <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground" title={data.path}>{data.path}</div> : null}
+          </div>
+          <button type="button" onClick={onClose} className="rounded-full border border-border p-1.5 text-muted-foreground transition hover:text-foreground" aria-label="Close file viewer">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="overflow-auto p-4">{body}</div>
+      </div>
+    </div>
+  );
+}
+
+// ---- Compact expandable ops tile (merges the former full-width sections) ----
+
+function OpsTile({ title, icon: Icon, headline, sub, badge, children }: {
+  title: string;
+  icon: typeof Clock;
+  headline: string;
+  sub: string;
+  badge?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <details className="group rounded-2xl border border-border bg-card">
+      <summary className="flex cursor-pointer list-none items-center gap-3 p-3 [&::-webkit-details-marker]:hidden">
+        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-xs font-semibold text-foreground">{title}{badge}</div>
+          <div className="truncate text-[11px] text-muted-foreground">{sub}</div>
+        </div>
+        <span className="shrink-0 font-mono text-sm tabular-nums text-foreground">{headline}</span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition group-open:rotate-180" />
+      </summary>
+      <div className="border-t border-border p-3">{children}</div>
+    </details>
+  );
+}
+
+function TileBadge({ tone, children }: { tone: "warn" | "danger"; children: ReactNode }) {
+  const cls = tone === "danger"
+    ? "bg-rose-500/15 text-rose-700 dark:text-rose-300"
+    : "bg-amber-500/15 text-amber-700 dark:text-amber-300";
+  return <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${cls}`}>{children}</span>;
+}
+
+// ---- Needs-you panel: every human-required item in one place ----
+
+type NeedsYouItem = {
+  key: string;
+  text: string;
+  sub?: string;
+  link?: string | null;
+  experimentId?: string;
+};
+
+function collectNeedsYou(data: CpsExperimentOverview): NeedsYouItem[] {
+  const items: NeedsYouItem[] = [];
+  for (const [index, action] of (data.operatorActions ?? []).entries()) {
+    items.push({
+      key: `action-${action.experimentId}-${action.stage}-${index}`,
+      text: action.simpleAsk,
+      sub: `${action.experimentId} · stage ${action.stage}${action.kind ? ` · ${action.kind}` : ""}`,
+      link: action.link,
+      experimentId: action.experimentId,
+    });
+  }
+  if (data.backtestQueue?.starving) {
+    items.push({ key: "queue-starving", text: "Backtests are waiting but no worker is reachable — wake a worker box (lillith / AMD-minis / finance-1). Nothing is rented or spent automatically." });
+  }
+  if (data.backtestQueue?.stopPresent) {
+    items.push({ key: "queue-paused", text: "The backtest queue is paused (STOP file present)." });
+  }
+  for (const sub of data.dataInventory?.subscriptions.filter((s) => s.status !== "have") ?? []) {
+    items.push({ key: `sub-${sub.provider}-${sub.subscription}`, text: `${sub.provider}: ${sub.subscription}`, sub: `unlocks ${sub.unlocks}`, link: sub.link || null });
+  }
+  if (data.toolCatalog?.present && data.toolCatalog.notReady.length) {
+    items.push({ key: "tools-not-ready", text: `Tools not ready: ${data.toolCatalog.notReady.join(", ")}`, sub: "these become install tasks or asks — nothing installs itself" });
+  }
+  return items;
+}
+
+function NeedsYouPanel({ data, onView }: { data: CpsExperimentOverview; onView: (experimentId: string) => void }) {
+  const items = collectNeedsYou(data);
+  const chatHint = (
+    <Link to="/board-chat" className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-sky-500/40 bg-sky-500/10 px-3 py-1 text-[11px] font-semibold text-sky-700 transition hover:bg-sky-500/20 dark:text-sky-300">
+      <MessagesSquare className="h-3.5 w-3.5" /> Conference Room — paste keys, answer asks, unblock the team
+    </Link>
+  );
+  if (items.length === 0) {
+    return (
+      <section className="flex flex-wrap items-center gap-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-2.5">
+        <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+        <span className="text-xs text-emerald-800 dark:text-emerald-200">All clear — nothing needs you right now.</span>
+        <span className="ml-auto">{chatHint}</span>
+      </section>
+    );
+  }
+  return (
+    <section className="rounded-2xl border border-amber-500/40 bg-amber-500/5 p-4">
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-200">
+        <AlertTriangle className="h-4 w-4" /> Needs you — only you can unblock these ({items.length})
+        <span className="ml-auto">{chatHint}</span>
+      </div>
+      <div className="grid gap-1.5">
+        {items.map((item) => (
+          <div key={item.key} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-card px-3 py-2 text-xs">
+            <div className="min-w-0">
+              <span className="text-foreground">{item.text}</span>
+              {item.sub ? <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">{item.sub}</div> : null}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {item.link ? (
+                <a href={item.link} target="_blank" rel="noreferrer" className="rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 font-semibold text-amber-800 transition hover:bg-amber-500/20 dark:text-amber-200">Open link</a>
+              ) : null}
+              {item.experimentId ? (
+                <button type="button" onClick={() => onView(item.experimentId!)} className="rounded-full border border-border px-3 py-1 text-muted-foreground transition hover:text-foreground">View</button>
+              ) : null}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// Operator credential drop: the value goes straight to the pods' env file on
+// the box — never into the Paperclip DB — and the consumer gets a run request.
+function CredentialDropForm({ companyId }: { companyId: string }) {
+  const [name, setName] = useState("");
+  const [value, setValue] = useState("");
+  const [note, setNote] = useState("");
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const mutation = useMutation({
+    mutationFn: () => cpsExperimentsApi.provideCredential(companyId, { name: name.trim(), value, note: note.trim() || null }),
+    onSuccess: (drop) => {
+      setResult({ ok: true, text: `${drop.name} ${drop.replacedExisting ? "updated" : "added"} in ${drop.envPath} — the team was notified (run ${drop.runRequestId}). The value is never shown again.` });
+      setName("");
+      setValue("");
+      setNote("");
+    },
+    onError: (err) => setResult({ ok: false, text: `Could not store the credential: ${err instanceof Error ? err.message : String(err)}` }),
+  });
+  const validName = /^[A-Z][A-Z0-9_]{1,63}$/.test(name.trim());
+  return (
+    <details className="rounded-2xl border border-border bg-card">
+      <summary className="flex cursor-pointer list-none items-center gap-2 p-4 text-sm font-semibold [&::-webkit-details-marker]:hidden">
+        <KeyRound className="h-4 w-4 text-muted-foreground" /> Provide a credential
+        <span className="text-[10px] font-normal text-muted-foreground">API keys go to the pods&apos; env file on this box — never into the database</span>
+        <ChevronDown className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+      </summary>
+      <div className="border-t border-border p-4">
+        <div className="grid gap-2 sm:grid-cols-[14rem_1fr_auto]">
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, "_"))}
+            placeholder="NAME, e.g. ALPACA_API_KEY"
+            autoComplete="off"
+            spellCheck={false}
+            className="rounded-md border border-border bg-background px-3 py-2 font-mono text-xs text-foreground outline-none focus:border-primary"
+          />
+          <input
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            placeholder="Paste the secret value"
+            type="password"
+            autoComplete="new-password"
+            spellCheck={false}
+            className="rounded-md border border-border bg-background px-3 py-2 font-mono text-xs text-foreground outline-none focus:border-primary"
+          />
+          <button
+            type="button"
+            disabled={mutation.isPending || !validName || !value.trim()}
+            onClick={() => { setResult(null); mutation.mutate(); }}
+            className="rounded-full bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+          >
+            {mutation.isPending ? "Storing…" : "Store & notify team"}
+          </button>
+        </div>
+        <input
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          placeholder="Note for the team (optional) — e.g. which ask this resolves"
+          maxLength={500}
+          className="mt-2 w-full rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground outline-none focus:border-primary"
+        />
+        {result ? (
+          <div className={`mt-2 rounded-lg px-3 py-2 text-xs ${result.ok ? "bg-emerald-500/10 text-emerald-800 dark:text-emerald-200" : "bg-rose-500/10 text-rose-700 dark:text-rose-300"}`}>{result.text}</div>
+        ) : null}
+      </div>
+    </details>
   );
 }
 
@@ -189,6 +474,7 @@ function EntryCard({ entry, selected, onSelect }: { entry: CpsExperimentEntry; s
 }
 
 function EntryDetail({
+  companyId,
   entry,
   onQueueFollowUp,
   onQueueJudgmentNext,
@@ -199,6 +485,7 @@ function EntryDetail({
   queuedId,
   labeledId,
 }: {
+  companyId: string;
   entry: CpsExperimentEntry;
   onQueueFollowUp: (entry: CpsExperimentEntry) => void;
   onQueueJudgmentNext: (entry: CpsExperimentEntry) => void;
@@ -213,13 +500,21 @@ function EntryDetail({
   const [correctedVerdict, setCorrectedVerdict] = useState("");
   const [routeToRole, setRouteToRole] = useState("");
   const [comment, setComment] = useState("");
+  const [viewingFile, setViewingFile] = useState<string | null>(null);
 
   useEffect(() => {
     setCorrectionLabel("disagree");
     setCorrectedVerdict("");
     setRouteToRole("");
     setComment("");
+    setViewingFile(null);
   }, [entry.id]);
+
+  const { data: equity, isLoading: equityLoading } = useQuery({
+    queryKey: ["cps-equity", companyId, entry.id],
+    queryFn: () => cpsExperimentsApi.equity(companyId, entry.id),
+    staleTime: 5 * 60_000,
+  });
 
   const failing = Array.isArray(entry.summary.failing_gates) ? entry.summary.failing_gates.filter((x): x is string => typeof x === "string") : [];
   const safety = entry.summary.safety && typeof entry.summary.safety === "object" ? entry.summary.safety as Record<string, unknown> : null;
@@ -230,18 +525,42 @@ function EntryDetail({
   const executionStatus = judgmentStatus(entry, "execution_fit", "executionFit");
   const nextPrompt = nextActionPrompt(entry);
   const blockers = Array.isArray(entry.judgment?.blockers) ? entry.judgment.blockers : [];
+
+  // Every artifact the index knows about, sidecars included; primary JSON first.
+  const artifactNames = useMemo(() => {
+    const names = new Set<string>();
+    if (entry.primaryJson) names.add(entry.primaryJson);
+    for (const file of entry.files) names.add(file);
+    if (entry.judgmentPath) names.add("JUDGMENT.json");
+    if (entry.progressPath) names.add("PROGRESS.json");
+    return Array.from(names);
+  }, [entry]);
+
   return (
     <div className="flex flex-col gap-4">
+      {viewingFile ? (
+        <FileViewerModal companyId={companyId} experimentId={entry.id} name={viewingFile} onClose={() => setViewingFile(null)} />
+      ) : null}
+
       <section className="rounded-2xl border border-border bg-card p-5">
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-foreground">{entry.kind}</span>
           <span>{entry.status}</span>
           <span>· updated {fmtDate(entry.updatedUtc)}</span>
         </div>
-        <h2 className="mt-2 break-words text-2xl font-semibold tracking-tight text-foreground">{entry.id}</h2>
+        <h2 className="mt-2 break-words text-xl font-semibold tracking-tight text-foreground">{entry.id}</h2>
         <div className="mt-3 flex flex-wrap gap-2">
           <span className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${decisionClass(entry.decision)}`}>{entry.decision ?? "UNLABELED"}</span>
-          {entry.primaryJson ? <span className="rounded-full border border-border bg-muted px-2.5 py-0.5 font-mono text-xs">{entry.primaryJson}</span> : null}
+          {entry.primaryJson ? (
+            <button
+              type="button"
+              onClick={() => isViewableFile(entry.primaryJson!) && setViewingFile(entry.primaryJson)}
+              className="rounded-full border border-border bg-muted px-2.5 py-0.5 font-mono text-xs transition hover:border-primary/40 hover:text-foreground"
+              title="Open evidence JSON"
+            >
+              {entry.primaryJson}
+            </button>
+          ) : null}
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <button
@@ -262,7 +581,16 @@ function EntryDetail({
           </button>
           {queuedId ? <span className="rounded-full bg-emerald-500/10 px-3 py-1.5 font-mono text-xs text-emerald-700 dark:text-emerald-300">queued {queuedId}</span> : null}
         </div>
+        {typeof entry.summary.gate_pass_count === "number" || typeof entry.summary.gate_fail_count === "number" ? (
+          <div className="mt-4 max-w-sm">
+            <GateBar passed={entry.summary.gate_pass_count as number} failed={entry.summary.gate_fail_count as number} />
+          </div>
+        ) : null}
       </section>
+
+      <EquityCurve curve={equity} loading={equityLoading} />
+
+      <MetricBars metrics={entry.metrics} />
 
       {entry.judgment ? (
         <section className="rounded-2xl border border-border bg-card p-4">
@@ -440,10 +768,39 @@ function EntryDetail({
         </section>
       ) : null}
 
-      <section className="rounded-2xl border border-border bg-card p-4">
-        <div className="mb-2 flex items-center gap-2 text-sm font-semibold"><FileJson className="h-4 w-4 text-muted-foreground" /> Summary JSON</div>
-        <pre className="max-h-96 overflow-auto rounded-lg bg-muted/40 p-3 text-xs leading-5 text-foreground/90">{JSON.stringify(entry.summary, null, 2)}</pre>
-      </section>
+      {artifactNames.length ? (
+        <section className="rounded-2xl border border-border bg-card p-4">
+          <div className="mb-2 flex items-center gap-2 text-sm font-semibold"><FileText className="h-4 w-4 text-muted-foreground" /> Artifacts <span className="font-normal text-muted-foreground">({artifactNames.length})</span></div>
+          <div className="flex flex-wrap gap-1.5">
+            {artifactNames.map((name) => {
+              const viewable = isViewableFile(name);
+              return viewable ? (
+                <button
+                  key={name}
+                  type="button"
+                  onClick={() => setViewingFile(name)}
+                  className="rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-xs text-foreground transition hover:border-primary/40 hover:bg-primary/5"
+                  title="Click to view"
+                >
+                  {name}
+                </button>
+              ) : (
+                <span key={name} className="rounded-md border border-border/50 bg-muted/20 px-2 py-1 font-mono text-xs text-muted-foreground" title="Binary artifact — not viewable inline">
+                  {name}
+                </span>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+
+      <details className="rounded-2xl border border-border bg-card">
+        <summary className="flex cursor-pointer list-none items-center gap-2 p-4 text-sm font-semibold [&::-webkit-details-marker]:hidden">
+          <FileJson className="h-4 w-4 text-muted-foreground" /> Summary JSON
+          <ChevronDown className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+        </summary>
+        <pre className="max-h-96 overflow-auto border-t border-border bg-muted/40 p-3 text-xs leading-5 text-foreground/90">{JSON.stringify(entry.summary, null, 2)}</pre>
+      </details>
     </div>
   );
 }
@@ -451,7 +808,7 @@ function EntryDetail({
 export function CpsExperiments() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const [kindFilter, setKindFilter] = useState("all");
+  const [groupFilter, setGroupFilter] = useState("strategies");
   const [decisionFilter, setDecisionFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -459,7 +816,7 @@ export function CpsExperiments() {
   const [labeledId, setLabeledId] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Dashboard", href: "/dashboard" }, { label: "CPS Experiments" }]);
+    setBreadcrumbs([{ label: "Dashboard", href: "/dashboard" }, { label: "Research Lab" }]);
   }, [setBreadcrumbs]);
 
   const { data, isLoading } = useQuery({
@@ -523,11 +880,20 @@ export function CpsExperiments() {
     onError: (err) => setIdeaResult(`Could not capture the idea: ${err instanceof Error ? err.message : String(err)}`),
   });
 
+  const groupCounts = useMemo(() => {
+    const counts: Record<string, number> = { all: 0, strategies: 0, papers: 0, system: 0 };
+    for (const entry of data?.entries ?? []) {
+      counts.all += 1;
+      counts[groupOfKind(entry.kind)] += 1;
+    }
+    return counts;
+  }, [data]);
+
   const filtered = useMemo(() => {
     if (!data) return [];
     const term = search.trim().toLowerCase();
     return data.entries.filter((entry) => {
-      if (kindFilter !== "all" && entry.kind !== kindFilter) return false;
+      if (groupFilter !== "all" && groupOfKind(entry.kind) !== groupFilter) return false;
       if (decisionFilter !== "all" && (entry.decision ?? "UNLABELED") !== decisionFilter) return false;
       if (term) {
         const haystack = `${entry.id} ${entry.kind} ${entry.decision ?? ""} ${entry.primaryJson ?? ""} ${JSON.stringify(entry.summary)} ${JSON.stringify(entry.judgment ?? {})}`.toLowerCase();
@@ -535,15 +901,23 @@ export function CpsExperiments() {
       }
       return true;
     });
-  }, [data, kindFilter, decisionFilter, search]);
+  }, [data, groupFilter, decisionFilter, search]);
 
   const selected = useMemo(() => filtered.find((entry) => entry.id === selectedId) ?? filtered[0] ?? null, [filtered, selectedId]);
+
+  // "View" on a needs-you item must always reveal the experiment, so clear any
+  // filter that would hide it.
+  const revealExperiment = (experimentId: string) => {
+    setGroupFilter("all");
+    setDecisionFilter("all");
+    setSearch("");
+    setSelectedId(experimentId);
+  };
 
   if (!selectedCompanyId) return <EmptyState icon={FlaskConical} message="Select a company to view CPS experiments." />;
   if (isLoading || !data) return <PageSkeleton variant="dashboard" />;
 
-  const kindOptions = Object.keys(data.counts.byKind);
-  const decisionOptions = Object.keys(data.counts.byDecision);
+  const decisionOptions = Object.keys(data.counts.byDecision).sort((a, b) => (data.counts.byDecision[b] ?? 0) - (data.counts.byDecision[a] ?? 0));
 
   if (!data.source.present) {
     return (
@@ -554,355 +928,250 @@ export function CpsExperiments() {
   }
 
   const emptyMessage = data.counts.total === 0 ? "No CPS experiments are recorded in the local index yet." : "No experiments match the current filters.";
+  const judgmentTotal = Object.values(data.counts.judgmentByResultVerdict).reduce((sum, value) => sum + value, 0);
+  const killedTotal = data.counts.strategyByDecision.KILL_ARCHIVE ?? data.counts.judgmentByResultVerdict.LOCAL_VALIDATION_KILL ?? 0;
+  const blockedTotal = (data.counts.judgmentByResultVerdict.DATA_BLOCKED ?? 0) + (data.counts.judgmentByResultVerdict.RULES_BLOCKED ?? 0) + (data.counts.strategyByDecision.BLOCKED_BY_DATA ?? 0);
+  const promoteTotal = (data.counts.judgmentByResultVerdict.PROMOTE_TO_OPERATOR_DOSSIER ?? 0) + (data.counts.strategyByDecision.PROMOTE_TO_OPERATOR_DOSSIER ?? 0);
+
+  const queue = data.backtestQueue;
+  const inventory = data.dataInventory;
+  const catalog = data.toolCatalog;
 
   return (
-    <div className="mx-auto flex max-w-[110rem] flex-col gap-6 p-6">
-      <section className="overflow-hidden rounded-[2rem] border border-slate-900/10 bg-[radial-gradient(circle_at_20%_20%,rgba(16,185,129,0.18),transparent_35%),linear-gradient(135deg,#07111f,#111827_55%,#0f172a)] p-6 text-white shadow-2xl">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-3xl">
-            <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs uppercase tracking-[0.24em] text-emerald-100">
-              <ShieldCheck className="h-3.5 w-3.5" /> Local-first tracker · read-only
-            </div>
-            <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">CPS experiments</h1>
-            <p className="mt-3 text-sm leading-6 text-slate-200">
-              Live view of the local CPS experiment index. It separates artifact health from strategy verdicts and exposes kill/archive/data-blocked evidence without running new jobs or touching brokers.
+    <div className="mx-auto flex max-w-[110rem] flex-col gap-4 p-6">
+      <section className="overflow-hidden rounded-2xl border border-slate-900/10 bg-[radial-gradient(circle_at_20%_20%,rgba(16,185,129,0.18),transparent_35%),linear-gradient(135deg,#07111f,#111827_55%,#0f172a)] p-4 text-white shadow-xl">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold tracking-tight">Research lab</h1>
+            <p className="mt-0.5 max-w-xl text-xs leading-5 text-slate-300">
+              Everything the company has tested — strategies, paper replications (GPTL/CPS), and autonomous system runs. Read-only; actions queue bounded research.
             </p>
-            <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-300">
-              <span className="rounded-md bg-white/10 px-2 py-1"><Clock className="mr-1 inline h-3 w-3" /> index age: {data.source.ageSeconds ?? "—"}s</span>
-              <span className={`rounded-md px-2 py-1 ${data.source.stale ? "bg-amber-500/20 text-amber-100" : "bg-emerald-500/20 text-emerald-100"}`}>{data.source.stale ? "stale" : "fresh"}</span>
-              <span className="rounded-md bg-white/10 px-2 py-1 font-mono">{data.source.indexPath}</span>
-            </div>
           </div>
-          <div className="grid grid-cols-2 gap-2 text-center lg:grid-cols-4">
-            <CountCard label="entries" value={data.counts.total} />
-            <CountCard label="judgments" value={Object.values(data.counts.judgmentByResultVerdict).reduce((sum, value) => sum + value, 0)} tone="ok" />
-            <CountCard label="killed" value={data.counts.strategyByDecision.KILL_ARCHIVE ?? data.counts.judgmentByResultVerdict.LOCAL_VALIDATION_KILL ?? 0} tone="danger" />
-            <CountCard label="blocked" value={(data.counts.judgmentByResultVerdict.DATA_BLOCKED ?? 0) + (data.counts.judgmentByResultVerdict.RULES_BLOCKED ?? 0) + (data.counts.strategyByDecision.BLOCKED_BY_DATA ?? 0)} tone="warn" />
+          <div className="ml-auto flex flex-wrap items-center gap-1.5">
+            <span className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] ${data.source.stale ? "bg-amber-500/20 text-amber-100" : "bg-emerald-500/20 text-emerald-100"}`} title={data.source.indexPath}>
+              <Clock className="h-3 w-3" /> {data.source.stale ? "stale" : "fresh"} · {data.source.ageSeconds !== null ? `${Math.round(data.source.ageSeconds / 60)}m` : "—"}
+            </span>
+            <HeroStat label="entries" value={data.counts.total} />
+            <HeroStat label="judged" value={judgmentTotal} tone="ok" />
+            <HeroStat label="killed" value={killedTotal} tone="danger" />
+            <HeroStat label="blocked" value={blockedTotal} tone="warn" />
+            <HeroStat label="promote" value={promoteTotal} tone="ok" />
           </div>
         </div>
       </section>
 
-      <section className="rounded-2xl border border-border bg-card p-4">
-        <div className="mb-2 flex flex-wrap items-center gap-2 text-sm font-semibold">
-          <Lightbulb className="h-4 w-4 text-muted-foreground" /> Paste an idea
-          <span className="ml-auto text-[10px] font-normal text-muted-foreground">
-            X post · article · paper — your paste is the snapshot; the CEO decomposes and routes it to a pod
-          </span>
-        </div>
-        <div className="grid gap-2 lg:grid-cols-[1fr_16rem]">
-          <textarea
-            value={ideaText}
-            onChange={(event) => setIdeaText(event.target.value)}
-            rows={4}
-            placeholder="Paste the idea content here (the strategy claim, thread text, abstract…). This text is what survives if the page disappears — paste the substance, not just a link."
-            className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground outline-none focus:border-primary"
-          />
-          <div className="flex flex-col gap-2">
-            <select
-              value={ideaSourceType}
-              onChange={(event) => setIdeaSourceType(event.target.value as "x_post" | "article" | "paper" | "other")}
-              className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus:border-primary"
-            >
-              <option value="x_post">X post</option>
-              <option value="article">Article</option>
-              <option value="paper">Paper / PDF</option>
-              <option value="other">Other</option>
-            </select>
-            <input
-              value={ideaUrl}
-              onChange={(event) => setIdeaUrl(event.target.value)}
-              placeholder="Source URL (optional, snapshotted now)"
-              className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus:border-primary"
-            />
-            <input
-              value={ideaTitle}
-              onChange={(event) => setIdeaTitle(event.target.value)}
-              placeholder="Short title (optional)"
-              className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus:border-primary"
-            />
-            <button
-              type="button"
-              disabled={ideaMutation.isPending || ideaText.trim().length < 20}
-              onClick={() => { setIdeaResult(null); ideaMutation.mutate(); }}
-              className="rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-            >
-              {ideaMutation.isPending ? "Capturing…" : "Send to the team"}
-            </button>
-          </div>
-        </div>
-        {ideaResult ? (
-          <div className="mt-2 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">{ideaResult}</div>
+      <NeedsYouPanel data={data} onView={revealExperiment} />
+
+      <CredentialDropForm companyId={selectedCompanyId} />
+
+      <VerdictOverview counts={data.counts} />
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {queue && (queue.present || queue.lastTick) ? (
+          <OpsTile
+            title="Backtest queue"
+            icon={ListOrdered}
+            headline={`${queue.summary?.pending ?? 0} waiting`}
+            sub={`${(queue.summary?.leased ?? 0) + (queue.summary?.running ?? 0)} running · ${queue.lastTick ? `${queue.lastTick.reachableWorkers.length}/${Object.keys(queue.lastTick.probedWorkers).length} workers up` : "no tick yet"}`}
+            badge={queue.starving ? <TileBadge tone="danger">starving</TileBadge> : queue.stopPresent ? <TileBadge tone="warn">paused</TileBadge> : null}
+          >
+            <div className="grid gap-2 text-xs">
+              <div className="rounded-lg bg-muted/50 px-3 py-2">
+                <span className="text-muted-foreground">Waiting</span>
+                <div className="font-mono text-lg text-foreground">{queue.summary?.pending ?? 0}</div>
+                <div className="text-muted-foreground">
+                  {queue.oldestPendingAgeSeconds !== null && queue.oldestPendingAgeSeconds !== undefined ? `oldest ${Math.round(queue.oldestPendingAgeSeconds / 60)}m` : "queue is clear"}
+                </div>
+              </div>
+              <div className="rounded-lg bg-muted/50 px-3 py-2">
+                <span className="text-muted-foreground">Done / failed</span>
+                <div className="font-mono text-lg text-foreground">{queue.summary?.completed ?? 0} / {queue.summary?.failed ?? 0}</div>
+              </div>
+              <div className="rounded-lg bg-muted/50 px-3 py-2">
+                <span className="text-muted-foreground">Workers</span>
+                <div className="truncate text-muted-foreground">
+                  {queue.lastTick
+                    ? Object.entries(queue.lastTick.probedWorkers).map(([worker, state]) => `${worker} ${state === "REACHABLE" ? "✓" : "✗"}`).join(" · ")
+                    : "no dispatcher tick recorded yet"}
+                </div>
+                <div className="mt-1 text-muted-foreground">Last tick: <span className="font-mono">{queue.lastTick?.status ?? "—"}</span>{queue.lastTick?.atUtc ? ` · ${fmtDate(queue.lastTick.atUtc)}` : ""}</div>
+              </div>
+              <div className="text-[10px] text-muted-foreground">pods request backtests · free workers pick them up · paid compute never starts on its own</div>
+            </div>
+          </OpsTile>
         ) : null}
-      </section>
 
-      {data.operatorActions?.length ? (
-        <section className="rounded-2xl border border-amber-500/40 bg-amber-500/5 p-4">
-          <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-200">
-            <AlertTriangle className="h-4 w-4" /> Operator actions — only you can unblock these ({data.operatorActions.length})
-          </div>
-          <div className="grid gap-1.5">
-            {data.operatorActions.map((action, index) => (
-              <div key={`${action.experimentId}-${action.stage}-${index}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-card px-3 py-2 text-xs">
-                <div className="min-w-0">
-                  <span className="text-foreground">{action.simpleAsk}</span>
-                  <div className="mt-0.5 font-mono text-[10px] text-muted-foreground">{action.experimentId} · stage {action.stage}{action.kind ? ` · ${action.kind}` : ""}</div>
-                </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  {action.link ? (
-                    <a href={action.link} target="_blank" rel="noreferrer" className="rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 font-semibold text-amber-800 transition hover:bg-amber-500/20 dark:text-amber-200">Open link</a>
-                  ) : null}
-                  <button type="button" onClick={() => setSelectedId(action.experimentId)} className="rounded-full border border-border px-3 py-1 text-muted-foreground transition hover:text-foreground">View</button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {data.backtestQueue && (data.backtestQueue.present || data.backtestQueue.lastTick) ? (
-        <section className="rounded-2xl border border-border bg-card p-4">
-          <div className="mb-3 flex flex-wrap items-center gap-2 text-sm font-semibold">
-            <ListOrdered className="h-4 w-4 text-muted-foreground" /> Backtest queue
-            {data.backtestQueue.stopPresent ? (
-              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">paused</span>
-            ) : null}
-            <span className="ml-auto text-[10px] font-normal text-muted-foreground">
-              pods request backtests · free workers pick them up · the rest wait in line · paid compute never starts on its own
-            </span>
-          </div>
-          {data.backtestQueue.starving ? (
-            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-              Backtests are waiting but no worker is reachable. Wake a worker box (lillith / AMD-minis / finance-1) — or decide on an escalation. Nothing is rented or spent automatically.
-            </div>
-          ) : null}
-          <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
-            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
-              <span className="text-muted-foreground">Waiting</span>
-              <div className="font-mono text-lg text-foreground">{data.backtestQueue.summary?.pending ?? 0}</div>
-              <div className="text-muted-foreground">
-                {data.backtestQueue.oldestPendingAgeSeconds !== null && data.backtestQueue.oldestPendingAgeSeconds !== undefined
-                  ? `oldest ${Math.round(data.backtestQueue.oldestPendingAgeSeconds / 60)}m`
-                  : "queue is clear"}
-              </div>
-            </div>
-            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
-              <span className="text-muted-foreground">Running</span>
-              <div className="font-mono text-lg text-foreground">{(data.backtestQueue.summary?.leased ?? 0) + (data.backtestQueue.summary?.running ?? 0)}</div>
-              <div className="text-muted-foreground">
-                {data.backtestQueue.lastTick?.leased?.length
-                  ? data.backtestQueue.lastTick.leased.map((lease) => lease.worker).filter(Boolean).join(", ") || "—"
-                  : "—"}
-              </div>
-            </div>
-            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
-              <span className="text-muted-foreground">Done</span>
-              <div className="font-mono text-lg text-foreground">{data.backtestQueue.summary?.completed ?? 0}</div>
-              <div className="text-muted-foreground">{data.backtestQueue.summary?.failed ? `${data.backtestQueue.summary.failed} failed` : "no failures"}</div>
-            </div>
-            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs sm:col-span-2">
-              <span className="text-muted-foreground">Workers online</span>
-              <div className="font-mono text-lg text-foreground">
-                {data.backtestQueue.lastTick ? `${data.backtestQueue.lastTick.reachableWorkers.length} / ${Object.keys(data.backtestQueue.lastTick.probedWorkers).length}` : "—"}
-              </div>
-              <div className="truncate text-muted-foreground">
-                {data.backtestQueue.lastTick
-                  ? Object.entries(data.backtestQueue.lastTick.probedWorkers)
-                      .map(([worker, state]) => `${worker} ${state === "REACHABLE" ? "✓" : "✗"}`)
-                      .join(" · ")
-                  : "no dispatcher tick recorded yet"}
-              </div>
-            </div>
-            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
-              <span className="text-muted-foreground">Last tick</span>
-              <div className="truncate font-mono text-sm text-foreground">{data.backtestQueue.lastTick?.status ?? "—"}</div>
-              <div className="text-muted-foreground">{data.backtestQueue.lastTick?.atUtc ? fmtDate(data.backtestQueue.lastTick.atUtc) : ""}</div>
-            </div>
-          </div>
-        </section>
-      ) : null}
-
-      {data.dataInventory ? (
-        <section className="rounded-2xl border border-border bg-card p-4">
-          <div className="mb-3 flex flex-wrap items-center gap-2 text-sm font-semibold">
-            <HardDrive className="h-4 w-4 text-muted-foreground" /> Local data inventory
-            {!data.dataInventory.present ? (
-              <span className="rounded-full bg-rose-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-300">not built</span>
-            ) : data.dataInventory.stale ? (
-              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">stale</span>
-            ) : null}
-            <span className="ml-auto text-[10px] font-normal text-muted-foreground">
-              pods check this before asking for new or paid data · nothing is bought automatically
-            </span>
-          </div>
-          {data.dataInventory.present ? (
-            <>
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+        {inventory ? (
+          <OpsTile
+            title="Data inventory"
+            icon={HardDrive}
+            headline={inventory.present ? fmtBytes(inventory.totalBytes) : "—"}
+            sub={inventory.present
+              ? `${inventory.tickVenues.filter((v) => v.live).length}/${inventory.tickVenues.length} recorders live · ${inventory.ohlcvSources.length} OHLCV sources`
+              : "registry not built yet"}
+            badge={!inventory.present ? <TileBadge tone="danger">not built</TileBadge> : inventory.stale ? <TileBadge tone="warn">stale</TileBadge> : null}
+          >
+            {inventory.present ? (
+              <div className="grid gap-2 text-xs">
+                <div className="rounded-lg bg-muted/50 px-3 py-2">
                   <span className="text-muted-foreground">Live tick recorders</span>
-                  <div className="font-mono text-lg text-foreground">
-                    {data.dataInventory.tickVenues.filter((v) => v.live).length} / {data.dataInventory.tickVenues.length}
-                  </div>
-                  <div className="truncate text-muted-foreground">
-                    {data.dataInventory.tickVenues.map((v) => `${v.venue} ${v.live ? "✓" : "✗"}`).join(" · ") || "none"}
-                  </div>
+                  <div className="truncate text-muted-foreground">{inventory.tickVenues.map((v) => `${v.venue} ${v.live ? "✓" : "✗"}`).join(" · ") || "none"}</div>
                 </div>
-                <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
-                  <span className="text-muted-foreground">OHLCV sources</span>
-                  <div className="font-mono text-lg text-foreground">{data.dataInventory.ohlcvSources.length}</div>
-                  <div className="text-muted-foreground">
-                    {data.dataInventory.staleSources.length ? `${data.dataInventory.staleSources.length} stale slices` : "all fresh"}
-                  </div>
+                <div className="rounded-lg bg-muted/50 px-3 py-2">
+                  <span className="text-muted-foreground">OHLCV freshness</span>
+                  <div className="text-muted-foreground">{inventory.staleSources.length ? `${inventory.staleSources.length} stale slices` : "all fresh"}</div>
                 </div>
-                <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
-                  <span className="text-muted-foreground">On disk</span>
-                  <div className="font-mono text-lg text-foreground">{fmtBytes(data.dataInventory.totalBytes)}</div>
-                  <div className="text-muted-foreground">ticks + bars, all local</div>
-                </div>
-                <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
+                <div className="rounded-lg bg-muted/50 px-3 py-2">
                   <span className="text-muted-foreground">Registry updated</span>
-                  <div className="truncate font-mono text-sm text-foreground">
-                    {data.dataInventory.generatedUtc ? fmtDate(data.dataInventory.generatedUtc) : "—"}
-                  </div>
-                  <div className="truncate text-muted-foreground">{data.dataInventory.registryPath}</div>
+                  <div className="truncate font-mono text-foreground">{inventory.generatedUtc ? fmtDate(inventory.generatedUtc) : "—"}</div>
+                </div>
+                <div className="text-[10px] text-muted-foreground">pods check this before asking for new or paid data · nothing is bought automatically</div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                Registry not built yet — run <code className="font-mono">pnpm cps:data-inventory</code> in /root/paperclip.
+              </div>
+            )}
+          </OpsTile>
+        ) : null}
+
+        {catalog?.present ? (
+          <OpsTile
+            title="Tool catalog"
+            icon={ListChecks}
+            headline={`${catalog.environments.filter((e) => e.ready).length}/${catalog.environments.length} envs`}
+            sub={`${[...catalog.recorders, ...catalog.services].filter((i) => i.ok).length}/${catalog.recorders.length + catalog.services.length} services up · ${catalog.enginesAndAdapters.filter((i) => i.ok).length}/${catalog.enginesAndAdapters.length} engines`}
+            badge={catalog.notReady.length ? <TileBadge tone="warn">{catalog.notReady.length} not ready</TileBadge> : catalog.stale ? <TileBadge tone="warn">stale</TileBadge> : null}
+          >
+            <div className="grid gap-2 text-xs">
+              <div className="rounded-lg bg-muted/50 px-3 py-2">
+                <span className="text-muted-foreground">Research environments</span>
+                <div className="truncate text-muted-foreground">{catalog.environments.map((e) => `${e.name.replace(/-py\d+$/, "")} ${e.ready ? "✓" : "✗"}`).join(" · ")}</div>
+              </div>
+              <div className="rounded-lg bg-muted/50 px-3 py-2">
+                <span className="text-muted-foreground">Services</span>
+                <div className="truncate text-muted-foreground">{catalog.services.map((s) => `${s.name} ${s.ok ? "✓" : "✗"}`).join(" · ") || "—"}</div>
+              </div>
+              <div className="rounded-lg bg-muted/50 px-3 py-2">
+                <span className="text-muted-foreground">Engines & adapters</span>
+                <div className="truncate text-muted-foreground">{catalog.enginesAndAdapters.map((e) => `${e.name} ${e.ok ? "✓" : "✗"}`).join(" · ")}</div>
+              </div>
+              <div className="rounded-lg bg-muted/50 px-3 py-2">
+                <span className="text-muted-foreground">Execution plane</span>
+                <div className="truncate font-mono text-foreground">{catalog.executionPlane ?? "—"}</div>
+                <div className="text-muted-foreground">{catalog.generatedUtc ? `updated ${fmtDate(catalog.generatedUtc)}` : ""}</div>
+              </div>
+              <div className="text-[10px] text-muted-foreground">what pods can use · missing tools become install tasks or asks, never ad-hoc installs</div>
+            </div>
+          </OpsTile>
+        ) : null}
+
+        {data.labels && data.datasetExport ? (
+          <OpsTile
+            title="Labels & dataset"
+            icon={Database}
+            headline={`${data.datasetExport.labeledJudgments}/${data.datasetExport.evalMinLabels}`}
+            sub={`${data.labels.total} operator labels · ${data.datasetExport.trainingRows ?? 0} training rows`}
+          >
+            <div className="grid gap-2 text-xs">
+              <div className="rounded-lg bg-muted/50 px-3 py-2">
+                <span className="text-muted-foreground">Eval gate progress</span>
+                <div className="font-mono text-lg text-foreground">{data.datasetExport.labeledJudgments} / {data.datasetExport.evalMinLabels}</div>
+                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+                  <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(100, (data.datasetExport.labeledJudgments / data.datasetExport.evalMinLabels) * 100)}%` }} />
                 </div>
               </div>
-              {data.dataInventory.subscriptions.some((s) => s.status !== "have") ? (
-                <div className="mt-3 space-y-2">
-                  {data.dataInventory.subscriptions.filter((s) => s.status !== "have").map((s) => (
-                    <div key={`${s.provider}-${s.subscription}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-                      <span>
-                        <span className="font-semibold">{s.provider}: {s.subscription}</span> — unlocks {s.unlocks}
-                      </span>
-                      {s.link ? (
-                        <a href={s.link} target="_blank" rel="noreferrer" className="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-3 py-1 font-semibold transition hover:bg-amber-500/20">Open link</a>
-                      ) : null}
-                    </div>
+              <div className="rounded-lg bg-muted/50 px-3 py-2">
+                <span className="text-muted-foreground">Exports</span>
+                <div className="text-muted-foreground">training {data.datasetExport.trainingRows ?? "—"} · tinker {data.datasetExport.tinkerRows ?? "—"} · eval {data.datasetExport.evalRows ?? `gated until ${data.datasetExport.evalMinLabels}`}</div>
+              </div>
+              {Object.keys(data.labels.byLabel).length ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {Object.entries(data.labels.byLabel).map(([label, count]) => (
+                    <span key={label} className="rounded-md bg-muted/60 px-2 py-1 font-mono text-[11px] text-muted-foreground">{label}: {count}</span>
                   ))}
                 </div>
               ) : null}
-            </>
-          ) : (
-            <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              Registry not built yet — run <code className="font-mono">pnpm cps:data-inventory</code> in /root/paperclip.
             </div>
-          )}
-        </section>
-      ) : null}
+          </OpsTile>
+        ) : null}
+      </div>
 
-      {data.toolCatalog?.present ? (
-        <section className="rounded-2xl border border-border bg-card p-4">
-          <div className="mb-3 flex flex-wrap items-center gap-2 text-sm font-semibold">
-            <ListChecks className="h-4 w-4 text-muted-foreground" /> Tool catalog
-            {data.toolCatalog.stale ? (
-              <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">stale</span>
-            ) : null}
-            <span className="ml-auto text-[10px] font-normal text-muted-foreground">
-              what pods can use · missing tools become install tasks or asks, never ad-hoc installs
-            </span>
+      <details className="rounded-2xl border border-border bg-card">
+        <summary className="flex cursor-pointer list-none items-center gap-2 p-4 text-sm font-semibold [&::-webkit-details-marker]:hidden">
+          <Lightbulb className="h-4 w-4 text-muted-foreground" /> Paste an idea
+          <span className="text-[10px] font-normal text-muted-foreground">X post · article · paper — the CEO decomposes and routes it to a pod</span>
+          <ChevronDown className="ml-auto h-3.5 w-3.5 text-muted-foreground" />
+        </summary>
+        <div className="border-t border-border p-4">
+          <div className="grid gap-2 lg:grid-cols-[1fr_16rem]">
+            <textarea
+              value={ideaText}
+              onChange={(event) => setIdeaText(event.target.value)}
+              rows={4}
+              placeholder="Paste the idea content here (the strategy claim, thread text, abstract…). This text is what survives if the page disappears — paste the substance, not just a link."
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs text-foreground outline-none focus:border-primary"
+            />
+            <div className="flex flex-col gap-2">
+              <select
+                value={ideaSourceType}
+                onChange={(event) => setIdeaSourceType(event.target.value as "x_post" | "article" | "paper" | "other")}
+                className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus:border-primary"
+              >
+                <option value="x_post">X post</option>
+                <option value="article">Article</option>
+                <option value="paper">Paper / PDF</option>
+                <option value="other">Other</option>
+              </select>
+              <input
+                value={ideaUrl}
+                onChange={(event) => setIdeaUrl(event.target.value)}
+                placeholder="Source URL (optional, snapshotted now)"
+                className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus:border-primary"
+              />
+              <input
+                value={ideaTitle}
+                onChange={(event) => setIdeaTitle(event.target.value)}
+                placeholder="Short title (optional)"
+                className="rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground outline-none focus:border-primary"
+              />
+              <button
+                type="button"
+                disabled={ideaMutation.isPending || ideaText.trim().length < 20}
+                onClick={() => { setIdeaResult(null); ideaMutation.mutate(); }}
+                className="rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+              >
+                {ideaMutation.isPending ? "Capturing…" : "Send to the team"}
+              </button>
+            </div>
           </div>
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
-              <span className="text-muted-foreground">Research environments</span>
-              <div className="font-mono text-lg text-foreground">
-                {data.toolCatalog.environments.filter((e) => e.ready).length} / {data.toolCatalog.environments.length} ready
-              </div>
-              <div className="truncate text-muted-foreground">
-                {data.toolCatalog.environments.map((e) => `${e.name.replace(/-py\d+$/, "")} ${e.ready ? "✓" : "✗"}`).join(" · ")}
-              </div>
-            </div>
-            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
-              <span className="text-muted-foreground">Recorders / services</span>
-              <div className="font-mono text-lg text-foreground">
-                {[...data.toolCatalog.recorders, ...data.toolCatalog.services].filter((i) => i.ok).length} / {data.toolCatalog.recorders.length + data.toolCatalog.services.length} up
-              </div>
-              <div className="truncate text-muted-foreground">
-                {data.toolCatalog.services.map((s) => `${s.name} ${s.ok ? "✓" : "✗"}`).join(" · ") || "—"}
-              </div>
-            </div>
-            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
-              <span className="text-muted-foreground">Engines & adapters</span>
-              <div className="font-mono text-lg text-foreground">
-                {data.toolCatalog.enginesAndAdapters.filter((i) => i.ok).length} / {data.toolCatalog.enginesAndAdapters.length}
-              </div>
-              <div className="truncate text-muted-foreground">
-                {data.toolCatalog.enginesAndAdapters.map((e) => `${e.name} ${e.ok ? "✓" : "✗"}`).join(" · ")}
-              </div>
-            </div>
-            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
-              <span className="text-muted-foreground">Execution plane</span>
-              <div className="truncate font-mono text-sm text-foreground">{data.toolCatalog.executionPlane ?? "—"}</div>
-              <div className="text-muted-foreground">
-                {data.toolCatalog.generatedUtc ? `updated ${fmtDate(data.toolCatalog.generatedUtc)}` : ""}
-              </div>
-            </div>
-          </div>
-          {data.toolCatalog.notReady.length ? (
-            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-              Not ready: {data.toolCatalog.notReady.join(", ")} — these become install tasks or operator asks.
-            </div>
+          {ideaResult ? (
+            <div className="mt-2 rounded-lg bg-muted/50 px-3 py-2 text-xs text-muted-foreground">{ideaResult}</div>
           ) : null}
-        </section>
-      ) : null}
+        </div>
+      </details>
 
-      {data.labels && data.datasetExport ? (
-        <section className="rounded-2xl border border-border bg-card p-4">
-          <div className="mb-3 flex items-center gap-2 text-sm font-semibold"><Database className="h-4 w-4 text-muted-foreground" /> Judgment dataset export</div>
-          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
-            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
-              <span className="text-muted-foreground">Operator labels</span>
-              <div className="font-mono text-lg text-foreground">{data.labels.total}</div>
-              <div className="text-muted-foreground">across {data.labels.experimentsLabeled} experiment{data.labels.experimentsLabeled === 1 ? "" : "s"}</div>
-            </div>
-            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
-              <span className="text-muted-foreground">Eval gate progress</span>
-              <div className="font-mono text-lg text-foreground">{data.datasetExport.labeledJudgments} / {data.datasetExport.evalMinLabels}</div>
-              <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
-                <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(100, (data.datasetExport.labeledJudgments / data.datasetExport.evalMinLabels) * 100)}%` }} />
-              </div>
-            </div>
-            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
-              <span className="text-muted-foreground">Training rows</span>
-              <div className="font-mono text-lg text-foreground">{data.datasetExport.trainingRows ?? "—"}</div>
-              <div className="text-muted-foreground">{data.datasetExport.trainingUpdatedUtc ? fmtDate(data.datasetExport.trainingUpdatedUtc) : "not exported yet"}</div>
-            </div>
-            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
-              <span className="text-muted-foreground">Tinker rows</span>
-              <div className="font-mono text-lg text-foreground">{data.datasetExport.tinkerRows ?? "—"}</div>
-              <div className="text-muted-foreground">{data.datasetExport.tinkerUpdatedUtc ? fmtDate(data.datasetExport.tinkerUpdatedUtc) : "not exported yet"}</div>
-            </div>
-            <div className="rounded-lg bg-muted/50 px-3 py-2 text-xs">
-              <span className="text-muted-foreground">Frozen eval rows</span>
-              <div className="font-mono text-lg text-foreground">{data.datasetExport.evalRows ?? "—"}</div>
-              <div className="text-muted-foreground">{data.datasetExport.evalRows === null ? `gated until ${data.datasetExport.evalMinLabels} labels` : data.datasetExport.evalUpdatedUtc ? fmtDate(data.datasetExport.evalUpdatedUtc) : ""}</div>
-            </div>
-          </div>
-          {Object.keys(data.labels.byLabel).length ? (
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {Object.entries(data.labels.byLabel).map(([label, count]) => (
-                <span key={label} className="rounded-md bg-muted/60 px-2 py-1 font-mono text-[11px] text-muted-foreground">{label}: {count}</span>
-              ))}
-            </div>
-          ) : null}
-        </section>
-      ) : null}
-
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-center gap-2">
         <div className="flex flex-wrap gap-1.5">
-          {["all", ...kindOptions].map((kind) => (
-            <button key={kind} type="button" onClick={() => setKindFilter(kind)} className={`rounded-full border px-3 py-1 text-xs font-medium transition ${kindFilter === kind ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"}`}>
-              {kind === "all" ? "All kinds" : `${kind} (${data.counts.byKind[kind]})`}
+          {[{ key: "strategies", label: "Strategies" }, { key: "papers", label: "Papers & ideas" }, { key: "system", label: "System runs" }, { key: "all", label: "All" }].map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setGroupFilter(tab.key)}
+              className={`rounded-full border px-3 py-1 text-xs font-medium transition ${groupFilter === tab.key ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"}`}
+            >
+              {tab.label} <span className="font-mono tabular-nums">({groupCounts[tab.key] ?? 0})</span>
             </button>
           ))}
         </div>
-        <div className="flex flex-wrap gap-1.5">
-          {["all", ...decisionOptions].map((decision) => (
-            <button key={decision} type="button" onClick={() => setDecisionFilter(decision)} className={`rounded-full border px-3 py-1 text-xs font-medium transition ${decisionFilter === decision ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:text-foreground"}`}>
-              {decision === "all" ? "All decisions" : `${decision} (${data.counts.byDecision[decision]})`}
-            </button>
-          ))}
-        </div>
+        <select
+          value={decisionFilter}
+          onChange={(event) => setDecisionFilter(event.target.value)}
+          className="rounded-full border border-border bg-background px-3 py-1 text-xs text-foreground outline-none focus:border-primary"
+        >
+          <option value="all">All decisions</option>
+          {decisionOptions.map((decision) => <option key={decision} value={decision}>{decision} ({data.counts.byDecision[decision]})</option>)}
+        </select>
         <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search id, mechanism, verdict…" className="ml-auto w-full max-w-xs rounded-full border border-border bg-background px-4 py-1.5 text-sm outline-none focus:border-primary" />
       </div>
 
@@ -917,6 +1186,7 @@ export function CpsExperiments() {
           {selected ? (
             <div className="lg:sticky lg:top-6">
               <EntryDetail
+                companyId={selectedCompanyId}
                 entry={selected}
                 onQueueFollowUp={(entry) => queueMutation.mutate({ entry, mode: "generic" })}
                 onQueueJudgmentNext={(entry) => queueMutation.mutate({ entry, mode: "judgment_next" })}

@@ -5214,6 +5214,48 @@ export function issueRoutes(
       actor.actorType,
     );
     await assertCanManageIssueMonitor(access, req, companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
+    // Recurring-check dedup: timer-woken agents re-file the same check issue
+    // on every wake ("Market data feed liveness check" ×40 by 2026-07-03)
+    // because nothing at this layer enforced idempotency. For agent-created,
+    // top-level, non-watchdog issues, an existing open issue by the same
+    // agent with the same normalized title is returned instead of a new row.
+    if (
+      req.actor.type === "agent" &&
+      actor.agentId &&
+      !effectiveParentId &&
+      !watchdogProductBugFollowUp &&
+      !isTaskBridgeKeyActor(req)
+    ) {
+      const normalizedTitle = String(rawCreateBody.title ?? "").trim().toLowerCase();
+      if (normalizedTitle) {
+        const openByAgent = await db
+          .select({ id: issueRows.id, title: issueRows.title })
+          .from(issueRows)
+          .where(
+            and(
+              eq(issueRows.companyId, companyId),
+              eq(issueRows.createdByAgentId, actor.agentId),
+              notInArray(issueRows.status, ["done", "cancelled"]),
+            ),
+          );
+        const duplicate = openByAgent.find(
+          (row) => (row.title ?? "").trim().toLowerCase() === normalizedTitle,
+        );
+        if (duplicate) {
+          const existing = await svc.getById(duplicate.id);
+          if (existing) {
+            const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(existing.id);
+            res.status(200).json({
+              ...existing,
+              relatedWork: referenceSummary,
+              referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+              deduplicated: true,
+            });
+            return;
+          }
+        }
+      }
+    }
     const issueId = randomUUID();
     const sourceTrust = await sourceTrustForActorWrite({
       id: issueId,

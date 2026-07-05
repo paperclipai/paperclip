@@ -160,14 +160,14 @@ describe("Sidebar", () => {
     });
   });
 
-  it("links the MCP Map top-level nav item to the MCP visualizer page", async () => {
+  it("does not render the retired MCP Map nav item (terminated 2026-07-03: static brochure, no operator value)", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
 
     const link = [...container.querySelectorAll("nav a")].find(
       (anchor) => anchor.textContent?.trim() === "MCP Map",
     );
-    expect(link?.getAttribute("href")).toBe("/mcp-visualizer");
+    expect(link).toBeUndefined();
 
     flushSync(() => {
       root.unmount();

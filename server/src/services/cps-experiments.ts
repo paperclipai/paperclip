@@ -7,10 +7,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type {
+  CpsCredentialDrop,
+  CreateCpsCredentialInput,
   CreateCpsIdeaInput,
   CreateCpsJudgmentFeedbackInput,
   CreateCpsRunRequestInput,
   CpsBacktestQueue,
+  CpsEquityCurve,
+  CpsEquityPoint,
+  CpsExperimentFile,
   CpsBacktestQueueLastTick,
   CpsBacktestQueueSummary,
   CpsDataInventory,
@@ -18,6 +23,8 @@ import type {
   CpsDataInventorySubscription,
   CpsDataInventoryTickVenue,
   CpsExperimentEntry,
+  CpsExperimentMetric,
+  CpsMetricKind,
   CpsToolCatalog,
   CpsToolCatalogEnvironment,
   CpsToolCatalogItem,
@@ -44,6 +51,7 @@ export interface CpsExperimentsServiceOptions {
   backtestQueueDir?: string;
   dataInventoryFile?: string;
   toolCatalogFile?: string;
+  credentialEnvFile?: string;
 }
 
 const DEFAULT_SELF_PRACTICE_DIR = "/root/cps/var/self_practice";
@@ -296,6 +304,54 @@ async function readProgress(entry: CpsExperimentEntry, selfPracticeDir: string):
     return { ...entry, progress, progressPath: progress ? path.normalize(progressPath) : null };
   } catch {
     return { ...entry, progress: null, progressPath: null };
+  }
+}
+
+// Curated per-strategy metrics pulled from the evidence file's oos_net summary
+// stats. Fallback key lists absorb naming drift across pods. `kind` tells the UI
+// how to render the bar. Signal series don't exist in the evidence, so these are
+// summary bars (not equity curves).
+const METRIC_SPECS: { keys: string[]; label: string; kind: CpsMetricKind }[] = [
+  { keys: ["ann_sharpe", "ann_sharpe_52", "strategy_ann_sharpe", "sharpe", "net_ann_sharpe_active_days"], label: "Ann. Sharpe", kind: "signed" },
+  { keys: ["total_return", "net_total_return_unlevered", "total_net_return", "net_r"], label: "Total return", kind: "pct_signed" },
+  { keys: ["cagr", "cagr_52", "ann_return_net_pct"], label: "CAGR", kind: "pct_signed" },
+  { keys: ["max_drawdown", "max_drawdown_pct", "net_max_drawdown_unlevered", "strategy_max_drawdown"], label: "Max drawdown", kind: "pct_neg" },
+  { keys: ["hit_rate", "win_rate", "active_hit_rate"], label: "Hit rate", kind: "ratio" },
+  { keys: ["mean_bps_event", "mean_bps_day", "mean_net_bps"], label: "Mean edge (bps)", kind: "signed_bps" },
+  { keys: ["psr_dsr_pvalue_sr0_trueN1", "psr_p_sharpe_le_0_trueN1"], label: "Deflated-Sharpe p", kind: "pvalue" },
+];
+
+function extractMetrics(evidence: unknown): CpsExperimentMetric[] {
+  const rec = asRecord(evidence);
+  if (!rec) return [];
+  const oos = asRecord(rec.oos_net) ?? asRecord(rec.oos) ?? asRecord(rec.metrics) ?? {};
+  const out: CpsExperimentMetric[] = [];
+  for (const spec of METRIC_SPECS) {
+    for (const k of spec.keys) {
+      const v = oos[k] ?? rec[k];
+      if (typeof v === "number" && Number.isFinite(v)) {
+        out.push({ key: k, label: spec.label, value: v, kind: spec.kind });
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+// Reads the evidence primary_json and attaches curated metrics for per-strategy charts.
+async function readMetrics(entry: CpsExperimentEntry, selfPracticeDir: string): Promise<CpsExperimentEntry> {
+  let primary = entry.absolutePrimaryJson ?? null;
+  if (!primary && entry.primaryJson) {
+    const dir = resolveEntryDir(entry, selfPracticeDir);
+    primary = dir ? path.join(dir, entry.primaryJson) : null;
+  }
+  if (!primary) return { ...entry, metrics: null };
+  try {
+    const text = await fs.readFile(primary, "utf8");
+    const metrics = extractMetrics(JSON.parse(text) as unknown);
+    return { ...entry, metrics: metrics.length ? metrics : null };
+  } catch {
+    return { ...entry, metrics: null };
   }
 }
 
@@ -704,6 +760,195 @@ async function readBacktestQueue(options: CpsExperimentsServiceOptions): Promise
   };
 }
 
+// ---- Operator credential drop ----
+//
+// The pasted value goes into the env file the CPS research pods read
+// (default /root/cps/.env), never into the Paperclip DB, activity log, or a
+// response body. A bounded run request tells the consumer the credential now
+// exists so blocked work can resume.
+
+const DEFAULT_CREDENTIAL_ENV_FILE = "/root/cps/.env";
+const CREDENTIAL_NAME_RE = /^[A-Z][A-Z0-9_]{1,63}$/;
+
+function assertCredentialInput(input: CreateCpsCredentialInput) {
+  const name = input.name?.trim();
+  if (!name || !CREDENTIAL_NAME_RE.test(name)) {
+    throw new Error("Credential name must be an env-style identifier (A-Z, 0-9, _), e.g. ALPACA_API_KEY");
+  }
+  const value = input.value ?? "";
+  if (!value.trim()) throw new Error("Credential value is required");
+  if (value.length > 4096) throw new Error("Credential value is too long");
+  if (/[\r\n]/.test(value)) throw new Error("Credential value must be a single line");
+  if (input.note && input.note.length > 500) throw new Error("Note is too long");
+}
+
+// Upsert NAME=value into the env file: backup, rewrite atomically, chmod 0600.
+async function upsertEnvCredential(envPath: string, name: string, value: string): Promise<{ replacedExisting: boolean }> {
+  let current = "";
+  try {
+    current = await fs.readFile(envPath, "utf8");
+  } catch {
+    // No env file yet — we create it below.
+  }
+  if (current) {
+    await fs.writeFile(`${envPath}.bak-credential-drop`, current, { mode: 0o600 });
+  }
+  const lines = current.length ? current.split("\n") : [];
+  const prefix = `${name}=`;
+  let replacedExisting = false;
+  const next = lines.map((line) => {
+    if (line.startsWith(prefix)) {
+      replacedExisting = true;
+      return `${prefix}${value}`;
+    }
+    return line;
+  });
+  if (!replacedExisting) {
+    while (next.length && next[next.length - 1] === "") next.pop();
+    next.push(`${prefix}${value}`);
+  }
+  const body = `${next.join("\n").replace(/\n+$/, "")}\n`;
+  const tmpPath = `${envPath}.tmp-${process.pid}`;
+  await fs.writeFile(tmpPath, body, { mode: 0o600 });
+  await fs.rename(tmpPath, envPath);
+  await fs.chmod(envPath, 0o600);
+  return { replacedExisting };
+}
+
+// ---- Artifact file viewer + equity curve (read-only, size-capped) ----
+
+const FILE_VIEW_MAX_BYTES = 512 * 1024;
+const EQUITY_CSV_MAX_BYTES = 8 * 1024 * 1024;
+const EQUITY_MAX_POINTS = 500;
+// Sidecars written by the board/pods that may not be in the index files list.
+const FILE_VIEW_SIDECARS = ["JUDGMENT.json", "PROGRESS.json", "IDEA.json", "SOURCE.txt", "FEASIBILITY.json", "SNAPSHOT.meta.json"];
+const FILE_VIEW_TEXT_EXTS = new Set([".json", ".jsonl", ".txt", ".md", ".csv", ".log", ".yaml", ".yml", ".py", ".toml", ".cfg", ".ini", ".html"]);
+
+async function findIndexEntry(options: CpsExperimentsServiceOptions, experimentId: string): Promise<{ entry: CpsExperimentEntry; entryDir: string } | null> {
+  const indexFile = await resolveIndexFile(options);
+  const raw = await readIndex(indexFile);
+  const selfPracticeDir = options.selfPracticeDir ?? process.env.PAPERCLIP_CPS_SELF_PRACTICE_DIR ?? DEFAULT_SELF_PRACTICE_DIR;
+  for (const item of Array.isArray(raw?.entries) ? raw.entries : []) {
+    const entry = mapEntry(item);
+    if (!entry || entry.id !== experimentId) continue;
+    const entryDir = resolveEntryDir(entry, selfPracticeDir);
+    if (!entryDir) return null;
+    return { entry, entryDir };
+  }
+  return null;
+}
+
+// A viewable name must be a plain basename that the index already knows about
+// (entry.files / primary json / known sidecars) — never a caller-supplied path.
+function viewableNames(entry: CpsExperimentEntry): Set<string> {
+  const names = new Set<string>(FILE_VIEW_SIDECARS);
+  for (const file of entry.files) names.add(file);
+  if (entry.primaryJson) names.add(entry.primaryJson);
+  return names;
+}
+
+async function readViewableFile(entryDir: string, name: string): Promise<{ absPath: string; content: string; bytes: number; truncated: boolean }> {
+  const absPath = path.join(entryDir, name);
+  // Symlink-escape guard: the realpath must stay inside the entry dir.
+  const [realFile, realDir] = await Promise.all([fs.realpath(absPath), fs.realpath(entryDir)]);
+  if (realFile !== realDir && !realFile.startsWith(realDir + path.sep)) {
+    throw new Error("File resolves outside the experiment directory");
+  }
+  const stat = await fs.stat(realFile);
+  if (!stat.isFile()) throw new Error("Not a regular file");
+  const handle = await fs.open(realFile, "r");
+  try {
+    const truncated = stat.size > FILE_VIEW_MAX_BYTES;
+    const buf = Buffer.alloc(Math.min(stat.size, FILE_VIEW_MAX_BYTES));
+    await handle.read(buf, 0, buf.length, 0);
+    return { absPath: path.normalize(realFile), content: buf.toString("utf8"), bytes: stat.size, truncated };
+  } finally {
+    await handle.close();
+  }
+}
+
+// Tolerant trades-CSV parser: these are pandas-written numeric CSVs (no quoted
+// commas). Column names drift across pods, so both the time and the net-return
+// column are matched from preference lists with a "contains net" fallback.
+const EQUITY_TIME_COLS = ["ts", "date", "datetime", "time", "exit_time", "entry_time", "exit_ts"];
+const EQUITY_RETURN_COLS = ["net", "active_net_ret", "net_ret", "net_return", "ret_net", "net_r", "pnl_net", "net_bps"];
+
+function pickColumn(header: string[], preferred: string[], contains?: string): number {
+  for (const want of preferred) {
+    const idx = header.findIndex((h) => h.trim().toLowerCase() === want);
+    if (idx >= 0) return idx;
+  }
+  if (contains) {
+    const idx = header.findIndex((h) => h.trim().toLowerCase().includes(contains));
+    if (idx >= 0) return idx;
+  }
+  return -1;
+}
+
+function buildEquityCurve(experimentId: string, csvName: string, text: string): CpsEquityCurve {
+  const absent = (reason: string): CpsEquityCurve => ({
+    present: false, experimentId, csvName, returnColumn: null, totalTrades: 0, points: [], splitBoundaries: [], finalCumBps: null, reason,
+  });
+  const lines = text.split("\n").filter((line) => line.trim().length > 0);
+  if (lines.length < 2) return absent("CSV has no data rows");
+  const header = lines[0].split(",").map((h) => h.trim());
+  const retIdx = pickColumn(header, EQUITY_RETURN_COLS, "net");
+  if (retIdx < 0) return absent("No net-return column found");
+  const timeIdx = pickColumn(header, EQUITY_TIME_COLS);
+  const splitIdx = pickColumn(header, ["split"]);
+  const returnColumn = header[retIdx];
+
+  const rows: { t: string; ret: number; split: string | null }[] = [];
+  for (let i = 1; i < lines.length; i += 1) {
+    const cells = lines[i].split(",");
+    if (cells.length < header.length) continue;
+    const ret = Number(cells[retIdx]);
+    if (!Number.isFinite(ret)) continue;
+    rows.push({
+      t: timeIdx >= 0 ? cells[timeIdx].trim() : String(i),
+      ret,
+      split: splitIdx >= 0 ? cells[splitIdx].trim() || null : null,
+    });
+  }
+  if (rows.length === 0) return absent("No parseable return rows");
+
+  // Values may be decimal returns (~0.006) or already bps; infer from magnitude.
+  const magnitudes = rows.map((r) => Math.abs(r.ret)).filter((v) => v > 0).sort((a, b) => a - b);
+  const median = magnitudes.length ? magnitudes[Math.floor(magnitudes.length / 2)] : 0;
+  const scale = median > 0.5 ? 1 : 10_000;
+
+  let cum = 0;
+  const full: CpsEquityPoint[] = rows.map((row) => {
+    cum += row.ret * scale;
+    return { t: row.t, cumBps: Math.round(cum * 100) / 100, split: row.split };
+  });
+
+  // Downsample by stride but always keep the last point and split transitions.
+  let points: CpsEquityPoint[] = full;
+  if (full.length > EQUITY_MAX_POINTS) {
+    const stride = Math.ceil(full.length / EQUITY_MAX_POINTS);
+    points = full.filter((point, index) =>
+      index % stride === 0 || index === full.length - 1 || (index > 0 && point.split !== full[index - 1].split));
+  }
+  const splitBoundaries: { split: string; index: number }[] = [];
+  points.forEach((point, index) => {
+    if (point.split && (index === 0 || point.split !== points[index - 1].split)) {
+      splitBoundaries.push({ split: point.split, index });
+    }
+  });
+  return {
+    present: true,
+    experimentId,
+    csvName,
+    returnColumn,
+    totalTrades: rows.length,
+    points,
+    splitBoundaries,
+    finalCumBps: full.length ? full[full.length - 1].cumBps : null,
+    reason: null,
+  };
+}
+
 async function resolveIndexFile(options: Pick<CpsExperimentsServiceOptions, "indexFile" | "selfPracticeDir">): Promise<string> {
   if (options.indexFile) return options.indexFile;
   if (process.env.PAPERCLIP_CPS_EXPERIMENTS_INDEX) return process.env.PAPERCLIP_CPS_EXPERIMENTS_INDEX;
@@ -733,34 +978,44 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
       const runRequestsDir = resolveRunRequestsDir(options);
       await fs.mkdir(runRequestsDir, { recursive: true });
       const experimentId = input.experimentId?.trim() || null;
-      const id = `${requestedAt.replace(/[-:.]/g, "").slice(0, 15)}-${safeSlug(input.action)}${experimentId ? `-${safeSlug(experimentId)}` : ""}`;
-      const requestPath = path.join(runRequestsDir, `${id}.json`);
+      const baseId = `${requestedAt.replace(/[-:.]/g, "").slice(0, 15)}-${safeSlug(input.action)}${experimentId ? `-${safeSlug(experimentId)}` : ""}`;
       const queuePath = path.join(runRequestsDir, "QUEUE.jsonl");
-      const request: CpsRunRequest = {
-        schema: "cps.paperclip_run_request.v1",
-        id,
-        companyId,
-        action: input.action,
-        experimentId,
-        prompt: input.prompt.trim(),
-        requestedAt,
-        requestedBy: "board",
-        status: "queued",
-        maxRuntimeMinutes: Math.trunc(input.maxRuntimeMinutes ?? 60),
-        safety: {
-          brokerActions: false,
-          signalPublishing: false,
-          allowPaidData: input.allowPaidData === true,
-          allowPaidCompute: input.allowPaidCompute === true,
-          note: "Paperclip is authorized to queue bounded CPS research runs here; executors must still enforce no broker actions and no public signal publishing.",
-        },
-        path: path.normalize(requestPath),
-        queuePath: path.normalize(queuePath),
-      };
-      const line = `${JSON.stringify(request)}\n`;
-      await fs.writeFile(requestPath, `${JSON.stringify(request, null, 2)}\n`, { flag: "wx" });
-      await fs.appendFile(queuePath, line);
-      return request;
+      // Ids are second-granularity, so same-second requests collide on the wx
+      // write; disambiguate with a numeric suffix instead of failing.
+      let request: CpsRunRequest | null = null;
+      for (let attempt = 1; attempt <= 20 && !request; attempt += 1) {
+        const id = attempt === 1 ? baseId : `${baseId}-${attempt}`;
+        const requestPath = path.join(runRequestsDir, `${id}.json`);
+        const candidate: CpsRunRequest = {
+          schema: "cps.paperclip_run_request.v1",
+          id,
+          companyId,
+          action: input.action,
+          experimentId,
+          prompt: input.prompt.trim(),
+          requestedAt,
+          requestedBy: "board",
+          status: "queued",
+          maxRuntimeMinutes: Math.trunc(input.maxRuntimeMinutes ?? 60),
+          safety: {
+            brokerActions: false,
+            signalPublishing: false,
+            allowPaidData: input.allowPaidData === true,
+            allowPaidCompute: input.allowPaidCompute === true,
+            note: "Paperclip is authorized to queue bounded CPS research runs here; executors must still enforce no broker actions and no public signal publishing.",
+          },
+          path: path.normalize(requestPath),
+          queuePath: path.normalize(queuePath),
+        };
+        try {
+          await fs.writeFile(requestPath, `${JSON.stringify(candidate, null, 2)}\n`, { flag: "wx" });
+          request = candidate;
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "EEXIST" || attempt === 20) throw err;
+        }
+      }
+      await fs.appendFile(queuePath, `${JSON.stringify(request)}\n`);
+      return request!;
     },
 
     // E3: idea intake. Writes the idea dir under self_practice (so it is indexed
@@ -864,6 +1119,78 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
       return feedback;
     },
 
+    // Operator credential drop: value → env file the pods read; run request →
+    // consumer. The value never touches the DB, the activity log, or the reply.
+    async provideCredential(companyId: string, input: CreateCpsCredentialInput): Promise<CpsCredentialDrop> {
+      assertCredentialInput(input);
+      const name = input.name.trim();
+      const envPath = options.credentialEnvFile ?? process.env.PAPERCLIP_CPS_CREDENTIAL_ENV_FILE ?? DEFAULT_CREDENTIAL_ENV_FILE;
+      const { replacedExisting } = await upsertEnvCredential(envPath, name, input.value);
+      const note = input.note?.trim();
+      const runRequest = await this.createRunRequest(companyId, {
+        action: "custom_bounded_research",
+        prompt: `The operator provided credential ${name} via the board credential drop; it is now set in ${envPath}. `
+          + `Re-check feasibility gates and experiments blocked on this credential and run the bounded next steps. `
+          + `Reference the credential by name only — never print, log, or transmit its value.`
+          + (note ? ` Operator note: ${note}` : ""),
+        maxRuntimeMinutes: 30,
+        allowPaidData: false,
+        allowPaidCompute: false,
+      });
+      return {
+        schema: "cps.credential_drop.v1",
+        name,
+        envPath: path.normalize(envPath),
+        replacedExisting,
+        runRequestId: runRequest.id,
+        createdAt: runRequest.requestedAt,
+      };
+    },
+
+    // Read-only artifact file viewer: only names the index already lists for
+    // this experiment (plus known sidecars) are readable, capped at 512KB.
+    async entryFile(experimentId: string, name: string): Promise<CpsExperimentFile> {
+      if (path.basename(name) !== name || name.startsWith(".")) throw new Error("Invalid file name");
+      if (!FILE_VIEW_TEXT_EXTS.has(path.extname(name).toLowerCase())) throw new Error("Unsupported file type");
+      const found = await findIndexEntry(options, experimentId);
+      if (!found) throw new Error(`Unknown experiment: ${experimentId}`);
+      if (!viewableNames(found.entry).has(name)) throw new Error(`File not listed for this experiment: ${name}`);
+      const { absPath, content, bytes, truncated } = await readViewableFile(found.entryDir, name);
+      const ext = path.extname(name).toLowerCase();
+      return {
+        experimentId,
+        name,
+        path: absPath,
+        bytes,
+        truncated,
+        contentType: ext === ".json" ? "json" : ext === ".csv" ? "csv" : "text",
+        content,
+      };
+    },
+
+    // Equity curve reconstructed from the experiment's trades CSV (if any).
+    async equityCurve(experimentId: string): Promise<CpsEquityCurve> {
+      const absentFor = (reason: string): CpsEquityCurve => ({
+        present: false, experimentId, csvName: null, returnColumn: null, totalTrades: 0, points: [], splitBoundaries: [], finalCumBps: null, reason,
+      });
+      const found = await findIndexEntry(options, experimentId);
+      if (!found) return absentFor(`Unknown experiment: ${experimentId}`);
+      const candidates = found.entry.files
+        .filter((file) => /trades.*\.csv$/i.test(file))
+        .sort((a, b) => (a === "trades.csv" ? -1 : b === "trades.csv" ? 1 : a.localeCompare(b)));
+      const csvName = candidates[0];
+      if (!csvName) return absentFor("No trades CSV in this experiment's artifacts");
+      let text: string;
+      try {
+        const { content, bytes } = await readViewableFile(found.entryDir, csvName);
+        if (bytes > EQUITY_CSV_MAX_BYTES) return absentFor("Trades CSV too large to chart");
+        text = bytes > FILE_VIEW_MAX_BYTES ? await fs.readFile(path.join(found.entryDir, csvName), "utf8") : content;
+      } catch (err) {
+        return absentFor(err instanceof Error ? err.message : "Could not read trades CSV");
+      }
+      return buildEquityCurve(experimentId, csvName, text);
+    },
+
     async overview(companyId: string): Promise<CpsExperimentOverview> {
       const indexFile = await resolveIndexFile(options);
       const raw = await readIndex(indexFile);
@@ -878,7 +1205,9 @@ export function cpsExperimentsService(options: CpsExperimentsServiceOptions = {}
       const operatorLabels = await readOperatorLabels(labelsFile);
       const entries = (await Promise.all(
         (Array.isArray(raw?.entries) ? raw.entries.map(mapEntry).filter((entry): entry is CpsExperimentEntry => entry !== null) : [])
-          .map((entry) => readJudgment(entry, selfPracticeDir).then((withJudgment) => readProgress(withJudgment, selfPracticeDir))),
+          .map((entry) => readJudgment(entry, selfPracticeDir)
+            .then((withJudgment) => readProgress(withJudgment, selfPracticeDir))
+            .then((withProgress) => readMetrics(withProgress, selfPracticeDir))),
       )).map((entry) => ({ ...entry, operatorLabels: operatorLabels.byExperiment.get(entry.id) ?? null }));
       entries.sort((a, b) => b.updatedUtc.localeCompare(a.updatedUtc));
       const operatorActions = collectOperatorActions(entries);

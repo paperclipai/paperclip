@@ -18,7 +18,6 @@ import {
   PanelLeftOpen,
   Pin,
   MessagesSquare,
-  ClipboardCheck,
   FlaskConical,
   BarChart3,
 } from "lucide-react";
@@ -162,10 +161,8 @@ export function Sidebar() {
             );
           })()}
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
-          <SidebarNavItem to="/micro-board-review" label="Board Review" icon={ClipboardCheck} />
           <SidebarNavItem to="/research-papers" label="Research Papers" icon={FlaskConical} />
-          <SidebarNavItem to="/cps-experiments" label="CPS Experiments" icon={BarChart3} />
-          <SidebarNavItem to="/mcp-visualizer" label="MCP Map" icon={Network} />
+          <SidebarNavItem to="/cps-experiments" label="Research Lab" icon={BarChart3} />
           <SidebarNavItem
             to="/inbox"
             label="Inbox"

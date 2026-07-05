@@ -8,8 +8,6 @@ import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
 import { CloudAccessGate } from "./components/CloudAccessGate";
 import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
-import { MicroBoardReview } from "./pages/MicroBoardReview";
-import { McpVisualizer } from "./pages/McpVisualizer";
 import { ResearchPapers } from "./pages/ResearchPapers";
 import { CpsExperiments } from "./pages/CpsExperiments";
 import { Companies } from "./pages/Companies";
@@ -83,8 +81,6 @@ function boardRoutes() {
       <Route index element={<Navigate to="dashboard" replace />} />
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="dashboard/live" element={<DashboardLive />} />
-      <Route path="micro-board-review" element={<MicroBoardReview />} />
-      <Route path="mcp-visualizer" element={<McpVisualizer />} />
       <Route path="research-papers" element={<ResearchPapers />} />
       <Route path="cps-experiments" element={<CpsExperiments />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
@@ -423,9 +419,8 @@ export function App() {
           <Route path="pipelines/:pipelineId/settings" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId/items/:caseId" element={<UnprefixedBoardRedirect />} />
           <Route path="pipelines/:pipelineId/cases/:caseId" element={<UnprefixedBoardRedirect />} />
-          <Route path="micro-board-review" element={<UnprefixedBoardRedirect />} />
-          <Route path="mcp-visualizer" element={<UnprefixedBoardRedirect />} />
           <Route path="research-papers" element={<UnprefixedBoardRedirect />} />
+          <Route path="cps-experiments" element={<UnprefixedBoardRedirect />} />
           <Route path="artifacts" element={<UnprefixedBoardRedirect />} />
           <Route path="u/:userSlug" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/*" element={<UnprefixedBoardRedirect />} />

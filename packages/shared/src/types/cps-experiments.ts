@@ -118,6 +118,16 @@ export interface CpsOperatorLabelSummary {
   latestAt: string | null;
 }
 
+// A single evidence-derived performance metric surfaced for per-strategy charts.
+// `kind` drives how the UI renders the bar (diverging around 0, magnitude, etc.).
+export type CpsMetricKind = "signed" | "pct_signed" | "pct_neg" | "ratio" | "signed_bps" | "pvalue";
+export interface CpsExperimentMetric {
+  key: string;
+  label: string;
+  value: number;
+  kind: CpsMetricKind;
+}
+
 export interface CpsExperimentEntry {
   id: string;
   runId: string;
@@ -136,6 +146,59 @@ export interface CpsExperimentEntry {
   operatorLabels?: CpsOperatorLabelSummary | null;
   progress?: CpsPaperProgress | null;
   progressPath?: string | null;
+  // Evidence-derived metrics (oos_net summary stats) for per-strategy charts.
+  metrics?: CpsExperimentMetric[] | null;
+}
+
+// Read-only artifact file viewer. Only files already listed in the entry's
+// index `files` (plus the known sidecars) are readable; content is size-capped.
+export interface CpsExperimentFile {
+  experimentId: string;
+  name: string;
+  path: string;
+  bytes: number;
+  truncated: boolean;
+  contentType: "json" | "csv" | "text";
+  content: string;
+}
+
+// Cumulative net-return curve reconstructed from the experiment's trades CSV.
+// Points are downsampled server-side; `split` carries the train/oos label when
+// the CSV has a split column so the UI can shade the OOS region.
+export interface CpsEquityPoint {
+  t: string;
+  cumBps: number;
+  split: string | null;
+}
+
+export interface CpsEquityCurve {
+  present: boolean;
+  experimentId: string;
+  csvName: string | null;
+  returnColumn: string | null;
+  totalTrades: number;
+  points: CpsEquityPoint[];
+  splitBoundaries: { split: string; index: number }[];
+  finalCumBps: number | null;
+  reason: string | null;
+}
+
+// Operator credential drop: the value is written to the CPS env file the
+// research pods read (never stored in the Paperclip DB, never echoed back);
+// a bounded run request notifies the consumer that the credential exists.
+export interface CreateCpsCredentialInput {
+  name: string;
+  value: string;
+  note?: string | null;
+}
+
+export interface CpsCredentialDrop {
+  schema: "cps.credential_drop.v1";
+  name: string;
+  envPath: string;
+  replacedExisting: boolean;
+  runRequestId: string;
+  createdAt: string;
 }
 
 export type CpsRunRequestAction =
