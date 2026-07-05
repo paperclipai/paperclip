@@ -185,7 +185,12 @@ describeEmbeddedPostgres("heartbeat OpenClaw gateway dispatch retry", () => {
       triggerDetail: "system",
       status: "queued",
       wakeupRequestId,
-      contextSnapshot: { issueId, wakeReason: "issue_assigned", responsibleUserId: "responsible-user" },
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_assigned",
+        responsibleUserId: "responsible-user",
+        skipIssueComment: true,
+      },
     });
     await db.update(agentWakeupRequests).set({ runId }).where(eq(agentWakeupRequests.id, wakeupRequestId));
     await db
@@ -255,12 +260,19 @@ describeEmbeddedPostgres("heartbeat OpenClaw gateway dispatch retry", () => {
 
     await heartbeat.resumeQueuedRuns();
     await waitForCondition(async () => {
-      const run = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runId))
-        .then((rows) => rows[0] ?? null);
-      return run?.status === "succeeded";
+      const [run, issue] = await Promise.all([
+        db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ checkoutRunId: issues.checkoutRunId })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null),
+      ]);
+      return run?.status === "succeeded" && issue?.checkoutRunId === null;
     });
 
     const [run, issue, retryEvents] = await Promise.all([
@@ -291,6 +303,7 @@ describeEmbeddedPostgres("heartbeat OpenClaw gateway dispatch retry", () => {
   it("fails after all OpenClaw gateway dispatch retries are exhausted", async () => {
     process.env.PAPERCLIP_OPENCLAW_GATEWAY_DISPATCH_RETRY_DELAYS_MS = "0,0,0";
     const { runId } = await seedOpenClawGatewayIssueRun();
+    const callsBefore = mockAdapterExecute.mock.calls.length;
     mockAdapterExecute.mockResolvedValue({
       exitCode: 1,
       signal: null,
@@ -316,7 +329,7 @@ describeEmbeddedPostgres("heartbeat OpenClaw gateway dispatch retry", () => {
       .from(heartbeatRunEvents)
       .where(eq(heartbeatRunEvents.runId, runId));
 
-    expect(mockAdapterExecute).toHaveBeenCalledTimes(4);
+    expect(mockAdapterExecute.mock.calls.length - callsBefore).toBe(4);
     expect(retryEvents.filter((event) => event.eventType === "adapter.retry")).toHaveLength(3);
   });
 });
