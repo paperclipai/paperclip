@@ -380,7 +380,7 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ✅ Better Budgeting
 - ✅ Agent Reviews and Approvals
 - ✅ Multiple Human Users
-- ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
+- ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b / Novita agents)
 - ⚪ Artifacts & Work Products
 - ⚪ Memory / Knowledge
 - ⚪ Enforced Outcomes
@@ -408,6 +408,8 @@ Paperclip ships with opt-in OpenTelemetry auto-instrumentation for the server (t
 ## Telemetry
 
 Paperclip collects anonymous usage telemetry to help us understand how the product is used and improve it. No personal information, issue content, prompts, file paths, or secrets are ever collected. Private repository references are hashed with a per-install salt before being sent.
+
+Contributors changing emitted telemetry events should follow the [Telemetry Data Contract](packages/shared/src/telemetry/README.md).
 
 Telemetry is **enabled by default** and can be disabled with any of the following:
 

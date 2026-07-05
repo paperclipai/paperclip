@@ -23,7 +23,11 @@
         const lightThemeColor = "#ffffff";
         try {
           const stored = window.localStorage.getItem(key);
-          const theme = stored === "light" || stored === "dark" ? stored : "dark";
+          const prefersDark =
+            typeof window.matchMedia === "function" &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches;
+          const fallback = prefersDark ? "dark" : "light";
+          const theme = stored === "light" || stored === "dark" ? stored : fallback;
           const isDark = theme === "dark";
           document.documentElement.classList.toggle("dark", isDark);
           document.documentElement.style.colorScheme = isDark ? "dark" : "light";

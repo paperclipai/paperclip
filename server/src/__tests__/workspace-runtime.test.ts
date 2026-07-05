@@ -94,6 +94,57 @@ async function createTempRepo(defaultBranch = "main") {
   return repoRoot;
 }
 
+async function createClonedRepoWithRemote() {
+  const sourceRepo = await createTempRepo("master");
+  const remoteDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-remote-"));
+  const remotePath = path.join(remoteDir, "paperclip.git");
+  await execFileAsync("git", ["clone", "--bare", sourceRepo, remotePath]);
+
+  const cloneRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-clone-"));
+  const repoRoot = path.join(cloneRoot, "paperclip");
+  await execFileAsync("git", ["clone", remotePath, repoRoot]);
+  await runGit(repoRoot, ["config", "user.email", "paperclip@example.com"]);
+  await runGit(repoRoot, ["config", "user.name", "Paperclip Test"]);
+  return { sourceRepo, remotePath, repoRoot };
+}
+
+async function advanceRemoteMaster(sourceRepo: string, remotePath: string, fileName: string) {
+  await fs.writeFile(path.join(sourceRepo, fileName), `${fileName}\n`, "utf8");
+  await runGit(sourceRepo, ["add", fileName]);
+  await runGit(sourceRepo, ["commit", "-m", `Add ${fileName}`]);
+  await runGit(sourceRepo, ["push", remotePath, "master"]);
+  return readGit(sourceRepo, ["rev-parse", "master"]);
+}
+
+function realizeWorktreeForTest(repoRoot: string, repoRef: string | null) {
+  return realizeExecutionWorkspace({
+    base: {
+      baseCwd: repoRoot,
+      source: "project_primary",
+      projectId: "project-1",
+      workspaceId: "workspace-1",
+      repoUrl: null,
+      repoRef,
+    },
+    config: {
+      workspaceStrategy: {
+        type: "git_worktree",
+        branchTemplate: "{{issue.identifier}}-{{slug}}",
+      },
+    },
+    issue: {
+      id: "issue-1",
+      identifier: "PAP-447",
+      title: "Add Worktree Support",
+    },
+    agent: {
+      id: "agent-1",
+      name: "Codex Coder",
+      companyId: "company-1",
+    },
+  });
+}
+
 function buildWorkspace(cwd: string): RealizedExecutionWorkspace {
   return {
     baseCwd: cwd,
@@ -149,6 +200,7 @@ function createWorkspaceOperationRecorderDouble() {
         companyId: "company-1",
         executionWorkspaceId,
         heartbeatRunId: "run-1",
+        issueId: null,
         phase: input.phase,
         command: input.command ?? null,
         cwd: input.cwd ?? null,
@@ -508,6 +560,123 @@ describe("realizeExecutionWorkspace", () => {
     ]);
   });
 
+  it("bases a fresh worktree on origin/master even when local master has unpushed commits", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    const originHead = await readGit(repoRoot, ["rev-parse", "origin/master"]);
+
+    await fs.writeFile(path.join(repoRoot, "unpushed.txt"), "local only\n", "utf8");
+    await runGit(repoRoot, ["add", "unpushed.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Unpushed local work"]);
+    const localHead = await readGit(repoRoot, ["rev-parse", "master"]);
+    expect(localHead).not.toBe(originHead);
+
+    const workspace = await realizeWorktreeForTest(repoRoot, null);
+
+    expect(workspace.baseRefSha).toBe(originHead);
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(originHead);
+  });
+
+  it("maps a configured local branch base ref to origin/<branch> for fresh worktrees", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    const originHead = await readGit(repoRoot, ["rev-parse", "origin/master"]);
+
+    await fs.writeFile(path.join(repoRoot, "unpushed.txt"), "local only\n", "utf8");
+    await runGit(repoRoot, ["add", "unpushed.txt"]);
+    await runGit(repoRoot, ["commit", "-m", "Unpushed local work"]);
+    const localHead = await readGit(repoRoot, ["rev-parse", "master"]);
+    expect(localHead).not.toBe(originHead);
+
+    const workspace = await realizeWorktreeForTest(repoRoot, "master");
+
+    expect(workspace.repoRef).toBe("origin/master");
+    expect(workspace.baseRefSha).toBe(originHead);
+    expect(await readGit(workspace.cwd, ["rev-parse", "HEAD"])).toBe(originHead);
+  });
+
+  it("fast-forwards an unstarted reused worktree to the advanced origin/master", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+
+    const initial = await realizeWorktreeForTest(repoRoot, null);
+    const initialHead = await readGit(initial.cwd, ["rev-parse", "HEAD"]);
+
+    const advancedHead = await advanceRemoteMaster(sourceRepo, remotePath, "auth-fix.txt");
+    expect(advancedHead).not.toBe(initialHead);
+
+    const reused = await realizeWorktreeForTest(repoRoot, null);
+
+    expect(reused.created).toBe(false);
+    expect(reused.cwd).toBe(initial.cwd);
+    expect(await readGit(reused.cwd, ["rev-parse", "HEAD"])).toBe(advancedHead);
+    expect(reused.baseRefSha).toBe(advancedHead);
+    expect(reused.warnings).toEqual([]);
+  });
+
+  it("does not reset a reused worktree that already has task commits", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+
+    const initial = await realizeWorktreeForTest(repoRoot, null);
+    await fs.writeFile(path.join(initial.cwd, "task-work.txt"), "in progress\n", "utf8");
+    await runGit(initial.cwd, ["add", "task-work.txt"]);
+    await runGit(initial.cwd, ["commit", "-m", "Task work in progress"]);
+    const taskHead = await readGit(initial.cwd, ["rev-parse", "HEAD"]);
+
+    await advanceRemoteMaster(sourceRepo, remotePath, "auth-fix.txt");
+
+    const reused = await realizeWorktreeForTest(repoRoot, null);
+
+    expect(reused.created).toBe(false);
+    expect(await readGit(reused.cwd, ["rev-parse", "HEAD"])).toBe(taskHead);
+    expect(reused.warnings).toEqual([
+      expect.stringContaining("is behind origin/master by 1 commit"),
+    ]);
+  });
+
+  it("does not reset a reused worktree with untracked changes", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+
+    const initial = await realizeWorktreeForTest(repoRoot, null);
+    const initialHead = await readGit(initial.cwd, ["rev-parse", "HEAD"]);
+    await fs.writeFile(path.join(initial.cwd, "scratch.txt"), "uncommitted scratch\n", "utf8");
+
+    await advanceRemoteMaster(sourceRepo, remotePath, "auth-fix.txt");
+
+    const reused = await realizeWorktreeForTest(repoRoot, null);
+
+    expect(reused.created).toBe(false);
+    expect(await readGit(reused.cwd, ["rev-parse", "HEAD"])).toBe(initialHead);
+    await expect(fs.readFile(path.join(reused.cwd, "scratch.txt"), "utf8")).resolves.toBe(
+      "uncommitted scratch\n",
+    );
+    expect(reused.warnings).toEqual([
+      expect.stringContaining("is behind origin/master by 1 commit"),
+    ]);
+  });
+
+  it("does not reset a reused worktree with untracked changes when status.showUntrackedFiles=no", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+
+    const initial = await realizeWorktreeForTest(repoRoot, null);
+    const initialHead = await readGit(initial.cwd, ["rev-parse", "HEAD"]);
+    // Without `--untracked-files=all`, this config hides untracked files from
+    // `git status --porcelain`, which would let the clean-tree guard pass and a
+    // `reset --hard` destroy the scratch file below.
+    await readGit(initial.cwd, ["config", "status.showUntrackedFiles", "no"]);
+    await fs.writeFile(path.join(initial.cwd, "scratch.txt"), "uncommitted scratch\n", "utf8");
+
+    await advanceRemoteMaster(sourceRepo, remotePath, "auth-fix.txt");
+
+    const reused = await realizeWorktreeForTest(repoRoot, null);
+
+    expect(reused.created).toBe(false);
+    expect(await readGit(reused.cwd, ["rev-parse", "HEAD"])).toBe(initialHead);
+    await expect(fs.readFile(path.join(reused.cwd, "scratch.txt"), "utf8")).resolves.toBe(
+      "uncommitted scratch\n",
+    );
+    expect(reused.warnings).toEqual([
+      expect.stringContaining("is behind origin/master by 1 commit"),
+    ]);
+  });
+
   it("rejects reusing an empty directory that only looks like a worktree because it sits inside the repo", async () => {
     const repoRoot = await createTempRepo();
     const branchName = "PAP-447-add-worktree-support";
@@ -669,8 +838,9 @@ describe("realizeExecutionWorkspace", () => {
     await expect(fs.realpath(realized.worktreePath ?? "")).resolves.toBe(expectedWorktreePath);
   });
 
-  it("rejects reusing a linked worktree whose branch drifted from the expected issue branch", async () => {
+  it("repairs a clean linked worktree whose branch drifted from the expected issue branch", async () => {
     const repoRoot = await createTempRepo();
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
 
     const initial = await realizeExecutionWorkspace({
       base: {
@@ -701,34 +871,52 @@ describe("realizeExecutionWorkspace", () => {
 
     await runGit(initial.cwd, ["checkout", "-b", "unexpected-branch"]);
 
-    await expect(
-      realizeExecutionWorkspace({
-        base: {
-          baseCwd: repoRoot,
-          source: "project_primary",
-          projectId: "project-1",
-          workspaceId: "workspace-1",
-          repoUrl: null,
-          repoRef: "HEAD",
+    const repaired = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
         },
-        config: {
-          workspaceStrategy: {
-            type: "git_worktree",
-            branchTemplate: "{{issue.identifier}}-{{slug}}",
-          },
-        },
-        issue: {
-          id: "issue-1",
-          identifier: "PAP-447",
-          title: "Add Worktree Support",
-        },
-        agent: {
-          id: "agent-1",
-          name: "Codex Coder",
-          companyId: "company-1",
-        },
-      }),
-    ).rejects.toThrow(/not a reusable git worktree \(worktree HEAD is on "unexpected-branch" instead of "PAP-447-add-worktree-support"\)\./);
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-447",
+        title: "Add Worktree Support",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recorder,
+    });
+
+    expect(repaired.created).toBe(false);
+    expect(repaired.cwd).toBe(initial.cwd);
+    await expect(readGit(initial.cwd, ["branch", "--show-current"])).resolves.toBe("PAP-447-add-worktree-support");
+    expect(operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "worktree_prepare",
+          command: "git checkout PAP-447-add-worktree-support",
+          metadata: expect.objectContaining({
+            branchIncoherenceRepair: true,
+            expectedBranchName: "PAP-447-add-worktree-support",
+            actualBranchName: "unexpected-branch",
+            sourceIssueId: "issue-1",
+            fingerprint: expect.stringMatching(/^workspace_incoherence:v1:sha256:/),
+          }),
+        }),
+      ]),
+    );
   });
 
   it("reuses an already checked out branch from git worktree metadata even when the target path differs", async () => {
@@ -1452,6 +1640,97 @@ describe("realizeExecutionWorkspace", () => {
     }
   });
 
+  it("regenerates stale worktree config that points at another host", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-stale-config-"));
+    const baseRoot = path.join(tempRoot, "base");
+    const worktreeRoot = path.join(tempRoot, "worktree");
+    const fakeBin = path.join(tempRoot, "bin");
+    const fakePnpmPath = path.join(fakeBin, "pnpm");
+    const scriptPath = path.join(worktreeRoot, "provision-worktree.sh");
+    const paperclipDir = path.join(worktreeRoot, ".paperclip");
+
+    try {
+      await fs.mkdir(baseRoot, { recursive: true });
+      await fs.mkdir(paperclipDir, { recursive: true });
+      await fs.mkdir(fakeBin, { recursive: true });
+      await fs.copyFile(provisionWorktreeScriptPath, scriptPath);
+      await fs.chmod(scriptPath, 0o755);
+      await fs.writeFile(
+        path.join(paperclipDir, "config.json"),
+        JSON.stringify({
+          database: {
+            mode: "embedded-postgres",
+            embeddedPostgresDataDir: "/Users/example/.paperclip-worktrees/instances/stale/db",
+          },
+          logging: {
+            mode: "file",
+            logDir: "/Users/example/.paperclip-worktrees/instances/stale/logs",
+          },
+          storage: {
+            provider: "local_disk",
+            localDisk: {
+              baseDir: "/Users/example/.paperclip-worktrees/instances/stale/data/storage",
+            },
+          },
+          secrets: {
+            provider: "local_encrypted",
+            localEncrypted: {
+              keyFilePath: "/Users/example/.paperclip-worktrees/instances/stale/secrets/master.key",
+            },
+          },
+        }),
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(paperclipDir, ".env"),
+        [
+          "PAPERCLIP_HOME=/Users/example/.paperclip-worktrees",
+          "PAPERCLIP_INSTANCE_ID=stale",
+          `PAPERCLIP_CONFIG=/Users/example/paperclip/${path.basename(worktreeRoot)}/.paperclip/config.json`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await fs.writeFile(
+        fakePnpmPath,
+        [
+          "#!/bin/sh",
+          "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"--help\" ]; then",
+          "  exit 0",
+          "fi",
+          "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"worktree\" ] && [ \"$3\" = \"init\" ]; then",
+          "  mkdir -p \"$PWD/.paperclip\"",
+          "  printf '%s\\n' '{\"database\":{\"embeddedPostgresDataDir\":\"'$PWD'/.paperclip/runtime/db\"}}' > \"$PWD/.paperclip/config.json\"",
+          "  printf '%s\\n' \"PAPERCLIP_HOME=$PWD/.paperclip/runtime\" \"PAPERCLIP_INSTANCE_ID=healthy\" \"PAPERCLIP_CONFIG=$PWD/.paperclip/config.json\" > \"$PWD/.paperclip/.env\"",
+          "  exit 0",
+          "fi",
+          "exit 0",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await fs.chmod(fakePnpmPath, 0o755);
+
+      const result = await execFileAsync(scriptPath, [], {
+        cwd: worktreeRoot,
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+          PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
+          PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
+        },
+      });
+
+      expect(result.stderr).toContain("Existing isolated Paperclip worktree config is stale for this host; regenerating.");
+      await expect(fs.readFile(path.join(paperclipDir, ".env"), "utf8")).resolves.toContain(
+        `PAPERCLIP_CONFIG=${worktreeRoot}/.paperclip/config.json`,
+      );
+      await expect(fs.readFile(path.join(paperclipDir, "config.json"), "utf8")).resolves.toContain(worktreeRoot);
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("retries worktree-local pnpm install without a frozen lockfile when the lockfile is outdated", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-outdated-lockfile-"));
     const baseRoot = path.join(tempRoot, "base");
@@ -1881,6 +2160,329 @@ describe("realizeExecutionWorkspace", () => {
     expect(actualHead).toBe(expectedHead);
   }, 15_000);
 
+  it("repairs a clean persisted git worktree branch mismatch when both branches point at the same commit", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "PAP-454-repair-clean-branch-mismatch";
+    const actualBranch = "PAP-454-publish-head";
+    const realWorktreeRoot = path.join(repoRoot, ".paperclip", "real-worktrees");
+    const symlinkedWorktreeRoot = path.join(repoRoot, ".paperclip", "worktrees");
+    const realWorktreePath = path.join(realWorktreeRoot, expectedBranch);
+    const worktreePath = path.join(symlinkedWorktreeRoot, expectedBranch);
+    await fs.mkdir(realWorktreeRoot, { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch]);
+    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, realWorktreePath, "HEAD"]);
+    await fs.symlink(realWorktreeRoot, symlinkedWorktreeRoot, "dir");
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        id: "execution-workspace-1",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: expectedBranch,
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-454",
+        title: "Repair clean branch mismatch",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      recorder,
+    });
+
+    expect(restored?.cwd).toBe(worktreePath);
+    await expect(readGit(worktreePath, ["branch", "--show-current"])).resolves.toBe(expectedBranch);
+    expect(operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "worktree_prepare",
+          command: "git checkout PAP-454-repair-clean-branch-mismatch",
+          metadata: expect.objectContaining({
+            branchIncoherenceRepair: true,
+            expectedBranchName: expectedBranch,
+            actualBranchName: actualBranch,
+            sourceIssueId: "issue-1",
+            executionWorkspaceId: "execution-workspace-1",
+            fingerprint: expect.stringMatching(/^workspace_incoherence:v1:sha256:/),
+          }),
+        }),
+      ]),
+    );
+  }, 15_000);
+
+  it("rejects dirty persisted git worktree branch incoherence with bounded recovery evidence", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "PAP-455-reject-dirty-branch-mismatch";
+    const actualBranch = "PAP-455-publish-head";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch]);
+    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, "HEAD"]);
+    await fs.writeFile(path.join(worktreePath, "untracked.txt"), "not safe to switch\n", "utf8");
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        id: "execution-workspace-2",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: expectedBranch,
+      },
+      issue: {
+        id: "issue-2",
+        identifier: "PAP-455",
+        title: "Reject dirty branch mismatch",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_branch_incoherence",
+          fingerprint: expect.stringMatching(/^workspace_incoherence:v1:sha256:/),
+          sourceIssueId: "issue-2",
+          sourceIdentifier: "PAP-455",
+          executionWorkspaceId: "execution-workspace-2",
+          expectedBranch,
+          actualBranch,
+          cleanliness: "dirty",
+          provenance: expect.objectContaining({
+            expectedBranchExists: true,
+            actualBranchExists: true,
+            sameHead: true,
+          }),
+          safeRepair: expect.objectContaining({
+            eligible: false,
+            attempted: false,
+            succeeded: false,
+            reason: "worktree is not clean",
+          }),
+        }),
+      },
+    });
+  }, 15_000);
+
+  it("routes non-reusable persisted git worktrees through workspace validation recovery", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "PAP-455-not-registered-worktree";
+    const detachedWorktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+    await fs.mkdir(path.dirname(detachedWorktreePath), { recursive: true });
+    await execFileAsync("git", ["clone", repoRoot, detachedWorktreePath]);
+    await runGit(detachedWorktreePath, ["checkout", "-B", expectedBranch]);
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        id: "execution-workspace-not-registered",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: detachedWorktreePath,
+        providerRef: detachedWorktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: expectedBranch,
+      },
+      issue: {
+        id: "issue-not-registered",
+        identifier: "PAP-455",
+        title: "Reject unregistered persisted worktree",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: {
+          reason: "git_worktree_not_reusable",
+          reasonCode: "not_registered",
+          worktreePath: detachedWorktreePath,
+          executionWorkspaceId: "execution-workspace-not-registered",
+        },
+      },
+    });
+  }, 15_000);
+
+  it("rejects an existing persisted git worktree when the checked-out branch changed to a different commit", async () => {
+    const repoRoot = await createTempRepo();
+
+    const initial = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-456",
+        title: "Keep persisted branch coherent",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    const actualBranch = "PAP-456-push-pr-head";
+    await runGit(initial.cwd, ["checkout", "-b", actualBranch]);
+    await fs.writeFile(path.join(initial.cwd, "publish.txt"), "publish\n", "utf8");
+    await runGit(initial.cwd, ["add", "publish.txt"]);
+    await runGit(initial.cwd, ["commit", "-m", "Add publish branch work"]);
+
+    await expect(ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        id: "execution-workspace-3",
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: initial.cwd,
+        providerRef: initial.worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: initial.branchName,
+      },
+      issue: {
+        id: "issue-3",
+        identifier: "PAP-456",
+        title: "Keep persisted branch coherent",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_branch_incoherence",
+          fingerprint: expect.stringMatching(/^workspace_incoherence:v1:sha256:/),
+          sourceIssueId: "issue-3",
+          sourceIdentifier: "PAP-456",
+          executionWorkspaceId: "execution-workspace-3",
+          expectedBranch: initial.branchName,
+          actualBranch,
+          cleanliness: "clean",
+          provenance: expect.objectContaining({
+            expectedBranchExists: true,
+            actualBranchExists: true,
+            sameHead: false,
+          }),
+          safeRepair: expect.objectContaining({
+            eligible: false,
+            attempted: false,
+            succeeded: false,
+            reason: "expected branch and current HEAD differ",
+          }),
+        }),
+      },
+    });
+  }, 15_000);
+
+  it("does not reuse a missing persisted local filesystem workspace", async () => {
+    const baseCwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-base-"));
+    const missingCwd = path.join(baseCwd, "missing-workspace");
+
+    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+      workspace: {
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        cwd: missingCwd,
+        providerRef: null,
+        projectId: "project-1",
+        projectWorkspaceId: null,
+        repoUrl: null,
+        baseRef: null,
+        branchName: null,
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-453",
+        title: "Missing local workspace",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(restored).toBeNull();
+  });
+
   it("reprovisions an existing persisted git worktree before manual control starts it", async () => {
     const repoRoot = await createTempRepo();
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
@@ -2019,10 +2621,12 @@ describe("realizeExecutionWorkspace", () => {
 
   it("auto-detects the default branch via symbolic-ref when origin/HEAD is set", async () => {
     const repoRoot = await createTempRepo("main");
+    await runGit(repoRoot, ["branch", "-f", "master", "main"]);
 
     const bareRemote = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-bare-symref-"));
     await runGit(bareRemote, ["init", "--bare"]);
     await runGit(repoRoot, ["remote", "add", "origin", bareRemote]);
+    await runGit(repoRoot, ["branch", "-f", "master"]);
     await runGit(repoRoot, ["push", "-u", "origin", "main", "master"]);
     await runGit(repoRoot, ["fetch", "origin"]);
     // Explicitly set refs/remotes/origin/HEAD to exercise the symbolic-ref path

@@ -6,6 +6,7 @@ import {
   activityLog,
   agentWakeupRequests,
   agents,
+  authUsers,
   approvals,
   assets,
   companies,
@@ -19,6 +20,7 @@ import {
   issueAttachments,
   issueInboxArchives,
   issueLabels,
+  issueWatchdogs,
   issuePlanDecompositions,
   issueRecoveryActions,
   issueRelations,
@@ -36,6 +38,7 @@ import type {
   AcceptedPlanDecomposition,
   IssueComment,
   IssueCommentAuthorType,
+  IssueCommentDerivedAuthorSource,
   IssueCommentMetadata,
   IssueCommentPresentation,
   IssueBlockerAttention,
@@ -44,6 +47,7 @@ import type {
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
+  IssueWatchdogSummary,
   LowTrustBoundary,
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
@@ -77,6 +81,10 @@ import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import {
+  summarizeIssueWatchdog,
+  upsertIssueWatchdogForIssue,
+} from "./task-watchdogs.js";
+import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
   type ActiveIssueTreePauseHoldGate,
@@ -95,6 +103,11 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
+// Non-human author sentinels that agents post under. These ARE eligible for
+// agent-attribution derivation even though `local-board` is also materialized
+// as a row in the `user` table (it is the implicit board admin). Genuine human
+// users — real signups with their own ids — are never reattributed.
+const NON_HUMAN_SENTINEL_AUTHOR_USER_IDS = new Set<string>(["local-board"]);
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
@@ -163,32 +176,65 @@ type IssueCommentRunLogAttributionRun = {
   createdAt: Date | string;
   startedAt?: Date | string | null;
   finishedAt?: Date | string | null;
+  // Best-effort run log text. May be empty when logs were not read for a tier
+  // that does not need them (run-id / run-window-unique); only the
+  // `run_log_comment_post` tier consults this.
   logContent: string;
 };
 
+type DerivedIssueCommentAttribution = {
+  derivedAuthorAgentId: string;
+  derivedCreatedByRunId: string;
+  derivedAuthorSource: IssueCommentDerivedAuthorSource;
+};
+
+/**
+ * Best-effort agent attribution for comments whose stored author is a non-human
+ * sentinel (e.g. `local-board`). Callers MUST pre-filter `comments` to drop any
+ * comment whose `authorUserId` maps to a genuine user profile so a real board /
+ * user comment is never reattributed.
+ *
+ * Only LOSSLESS signals are used — a comment is reattributed solely when a run
+ * provably authored it. Pure run-window timing overlap is intentionally NOT a
+ * signal: because agents post through the `local-board` subprocess, an agent
+ * comment and a genuine human board comment are indistinguishable rows, so any
+ * timing-based guess mis-attributes human board comments that merely coincided
+ * with an agent run (Option A).
+ *
+ * Tiers, in descending confidence (first match wins per comment):
+ *  1. `run_id` — the comment's own `createdByRunId` resolves to an agent run
+ *     (lossless: that run authored the comment).
+ *  2. `run_log_comment_post` — an overlapping run log contains the explicit
+ *     `comment id: {id}` post marker (lossless: the run recorded posting it).
+ */
 export function deriveIssueCommentRunLogAttribution(
   comments: readonly IssueCommentRunLogAttributionCandidate[],
   runs: readonly IssueCommentRunLogAttributionRun[],
 ) {
-  const derivedByCommentId = new Map<string, {
-    derivedAuthorAgentId: string;
-    derivedCreatedByRunId: string;
-    derivedAuthorSource: "run_log_comment_post";
-  }>();
+  const derivedByCommentId = new Map<string, DerivedIssueCommentAttribution>();
+  const runById = new Map(runs.map((run) => [run.runId, run] as const));
 
   for (const comment of comments) {
-    if (comment.authorAgentId || !comment.authorUserId || comment.createdByRunId) continue;
+    if (comment.authorAgentId || !comment.authorUserId) continue;
+
+    // Tier 1: the comment carries the run that authored it. Lossless even when
+    // the author was recorded as the `local-board` sentinel.
+    if (comment.createdByRunId) {
+      const ownRun = runById.get(comment.createdByRunId);
+      if (ownRun?.agentId) {
+        derivedByCommentId.set(comment.id, {
+          derivedAuthorAgentId: ownRun.agentId,
+          derivedCreatedByRunId: ownRun.runId,
+          derivedAuthorSource: "run_id",
+        });
+        continue;
+      }
+    }
+
     const commentCreatedAtMs = toTimestampMs(comment.createdAt);
     if (commentCreatedAtMs === null) continue;
 
-    let bestMatch:
-      | {
-        runId: string;
-        agentId: string;
-        distanceMs: number;
-      }
-      | null = null;
-
+    const overlappingRuns: Array<{ run: IssueCommentRunLogAttributionRun; runEndMs: number }> = [];
     for (const run of runs) {
       const runStartMs = toTimestampMs(run.startedAt ?? run.createdAt);
       const runEndMs = toTimestampMs(run.finishedAt ?? run.createdAt);
@@ -199,24 +245,30 @@ export function deriveIssueCommentRunLogAttribution(
       ) {
         continue;
       }
-      if (!run.logContent.includes(`comment id: ${comment.id}`)) continue;
-
-      const distanceMs = Math.abs(runEndMs - commentCreatedAtMs);
-      if (!bestMatch || distanceMs < bestMatch.distanceMs) {
-        bestMatch = {
-          runId: run.runId,
-          agentId: run.agentId,
-          distanceMs,
-        };
-      }
+      overlappingRuns.push({ run, runEndMs });
     }
 
-    if (!bestMatch) continue;
-    derivedByCommentId.set(comment.id, {
-      derivedAuthorAgentId: bestMatch.agentId,
-      derivedCreatedByRunId: bestMatch.runId,
-      derivedAuthorSource: "run_log_comment_post",
-    });
+    // Tier 2: an overlapping run log explicitly recorded posting this comment.
+    let bestLogMatch: { runId: string; agentId: string; distanceMs: number } | null = null;
+    for (const { run, runEndMs } of overlappingRuns) {
+      if (!run.logContent.includes(`comment id: ${comment.id}`)) continue;
+      const distanceMs = Math.abs(runEndMs - commentCreatedAtMs);
+      if (!bestLogMatch || distanceMs < bestLogMatch.distanceMs) {
+        bestLogMatch = { runId: run.runId, agentId: run.agentId, distanceMs };
+      }
+    }
+    if (bestLogMatch) {
+      derivedByCommentId.set(comment.id, {
+        derivedAuthorAgentId: bestLogMatch.agentId,
+        derivedCreatedByRunId: bestLogMatch.runId,
+        derivedAuthorSource: "run_log_comment_post",
+      });
+      continue;
+    }
+
+    // No lossless signal — leave unresolved. A pure run-window timing overlap is
+    // deliberately NOT enough to reattribute (it cannot tell an agent comment
+    // from a human board comment that happened during the run).
   }
 
   return derivedByCommentId;
@@ -267,6 +319,7 @@ export interface IssueFilters {
   includePluginOperations?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
+  includeLiveDescendantSummary?: boolean;
   hasPlanDocument?: boolean;
   lowTrustBoundary?: LowTrustBoundary & { companyId: string };
   q?: string;
@@ -302,7 +355,11 @@ type IssueScheduledRetryRow = {
   error?: string | null;
   errorCode?: string | null;
 };
-type IssueWithLabels = IssueRow & { labels: IssueLabelRow[]; labelIds: string[] };
+type IssueWithLabels = IssueRow & {
+  labels: IssueLabelRow[];
+  labelIds: string[];
+  watchdog?: IssueWatchdogSummary | null;
+};
 type IssueWithLabelsAndRun = IssueWithLabels & { activeRun: IssueActiveRunRow | null };
 type IssueUserCommentStats = {
   issueId: string;
@@ -354,6 +411,8 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
+  watchdog?: { agentId: string; instructions?: string | null } | null;
+  watchdogActorRunId?: string | null;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -677,6 +736,112 @@ export async function listUnfinalizedExecutionWorkspaceIds(
   return unfinalized;
 }
 
+async function listPendingFinalizeBlockerIssueIds(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  blockerWorkspacePairs: Array<{ blockerIssueId: string; executionWorkspaceId: string }>,
+): Promise<Set<string>> {
+  const pending = new Set<string>();
+  const blockerIssueIds = [...new Set(blockerWorkspacePairs.map((pair) => pair.blockerIssueId))];
+  const executionWorkspaceIds = [...new Set(blockerWorkspacePairs.map((pair) => pair.executionWorkspaceId))];
+  if (blockerIssueIds.length === 0 || executionWorkspaceIds.length === 0) return pending;
+  const blockerWorkspaceKeys = new Set(
+    blockerWorkspacePairs.map((pair) => `${pair.blockerIssueId}:${pair.executionWorkspaceId}`),
+  );
+
+  const rows = await dbOrTx
+    .select({
+      issueId: workspaceOperations.issueId,
+      executionWorkspaceId: workspaceOperations.executionWorkspaceId,
+      phase: workspaceOperations.phase,
+      status: workspaceOperations.status,
+      startedAt: workspaceOperations.startedAt,
+    })
+    .from(workspaceOperations)
+    .where(
+      and(
+        eq(workspaceOperations.companyId, companyId),
+        inArray(workspaceOperations.executionWorkspaceId, executionWorkspaceIds),
+        or(inArray(workspaceOperations.issueId, blockerIssueIds), isNull(workspaceOperations.issueId)),
+      ),
+    );
+
+  const latestAttributedByBlockerWorkspace = new Map<string, { phase: string; status: string; startedAt: Date }>();
+  const latestUnattributedByWorkspace = new Map<string, { phase: string; status: string; startedAt: Date }>();
+  for (const row of rows) {
+    if (!row.executionWorkspaceId) continue;
+    if (row.issueId) {
+      const key = `${row.issueId}:${row.executionWorkspaceId}`;
+      if (!blockerWorkspaceKeys.has(key)) continue;
+      const current = latestAttributedByBlockerWorkspace.get(key);
+      if (!current || row.startedAt > current.startedAt) {
+        latestAttributedByBlockerWorkspace.set(key, {
+          phase: row.phase,
+          status: row.status,
+          startedAt: row.startedAt,
+        });
+      }
+      continue;
+    }
+
+    const current = latestUnattributedByWorkspace.get(row.executionWorkspaceId);
+    if (!current || row.startedAt > current.startedAt) {
+      latestUnattributedByWorkspace.set(row.executionWorkspaceId, {
+        phase: row.phase,
+        status: row.status,
+        startedAt: row.startedAt,
+      });
+    }
+  }
+
+  for (const pair of blockerWorkspacePairs) {
+    const latest = latestAttributedByBlockerWorkspace.get(`${pair.blockerIssueId}:${pair.executionWorkspaceId}`)
+      ?? latestUnattributedByWorkspace.get(pair.executionWorkspaceId);
+    if (!latest) continue; // no ops recorded -> nothing to finalize for this blocker
+    if (latest.phase === "workspace_finalize" && latest.status === "succeeded") continue;
+    pending.add(pair.blockerIssueId);
+  }
+
+  return pending;
+}
+
+/**
+ * Returns whether a specific run's operations on a specific execution workspace
+ * reached the workspace_finalize barrier.
+ *
+ * Runs with no operations on the workspace are considered finalized because
+ * they never touched the workspace state that accept/review gates protect.
+ */
+export async function runWorkspaceIsFinalized(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  executionWorkspaceId: string,
+  runId: string,
+): Promise<boolean> {
+  const rows = await dbOrTx
+    .select({
+      phase: workspaceOperations.phase,
+      status: workspaceOperations.status,
+      startedAt: workspaceOperations.startedAt,
+    })
+    .from(workspaceOperations)
+    .where(
+      and(
+        eq(workspaceOperations.companyId, companyId),
+        eq(workspaceOperations.executionWorkspaceId, executionWorkspaceId),
+        eq(workspaceOperations.heartbeatRunId, runId),
+      ),
+    );
+
+  let latest: { phase: string; status: string; startedAt: Date } | null = null;
+  for (const row of rows) {
+    if (!latest || row.startedAt > latest.startedAt) latest = row;
+  }
+
+  if (!latest) return true;
+  return latest.phase === "workspace_finalize" && latest.status === "succeeded";
+}
+
 async function listIssueDependencyReadinessMap(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
@@ -706,19 +871,22 @@ async function listIssueDependencyReadinessMap(
       ),
     );
 
-  // Collect executionWorkspaceIds of "done" blockers — these are the only ones
+  // Collect issue/workspace pairs of "done" blockers — these are the only ones
   // subject to the workspace-finalize barrier. Blockers that aren't done already
   // mark the dependent as not-ready and don't need a finalize check.
-  const doneBlockerWorkspaceIds = new Set<string>();
+  const doneBlockerWorkspacePairs: Array<{ blockerIssueId: string; executionWorkspaceId: string }> = [];
   for (const row of blockerRows) {
     if (row.blockerStatus === "done" && row.blockerExecutionWorkspaceId) {
-      doneBlockerWorkspaceIds.add(row.blockerExecutionWorkspaceId);
+      doneBlockerWorkspacePairs.push({
+        blockerIssueId: row.blockerIssueId,
+        executionWorkspaceId: row.blockerExecutionWorkspaceId,
+      });
     }
   }
-  const unfinalizedWorkspaceIds = await listUnfinalizedExecutionWorkspaceIds(
+  const pendingFinalizeBlockerIssueIds = await listPendingFinalizeBlockerIssueIds(
     dbOrTx,
     companyId,
-    [...doneBlockerWorkspaceIds],
+    doneBlockerWorkspacePairs,
   );
 
   for (const row of blockerRows) {
@@ -733,7 +901,7 @@ async function listIssueDependencyReadinessMap(
       current.isDependencyReady = false;
     } else if (
       row.blockerExecutionWorkspaceId &&
-      unfinalizedWorkspaceIds.has(row.blockerExecutionWorkspaceId)
+      pendingFinalizeBlockerIssueIds.has(row.blockerIssueId)
     ) {
       // Workspace-finalize barrier: the blocker's most recent run on its
       // execution workspace hasn't recorded a successful workspace_finalize.
@@ -1143,15 +1311,47 @@ async function labelMapForIssues(dbOrTx: any, issueIds: string[]): Promise<Map<s
 
 async function withIssueLabels(dbOrTx: any, rows: IssueRow[]): Promise<IssueWithLabels[]> {
   if (rows.length === 0) return [];
-  const labelsByIssueId = await labelMapForIssues(dbOrTx, rows.map((row) => row.id));
+  const issueIds = rows.map((row) => row.id);
+  const [labelsByIssueId, watchdogByIssueId] = await Promise.all([
+    labelMapForIssues(dbOrTx, issueIds),
+    watchdogMapForIssues(dbOrTx, rows),
+  ]);
   return rows.map((row) => {
     const issueLabels = labelsByIssueId.get(row.id) ?? [];
     return {
       ...row,
       labels: issueLabels,
       labelIds: issueLabels.map((label) => label.id),
+      watchdog: watchdogByIssueId.get(row.id) ?? null,
     };
   });
+}
+
+async function watchdogMapForIssues(dbOrTx: any, rows: IssueRow[]): Promise<Map<string, IssueWatchdogSummary>> {
+  const map = new Map<string, IssueWatchdogSummary>();
+  if (rows.length === 0) return map;
+  const byCompany = new Map<string, string[]>();
+  for (const row of rows) {
+    const ids = byCompany.get(row.companyId) ?? [];
+    ids.push(row.id);
+    byCompany.set(row.companyId, ids);
+  }
+  for (const [companyId, issueIds] of byCompany.entries()) {
+    for (const issueIdChunk of chunkList([...new Set(issueIds)], ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+      const watchdogRows = await dbOrTx
+        .select()
+        .from(issueWatchdogs)
+        .where(and(
+          eq(issueWatchdogs.companyId, companyId),
+          inArray(issueWatchdogs.issueId, issueIdChunk),
+          eq(issueWatchdogs.status, "active"),
+        ));
+      for (const row of watchdogRows) {
+        map.set(row.issueId, summarizeIssueWatchdog(row));
+      }
+    }
+  }
+  return map;
 }
 
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
@@ -1160,6 +1360,7 @@ const BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES = ["queued", "deferred_issue_execut
 const BLOCKER_ATTENTION_PENDING_INTERACTION_STATUSES = ["pending"];
 const BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"];
 const BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND = "harness_liveness_escalation";
+const BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES = ["done", "cancelled"];
 const PRODUCTIVITY_REVIEW_ORIGIN_KIND = "issue_productivity_review";
 const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"];
 const PRODUCTIVITY_REVIEW_ACTIVITY_ACTIONS = [
@@ -1278,6 +1479,85 @@ async function activeRunMapForIssues(
       map.set(row.id, row);
     }
   }
+  return map;
+}
+
+async function liveDescendantCountMapForIssues(
+  dbOrTx: any,
+  companyId: string,
+  issueIds: string[],
+): Promise<Map<string, number>> {
+  const uniqueIssueIds = [...new Set(issueIds)];
+  const map = new Map<string, number>();
+  if (uniqueIssueIds.length === 0) return map;
+
+  for (const issueIdChunk of chunkList(uniqueIssueIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    const targetRows = issueIdChunk.map((issueId) => sql`(${issueId}::uuid)`);
+    const rows = await dbOrTx.execute(sql<{
+      issueId: string;
+      liveDescendantCount: number;
+    }>`
+      WITH RECURSIVE
+        target_issues(issue_id) AS (
+          VALUES ${sql.join(targetRows, sql`, `)}
+        ),
+        live_issues(live_issue_id, parent_id) AS (
+          SELECT DISTINCT live_issue.id, live_issue.parent_id
+          FROM issues live_issue
+          JOIN heartbeat_runs live_run ON live_run.id = live_issue.execution_run_id
+          WHERE live_issue.company_id = ${companyId}
+            AND live_issue.hidden_at IS NULL
+            AND live_run.company_id = ${companyId}
+            AND live_run.status IN ('queued', 'running')
+          UNION
+          SELECT DISTINCT live_issue.id, live_issue.parent_id
+          FROM heartbeat_runs live_run
+          JOIN issues live_issue ON live_issue.id::text = (live_run.context_snapshot ->> 'issueId')
+          WHERE live_issue.company_id = ${companyId}
+            AND live_issue.hidden_at IS NULL
+            AND live_run.company_id = ${companyId}
+            AND live_run.status IN ('queued', 'running')
+        ),
+        live_ancestors(live_issue_id, ancestor_id, next_parent_id, visited_issue_ids) AS (
+          SELECT live_issues.live_issue_id, parent.id, parent.parent_id, ARRAY[live_issues.live_issue_id, parent.id]
+          FROM live_issues
+          JOIN issues parent ON parent.id = live_issues.parent_id
+          WHERE parent.company_id = ${companyId}
+            AND parent.hidden_at IS NULL
+          UNION ALL
+          SELECT
+            live_ancestors.live_issue_id,
+            parent.id,
+            parent.parent_id,
+            live_ancestors.visited_issue_ids || parent.id
+          FROM live_ancestors
+          JOIN issues parent ON parent.id = live_ancestors.next_parent_id
+          WHERE parent.company_id = ${companyId}
+            AND parent.hidden_at IS NULL
+            AND NOT parent.id = ANY(live_ancestors.visited_issue_ids)
+        )
+      SELECT
+        live_ancestors.ancestor_id::text AS "issueId",
+        count(DISTINCT live_ancestors.live_issue_id)::int AS "liveDescendantCount"
+      FROM live_ancestors
+      JOIN target_issues ON target_issues.issue_id = live_ancestors.ancestor_id
+      WHERE live_ancestors.ancestor_id <> live_ancestors.live_issue_id
+      GROUP BY live_ancestors.ancestor_id
+    `);
+
+    const resultRows = Array.isArray(rows) ? rows : Array.from(rows as Iterable<unknown>);
+    for (const row of resultRows) {
+      if (typeof row !== "object" || row === null) continue;
+      const issueId = (row as { issueId?: unknown }).issueId;
+      const liveDescendantCount = (row as { liveDescendantCount?: unknown }).liveDescendantCount;
+      if (typeof issueId !== "string") continue;
+      const count = typeof liveDescendantCount === "number"
+        ? liveDescendantCount
+        : Number(liveDescendantCount);
+      if (Number.isFinite(count)) map.set(issueId, count);
+    }
+  }
+
   return map;
 }
 
@@ -1592,7 +1872,7 @@ async function listIssueBlockerAttentionMap(
           and(
             eq(issues.companyId, companyId),
             inArray(issues.parentId, chunk),
-            ne(issues.status, "done"),
+            notInArray(issues.status, BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES),
           ),
         );
       const [explicitBlockerRows, childRows] = await Promise.all([
@@ -2970,6 +3250,7 @@ async function listBlockedInboxIssues(
   blockerAttention?: IssueBlockerAttention;
   blockedInboxAttention: IssueBlockedInboxAttention;
   productivityReview?: IssueProductivityReview | null;
+  liveDescendantCount?: number;
   lastActivityAt: Date;
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;
@@ -2991,6 +3272,7 @@ async function listBlockedInboxIssues(
   if (withRuns.length === 0) return [];
 
   const issueIds = withRuns.map((row) => row.id);
+  const includeLiveDescendantSummary = filters?.includeLiveDescendantSummary === true;
   const [
     statsRows,
     readRows,
@@ -2999,6 +3281,7 @@ async function listBlockedInboxIssues(
     blockerAttentionByIssueId,
     productivityReviewByIssueId,
     blockedInboxAttentionByIssueId,
+    liveDescendantCountByIssueId,
   ] = await Promise.all([
     contextUserId ? userCommentStatsForIssues(dbOrTx, companyId, contextUserId, issueIds) : Promise.resolve([]),
     contextUserId ? userReadStatsForIssues(dbOrTx, companyId, contextUserId, issueIds) : Promise.resolve([]),
@@ -3007,6 +3290,9 @@ async function listBlockedInboxIssues(
     listIssueBlockerAttentionMap(dbOrTx, companyId, withRuns),
     listIssueProductivityReviewMap(dbOrTx, companyId, issueIds),
     listIssueBlockedInboxAttentionMap(dbOrTx, companyId, withRuns),
+    includeLiveDescendantSummary
+      ? liveDescendantCountMapForIssues(dbOrTx, companyId, issueIds)
+      : Promise.resolve(new Map<string, number>()),
   ]);
 
   const rawSearchInput = filters?.q?.trim() ?? "";
@@ -3056,6 +3342,7 @@ async function listBlockedInboxIssues(
       ...(productivityReviewByIssueId.has(row.id)
         ? { productivityReview: productivityReviewByIssueId.get(row.id) }
         : {}),
+      ...(includeLiveDescendantSummary ? { liveDescendantCount: liveDescendantCountByIssueId.get(row.id) ?? 0 } : {}),
       ...(contextUserId
         ? deriveIssueUserContext(row, contextUserId, {
             myLastCommentAt: statsByIssueId.get(row.id)?.myLastCommentAt ?? null,
@@ -3288,6 +3575,39 @@ export function issueService(db: Db) {
     return content;
   }
 
+  // Persist a resolved attribution so subsequent reads stop re-scanning run
+  // logs (and old "Board" threads stay fixed durably). Best-effort: a write
+  // failure must never break the read path. The `IS NULL` guard keeps this
+  // idempotent and avoids clobbering a value another reader just stored.
+  async function persistDerivedIssueCommentAttribution(
+    derivedByCommentId: ReadonlyMap<string, DerivedIssueCommentAttribution>,
+  ) {
+    if (derivedByCommentId.size === 0) return;
+    // One bulk `UPDATE ... FROM (VALUES ...)` so the read path is never blocked
+    // on N sequential round-trips for a large legacy thread. The `IS NULL` guard
+    // keeps this idempotent and avoids clobbering a value another reader just
+    // stored. Best-effort: a write failure must never break the read path.
+    const rows = [...derivedByCommentId].map(
+      ([commentId, derived]) =>
+        sql`(${commentId}::uuid, ${derived.derivedAuthorAgentId}::uuid, ${derived.derivedCreatedByRunId}::uuid, ${derived.derivedAuthorSource}::text)`,
+    );
+    try {
+      await db.execute(sql`
+        UPDATE ${issueComments} AS c
+        SET derived_author_agent_id = v.agent_id,
+            derived_created_by_run_id = v.run_id,
+            derived_author_source = v.source
+        FROM (VALUES ${sql.join(rows, sql`, `)}) AS v(comment_id, agent_id, run_id, source)
+        WHERE c.id = v.comment_id AND c.derived_author_agent_id IS NULL
+      `);
+    } catch (err) {
+      logger.warn(
+        { err, commentIds: [...derivedByCommentId.keys()] },
+        "failed to persist derived issue-comment attribution",
+      );
+    }
+  }
+
   async function enrichCommentsWithDerivedAgentAttribution<
     T extends {
       id: string;
@@ -3296,19 +3616,54 @@ export function issueService(db: Db) {
       authorAgentId?: string | null;
       authorUserId?: string | null;
       createdByRunId?: string | null;
+      derivedAuthorAgentId?: string | null;
       createdAt: Date | string;
     },
   >(comments: readonly T[]) {
-    const candidates = comments.filter((comment) =>
+    // Candidates: a non-human author, no stored agent, and not already resolved
+    // by a previous read / the backfill migration.
+    const preliminary = comments.filter((comment) =>
       !comment.authorAgentId
       && !!comment.authorUserId
-      && !comment.createdByRunId,
+      && !comment.derivedAuthorAgentId,
     );
-    if (candidates.length === 0) return comments;
+    if (preliminary.length === 0) return comments;
 
     const companyId = comments[0]?.companyId ?? null;
     const issueId = comments[0]?.issueId ?? null;
     if (!companyId || !issueId) return comments;
+
+    // Guard: never reattribute a comment whose author maps to a genuine user
+    // profile. Only the non-human sentinels agents post under (e.g.
+    // `local-board`) are eligible — even though `local-board` is itself a row in
+    // the `user` table, so a plain "exists in user table" check would wrongly
+    // exclude every mis-attributed agent comment.
+    const nonSentinelAuthorUserIds = [
+      ...new Set(
+        preliminary
+          .map((comment) => comment.authorUserId)
+          .filter((id): id is string => !!id && !NON_HUMAN_SENTINEL_AUTHOR_USER_IDS.has(id)),
+      ),
+    ];
+    const genuineUserIds = nonSentinelAuthorUserIds.length
+      ? new Set(
+          (
+            await db
+              .select({ id: authUsers.id })
+              .from(authUsers)
+              .where(inArray(authUsers.id, nonSentinelAuthorUserIds))
+          ).map((row) => row.id),
+        )
+      : new Set<string>();
+    // `preliminary` already guarantees a truthy `authorUserId`, so only the two
+    // "not a genuine user" arms are live: the explicit non-human sentinel, or an
+    // author id absent from the `user` table.
+    const candidates = preliminary.filter(
+      (comment) =>
+        NON_HUMAN_SENTINEL_AUTHOR_USER_IDS.has(comment.authorUserId!)
+        || !genuineUserIds.has(comment.authorUserId!),
+    );
+    if (candidates.length === 0) return comments;
 
     const minCommentCreatedAtMs = candidates.reduce<number | null>((min, comment) => {
       const timestamp = toTimestampMs(comment.createdAt);
@@ -3327,6 +3682,13 @@ export function issueService(db: Db) {
       maxCommentCreatedAtMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS,
     ).toISOString();
 
+    // The runs the comments' own `createdByRunId` point at — fetched
+    // unconditionally so the lossless run-id tier resolves even when a run is
+    // not otherwise associated with the issue.
+    const ownRunIds = [
+      ...new Set(candidates.map((comment) => comment.createdByRunId).filter((id): id is string => !!id)),
+    ];
+
     const runs = await db
       .select({
         runId: heartbeatRuns.id,
@@ -3343,35 +3705,81 @@ export function issueService(db: Db) {
         and(
           eq(heartbeatRuns.companyId, companyId),
           or(
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-            sql`exists (
-              select 1
-              from ${activityLog}
-              where ${activityLog.companyId} = ${companyId}
-                and ${activityLog.entityType} = 'issue'
-                and ${activityLog.entityId} = ${issueId}
-                and ${activityLog.runId} = ${heartbeatRuns.id}
-            )`,
+            and(
+              or(
+                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+                sql`exists (
+                  select 1
+                  from ${activityLog}
+                  where ${activityLog.companyId} = ${companyId}
+                    and ${activityLog.entityType} = 'issue'
+                    and ${activityLog.entityId} = ${issueId}
+                    and ${activityLog.runId} = ${heartbeatRuns.id}
+                )`,
+              ),
+              sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${minCommentCreatedAt}::timestamptz`,
+              sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${maxCommentCreatedAt}::timestamptz`,
+            ),
+            ownRunIds.length > 0 ? inArray(heartbeatRuns.id, ownRunIds) : sql`false`,
           ),
-          sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${minCommentCreatedAt}::timestamptz`,
-          sql`coalesce(${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${maxCommentCreatedAt}::timestamptz`,
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt));
 
     if (runs.length === 0) return comments;
 
-    const runsWithLogs: Array<(typeof runs)[number] & { logContent: string }> = [];
-    for (let index = 0; index < runs.length; index += ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS) {
-      const batch = runs.slice(index, index + ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS);
-      const batchWithLogs = await Promise.all(batch.map(async (run) => ({
-        ...run,
-        logContent: await readRunLogText(run),
-      })));
-      runsWithLogs.push(...batchWithLogs);
+    // Pass 1: resolve the run-id tier, which never reads log bodies. Most
+    // comments resolve here, so we avoid object-storage reads entirely.
+    const runsWithoutLogs = runs.map((run) => ({ ...run, logContent: "" }));
+    const derivedByCommentId = new Map<string, DerivedIssueCommentAttribution>(
+      deriveIssueCommentRunLogAttribution(candidates, runsWithoutLogs),
+    );
+
+    // Pass 2: for comments still unresolved after the run-id tier, read the logs
+    // of any run whose window overlaps such a comment, to look for the explicit
+    // `comment id:` post marker. The marker is a lossless signal regardless of
+    // how many runs overlap, so we do not short-circuit on the single-run case.
+    const unresolved = candidates.filter((comment) => !derivedByCommentId.has(comment.id));
+    if (unresolved.length > 0) {
+      const runIdsToRead = new Set<string>();
+      for (const run of runs) {
+        const runStartMs = toTimestampMs(run.startedAt ?? run.createdAt);
+        const runEndMs = toTimestampMs(run.finishedAt ?? run.createdAt);
+        if (runStartMs === null || runEndMs === null) continue;
+        for (const comment of unresolved) {
+          const commentCreatedAtMs = toTimestampMs(comment.createdAt);
+          if (commentCreatedAtMs === null) continue;
+          if (
+            commentCreatedAtMs >= runStartMs
+            && commentCreatedAtMs <= runEndMs + ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS
+          ) {
+            runIdsToRead.add(run.runId);
+            break;
+          }
+        }
+      }
+
+      if (runIdsToRead.size > 0) {
+        const runsToRead = runs.filter((run) => runIdsToRead.has(run.runId));
+        const logByRunId = new Map<string, string>();
+        for (let index = 0; index < runsToRead.length; index += ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS) {
+          const batch = runsToRead.slice(index, index + ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS);
+          await Promise.all(
+            batch.map(async (run) => {
+              logByRunId.set(run.runId, await readRunLogText(run));
+            }),
+          );
+        }
+        const runsWithLogs = runs.map((run) => ({ ...run, logContent: logByRunId.get(run.runId) ?? "" }));
+        for (const [commentId, derived] of deriveIssueCommentRunLogAttribution(unresolved, runsWithLogs)) {
+          derivedByCommentId.set(commentId, derived);
+        }
+      }
     }
-    const derivedByCommentId = deriveIssueCommentRunLogAttribution(candidates, runsWithLogs);
+
     if (derivedByCommentId.size === 0) return comments;
+
+    await persistDerivedIssueCommentAttribution(derivedByCommentId);
 
     return comments.map((comment) => {
       const derived = derivedByCommentId.get(comment.id);
@@ -3581,6 +3989,23 @@ export function issueService(db: Db) {
     }
 
     return empty;
+  }
+
+  async function withIssueRelationSummaries<T extends { id: string }>(
+    companyId: string,
+    rows: T[],
+    dbOrTx: DbReader = db,
+  ): Promise<Array<T & IssueRelationSummaryMap>> {
+    if (rows.length === 0) return [];
+    const relationMap = await getIssueRelationSummaryMap(
+      companyId,
+      rows.map((row) => row.id),
+      dbOrTx,
+    );
+    return rows.map((row) => ({
+      ...row,
+      ...(relationMap.get(row.id) ?? { blockedBy: [], blocks: [] }),
+    }));
   }
 
   async function assertNoBlockingCycles(
@@ -3968,6 +4393,7 @@ export function issueService(db: Db) {
       const contextUserId = unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
       const includeBlockedBy = filters?.includeBlockedBy === true;
       const includeBlockedInboxAttention = filters?.includeBlockedInboxAttention === true;
+      const includeLiveDescendantSummary = filters?.includeLiveDescendantSummary === true;
       const rawSearch = filters?.q?.trim() ?? "";
       const hasSearch = rawSearch.length > 0;
       const escapedSearch = hasSearch ? escapeLikePattern(rawSearch) : "";
@@ -4115,7 +4541,7 @@ export function issueService(db: Db) {
       }
 
       const issueIds = withRuns.map((row) => row.id);
-      const [statsRows, readRows, lastActivityRows, blockedByMap] = await Promise.all([
+      const [statsRows, readRows, lastActivityRows, blockedByMap, liveDescendantCountByIssueId] = await Promise.all([
         contextUserId
           ? userCommentStatsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
@@ -4126,6 +4552,9 @@ export function issueService(db: Db) {
         includeBlockedBy
           ? blockedByMapForIssues(db, companyId, issueIds)
           : Promise.resolve(new Map<string, IssueRelationIssueSummary[]>()),
+        includeLiveDescendantSummary
+          ? liveDescendantCountMapForIssues(db, companyId, issueIds)
+          : Promise.resolve(new Map<string, number>()),
       ]);
       const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
       const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
@@ -4155,6 +4584,7 @@ export function issueService(db: Db) {
             lastActivityAt,
             ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
             ...(includeBlockedInboxAttention ? { blockedInboxAttention: blockedInboxAttentionByIssueId.get(row.id) ?? null } : {}),
+            ...(includeLiveDescendantSummary ? { liveDescendantCount: liveDescendantCountByIssueId.get(row.id) ?? 0 } : {}),
             ...(productivityReviewByIssueId.has(row.id)
               ? { productivityReview: productivityReviewByIssueId.get(row.id) }
               : {}),
@@ -4177,6 +4607,7 @@ export function issueService(db: Db) {
           lastActivityAt,
           ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
           ...(includeBlockedInboxAttention ? { blockedInboxAttention: blockedInboxAttentionByIssueId.get(row.id) ?? null } : {}),
+          ...(includeLiveDescendantSummary ? { liveDescendantCount: liveDescendantCountByIssueId.get(row.id) ?? 0 } : {}),
           ...(productivityReviewByIssueId.has(row.id)
             ? { productivityReview: productivityReviewByIssueId.get(row.id) }
             : {}),
@@ -4546,7 +4977,7 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
-      const child = await issueService(db).create(parent.companyId, {
+      let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
         projectId: issueData.projectId ?? parent.projectId,
@@ -4569,6 +5000,7 @@ export function issueService(db: Db) {
           [...new Set([...existingBlockers.map((row) => row.blockerIssueId), child.id])],
           { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
         );
+        [child] = await withIssueRelationSummaries(parent.companyId, [child], db);
       }
 
       return {
@@ -4857,6 +5289,8 @@ export function issueService(db: Db) {
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
+        watchdog,
+        watchdogActorRunId,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -4929,9 +5363,8 @@ export function issueService(db: Db) {
           issueData.projectId = workspace.projectId;
         }
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
-        // Cache the project policy lookup for this insert. Both the
-        // default-settings block and the assignee-environment-promotion block
-        // need the same row; without caching they'd issue two round-trips.
+        // Cache the project policy lookup for this insert so the default
+        // workspace-settings block does not re-query the project row.
         let projectPolicyCached: ReturnType<typeof parseProjectExecutionWorkspacePolicy> | null = null;
         let projectPolicyLoaded = false;
         const loadProjectPolicyOnce = async () => {
@@ -4959,37 +5392,6 @@ export function issueService(db: Db) {
                 isolatedWorkspacesEnabled,
               ),
             ) as Record<string, unknown> | null;
-        }
-        if (data.assigneeAgentId && isolatedWorkspacesEnabled) {
-          const currentWorkspaceSettings = executionWorkspaceSettings == null
-            ? {}
-            : parseObject(executionWorkspaceSettings);
-          const issueHasEnvironmentSelection =
-            Object.prototype.hasOwnProperty.call(currentWorkspaceSettings, "environmentId");
-          // Don't promote the assignee agent's defaultEnvironmentId if either
-          // the issue or the project policy already specifies an environment.
-          // resolveExecutionWorkspaceEnvironmentId treats issue settings as
-          // higher priority than project policy, so promoting the agent's
-          // default to issue settings would invert the documented priority
-          // (project policy must win over agent default when explicitly set).
-          let projectHasEnvironmentSelection = false;
-          if (!issueHasEnvironmentSelection && issueData.projectId) {
-            const projectPolicy = await loadProjectPolicyOnce();
-            projectHasEnvironmentSelection = projectPolicy?.environmentId !== undefined;
-          }
-          if (!issueHasEnvironmentSelection && !projectHasEnvironmentSelection) {
-            const assigneeAgent = await tx
-              .select({ defaultEnvironmentId: agents.defaultEnvironmentId })
-              .from(agents)
-              .where(and(eq(agents.id, data.assigneeAgentId), eq(agents.companyId, companyId)))
-              .then((rows) => rows[0] ?? null);
-            if (typeof assigneeAgent?.defaultEnvironmentId === "string" && assigneeAgent.defaultEnvironmentId.length > 0) {
-              executionWorkspaceSettings = {
-                ...currentWorkspaceSettings,
-                environmentId: assigneeAgent.defaultEnvironmentId,
-              };
-            }
-          }
         }
         if (!projectWorkspaceId && issueData.projectId) {
           const project = await tx
@@ -5073,6 +5475,17 @@ export function issueService(db: Db) {
         );
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        if (watchdog) {
+          await upsertIssueWatchdogForIssue(tx, companyId, issue.id, {
+            agentId: watchdog.agentId,
+            instructions: watchdog.instructions,
+            actor: {
+              agentId: issueData.createdByAgentId ?? null,
+              userId: issueData.createdByUserId ?? null,
+              runId: watchdogActorRunId ?? null,
+            },
+          });
+        }
         if (inputLabelIds) {
           await syncIssueLabels(issue.id, companyId, inputLabelIds, tx);
         }
@@ -5089,7 +5502,8 @@ export function issueService(db: Db) {
           );
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
-        return enriched;
+        const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
+        return withRelations;
       });
     },
 
@@ -5179,6 +5593,11 @@ export function issueService(db: Db) {
         issueData.executionWorkspaceSettings !== undefined
           ? parseIssueExecutionWorkspaceSettings(issueData.executionWorkspaceSettings)
           : parseIssueExecutionWorkspaceSettings(existing.executionWorkspaceSettings);
+      if (issueData.executionWorkspaceSettings !== undefined) {
+        patch.executionWorkspaceSettings = nextExecutionWorkspaceSettings
+          ? { ...nextExecutionWorkspaceSettings }
+          : null;
+      }
       let validatedProjectWorkspace: { projectId: string } | null = null;
       let validatedExecutionWorkspace: { projectId: string } | null = null;
       if (!nextProjectId && nextProjectWorkspaceId) {
@@ -5237,93 +5656,6 @@ export function issueService(db: Db) {
             issueData.projectId !== undefined ? issueData.projectId : existing.projectId,
           ),
         ]);
-
-        // Mirror the create() path: when the assignee changes to a non-null
-        // agent, default the issue's executionWorkspaceSettings.environmentId
-        // to the new agent's defaultEnvironmentId. Skip when:
-        //   - this update explicitly sets executionWorkspaceSettings.environmentId
-        //     (caller is making a deliberate override; respect it), OR
-        //   - the project policy already specifies an environmentId (project
-        //     policy must win over agent default per the documented priority
-        //     order in resolveExecutionWorkspaceEnvironmentId), OR
-        //   - the issue already has an environmentId that was *not* the prior
-        //     assignee's default (i.e., the operator set it explicitly in an
-        //     earlier update; preserve their choice). When the existing
-        //     environmentId matches the prior assignee's default, treat it as
-        //     auto-promoted and refresh it to the new assignee's default.
-        const assigneeChanged =
-          issueData.assigneeAgentId !== undefined &&
-          issueData.assigneeAgentId !== null &&
-          issueData.assigneeAgentId !== existing.assigneeAgentId;
-        const explicitEnvInThisUpdate =
-          issueData.executionWorkspaceSettings !== undefined &&
-          Object.prototype.hasOwnProperty.call(
-            parseObject(issueData.executionWorkspaceSettings),
-            "environmentId",
-          );
-        if (assigneeChanged && isolatedWorkspacesEnabled && !explicitEnvInThisUpdate) {
-          let projectHasEnvironmentSelection = false;
-          if (nextProjectId) {
-            const projectRow = await tx
-              .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
-              .from(projects)
-              .where(and(eq(projects.id, nextProjectId), eq(projects.companyId, existing.companyId)))
-              .then((rows: Array<{ executionWorkspacePolicy: unknown }>) => rows[0] ?? null);
-            const projectPolicy = parseProjectExecutionWorkspacePolicy(projectRow?.executionWorkspacePolicy);
-            projectHasEnvironmentSelection = projectPolicy?.environmentId !== undefined;
-          }
-          if (!projectHasEnvironmentSelection) {
-            const baseSettings = nextExecutionWorkspaceSettings == null
-              ? {}
-              : parseObject(nextExecutionWorkspaceSettings);
-            const existingEnvId = typeof baseSettings.environmentId === "string"
-              ? baseSettings.environmentId
-              : null;
-
-            // Look up both the prior assignee (to detect auto-promoted env)
-            // and the new assignee in a single query.
-            type AgentRow = { id: string; defaultEnvironmentId: string | null };
-            const agentRows: AgentRow[] = await tx
-              .select({ id: agents.id, defaultEnvironmentId: agents.defaultEnvironmentId })
-              .from(agents)
-              .where(
-                and(
-                  eq(agents.companyId, existing.companyId),
-                  inArray(
-                    agents.id,
-                    [issueData.assigneeAgentId!, existing.assigneeAgentId].filter(
-                      (value): value is string => typeof value === "string",
-                    ),
-                  ),
-                ),
-              );
-
-            const newAssignee = agentRows.find((row: AgentRow) => row.id === issueData.assigneeAgentId);
-            const previousAssignee = existing.assigneeAgentId
-              ? agentRows.find((row: AgentRow) => row.id === existing.assigneeAgentId)
-              : null;
-
-            const newDefaultEnvId =
-              typeof newAssignee?.defaultEnvironmentId === "string" && newAssignee.defaultEnvironmentId.length > 0
-                ? newAssignee.defaultEnvironmentId
-                : null;
-            const previousDefaultEnvId =
-              typeof previousAssignee?.defaultEnvironmentId === "string" && previousAssignee.defaultEnvironmentId.length > 0
-                ? previousAssignee.defaultEnvironmentId
-                : null;
-
-            const existingEnvWasAutoPromoted =
-              existingEnvId === null ||
-              (previousDefaultEnvId !== null && existingEnvId === previousDefaultEnvId);
-
-            if (newDefaultEnvId && existingEnvWasAutoPromoted) {
-              patch.executionWorkspaceSettings = {
-                ...baseSettings,
-                environmentId: newDefaultEnvId,
-              };
-            }
-          }
-        }
 
         patch.goalId = resolveNextIssueGoalId({
           currentProjectId: existing.projectId,

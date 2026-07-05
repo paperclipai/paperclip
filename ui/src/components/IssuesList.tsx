@@ -9,6 +9,7 @@ import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
+import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
 import {
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
@@ -42,6 +43,7 @@ import {
   type InboxIssueColumn,
 } from "../lib/inbox";
 import { cn, formatDurationMs, formatTokens } from "../lib/utils";
+import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
 import {
   InboxIssueMetaLeading,
   InboxIssueTrailingColumns,
@@ -641,7 +643,9 @@ export function IssuesList({
     retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
+  const experimentalSettingsLoaded = experimentalSettings !== undefined;
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
+  const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true;
 
   // Scope the storage key per company so folding/view state is independent across companies.
   const scopedKey = selectedCompanyId ? `${viewStateKey}:${selectedCompanyId}` : viewStateKey;
@@ -690,6 +694,11 @@ export function IssuesList({
       return next;
     });
   }, [scopedKey]);
+
+  useEffect(() => {
+    if (!experimentalSettingsLoaded || externalObjectsEnabled || viewState.externalObjectStatuses.length === 0) return;
+    updateView({ externalObjectStatuses: [] });
+  }, [experimentalSettingsLoaded, externalObjectsEnabled, updateView, viewState.externalObjectStatuses.length]);
 
   // Prune stale IDs from collapsedParents whenever the issue list changes.
   // Deleted or reassigned issues leave orphan IDs in localStorage; this keeps
@@ -920,6 +929,10 @@ export function IssuesList({
     [isolatedWorkspacesEnabled],
   );
   const availableIssueColumnSet = useMemo(() => new Set(availableIssueColumns), [availableIssueColumns]);
+  const subtreeLiveCounts = useMemo(
+    () => collectSubtreeLiveCounts(issues, liveIssueIds ?? new Set<string>()),
+    [issues, liveIssueIds],
+  );
   const visibleTrailingIssueColumns = useMemo(
     () => issueTrailingColumns.filter((column) => visibleIssueColumnSet.has(column) && availableIssueColumnSet.has(column)),
     [availableIssueColumnSet, visibleIssueColumnSet],
@@ -962,32 +975,58 @@ export function IssuesList({
     [boardIssueQueries, searchWithinLoadedIssues, viewState.viewMode],
   );
 
-  const filtered = useMemo(() => {
+  const sourceIssues = useMemo(() => {
     const useRemoteSearch = normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues;
-    const sourceIssues = boardIssues ?? (useRemoteSearch ? searchedIssues : issues);
-    const searchScopedIssues = normalizedIssueSearch.length > 0 && searchWithinLoadedIssues
+    return boardIssues ?? (useRemoteSearch ? searchedIssues : issues);
+  }, [boardIssues, issues, normalizedIssueSearch, searchedIssues, searchWithinLoadedIssues]);
+
+  const searchScopedIssues = useMemo(
+    () => normalizedIssueSearch.length > 0 && searchWithinLoadedIssues
       ? sourceIssues.filter((issue) => issueMatchesLocalSearch(issue, normalizedIssueSearch))
-      : sourceIssues;
+      : sourceIssues,
+    [normalizedIssueSearch, searchWithinLoadedIssues, sourceIssues],
+  );
+  const hasExternalObjectStatusFilters = viewState.externalObjectStatuses.length > 0;
+  const issueIdsForExternalObjectSummaries = useMemo(
+    () => (viewState.viewMode === "list" || hasExternalObjectStatusFilters
+      ? searchScopedIssues.map((issue) => issue.id)
+      : []),
+    [hasExternalObjectStatusFilters, searchScopedIssues, viewState.viewMode],
+  );
+  const {
+    summaries: externalObjectSummaryByIssueId,
+    isLoading: externalObjectSummariesLoading,
+    isReady: externalObjectSummariesReady,
+  } = useIssueExternalObjectSummaries(
+    selectedCompanyId,
+    issueIdsForExternalObjectSummaries,
+  );
+  const issueFilterContext = useMemo(() => ({
+    ...issueFilterWorkspaceContext,
+    externalObjectSummaryByIssueId,
+    externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
+  }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId, issueFilterWorkspaceContext]);
+  const externalObjectFilterLoading = hasExternalObjectStatusFilters
+    && externalObjectSummariesLoading
+    && !externalObjectSummariesReady;
+
+  const filtered = useMemo(() => {
     const filteredByControls = applyIssueFilters(
       searchScopedIssues,
       viewState,
       currentUserId,
       enableRoutineVisibilityFilter,
       liveIssueIds,
-      issueFilterWorkspaceContext,
+      issueFilterContext,
     );
     return sortIssues(filteredByControls, viewState);
   }, [
-    boardIssues,
-    issues,
-    searchedIssues,
-    searchWithinLoadedIssues,
+    searchScopedIssues,
     viewState,
-    normalizedIssueSearch,
     currentUserId,
     enableRoutineVisibilityFilter,
     liveIssueIds,
-    issueFilterWorkspaceContext,
+    issueFilterContext,
   ]);
 
   const progressSummary = useMemo(
@@ -1349,11 +1388,13 @@ export function IssuesList({
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
           {/* View mode toggle */}
-          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1">
+          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1" role="group" aria-label="View mode">
             <button
               className={`p-1.5 transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
               title="List view"
+              aria-label="List view"
+              aria-pressed={viewState.viewMode === "list"}
             >
               <List className="h-3.5 w-3.5" />
             </button>
@@ -1361,6 +1402,8 @@ export function IssuesList({
               className={`p-1.5 transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
               title="Board view"
+              aria-label="Board view"
+              aria-pressed={viewState.viewMode === "board"}
             >
               <Columns3 className="h-3.5 w-3.5" />
             </button>
@@ -1474,6 +1517,7 @@ export function IssuesList({
             projects={projects?.map((project) => ({ id: project.id, name: project.name }))}
             labels={labels?.map((label) => ({ id: label.id, name: label.name, color: label.color }))}
             currentUserId={currentUserId}
+            enableExternalObjectFilters={externalObjectsEnabled}
             enableRoutineVisibilityFilter={enableRoutineVisibilityFilter}
             iconOnly
             workspaces={isolatedWorkspacesEnabled ? workspaceOptions : undefined}
@@ -1560,7 +1604,7 @@ export function IssuesList({
         </div>
       </div>
 
-      {isLoading && <PageSkeleton variant="issues-list" />}
+      {(isLoading || externalObjectFilterLoading) && <PageSkeleton variant="issues-list" />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {!searchWithinLoadedIssues && normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
@@ -1572,7 +1616,7 @@ export function IssuesList({
           Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} tasks. Refine filters or search to reveal the rest.
         </p>
       )}
-      {!isLoading && filtered.length === 0 && viewState.viewMode === "list" && (
+      {!isLoading && !externalObjectFilterLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
           message="No tasks match the current filters or search."
@@ -1744,6 +1788,7 @@ export function IssuesList({
                         checklistDependencyChips={checklistDependencyChips}
                         checklistRowId={checklistRowId}
                         titleClassName={doneRowTitleClass}
+                        externalObjectSummary={externalObjectSummaryByIssueId.get(issue.id) ?? null}
                         titleSuffix={(
                           <>
                             {hasChildren && !isExpanded ? (
@@ -1786,8 +1831,8 @@ export function IssuesList({
                               <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                             </button>
                           ) : (
-                            <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                              <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                            <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                              <StatusIcon status={issue.status} size="lg" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                             </span>
                           )
                         }
@@ -1808,12 +1853,13 @@ export function IssuesList({
                             <InboxIssueMetaLeading
                               issue={issue}
                               isLive={liveIssueIds?.has(issue.id) === true}
+                              subtreeLiveCount={subtreeLiveCounts.get(issue.id) ?? 0}
                               showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
                               showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
                               checklistStepNumber={checklistStepNumber}
                               statusSlot={(
-                                <span onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                                  <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                                <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                                  <StatusIcon status={issue.status} size="lg" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                                 </span>
                               )}
                             />

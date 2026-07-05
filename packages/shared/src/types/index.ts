@@ -179,6 +179,13 @@ export type {
   DocumentAnnotationTextQuoteSelector,
   DocumentAnnotationThread,
   DocumentAnnotationThreadWithComments,
+  PlanReviewContext,
+  PlanReviewContextAuthor,
+  PlanReviewContextComment,
+  PlanReviewContextThread,
+  PlanReviewInteractionContext,
+  PlanReviewInteractionResultContext,
+  PlanReviewInteractionTargetContext,
   DocumentTextPosition,
   DocumentTextProjection,
   DocumentTextRange,
@@ -206,6 +213,10 @@ export type {
   ExecutionWorkspaceCloseLinkedIssue,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceCloseReadinessState,
+  WorkspaceOverviewItem,
+  WorkspaceOverviewLinkedIssue,
+  WorkspaceOverviewPrimaryService,
+  WorkspaceOverviewResponse,
   ProjectWorkspaceRuntimeConfig,
   WorkspaceCommandDefinition,
   WorkspaceCommandKind,
@@ -265,6 +276,14 @@ export type {
   CompanyArtifactSource,
   CompanyArtifactsResponse,
 } from "./artifact.js";
+
+export type {
+  ExternalObject,
+  ExternalObjectMention,
+  ExternalObjectMentionGroup,
+  ExternalObjectSummary,
+  ExternalObjectSummaryItem,
+} from "./external-object.js";
 export type {
   Issue,
   IssueWorkMode,
@@ -305,6 +324,7 @@ export type {
   IssueReviewRequest,
   IssueExecutionDecision,
   IssueComment,
+  IssueCommentDerivedAuthorSource,
   IssueCommentMetadata,
   IssueCommentMetadataSection,
   IssueCommentMetadataRow,
@@ -357,6 +377,9 @@ export type {
   IssueAncestorGoal,
   IssueAttachment,
   IssueLabel,
+  IssueWatchdog,
+  IssueWatchdogStatus,
+  IssueWatchdogSummary,
 } from "./issue.js";
 export type {
   IssueTreeControlPreview,
@@ -418,6 +441,7 @@ export type {
   Routine,
   RoutineEnvConfig,
   RoutineManagedByPlugin,
+  RoutineDescriptionDocument,
   RoutineVariable,
   RoutineVariableDefaultValue,
   RoutineRevisionSnapshotRoutineV1,
@@ -440,6 +464,7 @@ export type {
   AgentWakeupSkipped,
   HeartbeatRun,
   HeartbeatRunEvent,
+  HeartbeatRunStatusPhase,
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupRequest,
@@ -447,6 +472,16 @@ export type {
 } from "./heartbeat.js";
 export type { LiveEvent } from "./live.js";
 export type { DashboardRunActivityDay, DashboardSummary } from "./dashboard.js";
+export type {
+  TimelineActorType,
+  TimelineEventKind,
+  TimelineEdgeKind,
+  WorkTimelineActor,
+  WorkTimelineSpan,
+  WorkTimelineEvent,
+  WorkTimelineEdge,
+  WorkTimelineResult,
+} from "./work-timeline.js";
 export type { ActivityEvent } from "./activity.js";
 export type {
   UserProfileActivitySummary,
@@ -526,6 +561,7 @@ export type {
   PluginWebhookDeclaration,
   PluginToolDeclaration,
   PluginEnvironmentDriverDeclaration,
+  PluginEnvironmentTemplateConfigBinding,
   PluginManagedAgentDeclaration,
   PluginManagedProjectDeclaration,
   PluginManagedRoutineDeclaration,
@@ -548,6 +584,8 @@ export type {
   PluginDatabaseDeclaration,
   PluginApiRouteCompanyResolution,
   PluginApiRouteDeclaration,
+  PluginObjectReferenceRefreshPolicy,
+  PluginObjectReferenceProviderDeclaration,
   PaperclipPluginManifestV1,
   PluginRecord,
   PluginDatabaseNamespaceRecord,

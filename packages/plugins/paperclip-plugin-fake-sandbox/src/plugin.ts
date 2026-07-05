@@ -6,9 +6,17 @@ import { spawn } from "node:child_process";
 import { definePlugin } from "@paperclipai/plugin-sdk";
 import type {
   PluginEnvironmentAcquireLeaseParams,
+  PluginEnvironmentCancelInteractiveSetupParams,
+  PluginEnvironmentCancelInteractiveSetupResult,
+  PluginEnvironmentCaptureTemplateParams,
+  PluginEnvironmentCaptureTemplateResult,
+  PluginEnvironmentDeleteTemplateParams,
+  PluginEnvironmentDeleteTemplateResult,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentGetInteractiveSetupParams,
+  PluginEnvironmentInteractiveSetupSession,
   PluginEnvironmentLease,
   PluginEnvironmentProbeParams,
   PluginEnvironmentProbeResult,
@@ -16,6 +24,7 @@ import type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentResumeLeaseParams,
+  PluginEnvironmentStartInteractiveSetupParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
 } from "@paperclipai/plugin-sdk";
@@ -34,9 +43,33 @@ interface FakeLeaseState {
   reuseLease: boolean;
 }
 
+interface FakeSetupState {
+  providerLeaseId: string;
+  environmentId: string;
+  sessionId: string;
+  image: string;
+  sourceTemplateRef: string | null;
+  expiresAt: string | null;
+  status: "waiting_for_user" | "capturing" | "promoted" | "cancelled" | "timed_out" | "failed";
+  capturedTemplateRef: string | null;
+}
+
+interface FakeTemplateState {
+  templateRef: string;
+  environmentId: string;
+  sessionId: string;
+  image: string;
+  sourceTemplateRef: string | null;
+  previousTemplateRef: string | null;
+  deleted: boolean;
+}
+
 const leases = new Map<string, FakeLeaseState>();
+const setupSessions = new Map<string, FakeSetupState>();
+const templates = new Map<string, FakeTemplateState>();
 const DEFAULT_FAKE_SANDBOX_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 const FAKE_SANDBOX_SIGKILL_GRACE_MS = 250;
+const REDACTED_FAKE_SSH_COMMAND = "ssh sandbox@[fake-setup-host-redacted] -p [fake-port-redacted]";
 
 function parseConfig(raw: Record<string, unknown>): FakeDriverConfig {
   return {
@@ -73,6 +106,76 @@ function leaseMetadata(state: FakeLeaseState) {
     remoteCwd: state.remoteCwd,
     fakeRootDir: state.rootDir,
   };
+}
+
+function encodeRefPart(value: string): string {
+  return encodeURIComponent(value).replace(/%/g, "_");
+}
+
+function buildSetupProviderLeaseId(environmentId: string, sessionId: string): string {
+  return `fake-plugin-setup://${encodeRefPart(environmentId)}/${encodeRefPart(sessionId)}`;
+}
+
+function buildTemplateRef(environmentId: string, sessionId: string): string {
+  return `fake-template:${encodeRefPart(environmentId)}:${encodeRefPart(sessionId)}`;
+}
+
+function setupMetadata(state: FakeSetupState): Record<string, unknown> {
+  return {
+    provider: "fake-plugin",
+    image: state.image,
+    sourceTemplateRefRedacted: Boolean(state.sourceTemplateRef),
+    setupSessionId: state.sessionId,
+    redactedConnectionOnly: true,
+    capturedTemplateRefRedacted: Boolean(state.capturedTemplateRef),
+  };
+}
+
+function setupConnectionSummary(): PluginEnvironmentInteractiveSetupSession["connectionSummary"] {
+  return {
+    type: "ssh",
+    username: "sandbox",
+    hostRedacted: true,
+    portRedacted: true,
+    commandRedacted: true,
+    metadata: {
+      placeholderOnly: true,
+    },
+  };
+}
+
+function setupConnectionPayload(expiresAt: string | null): PluginEnvironmentInteractiveSetupSession["connectionPayload"] {
+  return {
+    type: "ssh",
+    command: REDACTED_FAKE_SSH_COMMAND,
+    expiresAt,
+    metadata: {
+      placeholderOnly: true,
+    },
+  };
+}
+
+function presentSetupSession(
+  state: FakeSetupState,
+  options: { includeConnectionPayload: boolean },
+): PluginEnvironmentInteractiveSetupSession {
+  const canConnect = state.status === "waiting_for_user";
+  return {
+    providerLeaseId: state.providerLeaseId,
+    status: state.status,
+    connectionSummary: canConnect ? setupConnectionSummary() : null,
+    connectionPayload: canConnect && options.includeConnectionPayload ? setupConnectionPayload(state.expiresAt) : null,
+    expiresAt: state.expiresAt,
+    metadata: setupMetadata(state),
+  };
+}
+
+function cancelStatusFromReason(
+  reason: string | null | undefined,
+): Extract<FakeSetupState["status"], "cancelled" | "timed_out" | "failed"> {
+  if (reason === "timed_out") return "timed_out";
+  if (reason === "failed") return "failed";
+  return "cancelled";
 }
 
 async function removeLease(providerLeaseId: string | null | undefined): Promise<void> {
@@ -276,6 +379,121 @@ const plugin = definePlugin({
   ): Promise<PluginEnvironmentExecuteResult> {
     const config = parseConfig(params.config);
     return await runCommand(params, params.timeoutMs ?? config.timeoutMs);
+  },
+
+  async onEnvironmentStartInteractiveSetup(
+    params: PluginEnvironmentStartInteractiveSetupParams,
+  ): Promise<PluginEnvironmentInteractiveSetupSession> {
+    const config = parseConfig(params.config);
+    const providerLeaseId = buildSetupProviderLeaseId(params.environmentId, params.sessionId);
+    const state = setupSessions.get(providerLeaseId) ?? {
+      providerLeaseId,
+      environmentId: params.environmentId,
+      sessionId: params.sessionId,
+      image: config.image,
+      sourceTemplateRef: params.sourceTemplateRef ?? null,
+      expiresAt: params.expiresAt ?? null,
+      status: "waiting_for_user" as const,
+      capturedTemplateRef: null,
+    };
+    setupSessions.set(providerLeaseId, state);
+    return presentSetupSession(state, { includeConnectionPayload: true });
+  },
+
+  async onEnvironmentGetInteractiveSetup(
+    params: PluginEnvironmentGetInteractiveSetupParams,
+  ): Promise<PluginEnvironmentInteractiveSetupSession> {
+    const state = params.providerLeaseId ? setupSessions.get(params.providerLeaseId) : undefined;
+    if (!state) {
+      return {
+        providerLeaseId: params.providerLeaseId,
+        status: "missing",
+        connectionSummary: null,
+        connectionPayload: null,
+        metadata: {
+          provider: "fake-plugin",
+          found: false,
+        },
+      };
+    }
+    return presentSetupSession(state, { includeConnectionPayload: params.includeConnectionPayload === true });
+  },
+
+  async onEnvironmentCaptureTemplate(
+    params: PluginEnvironmentCaptureTemplateParams,
+  ): Promise<PluginEnvironmentCaptureTemplateResult> {
+    const config = parseConfig(params.config);
+    const state = params.providerLeaseId ? setupSessions.get(params.providerLeaseId) : undefined;
+    if (!state) {
+      throw new Error("Fake setup session not found.");
+    }
+    if (state.status === "cancelled" || state.status === "timed_out" || state.status === "failed") {
+      throw new Error(`Fake setup session cannot be captured from status ${state.status}.`);
+    }
+
+    state.status = "capturing";
+    const templateRef = buildTemplateRef(state.environmentId, state.sessionId);
+    const template: FakeTemplateState = {
+      templateRef,
+      environmentId: state.environmentId,
+      sessionId: state.sessionId,
+      image: config.image,
+      sourceTemplateRef: params.sourceTemplateRef ?? state.sourceTemplateRef,
+      previousTemplateRef: params.previousTemplateRef ?? null,
+      deleted: false,
+    };
+    templates.set(templateRef, template);
+    state.status = "promoted";
+    state.capturedTemplateRef = templateRef;
+    await removeLease(state.providerLeaseId);
+
+    return {
+      templateRef,
+      templateKind: "snapshot",
+      metadata: {
+        provider: "fake-plugin",
+        image: template.image,
+        sourceTemplateRefRedacted: Boolean(template.sourceTemplateRef),
+        previousTemplateRefRedacted: Boolean(template.previousTemplateRef),
+        setupSessionId: state.sessionId,
+        promoted: true,
+      },
+    };
+  },
+
+  async onEnvironmentCancelInteractiveSetup(
+    params: PluginEnvironmentCancelInteractiveSetupParams,
+  ): Promise<PluginEnvironmentCancelInteractiveSetupResult> {
+    const status = cancelStatusFromReason(params.reason);
+    const state = params.providerLeaseId ? setupSessions.get(params.providerLeaseId) : undefined;
+    if (state) {
+      state.status = status;
+      await removeLease(state.providerLeaseId);
+    }
+    return {
+      status,
+      metadata: {
+        provider: "fake-plugin",
+        found: Boolean(state),
+      },
+    };
+  },
+
+  async onEnvironmentDeleteTemplate(
+    params: PluginEnvironmentDeleteTemplateParams,
+  ): Promise<PluginEnvironmentDeleteTemplateResult> {
+    const template = templates.get(params.templateRef);
+    if (template) {
+      template.deleted = true;
+    }
+    return {
+      deleted: Boolean(template),
+      metadata: {
+        provider: "fake-plugin",
+        templateRef: params.templateRef,
+        templateKind: params.templateKind ?? "snapshot",
+      },
+    };
   },
 });
 

@@ -306,6 +306,164 @@ function invalidateVisibleIssueRunQueries(
   return true;
 }
 
+interface RunLiveStatusPatch {
+  runId: string;
+  agentId: string | null;
+  issueId: string | null;
+  message?: string | null;
+  updatedAt?: string | null;
+  currentToolName?: string | null;
+  lastAssistantSnippet?: string | null;
+  lastEventAt?: string | null;
+}
+
+function hasPatchKey<K extends keyof RunLiveStatusPatch>(
+  patch: RunLiveStatusPatch,
+  key: K,
+): patch is RunLiveStatusPatch & Required<Pick<RunLiveStatusPatch, K>> {
+  return Object.prototype.hasOwnProperty.call(patch, key);
+}
+
+function applyRunLiveStatusPatch<T extends ActiveRunForIssue | LiveRunForIssue>(
+  run: T,
+  patch: RunLiveStatusPatch,
+): T {
+  if (run.id !== patch.runId) return run;
+  return {
+    ...run,
+    ...(hasPatchKey(patch, "message")
+      ? { currentStatusMessage: patch.message }
+      : {}),
+    ...(hasPatchKey(patch, "updatedAt")
+      ? { currentStatusUpdatedAt: patch.updatedAt }
+      : {}),
+    ...(hasPatchKey(patch, "currentToolName")
+      ? { currentToolName: patch.currentToolName }
+      : {}),
+    ...(hasPatchKey(patch, "lastAssistantSnippet")
+      ? { lastAssistantSnippet: patch.lastAssistantSnippet }
+      : {}),
+    ...(hasPatchKey(patch, "lastEventAt")
+      ? { lastEventAt: patch.lastEventAt }
+      : {}),
+  };
+}
+
+function applyRunLiveStatusPatchToArray<T extends LiveRunForIssue>(
+  runs: T[] | undefined,
+  patch: RunLiveStatusPatch,
+): T[] | undefined {
+  if (!runs) return runs;
+  let changed = false;
+  const nextRuns = runs.map((run) => {
+    if (run.id !== patch.runId) return run;
+    changed = true;
+    return applyRunLiveStatusPatch(run, patch);
+  });
+  return changed ? nextRuns : runs;
+}
+
+function readRunLiveStatusPatchFromPayload(
+  payload: Record<string, unknown>,
+  eventCreatedAt: string,
+  eventType: string,
+): RunLiveStatusPatch | null {
+  const runId = readString(payload.runId);
+  if (!runId) return null;
+
+  const patch: RunLiveStatusPatch = {
+    runId,
+    agentId: readString(payload.agentId),
+    issueId: readString(payload.issueId),
+  };
+
+  if (eventType === "heartbeat.run.progress") {
+    patch.message = readString(payload.message);
+    patch.updatedAt = readString(payload.updatedAt) ?? eventCreatedAt;
+    patch.currentToolName = readString(payload.currentToolName);
+    patch.lastAssistantSnippet = readString(payload.lastAssistantSnippet);
+    patch.lastEventAt = readString(payload.lastEventAt) ?? patch.updatedAt;
+    return patch;
+  }
+
+  if (eventType === "heartbeat.run.log") {
+    patch.lastEventAt = readString(payload.ts) ?? eventCreatedAt;
+    return patch;
+  }
+
+  if (eventType === "heartbeat.run.event") {
+    const message = readString(payload.message);
+    if (message) patch.message = message;
+    patch.updatedAt = readString(payload.updatedAt) ?? eventCreatedAt;
+    const currentToolName = readString(payload.currentToolName);
+    if (currentToolName) patch.currentToolName = currentToolName;
+    const lastAssistantSnippet = readString(payload.lastAssistantSnippet);
+    if (lastAssistantSnippet) patch.lastAssistantSnippet = lastAssistantSnippet;
+    patch.lastEventAt = readString(payload.lastEventAt) ?? eventCreatedAt;
+    return patch;
+  }
+
+  return null;
+}
+
+function applyRunLiveStatusPatchToCaches(
+  queryClient: QueryClient,
+  companyId: string,
+  pathname: string,
+  patch: RunLiveStatusPatch,
+  options?: VisibleRouteOptions,
+): boolean {
+  let changed = false;
+  queryClient.setQueryData(
+    queryKeys.liveRuns(companyId),
+    (current: LiveRunForIssue[] | undefined) => {
+      const nextRuns = applyRunLiveStatusPatchToArray(current, patch);
+      if (nextRuns !== current) changed = true;
+      return nextRuns;
+    },
+  );
+
+  const issueRefs = new Set<string>();
+  if (patch.issueId) {
+    for (const ref of resolveIssueQueryRefs(queryClient, companyId, patch.issueId, null)) {
+      issueRefs.add(ref);
+    }
+  }
+
+  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  if (
+    context &&
+    (
+      context.runIds.has(patch.runId) ||
+      (!!patch.issueId && context.issueRefs.has(patch.issueId)) ||
+      (!!patch.agentId && !!context.assigneeAgentId && patch.agentId === context.assigneeAgentId)
+    )
+  ) {
+    for (const ref of context.issueRefs) issueRefs.add(ref);
+  }
+
+  for (const issueRef of issueRefs) {
+    queryClient.setQueryData(
+      queryKeys.issues.activeRun(issueRef),
+      (current: ActiveRunForIssue | null | undefined) => {
+        if (!current || current.id !== patch.runId) return current;
+        changed = true;
+        return applyRunLiveStatusPatch(current, patch);
+      },
+    );
+    queryClient.setQueryData(
+      queryKeys.issues.liveRuns(issueRef),
+      (current: LiveRunForIssue[] | undefined) => {
+        const nextRuns = applyRunLiveStatusPatchToArray(current, patch);
+        if (nextRuns !== current) changed = true;
+        return nextRuns;
+      },
+    );
+  }
+
+  return changed;
+}
+
 function shouldSuppressAgentStatusToastForVisibleIssue(
   queryClient: QueryClient,
   pathname: string,
@@ -414,6 +572,20 @@ const ISSUE_DOCUMENT_ACTIVITY_ACTIONS = new Set([
   "issue.document_updated",
   "issue.document_restored",
   "issue.document_deleted",
+]);
+const ISSUE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
+  "issue.document_annotation_thread_created",
+  "issue.document_annotation_comment_added",
+  "issue.document_annotation_thread_resolved",
+  "issue.document_annotation_thread_reopened",
+  "issue.document_annotation_remapped",
+]);
+const ROUTINE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
+  "routine.document_annotation_thread_created",
+  "routine.document_annotation_comment_added",
+  "routine.document_annotation_thread_resolved",
+  "routine.document_annotation_thread_reopened",
+  "routine.document_annotation_remapped",
 ]);
 const AGENT_TOAST_STATUSES = new Set(["error"]);
 const RUN_TOAST_STATUSES = new Set(["failed", "timed_out", "cancelled"]);
@@ -636,6 +808,22 @@ function invalidateHeartbeatQueries(
   }
 }
 
+function invalidateHeartbeatProgressQueries(
+  queryClient: ReturnType<typeof useQueryClient>,
+  companyId: string,
+  payload: Record<string, unknown>,
+) {
+  queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+
+  const agentId = readString(payload.agentId);
+  if (agentId) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
+  }
+}
+
 function invalidateActivityQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   companyId: string,
@@ -653,6 +841,9 @@ function invalidateActivityQueries(
   const actorType = readString(payload.actorType);
   const actorId = readString(payload.actorId);
   const details = readRecord(payload.details);
+  const ownActorActivity =
+    (actorType === "user" && !!currentActor.userId && actorId === currentActor.userId) ||
+    (actorType === "agent" && !!currentActor.agentId && actorId === currentActor.agentId);
 
   if (action?.startsWith("resource_membership.")) {
     const targetUserId = readString(details?.userId);
@@ -710,6 +901,18 @@ function invalidateActivityQueries(
             queryClient.invalidateQueries({ queryKey: ["issues", "document-revisions", ref], ...invalidationOptions });
           }
         }
+        if (
+          action &&
+          (ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action) || ISSUE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS.has(action))
+        ) {
+          const documentKey = readString(details?.key) ?? readString(details?.documentKey);
+          queryClient.invalidateQueries({
+            queryKey: documentKey
+              ? ["issues", "document-annotations", ref, documentKey]
+              : ["issues", "document-annotations", ref],
+            ...invalidationOptions,
+          });
+        }
         if (action?.startsWith("issue.thread_interaction_")) {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref), ...invalidationOptions });
         }
@@ -761,6 +964,14 @@ function invalidateActivityQueries(
 
   if (entityType === "routine" || entityType === "routine_trigger" || entityType === "routine_run") {
     queryClient.invalidateQueries({ queryKey: ["routines"] });
+    if (entityType === "routine" && action && ROUTINE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS.has(action) && entityId) {
+      const documentKey = readString(details?.key) ?? readString(details?.documentKey) ?? "description";
+      const routineInvalidationOptions = ownActorActivity ? { refetchType: "inactive" as const } : undefined;
+      queryClient.invalidateQueries({
+        queryKey: ["routines", "document-annotations", entityId, documentKey],
+        ...routineInvalidationOptions,
+      });
+    }
     return;
   }
 
@@ -817,11 +1028,18 @@ function handleLiveEvent(
 
   const nameOf = (id: string) => resolveAgentName(queryClient, expectedCompanyId, id);
   const payload = event.payload ?? {};
+  const liveStatusPatch = readRunLiveStatusPatchFromPayload(payload, event.createdAt, event.type);
+  if (liveStatusPatch) {
+    applyRunLiveStatusPatchToCaches(queryClient, expectedCompanyId, pathname, liveStatusPatch);
+  }
   if (event.type === "heartbeat.run.log") {
     return;
   }
 
-  if (event.type === "heartbeat.run.queued" || event.type === "heartbeat.run.status") {
+  if (
+    event.type === "heartbeat.run.queued" ||
+    event.type === "heartbeat.run.status"
+  ) {
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
     if (event.type === "heartbeat.run.status") {
@@ -833,6 +1051,12 @@ function handleLiveEvent(
         gatedPushToast(gate, pushToast, "run-status", toast);
       }
     }
+    return;
+  }
+
+  if (event.type === "heartbeat.run.progress") {
+    invalidateHeartbeatProgressQueries(queryClient, expectedCompanyId, payload);
+    invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
     return;
   }
 
@@ -917,9 +1141,12 @@ export const __liveUpdatesTestUtils = {
   buildAgentStatusToast,
   buildRunStatusToast,
   closeSocketQuietly,
+  applyRunLiveStatusPatchToCaches,
   hydrateVisibleIssueComment,
   invalidateActivityQueries,
+  invalidateHeartbeatProgressQueries,
   invalidateVisibleIssueRunQueries,
+  readRunLiveStatusPatchFromPayload,
   resolveLiveCompanyId,
   shouldDeferIssueRefetchForVisibleAgentActivity,
   shouldDeferVisibleIssueCommentActivity,
