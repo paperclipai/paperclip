@@ -17,9 +17,31 @@ Agents can use external [MCP](https://modelcontextprotocol.io) servers — hoste
 
 MCP servers of one agent are never visible to another: every runtime gets a per-agent (or per-run) config location.
 
-## Configuring servers
+## The company MCP library (recommended)
 
-Open the agent's **Configuration** tab and find the **MCP Servers** section.
+Like Skills, MCP servers can be defined once at the company level and enabled per agent:
+
+1. Sidebar → **MCP** — add a server to the company library (stdio command, or http/sse URL; store tokens as secret references, or click **Save & connect** for brokered OAuth).
+2. Open an agent → **MCP** tab — tick the servers this agent should use. Changes autosave and apply on the agent's next run.
+3. The agent's runtime gets the server's tools (`mcp__<name>__*`).
+
+Library servers are shared: one OAuth connection or API-key secret serves every agent that enables the server. Disabling a library server stops injecting it everywhere without touching agent selections. Deleting one is blocked while agents still use it (or cascade with force).
+
+Agents can self-manage their library selection with the `paperclipListCompanyMcpServers` and `paperclipSyncAgentMcpServers` tools.
+
+```text
+GET    /api/companies/:companyId/mcp-servers
+POST   /api/companies/:companyId/mcp-servers            { name, description?, config, enabled? }
+PATCH  /api/companies/:companyId/mcp-servers/:id
+DELETE /api/companies/:companyId/mcp-servers/:id?force=true
+POST   /api/companies/:companyId/mcp-servers/:id/oauth/start
+GET    /api/agents/:id/mcp-server-refs
+PUT    /api/agents/:id/mcp-server-refs                  { desiredMcpServers: string[] }
+```
+
+## Per-agent servers (overrides)
+
+Open the agent's **Configuration** tab and find the **MCP Servers** section. Servers defined here belong to this agent only, and override a library server with the same name.
 
 Each server has a name (letters, digits, `-`, `_`) and a transport:
 

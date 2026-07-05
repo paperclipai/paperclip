@@ -63,6 +63,7 @@ import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService } from "./secrets.js";
 import { mcpOauthService } from "./mcp-oauth.js";
+import { companyMcpServerService } from "./company-mcp-servers.js";
 import {
   hasAlternateCredentialOfType,
   isCredentialFailure,
@@ -2503,6 +2504,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
   const mcpOauthSvc = mcpOauthService(db);
+  const companyMcpSvc = companyMcpServerService(db);
   const companySkills = companySkillService(db);
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -7407,10 +7409,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueAdapterConfig: issueAssigneeOverrides?.adapterConfig ?? null,
     });
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
-    const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
+    let executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
+    // Expand company-catalog MCP refs (adapterConfig.mcpServerRefs) into the
+    // effective mcpServers record; per-agent inline definitions win on name
+    // conflicts. Failures never block the run.
+    try {
+      executionRunConfig = await companyMcpSvc.expandAgentMcpServers(
+        agent.companyId,
+        executionRunConfig,
+      );
+    } catch (err) {
+      logger.warn(
+        { agentId: agent.id, err: err instanceof Error ? err.message : String(err) },
+        "failed to expand company MCP server refs for run",
+      );
+    }
     // Refresh any expiring brokered OAuth tokens for external MCP servers
-    // BEFORE secret resolution so the run gets a fresh bearer token. Failures
-    // never block the run.
+    // BEFORE secret resolution so the run gets a fresh bearer token (catalog
+    // tokens included — they live in the expanded config). Failures never
+    // block the run.
     await mcpOauthSvc.refreshExpiringTokensForAgent({
       id: agent.id,
       companyId: agent.companyId,

@@ -28,6 +28,7 @@ import {
   updateAgentSchema,
   updateAgentMcpServersSchema,
   upsertAgentMcpServerSchema,
+  agentMcpServersSyncSchema,
   supportedEnvironmentDriversForAdapter,
 } from "@paperclipai/shared";
 import {
@@ -71,6 +72,11 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { secretService } from "../services/secrets.js";
 import { mcpOauthService } from "../services/mcp-oauth.js";
+import { sanitizeMcpServersForResponse } from "../services/mcp-sanitize.js";
+import {
+  companyMcpServerService,
+  writeAgentMcpServerRefs,
+} from "../services/company-mcp-servers.js";
 import {
   detectAdapterModel,
   findActiveServerAdapter,
@@ -256,6 +262,7 @@ export function agentRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const secretsSvc = secretService(db);
   const mcpOauthSvc = mcpOauthService(db);
+  const companyMcpSvc = companyMcpServerService(db);
   const credentialsSvc = credentialService(db);
   const instructions = agentInstructionsService();
   const companySkills = companySkillService(db);
@@ -2982,39 +2989,6 @@ export function agentRoutes(
   // so agents can self-manage their own MCP servers (via the Paperclip MCP
   // server tools) in addition to board users.
 
-  /**
-   * Redact plain secret-bearing values for API responses; secret_refs pass
-   * through. Generic sanitization flattens the whole `auth` object (its key
-   * matches the sensitive-key pattern), so a safe structural summary is
-   * rebuilt from the original: the UI needs auth type + OAuth connection
-   * status, never token material.
-   */
-  function sanitizeMcpServersForResponse(mcpServers: unknown): Record<string, unknown> {
-    const record = asRecord(mcpServers) ?? {};
-    const sanitized = (redactEventPayload(record) ?? {}) as Record<string, unknown>;
-    for (const [name, rawServer] of Object.entries(record)) {
-      const originalAuth = asRecord(asRecord(rawServer)?.auth);
-      const sanitizedServer = asRecord(sanitized[name]);
-      if (!originalAuth || !sanitizedServer) continue;
-      if (originalAuth.type === "oauth") {
-        sanitizedServer.auth = {
-          type: "oauth",
-          secretId: typeof originalAuth.secretId === "string" ? originalAuth.secretId : null,
-          connected: typeof originalAuth.secretId === "string" && originalAuth.secretId.length > 0,
-        };
-      } else if (originalAuth.type === "bearer") {
-        const token = asRecord(originalAuth.token);
-        sanitizedServer.auth = {
-          type: "bearer",
-          token:
-            token?.type === "secret_ref" && typeof token.secretId === "string"
-              ? { type: "secret_ref", secretId: token.secretId, ...(token.version !== undefined ? { version: token.version } : {}) }
-              : { type: "plain", value: "***REDACTED***" },
-        };
-      }
-    }
-    return sanitized;
-  }
 
   /**
    * A brokered OAuth connection stores its token secret id on the server's
@@ -3209,6 +3183,73 @@ export function agentRoutes(
     });
   });
 
+  // ---- Company MCP catalog enablement (Skills-style checkboxes) ------------
+  // The agent's enabled catalog servers live at adapterConfig.mcpServerRefs
+  // (names into company_mcp_servers). The heartbeat expands refs into the
+  // effective mcpServers record at run time.
+
+  router.get("/agents/:id/mcp-server-refs", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    await assertCanReadAgent(req, existing);
+    res.json(await companyMcpSvc.snapshotForAgent(existing.companyId, existing.adapterConfig));
+  });
+
+  router.put(
+    "/agents/:id/mcp-server-refs",
+    validate(agentMcpServersSyncSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await svc.getById(id);
+      if (!existing) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      await assertCanUpdateAgent(req, existing);
+
+      const { desiredMcpServers } = req.body as { desiredMcpServers: string[] };
+      const resolved = await companyMcpSvc.resolveRequestedNames(
+        existing.companyId,
+        desiredMcpServers,
+      );
+      const nextAdapterConfig = writeAgentMcpServerRefs(
+        asRecord(existing.adapterConfig) ?? {},
+        resolved,
+      );
+
+      const actor = getActorInfo(req);
+      const agent = await svc.update(id, { adapterConfig: nextAdapterConfig }, {
+        recordRevision: {
+          createdByAgentId: actor.agentId,
+          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+          source: "mcp-server-sync",
+        },
+      });
+      if (!agent) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+
+      await logActivity(db, {
+        companyId: agent.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "agent.mcp_servers_synced",
+        entityType: "agent",
+        entityId: agent.id,
+        details: { desiredMcpServers: resolved },
+      });
+
+      res.json(await companyMcpSvc.snapshotForAgent(agent.companyId, agent.adapterConfig));
+    },
+  );
+
   // ---- Brokered OAuth for remote MCP servers -------------------------------
 
   function mcpOauthRedirectUri(req: Request): string {
@@ -3323,12 +3364,18 @@ export function agentRoutes(
           : undefined;
       const result = await mcpOauthSvc.handleCallback({ state, code, actor });
       await logActivity(db, {
-        companyId: (await svc.getById(result.agentId))?.companyId ?? "",
+        companyId: result.companyId,
         actorType: actor?.userId ? "user" : "system",
         actorId: actor?.userId ?? "system",
-        action: "agent.mcp_server.oauth_connected",
-        entityType: "agent",
-        entityId: result.agentId,
+        action:
+          result.target.kind === "company_mcp_server"
+            ? "company.mcp_server_oauth_connected"
+            : "agent.mcp_server.oauth_connected",
+        entityType: result.target.kind === "company_mcp_server" ? "mcp_server" : "agent",
+        entityId:
+          result.target.kind === "company_mcp_server"
+            ? result.target.mcpServerId
+            : result.target.agentId,
         details: { server: result.serverName },
       });
       respondHtml(
