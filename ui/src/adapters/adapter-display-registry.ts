@@ -83,6 +83,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Gemini CLI harness",
     icon: Gem,
   },
+  antigravity_local: {
+    label: "Antigravity",
+    description: "Antigravity CLI harness",
+    icon: Sparkles,
+  },
   grok_local: {
     label: "Grok Build",
     description: "Grok Build harness",
