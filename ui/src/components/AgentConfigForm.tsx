@@ -1504,7 +1504,28 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 return created;
               }}
               onChange={(mcpServers) => mark("adapterConfig", "mcpServers", mcpServers)}
-              onStartOauth={async (serverName) => {
+              onStartOauth={async (serverName, server) => {
+                // The OAuth broker reads the agent's PERSISTED config, but the
+                // server may only exist in the unsaved form overlay (or have
+                // unsaved edits). Persist this one server first so Connect is
+                // a single click instead of a save-then-connect dance. The
+                // editor passes its current value for the name; fall back to
+                // the overlay for older call sites.
+                const currentServers = eff(
+                  "adapterConfig",
+                  "mcpServers",
+                  (config.mcpServers ?? EMPTY_MCP_SERVERS) as McpServersConfig,
+                ) as McpServersConfig | undefined;
+                const serverToPersist = server ?? currentServers?.[serverName];
+                if (!serverToPersist) {
+                  throw new Error(`MCP server "${serverName}" not found in the form`);
+                }
+                await agentsApi.upsertMcpServer(
+                  props.agent.id,
+                  serverName,
+                  serverToPersist,
+                  selectedCompanyId ?? undefined,
+                );
                 const { authorizeUrl } = await agentsApi.startMcpOauth(
                   props.agent.id,
                   serverName,

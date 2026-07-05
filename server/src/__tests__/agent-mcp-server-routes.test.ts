@@ -289,6 +289,48 @@ describe("agent MCP server routes", () => {
     expect(nextConfig.mcpServers).toEqual({});
   });
 
+  it("preserves a connected OAuth secretId when a stale write sends secretId null", async () => {
+    const CONNECTED_SECRET_ID = "33333333-3333-4333-8333-333333333333";
+    mockAgentService.getById.mockImplementation(async (id: string) =>
+      id === AGENT_ID
+        ? makeAgent({
+            mcpServers: {
+              linear: {
+                ...LINEAR_SERVER,
+                headers: {},
+                auth: { type: "oauth", secretId: CONNECTED_SECRET_ID },
+              },
+            },
+          })
+        : null,
+    );
+
+    const app = await createApp();
+    const response = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .put(`/api/agents/${AGENT_ID}/mcp-servers`)
+        .send({
+          mcpServers: {
+            linear: {
+              transport: "http",
+              url: "https://mcp.linear.app/mcp",
+              // Stale client copy from before the OAuth callback landed.
+              auth: { type: "oauth", secretId: null },
+            },
+          },
+        }),
+    );
+    expect(response.status).toBe(200);
+
+    const updateCall = mockAgentService.update.mock.calls.at(-1);
+    const nextConfig = (updateCall?.[1] as {
+      adapterConfig: { mcpServers: Record<string, { auth?: { secretId?: string | null } }> };
+    }).adapterConfig;
+    // secretId null means "not connected yet", never "disconnect" — the
+    // connected secret must be carried forward.
+    expect(nextConfig.mcpServers.linear.auth?.secretId).toBe(CONNECTED_SECRET_ID);
+  });
+
   it("starts OAuth via the broker and returns the authorize URL", async () => {
     mockMcpOauthService.startAuthorization.mockResolvedValue({
       authorizeUrl: "https://auth.example.com/authorize?x=1",
