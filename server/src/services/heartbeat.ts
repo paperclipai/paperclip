@@ -120,7 +120,7 @@ import {
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { workspaceOperationService } from "./workspace-operations.js";
+import { recordOperationBestEffort, workspaceOperationService } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
@@ -9300,19 +9300,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         metadata?: Record<string, unknown>,
       ) => {
         if (adapterFinalizeOutcome) return;
-        await workspaceOperationRecorder.recordOperation({
-          phase: "workspace_finalize",
-          cwd: executionWorkspace.cwd,
-          metadata: {
-            adapterType: agent.adapterType,
-            executionTargetKind: executionTarget?.kind ?? "local",
-            ...metadata,
+        // Best-effort: this row is a bookkeeping/gating barrier, not the work.
+        // A race between run cleanup (janitor/agent-or-company deletion/replica
+        // failover) and this write can leave heartbeat_run_id pointing at a
+        // heartbeat_runs row that no longer exists, which violates the FK on
+        // insert. That must never fail the whole heartbeat and strand the
+        // agent in status=error over pure bookkeeping — warn and continue.
+        // Dependents gated on reading a workspace_finalize=succeeded row may
+        // stay blocked until the next successful run, which is recoverable;
+        // a stranded agent is not.
+        await recordOperationBestEffort(
+          workspaceOperationRecorder,
+          {
+            phase: "workspace_finalize",
+            cwd: executionWorkspace.cwd,
+            metadata: {
+              adapterType: agent.adapterType,
+              executionTargetKind: executionTarget?.kind ?? "local",
+              ...metadata,
+            },
+            run: async () => ({ status }),
           },
-          run: async () => ({ status }),
-        });
-        // Only mark the outcome after the row landed, so a transient write
-        // failure on the succeeded path can still be recovered by recording
-        // finalize=failed from the catch path below.
+          (recordErr) => {
+            logger.warn(
+              { err: recordErr, runId: run.id, executionWorkspaceId: persistedExecutionWorkspace?.id ?? null },
+              "failed to record workspace_finalize operation; continuing without op-log barrier row",
+            );
+          },
+        );
         adapterFinalizeOutcome = status;
       };
 
@@ -9346,26 +9361,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // Adapter returned cleanly, which means its workspace-restore finally
         // block also ran without throwing. Record the workspace_finalize
         // barrier so dependents that share this executionWorkspace can wake.
-        // If recording the barrier itself fails, propagate as a run failure
-        // rather than silently leaving dependents stranded behind a missing
-        // finalize row.
+        // recordWorkspaceFinalize is best-effort (see above) and never
+        // throws, so a failed op-log write cannot itself fail this run.
         await recordWorkspaceFinalize("succeeded");
       } catch (adapterErr) {
-        // Adapter (or its restore finally) threw — or the finalize record
-        // write itself threw. Either way the workspace may be in a partial
-        // state. Best-effort record finalize=failed so the dependent readiness
-        // check keeps the gate closed instead of waking on stale local state,
-        // and surface the original error to the caller.
-        try {
-          await recordWorkspaceFinalize("failed", {
-            errorMessage: adapterErr instanceof Error ? adapterErr.message : String(adapterErr),
-          });
-        } catch (recordErr) {
-          logger.warn(
-            { err: recordErr, runId: run.id, executionWorkspaceId: persistedExecutionWorkspace?.id ?? null },
-            "failed to record workspace_finalize=failed operation; dependents may remain gated",
-          );
-        }
+        // Adapter (or its restore finally) threw. The workspace may be in a
+        // partial state. Best-effort record finalize=failed so the dependent
+        // readiness check keeps the gate closed instead of waking on stale
+        // local state, and surface the original error to the caller.
+        await recordWorkspaceFinalize("failed", {
+          errorMessage: adapterErr instanceof Error ? adapterErr.message : String(adapterErr),
+        });
         throw adapterErr;
       }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices

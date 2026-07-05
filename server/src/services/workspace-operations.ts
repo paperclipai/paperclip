@@ -259,3 +259,27 @@ export function workspaceOperationService(db: Db) {
 }
 
 export { toWorkspaceOperation };
+
+/**
+ * Best-effort variant of `WorkspaceOperationRecorder.recordOperation`.
+ *
+ * Workspace-operation rows are bookkeeping (an audit/gating trail), not the
+ * work itself. If the underlying insert/update fails — e.g. a
+ * `heartbeat_run_id` FK violation because the parent `heartbeat_runs` row was
+ * deleted out from under an in-flight run (janitor/cleanup race, agent/
+ * company deletion, replica failover) — that failure must never propagate
+ * and fail the caller's larger operation (a heartbeat, a run). Swallow the
+ * error, report it via `onError`, and return null instead of throwing.
+ */
+export async function recordOperationBestEffort(
+  recorder: WorkspaceOperationRecorder,
+  input: Parameters<WorkspaceOperationRecorder["recordOperation"]>[0],
+  onError: (error: unknown) => void,
+): Promise<WorkspaceOperation | null> {
+  try {
+    return await recorder.recordOperation(input);
+  } catch (error) {
+    onError(error);
+    return null;
+  }
+}
