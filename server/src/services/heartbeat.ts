@@ -70,7 +70,7 @@ import type {
   UsageSummary,
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
-import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { parseObject, asBoolean, asNumber } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -98,12 +98,23 @@ import {
   resolveModelProfileApplication,
   type ModelProfileApplication,
 } from "./heartbeat-model-profile.js";
+import {
+  appendExcerpt,
+  boundHeartbeatRunEventPayloadForStorage,
+  compactRunLogChunk,
+  redactDetectedSuccessfulRunProgressSummaryForBoard,
+} from "./heartbeat-run-event-payload.js";
 
 export {
   mergeModelProfileAdapterConfig,
   normalizeModelProfileWakeContext,
   resolveModelProfileApplication,
   type ModelProfileApplication,
+};
+export {
+  boundHeartbeatRunEventPayloadForStorage,
+  compactRunLogChunk,
+  redactDetectedSuccessfulRunProgressSummaryForBoard,
 };
 import {
   classifyRunLiveness,
@@ -203,7 +214,6 @@ import {
 import {
   redactCurrentUserText,
   redactCurrentUserValue,
-  type CurrentUserRedactionOptions,
 } from "../log-redaction.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import {
@@ -248,21 +258,6 @@ import {
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
-const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
-const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
-const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
-
-export function redactDetectedSuccessfulRunProgressSummaryForBoard(
-  summary: string,
-  currentUserRedactionOptions?: CurrentUserRedactionOptions,
-) {
-  const normalized = summary.replace(/\s+/g, " ").trim();
-  const redacted = redactSensitiveText(redactCurrentUserText(normalized, currentUserRedactionOptions));
-  return redacted.length <= 280 ? redacted : `${redacted.slice(0, 277)}...`;
-}
-
-const MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS = 100;
-const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
@@ -472,7 +467,6 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
 const activeRunExecutions = new Set<string>();
-const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
   ReturnType<typeof secretService>,
@@ -1842,101 +1836,6 @@ const heartbeatRunIssueSummaryColumns = {
   lastOutputBytes: heartbeatRuns.lastOutputBytes,
   issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
 } as const;
-
-function appendExcerpt(prev: string, chunk: string) {
-  return appendWithByteCap(prev, chunk, MAX_EXCERPT_BYTES);
-}
-
-function truncateRunEventString(value: string) {
-  if (value.length <= MAX_RUN_EVENT_PAYLOAD_STRING_CHARS) return value;
-  const omittedChars = value.length - MAX_RUN_EVENT_PAYLOAD_STRING_CHARS;
-  return `${value.slice(0, MAX_RUN_EVENT_PAYLOAD_STRING_CHARS)}\n[truncated ${omittedChars} chars]`;
-}
-
-function boundRunEventValue(value: unknown, depth: number, seen: WeakSet<object>): unknown {
-  if (typeof value === "string") {
-    return truncateRunEventString(value);
-  }
-  if (
-    value === null
-    || typeof value === "number"
-    || typeof value === "boolean"
-  ) {
-    return value;
-  }
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-  if (Array.isArray(value)) {
-    if (depth >= MAX_RUN_EVENT_PAYLOAD_DEPTH) {
-      return {
-        _truncated: true,
-        type: "array",
-        originalLength: value.length,
-      };
-    }
-    const bounded = value
-      .slice(0, MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS)
-      .map((entry) => boundRunEventValue(entry, depth + 1, seen));
-    if (value.length > MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS) {
-      bounded.push({
-        _truncated: true,
-        omittedItems: value.length - MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS,
-      });
-    }
-    return bounded;
-  }
-  if (typeof value !== "object" || value === undefined) {
-    return null;
-  }
-  if (seen.has(value)) {
-    return "[Circular]";
-  }
-  seen.add(value);
-  const entries = Object.entries(value as Record<string, unknown>);
-  if (depth >= MAX_RUN_EVENT_PAYLOAD_DEPTH) {
-    const bounded = {
-      _truncated: true,
-      type: "object",
-      keys: entries.map(([key]) => key).slice(0, 20),
-    };
-    seen.delete(value);
-    return bounded;
-  }
-
-  const out: Record<string, unknown> = {};
-  for (const [key, entryValue] of entries.slice(0, MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS)) {
-    out[key] = boundRunEventValue(entryValue, depth + 1, seen);
-  }
-  if (entries.length > MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS) {
-    out._truncated = true;
-    out._omittedKeys = entries.length - MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS;
-  }
-  seen.delete(value);
-  return out;
-}
-
-export function boundHeartbeatRunEventPayloadForStorage(payload: Record<string, unknown>): Record<string, unknown> {
-  const bounded = boundRunEventValue(payload, 0, new WeakSet());
-  return parseObject(bounded) ?? { _truncated: true };
-}
-
-function redactInlineBase64ImageData(chunk: string) {
-  return chunk.replace(INLINE_BASE64_IMAGE_DATA_RE, (_match, prefix: string, data: string, suffix: string) =>
-    `${prefix}[omitted base64 image data: ${data.length} chars]${suffix}`,
-  );
-}
-
-export function compactRunLogChunk(chunk: string, maxChars = MAX_PERSISTED_LOG_CHUNK_CHARS) {
-  const normalized = redactSensitiveText(redactInlineBase64ImageData(chunk));
-  if (normalized.length <= maxChars) return normalized;
-
-  const headChars = Math.max(0, Math.floor(maxChars * 0.6));
-  const tailChars = Math.max(0, Math.floor(maxChars * 0.25));
-  const omittedChars = Math.max(0, normalized.length - headChars - tailChars);
-  const marker = `\n[paperclip truncated run log chunk: omitted ${omittedChars} chars]\n`;
-  return `${normalized.slice(0, headChars)}${marker}${normalized.slice(normalized.length - tailChars)}`;
-}
 
 function normalizeMaxConcurrentRuns(value: unknown) {
   const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
