@@ -68,3 +68,30 @@ The first-install demo definitions are:
 - `local-project-helper`
 - `ops-status`
 - `crm-sales-note-draft`
+
+## Phase 5a User-Story Harness
+
+The Phase 5a MCP production harness scripts the accepted user-story catalog
+from PAP-12338 section 5:
+
+```sh
+pnpm test:e2e:mcp-user-stories
+```
+
+By default this runs only the currently runnable stories (US-1..US-5 and
+US-8..US-10) against the Playwright-managed local instance. Each scenario seeds
+a real company, a real Scout agent, and a deterministic MCP fixture connection;
+then it drives the gateway/Test-tab APIs plus the UI pages that provide
+evidence screenshots under `test-results/mcp-user-stories/`.
+
+Run the full catalog, including dependency-gated placeholders for US-6 and
+US-7, with:
+
+```sh
+pnpm test:e2e:mcp-user-stories -- --include-gated
+```
+
+The browser side uses the same `PAPERCLIP_PLAYWRIGHT_CHANNEL` override as the
+rest of `tests/e2e`. In minimal containers, install the Playwright system
+dependencies or point `PAPERCLIP_PLAYWRIGHT_CHANNEL` at the managed branch
+service's known-good Chromium wrapper before running the browser smoke.
