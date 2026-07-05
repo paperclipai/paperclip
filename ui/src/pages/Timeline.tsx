@@ -25,6 +25,7 @@ import {
   type ZoomLevel,
   zoomScaleForLevel,
 } from "@/components/timeline/WorkTimelineChart";
+import { TIMELINE_COLORS } from "@/lib/timeline/layout";
 import { cn } from "@/lib/utils";
 
 type RangePreset = "today" | "7d" | "30d" | "custom";
@@ -93,6 +94,33 @@ function Segmented<T extends string>({
           {opt.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/** Encoding key for the "Signal" timeline: colour = how each run started. */
+function TimelineLegend() {
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-3.5 py-2 text-xs text-muted-foreground">
+      <span className="flex items-center gap-1.5">
+        <span className="h-2.5 w-4 rounded-sm" style={{ backgroundColor: TIMELINE_COLORS.delegated }} />
+        Delegated
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="h-2.5 w-4 rounded-sm" style={{ backgroundColor: TIMELINE_COLORS.automation }} />
+        Automation
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span
+          className="h-2.5 w-4 rounded-sm border border-dashed bg-transparent"
+          style={{ borderColor: TIMELINE_COLORS.cancelled }}
+        />
+        Cancelled
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="h-3.5 w-0.5" style={{ backgroundColor: TIMELINE_COLORS.now }} />
+        Now
+      </span>
     </div>
   );
 }
@@ -265,6 +293,7 @@ export function Timeline() {
         ) : (
           <div className="space-y-3">
             <div className="rounded-lg border border-border bg-card">
+              <TimelineLegend />
               <WorkTimelineChart
                 data={data}
                 zoom={zoom}

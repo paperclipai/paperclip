@@ -73,6 +73,10 @@ export interface ActorRow {
   bars: PositionedBar[];
   /** reserved for instant event markers; currently empty by design. */
   markers: PositionedMarker[];
+  /** number of runs plotted on this row (the "Signal" rail count). */
+  runCount: number;
+  /** total active run time on this row in ms (the "Signal" rail active-time). */
+  activeMs: number;
 }
 
 export interface Connector {
@@ -105,9 +109,43 @@ export interface TimelineLayout {
 
 export const AXIS_H = 32;
 const RUNNING_STATUSES = new Set(["running", "in_progress", "queued", "pending"]);
+const CANCELLED_STATUSES = new Set(["cancelled", "canceled", "aborted", "skipped"]);
 
 export function isRunningStatus(status: string): boolean {
   return RUNNING_STATUSES.has(status);
+}
+
+export function isCancelledStatus(status: string): boolean {
+  return CANCELLED_STATUSES.has(status);
+}
+
+/**
+ * "Signal" encoding (PAP-12694, board-picked): colour spends on ONE meaning —
+ * how the run started — instead of a per-issue hash rainbow. Delegated runs
+ * (kicked off by another actor) read blue; automation/self-started runs read
+ * amber. The blue/amber pair is colour-blind-safe and holds contrast on both
+ * light and dark backgrounds so the chart screenshots cleanly. Cancelled runs
+ * drop their fill entirely (rendered as a hollow dashed bar) and a teal "now"
+ * line marks the present.
+ */
+export const TIMELINE_COLORS = {
+  delegated: "#5b9bf6",
+  automation: "#f4b740",
+  /** stroke/ink for a hollow, cancelled bar. */
+  cancelled: "#9aa3ad",
+  now: "#2dd4bf",
+} as const;
+
+export type RunSourceKind = "delegated" | "automation";
+
+/** How a run was started: delegated (has a kickoff actor) vs. automation/self. */
+export function barSourceKind(bar: PositionedBar): RunSourceKind {
+  return bar.kickoff ? "delegated" : "automation";
+}
+
+/** Source colour for a bar under the "Signal" encoding. */
+export function barColor(bar: PositionedBar): string {
+  return TIMELINE_COLORS[barSourceKind(bar)];
 }
 
 export function actorType(actor: WorkTimelineActor | undefined): string {
@@ -252,7 +290,9 @@ export function computeLayout(result: WorkTimelineResult, opts: LayoutOptions): 
 
     const markers: PositionedMarker[] = [];
 
-    rows.push({ actor, y, h, laneCount, bars, markers });
+    const activeMs = runs.reduce((sum, r) => sum + Math.max(0, spanEndMs(r, nowMs) - spanStartMs(r)), 0);
+
+    rows.push({ actor, y, h, laneCount, bars, markers, runCount: runs.length, activeMs });
     y += h;
   }
 

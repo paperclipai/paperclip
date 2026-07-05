@@ -15,11 +15,13 @@ import { applyCompanyPrefix, extractCompanyPrefixFromPath } from "@/lib/company-
 import {
   AXIS_H,
   actorType,
+  barColor,
   chooseTickStepMs,
   computeLayout,
   formatDuration,
-  issueColor,
+  isCancelledStatus,
   shortLabel,
+  TIMELINE_COLORS,
   type LayoutOptions,
   type PositionedBar,
 } from "@/lib/timeline/layout";
@@ -301,8 +303,6 @@ export function WorkTimelineChart({
   const startTick = Math.ceil(layout.fromMs / stepMs) * stepMs;
   for (let ms = startTick; ms <= layout.toMs; ms += stepMs) ticks.push(ms);
 
-  const barFill = (bar: PositionedBar): string => issueColor(bar.span.issueId);
-
   const openIssue = (issueId: string) => {
     const href = applyCompanyPrefix(`/issues/${encodeURIComponent(issueId)}`, companyPrefix);
     window.open(href, "_blank", "noopener,noreferrer");
@@ -439,17 +439,17 @@ export function WorkTimelineChart({
               );
             })}
 
-          {/* now line */}
+          {/* now line — teal "Signal" present marker */}
           {now >= layout.fromMs && now <= layout.toMs && (
             <line
               x1={layout.gutter + ((now - layout.fromMs) / 60000) * layout.pxPerMinute}
               y1={AXIS_H}
               x2={layout.gutter + ((now - layout.fromMs) / 60000) * layout.pxPerMinute}
               y2={layout.height}
-              stroke="var(--color-primary)"
-              strokeWidth={1}
+              stroke={TIMELINE_COLORS.now}
+              strokeWidth={1.5}
               strokeDasharray="2 3"
-              opacity={0.7}
+              opacity={0.9}
             />
           )}
 
@@ -513,7 +513,8 @@ export function WorkTimelineChart({
                 {row.bars.map((bar) => {
                   const yTop = bar.yTop + AXIS_H;
                   const w = bar.x2 - bar.x1;
-                  const hue = issueColor(bar.span.issueId);
+                  const cancelled = isCancelledStatus(bar.span.status);
+                  const color = barColor(bar);
                   const connectedState =
                     connectedRunIds == null ? "idle" : connectedRunIds.has(bar.span.runId) ? "connected" : "faded";
                   const barOpacity =
@@ -538,21 +539,23 @@ export function WorkTimelineChart({
                         onMouseDown={(e) => e.stopPropagation()}
                         onClick={() => openIssue(bar.span.issueId)}
                       >
+                        {/* "Signal" encoding: fill = how the run started (delegated /
+                            automation); cancelled runs drop the fill and read as a
+                            hollow dashed bar. */}
                         <rect
                           x={bar.x1}
                           y={yTop}
                           width={w}
                           height={bar.height}
                           rx={3}
-                          fill={barFill(bar)}
-                          stroke="var(--color-foreground)"
+                          fill={cancelled ? "transparent" : color}
+                          stroke={cancelled ? TIMELINE_COLORS.cancelled : "var(--color-foreground)"}
                           strokeWidth={1.5}
+                          strokeDasharray={cancelled ? "4 3" : undefined}
                           opacity={barOpacity}
                         />
-                        {/* left colour tab = issue identity (no textual ID on the bar) */}
-                        <rect x={bar.x1} y={yTop} width={3.5} height={bar.height} fill={hue} />
                         {/* in-progress fade to "now" */}
-                        {bar.running && w > 8 && (
+                        {bar.running && !cancelled && w > 8 && (
                           <rect x={bar.x2 - Math.min(w - 2, 26)} y={yTop + 1.5} width={Math.min(w - 2, 26)} height={bar.height - 3} fill="url(#tl-fade)" />
                         )}
                       </g>
@@ -632,10 +635,21 @@ function ActorGutter({ rows, height }: { rows: ReturnType<typeof computeLayout>[
             />
             <AvatarGlyph cx={26} cy={cy} r={AVATAR_R} label={shortLabel(row.actor.name)} type={row.actor.type} />
             <text x={26 + AVATAR_R + 10} y={cy - 2} fontSize={13} fill="var(--color-foreground)">
-              {truncate(row.actor.name, 18)}
+              {truncate(row.actor.name, 16)}
             </text>
             <text x={26 + AVATAR_R + 10} y={cy + 12} fontSize={11} fill="var(--color-muted-foreground)">
               {row.actor.type}
+            </text>
+            {/* "Signal" rail: run count + active time, right-aligned in the gutter. */}
+            <text
+              x={GEOM.gutter - 10}
+              y={cy + 11}
+              fontSize={10.5}
+              textAnchor="end"
+              fill="var(--color-muted-foreground)"
+              style={{ fontVariantNumeric: "tabular-nums" }}
+            >
+              {row.runCount}× · {formatDuration(0, row.activeMs)}
             </text>
           </g>
         );
@@ -845,7 +859,8 @@ function MiniMap({
                 y={yy + 1}
                 width={Math.max(2, mx(endMs) - mx(startMs))}
                 height={Math.max(2, laneH - 2)}
-                fill={issueColor(bar.span.issueId)}
+                fill={isCancelledStatus(bar.span.status) ? TIMELINE_COLORS.cancelled : barColor(bar)}
+                opacity={isCancelledStatus(bar.span.status) ? 0.5 : 1}
               />
             );
           }),
