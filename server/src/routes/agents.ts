@@ -2863,6 +2863,15 @@ export function agentRoutes(
           rawEffectiveAdapterConfig,
         );
       }
+      if (asRecord(rawEffectiveAdapterConfig.mcpServers)) {
+        rawEffectiveAdapterConfig = {
+          ...rawEffectiveAdapterConfig,
+          mcpServers: preserveConnectedMcpOauthSecrets(
+            existingAdapterConfig.mcpServers,
+            asRecord(rawEffectiveAdapterConfig.mcpServers) ?? {},
+          ),
+        };
+      }
       const effectiveAdapterConfig = applyCreateDefaultsByAdapterType(
         requestedAdapterType,
         rawEffectiveAdapterConfig,
@@ -3007,6 +3016,41 @@ export function agentRoutes(
     return sanitized;
   }
 
+  /**
+   * A brokered OAuth connection stores its token secret id on the server's
+   * auth config server-side (via the OAuth callback). Clients that saved a
+   * stale copy of the config would send `auth: {type:"oauth", secretId:null}`
+   * and silently disconnect the server. `secretId:null` means "not connected
+   * yet" — never "disconnect" — so carry the existing connected secret
+   * forward. Disconnecting is switching auth type or removing the server.
+   */
+  function preserveConnectedMcpOauthSecrets(
+    existingMcpServers: unknown,
+    nextMcpServers: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const existingRecord = asRecord(existingMcpServers);
+    if (!existingRecord) return nextMcpServers;
+    const merged: Record<string, unknown> = { ...nextMcpServers };
+    for (const [name, rawNextServer] of Object.entries(nextMcpServers)) {
+      const nextServer = asRecord(rawNextServer);
+      const nextAuth = asRecord(nextServer?.auth);
+      if (!nextServer || nextAuth?.type !== "oauth" || nextAuth.secretId) continue;
+      const existingAuth = asRecord(asRecord(existingRecord[name])?.auth);
+      if (existingAuth?.type !== "oauth" || typeof existingAuth.secretId !== "string" || !existingAuth.secretId) {
+        continue;
+      }
+      merged[name] = {
+        ...nextServer,
+        auth: {
+          ...nextAuth,
+          secretId: existingAuth.secretId,
+          ...(existingAuth.version !== undefined ? { version: existingAuth.version } : {}),
+        },
+      };
+    }
+    return merged;
+  }
+
   async function persistAgentMcpServers(input: {
     req: Request;
     existing: NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
@@ -3015,9 +3059,13 @@ export function agentRoutes(
     details: Record<string, unknown>;
   }) {
     const { req, existing } = input;
+    const guardedMcpServers = preserveConnectedMcpOauthSecrets(
+      asRecord(existing.adapterConfig)?.mcpServers,
+      input.nextMcpServers,
+    );
     const normalizedMcpServers = await secretsSvc.normalizeMcpServersForPersistence(
       existing.companyId,
-      input.nextMcpServers,
+      guardedMcpServers,
       { strictMode: strictSecretsMode },
     );
     const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};

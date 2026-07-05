@@ -192,12 +192,14 @@ export function McpServersEditor({
   onCreateSecret: (name: string, value: string) => Promise<CompanySecret>;
   onChange: (mcpServers: McpServersConfig | undefined) => void;
   /**
-   * Starts the Paperclip-brokered OAuth flow for a saved http/sse server. The
-   * caller is responsible for hitting the API and opening the authorize URL
-   * (e.g. agentsApi.startMcpOauth + window.open). Optional so the editor stays
-   * usable without network access (create flows, showcases).
+   * Starts the Paperclip-brokered OAuth flow for an http/sse server. The
+   * caller is responsible for persisting the server (it may only exist in the
+   * unsaved form), hitting the API, and opening the authorize URL
+   * (agentsApi.upsertMcpServer + startMcpOauth + window.open). `server` is the
+   * editor's current value for that name. Optional so the editor stays usable
+   * without network access (create flows, showcases).
    */
-  onStartOauth?: (serverName: string) => Promise<void>;
+  onStartOauth?: (serverName: string, server?: McpServerConfig) => Promise<void>;
 }) {
   const servers: McpServersConfig = value && typeof value === "object" ? value : {};
   const entries = Object.entries(servers);
@@ -205,12 +207,12 @@ export function McpServersEditor({
   const [oauthPendingName, setOauthPendingName] = useState<string | null>(null);
   const [oauthError, setOauthError] = useState<string | null>(null);
 
-  async function startOauth(name: string) {
+  async function startOauth(name: string, server?: McpServerConfig) {
     if (!onStartOauth) return;
     setOauthPendingName(name);
     setOauthError(null);
     try {
-      await onStartOauth(name);
+      await onStartOauth(name, server ?? servers[name]);
     } catch (error) {
       setOauthError(error instanceof Error ? error.message : "Failed to start OAuth connection");
     } finally {
@@ -274,7 +276,14 @@ export function McpServersEditor({
                 takenNames={entries.map(([existingName]) => existingName)}
                 secrets={secrets}
                 onCreateSecret={onCreateSecret}
-                onStartOauth={onStartOauth}
+                onSubmitAndConnect={
+                  onStartOauth
+                    ? (nextName, nextServer) => {
+                        commitServer(name, nextName, nextServer);
+                        void startOauth(nextName, nextServer);
+                      }
+                    : undefined
+                }
                 onCancel={() => setEditor(null)}
                 onSubmit={(nextName, nextServer) => commitServer(name, nextName, nextServer)}
               />
@@ -371,7 +380,14 @@ export function McpServersEditor({
             takenNames={entries.map(([existingName]) => existingName)}
             secrets={secrets}
             onCreateSecret={onCreateSecret}
-            onStartOauth={onStartOauth}
+            onSubmitAndConnect={
+              onStartOauth
+                ? (name, server) => {
+                    commitServer(null, name, server);
+                    void startOauth(name, server);
+                  }
+                : undefined
+            }
             onCancel={() => setEditor(null)}
             onSubmit={(name, server) => commitServer(null, name, server)}
           />
@@ -409,7 +425,7 @@ function ServerForm({
   takenNames,
   secrets,
   onCreateSecret,
-  onStartOauth,
+  onSubmitAndConnect,
   onCancel,
   onSubmit,
 }: {
@@ -418,7 +434,13 @@ function ServerForm({
   takenNames: string[];
   secrets: CompanySecret[];
   onCreateSecret: (name: string, value: string) => Promise<CompanySecret>;
-  onStartOauth?: (serverName: string) => Promise<void>;
+  /**
+   * Connect from inside the form: commits the current (validated) draft to the
+   * editor and kicks off the brokered OAuth flow — the parent persists the
+   * server before hitting the OAuth endpoint, so Connect is a single click
+   * even for a brand-new server.
+   */
+  onSubmitAndConnect?: (name: string, server: McpServerConfig) => void;
   onCancel: () => void;
   onSubmit: (name: string, server: McpServerConfig) => void;
 }) {
@@ -444,24 +466,8 @@ function ServerForm({
     initialAuth?.type === "bearer" ? bindingToRow("", initialAuth.token) : emptyBindingRow(),
   );
   const [bearerSealError, setBearerSealError] = useState<string | null>(null);
-  const [oauthPending, setOauthPending] = useState(false);
-  const [oauthError, setOauthError] = useState<string | null>(null);
 
   const initialOauth = initial ? oauthConnectionState(initial) : null;
-  const canConnectOauth = Boolean(onStartOauth && originalName && initialAuth?.type === "oauth");
-
-  async function startOauthFromForm() {
-    if (!onStartOauth || !originalName) return;
-    setOauthPending(true);
-    setOauthError(null);
-    try {
-      await onStartOauth(originalName);
-    } catch (error) {
-      setOauthError(error instanceof Error ? error.message : "Failed to start OAuth connection");
-    } finally {
-      setOauthPending(false);
-    }
-  }
 
   const trimmedName = name.trim();
   const nameValid = MCP_SERVER_NAME_RE.test(trimmedName);
@@ -479,6 +485,8 @@ function ServerForm({
     !commandMissing &&
     !urlInvalid &&
     !lockedRemaining;
+  // Connect commits the validated draft first, so it's gated the same as Save.
+  const canConnectOauth = Boolean(onSubmitAndConnect && authMode === "oauth" && canSave);
 
   function buildServer(): McpServerConfig {
     // Preserve fields this form does not edit (enabled, timeoutMs, allowedTools).
@@ -672,10 +680,9 @@ function ServerForm({
                         type="button"
                         variant="ghost"
                         size="xs"
-                        disabled={oauthPending}
-                        onClick={() => void startOauthFromForm()}
+                        onClick={() => onSubmitAndConnect?.(trimmedName, buildServer())}
                       >
-                        {oauthPending ? "Opening..." : "Reconnect"}
+                        Reconnect
                       </Button>
                     )}
                   </div>
@@ -685,19 +692,17 @@ function ServerForm({
                     <Button
                       type="button"
                       size="xs"
-                      disabled={oauthPending}
-                      onClick={() => void startOauthFromForm()}
+                      onClick={() => onSubmitAndConnect?.(trimmedName, buildServer())}
                     >
-                      {oauthPending ? "Opening..." : "Connect"}
+                      Save &amp; connect
                     </Button>
                   </div>
                 ) : (
                   <p className="text-[11px] text-muted-foreground/60">
-                    Save this server, then use Connect to authorize it. Paperclip stores and
-                    refreshes the token; the agent never sees an interactive login.
+                    Fill in the server details, then Save &amp; connect to authorize it. Paperclip
+                    stores and refreshes the token; the agent never sees an interactive login.
                   </p>
                 )}
-                {oauthError && <p className="text-[11px] text-destructive">{oauthError}</p>}
               </div>
             )}
           </FormField>

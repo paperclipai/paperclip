@@ -138,7 +138,65 @@ describe("McpServersEditor", () => {
     await act(async () => {
       connectButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(onStartOauth).toHaveBeenCalledWith("notion");
+    // Row-level Connect passes the editor's current server value so the
+    // caller can persist it before starting the OAuth flow.
+    expect(onStartOauth).toHaveBeenCalledWith(
+      "notion",
+      expect.objectContaining({ transport: "sse", url: "https://mcp.notion.com/sse" }),
+    );
+  });
+
+  it("Save & connect from the edit form commits the draft and starts OAuth", async () => {
+    // Regression: Connect used to hit the OAuth endpoint for a server that
+    // only existed in the unsaved form, and the backend answered
+    // "MCP server not found". Now the form commits the draft and the parent
+    // persists it before starting the flow.
+    const oauthServers: McpServersConfig = {
+      notion: {
+        transport: "sse",
+        url: "https://mcp.notion.com/sse",
+        auth: { type: "oauth", secretId: null },
+      },
+    };
+    const onChange = vi.fn();
+    const onStartOauth = vi.fn(() => Promise.resolve());
+    act(() => {
+      root.render(
+        <McpServersEditor
+          value={oauthServers}
+          secrets={[]}
+          onCreateSecret={noopCreateSecret}
+          onChange={onChange}
+          onStartOauth={onStartOauth}
+        />,
+      );
+    });
+
+    // Open the edit form for "notion".
+    const editButton = container.querySelector<HTMLButtonElement>('button[title="Edit notion"]');
+    expect(editButton).toBeDefined();
+    await act(async () => {
+      editButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>("button"));
+    const saveConnect = buttons.find((button) => button.textContent?.includes("Save & connect"));
+    expect(saveConnect).toBeDefined();
+    await act(async () => {
+      saveConnect!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Draft committed to the editor value…
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notion: expect.objectContaining({ transport: "sse", url: "https://mcp.notion.com/sse" }),
+      }),
+    );
+    // …and OAuth started with the freshly built server (not a stale lookup).
+    expect(onStartOauth).toHaveBeenCalledWith(
+      "notion",
+      expect.objectContaining({ transport: "sse", url: "https://mcp.notion.com/sse" }),
+    );
   });
 
   it("renders a plain OAuth badge when no onStartOauth handler is provided", () => {
