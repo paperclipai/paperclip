@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link2, ShieldAlert } from "lucide-react";
+import { Link2, ServerCog, ShieldAlert, ShieldQuestion, Wrench } from "lucide-react";
 import type {
   AppGalleryEntry,
   ToolApplication,
@@ -11,7 +11,7 @@ import {
   humanizeConnectionDisplayName,
   isToolConnectionAttentionHealth as isAttentionHealthStatus,
 } from "@paperclipai/shared";
-import { useNavigate } from "@/lib/router";
+import { Link, useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { queryKeys } from "@/lib/queryKeys";
@@ -20,10 +20,13 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
+import { advancedTabHref } from "@/pages/tools/tool-tabs";
 import { AppLogo } from "./AppLogo";
 import { AppsSubNav } from "./gateways/AppsSubNav";
+import { useReviewCount } from "./useReviewCount";
 
 const POPULAR_KEYS = ["zapier", "github", "slack", "notion", "linear"];
+const BYO_CONNECT_HREF = "/apps/connect?byo=1";
 
 type AppStatus = {
   label: "Healthy" | "Needs attention" | "Paused" | "Not connected";
@@ -67,6 +70,7 @@ export function Apps() {
   const navigate = useNavigate();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const reviewCount = useReviewCount();
 
   useEffect(() => {
     setBreadcrumbs([
@@ -191,7 +195,11 @@ export function Apps() {
           <Skeleton className="h-64 w-full" />
         </div>
       ) : rows.length === 0 ? (
-        <EmptyApps gallery={gallery} onConnect={() => navigate("/apps/connect")} />
+        <EmptyApps
+          gallery={gallery}
+          onConnect={() => navigate("/apps/connect")}
+          onConnectByo={() => navigate(BYO_CONNECT_HREF)}
+        />
       ) : (
         <div className="space-y-5">
           <header className="flex flex-wrap items-end justify-between gap-3">
@@ -212,6 +220,25 @@ export function Apps() {
               <span className="text-amber-600 dark:text-amber-400"> · {rowsNeedingAttention.length} needs attention</span>
             )}
           </div>
+
+          {reviewCount > 0 && (
+            <button
+              type="button"
+              onClick={() => navigate("/apps/review")}
+              className="flex w-full items-center gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-left transition-colors hover:bg-amber-500/15"
+            >
+              <ShieldQuestion className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-amber-900 dark:text-amber-100">
+                  {reviewCount} {reviewCount === 1 ? "action is" : "actions are"} waiting for your OK
+                </div>
+                <div className="truncate text-xs text-amber-700 dark:text-amber-300">
+                  Your agents paused to check with you before making a change.
+                </div>
+              </div>
+              <span className="shrink-0 text-xs font-semibold text-amber-800 dark:text-amber-200">Review →</span>
+            </button>
+          )}
 
           {rowsNeedingAttention.length > 0 && (
             <button
@@ -328,12 +355,59 @@ export function Apps() {
             </table>
           </div>
 
-          <p className="text-xs text-muted-foreground">
-            Apps you connect become available to every agent unless you change “Who can use it”.
-          </p>
+          <ByoConnectCard onConnect={() => navigate(BYO_CONNECT_HREF)} />
+
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-muted-foreground">
+              Apps you connect become available to every agent unless you change “Who can use it”.
+            </p>
+            <AdvancedToolsLink />
+          </div>
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * First-class "Connect your own MCP server" card (PAP-12371, Finding C). BYO
+ * used to be reachable only via the Connect wizard's side-doors into the
+ * Advanced setup surface. This promotes it into the gallery + empty state and
+ * launches the same guided in-wizard connect → quarantine review flow
+ * (`?byo=1`) instead of bouncing to the developer door mid-task.
+ */
+function ByoConnectCard({ onConnect }: { onConnect: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onConnect}
+      className="flex w-full items-center gap-4 rounded-xl border border-dashed border-border bg-card px-4 py-4 text-left transition-colors hover:border-foreground/30 hover:bg-accent/40"
+    >
+      <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-border bg-background">
+        <ServerCog className="h-5 w-5 text-muted-foreground" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-semibold text-foreground">Connect your own MCP server</div>
+        <div className="text-xs text-muted-foreground">
+          Have a custom or self-hosted tool? Paste its URL and we’ll walk you through it — same
+          guided permissions and review as any gallery app.
+        </div>
+      </div>
+      <span className="shrink-0 text-xs font-semibold text-primary">Connect →</span>
+    </button>
+  );
+}
+
+/** Labeled door to the developer control-plane (PAP-12371, Finding A cross-link). */
+function AdvancedToolsLink() {
+  return (
+    <Link
+      to={advancedTabHref("run-your-own")}
+      className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+    >
+      <Wrench className="h-3.5 w-3.5" />
+      Advanced / developer tools
+    </Link>
   );
 }
 
@@ -351,7 +425,15 @@ function floatSummary(rows: AppRow[]): string {
   return `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
 }
 
-function EmptyApps({ gallery, onConnect }: { gallery: AppGalleryEntry[]; onConnect: () => void }) {
+function EmptyApps({
+  gallery,
+  onConnect,
+  onConnectByo,
+}: {
+  gallery: AppGalleryEntry[];
+  onConnect: () => void;
+  onConnectByo: () => void;
+}) {
   const popular = POPULAR_KEYS
     .map((key) => gallery.find((entry) => entry.key === key))
     .filter((entry): entry is AppGalleryEntry => Boolean(entry));
@@ -399,6 +481,13 @@ function EmptyApps({ gallery, onConnect }: { gallery: AppGalleryEntry[]; onConne
             </p>
           </div>
         )}
+      </div>
+
+      <div className="space-y-3">
+        <ByoConnectCard onConnect={onConnectByo} />
+        <div className="flex justify-end">
+          <AdvancedToolsLink />
+        </div>
       </div>
     </div>
   );

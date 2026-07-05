@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ArrowUpRight,
@@ -211,6 +211,7 @@ export function AppsConnect() {
         <GalleryStep
           loading={galleryQuery.isLoading}
           apps={galleryQuery.data?.apps ?? []}
+          byo={searchParams.get("byo") === "1"}
           onPick={(picked) => {
             setEntry(picked);
             setGalleryName(picked.name);
@@ -378,6 +379,7 @@ function StepHeader({
 function GalleryStep({
   loading,
   apps,
+  byo = false,
   onPick,
   onUseLink,
   onRunYourOwn,
@@ -385,6 +387,8 @@ function GalleryStep({
 }: {
   loading: boolean;
   apps: AppGalleryEntry[];
+  /** Entered via the "Connect your own MCP server" card (PAP-12371, Finding C): focus the link path. */
+  byo?: boolean;
   onPick: (entry: AppGalleryEntry) => void;
   onUseLink: (link: string) => void;
   onRunYourOwn: () => void;
@@ -393,6 +397,16 @@ function GalleryStep({
   const [search, setSearch] = useState("");
   const [linkInput, setLinkInput] = useState("");
   const [linkError, setLinkError] = useState<string | null>(null);
+  const linkSectionRef = useRef<HTMLDivElement>(null);
+  const linkInputRef = useRef<HTMLInputElement>(null);
+
+  // Arriving from the BYO card: scroll the "Connect with a link" section into
+  // view and focus its input so the paste-URL path is the obvious next step.
+  useEffect(() => {
+    if (!byo || loading) return;
+    linkSectionRef.current?.scrollIntoView({ block: "center" });
+    linkInputRef.current?.focus();
+  }, [byo, loading]);
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return apps;
@@ -475,14 +489,22 @@ function GalleryStep({
         <div className="py-10 text-center text-sm text-muted-foreground">No apps match “{search}”.</div>
       )}
 
-      <div className="grid gap-4 border-t border-border pt-5 md:grid-cols-[minmax(0,1fr)_auto]">
+      <div
+        ref={linkSectionRef}
+        className={cn(
+          "grid gap-4 border-t border-border pt-5 md:grid-cols-[minmax(0,1fr)_auto]",
+          byo && "-mx-3 rounded-xl border border-primary/40 bg-primary/[0.04] px-3 pb-4 md:mx-0",
+        )}
+      >
         <div>
           <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
             <Link2 className="h-4 w-4 text-muted-foreground" />
-            Connect with a link
+            {byo ? "Connect your own MCP server" : "Connect with a link"}
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Paste a setup link from an app that is not listed here.
+            {byo
+              ? "Paste your MCP server’s URL and we’ll walk you through permissions and review."
+              : "Paste a setup link from an app that is not listed here."}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
             Any remote tool URL works here — including a local MCP server like{" "}
@@ -512,6 +534,7 @@ function GalleryStep({
         <div className="flex min-w-0 flex-col gap-2 sm:min-w-[360px]">
           <div className="flex gap-2">
             <Input
+              ref={linkInputRef}
               value={linkInput}
               onChange={(e) => {
                 setLinkInput(e.target.value);

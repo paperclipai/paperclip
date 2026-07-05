@@ -47,6 +47,7 @@ import { ProfileDetailRoute } from "./pages/tools/profiles/ProfileDetailRoute";
 import { Apps } from "./pages/apps/Apps";
 import { AppsConnect } from "./pages/apps/AppsConnect";
 import { AppsAttention } from "./pages/apps/AppsAttention";
+import { AppsReview } from "./pages/apps/AppsReview";
 import { AppDetail } from "./pages/apps/AppDetail";
 import { AppNotConnected } from "./pages/apps/AppNotConnected";
 import { GatewaysList } from "./pages/apps/gateways/GatewaysList";
@@ -106,6 +107,7 @@ function boardRoutes() {
       <Route path="tools/:tab" element={<LegacyToolsRedirect />} />
       <Route path="apps" element={<Apps />} />
       <Route path="apps/connect" element={<AppsConnect />} />
+      <Route path="apps/review" element={<AppsReview />} />
       <Route path="apps/attention" element={<AppsAttention />} />
       <Route path="apps/gateways" element={<GatewaysList />} />
       <Route path="apps/gateways/:gatewayId" element={<Navigate to="overview" replace />} />

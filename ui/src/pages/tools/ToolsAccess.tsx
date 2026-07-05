@@ -89,6 +89,11 @@ export function ToolsAccess() {
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
             For tools that aren't in the gallery. You'll need details from the tool's documentation.
+            Most people never need this — if the app you want is in the gallery,{" "}
+            <Link to="/apps" className="font-medium text-primary hover:underline">
+              connect it there instead
+            </Link>
+            .
           </p>
         </header>
 

@@ -1,4 +1,4 @@
-import { ChevronLeft, AppWindow, ShieldAlert } from "lucide-react";
+import { ChevronLeft, AppWindow, ShieldAlert, ShieldQuestion } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
@@ -6,19 +6,22 @@ import { useSidebar } from "@/context/SidebarContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { toolsApi } from "@/api/tools";
 import { DEVELOPER_TABS, advancedTabHref } from "@/pages/tools/tool-tabs";
+import { useReviewCount } from "@/pages/apps/useReviewCount";
 import { SidebarNavItem } from "./SidebarNavItem";
 
 /**
  * Secondary sidebar for the prosumer Apps area (PAP-10856, v1.1).
  *
- *   ← Back · APPS: All apps / Needs attention (n)
- *   DEVELOPER: Profiles / Policies / Runtime / Audit
+ *   ← Back · APPS: All apps / Review (n) / Needs attention (n)
+ *   DEVELOPER: Gateways / Profiles / Rules / Health / Activity
  *
- * "Needs attention" links to its own page (M9, PAP-10859) with a live count
- * chip from `GET /tools/apps/attention`. The Developer section was folded in
- * from the retired ToolsSidebar (PAP-10915) so the whole Apps area shares one
- * sidebar. "Run your own" and "Paste a config" moved out of the sidebar into
- * rows under "Connect with a link" on the Connect-an-app page (PAP-10922).
+ * "Review" (PAP-12371, Finding B) is the decisions-waiting-on-you inbox with a
+ * live pending Ask-first count; "Needs attention" (M9, PAP-10859) stays scoped
+ * to health/error triage so approvals are never buried behind an error label.
+ * The Developer section was folded in from the retired ToolsSidebar
+ * (PAP-10915) so the whole Apps area shares one sidebar; a one-line caption
+ * frames who it's for (Finding A). "Run your own" and "Paste a config" moved
+ * out of the sidebar into rows on the Connect-an-app page (PAP-10922).
  */
 export function AppsSidebar() {
   const { selectedCompany, selectedCompanyId } = useCompany();
@@ -31,6 +34,7 @@ export function AppsSidebar() {
     refetchInterval: 30_000,
   });
   const attentionCount = attentionQuery.data?.apps.length ?? 0;
+  const reviewCount = useReviewCount();
 
   const runtimeSlots = useQuery({
     queryKey: queryKeys.tools.runtimeSlots(selectedCompanyId ?? "__none__"),
@@ -67,6 +71,14 @@ export function AppsSidebar() {
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/apps" label="All apps" icon={AppWindow} end />
           <SidebarNavItem
+            to="/apps/review"
+            label="Review"
+            icon={ShieldQuestion}
+            badge={reviewCount > 0 ? reviewCount : undefined}
+            badgeTone="warning"
+            badgeLabel="waiting for your OK"
+          />
+          <SidebarNavItem
             to="/apps/attention"
             label="Needs attention"
             icon={ShieldAlert}
@@ -78,6 +90,9 @@ export function AppsSidebar() {
         <div className="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           Developer
         </div>
+        <p className="px-3 pb-1.5 text-[11px] leading-snug text-muted-foreground/70">
+          Optional control-plane. Most people never need this.
+        </p>
         <div className="flex flex-col gap-0.5">
           {DEVELOPER_TABS.map((tab) => (
             <SidebarNavItem
