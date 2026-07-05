@@ -392,7 +392,7 @@ async function buildReferencedCatalogSkill(
   if (!hasSkillEntrypoint) {
     errors.push(`${prefix} referenced inventory does not contain SKILL.md.`);
     const nextErrors = errors.slice(errorStart);
-    if (fallbackSkill && canFallbackToExistingReferencedSkill(nextErrors)) {
+    if (fallbackSkill && canFallbackToExistingReferencedSkill(nextErrors, fallbackSkill, descriptorFiles)) {
       errors.splice(errorStart, nextErrors.length);
       return fallbackSkill;
     }

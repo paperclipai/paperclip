@@ -10547,7 +10547,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...(providerFallbackApplication.adapterConfig ?? {}),
       ...(issueAssigneeOverrides?.adapterConfig ?? {}),
     };
-    const effectiveConfiguredModel = readConfiguredModelFromAdapterConfig(mergedConfig) ?? configuredModel;
+    const effectiveConfiguredModel =
+      readConfiguredModelFromAdapterConfig(mergedConfig) ?? readConfiguredModelFromAdapterConfig(config);
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
     const selectedEnvironmentForConfig = selectedEnvironmentId === localEnvironment.id
