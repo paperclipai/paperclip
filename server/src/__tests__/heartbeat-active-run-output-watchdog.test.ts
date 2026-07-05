@@ -310,6 +310,12 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(evaluations[0]?.description).toContain("Decision Checklist");
     expect(evaluations[0]?.description).not.toContain("sk-test-secret-value");
+    // Regression guard: an ordinary (non-process-loss-retry) evaluation must keep exactly
+    // one blank line between the intro sentence and "## Run" -- not two.
+    expect(evaluations[0]?.description).toMatch(
+      /output silence on an active heartbeat run\.\n\n## Run\n/,
+    );
+    expect(evaluations[0]?.description).not.toContain("automatic retry after a process-loss failure");
   });
 
   it("redacts sensitive values from actual run-log evidence", async () => {
@@ -403,6 +409,12 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(evaluation?.description).toContain("automatic retry after a process-loss failure");
     expect(evaluation?.description).toContain("process-loss-retry suspicion after");
+    // Regression guard: exactly one blank line before the retry-context paragraph, and
+    // exactly one blank line between it and "## Run" -- not a double blank line either place.
+    expect(evaluation?.description).toMatch(
+      /output silence on an active heartbeat run\.\n\n\*\*This run is itself an automatic retry/,
+    );
+    expect(evaluation?.description).toMatch(/no scheduledRetry\/monitor\/watchdog.*\n\n## Run\n/s);
   });
 
   it("leaves a process-loss-retry run alone while it is still producing fresh output", async () => {

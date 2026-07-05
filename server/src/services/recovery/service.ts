@@ -1576,13 +1576,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const isProcessLossRetry = isProcessLossRetryRun(input.run);
     return [
       `Paperclip detected ${input.level} output silence on an active heartbeat run.`,
-      isProcessLossRetry
-        ? "\n**This run is itself an automatic retry after a process-loss failure** " +
-          `(retry of run \`${input.run.retryOfRunId}\`). It has no scheduledRetry/monitor/watchdog of its own, ` +
-          "so it is held to a much shorter silence threshold and flagged critical immediately: if the same event " +
-          "that killed its predecessor also took out other agents, this retry could otherwise sit silent for the " +
-          "full generic suspicion window with nothing else watching it."
-        : "",
+      ...(isProcessLossRetry
+        ? [
+            "",
+            "**This run is itself an automatic retry after a process-loss failure** " +
+              `(retry of run \`${input.run.retryOfRunId}\`). It has no scheduledRetry/monitor/watchdog of its own, ` +
+              "so it is held to a much shorter silence threshold and flagged critical immediately: if the same event " +
+              "that killed its predecessor also took out other agents, this retry could otherwise sit silent for the " +
+              "full generic suspicion window with nothing else watching it.",
+          ]
+        : []),
       "",
       "## Run",
       "",
@@ -1971,7 +1974,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined,
           eq(heartbeatRuns.status, "running"),
           sql`${heartbeatRuns.retryOfRunId} is not null`,
-          sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'process_lost_retry'`,
+          // Kept in sync with isProcessLossRetryRun's OR below: enqueueProcessLossRetry
+          // always stamps both fields together today, but matching the TypeScript
+          // predicate's full contract here (rather than wakeReason alone) means a
+          // future caller that stamps only one of the two still gets the fast backstop.
+          sql`(${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'process_lost_retry' or ${heartbeatRuns.contextSnapshot} ->> 'retryReason' = 'process_lost')`,
           sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${processLossRetrySuspicionBefore.toISOString()}::timestamptz`,
         ),
       )
