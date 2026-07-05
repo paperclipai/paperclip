@@ -188,7 +188,9 @@ export function parseAntigravityJsonl(stdout: string) {
 
   let summary = messages.join("\n\n").trim();
   if (jsonEventCount === 0 && stdout.trim().length > 0) {
-    summary = stdout.trim();
+    const trimmed = stdout.trim();
+    const limit = 4000;
+    summary = trimmed.length > limit ? trimmed.slice(0, limit) + "..." : trimmed;
   }
 
   return {

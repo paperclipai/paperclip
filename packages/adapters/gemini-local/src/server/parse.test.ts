@@ -143,6 +143,13 @@ describe("parseGeminiJsonl", () => {
     expect(result.sessionId).toBeNull();
   });
 
+  it("truncates raw stdout text if it exceeds the length limit", () => {
+    const stdout = "a".repeat(5000);
+    const result = parseGeminiJsonl(stdout);
+    expect(result.summary.length).toBe(4003); // 4000 + "..."
+    expect(result.summary.endsWith("...")).toBe(true);
+  });
+
   it("classifies non-interactive manual authorization failures as auth required", () => {
     const result = detectGeminiAuthRequired({
       parsed: null,
