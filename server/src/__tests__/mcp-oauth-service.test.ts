@@ -14,6 +14,7 @@ vi.mock("node:dns/promises", () => ({
 import {
   agents,
   companies,
+  companyMcpServers,
   companySecretBindings,
   companySecretProviderConfigs,
   companySecretVersions,
@@ -97,6 +98,7 @@ describeEmbeddedPostgres("mcpOauthService — brokered flow", () => {
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(companySecretProviderConfigs);
+    await db.delete(companyMcpServers);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -284,5 +286,40 @@ describeEmbeddedPostgres("mcpOauthService — brokered flow", () => {
   it("rejects expired/unknown callback state", async () => {
     const svc = mcpOauthService(db);
     await expect(svc.handleCallback({ state: "nope", code: "c" })).rejects.toThrow(/unknown or expired/i);
+  });
+
+  it("brokers OAuth for a company catalog server and stores the shared token", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    stubOauthServerFetch();
+    const { companyMcpServerService } = await import("../services/company-mcp-servers.js");
+    const catalog = companyMcpServerService(db);
+    const created = await catalog.create(companyId, {
+      name: "linear",
+      config: { transport: "http", url: "https://mcp.example.com/mcp" },
+    });
+
+    const svc = mcpOauthService(db);
+    const { state } = await svc.startAuthorization({
+      companyId,
+      target: { kind: "company_mcp_server", mcpServerId: created.id },
+      serverName: "linear",
+      serverUrl: "https://mcp.example.com/mcp",
+      redirectUri: "http://localhost:3100/api/mcp-oauth/callback",
+    });
+    const result = await svc.handleCallback({ state, code: "auth-code-1" });
+    expect(result.target).toEqual({ kind: "company_mcp_server", mcpServerId: created.id });
+    expect(result.agentId).toBeNull();
+
+    // Catalog row now references the shared token secret and reports connected.
+    const listed = await catalog.list(companyId);
+    expect(listed[0].oauthConnected).toBe(true);
+    const auth = (listed[0].config as { auth?: { type?: string; secretId?: string | null } }).auth;
+    expect(auth?.type).toBe("oauth");
+    expect(auth?.secretId).toBe(result.secretId);
+
+    // The stored secret resolves to the token payload.
+    const secrets = secretService(db);
+    const raw = await secrets.resolveSecretValue(companyId, result.secretId, "latest");
+    expect(JSON.parse(raw)).toMatchObject({ accessToken: "at-1" });
   });
 });

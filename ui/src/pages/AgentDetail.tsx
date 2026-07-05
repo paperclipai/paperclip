@@ -9,6 +9,7 @@ import {
   type AgentPermissionUpdate,
 } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
+import { companyMcpApi } from "../api/companyMcp";
 import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -47,6 +48,7 @@ import { formatCents, formatDate, formatDateTime, relativeTime, formatTokens, vi
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
 import { RetryNowButton } from "../components/RetryNowButton";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs } from "@/components/ui/tabs";
@@ -105,6 +107,7 @@ import {
   arraysEqual,
   isReadOnlyUnmanagedSkillEntry,
 } from "../lib/agent-skills-state";
+import { applyAgentMcpServersSnapshot } from "../lib/agent-mcp-state";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -240,12 +243,13 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget";
+type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "mcp" | "runs" | "budget";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "instructions" || value === "prompts") return "instructions";
   if (value === "configure" || value === "configuration") return "configuration";
   if (value === "skills") return "skills";
+  if (value === "mcp") return "mcp";
   if (value === "budget") return "budget";
   if (value === "runs") return value;
   return "dashboard";
@@ -840,11 +844,13 @@ export function AgentDetail() {
           ? "configuration"
           : activeView === "skills"
             ? "skills"
-            : activeView === "runs"
-              ? "runs"
-              : activeView === "budget"
-                ? "budget"
-              : "dashboard";
+            : activeView === "mcp"
+              ? "mcp"
+              : activeView === "runs"
+                ? "runs"
+                : activeView === "budget"
+                  ? "budget"
+                : "dashboard";
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
       return;
@@ -1105,6 +1111,7 @@ export function AgentDetail() {
               { value: "dashboard", label: "Dashboard" },
               { value: "instructions", label: "Instructions" },
               { value: "skills", label: "Skills" },
+              { value: "mcp", label: "MCP" },
               { value: "configuration", label: "Configuration" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
@@ -1218,6 +1225,13 @@ export function AgentDetail() {
 
       {activeView === "skills" && (
         <AgentSkillsTab
+          agent={agent}
+          companyId={resolvedCompanyId ?? undefined}
+        />
+      )}
+
+      {activeView === "mcp" && (
+        <AgentMcpServersTab
           agent={agent}
           companyId={resolvedCompanyId ?? undefined}
         />
@@ -3236,6 +3250,242 @@ export function AgentSkillsTab({
               </p>
             )}
           </section>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---- MCP Tab ---- */
+
+export function AgentMcpServersTab({
+  agent,
+  companyId,
+}: {
+  agent: Agent;
+  companyId?: string;
+}) {
+  const queryClient = useQueryClient();
+  const [serverDraft, setServerDraft] = useState<string[]>([]);
+  const [lastSavedServers, setLastSavedServers] = useState<string[]>([]);
+  const lastSavedServersRef = useRef<string[]>([]);
+  const hasHydratedSnapshotRef = useRef(false);
+  const skipNextAutosaveRef = useRef(true);
+
+  const { data: refsSnapshot, isLoading } = useQuery({
+    queryKey: queryKeys.agents.mcpServerRefs(agent.id),
+    queryFn: () => agentsApi.getMcpServerRefs(agent.id, companyId),
+    enabled: Boolean(companyId),
+  });
+
+  const { data: catalogServers, isLoading: catalogLoading } = useQuery({
+    queryKey: queryKeys.companyMcpServers.list(companyId ?? ""),
+    queryFn: () => companyMcpApi.list(companyId!),
+    enabled: Boolean(companyId),
+  });
+
+  const syncServers = useMutation({
+    mutationFn: (desiredMcpServers: string[]) =>
+      agentsApi.putMcpServerRefs(agent.id, desiredMcpServers, companyId),
+    onSuccess: async (snapshot) => {
+      queryClient.setQueryData(queryKeys.agents.mcpServerRefs(agent.id), snapshot);
+      lastSavedServersRef.current = snapshot.desiredMcpServers;
+      setLastSavedServers(snapshot.desiredMcpServers);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) }),
+        ...(companyId
+          ? [queryClient.invalidateQueries({ queryKey: queryKeys.companyMcpServers.list(companyId) })]
+          : []),
+      ]);
+    },
+  });
+
+  useEffect(() => {
+    setServerDraft([]);
+    setLastSavedServers([]);
+    lastSavedServersRef.current = [];
+    hasHydratedSnapshotRef.current = false;
+    skipNextAutosaveRef.current = true;
+  }, [agent.id]);
+
+  useEffect(() => {
+    if (!refsSnapshot) return;
+    const nextState = applyAgentMcpServersSnapshot(
+      {
+        draft: serverDraft,
+        lastSaved: lastSavedServersRef.current,
+        hasHydratedSnapshot: hasHydratedSnapshotRef.current,
+      },
+      refsSnapshot.desiredMcpServers,
+    );
+    skipNextAutosaveRef.current = nextState.shouldSkipAutosave;
+    hasHydratedSnapshotRef.current = nextState.hasHydratedSnapshot;
+    setServerDraft(nextState.draft);
+    lastSavedServersRef.current = nextState.lastSaved;
+    setLastSavedServers(nextState.lastSaved);
+  }, [serverDraft, refsSnapshot]);
+
+  useEffect(() => {
+    if (!refsSnapshot) return;
+    if (skipNextAutosaveRef.current) {
+      skipNextAutosaveRef.current = false;
+      return;
+    }
+    if (syncServers.isPending) return;
+    if (arraysEqual(serverDraft, lastSavedServersRef.current)) return;
+
+    const timeout = window.setTimeout(() => {
+      if (!arraysEqual(serverDraft, lastSavedServersRef.current)) {
+        syncServers.mutate(serverDraft);
+      }
+    }, 250);
+
+    return () => window.clearTimeout(timeout);
+  }, [serverDraft, refsSnapshot, syncServers.isPending, syncServers.mutate]);
+
+  const catalogNames = useMemo(
+    () => new Set((catalogServers ?? []).map((server) => server.name)),
+    [catalogServers],
+  );
+
+  function toggleServer(name: string, checked: boolean) {
+    setServerDraft((current) => {
+      // Drop refs that no longer exist in the catalog: the API rejects
+      // unknown names, and a change here is the natural point to clean them.
+      const known = current.filter((value) => catalogNames.has(value));
+      if (checked) return known.includes(name) ? known : [...known, name];
+      return known.filter((value) => value !== name);
+    });
+  }
+
+  const missingServers = refsSnapshot?.missing ?? [];
+  const hasUnsavedChanges = !arraysEqual(serverDraft, lastSavedServers);
+  const saveStatusLabel = syncServers.isPending
+    ? "Saving changes..."
+    : hasUnsavedChanges
+      ? "Saving soon..."
+      : null;
+
+  return (
+    <div className="max-w-4xl space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Link
+          to="/mcp"
+          className="text-sm font-medium text-foreground underline-offset-4 no-underline transition-colors hover:text-foreground/70 hover:underline"
+        >
+          View company MCP library
+        </Link>
+        {saveStatusLabel ? (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            {syncServers.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+            <span>{saveStatusLabel}</span>
+          </div>
+        ) : null}
+      </div>
+
+      {missingServers.length > 0 && (
+        <div className="rounded-xl border border-amber-300/60 bg-amber-50/60 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
+          <div className="font-medium">Enabled servers missing from the company library</div>
+          <div className="mt-1 text-xs">
+            {missingServers.join(", ")} — removed from the library; they will be dropped the next
+            time this list changes.
+          </div>
+        </div>
+      )}
+
+      {isLoading || catalogLoading ? (
+        <PageSkeleton variant="list" />
+      ) : (
+        <>
+          {(catalogServers ?? []).length === 0 ? (
+            <section className="border-y border-border">
+              <div className="px-3 py-6 text-sm text-muted-foreground">
+                No MCP servers in the company library yet.{" "}
+                <Link
+                  to="/mcp"
+                  className="text-foreground underline-offset-4 hover:underline"
+                >
+                  Add one in the MCP library
+                </Link>
+                .
+              </div>
+            </section>
+          ) : (
+            <section className="border-y border-border">
+              {(catalogServers ?? []).map((server) => {
+                const checked = serverDraft.includes(server.name);
+                const catalogDisabled = !server.enabled;
+                return (
+                  <label
+                    key={server.id}
+                    className="flex items-start gap-3 border-b border-border px-3 py-3 text-sm last:border-b-0 hover:bg-accent/20"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(event) => toggleServer(server.name, event.target.checked)}
+                      className="mt-0.5"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={cn(
+                            "font-mono text-sm font-medium",
+                            catalogDisabled && "text-muted-foreground",
+                          )}
+                        >
+                          {server.name}
+                        </span>
+                        <Badge variant="outline" className="shrink-0 font-mono text-[10px]">
+                          {server.config.transport}
+                        </Badge>
+                        {server.oauthConnected && (
+                          <Badge
+                            variant="outline"
+                            className="shrink-0 border-green-300 bg-green-50 text-[10px] text-green-700 dark:border-green-500/40 dark:bg-green-500/10 dark:text-green-300"
+                          >
+                            Connected
+                          </Badge>
+                        )}
+                        {catalogDisabled && (
+                          <Badge
+                            variant="outline"
+                            className="shrink-0 text-[10px] text-muted-foreground"
+                          >
+                            Disabled in library
+                          </Badge>
+                        )}
+                      </div>
+                      {server.description && (
+                        <p
+                          className={cn(
+                            "mt-1 text-xs text-muted-foreground",
+                            catalogDisabled && "opacity-70",
+                          )}
+                        >
+                          {server.description}
+                        </p>
+                      )}
+                    </div>
+                  </label>
+                );
+              })}
+            </section>
+          )}
+
+          {syncServers.isError && (
+            <p className="text-xs text-destructive">
+              {syncServers.error instanceof Error
+                ? syncServers.error.message
+                : "Failed to update MCP servers"}
+            </p>
+          )}
+
+          <p className="border-t border-border pt-4 text-xs text-muted-foreground">
+            Servers added here are shared company-wide. Per-agent overrides live in Configuration →
+            MCP Servers.
+          </p>
         </>
       )}
     </div>

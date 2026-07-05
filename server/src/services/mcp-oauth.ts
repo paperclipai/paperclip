@@ -115,10 +115,19 @@ export interface McpOauthTokenPayload {
   scope?: string;
 }
 
+/**
+ * Where the brokered token lands: an agent's inline server config
+ * (adapterConfig.mcpServers) or a company catalog entry (company_mcp_servers,
+ * shared by every agent that enables it).
+ */
+export type McpOauthTarget =
+  | { kind: "agent"; agentId: string }
+  | { kind: "company_mcp_server"; mcpServerId: string };
+
 interface McpOauthChallenge {
   state: string;
   companyId: string;
-  agentId: string;
+  target: McpOauthTarget;
   serverName: string;
   serverUrl: string;
   codeVerifier: string;
@@ -405,10 +414,37 @@ export function mcpOauthService(db: Db) {
   const agents = agentService(db);
   const secrets = secretService(db);
 
+  async function upsertTokenSecret(input: {
+    companyId: string;
+    serverName: string;
+    ownerLabel: string;
+    existingSecretId: string | null;
+    serialized: string;
+    actor?: { userId?: string | null; agentId?: string | null };
+  }): Promise<string> {
+    if (input.existingSecretId) {
+      await secrets.rotate(input.existingSecretId, { value: input.serialized }, input.actor);
+      return input.existingSecretId;
+    }
+    // Random suffix so a reconnect never 409s against an orphaned token
+    // secret whose binding was dropped (e.g. after an adapter-type switch).
+    const created = await secrets.create(
+      input.companyId,
+      {
+        name: `mcp-oauth-${input.serverName}-${input.ownerLabel}-${base64UrlEncode(randomBytes(4))}`,
+        provider: "local_encrypted",
+        value: input.serialized,
+        description: `OAuth token for MCP server "${input.serverName}" (${input.ownerLabel})`,
+      },
+      input.actor,
+    );
+    return created.id;
+  }
+
   async function persistTokenForServer(input: {
     challenge: Pick<
       McpOauthChallenge,
-      "companyId" | "agentId" | "serverName" | "tokenEndpoint" | "clientId" | "clientSecret" | "resource"
+      "companyId" | "target" | "serverName" | "tokenEndpoint" | "clientId" | "clientSecret" | "resource"
     >;
     token: TokenEndpointResult;
     actor?: { userId?: string | null; agentId?: string | null };
@@ -426,7 +462,35 @@ export function mcpOauthService(db: Db) {
     };
     const serialized = JSON.stringify(payload);
 
-    const agent = await agents.getById(challenge.agentId);
+    if (challenge.target.kind === "company_mcp_server") {
+      // Shared catalog entry: the token secret is reused by every agent that
+      // enables this server. Lazy import avoids a module cycle.
+      const { companyMcpServerService } = await import("./company-mcp-servers.js");
+      const catalog = companyMcpServerService(db);
+      const row = await catalog.getRowById(challenge.companyId, challenge.target.mcpServerId);
+      if (!row) throw notFound(`MCP server not found: ${challenge.serverName}`);
+      const config = asRecord(row.config) ?? {};
+      const existingAuth = asRecord(config.auth);
+      const existingSecretId =
+        existingAuth?.type === "oauth" && typeof existingAuth.secretId === "string" && existingAuth.secretId
+          ? existingAuth.secretId
+          : null;
+      const secretId = await upsertTokenSecret({
+        companyId: challenge.companyId,
+        serverName: challenge.serverName,
+        ownerLabel: "company",
+        existingSecretId,
+        serialized,
+        actor: input.actor,
+      });
+      await catalog.update(challenge.companyId, row.id, {
+        config: { ...config, auth: { type: "oauth", secretId } },
+      });
+      return { secretId };
+    }
+
+    const agentId = challenge.target.agentId;
+    const agent = await agents.getById(agentId);
     if (!agent) throw notFound("Agent not found");
     const adapterConfig = asRecord(agent.adapterConfig) ?? {};
     const mcpServers = asRecord(adapterConfig.mcpServers) ?? {};
@@ -435,36 +499,25 @@ export function mcpOauthService(db: Db) {
 
     const existingAuth = asRecord(server.auth);
     const existingSecretId =
-      existingAuth?.type === "oauth" && typeof existingAuth.secretId === "string"
+      existingAuth?.type === "oauth" && typeof existingAuth.secretId === "string" && existingAuth.secretId
         ? existingAuth.secretId
         : null;
 
-    let secretId: string;
-    if (existingSecretId) {
-      await secrets.rotate(existingSecretId, { value: serialized }, input.actor);
-      secretId = existingSecretId;
-    } else {
-      // Random suffix so a reconnect never 409s against an orphaned token
-      // secret whose binding was dropped (e.g. after an adapter-type switch).
-      const created = await secrets.create(
-        challenge.companyId,
-        {
-          name: `mcp-oauth-${challenge.serverName}-${challenge.agentId.slice(0, 8)}-${base64UrlEncode(randomBytes(4))}`,
-          provider: "local_encrypted",
-          value: serialized,
-          description: `OAuth token for MCP server "${challenge.serverName}" (agent ${challenge.agentId})`,
-        },
-        input.actor,
-      );
-      secretId = created.id;
-    }
+    const secretId = await upsertTokenSecret({
+      companyId: challenge.companyId,
+      serverName: challenge.serverName,
+      ownerLabel: `agent-${agentId.slice(0, 8)}`,
+      existingSecretId,
+      serialized,
+      actor: input.actor,
+    });
 
     const nextServer = { ...server, auth: { type: "oauth", secretId } };
     const nextAdapterConfig = {
       ...adapterConfig,
       mcpServers: { ...mcpServers, [challenge.serverName]: nextServer },
     };
-    await agents.update(challenge.agentId, { adapterConfig: nextAdapterConfig }, {
+    await agents.update(agentId, { adapterConfig: nextAdapterConfig }, {
       recordRevision: {
         createdByAgentId: input.actor?.agentId ?? null,
         createdByUserId: input.actor?.userId ?? null,
@@ -473,7 +526,7 @@ export function mcpOauthService(db: Db) {
     });
     await secrets.syncMcpBindingsForTarget(
       challenge.companyId,
-      { targetType: "agent", targetId: challenge.agentId },
+      { targetType: "agent", targetId: agentId },
       nextAdapterConfig.mcpServers,
     );
     return { secretId };
@@ -481,17 +534,23 @@ export function mcpOauthService(db: Db) {
 
   return {
     /**
-     * Begin the brokered flow for one agent + server. Returns the authorize
-     * URL the board user's browser should open.
+     * Begin the brokered flow for a server owned by an agent (inline config)
+     * or by the company catalog. Returns the authorize URL the board user's
+     * browser should open. Legacy callers may pass `agentId` instead of
+     * `target`.
      */
     startAuthorization: async (input: {
       companyId: string;
-      agentId: string;
+      target?: McpOauthTarget;
+      agentId?: string;
       serverName: string;
       serverUrl: string;
       redirectUri: string;
       scope?: string;
     }): Promise<{ authorizeUrl: string; state: string }> => {
+      const target: McpOauthTarget | null =
+        input.target ?? (input.agentId ? { kind: "agent", agentId: input.agentId } : null);
+      if (!target) throw unprocessable("OAuth start requires a target agent or catalog server");
       prunePendingChallenges();
       const metadata = await discoverMcpAuthorizationServer(input.serverUrl);
       if (!metadata.registrationEndpoint) {
@@ -515,7 +574,7 @@ export function mcpOauthService(db: Db) {
       const challenge: McpOauthChallenge = {
         state,
         companyId: input.companyId,
-        agentId: input.agentId,
+        target,
         serverName: input.serverName,
         serverUrl: input.serverUrl,
         codeVerifier,
@@ -548,7 +607,13 @@ export function mcpOauthService(db: Db) {
       state: string;
       code: string;
       actor?: { userId?: string | null; agentId?: string | null };
-    }): Promise<{ agentId: string; serverName: string; secretId: string }> => {
+    }): Promise<{
+      target: McpOauthTarget;
+      companyId: string;
+      agentId: string | null;
+      serverName: string;
+      secretId: string;
+    }> => {
       prunePendingChallenges();
       const challenge = pendingChallenges.get(input.state);
       if (!challenge) {
@@ -570,7 +635,13 @@ export function mcpOauthService(db: Db) {
       );
 
       const { secretId } = await persistTokenForServer({ challenge, token, actor: input.actor });
-      return { agentId: challenge.agentId, serverName: challenge.serverName, secretId };
+      return {
+        target: challenge.target,
+        companyId: challenge.companyId,
+        agentId: challenge.target.kind === "agent" ? challenge.target.agentId : null,
+        serverName: challenge.serverName,
+        secretId,
+      };
     },
 
     /**
