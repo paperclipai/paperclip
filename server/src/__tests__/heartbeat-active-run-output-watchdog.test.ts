@@ -147,6 +147,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       id: companyId,
       name: "Watchdog Co",
       issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
     });
     await db.insert(agents).values([

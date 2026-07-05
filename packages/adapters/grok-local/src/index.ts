@@ -1,5 +1,5 @@
 export const type = "grok_local";
-export const label = "Grok Build (local)";
+export const label = "Grok Build";
 
 export const DEFAULT_GROK_LOCAL_MODEL = "grok-build";
 

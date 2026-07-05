@@ -73,8 +73,13 @@ export async function resolveEnvironmentExecutionTarget(input: {
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
       timeoutMs,
+      // Run-log streaming defaults ON for sandbox environments so agent CLI
+      // output reaches the UI mid-run; `streamRunLogs: false` is an explicit
+      // opt-out back to batch-at-end delivery.
+      streamRunLogs: parsed.config.streamRunLogs !== false,
       runner: input.environmentRuntime && input.lease
         ? {
+            supportsSingleStreamStdinProgress: false,
             execute: async (commandInput) => {
               const startedAt = new Date().toISOString();
               const result = await input.environmentRuntime!.execute({

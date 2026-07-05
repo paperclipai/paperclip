@@ -12,6 +12,11 @@ describe("awsSecretsManagerProvider", () => {
     AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
     AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
     AWS_SESSION_TOKEN: process.env.AWS_SESSION_TOKEN,
+    AWS_PROFILE: process.env.AWS_PROFILE,
+    AWS_DEFAULT_PROFILE: process.env.AWS_DEFAULT_PROFILE,
+    AWS_CONFIG_FILE: process.env.AWS_CONFIG_FILE,
+    AWS_SHARED_CREDENTIALS_FILE: process.env.AWS_SHARED_CREDENTIALS_FILE,
+    AWS_SDK_LOAD_CONFIG: process.env.AWS_SDK_LOAD_CONFIG,
   };
 
   afterEach(() => {
@@ -169,6 +174,11 @@ describe("awsSecretsManagerProvider", () => {
   });
 
   it("signs AWS Secrets Manager JSON requests with default runtime credentials", async () => {
+    delete process.env.AWS_PROFILE;
+    delete process.env.AWS_DEFAULT_PROFILE;
+    delete process.env.AWS_CONFIG_FILE;
+    delete process.env.AWS_SHARED_CREDENTIALS_FILE;
+    delete process.env.AWS_SDK_LOAD_CONFIG;
     process.env.AWS_ACCESS_KEY_ID = "AKIA_TEST_ACCESS";
     process.env.AWS_SECRET_ACCESS_KEY = "test-secret-key";
     process.env.AWS_SESSION_TOKEN = "test-session-token";

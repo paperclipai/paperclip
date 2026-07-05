@@ -15,6 +15,7 @@ export interface HeartbeatRun {
   invocationSource: HeartbeatInvocationSource;
   triggerDetail: WakeupTriggerDetail | null;
   status: HeartbeatRunStatus;
+  responsibleUserId: string | null;
   startedAt: Date | null;
   finishedAt: Date | null;
   error: string | null;
@@ -56,7 +57,32 @@ export interface HeartbeatRun {
   createdAt: Date;
   updatedAt: Date;
   outputSilence?: HeartbeatRunOutputSilence;
+  /**
+   * Ephemeral, process-local current status message for an active run. Resolved
+   * from the in-memory runtime status store (never persisted to the database)
+   * and only populated for active/live run reads. Disappears on TTL expiry,
+   * terminal run status, or server restart.
+   */
+  currentStatusMessage?: string | null;
+  currentStatusUpdatedAt?: Date | string | null;
+  currentToolName?: string | null;
+  lastAssistantSnippet?: string | null;
+  lastEventAt?: Date | string | null;
 }
+
+/**
+ * Typed phase labels emitted by the sandbox-managed runtime as it progresses
+ * through workspace preparation, adapter startup, restore/export, and
+ * finalization. Used by the ephemeral runtime status plumbing; not persisted.
+ */
+export type HeartbeatRunStatusPhase =
+  | "git_sync"
+  | "config_sync"
+  | "adapter_startup"
+  | "restore"
+  | "export"
+  | "finalize"
+  | "run_activity";
 
 export type HeartbeatRunOutputSilenceLevel =
   | "not_applicable"

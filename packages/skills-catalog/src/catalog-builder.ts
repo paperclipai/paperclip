@@ -390,6 +390,18 @@ async function buildReferencedCatalogSkill(
 
   if (!files.some((file) => file.path === SKILL_ENTRYPOINT && file.kind === "skill")) {
     errors.push(`${prefix} referenced inventory does not contain SKILL.md.`);
+    // Glob descriptors cannot be verified against the fallback inventory, so
+    // partial file reuse is unsafe; reuse the whole existing entry instead
+    // when the failures are recoverable fetch errors (upstream behavior).
+    const nextErrors = errors.slice(errorStart);
+    if (
+      fallbackSkill &&
+      descriptorFiles.some((file) => file.includes("*")) &&
+      errorsAllowReferencedFallback(nextErrors)
+    ) {
+      errors.splice(errorStart, nextErrors.length);
+      return fallbackSkill;
+    }
   }
   if (!name || !description) {
     return null;
@@ -449,7 +461,12 @@ function canFallbackToExistingReferencedSkill(
   fallbackSkill: CatalogSkill,
   descriptorFiles: string[],
 ) {
-  if (errors.length === 0 || !descriptorMatchesFallbackInventory(descriptorFiles, fallbackSkill.files)) return false;
+  if (!descriptorMatchesFallbackInventory(descriptorFiles, fallbackSkill.files)) return false;
+  return errorsAllowReferencedFallback(errors);
+}
+
+function errorsAllowReferencedFallback(errors: string[]) {
+  if (errors.length === 0) return false;
   const hasRecoverableFetchError = errors.some((error) => isRecoverableReferencedFetchError(error));
   return (
     hasRecoverableFetchError &&

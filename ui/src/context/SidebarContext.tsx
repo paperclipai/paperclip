@@ -112,10 +112,35 @@ export function SidebarProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
     const mql = window.matchMedia(PEEK_POINTER_QUERY);
-    const onChange = (e: MediaQueryListEvent) => setPointerCanPeek(e.matches);
+    // Latch on only — see the runtime detection below for why this never flips
+    // back to false.
+    const onChange = (e: MediaQueryListEvent) => {
+      if (e.matches) setPointerCanPeek(true);
+    };
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);
   }, []);
+
+  // iPadOS Safari does not flip the `(hover: hover) and (pointer: fine)` media
+  // query when a trackpad/mouse is attached, so the query above stays false even
+  // though a real cursor is driving the UI — and hover-peek never triggers
+  // (PAP-10725). Detect a fine pointer at runtime instead: a genuine
+  // mouse/trackpad emits pointer events with `pointerType: "mouse"`, whereas
+  // touch reports "touch" and the Pencil reports "pen", so this never enables on
+  // touch-only input. Treat peek capability as a one-way latch — once a cursor
+  // has been seen we keep peek available for the session.
+  useEffect(() => {
+    if (pointerCanPeek || typeof window.PointerEvent !== "function") return;
+    const onPointer = (e: PointerEvent) => {
+      if (e.pointerType === "mouse") setPointerCanPeek(true);
+    };
+    window.addEventListener("pointerover", onPointer, { passive: true });
+    window.addEventListener("pointermove", onPointer, { passive: true });
+    return () => {
+      window.removeEventListener("pointerover", onPointer);
+      window.removeEventListener("pointermove", onPointer);
+    };
+  }, [pointerCanPeek]);
 
   // Precedence (highest wins): forced (active secondary sidebar) > explicit user
   // pin > route request > default expanded. The force is ephemeral and never

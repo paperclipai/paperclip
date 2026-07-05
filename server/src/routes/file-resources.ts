@@ -1,3 +1,5 @@
+import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import { Router } from "express";
 import { ZodError } from "zod";
 import type { Db } from "@paperclipai/db";
@@ -35,6 +37,11 @@ export type WorkspaceFileResourceService = {
     input: { path: string; workspace?: "auto" | "execution" | "project" | null; projectId?: string | null; workspaceId?: string | null },
     opts?: { issue?: Awaited<ReturnType<WorkspaceFileResourceService["getIssue"]>> },
   ): Promise<WorkspaceFileContent>;
+  prepareDownload(
+    issueId: string,
+    input: { path: string; workspace?: "auto" | "execution" | "project" | null; projectId?: string | null; workspaceId?: string | null },
+    opts?: { issue?: Awaited<ReturnType<WorkspaceFileResourceService["getIssue"]>> },
+  ): Promise<{ resource: ResolvedWorkspaceResource; realPath: string }>;
 };
 
 type FileResourceLimiter = {
@@ -102,6 +109,14 @@ export function createFileResourceListLimiter(opts: {
 
 function limiterKey(companyId: string, actorId: string, issueId: string) {
   return `${companyId}:${actorId}:${issueId}`;
+}
+
+function parseBooleanQuery(value: unknown) {
+  return value === true || value === "true" || value === "1";
+}
+
+function safeAttachmentFilename(value: string) {
+  return value.replaceAll("\"", "").replace(/[\\/\r\n]/g, "_") || "workspace-file";
 }
 
 function readQuery(query: unknown) {
@@ -267,7 +282,7 @@ export function fileResourceRoutes(db: Db, opts: {
     projectId?: string | null;
     workspaceId?: string | null;
     error: unknown;
-    action?: "issue.file_resource_content_denied" | "issue.file_resource_resolve_denied";
+    action?: "issue.file_resource_content_denied" | "issue.file_resource_resolve_denied" | "issue.file_resource_download_denied";
   }) {
     await logActivity(db, {
       companyId: input.companyId,
@@ -595,6 +610,56 @@ export function fileResourceRoutes(db: Db, opts: {
       throw error;
     }
     try {
+      if (parseBooleanQuery(req.query.download)) {
+        let result: Awaited<ReturnType<WorkspaceFileResourceService["prepareDownload"]>> | null = null;
+        try {
+          result = await svc.prepareDownload(req.params.issueId, query, { issue });
+        } catch (error) {
+          await logDeniedAttempt({
+            companyId: issue.companyId,
+            actor,
+            issueId: req.params.issueId,
+            displayPath: query.path,
+            projectId: query.projectId,
+            workspaceId: query.workspaceId,
+            error,
+            action: "issue.file_resource_download_denied",
+          });
+          throw error;
+        }
+
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          action: "issue.file_resource_download",
+          entityType: "issue",
+          entityId: req.params.issueId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          details: activityDetails({
+            outcome: "success",
+            workspaceKind: result.resource.workspaceKind,
+            workspaceId: result.resource.workspaceId,
+            projectId: result.resource.projectId ?? null,
+            projectName: result.resource.projectName ?? null,
+            displayPath: result.resource.displayPath,
+            byteSize: result.resource.byteSize ?? null,
+            contentType: result.resource.contentType ?? null,
+          }),
+        });
+
+        res.setHeader("Content-Type", result.resource.contentType ?? "application/octet-stream");
+        if (result.resource.byteSize != null) {
+          res.setHeader("Content-Length", String(result.resource.byteSize));
+        }
+        res.setHeader("Cache-Control", "private, max-age=60");
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        res.setHeader("Content-Disposition", `attachment; filename="${safeAttachmentFilename(result.resource.title)}"`);
+        await pipeline(createReadStream(result.realPath), res);
+        return;
+      }
+
       let result: WorkspaceFileContent | null = null;
       try {
         result = await svc.readContent(req.params.issueId, query, { issue });

@@ -116,7 +116,7 @@ function createAskUserQuestionsInteraction(
     kind: "ask_user_questions",
     title: "Resolve open UX decisions before Phase 1",
     summary:
-      "This form stays local until the operator submits it, so the assignee only wakes once after the whole answer set is ready.",
+      "This form stays local until the operator submits it, so the responsible only wakes once after the whole answer set is ready.",
     status: "pending",
     continuationPolicy: "wake_assignee",
     createdByAgentId: "agent-codex",
@@ -192,7 +192,7 @@ function createRequestConfirmationInteraction(
     kind: "request_confirmation",
     title: "Approve the proposed plan",
     summary:
-      "The assignee is waiting on a direct board decision before continuing from the plan document.",
+      "The responsible is waiting on a direct board decision before continuing from the plan document.",
     status: "pending",
     continuationPolicy: "wake_assignee",
     createdByAgentId: "agent-codex",
@@ -204,7 +204,7 @@ function createRequestConfirmationInteraction(
     resolvedAt: null,
     payload: {
       version: 1,
-      prompt: "Approve the plan and let the assignee start implementation?",
+      prompt: "Approve the plan and let the responsible start implementation?",
       acceptLabel: "Approve plan",
       rejectLabel: "Request revisions",
       rejectRequiresReason: true,
@@ -370,12 +370,27 @@ export const answeredAskUserQuestionsInteraction = createAskUserQuestionsInterac
   },
 });
 
+export const commentExpiredAskUserQuestionsInteraction = createAskUserQuestionsInteraction({
+  id: "interaction-questions-expired-comment",
+  status: "expired",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T14:25:00.000Z"),
+  updatedAt: new Date("2026-04-20T14:25:00.000Z"),
+  result: {
+    version: 1,
+    answers: [],
+    expirationReason: "superseded_by_comment",
+    commentId: "22222222-2222-4222-8222-222222222222",
+    summaryMarkdown: null,
+  },
+});
+
 export const pendingRequestConfirmationInteraction = createRequestConfirmationInteraction({});
 
 export const genericPendingRequestConfirmationInteraction = createRequestConfirmationInteraction({
   id: "interaction-confirmation-generic-pending",
   title: "Confirm next step",
-  summary: "The assignee needs a lightweight yes or no before continuing.",
+  summary: "The responsible needs a lightweight yes or no before continuing.",
   continuationPolicy: "none",
   payload: {
     version: 1,
@@ -428,7 +443,7 @@ export const planApprovalAcceptedRequestConfirmationInteraction = createRequestC
   updatedAt: new Date("2026-04-20T14:34:00.000Z"),
   payload: {
     version: 1,
-    prompt: "Approve the plan and let the assignee start implementation?",
+    prompt: "Approve the plan and let the responsible start implementation?",
     acceptLabel: "Approve plan",
     rejectLabel: "Request changes",
     rejectRequiresReason: true,
@@ -494,7 +509,7 @@ export const staleTargetRequestConfirmationInteraction = createRequestConfirmati
   updatedAt: new Date("2026-04-20T14:40:00.000Z"),
   payload: {
     version: 1,
-    prompt: "Approve the plan and let the assignee start implementation?",
+    prompt: "Approve the plan and let the responsible start implementation?",
     acceptLabel: "Approve plan",
     rejectLabel: "Request revisions",
     rejectRequiresReason: true,

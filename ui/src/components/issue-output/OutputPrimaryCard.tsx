@@ -1,11 +1,11 @@
-import { Download, ExternalLink } from "lucide-react";
+import { Download, ExternalLink, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn, relativeTime } from "@/lib/utils";
 import {
   formatBytes,
   isImageContentType,
-  isVideoContentType,
+  isVideoLikeOutput,
   outputFilename,
   type IssueOutputItem,
 } from "@/lib/issue-output";
@@ -15,6 +15,7 @@ import { OutputFileTile } from "./OutputFileTile";
 interface OutputPrimaryCardProps {
   item: IssueOutputItem;
   creatorName?: string | null;
+  onMediaClick?: (item: IssueOutputItem) => void;
 }
 
 /**
@@ -22,26 +23,42 @@ interface OutputPrimaryCardProps {
  * over a metadata strip with Open + Download actions. The layout stacks on
  * mobile and uses a single horizontal meta row on desktop.
  */
-export function OutputPrimaryCard({ item, creatorName }: OutputPrimaryCardProps) {
+export function OutputPrimaryCard({ item, creatorName, onMediaClick }: OutputPrimaryCardProps) {
   const meta = item.metadata;
   const filename = outputFilename(item);
   const contentType = meta?.contentType;
+  const isMedia = Boolean(meta && (
+    isImageContentType(contentType) ||
+    isVideoLikeOutput(contentType, meta.originalFilename)
+  ));
+  const isVideo = Boolean(meta && isVideoLikeOutput(contentType, meta.originalFilename));
 
   return (
     <div className="overflow-hidden rounded-md border border-border bg-card">
       {/* Media region */}
-      {meta && isVideoContentType(contentType) ? (
+      {isVideo && meta ? (
         <OutputVideoPlayer src={meta.contentPath} title={filename} />
       ) : meta && isImageContentType(contentType) ? (
-        <a
-          href={meta.openPath}
-          target="_blank"
-          rel="noreferrer"
-          className="block aspect-video w-full overflow-hidden bg-black"
-          aria-label={`Open ${filename}`}
-        >
-          <img src={meta.contentPath} alt={filename} className="h-full w-full object-contain" />
-        </a>
+        onMediaClick ? (
+          <button
+            type="button"
+            className="block aspect-video w-full overflow-hidden bg-black"
+            aria-label={`Browse ${filename} in gallery`}
+            onClick={() => onMediaClick(item)}
+          >
+            <img src={meta.contentPath} alt={filename} className="h-full w-full object-contain" />
+          </button>
+        ) : (
+          <a
+            href={meta.openPath}
+            target="_blank"
+            rel="noreferrer"
+            className="block aspect-video w-full overflow-hidden bg-black"
+            aria-label={`Open ${filename}`}
+          >
+            <img src={meta.contentPath} alt={filename} className="h-full w-full object-contain" />
+          </a>
+        )
       ) : (
         <div className="flex aspect-video w-full items-center justify-center bg-muted/30">
           <OutputFileTile contentType={contentType} sizeClassName="h-16 w-16 text-base" />
@@ -76,12 +93,25 @@ export function OutputPrimaryCard({ item, creatorName }: OutputPrimaryCardProps)
 
         {meta ? (
           <div className={cn("flex shrink-0 items-center gap-2", "max-md:w-full")}>
-            <Button asChild variant="outline" size="sm" className="max-md:flex-1">
-              <a href={meta.openPath} target="_blank" rel="noreferrer">
-                <ExternalLink className="h-4 w-4" />
-                Open
-              </a>
-            </Button>
+            {isMedia && onMediaClick ? (
+              <Button
+                variant="outline"
+                size="sm"
+                className="max-md:flex-1"
+                onClick={() => onMediaClick(item)}
+              >
+                <Maximize2 className="h-4 w-4" />
+                Browse
+              </Button>
+            ) : null}
+            {!isMedia || !onMediaClick || isVideo ? (
+              <Button asChild variant="outline" size="sm" className="max-md:flex-1">
+                <a href={meta.openPath} target="_blank" rel="noreferrer">
+                  <ExternalLink className="h-4 w-4" />
+                  Open
+                </a>
+              </Button>
+            ) : null}
             <Button asChild size="sm" className="max-md:flex-1">
               <a href={meta.downloadPath} aria-label={`Download ${filename}`}>
                 <Download className="h-4 w-4" />

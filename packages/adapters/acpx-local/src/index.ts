@@ -1,7 +1,7 @@
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 
 export const type = "acpx_local";
-export const label = "ACPX (local)";
+export const label = "ACPX";
 
 export const DEFAULT_ACPX_LOCAL_AGENT = "claude";
 export const DEFAULT_ACPX_LOCAL_MODE = "persistent";
@@ -25,10 +25,14 @@ Adapter: acpx_local
 Use when:
 - The agent should run through Agent Client Protocol via ACPX on the Paperclip host or a managed execution environment.
 - You want one built-in adapter that can target Claude, Codex, or a custom ACP server command.
-- You need Paperclip-managed session identity and live streamed ACP events in later ACPX runtime phases.
+- You want the richest live run feedback. acpx_local streams structured JSONL events (acpx.session, acpx.status, acpx.text_delta, acpx.tool_call, acpx.result, acpx.error) that the UI renders as live message, thinking, tool, and status blocks.
+- The agent runs on a sandbox execution target. Sandbox run logs stream live, so
+  acpx_local's granular events make remote runs as observable as local ones.
+  Prefer acpx_local for sandbox workers, especially when watching progress in
+  real time.
 
 Don't use when:
-- You need today's stable Claude Code or Codex CLI wrapper behavior. Use claude_local or codex_local until acpx_local runtime execution is enabled.
+- You depend on CLI-wrapper-specific behavior of claude_local or codex_local (their session files, CLI flags, or CLI-version-specific output).
 - The host cannot satisfy ACPX's Node >=22.12.0 prerequisite.
 - The agent runtime is not an ACP server and cannot be launched through ACPX.
 

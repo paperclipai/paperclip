@@ -286,6 +286,11 @@ describe("IssueChatThread system notice routing", () => {
 
   it("shows copy-link feedback on the link button only", async () => {
     const writeText = vi.fn(async () => undefined);
+    const originalSecureContext = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+    Object.defineProperty(window, "isSecureContext", {
+      configurable: true,
+      value: true,
+    });
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
@@ -320,6 +325,12 @@ describe("IssueChatThread system notice routing", () => {
     expect(writeText).toHaveBeenCalledWith(expect.stringContaining("#comment-comment-copy-link"));
     expect(copyLink.querySelector(".lucide-check")).not.toBeNull();
     expect(copyText.querySelector(".lucide-check")).toBeNull();
+    if (originalSecureContext) {
+      Object.defineProperty(window, "isSecureContext", originalSecureContext);
+    } else {
+      // @ts-expect-error test cleanup for optional browser API
+      delete window.isSecureContext;
+    }
   });
 
   it("labels system notice source as Paperclip when no run agent can be resolved", () => {

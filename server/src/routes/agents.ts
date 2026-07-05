@@ -1,6 +1,5 @@
 import { Router, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import os from "node:os";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
@@ -69,6 +68,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
+import { authorizationDeniedDetails } from "../services/authorization.js";
 import {
   detectAdapterModel,
   findActiveServerAdapter,
@@ -141,7 +141,6 @@ export function agentRoutes(
     codex_local: "instructionsFilePath",
     droid_local: "instructionsFilePath",
     gemini_local: "instructionsFilePath",
-    hermes_local: "instructionsFilePath",
     opencode_local: "instructionsFilePath",
     cursor: "instructionsFilePath",
     pi_local: "instructionsFilePath",
@@ -271,7 +270,7 @@ export function agentRoutes(
     }
 
     const environment = await environmentsSvc.getById(input.environmentId);
-    if (!environment || environment.companyId !== input.companyId) {
+    if (!environment) {
       return {
         executionTarget: null,
         environmentName: null,
@@ -364,6 +363,11 @@ export function agentRoutes(
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
+        // Apply the active custom-image template so the Test boots with the
+        // operator's captured sandbox customizations and prepared image state,
+        // matching what real agent runs use. Without this the test would
+        // silently fall back to the base image.
+        applyCustomImageTemplate: true,
       });
     } catch (err) {
       return {
@@ -663,7 +667,7 @@ export function agentRoutes(
       resource: { type: "company", companyId },
     });
     if (!decision.allowed) {
-      throw forbidden(decision.explanation);
+      throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
     }
     if (req.actor.type !== "agent") return null;
     const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
@@ -682,7 +686,7 @@ export function agentRoutes(
       resource: { type: "company", companyId },
     });
     if (decision.allowed) return;
-    throw forbidden(decision.explanation);
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
   async function assertCanReadConfigurations(req: Request, companyId: string) {
@@ -830,7 +834,7 @@ export function agentRoutes(
       resource: { type: "agent", companyId: targetAgent.companyId, agentId: targetAgent.id },
     });
     if (decision.allowed) return;
-    throw forbidden(decision.explanation);
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
   }
 
   async function assertCanReadAgent(req: Request, targetAgent: { companyId: string }) {
@@ -865,8 +869,8 @@ export function agentRoutes(
   ) {
     if (environmentId === undefined || environmentId === null) return;
     const environment = await environmentsSvc.getById(environmentId);
-    if (!environment || environment.companyId !== companyId) {
-      throw unprocessable("Selected environment must belong to the same company");
+    if (!environment) {
+      throw unprocessable("Selected environment was not found");
     }
     if (options?.allowedDrivers && !options.allowedDrivers.includes(environment.driver)) {
       throw unprocessable(`Environment driver "${environment.driver}" is not allowed here`);
@@ -1118,7 +1122,10 @@ export function agentRoutes(
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       input.companyId,
       input.adapterConfig,
-      { strictMode: strictSecretsMode },
+      {
+        strictMode: strictSecretsMode,
+        adapterType: input.adapterType ?? null,
+      },
     );
     await assertAdapterConfigConstraints(
       input.adapterType,
@@ -1211,53 +1218,33 @@ export function agentRoutes(
     return path.resolve(instanceRoot, "companies", companyId, "agents", agentId, "codex-home");
   }
 
-  function normalizeCodexLocalHomePath(rawHome: string): string {
-    if (rawHome === "~") return path.resolve(os.homedir());
-    if (rawHome.startsWith("~/") || rawHome.startsWith("~\\")) {
-      return path.resolve(path.join(os.homedir(), rawHome.slice(2)));
-    }
-    return path.resolve(rawHome);
+  function codexLocalEnvKeyConfigured(value: unknown): boolean {
+    if (asEnvBindingString(value)) return true;
+    const record = asRecord(value);
+    return record?.type === "secret_ref" && typeof record.secretId === "string";
   }
 
-  function assertCodexLocalHomeIsNotShared(companyId: string, configuredHome: string) {
-    const instanceRoot = resolvePaperclipInstanceRootForAdapter({
-      homeDir: asNonEmptyString(process.env.PAPERCLIP_HOME) ?? undefined,
-      instanceId: asNonEmptyString(process.env.PAPERCLIP_INSTANCE_ID) ?? undefined,
-      env: process.env,
-    });
-    const normalizedHome = normalizeCodexLocalHomePath(configuredHome);
-    const sharedHomes = [
-      path.resolve(instanceRoot, "companies", companyId, "codex-home"),
-      path.resolve(path.join(os.homedir(), ".codex")),
-    ];
-    const hostCodexHome = asNonEmptyString(process.env.CODEX_HOME);
-    if (hostCodexHome) {
-      sharedHomes.push(normalizeCodexLocalHomePath(hostCodexHome));
-    }
-    if (!sharedHomes.some((sharedHome) => sharedHome === normalizedHome)) return;
-    throw unprocessable(
-      "codex_local agents must use an isolated adapterConfig.env.CODEX_HOME; shared company codex-home or host Codex auth home is not allowed",
-    );
-  }
-
-  function applyCodexLocalIsolationGuard(
+  // codex_local agents inherit whatever Codex login is already on the device
+  // (the host's ~/.codex or $CODEX_HOME) by default, so a fresh agent needs no
+  // env overrides at all. We only carve out an isolated per-agent CODEX_HOME
+  // when the agent sets its own OPENAI_API_KEY, so that key's api-key auth.json
+  // does not collide with the shared company home other agents use for the host
+  // login. Agents without a key share the host credentials.
+  function applyCodexLocalKeyIsolation(
     companyId: string,
     agentId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ): Record<string, unknown> {
     if (adapterType !== "codex_local") return adapterConfig;
-    const env = asRecord(adapterConfig.env) ? { ...(adapterConfig.env as Record<string, unknown>) } : {};
-    const configuredHome = asEnvBindingString(env.CODEX_HOME);
-    if (configuredHome) {
-      assertCodexLocalHomeIsNotShared(companyId, configuredHome);
-    } else {
-      env.CODEX_HOME = codexLocalAgentHome(companyId, agentId);
-    }
-    if (!Object.prototype.hasOwnProperty.call(env, "OPENAI_API_KEY")) {
-      env.OPENAI_API_KEY = "";
-    }
-    return { ...adapterConfig, env };
+    const existingEnv = asRecord(adapterConfig.env);
+    if (!existingEnv) return adapterConfig;
+    if (!codexLocalEnvKeyConfigured(existingEnv.OPENAI_API_KEY)) return adapterConfig;
+    if (codexLocalEnvKeyConfigured(existingEnv.CODEX_HOME)) return adapterConfig;
+    return {
+      ...adapterConfig,
+      env: { ...existingEnv, CODEX_HOME: codexLocalAgentHome(companyId, agentId) },
+    };
   }
 
   function applyCreateDefaultsByAdapterType(
@@ -1539,18 +1526,13 @@ export function agentRoutes(
       companyId,
       requestedDesiredSkills,
     );
-    const resolvedRequestedSkills = resolvedRequestedSkillEntries.map((entry) => entry.key);
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(companyId, {
       materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
       versionSelections: skillVersionSelectionMap(resolvedRequestedSkillEntries),
     });
-    const requiredSkills = runtimeSkillEntries
-      .filter((entry) => entry.required)
-      .map((entry) => entry.key);
-    const desiredSkillEntries = [
-      ...requiredSkills.map((key) => ({ key, versionId: null })),
-      ...resolvedRequestedSkillEntries,
-    ].filter((entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index);
+    const desiredSkillEntries = resolvedRequestedSkillEntries.filter(
+      (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
+    );
     const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
 
     return {
@@ -1651,7 +1633,7 @@ export function agentRoutes(
       : false;
     const environmentId = asNonEmptyString(req.query.environmentId);
     const environment = environmentId ? await environmentsSvc.getById(environmentId) : null;
-    if (environmentId && (!environment || environment.companyId !== companyId)) {
+    if (environmentId && !environment) {
       res.status(404).json({ error: "Environment not found" });
       return;
     }
@@ -1702,11 +1684,13 @@ export function agentRoutes(
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
         inputAdapterConfig,
-        { strictMode: strictSecretsMode },
+        { strictMode: strictSecretsMode, adapterType: type },
       );
       const { config: runtimeAdapterConfig } = await secretsSvc.resolveAdapterConfigForRuntime(
         companyId,
         normalizedAdapterConfig,
+        undefined,
+        { adapterType: type },
       );
 
       const { executionTarget, environmentName, fallbackChecks, release } =
@@ -1771,15 +1755,9 @@ export function agentRoutes(
       const preference = readPaperclipSkillSyncPreference(
         agent.adapterConfig as Record<string, unknown>,
       );
-      const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
-        materializeMissing: false,
-        versionSelections: skillVersionSelectionMap(preference.desiredSkillEntries),
-      });
-      const requiredSkills = runtimeSkillEntries.filter((entry) => entry.required).map((entry) => entry.key);
-      const desiredSkillEntries = [
-        ...requiredSkills.map((key) => ({ key, versionId: null })),
-        ...preference.desiredSkillEntries,
-      ].filter((entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index);
+      const desiredSkillEntries = preference.desiredSkillEntries.filter(
+        (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
+      );
       res.json(buildUnsupportedSkillSnapshot(agent.adapterType, desiredSkillEntries));
       return;
     }
@@ -2034,6 +2012,18 @@ export function agentRoutes(
       res.json(buildLowTrustSelfView(agent));
       return;
     }
+    if (req.actor.keyScope?.kind === "task_bridge") {
+      res.json({
+        id: agent.id,
+        companyId: agent.companyId,
+        name: agent.name,
+        role: agent.role,
+        title: agent.title,
+        status: agent.status,
+        keyScope: req.actor.keyScope,
+      });
+      return;
+    }
     res.json(await buildAgentDetail(agent));
   });
 
@@ -2286,7 +2276,7 @@ export function agentRoutes(
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
     const hiredAgentId = randomUUID();
-    const requestedAdapterConfig = applyCodexLocalIsolationGuard(
+    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       hiredAgentId,
       hireInput.adapterType,
@@ -2479,7 +2469,7 @@ export function agentRoutes(
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
     const agentId = randomUUID();
-    const requestedAdapterConfig = applyCodexLocalIsolationGuard(
+    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       agentId,
       createInput.adapterType,
@@ -2618,6 +2608,7 @@ export function agentRoutes(
       entityId: agent.id,
       details: {
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
+        canCreateSkills: agent.permissions?.canCreateSkills ?? true,
         canAssignTasks: effectiveCanAssignTasks,
         trustPreset: agent.permissions?.trustPreset ?? "standard",
       },
@@ -2662,7 +2653,7 @@ export function agentRoutes(
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       existing.companyId,
       syncedAdapterConfig,
-      { strictMode: strictSecretsMode },
+      { strictMode: strictSecretsMode, adapterType: existing.adapterType },
     );
     const actor = getActorInfo(req);
     const agent = await svc.update(
@@ -2733,7 +2724,7 @@ export function agentRoutes(
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       existing.companyId,
       adapterConfig,
-      { strictMode: strictSecretsMode },
+      { strictMode: strictSecretsMode, adapterType: existing.adapterType },
     );
     await svc.update(
       id,
@@ -2801,7 +2792,7 @@ export function agentRoutes(
     const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
       existing.companyId,
       result.adapterConfig,
-      { strictMode: strictSecretsMode },
+      { strictMode: strictSecretsMode, adapterType: existing.adapterType },
     );
     await svc.update(
       id,
@@ -2939,9 +2930,13 @@ export function agentRoutes(
         // Preserve adapter-agnostic keys (env, cwd, etc.) from the existing config
         // when the adapter type changes. Without this, a PATCH that includes
         // adapterConfig but omits these keys would silently drop them.
+        // `paperclipSkillSync` holds the agent's desired-skill selection, which is
+        // a company-level (adapter-agnostic) choice even though it is persisted
+        // inside the per-adapter config; switching adapters must not wipe it.
         const ADAPTER_AGNOSTIC_KEYS = [
           "env", "cwd", "timeoutSec", "graceSec",
           "promptTemplate", "bootstrapPromptTemplate",
+          "paperclipSkillSync",
         ] as const;
         for (const key of ADAPTER_AGNOSTIC_KEYS) {
           if (rawEffectiveAdapterConfig[key] === undefined && existingAdapterConfig[key] !== undefined) {
@@ -2953,7 +2948,7 @@ export function agentRoutes(
           rawEffectiveAdapterConfig,
         );
       }
-      const effectiveAdapterConfig = applyCodexLocalIsolationGuard(
+      const effectiveAdapterConfig = applyCodexLocalKeyIsolation(
         existing.companyId,
         existing.id,
         requestedAdapterType,
@@ -3119,16 +3114,35 @@ export function agentRoutes(
       res.status(409).json({ error: "Only pending approval agents can be approved" });
       return;
     }
-    const approval = await svc.activatePendingApproval(id);
-    if (!approval) {
+
+    // Resolve the linked hire approval (clears it from the inbox) and run the
+    // shared approval side effects: agent activation, budget policy, and the
+    // hire-approved notification. Fall back to direct activation if no open
+    // approval record exists (e.g. agents created before approvals were tracked).
+    const decidedByUserId = req.actor.userId ?? "board";
+    const openApproval = await approvalsSvc.findOpenHireApprovalForAgent(existing.companyId, id);
+
+    let agent: Awaited<ReturnType<typeof svc.getById>> | null = null;
+    if (openApproval) {
+      await approvalsSvc.approve(openApproval.id, decidedByUserId);
+      agent = await svc.getById(id);
+    } else {
+      const approval = await svc.activatePendingApproval(id);
+      if (!approval) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      if (!approval.activated) {
+        res.status(409).json({ error: "Only pending approval agents can be approved" });
+        return;
+      }
+      agent = approval.agent;
+    }
+
+    if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
-    if (!approval.activated) {
-      res.status(409).json({ error: "Only pending approval agents can be approved" });
-      return;
-    }
-    const { agent } = approval;
 
     await logActivity(db, {
       companyId: agent.companyId,
@@ -3137,7 +3151,7 @@ export function agentRoutes(
       action: "agent.approved",
       entityType: "agent",
       entityId: agent.id,
-      details: { source: "agent_detail" },
+      details: { source: "agent_detail", approvalId: openApproval?.id ?? null },
     });
 
     res.json(agent);
@@ -3146,10 +3160,28 @@ export function agentRoutes(
   router.post("/agents/:id/terminate", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    if (!(await getAccessibleAgent(req, res, id))) {
+    const existing = await getAccessibleAgent(req, res, id);
+    if (!existing) {
       return;
     }
-    const agent = await svc.terminate(id);
+
+    // Terminating an agent that is still awaiting approval is the agent-detail
+    // equivalent of rejecting the hire. When a linked hire approval is still
+    // open, delegate to approvalsSvc.reject(), which both resolves the approval
+    // (clearing the inbox "Approve/Reject" card) and terminates the agent.
+    // Mirror the approve path's branch-or-fallback so we never terminate twice:
+    // reject() already calls agentsSvc.terminate() internally.
+    let agent: Awaited<ReturnType<typeof svc.terminate>> = null;
+    if (existing.status === "pending_approval") {
+      const openApproval = await approvalsSvc.findOpenHireApprovalForAgent(existing.companyId, id);
+      if (openApproval) {
+        await approvalsSvc.reject(openApproval.id, req.actor.userId ?? "board");
+        agent = await svc.getById(id);
+      }
+    }
+    if (!agent) {
+      agent = await svc.terminate(id);
+    }
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -3237,7 +3269,9 @@ export function agentRoutes(
     if (!agent) {
       return;
     }
-    const key = await svc.createApiKey(id, req.body.name);
+    const key = await svc.createApiKey(id, req.body.name, req.body.scope, {
+      responsibleUserId: req.actor.userId ?? null,
+    });
 
     await logActivity(db, {
       companyId: agent.companyId,
@@ -3246,7 +3280,12 @@ export function agentRoutes(
       action: "agent.key_created",
       entityType: "agent",
       entityId: agent.id,
-      details: { keyId: key.id, name: key.name },
+      details: {
+        keyId: key.id,
+        name: key.name,
+        scope: key.scope,
+        responsibleUserId: key.responsibleUserId,
+      },
     });
 
     res.status(201).json(key);
@@ -3493,7 +3532,8 @@ export function agentRoutes(
     const agentId = req.query.agentId as string | undefined;
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
-    const runs = await heartbeat.list(companyId, agentId, limit);
+    const summary = req.query.summary === "true" || req.query.summary === "1";
+    const runs = await heartbeat.list(companyId, agentId, limit, { summary });
     res.json(runs);
   });
 
@@ -3570,14 +3610,14 @@ export function agentRoutes(
 
       const rows = [...liveRuns, ...recentRuns];
       res.json(await Promise.all(rows.map(async (run) => ({
-        ...run,
+        ...heartbeat.decorateActiveRunStatus(run),
         outputSilence: await heartbeat.buildRunOutputSilence(run),
       }))));
       return;
     }
 
     res.json(await Promise.all(liveRuns.map(async (run) => ({
-      ...run,
+      ...heartbeat.decorateActiveRunStatus(run),
       outputSilence: await heartbeat.buildRunOutputSilence(run),
     }))));
   });
@@ -3591,9 +3631,10 @@ export function agentRoutes(
     }
     assertCompanyAccess(req, run.companyId);
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
+    const decoratedRun = heartbeat.decorateActiveRunStatus(run);
     res.json(
       redactCurrentUserValue(
-        { ...run, retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
+        { ...decoratedRun, retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
         await getCurrentUserRedactionOptions(),
       ),
     );
@@ -3785,7 +3826,7 @@ export function agentRoutes(
       .orderBy(desc(heartbeatRuns.createdAt));
 
     res.json(await Promise.all(liveRuns.map(async (run) => ({
-      ...run,
+      ...heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id }),
       outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
     }))));
   });
@@ -3830,8 +3871,9 @@ export function agentRoutes(
       return;
     }
 
+    const decoratedRun = heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id });
     res.json({
-      ...run,
+      ...decoratedRun,
       agentId: agent.id,
       agentName: agent.name,
       adapterType: agent.adapterType,

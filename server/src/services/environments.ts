@@ -15,6 +15,7 @@ import {
   type EnvironmentLeaseStatus,
   type UpdateEnvironment,
 } from "@paperclipai/shared";
+import { conflict } from "../errors.js";
 
 type EnvironmentRow = typeof environments.$inferSelect;
 type EnvironmentLeaseRow = typeof environmentLeases.$inferSelect;
@@ -70,19 +71,68 @@ function readEnum<T extends string>(value: string | null, allowed: readonly T[],
   throw new Error(`Unexpected ${fieldName} value: ${value}`);
 }
 
+function hasConstraintName(error: unknown, constraintName: string): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as {
+    constraint?: unknown;
+    constraint_name?: unknown;
+    cause?: unknown;
+  };
+  return candidate.constraint === constraintName
+    || candidate.constraint_name === constraintName
+    || hasConstraintName(candidate.cause, constraintName);
+}
+
 function toEnvironment(row: EnvironmentRow): Environment {
   return {
     id: row.id,
-    companyId: row.companyId,
     name: row.name,
     description: row.description ?? null,
     driver: readEnum(row.driver, ENVIRONMENT_DRIVERS, "environment driver") ?? "local",
     status: readEnum(row.status, ENVIRONMENT_STATUSES, "environment status") ?? "active",
     config: cloneRecord(row.config, {}) ?? {},
+    envVars: cloneRecord(row.envVars, {}) ?? {},
     metadata: cloneRecord(row.metadata),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-  };
+  } as Environment;
+}
+
+type EnvironmentListFilters = {
+  status?: string;
+  driver?: string;
+};
+
+function resolveListFilters(
+  companyIdOrFilters?: string | EnvironmentListFilters,
+  maybeFilters?: EnvironmentListFilters,
+): EnvironmentListFilters {
+  if (typeof companyIdOrFilters === "string") {
+    return maybeFilters ?? {};
+  }
+  return companyIdOrFilters ?? {};
+}
+
+function resolveCreateInput(
+  companyIdOrInput: string | CreateEnvironment,
+  maybeInput?: CreateEnvironment,
+): CreateEnvironment {
+  if (typeof companyIdOrInput === "string") {
+    if (!maybeInput) throw new Error("Create environment input is required");
+    return maybeInput;
+  }
+  return companyIdOrInput;
+}
+
+function resolveKubernetesConfig(
+  companyIdOrConfig: string | KubernetesEnvironmentConfigInput,
+  maybeConfig?: KubernetesEnvironmentConfigInput,
+): KubernetesEnvironmentConfigInput {
+  if (typeof companyIdOrConfig === "string") {
+    if (!maybeConfig) throw new Error("Kubernetes environment config is required");
+    return maybeConfig;
+  }
+  return companyIdOrConfig;
 }
 
 function toEnvironmentLease(row: EnvironmentLeaseRow): EnvironmentLease {
@@ -116,19 +166,17 @@ function toEnvironmentLease(row: EnvironmentLeaseRow): EnvironmentLease {
 export function environmentService(db: Db) {
   return {
     list: async (
-      companyId: string,
-      filters: {
-        status?: string;
-        driver?: string;
-      } = {},
+      companyIdOrFilters?: string | EnvironmentListFilters,
+      maybeFilters?: EnvironmentListFilters,
     ): Promise<Environment[]> => {
-      const conditions = [eq(environments.companyId, companyId)];
+      const filters = resolveListFilters(companyIdOrFilters, maybeFilters);
+      const conditions = [];
       if (filters.status) conditions.push(eq(environments.status, filters.status));
       if (filters.driver) conditions.push(eq(environments.driver, filters.driver));
       const rows = await db
         .select()
         .from(environments)
-        .where(and(...conditions))
+        .where(conditions.length > 0 ? and(...conditions) : undefined)
         .orderBy(desc(environments.updatedAt), desc(environments.createdAt));
       return rows.map(toEnvironment);
     },
@@ -147,26 +195,26 @@ export function environmentService(db: Db) {
       return row ? toEnvironmentLease(row) : null;
     },
 
-    ensureLocalEnvironment: async (companyId: string): Promise<Environment> => {
+    ensureLocalEnvironment: async (_companyId?: string): Promise<Environment> => {
       const now = new Date();
       const row = await db
         .insert(environments)
         .values({
-          companyId,
           name: DEFAULT_LOCAL_ENVIRONMENT_NAME,
           description: DEFAULT_LOCAL_ENVIRONMENT_DESCRIPTION,
           driver: "local",
           status: "active",
           config: {},
+          envVars: {},
           metadata: {
             managedByPaperclip: true,
-            defaultForCompany: true,
+            defaultForInstance: true,
           },
           createdAt: now,
           updatedAt: now,
         })
         .onConflictDoNothing({
-          target: [environments.companyId, environments.driver],
+          target: [environments.driver],
           where: sql`${environments.driver} = 'local'`,
         })
         .returning()
@@ -176,7 +224,7 @@ export function environmentService(db: Db) {
       const existing = await db
         .select()
         .from(environments)
-        .where(and(eq(environments.companyId, companyId), eq(environments.driver, "local")))
+        .where(eq(environments.driver, "local"))
         .then((rows) => rows[0] ?? null);
       if (!existing) {
         throw new Error("Failed to ensure local environment");
@@ -186,7 +234,7 @@ export function environmentService(db: Db) {
 
     /**
      * Idempotently ensure a managed Kubernetes sandbox environment exists for a
-     * company, configured from instance/operator-supplied config. Mirrors
+     * instance, configured from instance/operator-supplied config. Mirrors
      * `ensureLocalEnvironment`, but there is no DB unique index for sandbox
      * drivers, so idempotency is by metadata marker + driver lookup.
      *
@@ -196,9 +244,10 @@ export function environmentService(db: Db) {
      * update egress/runtimeClass via gitops without recreating the row).
      */
     ensureKubernetesEnvironment: async (
-      companyId: string,
-      config: KubernetesEnvironmentConfigInput,
+      companyIdOrConfig: string | KubernetesEnvironmentConfigInput,
+      maybeConfig?: KubernetesEnvironmentConfigInput,
     ): Promise<Environment> => {
+      const config = resolveKubernetesConfig(companyIdOrConfig, maybeConfig);
       const desiredConfig: Record<string, unknown> = {
         ...config,
         provider: KUBERNETES_PROVIDER_KEY,
@@ -211,7 +260,7 @@ export function environmentService(db: Db) {
       const existing = await db
         .select()
         .from(environments)
-        .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
+        .where(eq(environments.driver, "sandbox"))
         .then((rows) =>
           rows.find(
             (row) =>
@@ -235,36 +284,45 @@ export function environmentService(db: Db) {
         return toEnvironment(updated);
       }
 
-      // The partial unique index `environments_company_managed_sandbox_idx`
-      // (added in migration 0102) enforces "at most one Paperclip-managed
-      // sandbox row per company" at the DB level. Use ON CONFLICT DO NOTHING
-      // keyed on that index so concurrent callers can race the INSERT — only
-      // one succeeds; losers re-read the surviving row.
+      // The partial unique index `environments_managed_sandbox_idx` enforces
+      // "at most one Paperclip-managed sandbox row per instance" at the DB
+      // level. Use ON CONFLICT DO NOTHING keyed on that index so concurrent
+      // callers can race the INSERT; losers re-read the surviving row.
       const inserted = await db
         .insert(environments)
         .values({
-          companyId,
           name: DEFAULT_KUBERNETES_ENVIRONMENT_NAME,
           description: DEFAULT_KUBERNETES_ENVIRONMENT_DESCRIPTION,
           driver: "sandbox",
           status: "active",
           config: desiredConfig,
+          envVars: {},
           metadata: desiredMetadata,
           createdAt: now,
           updatedAt: now,
         })
         .onConflictDoNothing({
-          target: [environments.companyId],
-          where: sql`${environments.driver} = 'sandbox' AND (${environments.metadata} ->> 'managedByPaperclip')::boolean = true`,
+          target: [environments.driver],
+          where:
+            sql`${environments.driver} = 'sandbox' AND (${environments.metadata} ->> 'managedByPaperclip')::boolean = true`,
         })
         .returning()
-        .then((rows) => rows[0] ?? null);
+        .then((rows) => rows[0] ?? null)
+        .catch((error) => {
+          if (
+            hasConstraintName(error, "environments_name_idx")
+            || hasConstraintName(error, "environments_managed_sandbox_idx")
+          ) {
+            return null;
+          }
+          throw error;
+        });
       if (inserted) return toEnvironment(inserted);
 
       const winner = await db
         .select()
         .from(environments)
-        .where(and(eq(environments.companyId, companyId), eq(environments.driver, "sandbox")))
+        .where(eq(environments.driver, "sandbox"))
         .then(
           (rows) =>
             rows.find(
@@ -281,17 +339,16 @@ export function environmentService(db: Db) {
     },
 
     /**
-     * Find an active Kubernetes sandbox environment for a company, if one
+     * Find the active managed Kubernetes sandbox environment, if one
      * exists. Read-only counterpart to `ensureKubernetesEnvironment` used by the
      * per-run execution guard (which must not silently create config-less envs).
      */
-    findKubernetesEnvironment: async (companyId: string): Promise<Environment | null> => {
+    findKubernetesEnvironment: async (_companyId?: string): Promise<Environment | null> => {
       const rows = await db
         .select()
         .from(environments)
         .where(
           and(
-            eq(environments.companyId, companyId),
             eq(environments.driver, "sandbox"),
             eq(environments.status, "active"),
           ),
@@ -304,23 +361,36 @@ export function environmentService(db: Db) {
       return match ? toEnvironment(match) : null;
     },
 
-    create: async (companyId: string, input: CreateEnvironment): Promise<Environment> => {
+    create: async (
+      companyIdOrInput: string | CreateEnvironment,
+      maybeInput?: CreateEnvironment,
+    ): Promise<Environment> => {
+      const input = resolveCreateInput(companyIdOrInput, maybeInput);
       const now = new Date();
       const row = await db
         .insert(environments)
         .values({
-          companyId,
           name: input.name,
           description: input.description ?? null,
           driver: input.driver,
           status: input.status ?? "active",
           config: input.config ?? {},
+          envVars: (input as CreateEnvironment & { envVars?: Record<string, unknown> }).envVars ?? {},
           metadata: input.metadata ?? null,
           createdAt: now,
           updatedAt: now,
         })
         .returning()
-        .then((rows) => rows[0] ?? null);
+        .then((rows) => rows[0] ?? null)
+        .catch((error) => {
+          if (hasConstraintName(error, "environments_name_idx")) {
+            throw conflict(`An environment named "${input.name}" already exists for this instance.`);
+          }
+          if (hasConstraintName(error, "environments_local_driver_idx")) {
+            throw conflict("A local environment already exists for this instance.");
+          }
+          throw error;
+        });
       if (!row) {
         throw new Error("Failed to create environment");
       }
@@ -336,6 +406,9 @@ export function environmentService(db: Db) {
       if (patch.driver !== undefined) values.driver = patch.driver;
       if (patch.status !== undefined) values.status = patch.status;
       if (patch.config !== undefined) values.config = patch.config;
+      if ("envVars" in patch && patch.envVars !== undefined) {
+        values.envVars = (patch.envVars ?? {}) as Record<string, unknown>;
+      }
       if (patch.metadata !== undefined) values.metadata = patch.metadata ?? null;
 
       const row = await db
@@ -343,7 +416,16 @@ export function environmentService(db: Db) {
         .set(values)
         .where(eq(environments.id, id))
         .returning()
-        .then((rows) => rows[0] ?? null);
+        .then((rows) => rows[0] ?? null)
+        .catch((error) => {
+          if (hasConstraintName(error, "environments_name_idx")) {
+            throw conflict(`An environment named "${patch.name}" already exists for this instance.`);
+          }
+          if (hasConstraintName(error, "environments_local_driver_idx")) {
+            throw conflict("A local environment already exists for this instance.");
+          }
+          throw error;
+        });
       return row ? toEnvironment(row) : null;
     },
 
@@ -417,7 +499,7 @@ export function environmentService(db: Db) {
 
     releaseLease: async (
       id: string,
-      status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed" | "retained"> = "released",
+      status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed" | "retained" | "pending_cleanup"> = "released",
       options?: {
         failureReason?: string;
         cleanupStatus?: EnvironmentLeaseCleanupStatus;

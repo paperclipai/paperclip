@@ -379,6 +379,101 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("deduplicates workspace-incoherence recovery actions by the typed workspace fingerprint", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const workspaceFingerprint = `workspace_incoherence:v1:sha256:${"a".repeat(64)}`;
+    const workspaceValidation = {
+      reason: "git_worktree_branch_incoherence",
+      fingerprint: workspaceFingerprint,
+      sourceIssueId: sourceIssue.id,
+      sourceIdentifier: sourceIssue.identifier,
+      executionWorkspaceId: "execution-workspace-1",
+      expectedBranch: "PAP-1-expected",
+      actualBranch: "PAP-1-publish",
+      cleanliness: "dirty",
+      provenance: {
+        expectedBranchExists: true,
+        actualBranchExists: true,
+        expectedHeadSha: "1111111111111111111111111111111111111111",
+        actualHeadSha: "2222222222222222222222222222222222222222",
+        sameHead: false,
+      },
+      safeRepair: {
+        eligible: false,
+        attempted: false,
+        succeeded: false,
+        reason: "worktree is not clean",
+      },
+    };
+    const firstLatestRun = {
+      id: randomUUID(),
+      agentId: coderId,
+      status: "failed",
+      error: "workspace branch mismatch",
+      errorCode: "workspace_validation_failed",
+      contextSnapshot: {},
+      livenessState: "failed",
+      resultJson: { workspaceValidation },
+    } as const;
+    const secondLatestRun = {
+      ...firstLatestRun,
+      id: randomUUID(),
+    };
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: firstLatestRun,
+      comment: "Workspace failed validation.",
+      recoveryCause: "workspace_validation_failed",
+    });
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: secondLatestRun,
+      comment: "Workspace failed validation.",
+      recoveryCause: "workspace_validation_failed",
+    });
+
+    const actionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actionRows).toHaveLength(1);
+    expect(actionRows[0]).toMatchObject({
+      companyId,
+      kind: "workspace_validation",
+      cause: "workspace_validation_failed",
+      status: "active",
+      attemptCount: 2,
+      fingerprint: expect.stringContaining(workspaceFingerprint),
+      evidence: expect.objectContaining({
+        latestRunId: secondLatestRun.id,
+        latestRunErrorCode: "workspace_validation_failed",
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_branch_incoherence",
+          fingerprint: workspaceFingerprint,
+          sourceIssueId: sourceIssue.id,
+          executionWorkspaceId: "execution-workspace-1",
+          expectedBranch: "PAP-1-expected",
+          actualBranch: "PAP-1-publish",
+          cleanliness: "dirty",
+        }),
+      }),
+      nextAction: expect.stringContaining("git worktree branch incoherence"),
+      wakePolicy: expect.objectContaining({
+        type: "manual_repair_required",
+        reason: "workspace_validation_failed",
+      }),
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
+    expect(comments.filter((comment) => comment.body.includes(`Recovery action: \`${actionRows[0]?.id}\``))).toHaveLength(1);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it("keeps the source issue blocked when source-scoped wakeup is claimed synchronously", async () => {
     const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
     await db.update(agents).set({ status: "paused" }).where(eq(agents.id, managerId));

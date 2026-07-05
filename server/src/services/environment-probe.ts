@@ -2,6 +2,7 @@ import type { Environment, EnvironmentProbeResult } from "@paperclipai/shared";
 import type { Db } from "@paperclipai/db";
 import { ensureSshWorkspaceReady } from "@paperclipai/adapter-utils/ssh";
 import {
+  parseEnvironmentDriverConfig,
   resolveEnvironmentDriverConfigForRuntime,
   type ParsedEnvironmentConfig,
 } from "./environment-config.js";
@@ -13,9 +14,21 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 export async function probeEnvironment(
   db: Db,
   environment: Environment,
-  options: { pluginWorkerManager?: PluginWorkerManager; resolvedConfig?: ParsedEnvironmentConfig } = {},
+  options: {
+    companyId?: string | null;
+    pluginWorkerManager?: PluginWorkerManager;
+    resolvedConfig?: ParsedEnvironmentConfig;
+    applyCustomImageTemplate?: boolean;
+  } = {},
 ): Promise<EnvironmentProbeResult> {
-  const parsed = options.resolvedConfig ?? await resolveEnvironmentDriverConfigForRuntime(db, environment.companyId, environment);
+  const resolvedCompanyId = options.companyId ?? null;
+  const parsed = options.resolvedConfig ?? (
+    resolvedCompanyId || options.applyCustomImageTemplate === true
+      ? await resolveEnvironmentDriverConfigForRuntime(db, resolvedCompanyId, environment, {
+          applyCustomImageTemplate: options.applyCustomImageTemplate === true,
+        })
+      : parseEnvironmentDriverConfig(environment)
+  );
 
   if (parsed.driver === "local") {
     return {
@@ -44,7 +57,7 @@ export async function probeEnvironment(
       return await probePluginSandboxProviderDriver({
         db,
         workerManager: options.pluginWorkerManager,
-        companyId: environment.companyId,
+        companyId: resolvedCompanyId ?? "instance",
         environmentId: environment.id,
         provider: parsed.config.provider,
         config: parsed.config as unknown as Record<string, unknown>,
@@ -68,7 +81,7 @@ export async function probeEnvironment(
     return await probePluginEnvironmentDriver({
       db,
       workerManager: options.pluginWorkerManager,
-      companyId: environment.companyId,
+      companyId: resolvedCompanyId ?? "instance",
       environmentId: environment.id,
       config: parsed.config,
     });

@@ -6,7 +6,7 @@ import {
   parseJson,
 } from "@paperclipai/adapter-utils/server-utils";
 
-const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
+const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+(?:`?claude\s+login`?|\/login)|login\s+required|requires\s+login|unauthorized|authentication\s+required|invalid\s+api\s+key[\s\S]{0,120}(?:\/login|claude\s+login|log\s+in))/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
@@ -183,6 +183,24 @@ export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | 
     reason === "turn_limit" ||
     reason === "turn_limit_exhausted",
   );
+}
+
+export function isClaudeRefusalResult(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+
+  // A policy refusal exits the CLI cleanly (exitCode=0, is_error=false), so it
+  // must be detected from the structured fields rather than the failure flag.
+  const subtype = asString(parsed.subtype, "").trim().toLowerCase();
+  if (subtype === "model_refusal" || subtype === "refusal") return true;
+
+  const structuredStopReasons = [
+    parsed.stop_reason,
+    parsed.stopReason,
+    parsed.error_code,
+    parsed.errorCode,
+  ].map((value) => asString(value, "").trim().toLowerCase());
+
+  return structuredStopReasons.some((reason) => reason === "refusal");
 }
 
 export function isClaudeUnknownSessionError(parsed: Record<string, unknown>): boolean {

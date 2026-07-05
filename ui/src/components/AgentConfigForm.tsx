@@ -47,7 +47,10 @@ import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
-import { EnvVarEditor } from "./EnvVarEditor";
+import {
+  EnvironmentVariablesEditor,
+  type EnvironmentVariablesEditorHandle,
+} from "./environment-variables-editor";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
 import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -114,22 +117,6 @@ const EMPTY_ENV: Record<string, EnvBinding> = {};
 
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
   return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "acpx_local";
-}
-
-export function getAgentConfigTestActionLabel(input: { isCreate: boolean; isDirty: boolean }): string {
-  return !input.isCreate && input.isDirty ? "Save + Test" : "Test";
-}
-
-export async function runAgentConfigEnvironmentTest(input: {
-  isCreate: boolean;
-  isDirty: boolean;
-  saveDraft?: () => void | Promise<unknown>;
-  runTest: () => Promise<AdapterEnvironmentTestResult>;
-}) {
-  if (!input.isCreate && input.isDirty) {
-    await input.saveDraft?.();
-  }
-  return await input.runTest();
 }
 
 function isOverlayDirty(o: AgentConfigOverlay): boolean {
@@ -224,6 +211,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const hideInstructionsFile = props.hideInstructionsFile ?? false;
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
+  const environmentVariablesEditorRef = useRef<EnvironmentVariablesEditorHandle | null>(null);
 
   // Sync disabled adapter types from server so dropdown filters them out
   const disabledTypes = useDisabledAdaptersSync();
@@ -232,6 +220,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryKey: selectedCompanyId ? queryKeys.secrets.list(selectedCompanyId) : ["secrets", "none"],
     queryFn: () => secretsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
+  });
+  // User-secret definitions power the "User secret" env binding source. Requires
+  // secret-admin; non-admins simply get the free-text key fallback in the editor.
+  const { data: userSecretDefinitions = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.secrets.userDefinitions(selectedCompanyId)
+      : ["user-secret-definitions", "none"],
+    queryFn: () => secretsApi.listUserSecretDefinitions(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+    retry: false,
   });
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -247,6 +245,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const { data: generalSettings } = useQuery({
     queryKey: queryKeys.instance.generalSettings,
     queryFn: () => instanceSettingsApi.getGeneral(),
+    retry: false,
+  });
+  const { data: instanceSettings } = useQuery({
+    queryKey: queryKeys.instance.settings,
+    queryFn: () => instanceSettingsApi.get(),
     retry: false,
   });
 
@@ -318,14 +321,29 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     }));
   }
 
+  function flushEnvironmentDraft() {
+    return environmentVariablesEditorRef.current?.flushPendingDraft() ?? null;
+  }
+
   /** Build accumulated patch and send to parent */
   const handleCancel = useCallback(() => {
     setOverlay({ ...emptyOverlay });
   }, []);
 
   const handleSave = useCallback(async () => {
-    if (isCreate || !isDirty) return;
-    await props.onSave(buildAgentUpdatePatch(props.agent, overlay));
+    if (isCreate) return;
+    const flushedEnv = flushEnvironmentDraft();
+    const nextOverlay = flushedEnv
+      ? {
+          ...overlay,
+          adapterConfig: {
+            ...overlay.adapterConfig,
+            env: flushedEnv,
+          },
+        }
+      : overlay;
+    if (!isOverlayDirty(nextOverlay)) return;
+    await props.onSave(buildAgentUpdatePatch(props.agent, nextOverlay));
   }, [isCreate, isDirty, overlay, props]);
 
   useEffect(() => {
@@ -368,12 +386,27 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const set = isCreate
     ? (patch: Partial<CreateConfigValues>) => props.onChange(patch)
     : null;
-  const currentDefaultEnvironmentId = isCreate
+  const rawCurrentDefaultEnvironmentId = isCreate
     ? val!.defaultEnvironmentId ?? ""
     : eff("identity", "defaultEnvironmentId", props.agent.defaultEnvironmentId ?? "");
+  const currentDefaultEnvironmentId = useMemo(() => {
+    if (!rawCurrentDefaultEnvironmentId) return "";
+    const selected = environments.find((environment) => environment.id === rawCurrentDefaultEnvironmentId) ?? null;
+    return selected?.driver === "local" ? "" : rawCurrentDefaultEnvironmentId;
+  }, [environments, rawCurrentDefaultEnvironmentId]);
   const currentDefaultEnvironment = useMemo(
     () => environments.find((environment) => environment.id === currentDefaultEnvironmentId) ?? null,
     [currentDefaultEnvironmentId, environments],
+  );
+  const instanceDefaultEnvironmentId = useMemo(() => {
+    const environmentId = instanceSettings?.defaultEnvironmentId ?? null;
+    if (!environmentId) return "";
+    const selected = environments.find((environment) => environment.id === environmentId) ?? null;
+    return selected?.driver === "local" ? "" : environmentId;
+  }, [environments, instanceSettings?.defaultEnvironmentId]);
+  const instanceDefaultEnvironment = useMemo(
+    () => environments.find((environment) => environment.id === instanceDefaultEnvironmentId) ?? null,
+    [environments, instanceDefaultEnvironmentId],
   );
 
   // When the instance forces Kubernetes execution, new agents must default to the
@@ -389,12 +422,31 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const runnableEnvironments = useMemo(
     () => environments.filter((environment) => {
       if (!supportedEnvironmentDrivers.has(environment.driver)) return false;
+      if (environment.driver === "local") return false;
       if (environment.driver !== "sandbox") return true;
       const provider = typeof environment.config?.provider === "string" ? environment.config.provider : null;
       return provider !== null && provider !== "fake";
     }),
     [environments, supportedEnvironmentDrivers],
   );
+  const environmentOptions = useMemo(() => {
+    if (!currentDefaultEnvironment) return runnableEnvironments;
+    if (runnableEnvironments.some((environment) => environment.id === currentDefaultEnvironment.id)) {
+      return runnableEnvironments;
+    }
+    return [...runnableEnvironments, currentDefaultEnvironment];
+  }, [currentDefaultEnvironment, runnableEnvironments]);
+  // `runnableEnvironments` excludes the always-available Local environment, so a
+  // single entry already means the user has more than one environment configured
+  // (Local + that environment) and the override selector is meaningful.
+  const showEnvironmentOverrideControl = environmentsEnabled && (
+    forcedKubernetes ||
+    currentDefaultEnvironmentId.length > 0 ||
+    runnableEnvironments.length >= 1
+  );
+  const inheritedEnvironmentLabel = instanceDefaultEnvironment
+    ? `${instanceDefaultEnvironment.name} (${instanceDefaultEnvironment.driver})`
+    : "Local";
 
   // Fetch adapter models for the effective adapter type
   const modelQueryKey = selectedCompanyId
@@ -413,8 +465,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const rawModels = fetchedModels ?? externalModels ?? [];
-  const adapterCommandField =
-    adapterType === "hermes_local" ? "hermesCommand" : "command";
+  const adapterCommandField = "command";
   const acpxAgent =
     adapterType === "acpx_local"
       ? isCreate
@@ -493,24 +544,100 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     return typeof value === "string" ? value : "";
   }, [adapterCheapDefault]);
 
-  function buildAdapterConfigForTest(): Record<string, unknown> {
+  function buildAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
     if (isCreate) {
-      return uiAdapter.buildAdapterConfig(val!);
+      const next = uiAdapter.buildAdapterConfig(val!);
+      if (adapterConfigPatch) {
+        Object.assign(next, adapterConfigPatch);
+      }
+      return next;
     }
     const base = config as Record<string, unknown>;
     const next = { ...base, ...overlay.adapterConfig };
-    if (adapterType === "hermes_local") {
-      const hermesCommand =
-        typeof next.hermesCommand === "string" && next.hermesCommand.length > 0
-          ? next.hermesCommand
-          : typeof next.command === "string" && next.command.length > 0
-            ? next.command
-            : undefined;
-      if (hermesCommand) {
-        next.hermesCommand = hermesCommand;
-      }
+    if (adapterConfigPatch) {
+      Object.assign(next, adapterConfigPatch);
     }
     return next;
+  }
+
+  function buildCheapAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
+    const adapterDefaultConfig = asObject(adapterCheapDefault?.adapterConfig);
+    const createCheapModel = isCreate ? (val!.cheapModel ?? "").trim() : "";
+    const cheapAdapterConfig = isCreate
+      ? {
+          ...adapterDefaultConfig,
+          ...(createCheapModel ? { model: createCheapModel } : {}),
+        }
+      : {
+          ...adapterDefaultConfig,
+          ...cheapProfileFromAgent.adapterConfig,
+          ...asObject(cheapOverlay?.adapterConfig),
+        };
+    return buildAdapterConfigForTest({ ...cheapAdapterConfig, ...adapterConfigPatch });
+  }
+
+  function getCheapModelTestCase(adapterConfigPatch?: Record<string, unknown>): { model: string; adapterConfig: Record<string, unknown> } | null {
+    if (!currentCheapEnabled) return null;
+    const adapterConfig = buildCheapAdapterConfigForTest(adapterConfigPatch);
+    const configModel = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
+    const model = configModel || currentCheapModel.trim();
+    if (!model) return null;
+    adapterConfig.model = model;
+    return { model, adapterConfig };
+  }
+
+  function prefixEnvironmentTestChecks(
+    result: AdapterEnvironmentTestResult,
+    label: string,
+    model: string | null,
+  ): AdapterEnvironmentTestResult {
+    const modelLabel = model ? ` (${model})` : "";
+    return {
+      ...result,
+      checks: [
+        {
+          code: `${label.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_test_started`,
+          level: "info",
+          message: `${label} test${modelLabel}`,
+        },
+        ...result.checks.map((check) => ({
+          ...check,
+          message: `${label} test${modelLabel}: ${check.message}`,
+        })),
+      ],
+    };
+  }
+
+  async function runEnvironmentTestCase(
+    label: string,
+    model: string | null,
+    adapterConfig: Record<string, unknown>,
+    environmentId: string | null,
+  ): Promise<AdapterEnvironmentTestResult> {
+    const result = await agentsApi.testEnvironment(selectedCompanyId!, adapterType, {
+      adapterConfig,
+      environmentId,
+    });
+    return prefixEnvironmentTestChecks(result, label, model);
+  }
+
+  function mergeEnvironmentTestResults(
+    results: AdapterEnvironmentTestResult[],
+  ): AdapterEnvironmentTestResult {
+    const checks = results.flatMap((result) => result.checks);
+    const status = results.some((result) => result.status === "fail")
+      ? "fail"
+      : results.some((result) => result.status === "warn")
+        ? "warn"
+        : "pass";
+    const testedAt = results[results.length - 1]?.testedAt ?? new Date().toISOString();
+
+    return {
+      adapterType,
+      status,
+      checks,
+      testedAt,
+    };
   }
 
   const testEnvironment = useMutation({
@@ -518,15 +645,45 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       if (!selectedCompanyId) {
         throw new Error("Select a company to test adapter environment");
       }
-      return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
-        adapterConfig: buildAdapterConfigForTest(),
-        environmentId: currentDefaultEnvironmentId || null,
-      });
+      const flushedEnv = flushEnvironmentDraft();
+      const adapterConfigPatch = flushedEnv ? { env: flushedEnv } : undefined;
+      const primaryModel = currentModelId.trim() || null;
+      const cheapTestCase = getCheapModelTestCase(adapterConfigPatch);
+      const environmentId = currentDefaultEnvironmentId || null;
+      const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
+        {
+          label: "Primary model",
+          model: primaryModel,
+          result: await runEnvironmentTestCase(
+            "Primary model",
+            primaryModel,
+            buildAdapterConfigForTest(adapterConfigPatch),
+            environmentId,
+          ),
+        },
+      ];
+
+      if (cheapTestCase) {
+        testResults.push({
+          label: "Cheap model",
+          model: cheapTestCase.model,
+          result: await runEnvironmentTestCase(
+            "Cheap model",
+            cheapTestCase.model,
+            cheapTestCase.adapterConfig,
+            environmentId,
+          ),
+        });
+      }
+
+      return testResults.length > 1
+        ? mergeEnvironmentTestResults(testResults.map(({ result }) => result))
+        : testResults[0]!.result;
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
   const [testActionError, setTestActionError] = useState<string | null>(null);
-  const testActionLabel = getAgentConfigTestActionLabel({ isCreate, isDirty });
+  const testActionLabel = "Test";
   const isSavePending = !isCreate && Boolean(props.isSaving);
   const testEnvironmentDisabled = testActionPending || isSavePending || !selectedCompanyId;
   const runEnvironmentTest = useCallback(async () => {
@@ -537,23 +694,29 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setTestActionError(null);
     testEnvironment.reset();
     try {
-      return await runAgentConfigEnvironmentTest({
-        isCreate,
-        isDirty,
-        saveDraft: !isCreate ? handleSave : undefined,
-        runTest: () => testEnvironment.mutateAsync(),
-      });
+      return await testEnvironment.mutateAsync();
     } catch (error) {
       setTestActionError(error instanceof Error ? error.message : "Environment test failed");
       throw error;
     } finally {
       setTestActionPending(false);
     }
-  }, [selectedCompanyId, isCreate, isDirty, handleSave, testEnvironment]);
-  const triggerTestEnvironment = useCallback(() => {
-    if (testEnvironmentDisabled) return;
-    void runEnvironmentTest().catch(() => undefined);
+  }, [selectedCompanyId, testEnvironment]);
+  // `runEnvironmentTest` (and `testEnvironmentDisabled`) change identity on every
+  // render because `useMutation` returns a fresh result object each time. Hold the
+  // latest behavior in a ref so the trigger handed to the parent stays referentially
+  // stable — otherwise the `onTestActionChange` effect below re-runs every render,
+  // pushing a new function into parent state and causing an infinite update loop.
+  const triggerRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    triggerRef.current = () => {
+      if (testEnvironmentDisabled) return;
+      void runEnvironmentTest().catch(() => undefined);
+    };
   }, [runEnvironmentTest, testEnvironmentDisabled]);
+  const triggerTestEnvironment = useCallback(() => {
+    triggerRef.current();
+  }, []);
 
   useEffect(() => {
     if (!showAdapterTestEnvironmentButton || !props.onTestActionChange) return;
@@ -663,9 +826,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const cheapProfileFromAgent = useMemo(() => {
     const profiles = (runtimeConfig.modelProfiles ?? {}) as Record<string, unknown>;
     const cheap = (profiles.cheap ?? {}) as Record<string, unknown>;
-    const cheapAdapterConfig = (cheap.adapterConfig ?? {}) as Record<string, unknown>;
+    const cheapAdapterConfig = asObject(cheap.adapterConfig);
     return {
       enabled: cheap.enabled !== false,
+      adapterConfig: cheapAdapterConfig,
       model: typeof cheapAdapterConfig.model === "string" ? cheapAdapterConfig.model : "",
     };
   }, [runtimeConfig]);
@@ -864,8 +1028,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         // Render the environment read-only instead of the selectable picker.
         <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Execution</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Execution</div>
+            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
             <Field
@@ -886,36 +1050,35 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           </div>
         </div>
-      ) : environmentsEnabled ? (
+      ) : showEnvironmentOverrideControl ? (
         <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Execution</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Execution</div>
+            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-            <Field
-              label="Default environment"
-              hint="Agent-level default execution target. Project and task settings can still override this."
-            >
-              <select
-                className={inputClass}
-                value={currentDefaultEnvironmentId}
-                onChange={(event) => {
-                  const nextValue = event.target.value;
-                  if (isCreate) {
-                    set!({ defaultEnvironmentId: nextValue });
-                    return;
-                  }
-                  mark("identity", "defaultEnvironmentId", nextValue || null);
-                }}
-              >
-                <option value="">Company default (Local)</option>
-                {runnableEnvironments.map((environment) => (
-                  <option key={environment.id} value={environment.id}>
-                    {environment.name} · {environment.driver}
-                  </option>
-                ))}
-              </select>
+            <Field label="Environment override">
+              <div className="space-y-2">
+                <select
+                  className={inputClass}
+                  value={currentDefaultEnvironmentId}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    if (isCreate) {
+                      set!({ defaultEnvironmentId: nextValue });
+                      return;
+                    }
+                    mark("identity", "defaultEnvironmentId", nextValue || null);
+                  }}
+                >
+                  <option value="">Default: {inheritedEnvironmentLabel}</option>
+                  {environmentOptions.map((environment) => (
+                    <option key={environment.id} value={environment.id}>
+                      {environment.name} · {environment.driver}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </Field>
           </div>
         </div>
@@ -1035,7 +1198,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {/* Adapter-specific fields are rendered inside Permissions & Configuration */}
+          {!isLocal && <uiAdapter.ConfigFields {...adapterFieldProps} />}
+
+          {/* Local adapter-specific fields are rendered inside Permissions & Configuration */}
         </div>
 
       </div>
@@ -1057,9 +1222,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                           "adapterConfig",
                           adapterCommandField,
                           String(
-                            (adapterType === "hermes_local"
-                              ? config.hermesCommand ?? config.command
-                              : config.command) ?? "",
+                            config.command ?? "",
                           ),
                         )
                   }
@@ -1218,7 +1381,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               </Field>
 
               <Field label="Environment variables" hint={help.envVars}>
-                <EnvVarEditor
+                <EnvironmentVariablesEditor
+                  ref={environmentVariablesEditorRef}
                   value={
                     isCreate
                       ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
@@ -1226,6 +1390,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       )
                   }
                   secrets={availableSecrets}
+                  userSecretDefinitions={userSecretDefinitions}
                   onCreateSecret={async (name, value) => {
                     const created = await createSecret.mutateAsync({ name, value });
                     return created;
