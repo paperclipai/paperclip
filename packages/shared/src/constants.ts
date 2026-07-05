@@ -203,7 +203,7 @@ export const ISSUE_WORK_MODES = ["standard", "ask", "planning"] as const;
 export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
 
-export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
+export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system", "routine"] as const;
 export type IssueCommentAuthorType = (typeof ISSUE_COMMENT_AUTHOR_TYPES)[number];
 
 export const ISSUE_COMMENT_PRESENTATION_KINDS = ["message", "system_notice"] as const;
@@ -842,6 +842,7 @@ export const PERMISSION_KEYS = [
   "tasks:manage_active_checkouts",
   "pipelines:write",
   "joins:approve",
+  "routines:execute_comment",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 

@@ -6,6 +6,7 @@ import {
   companies,
   companyMemberships,
   createDb,
+  heartbeatRuns,
   instanceUserRoles,
   issueComments,
   issues,
@@ -100,7 +101,7 @@ async function grantAgentPermission(
   db: ReturnType<typeof createDb>,
   companyId: string,
   agentId: string,
-  permissionKey: "tasks:assign" | "tasks:assign_scope",
+  permissionKey: "tasks:assign" | "tasks:assign_scope" | "routines:execute_comment",
   scope: Record<string, unknown> | null = null,
 ) {
   await db.insert(companyMemberships).values({
@@ -118,6 +119,25 @@ async function grantAgentPermission(
     scope,
     grantedByUserId: null,
   });
+}
+
+async function createHeartbeatRun(
+  db: ReturnType<typeof createDb>,
+  companyId: string,
+  agentId: string,
+  input: { status?: string; routineId?: string | null; runId?: string } = {},
+) {
+  return db
+    .insert(heartbeatRuns)
+    .values({
+      id: input.runId ?? randomUUID(),
+      companyId,
+      agentId,
+      status: input.status ?? "running",
+      contextSnapshot: input.routineId ? { routineId: input.routineId } : {},
+    })
+    .returning()
+    .then((rows) => rows[0]!);
 }
 
 async function createUser(
@@ -141,7 +161,7 @@ async function grantUserPermission(
   db: ReturnType<typeof createDb>,
   companyId: string,
   userId: string,
-  permissionKey: "tasks:assign" | "tasks:assign_scope",
+  permissionKey: "tasks:assign" | "tasks:assign_scope" | "routines:execute_comment",
   scope: Record<string, unknown> | null = null,
 ) {
   await db.insert(companyMemberships).values({
@@ -176,6 +196,7 @@ describeEmbeddedPostgres("authorization service", () => {
     await db.delete(companyMemberships);
     await db.delete(instanceUserRoles);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(projects);
     await db.delete(companies);
@@ -1520,5 +1541,236 @@ describeEmbeddedPostgres("authorization service", () => {
       allowed: false,
       reason: "deny_scope",
     });
+  });
+
+  it("allows routine_executor grant to comment on any issue in the company when a live routine run is active", async () => {
+    const company = await createCompany(db, "RoutineExecutorAllow");
+    const otherCompany = await createCompany(db, "RoutineExecutorOtherCompany");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Cross-owner comment target",
+      assigneeAgentId: ownerAgent.id,
+    });
+    await grantAgentPermission(db, company.id, actorAgent.id, "routines:execute_comment");
+    const routineId = randomUUID();
+    const run = await createHeartbeatRun(db, company.id, actorAgent.id, { routineId });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_jwt",
+        runId: run.id,
+      },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: ownerAgent.id,
+      },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_routine_executor",
+      grant: {
+        principalType: "agent",
+        principalId: actorAgent.id,
+        permissionKey: "routines:execute_comment",
+      },
+    });
+    expect(decision.explanation).toContain(`routine run ${run.id}`);
+
+    // Cross-company isolation: even with the grant and a live run, a different
+    // companyId on the resource must not be reachable via this carve-out.
+    const crossCompanyDecision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: otherCompany.id,
+        source: "agent_jwt",
+        runId: run.id,
+      },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: otherCompany.id,
+        issueId: issue.id,
+      },
+    });
+    expect(crossCompanyDecision.allowed).toBe(false);
+  });
+
+  it("denies routine_executor comments when no routines:execute_comment grant exists", async () => {
+    const company = await createCompany(db, "RoutineExecutorNoGrant");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "No-grant target",
+      assigneeAgentId: ownerAgent.id,
+    });
+    const run = await createHeartbeatRun(db, company.id, actorAgent.id, {
+      routineId: randomUUID(),
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_jwt",
+        runId: run.id,
+      },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: ownerAgent.id,
+      },
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).not.toBe("allow_routine_executor");
+  });
+
+  it("denies routine_executor comments when the actor runId is missing", async () => {
+    const company = await createCompany(db, "RoutineExecutorNoRunId");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "No-runId target",
+      assigneeAgentId: ownerAgent.id,
+    });
+    await grantAgentPermission(db, company.id, actorAgent.id, "routines:execute_comment");
+    // Live routine run exists, but the actor did not present runId.
+    await createHeartbeatRun(db, company.id, actorAgent.id, { routineId: randomUUID() });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_jwt",
+      },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: ownerAgent.id,
+      },
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).not.toBe("allow_routine_executor");
+  });
+
+  it("denies routine_executor comments when the heartbeat run is in a terminal status", async () => {
+    const company = await createCompany(db, "RoutineExecutorTerminal");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Terminal-run target",
+      assigneeAgentId: ownerAgent.id,
+    });
+    await grantAgentPermission(db, company.id, actorAgent.id, "routines:execute_comment");
+    const run = await createHeartbeatRun(db, company.id, actorAgent.id, {
+      routineId: randomUUID(),
+      status: "succeeded",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_jwt",
+        runId: run.id,
+      },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: ownerAgent.id,
+      },
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).not.toBe("allow_routine_executor");
+  });
+
+  it("denies routine_executor comments when the heartbeat run lacks a routineId in contextSnapshot", async () => {
+    const company = await createCompany(db, "RoutineExecutorMissingContext");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Missing-context target",
+      assigneeAgentId: ownerAgent.id,
+    });
+    await grantAgentPermission(db, company.id, actorAgent.id, "routines:execute_comment");
+    // Live run, but contextSnapshot has no routineId — this is an ad-hoc wake,
+    // not a routine execution, so the carve-out must not apply.
+    const run = await createHeartbeatRun(db, company.id, actorAgent.id, {});
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_jwt",
+        runId: run.id,
+      },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: ownerAgent.id,
+      },
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).not.toBe("allow_routine_executor");
+  });
+
+  it("denies routine_executor comments when the heartbeat run belongs to a different agent", async () => {
+    const company = await createCompany(db, "RoutineExecutorWrongAgent");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const otherAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Wrong-agent run target",
+      assigneeAgentId: ownerAgent.id,
+    });
+    await grantAgentPermission(db, company.id, actorAgent.id, "routines:execute_comment");
+    // Live routine run exists, but it is for a different agent in the same company.
+    const run = await createHeartbeatRun(db, company.id, otherAgent.id, {
+      routineId: randomUUID(),
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_jwt",
+        runId: run.id,
+      },
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: ownerAgent.id,
+      },
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).not.toBe("allow_routine_executor");
   });
 });

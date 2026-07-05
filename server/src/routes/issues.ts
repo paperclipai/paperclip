@@ -7951,6 +7951,11 @@ export function issueRoutes(
     assertCompanyAccess(req, issue.companyId);
     const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
     if (!commentAccessDecision) return;
+    const commentAccessReason =
+      typeof commentAccessDecision === "object" && commentAccessDecision !== null
+        ? (commentAccessDecision as { reason?: string }).reason
+        : null;
+    const isRoutineExecutorComment = commentAccessReason === "allow_routine_executor";
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
@@ -8273,6 +8278,27 @@ export function issueRoutes(
     if (actor.runId) {
       await heartbeat.reportRunActivity(actor.runId).catch((err) =>
         logger.warn({ err, runId: actor.runId }, "failed to clear detached run warning after issue comment"));
+    }
+
+    if (isRoutineExecutorComment && actor.runId && actor.agentId) {
+      await logActivity(db, {
+        companyId: currentIssue.companyId,
+        actorType: "agent",
+        actorId: actor.agentId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "routine.comment_posted",
+        entityType: "issue",
+        entityId: currentIssue.id,
+        details: {
+          commentId: comment.id,
+          runId: actor.runId,
+          agentId: actor.agentId,
+          issueId: currentIssue.id,
+          role: "routine_executor",
+          identifier: currentIssue.identifier,
+        },
+      });
     }
 
     await logActivity(db, {

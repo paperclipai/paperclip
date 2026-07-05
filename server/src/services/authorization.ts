@@ -89,6 +89,7 @@ export type AuthorizationDecision = {
     | "allow_explicit_grant"
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
+    | "allow_routine_executor"
     | "allow_self"
     | "allow_company_agent"
     | "allow_company_member"
@@ -595,6 +596,56 @@ export function authorizationService(db: Db) {
         ),
       )
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function resolveRoutineExecutorCommentDecision(input: {
+    companyId: string;
+    actorAgentId: string;
+    actorRunId: string | null;
+  }): Promise<AuthorizationDecision | null> {
+    if (!input.actorRunId) return null;
+
+    const grant = await findGrant(
+      input.companyId,
+      "agent",
+      input.actorAgentId,
+      "routines:execute_comment",
+    );
+    if (!grant) return null;
+
+    const rows = await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, input.actorRunId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.actorAgentId),
+          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'routineId' IS NOT NULL`,
+        ),
+      )
+      .limit(1);
+    const run = rows[0];
+    if (!run) return null;
+
+    return allow({
+      action: "issue:comment",
+      reason: "allow_routine_executor",
+      explanation: `Allowed by routine_executor grant for live routine run ${run.id}.`,
+      grant: {
+        principalType: "agent",
+        principalId: input.actorAgentId,
+        permissionKey: "routines:execute_comment",
+        scope: grant.scope ?? null,
+      },
+    });
   }
 
   async function decidePrincipalGrant(input: {
@@ -1579,6 +1630,16 @@ export function authorizationService(db: Db) {
         })
       ) {
         return allowIssueMentionGrant(input.action);
+      }
+      if (input.action === "issue:comment" && resource?.issueId) {
+        const routineExecutorDecision = await resolveRoutineExecutorCommentDecision({
+          companyId,
+          actorAgentId,
+          actorRunId: input.actor.runId ?? null,
+        });
+        if (routineExecutorDecision) {
+          return routineExecutorDecision;
+        }
       }
     }
     if (
