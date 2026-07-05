@@ -20,6 +20,7 @@ import {
   MessagesSquare,
   FlaskConical,
   BarChart3,
+  FileScan,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -163,6 +164,7 @@ export function Sidebar() {
           <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem to="/research-papers" label="Research Papers" icon={FlaskConical} />
           <SidebarNavItem to="/cps-experiments" label="Research Lab" icon={BarChart3} />
+          <SidebarNavItem to="/decompose" label="Decompose" icon={FileScan} />
           <SidebarNavItem
             to="/inbox"
             label="Inbox"
