@@ -195,6 +195,20 @@ export {
   type CompanySkillReset,
 } from "./company-skill.js";
 export {
+  folderKindSchema,
+  folderSchema,
+  folderListItemSchema,
+  folderListResultSchema,
+  createFolderSchema,
+  updateFolderSchema,
+  moveFolderSchema,
+  moveFolderItemSchema,
+  type CreateFolder,
+  type UpdateFolder,
+  type MoveFolder,
+  type MoveFolderItem,
+} from "./folder.js";
+export {
   catalogTeamKindSchema,
   catalogTeamTrustLevelSchema,
   catalogTeamCompatibilitySchema,

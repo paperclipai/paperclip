@@ -118,6 +118,7 @@ type CompanySkillListDbRow = Pick<
   CompanySkillRow,
   | "id"
   | "companyId"
+  | "folderId"
   | "key"
   | "slug"
   | "name"
@@ -150,6 +151,7 @@ type CompanySkillListRow = Pick<
   CompanySkill,
   | "id"
   | "companyId"
+  | "folderId"
   | "key"
   | "slug"
   | "name"
@@ -375,6 +377,7 @@ function selectCompanySkillColumns() {
   return {
     id: companySkills.id,
     companyId: companySkills.companyId,
+    folderId: companySkills.folderId,
     key: companySkills.key,
     slug: companySkills.slug,
     name: companySkills.name,
@@ -2518,6 +2521,7 @@ function toCompanySkillListItem(skill: CompanySkillListRow, attachedAgentCount: 
   return {
     id: skill.id,
     companyId: skill.companyId,
+    folderId: skill.folderId,
     key: skill.key,
     slug: skill.slug,
     name: skill.name,
@@ -2783,6 +2787,7 @@ export function companySkillService(db: Db) {
       .select({
         id: companySkills.id,
         companyId: companySkills.companyId,
+        folderId: companySkills.folderId,
         key: companySkills.key,
         slug: companySkills.slug,
         name: companySkills.name,

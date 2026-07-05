@@ -3,6 +3,10 @@ export const API_PREFIX = "/api";
 export const API = {
   health: `${API_PREFIX}/health`,
   companies: `${API_PREFIX}/companies`,
+  companyFolders: `${API_PREFIX}/companies/:companyId/folders`,
+  companyFolder: `${API_PREFIX}/companies/:companyId/folders/:folderId`,
+  companyFolderMove: `${API_PREFIX}/companies/:companyId/folders/:folderId/move`,
+  companyFolderItemMove: `${API_PREFIX}/companies/:companyId/folders/items/move`,
   agents: `${API_PREFIX}/agents`,
   projects: `${API_PREFIX}/projects`,
   environments: `${API_PREFIX}/environments`,
