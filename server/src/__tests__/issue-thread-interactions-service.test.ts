@@ -1155,9 +1155,9 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   });
 
   it("does not supersede request confirmations for run-originated comments even under user auth", async () => {
-    // Regression for POS-127: local-CLI agents post under user auth, so authorUserId is
-    // set nondeterministically. A comment carrying createdByRunId is machine-originated and
-    // must never expire a pending decision card.
+    // Local-CLI agents post under user auth, so authorUserId is set nondeterministically.
+    // A comment carrying createdByRunId is machine-originated and must never expire a
+    // pending decision card.
     const { companyId, issueId } = await seedConfirmationIssue("Run-originated comment supersede exclusion");
 
     const created = await interactionsSvc.create({
@@ -1258,8 +1258,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   });
 
   it("does not repair historical confirmations from run-originated comments", async () => {
-    // Regression for POS-127: the repair sweep must ignore machine-originated comments
-    // (createdByRunId set) even when authorUserId is present under user auth.
+    // The repair sweep must ignore machine-originated comments (createdByRunId set) even
+    // when authorUserId is present under user auth.
     const { companyId, issueId } = await seedConfirmationIssue("Historical run-originated exclusion");
     const agentId = randomUUID();
     const runId = randomUUID();

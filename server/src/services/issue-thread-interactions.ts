@@ -1131,7 +1131,7 @@ export function issueThreadInteractionService(db: Db) {
       // local-CLI adapter posts it under user auth (which nondeterministically sets
       // authorUserId). Such comments must never supersede pending decision cards — only a
       // genuine interactive human comment (no run context) should. Without this guard an
-      // agent's own on-thread SLA/heartbeat comment expires its own card. See POS-127.
+      // agent's own on-thread comment can expire its own (or a teammate's) pending card.
       if (comment.createdByRunId) return [];
 
       const rows = await db
@@ -1209,7 +1209,7 @@ export function issueThreadInteractionService(db: Db) {
             eq(issueComments.issueId, issue.id),
             isNotNull(issueComments.authorUserId),
             // Only genuine interactive human comments (no heartbeat run context) supersede.
-            // Machine-originated comments carry createdByRunId even under user auth. See POS-127.
+            // Machine-originated comments carry createdByRunId even when posted under user auth.
             isNull(issueComments.createdByRunId),
           ))
           .orderBy(asc(issueComments.createdAt)),
