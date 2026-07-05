@@ -460,6 +460,42 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   return checkoutRunId == null;
 }
 
+// Drizzle's postgres-js driver wraps every failed query in a DrizzleQueryError
+// whose own `.code`/`.constraint` are undefined — the real Postgres error
+// (with `.code` and `.constraint_name`) lives on `.cause`. Checking only the
+// top-level error (as some other conflict matchers in this codebase do) never
+// matches. Walk the cause chain so both shapes are handled.
+function isUniqueConstraintViolation(error: unknown, constraintName: string): boolean {
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    const candidate = current as { code?: unknown; constraint?: unknown; constraint_name?: unknown; cause?: unknown };
+    if (
+      candidate.code === "23505" &&
+      (candidate.constraint === constraintName || candidate.constraint_name === constraintName)
+    ) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
+}
+
+// Checkout-lock adoption (adoptUnownedCheckoutRun / adoptStaleCheckoutRun)
+// claims `executionRunId` for the actor's run on a routine_execution-origin
+// issue. If a sibling issue from the same routine dispatch (same companyId +
+// originKind + originId + originFingerprint) already holds the single "live
+// execution slot" enforced by issues_open_routine_execution_uq, that claim
+// collides — this is a real, expected race (e.g. a routine that already
+// dispatched a fresh execution issue while this one's own lock columns were
+// cleared), not a bug in the caller's request. Treat it as "adoption failed",
+// the same outcome as any other lock-adoption precondition miss, instead of
+// letting the raw DB conflict surface as an uncaught 500 (DRO-758).
+function isOpenRoutineExecutionSlotConflict(error: unknown): boolean {
+  return isUniqueConstraintViolation(error, "issues_open_routine_execution_uq");
+}
+
 export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
@@ -4012,87 +4048,111 @@ export function issueService(db: Db) {
     actorRunId: string;
     expectedCheckoutRunId: string;
   }) {
-    return db.transaction(async (tx) => {
-      const lockedIssue = await tx
-        .select({
-          id: issues.id,
-          status: issues.status,
-          assigneeAgentId: issues.assigneeAgentId,
-          checkoutRunId: issues.checkoutRunId,
-          executionRunId: issues.executionRunId,
-        })
-        .from(issues)
-        .where(eq(issues.id, input.issueId))
-        .for("update")
-        .then((rows) => rows[0] ?? null);
-      if (!lockedIssue) {
-        return { adopted: null, latest: null };
-      }
+    try {
+      return await db.transaction(async (tx) => {
+        const lockedIssue = await tx
+          .select({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, input.issueId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedIssue) {
+          return { adopted: null, latest: null };
+        }
 
-      if (
-        lockedIssue.status !== "in_progress" ||
-        lockedIssue.assigneeAgentId !== input.actorAgentId ||
-        lockedIssue.checkoutRunId !== input.expectedCheckoutRunId
-      ) {
-        return { adopted: null, latest: lockedIssue };
-      }
+        if (
+          lockedIssue.status !== "in_progress" ||
+          lockedIssue.assigneeAgentId !== input.actorAgentId ||
+          lockedIssue.checkoutRunId !== input.expectedCheckoutRunId
+        ) {
+          return { adopted: null, latest: lockedIssue };
+        }
 
-      await Promise.all([
-        tx.execute(
-          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.expectedCheckoutRunId} for update`,
-        ),
-        tx.execute(
-          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
-        ),
-      ]);
-      const [existingRun, actorRun] = await Promise.all([
-        tx
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, input.expectedCheckoutRunId))
-          .then((rows) => rows[0] ?? null),
-        tx
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, input.actorRunId))
-          .then((rows) => rows[0] ?? null),
-      ]);
-      const stale = !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
-      const actorLive = actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
-      if (!stale || !actorLive) {
-        return { adopted: null, latest: lockedIssue };
-      }
-
-      const now = new Date();
-      const adopted = await tx
-        .update(issues)
-        .set({
-          checkoutRunId: input.actorRunId,
-          executionRunId: input.actorRunId,
-          executionLockedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.id, input.issueId),
-            eq(issues.status, "in_progress"),
-            eq(issues.assigneeAgentId, input.actorAgentId),
-            eq(issues.checkoutRunId, input.expectedCheckoutRunId),
+        await Promise.all([
+          tx.execute(
+            sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.expectedCheckoutRunId} for update`,
           ),
-        )
-        .returning({
-          id: issues.id,
-          status: issues.status,
-          assigneeAgentId: issues.assigneeAgentId,
-          checkoutRunId: issues.checkoutRunId,
-          executionRunId: issues.executionRunId,
-        })
-        .then((rows) => rows[0] ?? null);
-      if (adopted) {
-        return { adopted, latest: adopted };
-      }
+          tx.execute(
+            sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
+          ),
+        ]);
+        const [existingRun, actorRun] = await Promise.all([
+          tx
+            .select({ status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, input.expectedCheckoutRunId))
+            .then((rows) => rows[0] ?? null),
+          tx
+            .select({ status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, input.actorRunId))
+            .then((rows) => rows[0] ?? null),
+        ]);
+        const stale = !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
+        const actorLive = actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
+        if (!stale || !actorLive) {
+          return { adopted: null, latest: lockedIssue };
+        }
 
-      const latest = await tx
+        const now = new Date();
+        const adopted = await tx
+          .update(issues)
+          .set({
+            checkoutRunId: input.actorRunId,
+            executionRunId: input.actorRunId,
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, input.issueId),
+              eq(issues.status, "in_progress"),
+              eq(issues.assigneeAgentId, input.actorAgentId),
+              eq(issues.checkoutRunId, input.expectedCheckoutRunId),
+            ),
+          )
+          .returning({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .then((rows) => rows[0] ?? null);
+        if (adopted) {
+          return { adopted, latest: adopted };
+        }
+
+        const latest = await tx
+          .select({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .from(issues)
+          .where(eq(issues.id, input.issueId))
+          .then((rows) => rows[0] ?? null);
+        return { adopted: null, latest };
+      });
+    } catch (error) {
+      if (!isOpenRoutineExecutionSlotConflict(error)) throw error;
+      // Another issue sharing this routine's open-execution slot won the race.
+      // Report this the same way as any other failed-precondition adoption
+      // attempt: no adoption, with the current row state for the caller to
+      // re-evaluate (outside the now-aborted transaction).
+      logger.warn(
+        { issueId: input.issueId, actorAgentId: input.actorAgentId, actorRunId: input.actorRunId },
+        "adoptStaleCheckoutRun: open routine-execution slot already held by a sibling issue",
+      );
+      const latest = await db
         .select({
           id: issues.id,
           status: issues.status,
@@ -4104,7 +4164,7 @@ export function issueService(db: Db) {
         .where(eq(issues.id, input.issueId))
         .then((rows) => rows[0] ?? null);
       return { adopted: null, latest };
-    });
+    }
   }
 
   async function adoptUnownedCheckoutRun(input: {
@@ -4112,46 +4172,60 @@ export function issueService(db: Db) {
     actorAgentId: string;
     actorRunId: string;
   }) {
-    return db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
+    try {
+      return await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${input.actorRunId} for update`,
+        );
+        const actorRun = await tx
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, input.actorRunId))
+          .then((rows) => rows[0] ?? null);
+        if (!actorRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status)) return null;
+
+        const now = new Date();
+        const adopted = await tx
+          .update(issues)
+          .set({
+            checkoutRunId: input.actorRunId,
+            executionRunId: input.actorRunId,
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, input.issueId),
+              eq(issues.status, "in_progress"),
+              eq(issues.assigneeAgentId, input.actorAgentId),
+              isNull(issues.checkoutRunId),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, input.actorRunId)),
+            ),
+          )
+          .returning({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            checkoutRunId: issues.checkoutRunId,
+            executionRunId: issues.executionRunId,
+          })
+          .then((rows) => rows[0] ?? null);
+
+        return adopted;
+      });
+    } catch (error) {
+      if (!isOpenRoutineExecutionSlotConflict(error)) throw error;
+      // Another issue sharing this routine's open-execution slot won the race
+      // (see isOpenRoutineExecutionSlotConflict). Report this the same way as
+      // any other failed adoption precondition: no adoption. The caller
+      // (resolveOwnership) already re-fetches the current row and falls
+      // through to its normal "ownership conflict" 409 path in that case.
+      logger.warn(
+        { issueId: input.issueId, actorAgentId: input.actorAgentId, actorRunId: input.actorRunId },
+        "adoptUnownedCheckoutRun: open routine-execution slot already held by a sibling issue",
       );
-      const actorRun = await tx
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, input.actorRunId))
-        .then((rows) => rows[0] ?? null);
-      if (!actorRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status)) return null;
-
-      const now = new Date();
-      const adopted = await tx
-        .update(issues)
-        .set({
-          checkoutRunId: input.actorRunId,
-          executionRunId: input.actorRunId,
-          executionLockedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.id, input.issueId),
-            eq(issues.status, "in_progress"),
-            eq(issues.assigneeAgentId, input.actorAgentId),
-            isNull(issues.checkoutRunId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, input.actorRunId)),
-          ),
-        )
-        .returning({
-          id: issues.id,
-          status: issues.status,
-          assigneeAgentId: issues.assigneeAgentId,
-          checkoutRunId: issues.checkoutRunId,
-          executionRunId: issues.executionRunId,
-        })
-        .then((rows) => rows[0] ?? null);
-
-      return adopted;
-    });
+      return null;
+    }
   }
 
   async function clearExecutionRunIfTerminal(issueId: string): Promise<boolean> {
