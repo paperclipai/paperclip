@@ -12,6 +12,9 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // Accept requests forwarded by `tailscale serve` (Host = *.ts.net).
+    // Tailnet is private (Clayton's own devices), so allow all hosts.
+    allowedHosts: true,
     proxy: {
       "/api": {
         target: "http://localhost:3100",
