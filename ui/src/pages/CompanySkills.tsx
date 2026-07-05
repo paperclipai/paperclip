@@ -4592,6 +4592,30 @@ export function CompanySkills() {
     : "Create an editable company skill in the Paperclip workspace.";
   const skillFolderResult = skillFoldersQuery.data ?? null;
   const showInstalledFolders = isDiscovery && discoveryTab === "installed";
+  // Rail counts reflect the current category/search scope, never the folder
+  // filter itself (ux-spec §5.3).
+  const railSkillFolderResult = useMemo(() => {
+    if (!skillFolderResult || discoveryTab !== "installed") return skillFolderResult;
+    const scoped = discoveryTabCards.filter((card) => {
+      if (discoveryCategory && !card.categories.includes(discoveryCategory)) return false;
+      return discoveryMatchesSearch(card, discoverySearch.trim());
+    });
+    const counts = new Map<string, number>();
+    let unfiled = 0;
+    for (const card of scoped) {
+      if (card.folderId) counts.set(card.folderId, (counts.get(card.folderId) ?? 0) + 1);
+      else unfiled += 1;
+    }
+    return {
+      ...skillFolderResult,
+      allCount: scoped.length,
+      unfiledCount: unfiled,
+      folders: skillFolderResult.folders.map((folder) => ({
+        ...folder,
+        itemCount: counts.get(folder.id) ?? 0,
+      })),
+    };
+  }, [skillFolderResult, discoveryTab, discoveryTabCards, discoveryCategory, discoverySearch]);
 
   return (
     <>
@@ -4797,7 +4821,7 @@ export function CompanySkills() {
       <MobileFolderSheet
         open={mobileFoldersOpen}
         onOpenChange={setMobileFoldersOpen}
-        result={skillFolderResult}
+        result={railSkillFolderResult}
         selection={folderSelection}
         allLabel="All skills"
         itemLabelPlural="Skills"
@@ -4861,7 +4885,7 @@ export function CompanySkills() {
           onScan={() => scanProjects.mutate()}
           scanPending={scanProjects.isPending}
           scanStatus={scanStatusMessage}
-          folderResult={showInstalledFolders ? skillFolderResult : null}
+          folderResult={showInstalledFolders ? railSkillFolderResult : null}
           folderSelection={folderSelection}
           foldersLoading={skillFoldersQuery.isLoading}
           selectMode={showInstalledFolders && selectMode}
