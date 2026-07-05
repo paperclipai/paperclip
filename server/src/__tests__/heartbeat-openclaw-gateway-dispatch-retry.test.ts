@@ -221,7 +221,7 @@ describeEmbeddedPostgres("heartbeat OpenClaw gateway dispatch retry", () => {
     )).toBe(false);
   });
 
-  it("retries transient OpenClaw gateway dispatch failure and preserves the issue lock on success", async () => {
+  it("retries transient OpenClaw gateway dispatch failure and releases the issue lock on success", async () => {
     process.env.PAPERCLIP_OPENCLAW_GATEWAY_DISPATCH_RETRY_DELAYS_MS = "0,0,0";
     const { runId, issueId } = await seedOpenClawGatewayIssueRun();
     mockAdapterExecute
@@ -284,7 +284,7 @@ describeEmbeddedPostgres("heartbeat OpenClaw gateway dispatch retry", () => {
     expect(run?.status).toBe("succeeded");
     expect(run?.errorCode).toBeNull();
     expect(issue?.status).toBe("in_progress");
-    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.checkoutRunId).toBeNull();
     expect(retryEvents.filter((event) => event.eventType === "adapter.retry")).toHaveLength(2);
   });
 
