@@ -1249,6 +1249,13 @@ export function IssueProperties({
     }
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
+  const humanTaskReviewPending =
+    issue.workItemType === "human_task" &&
+    issue.status === "in_review" &&
+    issue.executionState?.status === "pending";
+  const returnHumanTaskToWork = () => {
+    onUpdate({ status: issue.assigneeUserId || issue.assigneeAgentId ? "todo" : "backlog" });
+  };
   useEffect(() => {
     setMonitorAtInput(toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
     setMonitorNotesInput(issue.executionPolicy?.monitor?.notes ?? "");
@@ -2695,6 +2702,15 @@ export function IssueProperties({
         {currentExecutionLabel && (
           <PropertyRow label="Execution">
             <span className="text-sm">{currentExecutionLabel}</span>
+            {humanTaskReviewPending ? (
+              <button
+                type="button"
+                className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                onClick={returnHumanTaskToWork}
+              >
+                Return to work
+              </button>
+            ) : null}
           </PropertyRow>
         )}
 

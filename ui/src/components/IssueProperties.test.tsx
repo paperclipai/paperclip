@@ -1255,6 +1255,49 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("offers a return-to-work action for pending human task reviews", async () => {
+    const onUpdate = vi.fn();
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "in_review",
+        workItemType: "human_task",
+        assigneeUserId: "user-1",
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "review-stage",
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "user", agentId: null, userId: "user-1" }],
+            },
+          ],
+        }),
+        executionState: createExecutionState({
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "user", agentId: null, userId: "user-1" },
+          returnAssignee: { type: "user", agentId: null, userId: "worker-1" },
+          lastDecisionOutcome: null,
+        }),
+      }),
+      childIssues: [],
+      onUpdate,
+    });
+    await flush();
+
+    const returnButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Return to work"));
+    expect(returnButton).not.toBeUndefined();
+
+    await act(async () => {
+      returnButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onUpdate).toHaveBeenCalledWith({ status: "todo" });
+
+    act(() => root.unmount());
+  });
+
   it("renders monitor controls and clears an existing monitor", async () => {
     const onUpdate = vi.fn();
     const root = renderProperties(container, {

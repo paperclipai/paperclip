@@ -802,6 +802,42 @@ function isClosedIssueStatus(status: string | null | undefined): status is "done
   return status === "done" || status === "cancelled";
 }
 
+function applyHumanTaskReviewUnlockPatch(input: {
+  existing: {
+    status: string;
+    workItemType?: string | null;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    executionState?: unknown;
+  };
+  updateFields: Record<string, unknown>;
+}) {
+  if (input.existing.workItemType !== "human_task" || input.existing.status !== "in_review") return false;
+  const existingState = parseIssueExecutionState(input.existing.executionState);
+  if (existingState?.status !== "pending") return false;
+
+  const requestedStatus = typeof input.updateFields.status === "string"
+    ? input.updateFields.status
+    : undefined;
+  const assigneePatchRequested =
+    input.updateFields.assigneeAgentId !== undefined || input.updateFields.assigneeUserId !== undefined;
+  const statusLeavesReview = requestedStatus !== undefined && requestedStatus !== "in_review";
+  if (!statusLeavesReview && !assigneePatchRequested) return false;
+
+  input.updateFields.executionState = null;
+  if (!statusLeavesReview) {
+    const nextAssigneeAgentId = input.updateFields.assigneeAgentId === undefined
+      ? input.existing.assigneeAgentId
+      : input.updateFields.assigneeAgentId;
+    const nextAssigneeUserId = input.updateFields.assigneeUserId === undefined
+      ? input.existing.assigneeUserId
+      : input.updateFields.assigneeUserId;
+    input.updateFields.status = nextAssigneeAgentId || nextAssigneeUserId ? "todo" : "backlog";
+  }
+
+  return true;
+}
+
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
@@ -3654,24 +3690,27 @@ export function issueRoutes(
     const monitorChanged = monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) === false;
     assertCanManageIssueMonitor(req, existing.assigneeAgentId, req.body.executionPolicy !== undefined && monitorChanged);
 
-    const transition = applyIssueExecutionPolicyTransition({
-      issue: existing,
-      policy: nextExecutionPolicy,
-      previousPolicy: previousExecutionPolicy,
-      requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
-      requestedAssigneePatch: {
-        assigneeAgentId: normalizedAssigneeAgentId,
-        assigneeUserId:
-          req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
-      },
-      actor: {
-        agentId: actor.agentId ?? null,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      },
-      commentBody,
-      reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
-      monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
-    });
+    const humanTaskReviewUnlocked = applyHumanTaskReviewUnlockPatch({ existing, updateFields });
+    const transition = humanTaskReviewUnlocked
+      ? { patch: {} as Record<string, unknown> }
+      : applyIssueExecutionPolicyTransition({
+          issue: existing,
+          policy: nextExecutionPolicy,
+          previousPolicy: previousExecutionPolicy,
+          requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
+          requestedAssigneePatch: {
+            assigneeAgentId: normalizedAssigneeAgentId,
+            assigneeUserId:
+              req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
+          },
+          actor: {
+            agentId: actor.agentId ?? null,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+          commentBody,
+          reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
+          monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
+        });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
       const nextExecutionState = transition.patch.executionState;
