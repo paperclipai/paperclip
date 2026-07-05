@@ -826,6 +826,7 @@ export type {
   SidebarBadges,
   SidebarOrderPreference,
   InboxDismissal,
+  IssueFavourite,
   AccessUserProfile,
   CompanyMemberRecord,
   CompanyMembersResponse,

@@ -577,6 +577,7 @@ export type {
 } from "./resource-memberships.js";
 export { RESOURCE_MEMBERSHIP_STATES } from "./resource-memberships.js";
 export type { InboxDismissal } from "./inbox-dismissal.js";
+export type { IssueFavourite } from "./issue-favourite.js";
 export type {
   AccessUserProfile,
   CompanyMemberRecord,

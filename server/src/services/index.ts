@@ -75,6 +75,7 @@ export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferenceService } from "./sidebar-preferences.js";
 export { resourceMembershipService, type ResourceMembershipPolicyHook } from "./resource-memberships.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
+export { issueFavouriteService } from "./issue-favourites.js";
 export { accessService } from "./access.js";
 export {
   CROSS_COMPANY_AGENT_SOURCE_COMPANY_IDS_ENV_VAR,

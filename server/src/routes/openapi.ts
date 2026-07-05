@@ -2783,6 +2783,38 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+// ─── Issue favourites ────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/issue-favourites",
+  tags: ["issues"],
+  summary: "List the current user's favourite tasks",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/issue-favourites",
+  tags: ["issues"],
+  summary: "Add a task to the current user's favourites",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(z.object({ issueId: z.string().trim().min(1) })),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/issue-favourites/{issueId}",
+  tags: ["issues"],
+  summary: "Remove a task from the current user's favourites",
+  request: { params: z.object({ companyId: z.string(), issueId: z.string() }) },
+  responses: { 204: r.noContent, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
 // ─── Instance settings ────────────────────────────────────────────────────────
 
 registry.registerPath({
