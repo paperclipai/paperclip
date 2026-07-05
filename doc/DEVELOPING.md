@@ -68,6 +68,12 @@ Font assets live in Vite's public directory so `pnpm --filter @paperclipai/ui bu
 emits them under `ui/dist/fonts/`. The server package copies the same output into
 `server/ui-dist/fonts/` through `scripts/prepare-server-ui-dist.sh`.
 
+Run the focused regression check after font asset changes:
+
+```sh
+pnpm check:ui-font-assets
+```
+
 Inspect or stop the current repo's managed dev runner:
 
 ```sh

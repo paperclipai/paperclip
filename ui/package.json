@@ -15,7 +15,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node ../scripts/check-ui-font-assets.mjs",
+    "check:font-assets": "node ../scripts/check-ui-font-assets.mjs",
     "storybook": "storybook dev -p 6006 -c storybook/.storybook",
     "build-storybook": "storybook build -c storybook/.storybook -o storybook-static",
     "preview": "vite preview",
