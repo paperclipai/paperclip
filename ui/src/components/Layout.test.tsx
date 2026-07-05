@@ -576,6 +576,63 @@ describe("Layout", () => {
     });
   });
 
+  // PAP-12735: `review` and `gateways` are real reserved Apps subroutes, not app
+  // connection ids. They must keep the top-level Apps sidebar, never mount the
+  // per-app detail sidebar scoped to a phantom "review"/"gateways" app.
+  it("keeps the Apps sidebar on the Review IA surface", async () => {
+    currentPathname = "/PAP/apps/review";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("Apps sidebar");
+    expect(container.textContent).toContain("Main company nav");
+    expect(container.textContent).not.toContain("App detail sidebar");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the Apps sidebar on the gateways list and detail routes", async () => {
+    for (const pathname of ["/PAP/apps/gateways", "/PAP/apps/gateways/gw-1/overview"]) {
+      currentPathname = pathname;
+      const root = createRoot(container);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Layout />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+
+      expect(container.textContent).toContain("Apps sidebar");
+      expect(container.textContent).toContain("Main company nav");
+      expect(container.textContent).not.toContain("App detail sidebar");
+
+      await act(async () => {
+        root.unmount();
+      });
+    }
+  });
+
   it("uses the app connection sidebar on app detail routes", async () => {
     currentPathname = "/PAP/apps/conn-1/permissions";
     const root = createRoot(container);
