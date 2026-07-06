@@ -339,7 +339,11 @@ export function computePipelineHealth(input: PipelineHealthInput): PipelineHealt
     // the pipeline; a blank default in settings is a normal configuration.
   }
 
+  const seenFailedAutomationKeys = new Set<string>();
   for (const failure of input.failedAutomations ?? []) {
+    const dedupeKey = `${failure.stageId}:${failure.caseId}`;
+    if (seenFailedAutomationKeys.has(dedupeKey)) continue;
+    seenFailedAutomationKeys.add(dedupeKey);
     warnings.push({
       code: "automation_failed",
       stageId: failure.stageId,
