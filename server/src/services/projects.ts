@@ -189,6 +189,7 @@ function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
 function deriveProjectCodebase(input: {
   companyId: string;
   projectId: string;
+  projectName: string;
   primaryWorkspace: ProjectWorkspace | null;
   fallbackWorkspaces: ProjectWorkspace[];
 }): ProjectCodebase {
@@ -199,6 +200,7 @@ function deriveProjectCodebase(input: {
   const managedFolder = resolveManagedProjectWorkspaceDir({
     companyId: input.companyId,
     projectId: input.projectId,
+    projectName: input.projectName,
     repoName,
   });
 
@@ -305,6 +307,7 @@ async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<Proje
       codebase: deriveProjectCodebase({
         companyId: row.companyId,
         projectId: row.id,
+        projectName: row.name,
         primaryWorkspace,
         fallbackWorkspaces: workspaces,
       }),

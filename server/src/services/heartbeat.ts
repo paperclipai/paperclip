@@ -661,55 +661,170 @@ function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   }
 }
 
-async function ensureManagedProjectWorkspace(input: {
-  companyId: string;
-  projectId: string;
+function normalizeRepoUrlForComparison(repoUrl: string | null | undefined): string | null {
+  const trimmed = repoUrl?.trim();
+  if (!trimmed) return null;
+  const withoutTrailingGit = (value: string) => value.replace(/\.git$/i, "").replace(/\/+$/g, "");
+  try {
+    const parsed = new URL(trimmed);
+    const pathname = withoutTrailingGit(parsed.pathname.replace(/^\/+/, ""));
+    return `${parsed.host.toLowerCase()}/${pathname}`.toLowerCase();
+  } catch {
+    const scpLike = trimmed.match(/^(?:[^@]+@)?([^:]+):(.+)$/);
+    if (scpLike) {
+      return `${scpLike[1]}/${withoutTrailingGit(scpLike[2] ?? "")}`.toLowerCase();
+    }
+    return withoutTrailingGit(trimmed).toLowerCase();
+  }
+}
+
+function repoUrlsMatch(actual: string | null | undefined, expected: string | null | undefined) {
+  const normalizedActual = normalizeRepoUrlForComparison(actual);
+  const normalizedExpected = normalizeRepoUrlForComparison(expected);
+  return Boolean(normalizedActual && normalizedExpected && normalizedActual === normalizedExpected);
+}
+
+async function readGitOutput(args: string[], cwd: string): Promise<string | null> {
+  try {
+    const result = await execFile("git", args, {
+      cwd,
+      env: sanitizeRuntimeServiceBaseEnv(process.env),
+      timeout: 30_000,
+    });
+    return String(result.stdout ?? "").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function inspectProjectWorkspaceGit(cwd: string): Promise<{ isRepoRoot: boolean; originUrl: string | null }> {
+  const topLevel = await readGitOutput(["rev-parse", "--show-toplevel"], cwd);
+  const resolvedTopLevel = topLevel ? await fs.realpath(topLevel).catch(() => path.resolve(topLevel)) : null;
+  const resolvedCwd = await fs.realpath(cwd).catch(() => path.resolve(cwd));
+  const isRepoRoot = resolvedTopLevel !== null && resolvedTopLevel === resolvedCwd;
+  const originUrl = isRepoRoot ? await readGitOutput(["config", "--get", "remote.origin.url"], cwd) : null;
+  return { isRepoRoot, originUrl };
+}
+
+async function cloneProjectWorkspaceRepo(input: {
+  repoUrl: string;
+  cwd: string;
+  label: string;
+}) {
+  await fs.mkdir(path.dirname(input.cwd), { recursive: true });
+  await fs.rm(input.cwd, { recursive: true, force: true });
+  try {
+    await execFile("git", ["clone", input.repoUrl, input.cwd], {
+      env: sanitizeRuntimeServiceBaseEnv(process.env),
+      timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to prepare ${input.label} checkout for "${input.repoUrl}" at "${input.cwd}": ${reason}`);
+  }
+}
+
+export async function ensureProjectWorkspacePath(input: {
+  cwd: string;
   repoUrl: string | null;
+  label?: string | null;
 }): Promise<{ cwd: string; warning: string | null }> {
-  const cwd = resolveManagedProjectWorkspaceDir({
-    companyId: input.companyId,
-    projectId: input.projectId,
-    repoName: deriveRepoNameFromRepoUrl(input.repoUrl),
-  });
-  await fs.mkdir(path.dirname(cwd), { recursive: true });
+  const cwd = path.resolve(input.cwd);
+  const repoUrl = input.repoUrl?.trim() || null;
+  const label = input.label?.trim() || "project workspace";
   const stats = await fs.stat(cwd).catch(() => null);
 
-  if (!input.repoUrl) {
+  if (!repoUrl) {
+    if (stats && !stats.isDirectory()) {
+      throw new Error(`Configured ${label} path "${cwd}" exists but is not a directory.`);
+    }
     if (!stats) {
       await fs.mkdir(cwd, { recursive: true });
     }
     return { cwd, warning: null };
   }
 
-  const gitDirExists = await fs
-    .stat(path.resolve(cwd, ".git"))
-    .then((entry) => entry.isDirectory())
-    .catch(() => false);
-  if (gitDirExists) {
+  if (!stats) {
+    await cloneProjectWorkspaceRepo({ repoUrl, cwd, label });
     return { cwd, warning: null };
   }
 
-  if (stats) {
-    const entries = await fs.readdir(cwd).catch(() => []);
-    if (entries.length > 0) {
-      return {
-        cwd,
-        warning: `Managed workspace path "${cwd}" already exists but is not a git checkout. Using it as-is.`,
-      };
-    }
-    await fs.rm(cwd, { recursive: true, force: true });
+  if (!stats.isDirectory()) {
+    throw new Error(`Configured ${label} path "${cwd}" exists but is not a directory.`);
   }
 
-  try {
-    await execFile("git", ["clone", input.repoUrl, cwd], {
-      env: sanitizeRuntimeServiceBaseEnv(process.env),
-      timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
-    });
+  const entries = await fs.readdir(cwd).catch(() => []);
+  if (entries.length === 0) {
+    await cloneProjectWorkspaceRepo({ repoUrl, cwd, label });
     return { cwd, warning: null };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to prepare managed checkout for "${input.repoUrl}" at "${cwd}": ${reason}`);
   }
+
+  const git = await inspectProjectWorkspaceGit(cwd);
+  if (!git.isRepoRoot) {
+    throw new Error(`Configured ${label} path "${cwd}" exists but is not a git checkout for "${repoUrl}".`);
+  }
+
+  if (!repoUrlsMatch(git.originUrl, repoUrl)) {
+    throw new Error(
+      `Configured ${label} path "${cwd}" is a git checkout for "${git.originUrl ?? "unknown origin"}" but project expects "${repoUrl}".`,
+    );
+  }
+
+  return { cwd, warning: null };
+}
+
+async function isPersistedExecutionWorkspaceReusable(workspace: ExecutionWorkspace): Promise<{ reusable: boolean; reason: string | null }> {
+  const cwd = readNonEmptyString(workspace.cwd) ?? readNonEmptyString(workspace.providerRef);
+  if (!cwd) {
+    return { reusable: false, reason: "persisted execution workspace has no cwd" };
+  }
+
+  const resolvedCwd = path.resolve(cwd);
+  const stats = await fs.stat(resolvedCwd).catch(() => null);
+  if (!stats?.isDirectory()) {
+    return { reusable: false, reason: `persisted execution workspace path "${resolvedCwd}" is not available` };
+  }
+
+  const repoUrl = readNonEmptyString(workspace.repoUrl);
+  if (!repoUrl) {
+    return { reusable: true, reason: null };
+  }
+
+  const git = await inspectProjectWorkspaceGit(resolvedCwd);
+  if (!git.isRepoRoot) {
+    return {
+      reusable: false,
+      reason: `persisted execution workspace path "${resolvedCwd}" is not a git checkout for "${repoUrl}"`,
+    };
+  }
+
+  if (!repoUrlsMatch(git.originUrl, repoUrl)) {
+    return {
+      reusable: false,
+      reason: `persisted execution workspace path "${resolvedCwd}" is a git checkout for "${git.originUrl ?? "unknown origin"}" but expects "${repoUrl}"`,
+    };
+  }
+
+  return { reusable: true, reason: null };
+}
+
+async function ensureManagedProjectWorkspace(input: {
+  companyId: string;
+  projectId: string;
+  projectName?: string | null;
+  repoUrl: string | null;
+}): Promise<{ cwd: string; warning: string | null }> {
+  const cwd = resolveManagedProjectWorkspaceDir({
+    companyId: input.companyId,
+    projectId: input.projectId,
+    projectName: input.projectName,
+    repoName: deriveRepoNameFromRepoUrl(input.repoUrl),
+  });
+  return ensureProjectWorkspacePath({
+    cwd,
+    repoUrl: input.repoUrl,
+    label: "managed project workspace",
+  });
 }
 
 const heartbeatRunProcessGroupIdColumn =
@@ -3609,7 +3724,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null },
+    opts?: { useProjectWorkspace?: boolean | null; projectName?: string | null },
   ): Promise<ResolvedWorkspaceForRun> {
     const issueId = readNonEmptyString(context.issueId);
     const contextProjectId = readNonEmptyString(context.projectId);
@@ -3659,9 +3774,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const preferredWorkspace = preferredProjectWorkspaceId
         ? projectWorkspaceRows.find((workspace) => workspace.id === preferredProjectWorkspaceId) ?? null
         : null;
-      const missingProjectCwds: string[] = [];
-      let hasConfiguredProjectCwd = false;
       let preferredWorkspaceWarning: string | null = null;
+      const workspaceResolutionFailures: string[] = [];
       if (preferredProjectWorkspaceId && !preferredWorkspace) {
         preferredWorkspaceWarning =
           `Selected project workspace "${preferredProjectWorkspaceId}" is not available on this project.`;
@@ -3669,28 +3783,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       for (const workspace of projectWorkspaceRows) {
         let projectCwd = readNonEmptyString(workspace.cwd);
         let managedWorkspaceWarning: string | null = null;
-        if (!projectCwd || projectCwd === REPO_ONLY_CWD_SENTINEL) {
-          try {
+        try {
+          if (!projectCwd || projectCwd === REPO_ONLY_CWD_SENTINEL) {
             const managedWorkspace = await ensureManagedProjectWorkspace({
               companyId: agent.companyId,
               projectId: workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
+              projectName: opts?.projectName ?? null,
               repoUrl: readNonEmptyString(workspace.repoUrl),
             });
             projectCwd = managedWorkspace.cwd;
             managedWorkspaceWarning = managedWorkspace.warning;
-          } catch (error) {
-            if (preferredWorkspace?.id === workspace.id) {
-              preferredWorkspaceWarning = error instanceof Error ? error.message : String(error);
-            }
-            continue;
+          } else {
+            const materializedWorkspace = await ensureProjectWorkspacePath({
+              cwd: projectCwd,
+              repoUrl: readNonEmptyString(workspace.repoUrl),
+              label: `project workspace "${workspace.name ?? workspace.id}"`,
+            });
+            projectCwd = materializedWorkspace.cwd;
+            managedWorkspaceWarning = materializedWorkspace.warning;
           }
-        }
-        hasConfiguredProjectCwd = true;
-        const projectCwdExists = await fs
-          .stat(projectCwd)
-          .then((stats) => stats.isDirectory())
-          .catch(() => false);
-        if (projectCwdExists) {
+
           return {
             cwd: projectCwd,
             source: "project_primary" as const,
@@ -3703,49 +3815,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               (value): value is string => Boolean(value),
             ),
           };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          workspaceResolutionFailures.push(message);
+          if (preferredWorkspace?.id === workspace.id) {
+            preferredWorkspaceWarning = message;
+          }
         }
-        if (preferredWorkspace?.id === workspace.id) {
-          preferredWorkspaceWarning =
-            `Selected project workspace path "${projectCwd}" is not available yet.`;
-        }
-        missingProjectCwds.push(projectCwd);
       }
 
-      const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
-      await fs.mkdir(fallbackCwd, { recursive: true });
-      const warnings: string[] = [];
-      if (preferredWorkspaceWarning) {
-        warnings.push(preferredWorkspaceWarning);
-      }
-      if (missingProjectCwds.length > 0) {
-        const firstMissing = missingProjectCwds[0];
-        const extraMissingCount = Math.max(0, missingProjectCwds.length - 1);
-        warnings.push(
-          extraMissingCount > 0
-            ? `Project workspace path "${firstMissing}" and ${extraMissingCount} other configured path(s) are not available yet. Using fallback workspace "${fallbackCwd}" for this run.`
-            : `Project workspace path "${firstMissing}" is not available yet. Using fallback workspace "${fallbackCwd}" for this run.`,
-        );
-      } else if (!hasConfiguredProjectCwd) {
-        warnings.push(
-          `Project workspace has no local cwd configured. Using fallback workspace "${fallbackCwd}" for this run.`,
-        );
-      }
-      return {
-        cwd: fallbackCwd,
-        source: "project_primary" as const,
-        projectId: resolvedProjectId,
-        workspaceId: projectWorkspaceRows[0]?.id ?? null,
-        repoUrl: projectWorkspaceRows[0]?.repoUrl ?? null,
-        repoRef: projectWorkspaceRows[0]?.repoRef ?? null,
-        workspaceHints,
-        warnings,
-      };
+      const failureSummary = preferredWorkspaceWarning
+        ?? workspaceResolutionFailures[0]
+        ?? "No project workspace could be prepared.";
+      throw new Error(
+        `Project workspace could not be prepared for this run: ${failureSummary}`,
+      );
     }
 
     if (workspaceProjectId) {
       const managedWorkspace = await ensureManagedProjectWorkspace({
         companyId: agent.companyId,
         projectId: workspaceProjectId,
+        projectName: opts?.projectName ?? null,
         repoUrl: null,
       });
       return {
@@ -7188,6 +7279,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ? await db
           .select({
             id: projects.id,
+            name: projects.name,
             executionWorkspacePolicy: projects.executionWorkspacePolicy,
             env: projects.env,
           })
@@ -7227,7 +7319,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agent,
       context,
       previousSessionParams,
-      { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
+      {
+        useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default",
+        projectName: projectContext?.name ?? null,
+      },
     );
     const issueRef = issueContext
       ? {
@@ -7320,10 +7415,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     const existingExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
-    const shouldReuseExisting =
-      issueRef?.executionWorkspacePreference === "reuse_existing" &&
-      existingExecutionWorkspace !== null &&
-      existingExecutionWorkspace.status !== "archived";
+    let existingExecutionWorkspaceReuseWarning: string | null = null;
+    let shouldReuseExisting =
+      issueRef?.executionWorkspacePreference === "reuse_existing"
+      && existingExecutionWorkspace !== null
+      && existingExecutionWorkspace.status !== "archived";
+    if (shouldReuseExisting && existingExecutionWorkspace) {
+      const reuseCheck = await isPersistedExecutionWorkspaceReusable(existingExecutionWorkspace);
+      shouldReuseExisting = reuseCheck.reusable;
+      existingExecutionWorkspaceReuseWarning = reuseCheck.reason;
+    }
     const reusableExecutionWorkspaceConfig = shouldReuseExisting
       ? existingExecutionWorkspace?.config ?? null
       : null;
@@ -7539,6 +7640,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           recorder: workspaceOperationRecorder,
         });
+    if (existingExecutionWorkspaceReuseWarning) {
+      executionWorkspace.warnings.push(existingExecutionWorkspaceReuseWarning);
+    }
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace = null;
