@@ -1574,7 +1574,7 @@ export function IssueProperties({
     <>
       <span
         className="shrink-0 h-3 w-3 rounded-sm"
-        style={{ backgroundColor: orderedProjects.find((p) => p.id === issue.projectId)?.color ?? "var(--hex-6366f1)" }}
+        style={{ backgroundColor: orderedProjects.find((p) => p.id === issue.projectId)?.color ?? "var(--project-seed)" }}
       />
       <span className="text-sm truncate min-w-0" title={projectName(issue.projectId)}>{projectName(issue.projectId)}</span>
     </>
@@ -1647,7 +1647,7 @@ export function IssueProperties({
               {option.kind === "project" ? (
                 <span
                   className="shrink-0 h-3 w-3 rounded-sm"
-                  style={{ backgroundColor: option.color ?? "var(--hex-6366f1)" }}
+                  style={{ backgroundColor: option.color ?? "var(--project-seed)" }}
                 />
               ) : null}
               {option.name}

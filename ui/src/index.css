@@ -1463,8 +1463,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --hex-8b5cf6: #8b5cf6; /* ActivityCharts.tsx — status 'in_progress' (independent from --status-task-in_progress which is #2563eb — flagged inconsistency, TOKEN-AUDIT.md 1.2). */
   --hex-a855f7: #a855f7; /* ActivityCharts.tsx — status 'in_review'. */
   --hex-10b981: #10b981; /* ActivityCharts.tsx — status 'done'; also the >=0.8 success-rate bar tint. */
-  --hex-64748b: #64748b; /* ActivityCharts.tsx status 'backlog'; also the widely-repeated 'no project assigned' muted-slate fallback color (TOKEN-AUDIT.md 1.3) across Routines/MarkdownEditor/RoutineRunVariablesDialog/RoutineList/IssueColumns/editable-sections. */
-  --hex-6366f1: #6366f1; /* Project-color-fallback indigo seed default (ProjectDetail/PipelineSettings/IssueProperties/NewIssueDialog) — new-project-color-picker-seed family per TOKEN-AUDIT.md 1.3. */
+  --project-none: #64748b; /* Semantic rename of --hex-64748b (DECISION-SHEET.md A3, value unchanged). 'No project assigned' muted-slate fallback (TOKEN-AUDIT.md 1.3) across Routines/MarkdownEditor/RoutineRunVariablesDialog/RoutineList/IssueColumns/editable-sections; also ActivityCharts.tsx status 'backlog'. */
+  --project-seed: #6366f1; /* Semantic rename of --hex-6366f1 (DECISION-SHEET.md A3, value unchanged). Project-color-fallback indigo seed default (ProjectDetail/PipelineSettings/IssueProperties/NewIssueDialog) — new-project-color-picker-seed family per TOKEN-AUDIT.md 1.3. */
   --gradient-extract-1: linear-gradient(180deg,rgba(255,80,80,0.12),rgba(255,255,255,0.02)); /* Dashboard.tsx budget-alert card gradient. */
   --gradient-extract-2: linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02)); /* Costs.tsx subtle white card gradient. */
   --gradient-extract-3: radial-gradient(circle at top left,rgba(244,114,182,0.08),transparent 35%),radial-gradient(circle at bottom right,rgba(56,189,248,0.1),transparent 32%); /* AccountingModelCard.tsx decorative overlay. */

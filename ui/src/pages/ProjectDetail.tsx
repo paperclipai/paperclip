@@ -786,7 +786,7 @@ export function ProjectDetail() {
           ) : null}
           {project.managedByPlugin ? (
             <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-(length:--fs-11) font-medium text-muted-foreground">
-              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: project.color ?? "var(--hex-6366f1)" }} />
+              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: project.color ?? "var(--project-seed)" }} />
               Managed by {project.managedByPlugin.pluginDisplayName}
             </div>
           ) : null}

@@ -423,7 +423,7 @@ export function RoutineRunVariablesDialog({
                     <>
                       <span
                         className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                        style={{ backgroundColor: selectedProject.color ?? "var(--hex-64748b)" }}
+                        style={{ backgroundColor: selectedProject.color ?? "var(--project-none)" }}
                       />
                       <span className="truncate">{option.label}</span>
                     </>
@@ -438,7 +438,7 @@ export function RoutineRunVariablesDialog({
                     <>
                       <span
                         className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                        style={{ backgroundColor: project?.color ?? "var(--hex-64748b)" }}
+                        style={{ backgroundColor: project?.color ?? "var(--project-none)" }}
                       />
                       <span className="truncate">{option.label}</span>
                     </>

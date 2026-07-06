@@ -181,7 +181,7 @@ const statusColors: Record<string, string> = {
   done: "var(--hex-10b981)",
   blocked: "var(--hex-ef4444)",
   cancelled: "var(--hex-6b7280)",
-  backlog: "var(--hex-64748b)",
+  backlog: "var(--project-none)",
 };
 
 const statusLabels: Record<string, string> = {

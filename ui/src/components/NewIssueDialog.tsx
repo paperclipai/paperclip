@@ -1486,7 +1486,7 @@ export function NewIssueDialog() {
                     <>
                       <span
                         className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                        style={{ backgroundColor: currentProject.color ?? "var(--hex-6366f1)" }}
+                        style={{ backgroundColor: currentProject.color ?? "var(--project-seed)" }}
                       />
                       <span className="truncate">{option.label}</span>
                     </>
@@ -1501,7 +1501,7 @@ export function NewIssueDialog() {
                     <>
                       <span
                         className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                        style={{ backgroundColor: project?.color ?? "var(--hex-6366f1)" }}
+                        style={{ backgroundColor: project?.color ?? "var(--project-seed)" }}
                       />
                       <span className="truncate">{option.label}</span>
                     </>
