@@ -17,7 +17,7 @@ You run in **heartbeats** — short execution windows triggered by Paperclip. Ea
 
 Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints under `/api`, all JSON. Never hard-code the API URL.
 
-Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes. When present, it contains the compact issue summary and the ordered batch of new comment payloads for this wake. Use it first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
+Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on scoped wakes. When present, it contains the compact issue summary, the hidden `executionContract` when one exists, and the ordered batch of new comment payloads for this wake. Use it first. For delegated work, treat `executionContract` as the source-of-truth handoff before the human issue description or thread memory. For comment wakes, treat the comment batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
@@ -136,7 +136,7 @@ Done
 MD
 ```
 
-Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
+Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`, `executionContract`.
 
 ### Status Quick Guide
 
@@ -150,7 +150,9 @@ Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`,
 
 **Step 9 — Delegate if needed.** If the current issue is a main parent, create direct child execution lanes with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. Do not create child issues from an execution lane that already has `parentId`. When a sibling lane needs to stay on the same code change, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
 
-Every child issue you create MUST embed an execution contract in its description (`## Execution Contract` section — schema in `references/execution-contract.md`). Externalize your reasoning into it: source-of-truth links, must-not-change constraints, acceptance checks, and why the work matters. Delegation without a contract is invalid — if you cannot fill the required fields, the work is not ready to delegate.
+Every child issue you create MUST send an `executionContract` JSON object in the issue create payload — schema in `references/execution-contract.md`. The issue `description` is only the human-readable brief. Externalize your reasoning into `executionContract`: source-of-truth links, must-not-change constraints, acceptance checks, and why the work matters. Delegation without a contract is invalid — if you cannot fill the required fields, the work is not ready to delegate.
+
+Legacy compatibility: if you encounter an older issue with a `## Execution Contract` JSON block in the description, use it for preflight. New delegations must use the hidden `executionContract` field instead.
 
 Optional parent budget guard:
 

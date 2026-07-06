@@ -67,6 +67,41 @@ export const issueAssigneeAdapterOverridesSchema = z
   })
   .strict();
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export const issueExecutionContractSchema = z.record(z.unknown()).superRefine((value, ctx) => {
+  const schemaVersion = value.schemaVersion ?? value.schema_version;
+  if (
+    schemaVersion !== undefined &&
+    (
+      typeof schemaVersion !== "number" ||
+      !Number.isInteger(schemaVersion) ||
+      schemaVersion < 1 ||
+      schemaVersion > 1000
+    )
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "executionContract schemaVersion must be a positive integer",
+      path: [Object.prototype.hasOwnProperty.call(value, "schemaVersion") ? "schemaVersion" : "schema_version"],
+    });
+  }
+
+  for (const key of ["core", "extensions"] as const) {
+    if (value[key] !== undefined && value[key] !== null && !isPlainRecord(value[key])) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `executionContract ${key} must be an object`,
+        path: [key],
+      });
+    }
+  }
+});
+
+export type IssueExecutionContractInput = z.infer<typeof issueExecutionContractSchema>;
+
 const issueExecutionStagePrincipalBaseSchema = z.object({
   type: z.enum(["agent", "user"]),
   agentId: z.string().uuid().optional().nullable(),
@@ -322,6 +357,7 @@ const createIssueBaseSchema = z.object({
   requestDepth: issueRequestDepthInputSchema.optional().default(0),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
+  executionContract: issueExecutionContractSchema.optional().nullable(),
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),

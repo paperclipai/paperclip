@@ -757,6 +757,13 @@
       "when": 1783305660000,
       "tag": "0107_attachment_upload_limit_30mib",
       "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "7",
+      "when": 1783305720000,
+      "tag": "0108_issue_execution_contract",
+      "breakpoints": true
     }
   ]
 }

@@ -211,6 +211,30 @@ function issueTreeControlLabel(mode: IssueTreeControlMode, scope: "leaf" | "subt
     : TREE_CONTROL_MODE_LABEL[mode];
 }
 
+function hasExecutionContract(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.keys(value).length > 0;
+}
+
+function IssueExecutionContractPanel({ contract }: { contract: unknown }) {
+  if (!hasExecutionContract(contract)) return null;
+
+  return (
+    <details className="group rounded-md border border-border bg-muted/20">
+      <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium">
+        <span className="flex min-w-0 items-center gap-2">
+          <ListTree className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span className="truncate">Execution Contract</span>
+        </span>
+        <span className="shrink-0 text-xs font-normal text-muted-foreground">Hidden handoff</span>
+      </summary>
+      <pre className="max-h-96 overflow-auto border-t border-border px-3 py-2 text-xs leading-5 text-muted-foreground">
+        {JSON.stringify(contract, null, 2)}
+      </pre>
+    </details>
+  );
+}
+
 function issueTreeControlHelpText(mode: IssueTreeControlMode, scope: "leaf" | "subtree") {
   return scope === "leaf"
     ? LEAF_WORK_CONTROL_MODE_HELP_TEXT[mode] ?? TREE_CONTROL_MODE_HELP_TEXT[mode]
@@ -3995,6 +4019,7 @@ export function IssueDetail() {
         />
 
         <IssuePlanningStrip issue={issue} childIssues={childIssues} />
+        <IssueExecutionContractPanel contract={issue.executionContract} />
       </div>
 
       <PluginSlotOutlet

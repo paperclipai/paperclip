@@ -2075,6 +2075,7 @@ async function buildPaperclipWakePayload(input: {
         status: string;
         priority: string;
         workMode: string;
+        executionContract?: Record<string, unknown> | null;
       }
     | null;
 }) {
@@ -2093,6 +2094,7 @@ async function buildPaperclipWakePayload(input: {
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
+            executionContract: issues.executionContract,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
@@ -2172,6 +2174,7 @@ async function buildPaperclipWakePayload(input: {
 
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
+    executionContract: issueSummary?.executionContract ?? null,
     issue: issueSummary
       ? {
           id: issueSummary.id,
@@ -2180,6 +2183,7 @@ async function buildPaperclipWakePayload(input: {
           status: issueSummary.status,
           priority: issueSummary.priority,
           workMode: issueSummary.workMode,
+          executionContract: issueSummary.executionContract ?? null,
         }
       : null,
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
@@ -2610,6 +2614,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         identifier: issues.identifier,
         title: issues.title,
         description: issues.description,
+        executionContract: issues.executionContract,
         status: issues.status,
         workMode: issues.workMode,
         priority: issues.priority,
@@ -7233,6 +7238,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           priority: issueContext.priority,
           workMode: issueContext.workMode,
           description: issueContext.description,
+          executionContract: issueContext.executionContract ?? null,
           projectId: issueContext.projectId,
           projectWorkspaceId: issueContext.projectWorkspaceId,
           executionWorkspaceId: issueContext.executionWorkspaceId,
@@ -7265,6 +7271,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: issueRef.status,
             priority: issueRef.priority,
             workMode: issueRef.workMode,
+            executionContract: issueRef.executionContract ?? null,
           }
         : null,
     });
@@ -7295,6 +7302,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         identifier: issueRef.identifier,
         title: issueRef.title,
         description: issueRef.description,
+        executionContract: issueRef.executionContract ?? null,
         workMode: issueRef.workMode,
       };
     } else {

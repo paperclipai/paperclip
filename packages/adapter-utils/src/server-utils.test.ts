@@ -446,6 +446,14 @@ describe("renderPaperclipWakePrompt", () => {
         title: "Update prompts",
         status: "in_progress",
       },
+      executionContract: {
+        schemaVersion: 2,
+        contractType: "delegated_task",
+        taskType: "implementation",
+        core: {
+          objective: "Update prompts without losing handoff context.",
+        },
+      },
       commentWindow: {
         requestedCount: 0,
         includedCount: 0,
@@ -457,6 +465,8 @@ describe("renderPaperclipWakePrompt", () => {
 
     expect(prompt).toContain("## Paperclip Wake Payload");
     expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
+    expect(prompt).toContain("- hidden execution contract: present");
+    expect(prompt).toContain("Follow `executionContract` from `PAPERCLIP_WAKE_PAYLOAD_JSON`");
     expect(prompt).toContain("clear final disposition");
     expect(prompt).toContain("evidence, not valid liveness paths by themselves");
     expect(prompt).toContain("Use direct child issues only for bounded parent-level parallelism");

@@ -436,6 +436,85 @@ function appendAcceptanceCriteriaToDescription(description: string | null | unde
   return base ? `${base}\n\n${criteriaMarkdown}` : criteriaMarkdown;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeExecutionContractValue(value: unknown): Record<string, unknown> | null {
+  if (value == null) return null;
+  return isRecord(value) ? value : null;
+}
+
+function extractJsonObjectFromMarkdown(value: string): Record<string, unknown> | null {
+  const fenced = value.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced?.[1]?.trim() ?? (() => {
+    const start = value.indexOf("{");
+    const end = value.lastIndexOf("}");
+    return start >= 0 && end > start ? value.slice(start, end + 1).trim() : "";
+  })();
+  if (!candidate) return null;
+  try {
+    const parsed = JSON.parse(candidate);
+    return normalizeExecutionContractValue(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function extractExecutionContractFromDescription(description: string | null | undefined): {
+  description: string | null;
+  executionContract: Record<string, unknown> | null;
+} | null {
+  if (typeof description !== "string" || !description.trim()) return null;
+  const headingPattern = /^##\s+Execution Contract\s*$/gim;
+  const match = headingPattern.exec(description);
+  if (!match) return null;
+
+  const sectionStart = (() => {
+    const lineEnd = description.indexOf("\n", match.index + match[0].length);
+    return lineEnd === -1 ? description.length : lineEnd + 1;
+  })();
+  const nextHeadingPattern = /^##\s+\S.*$/gm;
+  nextHeadingPattern.lastIndex = sectionStart;
+  const nextHeading = nextHeadingPattern.exec(description);
+  const sectionEnd = nextHeading?.index ?? description.length;
+  const sectionBody = description.slice(sectionStart, sectionEnd);
+  const executionContract = extractJsonObjectFromMarkdown(sectionBody);
+  if (!executionContract) return null;
+
+  const before = description.slice(0, match.index).trimEnd();
+  const after = description.slice(sectionEnd).trimStart();
+  const nextDescription = [before, after].filter(Boolean).join("\n\n").trim();
+  return {
+    description: nextDescription || null,
+    executionContract,
+  };
+}
+
+function resolveExecutionContractFields(input: {
+  description?: string | null;
+  executionContract?: Record<string, unknown> | null;
+}): {
+  description?: string | null;
+  executionContract?: Record<string, unknown> | null;
+} {
+  const extracted = extractExecutionContractFromDescription(input.description);
+  const description = extracted ? extracted.description : input.description;
+  if (input.executionContract !== undefined) {
+    return {
+      description,
+      executionContract: normalizeExecutionContractValue(input.executionContract),
+    };
+  }
+  if (extracted) {
+    return {
+      description,
+      executionContract: extracted.executionContract,
+    };
+  }
+  return { description };
+}
+
 function createIssueDependencyReadiness(issueId: string): IssueDependencyReadiness {
   return {
     issueId,
@@ -1793,6 +1872,7 @@ const issueListSelect = {
   requestDepth: issues.requestDepth,
   billingCode: issues.billingCode,
   assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+  executionContract: sql<null>`null`,
   executionPolicy: sql<null>`null`,
   executionState: sql<null>`null`,
   monitorNextCheckAt: issues.monitorNextCheckAt,
@@ -3381,6 +3461,16 @@ export function issueService(db: Db) {
         budgetLimits: _budgetLimits,
         ...issueData
       } = data;
+      const contractFields = resolveExecutionContractFields({
+        description: issueData.description,
+        executionContract: issueData.executionContract,
+      });
+      issueData.description = contractFields.description ?? null;
+      if (Object.prototype.hasOwnProperty.call(contractFields, "executionContract")) {
+        issueData.executionContract = contractFields.executionContract ?? null;
+      } else {
+        delete issueData.executionContract;
+      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -3635,6 +3725,20 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
+      const contractFields = resolveExecutionContractFields({
+        ...(Object.prototype.hasOwnProperty.call(issueData, "description")
+          ? { description: issueData.description }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(issueData, "executionContract")
+          ? { executionContract: issueData.executionContract }
+          : {}),
+      });
+      if (Object.prototype.hasOwnProperty.call(contractFields, "description")) {
+        issueData.description = contractFields.description ?? null;
+      }
+      if (Object.prototype.hasOwnProperty.call(contractFields, "executionContract")) {
+        issueData.executionContract = contractFields.executionContract ?? null;
+      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;

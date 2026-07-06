@@ -2313,6 +2313,90 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     ]);
   });
 
+  it("stores explicit execution contracts as hidden issue data", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const executionContract = {
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "qa",
+      core: {
+        objective: "Verify the child lane against the source contract.",
+        acceptanceChecks: ["Contract is available to QA"],
+      },
+      extensions: {
+        qa: {
+          reviewMode: "contract_fidelity",
+        },
+      },
+    };
+
+    const issue = await svc.create(companyId, {
+      title: "QA lane",
+      status: "todo",
+      description: "Human-readable QA brief.",
+      executionContract,
+    });
+
+    expect(issue.description).toBe("Human-readable QA brief.");
+    expect(issue.executionContract).toEqual(executionContract);
+  });
+
+  it("extracts legacy markdown execution contracts from descriptions on create", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Implementation lane",
+      status: "todo",
+      description: [
+        "Build the handoff storage.",
+        "",
+        "## Execution Contract",
+        "",
+        "```json",
+        JSON.stringify({
+          schemaVersion: 2,
+          contractType: "delegated_task",
+          taskType: "implementation",
+          core: {
+            objective: "Store execution contracts outside descriptions.",
+            acceptanceChecks: ["Issue description stays human-readable"],
+          },
+        }),
+        "```",
+        "",
+        "## Acceptance Criteria",
+        "",
+        "- The contract is hidden from the description",
+      ].join("\n"),
+    });
+
+    expect(issue.description).toBe([
+      "Build the handoff storage.",
+      "",
+      "## Acceptance Criteria",
+      "",
+      "- The contract is hidden from the description",
+    ].join("\n"));
+    expect(issue.executionContract).toMatchObject({
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "implementation",
+    });
+  });
+
   it("clamps helper-created child requestDepth to the safe maximum", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

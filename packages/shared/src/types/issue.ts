@@ -83,6 +83,8 @@ export interface IssueAssigneeAdapterOverrides {
   useProjectWorkspace?: boolean;
 }
 
+export type IssueExecutionContract = Record<string, unknown>;
+
 export type DocumentFormat = "markdown";
 
 export interface IssueDocumentSummary {
@@ -390,6 +392,7 @@ export interface Issue {
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
+  executionContract?: IssueExecutionContract | null;
   executionPolicy?: IssueExecutionPolicy | null;
   executionState?: IssueExecutionState | null;
   monitorNextCheckAt?: Date | null;
