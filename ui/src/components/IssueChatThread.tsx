@@ -653,7 +653,7 @@ function IssueChatFallbackThread({
                 <div className="mb-2 flex items-center gap-2 text-sm">
                   <span className="font-medium text-foreground">{fallbackAuthorLabel(message)}</span>
                   {message.createdAt ? (
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className="text-(length:--fs-11) text-muted-foreground">
                       {commentDateLabel(message.createdAt)}
                     </span>
                   ) : null}
@@ -1049,7 +1049,7 @@ function IssueChatReasoningPart({ text }: { text: string }) {
         {ticker.exiting !== null && (
           <span
             key={`out-${ticker.key}`}
-            className="cot-line-exit absolute inset-x-0 truncate text-[13px] italic leading-5 text-muted-foreground/70"
+            className="cot-line-exit absolute inset-x-0 truncate text-(length:--fs-13) italic leading-5 text-muted-foreground/70"
             onAnimationEnd={() => setTicker((t) => ({ ...t, exiting: null }))}
           >
             {ticker.exiting}
@@ -1058,7 +1058,7 @@ function IssueChatReasoningPart({ text }: { text: string }) {
         <span
           key={`in-${ticker.key}`}
           className={cn(
-            "absolute inset-x-0 truncate text-[13px] italic leading-5 text-muted-foreground/70",
+            "absolute inset-x-0 truncate text-(length:--fs-13) italic leading-5 text-muted-foreground/70",
             ticker.key > 0 && "cot-line-enter",
           )}
         >
@@ -1106,7 +1106,7 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
         {ticker.exiting !== null && (
           <span
             key={`out-${ticker.key}`}
-            className="cot-line-exit absolute inset-x-0 truncate text-[13px] leading-5 text-muted-foreground/70"
+            className="cot-line-exit absolute inset-x-0 truncate text-(length:--fs-13) leading-5 text-muted-foreground/70"
             onAnimationEnd={() => setTicker((t) => ({ ...t, exiting: null }))}
           >
             {ticker.exiting}
@@ -1115,7 +1115,7 @@ function IssueChatRollingToolPart({ toolParts }: { toolParts: ToolCallMessagePar
         <span
           key={`in-${ticker.key}`}
           className={cn(
-            "absolute inset-x-0 truncate text-[13px] leading-5 text-muted-foreground/70",
+            "absolute inset-x-0 truncate text-(length:--fs-13) leading-5 text-muted-foreground/70",
             ticker.key > 0 && "cot-line-enter",
           )}
         >
@@ -1216,7 +1216,7 @@ function IssueChatToolPart({
           className="flex w-full items-center gap-2 rounded-md py-0.5 text-left transition-colors hover:bg-accent/5"
           onClick={() => setOpen((current) => !current)}
         >
-          <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground/80">
+          <span className="min-w-0 flex-1 truncate text-(length:--fs-13) text-muted-foreground/80">
             {title}
             {!intentDetail && summary ? <span className="ml-1.5 text-muted-foreground/50">{summary}</span> : null}
           </span>
@@ -1230,16 +1230,16 @@ function IssueChatToolPart({
           <div className="mt-1 space-y-2 pb-1">
             {nonIntentDetails.length > 0 ? (
               <div>
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
+                <div className="mb-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_14) text-muted-foreground/60">
                   Input
                 </div>
                 <dl className="space-y-1.5">
                   {nonIntentDetails.map((detail) => (
                     <div key={`${detail.label}:${detail.value}`}>
-                      <dt className="text-[10px] font-medium text-muted-foreground/60">
+                      <dt className="text-(length:--fs-10) font-medium text-muted-foreground/60">
                         {detail.label}
                       </dt>
-                      <dd className={cn("text-xs leading-5 text-foreground/70", detail.tone === "code" && "font-mono text-[11px]")}>
+                      <dd className={cn("text-xs leading-5 text-foreground/70", detail.tone === "code" && "font-mono text-(length:--fs-11)")}>
                         {detail.value}
                       </dd>
                     </div>
@@ -1248,18 +1248,18 @@ function IssueChatToolPart({
               </div>
             ) : rawArgsText ? (
               <div>
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
+                <div className="mb-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_14) text-muted-foreground/60">
                   Input
                 </div>
-                <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-[11px] leading-4 text-foreground/70">{rawArgsText}</CopyablePreBlock>
+                <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-(length:--fs-11) leading-4 text-foreground/70">{rawArgsText}</CopyablePreBlock>
               </div>
             ) : null}
             {result !== undefined ? (
               <div>
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/60">
+                <div className="mb-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_14) text-muted-foreground/60">
                   Result
                 </div>
-                <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-[11px] leading-4 text-foreground/70">{resultText}</CopyablePreBlock>
+                <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-(length:--fs-11) leading-4 text-foreground/70">{resultText}</CopyablePreBlock>
               </div>
             ) : null}
           </div>
@@ -1431,7 +1431,7 @@ function IssueChatUserMessage({
         <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
         <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
         {followUpRequested ? (
-          <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+          <Badge variant="outline" className="text-(length:--fs-10) uppercase tracking-(--ls-0_14)">
             Follow-up
           </Badge>
         ) : null}
@@ -1455,14 +1455,14 @@ function IssueChatUserMessage({
       >
         {queued ? (
           <div className="mb-1.5 flex items-center gap-2">
-            <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+            <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-(length:--fs-10) font-medium uppercase tracking-(--ls-0_14) text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
               {queueBadgeLabel}
             </span>
             {queueTargetRunId && onInterruptQueued ? (
               <Button
                 size="sm"
                 variant="outline"
-                className="h-6 border-red-300 px-2 text-[11px] text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
+                className="h-6 border-red-300 px-2 text-(length:--fs-11) text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
                 disabled={isInterruptingQueuedRun}
                 onClick={() => void onInterruptQueued(queueTargetRunId)}
               >
@@ -1473,7 +1473,7 @@ function IssueChatUserMessage({
               <Button
                 size="sm"
                 variant="outline"
-                className="h-6 border-amber-300 px-2 text-[11px] text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
+                className="h-6 border-amber-300 px-2 text-(length:--fs-11) text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
                 onClick={() => onCancelQueued(commentId)}
               >
                 Cancel
@@ -1491,7 +1491,7 @@ function IssueChatUserMessage({
       </div>
 
       {pending ? (
-        <div className={cn("mt-1 flex px-1 text-[11px] text-muted-foreground", isCurrentUser ? "justify-end" : "justify-start")}>
+        <div className={cn("mt-1 flex px-1 text-(length:--fs-11) text-muted-foreground", isCurrentUser ? "justify-end" : "justify-start")}>
           Sending...
         </div>
       ) : (
@@ -1505,7 +1505,7 @@ function IssueChatUserMessage({
             <TooltipTrigger asChild>
               <a
                 href={anchorId ? `#${anchorId}` : undefined}
-                className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                className="text-(length:--fs-11) text-muted-foreground hover:text-foreground hover:underline"
               >
                 {message.createdAt ? commentDateLabel(message.createdAt) : ""}
               </a>
@@ -1731,7 +1731,7 @@ function IssueChatAssistantMessage({
         <TooltipTrigger asChild>
           <a
             href={anchorId ? `#${anchorId}` : undefined}
-            className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+            className="text-(length:--fs-11) text-muted-foreground hover:text-foreground hover:underline"
           >
             {message.createdAt ? commentDateLabel(message.createdAt) : ""}
           </a>
@@ -1813,14 +1813,14 @@ function IssueChatAssistantMessage({
                 <AgentIcon icon={agentIcon} className="h-4 w-4" />
               ) : (
                 <Avatar size="sm" className="size-5">
-                  <AvatarFallback className="text-[10px]">{initialsForName(authorName)}</AvatarFallback>
+                  <AvatarFallback className="text-(length:--fs-10)">{initialsForName(authorName)}</AvatarFallback>
                 </Avatar>
               )}
             </span>
             <span className="text-sm font-medium text-foreground">{authorName}</span>
             <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
             {followUpRequested ? (
-              <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+              <Badge variant="outline" className="text-(length:--fs-10) uppercase tracking-(--ls-0_14)">
                 Follow-up
               </Badge>
             ) : null}
@@ -1878,7 +1878,7 @@ function IssueChatAssistantMessage({
               <span className="text-xs text-muted-foreground/60">{chainOfThoughtLabel?.toLowerCase()}</span>
               <span className="ml-auto flex items-center gap-1.5">
                 {message.createdAt ? (
-                  <span className="text-[11px] text-muted-foreground/50">
+                  <span className="text-(length:--fs-11) text-muted-foreground/50">
                     {commentDateLabel(message.createdAt)}
                   </span>
                 ) : null}
@@ -1890,12 +1890,12 @@ function IssueChatAssistantMessage({
               <span className="text-sm font-medium text-foreground">{authorName}</span>
               <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
               {followUpRequested ? (
-                <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+                <Badge variant="outline" className="text-(length:--fs-10) uppercase tracking-(--ls-0_14)">
                   Follow-up
                 </Badge>
               ) : null}
               {isRunning ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-cyan-700 dark:text-cyan-200">
+                <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-(length:--fs-10) font-medium uppercase tracking-(--ls-0_14) text-cyan-700 dark:text-cyan-200">
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Running
                 </span>
@@ -2221,7 +2221,7 @@ function ExpiredRequestConfirmationActivity({
         </a>
         <button
           type="button"
-          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 text-(length:--fs-11) font-medium text-muted-foreground transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           aria-expanded={expanded}
           aria-controls={detailsId}
           onClick={() => setExpanded((current) => !current)}
@@ -2338,7 +2338,7 @@ function isStaleSuccessfulRunHandoffNotice(input: {
 
 function StaleDispositionWarningMetadataRow({ row }: { row: SystemNoticeMetadataRow }) {
   const label = (
-    <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+    <span className="text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_14) text-muted-foreground">
       {row.label}
     </span>
   );
@@ -2348,7 +2348,7 @@ function StaleDispositionWarningMetadataRow({ row }: { row: SystemNoticeMetadata
         return <span>{row.value}</span>;
       case "code":
         return (
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-11) text-foreground/80">
             {row.value}
           </code>
         );
@@ -2379,7 +2379,7 @@ function StaleDispositionWarningMetadataRow({ row }: { row: SystemNoticeMetadata
         const runShort = row.runId.length > 12 ? `${row.runId.slice(0, 8)}...` : row.runId;
         const content = (
           <>
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-11) text-foreground/80">
               {runShort}
             </code>
             {row.status ? <span>{row.status}</span> : null}
@@ -2454,7 +2454,7 @@ function StaleDispositionWarningDetails({
       {sections.map((section) => (
         <div key={metadataSectionKey(section)} className="space-y-1.5">
           {section.title ? (
-            <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            <div className="text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_16) text-muted-foreground">
               {section.title}
             </div>
           ) : null}
@@ -2501,7 +2501,7 @@ function StaleDispositionWarningRow({
             </span>
             <span className="ml-auto flex items-center gap-1.5">
               {message.createdAt ? (
-                <span data-testid="stale-disposition-warning-time" className="text-[11px] text-muted-foreground/50">
+                <span data-testid="stale-disposition-warning-time" className="text-(length:--fs-11) text-muted-foreground/50">
                   {commentDateLabel(message.createdAt)}
                 </span>
               ) : null}
@@ -2622,7 +2622,7 @@ function SystemNoticeCommentRow({
             <TooltipTrigger asChild>
               <a
                 href={anchorId ? `#${anchorId}` : undefined}
-                className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                className="text-(length:--fs-11) text-muted-foreground hover:text-foreground hover:underline"
               >
                 {message.createdAt ? commentDateLabel(message.createdAt) : ""}
               </a>
@@ -2790,7 +2790,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
 
         {statusChange ? (
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
-            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+            <span className="text-(length:--fs-10) font-medium uppercase tracking-wider text-muted-foreground/70">
               Status
             </span>
             <span className="text-muted-foreground">{humanizeValue(statusChange.from)}</span>
@@ -2802,7 +2802,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         {assigneeChange ? (
           <div className="space-y-1">
             <div className={cn("flex flex-wrap items-center gap-1.5 text-xs", isCurrentUser && "justify-end")}>
-              <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+              <span className="text-(length:--fs-10) font-medium uppercase tracking-wider text-muted-foreground/70">
                 Assignee
               </span>
               <AssigneeChip assignee={assigneeChange.from} resolvers={handoffResolvers} />
@@ -2821,7 +2821,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
 
         {workspaceChange ? (
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
-            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+            <span className="text-(length:--fs-10) font-medium uppercase tracking-wider text-muted-foreground/70">
               Workspace
             </span>
             <span className="text-muted-foreground">
@@ -2853,7 +2853,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
           <span className="text-muted-foreground">run</span>
           <Link
             to={`/agents/${runAgentId}/runs/${runId}`}
-            className="inline-flex items-center rounded-md border border-border bg-accent/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+            className="inline-flex items-center rounded-md border border-border bg-accent/40 px-1.5 py-0.5 font-mono text-(length:--fs-10) text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
           >
             {runId.slice(0, 8)}
           </Link>
@@ -3906,7 +3906,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       ) : null}
 
       {composerHint ? (
-        <div className="inline-flex items-center rounded-full border border-border/70 bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground">
+        <div className="inline-flex items-center rounded-full border border-border/70 bg-muted/30 px-2 py-1 text-(length:--fs-11) text-muted-foreground">
           {composerHint}
         </div>
       ) : null}
@@ -3998,7 +3998,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                   aria-keyshortcuts="Meta+Period Control+Period"
                   title={titleForPendingWorkMode(pendingWorkMode)}
                   className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors",
+                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-(length:--fs-11) font-semibold transition-colors",
                     pendingWorkModeMeta.classes.chip,
                   )}
                 >
@@ -4037,7 +4037,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
                     </button>
                   );
                 })}
-                <div className="mt-1 border-t px-2 py-1.5 text-[10px] text-muted-foreground">
+                <div className="mt-1 border-t px-2 py-1.5 text-(length:--fs-10) text-muted-foreground">
                   Cmd/Ctrl+. cycles modes
                 </div>
               </PopoverContent>

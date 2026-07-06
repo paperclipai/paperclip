@@ -33,7 +33,7 @@ export function MatchSourceChip({ kind, count, label, className }: MatchSourceCh
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-px text-[11px] font-medium leading-none whitespace-nowrap",
+        "inline-flex items-center gap-1 rounded-full border px-2 py-px text-(length:--fs-11) font-medium leading-none whitespace-nowrap",
         chipStyles[kind],
         className,
       )}

@@ -673,7 +673,7 @@ function TranscriptMessageBlock({
   return (
     <div>
       {!isAssistant && (
-        <div className="mb-1.5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+        <div className="mb-1.5 flex items-center gap-2 text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_18) text-muted-foreground">
           <User className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
           <span>User</span>
         </div>
@@ -688,7 +688,7 @@ function TranscriptMessageBlock({
         {block.text}
       </MarkdownBody>
       {block.streaming && (
-        <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium italic text-muted-foreground">
+        <div className="mt-2 inline-flex items-center gap-1 text-(length:--fs-10) font-medium italic text-muted-foreground">
           <span className="relative flex h-1.5 w-1.5">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-70" />
             <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-current" />
@@ -715,7 +715,7 @@ function TranscriptThinkingBlock({
     <MarkdownBody
       className={cn(
         "italic text-foreground/70 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
-        density === "compact" ? "text-[11px] leading-5" : "text-sm leading-6",
+        density === "compact" ? "text-(length:--fs-11) leading-5" : "text-sm leading-6",
         className,
       )}
       externalReferences={externalReferences}
@@ -777,10 +777,10 @@ function TranscriptToolCard({
         )}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+            <span className="text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_18) text-muted-foreground">
               {block.name}
             </span>
-            <span className={cn("text-[10px] font-semibold uppercase tracking-[0.14em]", statusTone)}>
+            <span className={cn("text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_14)", statusTone)}>
               {statusLabel}
             </span>
           </div>
@@ -802,19 +802,19 @@ function TranscriptToolCard({
           <div className={detailsClass}>
             <div className={cn("grid gap-3", compact ? "grid-cols-1" : "lg:grid-cols-2")}>
               <div>
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                <div className="mb-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_18) text-muted-foreground">
                   Input
                 </div>
-                <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground/80">
+                <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-(length:--fs-11) text-foreground/80">
                   {formatToolPayload(block.input) || "<empty>"}
                 </pre>
               </div>
               <div>
-                <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                <div className="mb-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_18) text-muted-foreground">
                   Result
                 </div>
                 <pre className={cn(
-                  "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
+                  "overflow-x-auto whitespace-pre-wrap break-words font-mono text-(length:--fs-11)",
                   block.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
                 )}>
                   {block.result ? formatToolPayload(block.result) : "Waiting for result..."}
@@ -894,7 +894,7 @@ function TranscriptCommandGroup({
           ))}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-semibold uppercase leading-none tracking-[0.1em] text-muted-foreground/70">
+          <div className="text-(length:--fs-11) font-semibold uppercase leading-none tracking-(--ls-0_1) text-muted-foreground/70">
             {title}
           </div>
           {subtitle && (
@@ -938,13 +938,13 @@ function TranscriptCommandGroup({
                 )}>
                   <TerminalSquare className="h-3 w-3" />
                 </span>
-                <span className={cn("font-mono break-all", compact ? "text-[11px]" : "text-xs")}>
+                <span className={cn("font-mono break-all", compact ? "text-(length:--fs-11)" : "text-xs")}>
                   {summarizeToolInput("command_execution", item.input, density)}
                 </span>
               </div>
               {item.result && (
                 <pre className={cn(
-                  "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
+                  "overflow-x-auto whitespace-pre-wrap break-words font-mono text-(length:--fs-11)",
                   item.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
                 )}>
                   {formatToolPayload(item.result)}
@@ -1020,7 +1020,7 @@ function TranscriptToolGroup({
           })}
         </div>
         <div className="min-w-0 flex-1">
-          <div className={cn("font-semibold uppercase leading-none tracking-[0.1em]", compact ? "text-[10px]" : "text-[11px]", "text-muted-foreground/70")}>
+          <div className={cn("font-semibold uppercase leading-none tracking-(--ls-0_1)", compact ? "text-(length:--fs-10)" : "text-(length:--fs-11)", "text-muted-foreground/70")}>
             {title}
           </div>
           {subtitle && (
@@ -1053,10 +1053,10 @@ function TranscriptToolGroup({
                 )}>
                   <Wrench className="h-3 w-3" />
                 </span>
-                <span className={cn("text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground")}>
+                <span className={cn("text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_14) text-muted-foreground")}>
                   {humanizeLabel(item.name)}
                 </span>
-                <span className={cn("text-[10px] font-semibold uppercase tracking-[0.14em]",
+                <span className={cn("text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_14)",
                   item.status === "running" ? "text-cyan-700 dark:text-cyan-300"
                   : item.status === "error" ? "text-red-700 dark:text-red-300"
                   : "text-emerald-700 dark:text-emerald-300"
@@ -1066,16 +1066,16 @@ function TranscriptToolGroup({
               </div>
               <div className={cn("grid gap-2 pl-7", compact ? "grid-cols-1" : "lg:grid-cols-2")}>
                 <div>
-                  <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Input</div>
-                  <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground/80">
+                  <div className="mb-0.5 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_18) text-muted-foreground">Input</div>
+                  <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-(length:--fs-11) text-foreground/80">
                     {formatToolPayload(item.input) || "<empty>"}
                   </pre>
                 </div>
                 {item.result && (
                   <div>
-                    <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Result</div>
+                    <div className="mb-0.5 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_18) text-muted-foreground">Result</div>
                     <pre className={cn(
-                      "overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]",
+                      "overflow-x-auto whitespace-pre-wrap break-words font-mono text-(length:--fs-11)",
                       item.status === "error" ? "text-red-700 dark:text-red-300" : "text-foreground/80",
                     )}>
                       {formatToolPayload(item.result)}
@@ -1152,22 +1152,22 @@ function TranscriptEventRow({
             <MarkdownBody
               className={cn(
                 "[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 text-sky-700 dark:text-sky-300",
-                compact ? "text-[11px] leading-5" : "text-xs leading-5",
+                compact ? "text-(length:--fs-11) leading-5" : "text-xs leading-5",
               )}
               externalReferences={externalReferences}
             >
               {block.text}
             </MarkdownBody>
           ) : (
-            <div className={cn("whitespace-pre-wrap break-words", compact ? "text-[11px]" : "text-xs")}>
-              <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/70">
+            <div className={cn("whitespace-pre-wrap break-words", compact ? "text-(length:--fs-11)" : "text-xs")}>
+              <span className="text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_1) text-muted-foreground/70">
                 {block.label}
               </span>
               {block.text ? <span className="ml-2">{block.text}</span> : null}
             </div>
           )}
           {block.detail && (
-            <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-foreground/75">
+            <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-(length:--fs-11) text-foreground/75">
               {block.detail}
             </pre>
           )}
@@ -1207,11 +1207,11 @@ function TranscriptDiffGroup({
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((v) => !v); } }}
       >
         <GitCompare className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
-        <span className={cn("text-[11px] font-semibold uppercase tracking-[0.14em] text-blue-700 dark:text-blue-300")}>
+        <span className={cn("text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_14) text-blue-700 dark:text-blue-300")}>
           {shortFile}
         </span>
         {hasChanges && (
-          <span className="text-[10px] tabular-nums">
+          <span className="text-(length:--fs-10) tabular-nums">
             <span className="text-emerald-600 dark:text-emerald-400">+{addCount}</span>
             {" "}
             <span className="text-red-600 dark:text-red-400">-{removeCount}</span>
@@ -1222,7 +1222,7 @@ function TranscriptDiffGroup({
       {open && (
         <pre className={cn(
           "mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono pl-5",
-          compact ? "text-[11px]" : "text-xs",
+          compact ? "text-(length:--fs-11)" : "text-xs",
         )}>
           {block.hunks.map((hunk, i) => {
             const key = `${i}-${hunk.changeType}`;
@@ -1292,13 +1292,13 @@ function TranscriptStderrGroup({
         onClick={() => setOpen((v) => !v)}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((v) => !v); } }}
       >
-        <span className={cn("text-[10px] font-semibold uppercase tracking-[0.14em]")}>
+        <span className={cn("text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_14)")}>
           {block.lines.length} log {block.lines.length === 1 ? "line" : "lines"}
         </span>
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </div>
       {open && (
-        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-amber-700/80 dark:text-amber-300/80 pl-5">
+        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-(length:--fs-11) text-amber-700/80 dark:text-amber-300/80 pl-5">
           {block.lines.map((line, i) => (
             <span key={`${line.ts}-${i}`}>
               <span className="select-none text-amber-500/50 dark:text-amber-400/40">{i > 0 ? "\n" : ""}</span>
@@ -1329,13 +1329,13 @@ function TranscriptSystemGroup({
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((v) => !v); } }}
       >
         <TerminalSquare className="h-3.5 w-3.5 shrink-0" />
-        <span className="text-[10px] font-semibold uppercase tracking-[0.14em]">
+        <span className="text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_14)">
           {block.lines.length} system {block.lines.length === 1 ? "message" : "messages"}
         </span>
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </div>
       {open && (
-        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-blue-700/80 dark:text-blue-300/80 pl-5">
+        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-(length:--fs-11) text-blue-700/80 dark:text-blue-300/80 pl-5">
           {block.lines.map((line, i) => (
             <span key={`${line.ts}-${i}`}>
               <span className="select-none text-blue-500/40 dark:text-blue-400/30">{i > 0 ? "\n" : ""}</span>
@@ -1362,7 +1362,7 @@ function TranscriptStdoutRow({
   return (
     <div>
       <div className="flex items-center gap-2">
-        <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+        <span className="text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_18) text-muted-foreground">
           stdout
         </span>
         <button
@@ -1377,7 +1377,7 @@ function TranscriptStdoutRow({
       {open && (
         <pre className={cn(
           "mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-foreground/80",
-          density === "compact" ? "text-[11px]" : "text-xs",
+          density === "compact" ? "text-(length:--fs-11)" : "text-xs",
         )}>
           {block.text}
         </pre>
@@ -1474,7 +1474,7 @@ function RawTranscriptView({
   const bottomSpacer = shouldVirtualize ? Math.max(0, entries.length - range.end) * RAW_ESTIMATED_ROW_HEIGHT : 0;
 
   return (
-    <div ref={listRef} className={cn("font-mono", compact ? "space-y-1 text-[11px]" : "space-y-1.5 text-xs")}>
+    <div ref={listRef} className={cn("font-mono", compact ? "space-y-1 text-(length:--fs-11)" : "space-y-1.5 text-xs")}>
       {topSpacer > 0 && <div aria-hidden="true" style={{ height: topSpacer }} />}
       {visibleEntries.map((entry, idx) => (
         <div
@@ -1484,7 +1484,7 @@ function RawTranscriptView({
             "grid-cols-[auto_1fr]",
           )}
         >
-          <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+          <span className="text-(length:--fs-10) uppercase tracking-(--ls-0_18) text-muted-foreground">
             {entry.kind}
           </span>
           <pre className="min-w-0 whitespace-pre-wrap break-words text-foreground/80">

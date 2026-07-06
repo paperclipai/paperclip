@@ -363,12 +363,12 @@ const FieldWrapper = React.memo(({
       </div>
       {children}
       {description && (
-        <p className="text-[12px] text-muted-foreground leading-relaxed">
+        <p className="text-(length:--fs-12) text-muted-foreground leading-relaxed">
           {description}
         </p>
       )}
       {error && (
-        <p className="text-[12px] font-medium text-destructive">{error}</p>
+        <p className="text-(length:--fs-12) font-medium text-destructive">{error}</p>
       )}
     </div>
   );
@@ -695,7 +695,7 @@ const SecretField = React.memo(({
               {!hasRawValue ? (
                 <button
                   type="button"
-                  className="text-[11px] text-muted-foreground hover:text-foreground"
+                  className="text-(length:--fs-11) text-muted-foreground hover:text-foreground"
                   onClick={() => {
                     setShowRawInput(false);
                     setIsVisible(false);
@@ -709,7 +709,7 @@ const SecretField = React.memo(({
           ) : (
             <button
               type="button"
-              className="text-[11px] text-muted-foreground hover:text-foreground"
+              className="text-(length:--fs-11) text-muted-foreground hover:text-foreground"
               onClick={() => setShowRawInput(true)}
               disabled={disabled}
             >

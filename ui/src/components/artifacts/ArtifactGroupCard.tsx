@@ -56,7 +56,7 @@ export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
               <Layers className="h-7 w-7" aria-hidden="true" />
             </div>
           )}
-          <span className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-full bg-background/85 px-2 py-0.5 text-[11px] font-medium text-foreground/90 shadow-sm backdrop-blur">
+          <span className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-full bg-background/85 px-2 py-0.5 text-(length:--fs-11) font-medium text-foreground/90 shadow-sm backdrop-blur">
             <Layers className="h-3 w-3" aria-hidden="true" />
             {group.count}
           </span>
@@ -64,7 +64,7 @@ export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
 
         <div className="flex flex-1 flex-col gap-1 p-3">
           <div className="flex h-7 items-center gap-2">
-            <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+            <span className="shrink-0 font-mono text-(length:--fs-11) text-muted-foreground">
               {group.issue.identifier}
             </span>
             <h3
@@ -75,7 +75,7 @@ export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
             </h3>
           </div>
 
-          <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground/65">
+          <div className="mt-0.5 flex items-center gap-1.5 text-(length:--fs-11) text-muted-foreground/65">
             <span>{countLabel}</span>
             <span className="text-muted-foreground/50">·</span>
             <span>Updated {formatDate(group.updatedAt)}</span>

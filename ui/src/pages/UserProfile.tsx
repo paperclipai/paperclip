@@ -44,7 +44,7 @@ function HeroStat({ label, value, hint }: { label: string; value: string; hint?:
   return (
     <div className="min-w-0">
       <div className="text-2xl font-semibold tabular-nums sm:text-3xl">{value}</div>
-      <div className="mt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-1 text-(length:--fs-11) font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
       {hint ? <div className="mt-0.5 text-xs text-muted-foreground/70">{hint}</div> : null}
     </div>
   );
@@ -55,8 +55,8 @@ function WindowColumn({ stats }: { stats: UserProfileWindowStats }) {
   return (
     <div className="flex min-w-0 flex-col gap-4 border-l border-border pl-5 first:border-l-0 first:pl-0">
       <div className="flex items-baseline justify-between gap-3">
-        <h2 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{stats.label}</h2>
-        <span className="text-[11px] text-muted-foreground tabular-nums">{completionRate(stats)} done</span>
+        <h2 className="text-(length:--fs-11) font-medium uppercase tracking-wide text-muted-foreground">{stats.label}</h2>
+        <span className="text-(length:--fs-11) text-muted-foreground tabular-nums">{completionRate(stats)} done</span>
       </div>
 
       <div className="grid grid-cols-2 gap-x-5 gap-y-3">
@@ -84,7 +84,7 @@ function Metric({ value, label }: { value: string; label: string }) {
   return (
     <div className="min-w-0">
       <div className="truncate text-xl font-semibold tabular-nums">{value}</div>
-      <div className="mt-0.5 text-[11px] text-muted-foreground">{label}</div>
+      <div className="mt-0.5 text-(length:--fs-11) text-muted-foreground">{label}</div>
     </div>
   );
 }
@@ -128,14 +128,14 @@ function UsageChart({ points }: { points: UserProfileDailyPoint[] }) {
           );
         })}
       </div>
-      <div className="mt-2 grid grid-cols-[repeat(14,minmax(0,1fr))] gap-1.5 text-[10px] tabular-nums text-muted-foreground sm:gap-2">
+      <div className="mt-2 grid grid-cols-[repeat(14,minmax(0,1fr))] gap-1.5 text-(length:--fs-10) tabular-nums text-muted-foreground sm:gap-2">
         {points.map((point, index) => (
           <div key={point.date} className="text-center">
             {index === 0 || index === 6 || index === 13 ? formatShortDate(point.date) : null}
           </div>
         ))}
       </div>
-      <div className="mt-4 flex flex-wrap items-center gap-4 text-[10px] uppercase tracking-wide text-muted-foreground">
+      <div className="mt-4 flex flex-wrap items-center gap-4 text-(length:--fs-10) uppercase tracking-wide text-muted-foreground">
         <span className="inline-flex items-center gap-1.5">
           <span className="h-2 w-2 bg-foreground/80" /> tokens / day
         </span>

@@ -96,7 +96,7 @@ export function IssueColumnPicker({
       <DropdownMenuContent align="end" className="w-[300px] rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">
         <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
           <div className="space-y-1">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+            <div className="text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_22) text-muted-foreground">
               Desktop task rows
             </div>
             <div className="text-sm font-medium text-foreground">
@@ -190,7 +190,7 @@ export function InboxIssueMetaLeading({
           </span>
           <span
             className={cn(
-              "hidden text-[11px] font-medium sm:inline",
+              "hidden text-(length:--fs-11) font-medium sm:inline",
               "text-blue-600 dark:text-blue-400",
             )}
           >
@@ -213,7 +213,7 @@ export function InboxIssueMetaLeading({
             )}
             aria-hidden="true"
           />
-          <span className="hidden text-[11px] font-medium text-muted-foreground sm:inline">
+          <span className="hidden text-(length:--fs-11) font-medium text-muted-foreground sm:inline">
             {subtreeLiveCount} live below
           </span>
         </span>
@@ -390,7 +390,7 @@ export function InboxIssueTrailingColumns({
                 {(issue.labels ?? []).slice(0, 2).map((label) => (
                   <span
                     key={label.id}
-                    className="inline-flex min-w-0 max-w-full shrink-0 items-center rounded-full border px-1.5 py-0 text-[10px] font-medium"
+                    className="inline-flex min-w-0 max-w-full shrink-0 items-center rounded-full border px-1.5 py-0 text-(length:--fs-10) font-medium"
                     style={{
                       borderColor: label.color,
                       color: pickTextColorForPillBg(label.color, 0.12),
@@ -401,7 +401,7 @@ export function InboxIssueTrailingColumns({
                   </span>
                 ))}
                 {(issue.labels ?? []).length > 2 ? (
-                  <span className="shrink-0 text-[10px] font-medium text-muted-foreground">
+                  <span className="shrink-0 text-(length:--fs-10) font-medium text-muted-foreground">
                     +{(issue.labels ?? []).length - 2}
                   </span>
                 ) : null}
@@ -463,7 +463,7 @@ export function InboxIssueTrailingColumns({
 
         if (column === "updated") {
           return (
-            <span key={column} className="min-w-0 truncate text-right text-[11px] font-medium text-muted-foreground">
+            <span key={column} className="min-w-0 truncate text-right text-(length:--fs-11) font-medium text-muted-foreground">
               {activityText}
             </span>
           );

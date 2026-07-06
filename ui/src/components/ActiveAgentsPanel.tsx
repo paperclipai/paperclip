@@ -29,7 +29,7 @@ function RunCardRecoveryChip({ action }: { action: IssueRecoveryAction }) {
       aria-label={tone.label}
       title={`${tone.label} — open the source task to act.`}
       className={cn(
-        "inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[10px] font-medium",
+        "inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-(length:--fs-10) font-medium",
         tone.className,
       )}
     >
@@ -188,16 +188,16 @@ const AgentRunCard = memo(function AgentRunCard({
               ) : (
                 <span className="inline-flex h-2.5 w-2.5 rounded-full bg-muted-foreground/35" />
               )}
-              <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-[11px]" />
+              <Identity name={run.agentName} size="sm" className="[&>span:last-child]:!text-(length:--fs-11)" />
             </div>
-            <div className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+            <div className="mt-2 flex items-center gap-2 text-(length:--fs-11) text-muted-foreground">
               <span>{isActive ? "Live now" : run.finishedAt ? `Finished ${relativeTime(run.finishedAt)}` : `Started ${relativeTime(run.createdAt)}`}</span>
             </div>
           </div>
 
           <Link
             to={`/agents/${run.agentId}/runs/${run.id}`}
-            className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2 py-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+            className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2 py-1 text-(length:--fs-10) text-muted-foreground transition-colors hover:text-foreground"
           >
             <ExternalLink className="h-2.5 w-2.5" />
           </Link>

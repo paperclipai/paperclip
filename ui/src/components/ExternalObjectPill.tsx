@@ -153,7 +153,7 @@ export function ExternalObjectPill({
     </>
   );
   const countSuffix = typeof sourceCount === "number" && sourceCount > 1 ? (
-    <span className="tabular-nums text-[10px] font-medium opacity-80">×{sourceCount}</span>
+    <span className="tabular-nums text-(length:--fs-10) font-medium opacity-80">×{sourceCount}</span>
   ) : null;
   const innerContent = (
     <>

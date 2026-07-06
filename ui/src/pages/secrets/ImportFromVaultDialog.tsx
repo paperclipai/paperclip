@@ -796,7 +796,7 @@ function Stepper({ step }: { step: Step }) {
         <span key={s.id} className="flex items-center gap-2">
           <span
             className={cn(
-              "inline-flex h-4 w-4 items-center justify-center rounded-full border text-[10px]",
+              "inline-flex h-4 w-4 items-center justify-center rounded-full border text-(length:--fs-10)",
               index === activeIndex
                 ? "border-primary bg-primary text-primary-foreground"
                 : index < activeIndex
@@ -923,13 +923,13 @@ function SelectStep(props: SelectStepProps) {
                     <span className="flex items-center gap-2">
                       <span>{vault.displayName}</span>
                       {vault.isDefault && (
-                        <Badge variant="outline" className="px-1 py-0 text-[10px]">default</Badge>
+                        <Badge variant="outline" className="px-1 py-0 text-(length:--fs-10)">default</Badge>
                       )}
                       {vault.status === "warning" && (
-                        <Badge variant="outline" className="px-1 py-0 text-[10px] text-amber-500 border-amber-500/40">warning</Badge>
+                        <Badge variant="outline" className="px-1 py-0 text-(length:--fs-10) text-amber-500 border-amber-500/40">warning</Badge>
                       )}
                       {blocked && (
-                        <Badge variant="outline" className="px-1 py-0 text-[10px] text-muted-foreground">
+                        <Badge variant="outline" className="px-1 py-0 text-(length:--fs-10) text-muted-foreground">
                           {vault.status === "coming_soon" ? "coming soon" : vault.status}
                         </Badge>
                       )}
@@ -1061,13 +1061,13 @@ function SelectStep(props: SelectStepProps) {
                         <StatusBadge status={candidate.status} />
                         {candidate.status === "duplicate" &&
                           candidate.conflicts.find((c) => c.type === "exact_reference")?.existingSecretId && (
-                            <span className="text-[11px] text-muted-foreground">
+                            <span className="text-(length:--fs-11) text-muted-foreground">
                               Already imported
                             </span>
                           )}
                       </div>
                       {candidate.status === "conflict" && candidate.conflicts.length > 0 && (
-                        <div className="mt-0.5 text-[11px] text-amber-600 dark:text-amber-400">
+                        <div className="mt-0.5 text-(length:--fs-11) text-amber-600 dark:text-amber-400">
                           {candidate.conflicts[0].message}
                         </div>
                       )}

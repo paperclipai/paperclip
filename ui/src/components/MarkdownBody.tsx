@@ -194,7 +194,7 @@ const codeBlockActionStyle: React.CSSProperties = {
   border: "1px solid color-mix(in oklab, var(--foreground) 14%, transparent)",
   backgroundColor: "color-mix(in oklab, var(--muted) 92%, var(--background) 8%)",
   color: "var(--muted-foreground)",
-  fontSize: "0.7rem",
+  fontSize: "var(--fs-0_7rem)",
   lineHeight: 1,
   cursor: "pointer",
 };

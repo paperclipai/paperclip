@@ -115,7 +115,7 @@ function LabSection({
     >
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+          <div className="text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_22) text-muted-foreground">
             {eyebrow}
           </div>
           <h2 className="mt-1 text-xl font-semibold tracking-tight">{title}</h2>
@@ -201,7 +201,7 @@ function InviteSummaryPanel({
           className="h-16 w-16 rounded-none border border-zinc-800"
         />
         <div className="min-w-0">
-          <p className="text-xs uppercase tracking-[0.24em] text-zinc-500">You&apos;ve been invited to join Paperclip</p>
+          <p className="text-xs uppercase tracking-(--ls-0_24) text-zinc-500">You&apos;ve been invited to join Paperclip</p>
           <h3 className="mt-2 text-2xl font-semibold text-zinc-100">{title}</h3>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-300">{description}</p>
         </div>
@@ -216,7 +216,7 @@ function InviteSummaryPanel({
 
       {inviteMessage ? (
         <div className="border border-amber-500/40 bg-amber-500/10 p-4">
-          <div className="text-xs uppercase tracking-[0.2em] text-amber-200/80">Message from inviter</div>
+          <div className="text-xs uppercase tracking-(--ls-0_2) text-amber-200/80">Message from inviter</div>
           <p className="mt-2 text-sm leading-6 text-amber-50">{inviteMessage}</p>
         </div>
       ) : null}
@@ -233,7 +233,7 @@ function InviteSummaryPanel({
 function MetaCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="border border-zinc-800 p-3">
-      <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">{label}</div>
+      <div className="text-xs uppercase tracking-(--ls-0_2) text-zinc-500">{label}</div>
       <div className="mt-1 text-sm text-zinc-100">{value}</div>
     </div>
   );
@@ -510,7 +510,7 @@ function AuthScreenPreview({ mode, error }: { mode: "sign_in" | "sign_up"; error
         </div>
         <div className="hidden min-h-[420px] items-center justify-center bg-(image:--gradient-extract-8) px-8 py-10 md:flex">
           <div className="max-w-sm space-y-4 text-zinc-200">
-            <div className="inline-flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-500/[0.08] px-3 py-1 text-[10px] uppercase tracking-[0.22em] text-cyan-200">
+            <div className="inline-flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-500/[0.08] px-3 py-1 text-(length:--fs-10) uppercase tracking-(--ls-0_22) text-cyan-200">
               Auth preview
             </div>
             <div className="text-2xl font-semibold">Side-by-side signup styling review</div>
@@ -701,7 +701,7 @@ export function InviteUxLab() {
       <div className="overflow-hidden rounded-[32px] border border-border/70 bg-(image:--gradient-extract-9) shadow-[0_30px_80px_rgba(15,23,42,0.10)]">
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_320px]">
           <div className="p-6 sm:p-7">
-            <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/[0.08] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] text-cyan-700 dark:text-cyan-300">
+            <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/[0.08] px-3 py-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_24) text-cyan-700 dark:text-cyan-300">
               <FlaskConical className="h-3.5 w-3.5" />
               Invite UX Lab
             </div>
@@ -711,20 +711,20 @@ export function InviteUxLab() {
             </p>
 
             <div className="mt-5 flex flex-wrap items-center gap-2">
-              <Badge variant="outline" className="rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em]">
+              <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--fs-10) uppercase tracking-(--ls-0_18)">
                 /tests/ux/invites
               </Badge>
-              <Badge variant="outline" className="rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em]">
+              <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--fs-10) uppercase tracking-(--ls-0_18)">
                 signup + invite states
               </Badge>
-              <Badge variant="outline" className="rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.18em]">
+              <Badge variant="outline" className="rounded-full px-3 py-1 text-(length:--fs-10) uppercase tracking-(--ls-0_18)">
                 fixture-backed preview
               </Badge>
             </div>
           </div>
 
           <aside className="border-t border-border/60 bg-background/70 p-6 lg:border-l lg:border-t-0">
-            <div className="mb-4 text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+            <div className="mb-4 text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_2) text-muted-foreground">
               Covered states
             </div>
             <div className="space-y-3">

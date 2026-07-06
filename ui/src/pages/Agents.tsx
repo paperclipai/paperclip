@@ -670,7 +670,7 @@ function AgentMetaColumns({
         >
           {model ?? "—"}
         </div>
-        <div className="truncate font-mono text-[11px] text-muted-foreground/70" title={adapterLabel}>
+        <div className="truncate font-mono text-(length:--fs-11) text-muted-foreground/70" title={adapterLabel}>
           {adapterLabel}
         </div>
       </div>
@@ -679,7 +679,7 @@ function AgentMetaColumns({
           <div className="truncate text-xs text-muted-foreground" title={environment.title}>
             {environment.label}
           </div>
-          <div className="truncate text-[11px] text-muted-foreground/70">
+          <div className="truncate text-(length:--fs-11) text-muted-foreground/70">
             {environment.detail}
           </div>
         </div>
@@ -710,7 +710,7 @@ function LiveRunIndicator({
         <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
         <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
       </span>
-      <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+      <span className="text-(length:--fs-11) font-medium text-blue-600 dark:text-blue-400">
         Live{liveCount > 1 ? ` (${liveCount})` : ""}
       </span>
     </Link>

@@ -151,7 +151,7 @@ function renderImportFileExtra(node: FileTreeNode, checked: boolean, renameMap: 
   const renamedTo = node.kind === "dir" ? renameMap.get(node.path) : undefined;
   const actionBadge = node.action ? (
     <span className={cn(
-      "shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
+      "shrink-0 rounded-full border px-2 py-0.5 text-(length:--fs-10) uppercase tracking-wide",
       ACTION_COLORS[node.action] ?? ACTION_COLORS.skip,
     )}>
       {checked ? node.action : "skip"}
@@ -163,7 +163,7 @@ function renderImportFileExtra(node: FileTreeNode, checked: boolean, renameMap: 
   return (
     <span className="inline-flex items-center gap-1.5 shrink-0">
       {renamedTo && checked && (
-        <span className="text-[10px] text-cyan-500 font-mono truncate max-w-[7rem]" title={renamedTo}>
+        <span className="text-(length:--fs-10) text-cyan-500 font-mono truncate max-w-[7rem]" title={renamedTo}>
           &rarr; {renamedTo}
         </span>
       )}
@@ -446,7 +446,7 @@ function ConflictResolutionList({
                 </button>
 
                 <span className={cn(
-                  "shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                  "shrink-0 rounded-full border px-2 py-0.5 text-(length:--fs-10) uppercase tracking-wide",
                   isSkipped
                     ? "text-muted-foreground border-border"
                     : isConfirmed
@@ -564,7 +564,7 @@ function AdapterPickerList({
               <div key={agent.slug}>
                 <div className="flex items-center gap-3 px-4 py-2.5 text-sm">
                   <span className={cn(
-                    "shrink-0 rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                    "shrink-0 rounded-full border px-2 py-0.5 text-(length:--fs-10) uppercase tracking-wide",
                     "text-blue-500 border-blue-500/30",
                   )}>
                     agent

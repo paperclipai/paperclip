@@ -328,7 +328,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
         data-testid={bodyTestId}
         className="flex items-center justify-end gap-1 border-b border-border bg-popover px-2 py-1.5"
       >
-        <span className="text-[11px] tabular-nums text-muted-foreground">
+        <span className="text-(length:--fs-11) tabular-nums text-muted-foreground">
           rev {props.documentRevisionNumber}
         </span>
         <Button
@@ -348,7 +348,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
       {props.newCommentDisabled && props.newCommentDisabledReason ? (
         <p
           data-testid="document-annotation-disabled-reason"
-          className="border-b border-border bg-muted px-3 py-1.5 text-[11px] text-muted-foreground"
+          className="border-b border-border bg-muted px-3 py-1.5 text-(length:--fs-11) text-muted-foreground"
         >
           {props.newCommentDisabledReason}
         </p>
@@ -356,7 +356,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
       {mutationError ? (
         <p
           data-testid="document-annotation-error"
-          className="border-b border-border bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive"
+          className="border-b border-border bg-destructive/10 px-3 py-1.5 text-(length:--fs-11) text-destructive"
         >
           {mutationError}
         </p>
@@ -408,7 +408,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
               {currentUser.image ? <AvatarImage src={currentUser.image} alt={currentUser.name} /> : null}
               <AvatarFallback>{deriveInitials(currentUser.name)}</AvatarFallback>
             </Avatar>
-            <span className="truncate text-[11px] font-medium text-foreground">{currentUser.name}</span>
+            <span className="truncate text-(length:--fs-11) font-medium text-foreground">{currentUser.name}</span>
           </div>
           <Textarea
             ref={composerRef}
@@ -626,7 +626,7 @@ function CommentRow({
         focused && "ring-2 ring-primary/40",
       )}
     >
-      <div className="mb-0.5 flex items-center justify-between gap-2 text-[11px]">
+      <div className="mb-0.5 flex items-center justify-between gap-2 text-(length:--fs-11)">
         <span className="flex min-w-0 items-center gap-1.5">
           <Avatar size="xs" className="shrink-0">
             {author.role === "agent" ? (

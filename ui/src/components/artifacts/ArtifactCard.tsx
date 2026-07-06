@@ -26,7 +26,7 @@ function PlaceholderPreview({ label }: { label?: string }) {
     <PreviewFrame className="flex items-center justify-center">
       <div className="flex flex-col items-center gap-1.5 text-muted-foreground/50">
         <Paperclip className="h-7 w-7" aria-hidden="true" />
-        {label ? <span className="text-[11px] font-medium uppercase tracking-wide">{label}</span> : null}
+        {label ? <span className="text-(length:--fs-11) font-medium uppercase tracking-wide">{label}</span> : null}
       </div>
     </PreviewFrame>
   );
@@ -223,7 +223,7 @@ export function ArtifactCard({ artifact }: ArtifactCardProps) {
           </div>
         </div>
 
-        <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground/65">
+        <div className="mt-0.5 flex items-center gap-1.5 text-(length:--fs-11) text-muted-foreground/65">
           <span>Last edited {formatDate(artifact.updatedAt)}</span>
           {artifact.createdByAgent ? (
             <>

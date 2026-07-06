@@ -62,7 +62,7 @@ export function ClaudeSubscriptionPanel({
     <div className="border border-border px-4 py-4">
       <div className="flex items-start justify-between gap-3 border-b border-border pb-3">
         <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+          <div className="text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_2) text-muted-foreground">
             Anthropic subscription
           </div>
           <div className="mt-1 text-sm text-muted-foreground">
@@ -70,7 +70,7 @@ export function ClaudeSubscriptionPanel({
           </div>
         </div>
         {source ? (
-          <span className="shrink-0 border border-border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+          <span className="shrink-0 border border-border px-2.5 py-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_16) text-muted-foreground">
             {quotaSourceDisplayName(source)}
           </span>
         ) : null}

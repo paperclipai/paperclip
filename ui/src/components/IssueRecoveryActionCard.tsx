@@ -220,7 +220,7 @@ function MetadataRow({
 }) {
   return (
     <div className="grid grid-cols-[7.5rem_1fr] gap-x-3 gap-y-0 px-3 py-1.5 text-xs sm:px-4">
-      <dt className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+      <dt className="truncate text-(length:--fs-11) font-medium uppercase tracking-(--ls-0_08) text-muted-foreground">
         {label}
       </dt>
       <dd className="min-w-0 break-words text-foreground/90">{children}</dd>
@@ -272,11 +272,11 @@ function RunChip({
   const short = shortenRunId(runId);
   const inner = (
     <>
-      <code className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
+      <code className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-(length:--fs-11) text-foreground/80">
         run {short}
       </code>
       {status ? (
-        <span className="font-sans text-[11px] text-muted-foreground">{status}</span>
+        <span className="font-sans text-(length:--fs-11) text-muted-foreground">{status}</span>
       ) : null}
     </>
   );
@@ -404,10 +404,10 @@ export function IssueRecoveryActionCard({
           <ToneIcon className={cn("h-4 w-4", tone.iconClass)} />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-semibold uppercase tracking-[0.14em]">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_14)">
             <span className={tone.labelClass}>{tone.label}</span>
             <span className="text-muted-foreground/60" aria-hidden>·</span>
-            <code className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[11px] tracking-normal text-muted-foreground">
+            <code className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-(length:--fs-11) tracking-normal text-muted-foreground">
               {KIND_LABEL[action.kind] ?? action.kind}
             </code>
             {updatedAtLabel ? (
@@ -419,7 +419,7 @@ export function IssueRecoveryActionCard({
               </>
             ) : null}
           </div>
-          <p className="mt-1 text-[14px] leading-6">{headline}</p>
+          <p className="mt-1 text-(length:--fs-14) leading-6">{headline}</p>
         </div>
       </header>
       <dl className={cn("border-t bg-background/40 dark:bg-background/20", tone.divider)}>
@@ -457,7 +457,7 @@ export function IssueRecoveryActionCard({
         ) : null}
         <MetadataRow label="Evidence">
           {evidenceSummary ? (
-            <span className="break-words font-mono text-[11px] text-foreground/80">{evidenceSummary}</span>
+            <span className="break-words font-mono text-(length:--fs-11) text-foreground/80">{evidenceSummary}</span>
           ) : (
             <MissingValue />
           )}
@@ -469,12 +469,12 @@ export function IssueRecoveryActionCard({
           <span className="inline-flex flex-wrap items-center gap-1.5">
             {wakeSummary ? <span>{wakeSummary}</span> : <MissingValue />}
             {showAttempt ? (
-              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--fs-11) text-muted-foreground">
                 attempt {action.attemptCount} of {action.maxAttempts}
               </span>
             ) : null}
             {showTimeoutInline ? (
-              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+              <span className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--fs-11) text-muted-foreground">
                 Times out {formatTimeShort(action.timeoutAt) ?? "soon"}
               </span>
             ) : null}
@@ -508,7 +508,7 @@ export function IssueRecoveryActionCard({
               sideOffset={6}
               className="w-72 p-1.5"
             >
-              <div className="px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+              <div className="px-2 py-1 text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_12) text-muted-foreground">
                 Resolve recovery
               </div>
               <div className="flex flex-col">
@@ -524,18 +524,18 @@ export function IssueRecoveryActionCard({
                     )}
                   >
                     <span className="font-medium leading-5">{option.label}</span>
-                    <span className="text-[11px] leading-4 text-muted-foreground">{option.description}</span>
+                    <span className="text-(length:--fs-11) leading-4 text-muted-foreground">{option.description}</span>
                   </button>
                 ))}
               </div>
             </PopoverContent>
           </Popover>
           {cardState === "observe_only" ? (
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-(length:--fs-11) text-muted-foreground">
               Recovery is observing without interrupting the live run.
             </span>
           ) : (
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-(length:--fs-11) text-muted-foreground">
               The card stays open until an explicit decision is recorded.
             </span>
           )}

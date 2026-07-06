@@ -95,7 +95,7 @@ export function DocumentDiffModal({
 
           <div className="flex items-center gap-4 shrink-0">
             <div className="flex items-center gap-2">
-              <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-red-400">Old</span>
+              <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-(length:--fs-10) font-medium uppercase tracking-wider text-red-400">Old</span>
               <Select
                 value={effectiveLeftId ?? ""}
                 onValueChange={(value) => setLeftRevisionId(value)}
@@ -113,7 +113,7 @@ export function DocumentDiffModal({
               </Select>
             </div>
             <div className="flex items-center gap-2">
-              <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-green-400">New</span>
+              <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-(length:--fs-10) font-medium uppercase tracking-wider text-green-400">New</span>
               <Select
                 value={effectiveRightId ?? ""}
                 onValueChange={(value) => setRightRevisionId(value)}
@@ -141,8 +141,8 @@ export function DocumentDiffModal({
           ) : leftRevision.id === rightRevision.id ? (
             <div className="p-6 text-center text-muted-foreground text-sm">Both sides are the same revision.</div>
           ) : (
-            <div className="font-mono text-[12px] leading-6">
-              <div className="grid grid-cols-[56px_56px_24px_minmax(0,1fr)] border-b border-border/60 bg-muted/30 px-3 py-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+            <div className="font-mono text-(length:--fs-12) leading-6">
+              <div className="grid grid-cols-[56px_56px_24px_minmax(0,1fr)] border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--fs-11) uppercase tracking-wide text-muted-foreground">
                 <span>Old</span>
                 <span>New</span>
                 <span />

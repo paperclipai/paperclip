@@ -279,3 +279,40 @@ Codemod: `scripts/codemod-extract-colors.mjs` (table-driven, idempotent — see 
 **Needs human decision (new, from this batch):**
 - `components/FileViewerSheet.tsx`'s `--paperclip-code-highlight-bg`/`-border` half-migrated var-with-fallback pattern (allowlist item 7 above) — TOKEN-AUDIT.md section 2 already recommended "this becomes the actual token"; this batch deliberately did NOT act on that recommendation because defining the var changes what `var(--x, fallback)` resolves to structurally (from "always the literal fallback" to "the var if defined, else the fallback") even though the *value* would be identical today — a human should confirm this is the intended direction before Batch 2+ touches it, alongside the sibling `--paperclip-code-bg`/`--paperclip-code-gutter-fg` vars in the same file that use `theme(colors.muted...)` fallbacks (out of scope for colors, relevant to a future spacing/type batch).
 - The `#2563EB` reuse (`IssueChatThread.tsx`'s "Liveness blue" chat bubble → `--status-task-in_progress`) is a **semantic coincidence**, not a designed relationship — the original code comment explicitly called it "Liveness blue" independently of the task-status system. Batch 1 reused the token per the exact-match rule, but a human should confirm a chat-bubble liveness color is supposed to be permanently coupled to the task `in_progress` status hue going forward (if a future redesign changes one, does the other move too?).
+
+---
+
+## Phase 2 extraction log — Batch 2 (type)
+
+Codemod: `scripts/codemod-extract-type.mjs`. Unlike Batch 1's hand-audited site table (needed to avoid hex-like false positives such as issue references), this batch's patterns — `text-[Npx]`/`text-[N.Nrem]` Tailwind font-size, `tracking-[N em]` letter-spacing, `leading-[...]` line-height, and `fontSize: "Npx"`/`fontSize: "N.Nrem"` inline-style string literals — are unambiguous, so the codemod does a blanket regex sweep scoped to `ui/src/components/**` and `ui/src/pages/**` (including `*.test.tsx` companions; a full scan found **zero** test files containing any of these patterns, so no test file needed a lockstep update this batch). Verified idempotent (second run: 0 sites, 0 files changed).
+
+**Sites rewritten: 932**, across 143 files.
+- Font-size Tailwind class utilities (`text-[Npx]`): 728 sites (matches TOKEN-AUDIT.md section 3.1's count almost exactly — 730 vs. 728, negligible drift from audit-vs-extraction timing). No rem-unit or line-height-suffixed (`text-[N]/[N]`) forms were found in class strings; none existed to convert.
+- Letter-spacing (`tracking-[N em]`): 202 sites, matching TOKEN-AUDIT.md section 3.2 exactly (9 distinct values).
+- `leading-[...]` line-height brackets: 0 sites found (confirmed via full sweep; TOKEN-AUDIT.md did not call this out as a populated cluster either).
+- Inline-style `fontSize` string literals: 2 sites — `components/AsciiArtAnimation.tsx:344` (`fontSize: "11px"`, reused the same `--fs-11` token minted by the class-based sites — no duplicate) and `components/MarkdownBody.tsx:197` (`fontSize: "0.7rem"`, new rem-unit token).
+
+**Tokens minted: 17 new** (0 reused from Batch 1 — font-size/letter-spacing/line-height had no prior tokens to match against).
+- 8 `--fs-*` (font-size): `--fs-9`, `--fs-10`, `--fs-11`, `--fs-12`, `--fs-13`, `--fs-14`, `--fs-15` (px, one per distinct value found) + `--fs-0_7rem` (0.7rem, `MarkdownBody.tsx`'s inline style — kept in rem per DESIGN.md "no normalizing/unit-converting" rule, NOT collapsed into the 11px-ish px cluster even though 0.7rem ≈ 11.2px).
+- 9 `--ls-*` (letter-spacing): `--ls-0_08`, `--ls-0_1`, `--ls-0_12`, `--ls-0_14`, `--ls-0_16`, `--ls-0_18`, `--ls-0_2`, `--ls-0_22`, `--ls-0_24` — one per distinct em value, matching TOKEN-AUDIT.md 3.2's 9-value cluster exactly.
+- 0 `--lh-*` (line-height) — no sites required one; the token-registration code path exists in the codemod (and was exercised in the Step 0 syntax spike) for forward-compatibility but minted nothing this batch.
+- All new tokens live in a second non-`@theme` `:root { ... }` block appended to `ui/src/index.css` immediately after Batch 1's color block, headed `/* ── Extracted verbatim TYPE tokens (Phase 2 Batch 2, design/token-extraction) ── */`, per DESIGN.md (runtime-tunable). **No normalizing performed** — 9/10/11/12/13/14/15px and the 9 distinct tracking values all remain distinct tokens; the human scale-collapse decision (TOKEN-AUDIT.md "Needs human decision" #2/#3, PRIOR-ART's draft `.type-*` scale) is explicitly deferred, per mandate.
+
+**Tailwind v4 rewrite forms used** (confirmed via mandatory Step-0 syntax spike — scratch story + `pnpm build-storybook` + grep of emitted CSS, then deleted before the real codemod ran):
+- `text-[11px]` → `text-(length:--fs-11)` — emits `font-size:var(--fs-11)`. The `length:` hint is REQUIRED; a bare `text-(--fs-11)` would be interpreted as a color utility.
+- `tracking-[0.18em]` → `tracking-(--ls-0_18)` — emits `--tw-tracking:var(--ls-0_18);letter-spacing:var(--ls-0_18)`. Unambiguous, no hint needed.
+- `leading-[...]` (numeric/unit forms only) → `leading-(--lh-*)` — verified to emit `--tw-leading:var(--lh-*);line-height:var(--lh-*)` in the spike; not exercised on a real site since 0 sites existed.
+- All variant/modifier prefixes preserved verbatim by construction (the regex only rewrites the bracket portion): confirmed sites include `sm:text-[11px]` (`components/BlockedReasonChip.tsx`), a compound arbitrary-variant `group-data-[size=xs]/avatar:text-[10px]` (`components/ui/avatar.tsx`), and an `!important`-marked bracket-selector `[&>span:last-child]:!text-[11px]` (`components/ActiveAgentsPanel.tsx`) — all rewrote correctly to `sm:text-(length:--fs-11)`, `group-data-[size=xs]/avatar:text-(length:--fs-10)`, and `[&>span:last-child]:!text-(length:--fs-11)` respectively.
+
+**Sites allowlisted (2 sites, both already covered by Batch 1's allowlist doc-comment structure for their files, no new inline comments needed since neither is a bracket-literal or class-string site):**
+1. `pages/CompanyEnvironments.tsx:422` — `fontSize: 12` inside the xterm.js terminal theme option object (same object Batch 1 allowlisted for its color literals). Numeric, functional third-party config — not a rendered CSS value, not a string literal the codemod's regex targets.
+2. `pages/CompanySkills.tsx:580` — `fontSize: Math.round(size * 0.42)` — computed at runtime from a prop; not a static literal, nothing to extract.
+
+**Verify results:**
+- `rg` gates clean in `ui/src/components/**` / `ui/src/pages/**`: zero `text-[Npx]`/`text-[N.Nrem]` arbitrary font-size, zero `tracking-[N em]`, zero numeric `leading-[...]`, zero raw `fontSize: "..."` string literals remain (the only two `fontSize:` string-literal grep hits left are the already-converted `fontSize: "var(--fs-11)"` / `fontSize: "var(--fs-0_7rem)"` sites).
+- `pnpm build-storybook` exit 0.
+- Storybook visual snapshot suite: **510/510 passed, 0 failed**, first attempt, no retries needed (`npx playwright test --config tests/storybook-visual/playwright.config.ts --reporter=line`).
+- `pnpm typecheck` exit 0.
+- Codemod re-run confirmed idempotent: second invocation reports 0 sites rewritten, 0 files changed, token block already present.
+
+**Needs human decision:** none new from this batch beyond the already-logged #2 (micro type-size cluster) and #3 (letter-spacing cluster) in section 8 above — this batch's 17 minted tokens are exactly the verbatim inventory those two items describe, now materialized as CSS custom properties ready for a human to collapse into a real scale.

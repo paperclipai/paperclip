@@ -114,7 +114,7 @@ export function RoutineSubSidebar({
     >
       {NAV_GROUPS.map((group) => (
         <div key={group.label} className="flex flex-col gap-0.5">
-          <p className="px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/80">
+          <p className="px-3 py-2 text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_12) text-muted-foreground/80">
             {group.label}
           </p>
           {group.items.map((item) => {
@@ -189,7 +189,7 @@ export function RoutineSectionPicker({
         <SelectContent>
           {NAV_GROUPS.map((group) => (
             <SelectGroup key={group.label}>
-              <SelectLabel className="uppercase tracking-[0.12em] text-[11px]">
+              <SelectLabel className="uppercase tracking-(--ls-0_12) text-(length:--fs-11)">
                 {group.label}
               </SelectLabel>
               {group.items.map((item) => (

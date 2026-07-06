@@ -254,7 +254,7 @@ export function OverviewSection({
               onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
               placeholder="Add instructions..."
               bordered={false}
-              contentClassName="min-h-[120px] text-[15px] leading-7"
+              contentClassName="min-h-[120px] text-(length:--fs-15) leading-7"
               mentions={mentionOptions}
               onSubmit={() => {
                 if (!saveRoutine.isPending && editDraft.title.trim()) {
@@ -270,7 +270,7 @@ export function OverviewSection({
             onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
             placeholder="Add instructions..."
             bordered={false}
-            contentClassName="min-h-[120px] text-[15px] leading-7"
+            contentClassName="min-h-[120px] text-(length:--fs-15) leading-7"
             mentions={mentionOptions}
             onSubmit={() => {
               if (!saveRoutine.isPending && editDraft.title.trim()) {
@@ -667,7 +667,7 @@ export function DeliverySection() {
   return (
     <div className="space-y-6">
       <div className="space-y-3">
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-(--ls-0_18) text-muted-foreground">
           Concurrency
         </p>
         <RadioCardGroup
@@ -680,7 +680,7 @@ export function DeliverySection() {
         />
       </div>
       <div className="space-y-3">
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="text-xs font-medium uppercase tracking-(--ls-0_18) text-muted-foreground">
           Catch-up
         </p>
         <RadioCardGroup
@@ -739,7 +739,7 @@ function NextFiresPreview({
 
   return (
     <div className="space-y-3">
-      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+      <p className="text-xs font-medium uppercase tracking-(--ls-0_18) text-muted-foreground">
         Next 5 fires
       </p>
       {preview ? (
@@ -759,7 +759,7 @@ function NextFiresPreview({
               </div>
             ))}
           </div>
-          <p className="text-[11px] text-muted-foreground/60">
+          <p className="text-(length:--fs-11) text-muted-foreground/60">
             Preview assumes the previous run is still in flight when the next fires. Times shown in{" "}
             {preview.timeZone}.
           </p>

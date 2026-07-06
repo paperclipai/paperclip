@@ -114,7 +114,7 @@ function formatTimestamp(ts: string) {
 function MetadataRow({ row, tone }: { row: SystemNoticeMetadataRow; tone: ToneTokens }) {
   return (
     <div className="grid grid-cols-[7.5rem_1fr] gap-x-3 gap-y-0.5 px-3 py-1.5 text-xs">
-      <div className="truncate text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+      <div className="truncate text-(length:--fs-11) font-medium uppercase tracking-(--ls-0_08) text-muted-foreground">
         {row.label}
       </div>
       <div className="min-w-0 break-words text-foreground/90">
@@ -124,7 +124,7 @@ function MetadataRow({ row, tone }: { row: SystemNoticeMetadataRow; tone: ToneTo
               return <span>{row.value}</span>;
             case "code":
               return (
-                <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/80">
+                <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--fs-11) text-foreground/80">
                   {row.value}
                 </code>
               );
@@ -187,14 +187,14 @@ function MetadataRow({ row, tone }: { row: SystemNoticeMetadataRow; tone: ToneTo
                 return (
                   <a
                     href={row.href}
-                    className="inline-flex items-center gap-2 rounded-sm font-mono text-[11px] underline-offset-2 hover:underline"
+                    className="inline-flex items-center gap-2 rounded-sm font-mono text-(length:--fs-11) underline-offset-2 hover:underline"
                   >
                     {inner}
                   </a>
                 );
               }
               return (
-                <span className="inline-flex items-center gap-2 font-mono text-[11px]">
+                <span className="inline-flex items-center gap-2 font-mono text-(length:--fs-11)">
                   {inner}
                 </span>
               );
@@ -252,7 +252,7 @@ export function SystemNotice({
           <ToneIcon className={cn("h-4 w-4", tokens.iconClass)} />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] font-semibold uppercase tracking-[0.14em]">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-(length:--fs-11) font-semibold uppercase tracking-(--ls-0_14)">
             <span className={tokens.label}>{resolvedLabel}</span>
             {source ? (
               <>
@@ -280,7 +280,7 @@ export function SystemNotice({
               </>
             ) : null}
           </div>
-          <div className="mt-1 break-words text-[14px] leading-6 text-foreground">{body}</div>
+          <div className="mt-1 break-words text-(length:--fs-14) leading-6 text-foreground">{body}</div>
         </div>
         {hasDetails ? (
           <button
@@ -289,7 +289,7 @@ export function SystemNotice({
             aria-expanded={open}
             aria-controls={detailsId}
             className={cn(
-              "ml-1 inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-transparent px-2 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground transition-[background-color,border-color,color]",
+              "ml-1 inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-transparent px-2 text-(length:--fs-11) font-medium uppercase tracking-(--ls-0_12) text-muted-foreground transition-[background-color,border-color,color]",
               "hover:border-border/70 hover:bg-background/70 hover:text-foreground",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
             )}
@@ -316,7 +316,7 @@ export function SystemNotice({
             {metadata!.map((section, sectionIdx) => (
               <div key={sectionIdx} className="py-1.5 first:pt-2 last:pb-2">
                 {section.title ? (
-                  <div className="px-3 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  <div className="px-3 pb-1 pt-0.5 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_18) text-muted-foreground">
                     {section.title}
                   </div>
                 ) : null}

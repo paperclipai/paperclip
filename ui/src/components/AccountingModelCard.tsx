@@ -30,7 +30,7 @@ export function AccountingModelCard() {
     <Card className="relative overflow-hidden border-border/70">
       <div className="absolute inset-0 bg-(image:--gradient-extract-3)" />
       <CardHeader className="relative px-5 pt-5 pb-2">
-        <CardTitle className="text-sm font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+        <CardTitle className="text-sm font-semibold uppercase tracking-(--ls-0_22) text-muted-foreground">
           Accounting model
         </CardTitle>
         <CardDescription className="max-w-2xl text-sm leading-6">

@@ -724,7 +724,7 @@ function Tooltip({ tooltip, now }: { tooltip: TooltipState; now: number }) {
       className="pointer-events-none fixed z-50 max-w-[280px] rounded-md border border-foreground bg-card px-2.5 py-2 text-xs shadow-md"
       style={{ left, top: tooltip.y + 14 }}
     >
-      <div className="text-[13px] font-medium text-foreground">{truncate(title)}</div>
+      <div className="text-(length:--fs-13) font-medium text-foreground">{truncate(title)}</div>
       <div className="mt-0.5 text-muted-foreground">
         {fmtClock(startMs)}–{bar.span.end ? fmtClock(endMs) : "now"} · {formatDuration(startMs, endMs)} ·{" "}
         <span className="font-medium text-foreground">{bar.span.status}</span>

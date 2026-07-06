@@ -939,7 +939,7 @@ function EnvironmentImageTemplatePanel({
             <summary className="cursor-pointer select-none font-medium text-foreground">
               SSH command fallback
             </summary>
-            <code className="mt-2 block overflow-x-auto whitespace-nowrap text-[11px] leading-5">
+            <code className="mt-2 block overflow-x-auto whitespace-nowrap text-(length:--fs-11) leading-5">
               {connectionCommand}
             </code>
           </details>
@@ -1475,7 +1475,7 @@ export function CompanyEnvironments() {
                   >
                     <div className="font-medium">{probe.summary}</div>
                     {probe.details?.error && typeof probe.details.error === "string" ? (
-                      <div className="mt-1 font-mono text-[11px]">{probe.details.error}</div>
+                      <div className="mt-1 font-mono text-(length:--fs-11)">{probe.details.error}</div>
                     ) : null}
                   </div>
                 ) : null}
