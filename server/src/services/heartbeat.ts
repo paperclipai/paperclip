@@ -1561,6 +1561,61 @@ function readWakeWorkflowBridgeSelector(contextSnapshot: Record<string, unknown>
   };
 }
 
+function readWakeWorkflowBridgeFromDescription(description: string | null | undefined): WakeWorkflowBridge | null {
+  const rawDescription = readNonEmptyString(description);
+  if (!rawDescription) return null;
+
+  const targetLine = rawDescription
+    .split(/\r?\n/)
+    .find((line) => line.trim().startsWith("Workflow target:"));
+  if (!targetLine) return null;
+
+  const selectorText = targetLine.slice(targetLine.indexOf(":") + 1).trim();
+  if (!selectorText) return null;
+
+  const workflowBridge: WakeWorkflowBridge = {
+    workflowId: null,
+    workflowKey: null,
+    capability: null,
+    workflowRunId: null,
+    workflowHandoffId: null,
+  };
+
+  for (const entry of selectorText.split(",")) {
+    const [rawKey, ...rawValueParts] = entry.split("=");
+    const key = rawKey.trim();
+    const value = rawValueParts.join("=").trim();
+    if (!value) continue;
+
+    if (key === "workflowId" || key === "workflow_id") {
+      workflowBridge.workflowId = value;
+      continue;
+    }
+    if (key === "workflowKey" || key === "workflow_key") {
+      workflowBridge.workflowKey = value;
+      continue;
+    }
+    if (key === "capability") {
+      workflowBridge.capability = value;
+      continue;
+    }
+  }
+
+  return workflowBridge.workflowId || workflowBridge.workflowKey || workflowBridge.capability
+    ? workflowBridge
+    : null;
+}
+
+function materializeWakeWorkflowBridge(input: {
+  wakeReason: string | null | undefined;
+  workflowBridge: WakeWorkflowBridge | null;
+  issueDescription: string | null | undefined;
+}): WakeWorkflowBridge | null {
+  if (input.workflowBridge) return input.workflowBridge;
+  if (input.wakeReason !== "workflow_invoked") return null;
+  return readWakeWorkflowBridgeFromDescription(input.issueDescription);
+}
+
 function enrichWakeContextSnapshot(input: {
   contextSnapshot: Record<string, unknown>;
   reason: string | null;
@@ -1667,7 +1722,6 @@ export async function buildPaperclipWakePayload(input: {
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const agentThreadId = readNonEmptyString(input.contextSnapshot.agentThreadId);
   const agentThreadMessageId = readNonEmptyString(input.contextSnapshot.agentThreadMessageId);
-  const workflowBridge = readWakeWorkflowBridgeSelector(input.contextSnapshot);
   const continuationSummary = input.continuationSummary ?? null;
   const issueSummary =
     input.issueSummary ??
@@ -1685,6 +1739,11 @@ export async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
+  const workflowBridge = materializeWakeWorkflowBridge({
+    wakeReason: readNonEmptyString(input.contextSnapshot.wakeReason),
+    workflowBridge: readWakeWorkflowBridgeSelector(input.contextSnapshot),
+    issueDescription: issueSummary?.description ?? null,
+  });
   const threadSummary =
     agentThreadId
       ? await input.db
