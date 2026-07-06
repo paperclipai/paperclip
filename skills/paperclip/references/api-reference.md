@@ -226,6 +226,7 @@ Read `diagnosis` first. It is a deterministic, nullable explanation derived only
 Security and bounds:
 
 - The root issue and every returned blocker are independently checked against `issue:read`; unauthorized blockers are omitted.
+- `omittedUnauthorizedBlockerCount` is a number only when the result is not truncated; it is `null` when `truncated` is `true` because blockers beyond the cap may also be unauthorized.
 - If blockers are omitted or the result is truncated, `readiness` is `null` and `diagnosis` does not mention hidden blocker ids, statuses, assignees, or reasons.
 - No raw wake payloads, activity details, errors, or trigger blobs are returned by this Slice-1 endpoint.
 

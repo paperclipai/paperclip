@@ -246,7 +246,7 @@ export interface IssueBlockerDiagnosticsResponse {
   diagnosis: string | null;
   readiness: IssueBlockerDiagnosticsReadiness | null;
   blockers: IssueBlockerDiagnosticNode[];
-  omittedUnauthorizedBlockerCount: number;
+  omittedUnauthorizedBlockerCount: number | null;
   truncated: boolean;
   caps: {
     maxBlockers: number;

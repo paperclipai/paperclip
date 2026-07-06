@@ -382,6 +382,7 @@ describeEmbeddedPostgres("issue blocker diagnostics route", () => {
     expect(res.body.blockers).toHaveLength(100);
     expect(res.body.truncated).toBe(true);
     expect(res.body.readiness).toBeNull();
+    expect(res.body.omittedUnauthorizedBlockerCount).toBeNull();
     expect(res.body.diagnosis).toContain("truncated at 100 blockers");
     expect(res.body.caps).toEqual({ maxBlockers: 100 });
   });

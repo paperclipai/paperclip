@@ -846,6 +846,9 @@ function buildIssueBlockerDiagnosticsResponse(input: {
         pendingFinalizeBlockerCount: input.readiness.pendingFinalizeBlockerIssueIds.length,
       }
     : null;
+  const reportedOmittedUnauthorizedBlockerCount = input.truncated
+    ? null
+    : omittedUnauthorizedBlockerCount;
 
   return {
     issue,
@@ -853,12 +856,12 @@ function buildIssueBlockerDiagnosticsResponse(input: {
       issue,
       blockers,
       readiness,
-      omittedUnauthorizedBlockerCount,
+      omittedUnauthorizedBlockerCount: reportedOmittedUnauthorizedBlockerCount,
       truncated: input.truncated,
     }),
     readiness,
     blockers,
-    omittedUnauthorizedBlockerCount,
+    omittedUnauthorizedBlockerCount: reportedOmittedUnauthorizedBlockerCount,
     truncated: input.truncated,
     caps: {
       maxBlockers: ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
@@ -870,7 +873,7 @@ function buildIssueBlockerDiagnosis(input: {
   issue: IssueBlockerDiagnosticIssueSummary;
   blockers: IssueBlockerDiagnosticNode[];
   readiness: IssueBlockerDiagnosticsReadiness | null;
-  omittedUnauthorizedBlockerCount: number;
+  omittedUnauthorizedBlockerCount: number | null;
   truncated: boolean;
 }) {
   if (input.truncated) {
@@ -878,7 +881,8 @@ function buildIssueBlockerDiagnosis(input: {
       ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS
     } blockers, so readiness is not reported.`;
   }
-  if (input.omittedUnauthorizedBlockerCount > 0) {
+  const omittedUnauthorizedBlockerCount = input.omittedUnauthorizedBlockerCount ?? 0;
+  if (omittedUnauthorizedBlockerCount > 0) {
     return `One or more blockers for ${blockerDiagnosticLabel(
       input.issue,
     )} are outside this actor's authorization boundary, so this diagnosis only covers visible blockers.`;
