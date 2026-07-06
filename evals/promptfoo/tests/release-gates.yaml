@@ -1,6 +1,6 @@
 # Q3 backend release-gate heartbeat behavior tests.
 # These cases cover prompt-level policy regressions that complement server/API,
-# browser/runtime, and QA evidence gates tracked from PAP-11203.
+# browser/runtime, and QA evidence gates for the backend release gate.
 
 - description: "release_gates.scoped_wake_payload - uses inline wake context before inbox exploration"
   vars:
@@ -20,6 +20,7 @@
   assert:
     - type: contains
       value: heartbeat-context
+      metric: uses_heartbeat_context_first
     - type: javascript
       value: "!output.includes('inbox-lite') && !output.includes('/api/agents/me/inbox')"
       metric: no_inbox_on_scoped_wake
