@@ -137,7 +137,7 @@ WITH extracted_run_refs AS (
     1 AS "ref_priority"
   FROM "heartbeat_runs" AS h
   WHERE h."responsible_user_id" IS NULL
-    AND h."context_snapshot" ->> 'issueId' IS NOT NULL
+    AND NULLIF(h."context_snapshot" ->> 'issueId', '') IS NOT NULL
 
   UNION ALL
 
@@ -148,7 +148,7 @@ WITH extracted_run_refs AS (
     2 AS "ref_priority"
   FROM "heartbeat_runs" AS h
   WHERE h."responsible_user_id" IS NULL
-    AND h."context_snapshot" ->> 'taskId' IS NOT NULL
+    AND NULLIF(h."context_snapshot" ->> 'taskId', '') IS NOT NULL
 ),
 uuid_run_refs AS (
   SELECT

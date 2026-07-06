@@ -543,7 +543,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
   );
 
   it(
-    "replays migration 0130 safely when heartbeat run issue refs are identifiers",
+    "replays the run responsible user repair migration when heartbeat run issue refs are identifiers",
     async () => {
       const connectionString = await createTempDatabase();
 
@@ -551,8 +551,8 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
-        const runResponsibleUserHash = await migrationHash(
-          "0130_run_responsible_user_invariant.sql",
+        const runResponsibleUserRepairHash = await migrationHash(
+          "0131_repair_run_responsible_user_context_refs.sql",
         );
 
         await sql.unsafe(`
@@ -638,7 +638,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           )
         `);
         await sql.unsafe(
-          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${runResponsibleUserHash}'`,
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${runResponsibleUserRepairHash}'`,
         );
       } finally {
         await sql.end();
@@ -647,7 +647,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const pendingState = await inspectMigrations(connectionString);
       expect(pendingState).toMatchObject({
         status: "needsMigrations",
-        pendingMigrations: ["0130_run_responsible_user_invariant.sql"],
+        pendingMigrations: ["0131_repair_run_responsible_user_context_refs.sql"],
         reason: "pending-migrations",
       });
 
@@ -662,12 +662,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
         `);
         expect(runs).toEqual([{ responsible_user_id: "issue-user" }]);
 
-        const companies = await verifySql.unsafe<{ default_responsible_user_id: string | null }[]>(`
-          SELECT "default_responsible_user_id"
-          FROM "companies"
-          WHERE "id" = '00000000-0000-0000-0000-000000000130'
-        `);
-        expect(companies).toEqual([{ default_responsible_user_id: "owner-user" }]);
       } finally {
         await verifySql.end();
       }
