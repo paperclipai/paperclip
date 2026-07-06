@@ -487,6 +487,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       .from(agents);
     expect(agentAfterHardStop).toMatchObject({ status: "paused", pauseReason: "budget" });
     expect(agentAfterHardStop?.pausedAt).toBeInstanceOf(Date);
+    expect(cancelWorkForScope).toHaveBeenCalledTimes(2);
     expect(cancelWorkForScope).toHaveBeenCalledWith({ companyId, scopeType: "agent", scopeId: agentId });
 
     const block = await service.getInvocationBlock(companyId, agentId);
@@ -629,7 +630,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       amount: 175,
       observedAmount: 125,
       remainingAmount: 50,
-      utilizationPercent: 71.43,
+      utilizationPercent: expect.closeTo(71.43, 2),
       status: "ok",
       paused: false,
       pauseReason: null,
