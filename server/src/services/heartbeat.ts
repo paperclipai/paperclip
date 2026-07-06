@@ -4118,18 +4118,20 @@ export async function buildPaperclipWakePayload(input: {
 
   // Goal ancestry + company mission: the wake payload carries the "why" chain
   // (root goal → leaf goal) alongside the "what" (issue + comments), so agents
-  // see purpose without an extra API round-trip.
-  const goalChain: Array<{
-    id: string;
-    title: string;
-    level: string | null;
-    status: string | null;
-    description: string | null;
-  }> = [];
-  if (issueSummary?.goalId) {
+  // see purpose without an extra API round-trip. The chain walk and the company
+  // lookup are independent, so they run concurrently.
+  const goalChainPromise = (async () => {
+    const chain: Array<{
+      id: string;
+      title: string;
+      level: string | null;
+      status: string | null;
+      description: string | null;
+    }> = [];
+    if (!issueSummary?.goalId) return chain;
     const visitedGoalIds = new Set<string>();
     let currentGoalId: string | null = issueSummary.goalId;
-    while (currentGoalId && !visitedGoalIds.has(currentGoalId) && goalChain.length < MAX_WAKE_GOAL_CHAIN_LENGTH) {
+    while (currentGoalId && !visitedGoalIds.has(currentGoalId) && chain.length < MAX_WAKE_GOAL_CHAIN_LENGTH) {
       visitedGoalIds.add(currentGoalId);
       const goalRow: {
         id: string;
@@ -4151,7 +4153,7 @@ export async function buildPaperclipWakePayload(input: {
         .where(and(eq(goals.id, currentGoalId), eq(goals.companyId, input.companyId)))
         .then((rows) => rows[0] ?? null);
       if (!goalRow) break;
-      goalChain.push({
+      chain.push({
         id: goalRow.id,
         title: goalRow.title,
         level: goalRow.level,
@@ -4162,15 +4164,17 @@ export async function buildPaperclipWakePayload(input: {
       });
       currentGoalId = goalRow.parentId;
     }
-    goalChain.reverse();
-  }
-  const companySummary = issueSummary
-    ? await input.db
+    chain.reverse();
+    return chain;
+  })();
+  const companySummaryPromise = issueSummary
+    ? input.db
         .select({ name: companies.name, description: companies.description })
         .from(companies)
         .where(eq(companies.id, input.companyId))
         .then((rows) => rows[0] ?? null)
-    : null;
+    : Promise.resolve(null);
+  const [goalChain, companySummary] = await Promise.all([goalChainPromise, companySummaryPromise]);
 
   const commentRows =
     commentIds.length === 0
