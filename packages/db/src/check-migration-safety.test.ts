@@ -1,0 +1,140 @@
+import { describe, expect, it } from "vitest";
+import {
+  analyzeMigrationSafety,
+  type MigrationSafetyInput,
+} from "./check-migration-safety.js";
+import {
+  TABLE_SIZE_ESTIMATE_FACTOR,
+  TABLE_SIZE_BUCKET_THRESHOLDS,
+  type TableSizeEstimate,
+} from "./table-size-estimates.js";
+
+const testEstimates: readonly TableSizeEstimate[] = [
+  {
+    table: "issue_comments",
+    localRows: 5_034,
+    estimateFactor: TABLE_SIZE_ESTIMATE_FACTOR,
+    estimatedRows: 5_034 * TABLE_SIZE_ESTIMATE_FACTOR,
+    bucket: "large",
+  },
+  {
+    table: "companies",
+    localRows: 1,
+    estimateFactor: TABLE_SIZE_ESTIMATE_FACTOR,
+    estimatedRows: TABLE_SIZE_ESTIMATE_FACTOR,
+    bucket: "small",
+  },
+];
+
+function analyze(sql: string) {
+  const migrations: readonly MigrationSafetyInput[] = [{ fileName: "9999_fixture.sql", sql }];
+  return analyzeMigrationSafety(migrations, { baselineIds: [], estimates: testEstimates });
+}
+
+describe("migration safety check", () => {
+  it("documents the large table threshold used by the estimates", () => {
+    expect(TABLE_SIZE_BUCKET_THRESHOLDS.largeRows).toBe(1_000_000);
+    expect(testEstimates[0]?.estimatedRows).toBeGreaterThanOrEqual(
+      TABLE_SIZE_BUCKET_THRESHOLDS.largeRows,
+    );
+  });
+
+  it("fails a 0126-shaped batched loop over a large table without a support index", () => {
+    const result = analyze(`
+      DO $$
+      DECLARE
+        last_comment_id uuid := '00000000-0000-0000-0000-000000000000'::uuid;
+      BEGIN
+        LOOP
+          WITH batch AS MATERIALIZED (
+            SELECT c."id"
+            FROM "issue_comments" c
+            WHERE c."id" > last_comment_id
+              AND c."author_agent_id" IS NULL
+            ORDER BY c."id"
+            LIMIT 5000
+          )
+          UPDATE "issue_comments" c
+          SET "derived_author_agent_id" = NULL
+          FROM batch b
+          WHERE c."id" = b."id";
+
+          EXIT WHEN NOT FOUND;
+        END LOOP;
+      END $$;
+    `);
+
+    expect(result.newFindings.map((finding) => finding.rule)).toEqual(
+      expect.arrayContaining([
+        "loop-mutation-large-table",
+        "batched-mutation-large-table-missing-index",
+      ]),
+    );
+    expect(result.newFindings[0]?.table).toBe("issue_comments");
+  });
+
+  it("passes the same bounded large-table backfill when a matching concurrent support index exists", () => {
+    const result = analyze(`
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS "issue_comments_fixture_backfill_idx"
+        ON "issue_comments" USING btree ("id")
+        WHERE "author_agent_id" IS NULL;--> statement-breakpoint
+      DO $$
+      DECLARE
+        last_comment_id uuid := '00000000-0000-0000-0000-000000000000'::uuid;
+      BEGIN
+        LOOP
+          WITH batch AS MATERIALIZED (
+            SELECT c."id"
+            FROM "issue_comments" c
+            WHERE c."id" > last_comment_id
+              AND c."author_agent_id" IS NULL
+            ORDER BY c."id"
+            LIMIT 5000
+          )
+          UPDATE "issue_comments" c
+          SET "derived_author_agent_id" = NULL
+          FROM batch b
+          WHERE c."id" = b."id";
+
+          EXIT WHEN NOT FOUND;
+        END LOOP;
+      END $$;
+    `);
+
+    expect(result.newFindings).toEqual([]);
+  });
+
+  it("passes a batched backfill over a small-bucket table", () => {
+    const result = analyze(`
+      DO $$
+      BEGIN
+        LOOP
+          WITH batch AS (
+            SELECT "id"
+            FROM "companies"
+            ORDER BY "id"
+            LIMIT 100
+          )
+          UPDATE "companies" c
+          SET "description" = c."description"
+          FROM batch b
+          WHERE c."id" = b."id";
+
+          EXIT WHEN NOT FOUND;
+        END LOOP;
+      END $$;
+    `);
+
+    expect(result.newFindings).toEqual([]);
+  });
+
+  it("honors suppressions only when they name a rule and reason", () => {
+    const result = analyze(`
+      -- paperclip:migration-safety-ignore full-table-mutation-large-table: one-time metadata reset approved in issue thread
+      UPDATE "issue_comments"
+      SET "derived_author_source" = NULL;
+    `);
+
+    expect(result.newFindings).toEqual([]);
+  });
+});
