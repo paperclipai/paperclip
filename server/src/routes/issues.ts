@@ -66,6 +66,7 @@ import {
   type ExecutionWorkspace,
   type IssueRelationIssueSummary,
   type IssueWatchdogDiscoveryKind,
+  type PermissionKey,
   type SourceTrustMetadata,
   type SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
@@ -2092,10 +2093,12 @@ export function issueRoutes(
       status: string;
     },
     action: "issue:comment" | "issue:read" | "issue:mutate",
+    options?: { permissionKey?: PermissionKey },
   ) {
     return access.decide({
       actor: req.actor,
       action,
+      permissionKey: options?.permissionKey,
       resource: {
         type: "issue",
         companyId: issue.companyId,
@@ -2135,6 +2138,7 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    options?: { crossIssueGrantKey?: PermissionKey },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -2157,10 +2161,43 @@ export function issueRoutes(
       }
       return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
     }
-    const boundaryDecision = await decideIssueAccess(req, issue, "issue:comment");
+    const boundaryDecision = await decideIssueAccess(req, issue, "issue:comment", {
+      permissionKey: options?.crossIssueGrantKey,
+    });
     if (!boundaryDecision.allowed) {
       res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;
+    }
+    if (
+      issue.assigneeAgentId &&
+      issue.assigneeAgentId !== actorAgentId &&
+      options?.crossIssueGrantKey &&
+      !isIssueMentionGrantDecision(boundaryDecision)
+    ) {
+      const hasGrant = await access.hasPermission(
+        issue.companyId,
+        "agent",
+        actorAgentId,
+        options.crossIssueGrantKey,
+      );
+      if (hasGrant) {
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.cross_agent_write",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            grantKey: options.crossIssueGrantKey,
+            actorAgentId,
+            assigneeAgentId: issue.assigneeAgentId,
+          },
+        });
+      }
     }
     return boundaryDecision;
   }
@@ -2216,6 +2253,7 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    options?: { crossIssueGrantKey?: PermissionKey },
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -2246,7 +2284,9 @@ export function issueRoutes(
       }
       return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
     }
-    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate", {
+      permissionKey: options?.crossIssueGrantKey,
+    });
     if (!boundaryDecision.allowed) {
       res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;
@@ -2257,6 +2297,33 @@ export function issueRoutes(
     if (issue.assigneeAgentId !== actorAgentId) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
+      }
+      if (options?.crossIssueGrantKey) {
+        const hasGrant = await access.hasPermission(
+          issue.companyId,
+          "agent",
+          actorAgentId,
+          options.crossIssueGrantKey,
+        );
+        if (hasGrant) {
+          const actor = getActorInfo(req);
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "issue.cross_agent_write",
+            entityType: "issue",
+            entityId: issue.id,
+            details: {
+              grantKey: options.crossIssueGrantKey,
+              actorAgentId,
+              assigneeAgentId: issue.assigneeAgentId,
+            },
+          });
+          return true;
+        }
       }
       if (issue.status === "in_progress") {
         res.status(409).json({
@@ -5923,7 +5990,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { crossIssueGrantKey: "issues:patch:all" }))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -7855,7 +7922,9 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, issue.companyId);
-    const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
+    const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue, {
+      crossIssueGrantKey: "issues:comment:all",
+    });
     if (!commentAccessDecision) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,

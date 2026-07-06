@@ -86,6 +86,7 @@ export function accessService(db: Db) {
   async function decide(input: {
     actor: AuthorizationActor;
     action: Parameters<typeof authorization.decide>[0]["action"];
+    permissionKey?: PermissionKey | null;
     resource: AuthorizationResource;
     scope?: Record<string, unknown> | null;
   }) {
