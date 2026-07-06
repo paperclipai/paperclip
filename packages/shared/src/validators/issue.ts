@@ -202,6 +202,8 @@ export const issueExecutionPolicySchema = z.object({
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
+  permanentWatcher: z.boolean().optional(),
+  parkedGate: z.enum(["deploy_gate", "approval_pending", "external_dependency", "manual_review"]).optional(),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({

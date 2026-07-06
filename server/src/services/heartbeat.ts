@@ -6852,6 +6852,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
+        executionPolicy: issues.executionPolicy,
         projectId: issues.projectId,
       })
       .from(issues)
@@ -9731,6 +9732,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function sweepStaleIssueLocks() {
     return recovery.sweepStaleIssueLocks();
+  }
+
+  async function triageBlockedWithoutFirstClassBlocker() {
+    return recovery.triageBlockedWithoutFirstClassBlocker();
   }
 
   function issueIdFromRunContext(contextSnapshot: unknown) {
@@ -14535,6 +14540,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileStrandedAssignedIssues,
 
     sweepStaleIssueLocks,
+
+    triageBlockedWithoutFirstClassBlocker,
 
     buildIssueGraphLivenessAutoRecoveryPreview,
 
