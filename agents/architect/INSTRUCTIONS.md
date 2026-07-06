@@ -9,8 +9,9 @@ already committed there. You verify (cargo), fix if needed, push, and
 open the PR.
 
 **You own cargo end-to-end.** Coordinator does not run cargo and does
-not maintain cached output for you. Run `cargo check` / `clippy` /
-`test` yourself in the task worktree. If multiple Architects run
+not maintain cached output for you. Run `cargo clippy` / `test`
+yourself in the task worktree (no `cargo check` — clippy subsumes it;
+see Cargo discipline rule 3). If multiple Architects run
 concurrently, cargo's own build lock serializes them at the OS level —
 that's expected and fine. Don't try to coordinate with siblings; the
 lock handles it.
@@ -111,10 +112,16 @@ These are hard rules. Past Architect runs have wasted 60+ minutes wrestling with
    > **If you are re-woken onto a task you believe you already finished:** do NOT re-emit "complete / redundant / stopping". The reused-session loop is exactly the model citing a phantom completion. **Verify it for real first:** `gh pr view --json headRefName,state` and confirm the head is `task/{task-id}` (your task's branch) — an unrelated PR number is NOT proof. If no PR with that head exists, your prior run did **not** land — run cargo to completion and execute the §Landing block now, this turn.
 3. **Use the canonical command verbatim — do not invent variants.** Copy these lines, substituting `{task-id}`. Prefix every cargo command with `CARGO_INCREMENTAL=0` so the shared sccache cache (configured in `~/.cargo/config.toml`) actually gets hits — sccache cannot cache incremental builds, and a clean verify gains nothing from incremental anyway:
    ```sh
-   CARGO_INCREMENTAL=0 cargo check    2>&1 | tee /tmp/cargo-check-{task-id}.txt
    CARGO_INCREMENTAL=0 cargo clippy   2>&1 | tee /tmp/cargo-clippy-{task-id}.txt
    CARGO_INCREMENTAL=0 cargo test --lib 2>&1 | tee /tmp/cargo-test-{task-id}.txt
    ```
+   **No `cargo check` — `cargo clippy` subsumes it.** clippy runs the full
+   rustc front-end (parse / typecheck / borrowck) via `clippy-driver`, so
+   every compile error `check` would report surfaces under clippy too, plus
+   lints — and neither does codegen, so clippy costs the same check-level
+   compile. Running `check` first was a redundant second check-level build
+   of the workspace crate (clippy's `clippy-driver` fingerprint differs from
+   check's rustc, so they never shared artifacts anyway). Do not re-add it.
    **The test gate is `cargo test --lib`, NOT full `cargo test`.** The
    integration-test crates under `tests/` are separately maintained and
    have historically been broken on `main` for reasons unrelated to any
@@ -126,13 +133,13 @@ These are hard rules. Past Architect runs have wasted 60+ minutes wrestling with
    adds/changes); integration-crate health is tracked as its own task.
    If your changed files include anything under `tests/`, additionally run
    `cargo test --test <name>` for just those targets.
-   **`cargo check` is a staged gate, not just the first of three.** Run `check` alone first. If it surfaces errors in your changed files, fix + re-`check` until clean (do NOT run clippy/test against a tree that fails `check` — clippy recompiles and `test` builds the full test binaries, the most expensive step, so running them on a broken base burns minutes for nothing). Only once `check` is clean do you run `clippy`, then `test`.
+   **`cargo clippy` is a staged gate, not just the first of two.** Run `clippy` alone first — it is check-level (no codegen) and reports every compile error `check` would, so it is the cheap gate. If it surfaces errors in your changed files, fix + re-`clippy` until clean (do NOT run `test` against a tree that fails `clippy` — `test` builds the full test binaries, the most expensive step, so running it on a broken base burns minutes for nothing). Only once `clippy` is clean do you run `test`.
    - `2>&1` redirects stderr to stdout. `|` pipes stdout to tee. `tee` writes to file *and* to stdout. You get full output in the file AND streamed back to Monitor.
    - **Wrong**: `cargo clippy 2>&1 > /tmp/file` — that redirects stderr to the terminal's stdout, then sends only stdout to the file. Most clippy output is on stderr; you get an empty file.
    - **Wrong**: `cargo clippy > /tmp/file` — drops stderr entirely. Same empty-file outcome.
    - **Wrong**: `cargo clippy &> /tmp/file` — bash-only, captures both but doesn't stream to you. Use `tee`.
 4. **Never try to kill a stale cargo process.** Your bash environment is sandboxed; `kill`/`pkill` will be denied. If a previous invocation appears stuck, wait it out via Monitor — it will exit on its own (cargo's slow, not hung). If you genuinely think it's wedged, escalate to operator via task comment. Do not loop attempting `kill`. The same applies to a *live* orphan build (a verify still compiling for a task whose PR already merged) — killing it needs privileges your sandbox lacks, so that reap is a Facilitator/operator action. Your contribution to orphan-reaping is the pre-launch guard (§rule 2 launch block): you stop *new* orphans from ever queuing, you don't kill running ones.
-5. **The three stages run as ONE detached `&&` chain (per rule 2), not three separate in-run waits.** `cargo check && cargo clippy && cargo test --lib` inside the single `setsid` launch preserves staged-gate ordering (clippy runs only if check passed, test only if clippy passed) while keeping the whole verify to one detached process you can `pgrep` for. Do not launch the three as separate background jobs — they'd serialize on the build lock and you'd lose the single-sentinel state model.
+5. **The two stages run as ONE detached `&&` chain (per rule 2), not two separate in-run waits.** `cargo clippy && cargo test --lib` inside the single `setsid` launch preserves staged-gate ordering (test runs only if clippy passed) while keeping the whole verify to one detached process you can `pgrep` for. Do not launch the two as separate background jobs — they'd serialize on the build lock and you'd lose the single-sentinel state model.
 6. **Schema-drift / `generate_schemas` tasks: verify with DEFAULT features — never add `--no-default-features` locally.** The JSON-Schema output of `generate_schemas` is link-mode-independent, so the default (`dev`) profile — dynamic linking + mold + warm sccache — produces byte-identical `assets/schemas/` to CI's `--no-default-features` run, in minutes instead of a cold ~38-min build. Reproducing CI's link mode locally buys nothing and has repeatedly blown the run timeout (AA-1407 hit the 2h cap twice). Canonical:
    ```sh
    sccache --start-server >/dev/null 2>&1 || true; flock /tmp/cargo-global.lock nice -n19 ionice -c3 taskset -c 0-5 bash -c 'CARGO_INCREMENTAL=0 cargo run --bin generate_schemas' 2>&1 | tee /tmp/genschemas-{task-id}.txt
@@ -237,7 +244,7 @@ if [ ! -f "$BASE" ] || [ "$(git rev-parse origin/main)" != "$(cat "$BASE")" ]; t
     # the detached build, exit. A later wake re-evaluates the sentinel.
     echo "$((N + 1))" > "$FRESH"
     rm -f "/tmp/verify-{task-id}.exit"
-    setsid bash -c 'echo verifyrun-{task-id}; cd "${PAPERCLIP_PROJECT}/.paperclip/worktrees/{task-id}" || exit 97; sccache --start-server >/dev/null 2>&1 || true; flock /tmp/cargo-global.lock nice -n19 ionice -c3 taskset -c 0-5 bash -c "CARGO_INCREMENTAL=0 cargo check && CARGO_INCREMENTAL=0 cargo clippy && CARGO_INCREMENTAL=0 cargo test --lib"; echo $? > /tmp/verify-{task-id}.exit; curl -fsS -X POST "$PAPERCLIP_API_URL/api/agents/$PAPERCLIP_AGENT_ID/wakeup" -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Content-Type: application/json" -d "{\"source\":\"automation\",\"triggerDetail\":\"callback\",\"reason\":\"verify-sentinel-ready\"}" >/dev/null 2>&1 || true' >> "/tmp/verify-{task-id}.log" 2>&1 &
+    setsid bash -c 'echo verifyrun-{task-id}; cd "${PAPERCLIP_PROJECT}/.paperclip/worktrees/{task-id}" || exit 97; sccache --start-server >/dev/null 2>&1 || true; flock /tmp/cargo-global.lock nice -n19 ionice -c3 taskset -c 0-5 bash -c "CARGO_INCREMENTAL=0 cargo clippy && CARGO_INCREMENTAL=0 cargo test --lib"; echo $? > /tmp/verify-{task-id}.exit; curl -fsS -X POST "$PAPERCLIP_API_URL/api/agents/$PAPERCLIP_AGENT_ID/wakeup" -H "Authorization: Bearer $PAPERCLIP_API_KEY" -H "Content-Type: application/json" -d "{\"source\":\"automation\",\"triggerDetail\":\"callback\",\"reason\":\"verify-sentinel-ready\"}" >/dev/null 2>&1 || true' >> "/tmp/verify-{task-id}.log" 2>&1 &
     echo "origin/main advanced (freshness re-verify $((N + 1))/$FRESHNESS_CAP) — re-verifying against current main; a later wake lands it"
     exit 0
   fi
@@ -268,8 +275,7 @@ if ! gh pr list --head "task/{task-id}" --state all --json number -q '.[0].numbe
 Closes #<task-id>
 
 ## Test plan
-- [ ] cargo check (passed)
-- [ ] cargo clippy (zero warnings)
+- [ ] cargo clippy (zero warnings; subsumes check)
 - [ ] cargo test --lib (passed)
 EOF
 )"
