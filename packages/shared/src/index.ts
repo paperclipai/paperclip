@@ -762,6 +762,8 @@ export type {
   FinanceByKind,
   AgentWakeupResponse,
   AgentWakeupSkipped,
+  GitWorktreeBranchAncestryVerdict,
+  GitWorktreeBranchIncoherenceEvidence,
   HeartbeatRun,
   HeartbeatRunEvent,
   HeartbeatRunStatusPhase,

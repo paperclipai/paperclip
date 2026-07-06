@@ -467,6 +467,8 @@ export type { FinanceEvent, FinanceSummary, FinanceByBiller, FinanceByKind } fro
 export type {
   AgentWakeupResponse,
   AgentWakeupSkipped,
+  GitWorktreeBranchAncestryVerdict,
+  GitWorktreeBranchIncoherenceEvidence,
   HeartbeatRun,
   HeartbeatRunEvent,
   HeartbeatRunStatusPhase,
