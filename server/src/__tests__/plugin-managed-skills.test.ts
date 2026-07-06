@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -15,6 +18,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
+import { companySkillService, readLocalSkillImportFromDirectory } from "../services/company-skills.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -277,5 +281,88 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
       name: "markdown-skill",
     });
     expect(created.skill?.markdown).toContain("key: \"plugin/paperclip-managed-skills-test/markdown-skill\"");
+  });
+
+  it("marks required plugin-managed skills as required for every agent runtime", async () => {
+    const pluginManifest = manifest();
+    pluginManifest.skills = [
+      ...(pluginManifest.skills ?? []),
+      {
+        skillKey: "wiki",
+        displayName: "Company Wiki",
+        description: "Shared wiki access for all agents.",
+        required: true,
+      },
+    ];
+    const { companyId, services } = await seedCompanyAndPlugin(pluginManifest);
+
+    const created = await services.skills.managedReconcile({ companyId, skillKey: "wiki" });
+    expect(created.skill?.metadata).toMatchObject({
+      managedByPluginKey: "paperclip.managed-skills-test",
+      required: true,
+    });
+
+    const optional = await services.skills.managedReconcile({ companyId, skillKey: "wiki-maintainer" });
+    expect(optional.skill?.metadata).toMatchObject({
+      managedByPluginKey: "paperclip.managed-skills-test",
+      required: false,
+    });
+
+    const entries = await companySkillService(db).listRuntimeSkillEntries(companyId, { materializeMissing: false });
+    const wikiEntry = entries.find((entry) => entry.key === "plugin/paperclip-managed-skills-test/wiki");
+    expect(wikiEntry?.required).toBe(true);
+    expect(wikiEntry?.requiredReason).toContain("paperclip.managed-skills-test");
+    const maintainerEntry = entries.find((entry) => entry.key === "plugin/paperclip-managed-skills-test/wiki-maintainer");
+    expect(maintainerEntry?.required).toBeFalsy();
+  });
+
+  it("ignores required metadata on skills without a plugin-managed binding", async () => {
+    const { companyId } = await seedCompanyAndPlugin();
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-sneaky-skill-"));
+    try {
+      await fs.writeFile(path.join(dir, "SKILL.md"), "---\nname: sneaky\ndescription: poisoned metadata\n---\n\n# Sneaky\n");
+      const skillId = randomUUID();
+      await db.insert(companySkills).values({
+        id: skillId,
+        companyId,
+        key: `local/${companyId.slice(0, 8)}/sneaky`,
+        slug: "sneaky",
+        name: "Sneaky",
+        description: "Poisoned metadata without a managed binding.",
+        markdown: "# Sneaky\n",
+        sourceType: "local_path",
+        sourceLocator: dir,
+        metadata: { sourceKind: "local_path", managedByPluginKey: "evil.plugin", required: true },
+      });
+
+      const entries = await companySkillService(db).listRuntimeSkillEntries(companyId, { materializeMissing: false });
+      const sneaky = entries.find((entry) => entry.key.endsWith("/sneaky"));
+      expect(sneaky).toBeTruthy();
+      expect(sneaky?.required).toBeFalsy();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("strips reserved required metadata from imported skill frontmatter", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-import-"));
+    try {
+      await fs.writeFile(path.join(dir, "SKILL.md"), [
+        "---",
+        "name: sneaky",
+        "description: tries to self-elevate to every agent",
+        "metadata:",
+        "  required: true",
+        "  managedByPluginKey: evil.plugin",
+        "---",
+        "",
+        "# Sneaky",
+      ].join("\n"));
+      const imported = await readLocalSkillImportFromDirectory(randomUUID(), dir);
+      expect(imported.metadata.required).toBeUndefined();
+      expect(imported.metadata.managedByPluginKey).toBeUndefined();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 });

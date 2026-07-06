@@ -8,6 +8,40 @@ This package is the standalone home for LLM Wiki behavior. Wiki-specific routes,
 UI, prompts, tools, local-folder templates, migrations, fixtures, and tests live
 here rather than in Paperclip core.
 
+## Shared company context (project spaces + agent API)
+
+The wiki is the company's shared context surface: every Paperclip project gets
+its own wiki space, and every agent can read and contribute through a scoped
+HTTP API.
+
+- **Project-bound spaces** (migration `004_project_spaces.sql`): the worker
+  subscribes to `project.created`/`project.updated` and keeps one shared space
+  per project (`spaces/proj-<slug>/`, display name follows project renames,
+  archived projects archive their space). A `reconcile-project-spaces` action
+  and a best-effort startup sweep cover pre-existing projects.
+- **Zero-config activation**: when no wiki root is configured, bootstrap (and
+  the first project space) auto-configures a managed default under
+  `<PAPERCLIP_HOME>/instances/<id>/plugin-data/<companyId>/<pluginKey>/wiki-root`.
+- **Agent API** (`auth: "board-or-agent"`, base
+  `/api/plugins/paperclipai.plugin-llm-wiki/api`): `GET /agent/space-index`,
+  `GET /agent/search` (company-wide body search), `GET /agent/page`,
+  `POST /agent/page` (expectedHash with 409 + currentHash on conflict),
+  `POST /agent/capture` (raw source + queued ingest operation), and
+  `POST /agent/log`. Routes accept `spaceSlug`, `projectId`, or `projectName`;
+  writes record agent/user attribution on revisions and sources.
+- **Company-required skill**: the `wiki` managed skill ships with
+  `required: true`, so the host force-syncs it to every agent on every runtime
+  (host-side support: `required` flag on plugin-managed skill declarations).
+- **Body search** (migration `005_body_search.sql`): `wiki_search_documents`
+  keeps a secret-redacted, capped text mirror per page/source with trigram
+  indexes; `wiki_search` and `/agent/search` rank over bodies, and a
+  `reindex-search` action rebuilds the cache from disk (disk stays truth).
+- **Revision recovery** (migration `006_revision_attribution.sql`): page
+  revisions now store contents plus `author_kind`/`author_id`/`author_run_id`.
+- **Maintenance activation**: the `activate-wiki-maintenance` action resumes
+  the Wiki Maintainer, activates the three maintenance routines, and warns when
+  the maintainer has no monthly budget.
+
 The alpha surface includes:
 
 - manifest-declared Wiki page, sidebar entry, and settings page
