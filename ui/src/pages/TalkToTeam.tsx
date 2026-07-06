@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { MessagesSquare, Send, Loader2, FolderGit2, Bot } from "lucide-react";
+import { ArrowRight, Loader2, FolderGit2, Bot } from "lucide-react";
 import type { AgentStatus } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -27,6 +27,14 @@ const NO_PROJECT = "__no_project__";
 // Statuses that mean an agent is ready to pick up work; used to choose a sane
 // default assignee (skips paused managed agents like the Wiki Maintainer).
 const WORKING_STATUSES: ReadonlySet<AgentStatus> = new Set(["active", "idle", "running"]);
+
+// Nothing-OS console texture: faint radial dot-grid. Works in both themes since
+// it mixes against --foreground (dark ink on light, light ink on dark).
+const DOT_TEXTURE: React.CSSProperties = {
+  backgroundImage:
+    "radial-gradient(circle, color-mix(in oklab, var(--foreground) 6%, transparent) 1px, transparent 1px)",
+  backgroundSize: "16px 16px",
+};
 
 /** Derive a concise task title from the free-form message (first non-empty line). */
 function deriveTitle(message: string): string {
@@ -131,35 +139,86 @@ export function TalkToTeam() {
     }
   }
 
+  const contextPath = (
+    selectedCompany?.issuePrefix ??
+    selectedCompany?.name ??
+    "paperclip"
+  ).toLowerCase();
+
   return (
-    <div className="mx-auto flex min-h-[calc(100vh-6rem)] w-full max-w-2xl flex-col items-center justify-center gap-8 px-4 py-10">
-      <div className="flex flex-col items-center gap-3 text-center">
-        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-          <MessagesSquare className="h-6 w-6" />
+    <div className="mx-auto flex min-h-[calc(100vh-6rem)] w-full max-w-2xl flex-col items-center justify-center gap-9 px-4 py-12">
+      {/* Header — Nothing-OS glyph title */}
+      <div className="flex flex-col items-center gap-4 text-center">
+        {/* Dot-matrix rule, faded at the edges */}
+        <div
+          aria-hidden
+          className="h-2 w-36"
+          style={{
+            backgroundImage:
+              "radial-gradient(circle, color-mix(in oklab, var(--foreground) 40%, transparent) 1px, transparent 1px)",
+            backgroundSize: "8px 8px",
+            backgroundPosition: "center",
+            WebkitMaskImage:
+              "linear-gradient(90deg, transparent, black 35%, black 65%, transparent)",
+            maskImage: "linear-gradient(90deg, transparent, black 35%, black 65%, transparent)",
+          }}
+        />
+        <div className="flex items-center gap-3">
+          {/* Signature red glyph dot — the one spot of colour, Nothing-style */}
+          <span className="relative flex h-2.5 w-2.5" aria-hidden>
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500/60 motion-reduce:animate-none" />
+            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500" />
+          </span>
+          <h1 className="font-display text-3xl leading-none sm:text-[2.5rem]">Talk to the team</h1>
         </div>
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Talk to the team</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Describe what you need and {selectedCompany?.name ?? "your team"} gets to work — this
-            creates a task and opens it.
-          </p>
-        </div>
+        <p className="max-w-md font-mono text-[12px] leading-relaxed text-muted-foreground">
+          Describe what you need — {selectedCompany?.name ?? "your team"} gets to work. This files a
+          task and opens it.
+        </p>
       </div>
 
-      <div className="w-full overflow-hidden rounded-2xl border border-border bg-card shadow-sm focus-within:border-ring/60 focus-within:ring-[3px] focus-within:ring-ring/20 transition-[box-shadow,border-color]">
-        <Textarea
-          ref={textareaRef}
-          value={message}
-          onChange={(event) => setMessage(event.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="e.g. Draft a launch plan for the new pricing page, then share it for review."
-          className="min-h-[132px] resize-none border-0 bg-transparent px-4 py-4 text-[15px] shadow-none focus-visible:ring-0"
-        />
-        <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-3 py-2.5">
+      {/* Console — matte, flat, exposed dot-grid (Nothing OS, not frosted glass) */}
+      <div className="w-full border border-border bg-card/90 transition-colors focus-within:border-foreground/40">
+        {/* Status bar */}
+        <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-1.5">
+          <span className="truncate font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+            {contextPath} <span className="text-muted-foreground/40">/</span> new_task
+          </span>
+          <span className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+            <span className="h-1.5 w-1.5 bg-foreground/45" aria-hidden />
+            ready
+          </span>
+        </div>
+
+        {/* Task input */}
+        <div className="relative" style={DOT_TEXTURE}>
+          <span
+            aria-hidden
+            className="pointer-events-none absolute left-4 top-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground"
+          >
+            // task
+          </span>
+          <Textarea
+            ref={textareaRef}
+            value={message}
+            onChange={(event) => setMessage(event.target.value)}
+            onKeyDown={handleKeyDown}
+            aria-label="Task description"
+            placeholder="e.g. Draft a launch plan for the new pricing page, then share it for review."
+            className="min-h-[168px] resize-none rounded-none border-0 bg-transparent px-4 pb-4 pt-9 font-mono text-[13.5px] leading-relaxed shadow-none placeholder:text-muted-foreground focus-visible:ring-0"
+          />
+        </div>
+
+        {/* Controls */}
+        <div className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2.5">
           <Select value={agentId} onValueChange={setAgentId}>
-            <SelectTrigger size="sm" className="h-8 gap-2 rounded-lg" aria-label="Assign to agent">
+            <SelectTrigger
+              size="sm"
+              aria-label="Assign to agent"
+              className="h-8 min-w-0 max-w-[13rem] gap-2 rounded-none border-border bg-transparent font-mono text-[11px] tracking-wide hover:border-foreground/40"
+            >
               {assignedAgent ? (
-                <span className="flex items-center gap-2">
+                <span className="flex min-w-0 items-center gap-2">
                   <AgentIcon icon={assignedAgent.icon} className="h-3.5 w-3.5 text-muted-foreground" />
                   <span className="truncate">{assignedAgent.name}</span>
                 </span>
@@ -170,18 +229,23 @@ export function TalkToTeam() {
                 </span>
               )}
             </SelectTrigger>
-            <SelectContent align="start">
+            <SelectContent
+              position="popper"
+              align="start"
+              sideOffset={6}
+              className="rounded-none border-border bg-popover font-mono text-[12px] shadow-none backdrop-blur-none dark:bg-popover"
+            >
               {selectableAgents.length === 0 ? (
                 <div className="px-2 py-1.5 text-xs text-muted-foreground">No agents yet</div>
               ) : (
                 selectableAgents.map((agent) => (
-                  <SelectItem key={agent.id} value={agent.id}>
+                  <SelectItem key={agent.id} value={agent.id} className="rounded-none">
                     <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 text-muted-foreground" />
                     <span className="truncate">{agent.name}</span>
                   </SelectItem>
                 ))
               )}
-              <SelectItem value={UNASSIGNED}>
+              <SelectItem value={UNASSIGNED} className="rounded-none">
                 <Bot className="h-3.5 w-3.5 text-muted-foreground" />
                 <span>Unassigned (triage later)</span>
               </SelectItem>
@@ -189,31 +253,49 @@ export function TalkToTeam() {
           </Select>
 
           <Select value={projectId} onValueChange={setProjectId}>
-            <SelectTrigger size="sm" className="h-8 gap-2 rounded-lg" aria-label="Choose project">
-              <span className="flex items-center gap-2">
+            <SelectTrigger
+              size="sm"
+              aria-label="Choose project"
+              className="h-8 min-w-0 max-w-[13rem] gap-2 rounded-none border-border bg-transparent font-mono text-[11px] tracking-wide hover:border-foreground/40"
+            >
+              <span className="flex min-w-0 items-center gap-2">
                 <FolderGit2 className="h-3.5 w-3.5 text-muted-foreground" />
                 <SelectValue placeholder="No project" />
               </span>
             </SelectTrigger>
-            <SelectContent align="start">
-              <SelectItem value={NO_PROJECT}>No project</SelectItem>
+            <SelectContent
+              position="popper"
+              align="start"
+              sideOffset={6}
+              className="rounded-none border-border bg-popover font-mono text-[12px] shadow-none backdrop-blur-none dark:bg-popover"
+            >
+              <SelectItem value={NO_PROJECT} className="rounded-none">
+                No project
+              </SelectItem>
               {activeProjects.map((project) => (
-                <SelectItem key={project.id} value={project.id}>
+                <SelectItem key={project.id} value={project.id} className="rounded-none">
                   {project.name}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
 
-          <div className="ml-auto flex items-center gap-2.5">
-            <span className="hidden text-[11px] text-muted-foreground sm:inline">⌘↵ to send</span>
-            <Button size="sm" onClick={() => void handleSubmit()} disabled={!canSubmit} className="gap-1.5">
+          <div className="ml-auto flex items-center gap-3">
+            <span className="hidden font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground sm:inline">
+              ⌘↵ send
+            </span>
+            <Button
+              size="sm"
+              onClick={() => void handleSubmit()}
+              disabled={!canSubmit}
+              className="h-8 gap-2 rounded-none font-mono text-[11px] uppercase tracking-[0.14em]"
+            >
               {submitting ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                <Send className="h-3.5 w-3.5" />
+                <ArrowRight className="h-3.5 w-3.5" />
               )}
-              {submitting ? "Starting…" : "Start task"}
+              {submitting ? "Starting" : "Start task"}
             </Button>
           </div>
         </div>
