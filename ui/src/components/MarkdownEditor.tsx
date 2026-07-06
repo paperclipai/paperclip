@@ -1,6 +1,7 @@
 import {
   Component,
   type ClipboardEvent,
+  type ErrorInfo,
   forwardRef,
   useCallback,
   useEffect,
@@ -105,7 +106,11 @@ class MarkdownEditorRichErrorBoundary extends Component<
     return { hasError: true };
   }
 
-  componentDidCatch(error: unknown) {
+  componentDidCatch(error: unknown, info: ErrorInfo) {
+    console.error("Markdown rich editor failed; falling back to raw textarea", {
+      error,
+      componentStack: info.componentStack,
+    });
     this.props.onError(error);
   }
 

@@ -408,6 +408,7 @@ describe("MarkdownEditor", () => {
 
   it("falls back to a raw textarea when the rich editor crashes during render", async () => {
     mdxEditorMockState.throwOnRender = true;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const handleChange = vi.fn();
     const root = createRoot(container);
 
@@ -428,6 +429,14 @@ describe("MarkdownEditor", () => {
     expect(textarea).not.toBeNull();
     expect(textarea?.value).toBe("5. python3 circleback/sync_insights.py --input <tmp> -- writes insights/<group>/*.md");
     expect(container.textContent).toContain("Rich editor unavailable for this markdown");
+    expect(consoleError).toHaveBeenCalledWith(
+      "Markdown rich editor failed; falling back to raw textarea",
+      expect.objectContaining({
+        error: expect.any(Error),
+        componentStack: expect.any(String),
+      }),
+    );
+    consoleError.mockRestore();
     expect(handleChange).not.toHaveBeenCalled();
 
     await act(async () => {

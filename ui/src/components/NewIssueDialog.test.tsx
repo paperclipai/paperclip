@@ -990,6 +990,19 @@ describe("NewIssueDialog", () => {
     expect(plainEscape.defaultPrevented).toBe(false);
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
 
+    const controlEscape = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      key: "Escape",
+    });
+    await act(async () => {
+      dialogContentState.onEscapeKeyDown?.(controlEscape);
+    });
+
+    expect(controlEscape.defaultPrevented).toBe(false);
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+
     act(() => root.unmount());
   });
 

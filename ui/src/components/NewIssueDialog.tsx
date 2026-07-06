@@ -302,8 +302,8 @@ function isWorkModePeriodShortcut(e: Pick<React.KeyboardEvent, "code" | "ctrlKey
   return (e.metaKey || e.ctrlKey) && isPeriod;
 }
 
-function isWorkModeEscapeShortcut(e: Pick<KeyboardEvent, "ctrlKey" | "key" | "metaKey">) {
-  return (e.metaKey || e.ctrlKey) && e.key === "Escape";
+function isWorkModeEscapeShortcut(e: Pick<KeyboardEvent, "key" | "metaKey">) {
+  return e.metaKey && e.key === "Escape";
 }
 
 const IssueTitleTextarea = memo(function IssueTitleTextarea({
