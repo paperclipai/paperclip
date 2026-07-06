@@ -5165,7 +5165,17 @@ export async function readWikiPage(ctx: PluginContext, input: { companyId: strin
   const wikiId = normalizeWikiId(input.wikiId);
   const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
   const path = assertWikiPath(input.path);
-  const contents = await ctx.localFolders.readText(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path));
+  let contents: string;
+  try {
+    contents = await ctx.localFolders.readText(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path));
+  } catch (error) {
+    // A space row can exist before its skeleton files do (e.g. the space was
+    // auto-created while the wiki root was unconfigured, or the root was
+    // repointed later). Heal skeleton files on first read instead of failing.
+    if (!BOOTSTRAP_FILES.some((file) => file.path === path)) throw error;
+    await bootstrapSpaceFiles(ctx, input.companyId, space);
+    contents = await ctx.localFolders.readText(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path));
+  }
   const meta = await ctx.db.query<{ title: string | null; page_type: string | null; backlinks: unknown; source_refs: unknown; updated_at: string }>(
     `SELECT title, page_type, backlinks, source_refs, updated_at::text AS updated_at
        FROM ${tableName(ctx.db.namespace, "wiki_pages")}

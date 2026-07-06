@@ -1,1 +1,1 @@
-export { SidebarLink, SettingsPage, WikiPage, WikiRouteSidebar } from "./app.js";
+export { ProjectWikiTab, SidebarLink, SettingsPage, WikiPage, WikiRouteSidebar } from "./app.js";

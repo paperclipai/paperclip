@@ -723,7 +723,14 @@ describe("LLM Wiki plugin scaffold", () => {
       "sidebar",
       "page",
       "routeSidebar",
+      "detailTab",
     ]);
+    const projectTabSlot = manifest.ui?.slots?.find((slot) => slot.type === "detailTab");
+    expect(projectTabSlot).toMatchObject({
+      id: "wiki-project-tab",
+      exportName: "ProjectWikiTab",
+      entityTypes: ["project"],
+    });
     expect(manifest.capabilities).not.toContain("instance.settings.register");
     expect(manifest.instanceConfigSchema).toBeUndefined();
     const routeSidebarSlot = manifest.ui?.slots?.find((slot) => slot.type === "routeSidebar");
@@ -4021,6 +4028,25 @@ describe("Project-bound wiki spaces and the agent wiki API", () => {
     expect(body.spaceSlug).toBe("default");
     expect(body.contents).toContain("# Wiki index");
     expect(body.spaces.some((space) => space.slug === "default")).toBe(true);
+  });
+
+  it("heals missing skeleton files on first read instead of failing", async () => {
+    const harness = createTestHarness({ manifest });
+    const project = existingProject();
+    harness.seed({ projects: [project] });
+    await plugin.definition.setup(harness.ctx);
+    mockProjectSpace(harness, projectSpaceRow(project));
+
+    // Space row exists but no files were ever bootstrapped for it.
+    const result = await harness.getData<{ path: string; contents: string }>("page-content", {
+      companyId: COMPANY_ID,
+      spaceSlug: PROJECT_SPACE_SLUG,
+      path: "IDEA.md",
+    });
+    expect(result.path).toBe("IDEA.md");
+    expect(result.contents).toBe(DEFAULT_IDEA);
+    const healed = await harness.ctx.localFolders.readText(COMPANY_ID, "wiki-root", `spaces/${PROJECT_SPACE_SLUG}/wiki/index.md`);
+    expect(healed).toBe(DEFAULT_INDEX);
   });
 
   it("appends attributed log entries through the agent API", async () => {

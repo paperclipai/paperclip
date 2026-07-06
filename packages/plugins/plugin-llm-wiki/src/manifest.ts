@@ -652,6 +652,13 @@ const manifest: PaperclipPluginManifestV1 = {
         displayName: "Wiki",
         exportName: "WikiRouteSidebar",
         routePath: "wiki"
+      },
+      {
+        type: "detailTab",
+        id: "wiki-project-tab",
+        displayName: "Wiki",
+        exportName: "ProjectWikiTab",
+        entityTypes: ["project"]
       }
     ]
   }
