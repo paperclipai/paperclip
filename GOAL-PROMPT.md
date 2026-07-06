@@ -1,98 +1,73 @@
-# /goal Prompt — Design Language Simplification, Run 1 (v2)
+# /goal Prompt — Design Language Simplification, Run 1 (v3)
 
 Paste everything inside the code block below into Claude Code after typing `/goal`, from inside this worktree. Prerequisites already satisfied on this branch: DESIGN.md, PRIOR-ART.md, KNOWN-DUPLICATES.md at repo root; token-auditor + codemod-runner in `.claude/agents/`.
 
-v2 changes vs v1: token destination corrected to `ui/src/index.css`; Phase 0 snapshot scope bounded; component consolidation (old Phase 3) and the issue→task rename REMOVED from this run (they become their own human-gated follow-up runs); DONE-WHEN expressed as runnable commands.
+v3: condensed under the /goal 4,000-character limit (v2 was 4,648 and got rejected). The paste block now carries only mission + DONE-WHEN + guardrails; the full phase spec lives in the "Phase spec" section below, which the run reads from this file on disk.
 
 ```
 Refactor Paperclip's UI so every visual value flows through the single
-existing token layer, with provably zero visual change, working in this
-isolated git worktree. DESIGN.md at the repo root is the source of truth
-for all design decisions; follow it exactly. Read PRIOR-ART.md before
-auditing.
+existing token layer, with provably zero visual change, working only in
+this git worktree on branch design/token-extraction. Never touch master
+or other working trees. DESIGN.md at the repo root is the source of
+truth; follow it exactly. Read PRIOR-ART.md before auditing. Execute
+Phases 0-2 exactly as specified in the "Phase spec" section of
+GOAL-PROMPT.md at the repo root (Phase 0 baseline snapshots, Phase 1
+audit, Phase 2 codemod extraction), delegating Phase 1 to the
+token-auditor subagent and Phase 2 to the codemod-runner subagent.
+Commit after each phase and in small reviewable steps.
 
-SETUP
-You are already inside a dedicated git worktree on branch
-design/token-extraction. All work happens here. Never touch master,
-switch branches, create new worktrees, or modify other working trees.
-Commit after each phase and in small, reviewable steps within phases,
-with descriptive messages.
-
-WORK IN PHASES, IN ORDER
-Delegate Phase 1 to the token-auditor subagent and Phase 2 to the
-codemod-runner subagent (defined in .claude/agents/). Handle Phase 0
-yourself. Hand context between phases through the committed report
-files, not conversation memory.
-
-Phase 0 — Baseline (before changing ANY component):
-- Set up Storybook visual snapshot testing (Storybook test-runner with
-  image snapshots, or equivalent already-compatible tooling; Storybook
-  lives at ui/storybook/, launched via `pnpm storybook`).
-- Coverage scope: the shared primitives in ui/src/components/ui/ (add a
-  minimal story for any of the ~24 that lack one) plus all existing
-  stories under ui/storybook/stories/. Do NOT write stories for the
-  ~277 feature components in this run.
-- Commit passing baseline snapshots. Every later phase must keep
-  snapshots matching this baseline.
-
-Phase 1 — Audit (no code changes):
-- Produce TOKEN-AUDIT.md at the repo root: every hardcoded
-  color/spacing/radius/type/shadow value in ui/src/, its frequency,
-  file locations, and near-duplicate clusters (e.g. 13/14/15px used
-  interchangeably). Flag clusters for human review — do NOT merge them.
-  Cross-reference the existing ~80 tokens in ui/src/index.css: for each
-  hardcoded value, note whether it exactly matches an existing token.
-- Produce COMPONENT-INVENTORY.md: all components, their variants, and
-  suspected duplicates with evidence (similar props, similar rendered
-  output, copy-pasted origins). Include a "shadcn candidates" section:
-  (a) custom components duplicating an available shadcn primitive,
-  (b) installed shadcn components drifted from the registry
-  (npx shadcn@latest diff where available), (c) raw Radix/plain
-  elements where an installed shadcn wrapper exists. For each, state
-  the recommended replacement and expected visual impact.
-  ALL consolidation and swap items are RECOMMENDATIONS ONLY — no
-  merges, no swaps, no deletions in this run.
-
-Phase 2 — Extraction (mechanical, via codemod):
-- Token destination is ui/src/index.css (Tailwind v4; optionally a
-  tokens.css imported by index.css). Do NOT create a parallel token
-  source. Tokens that must be runtime-tunable go in a NON-inline
-  @theme/:root block (inline @theme bakes literals).
-- Where a hardcoded value EXACTLY matches an existing token, replace it
-  with that token. Otherwise add a new token containing the audited
-  value VERBATIM — no normalizing, rounding, or inventing a scale.
-  Ugly values stay ugly; they are the audit.
-- Write codemod scripts, committed to scripts/, that perform the
-  replacements. Run them. Do not hand-edit values file-by-file.
-- Third-party style overrides that cannot use tokens go on a documented
-  allowlist in the token source, each with an inline comment saying why.
-
-DONE WHEN (all verified in this worktree)
-1. The snapshot suite passes against the Phase 0 baseline — zero
-   visual change.
-2. ui/src/index.css (plus any imported tokens.css) is the only token
-   source; components consume values only through it.
-3. rg gates pass: zero hex color literals, zero arbitrary
-   px/bracket-value Tailwind classes, zero raw font-size declarations
-   in ui/src/components/** and ui/src/pages/** outside the documented
-   allowlist.
-4. TOKEN-AUDIT.md and COMPONENT-INVENTORY.md exist, are current, and
-   each has a "Needs human decision" section (even if empty).
+DONE WHEN (all verified in this worktree):
+1. The Storybook visual snapshot suite passes against a Phase 0
+   baseline that was committed BEFORE any component change — zero
+   visual change. Baseline scope: primitives in ui/src/components/ui/
+   (add minimal stories only for those) plus the existing stories in
+   ui/storybook/stories/. No stories for the ~277 feature components.
+2. ui/src/index.css (plus any tokens.css it imports) is the only token
+   source and components consume visual values only through it; no
+   parallel token source exists; runtime-tunable tokens live in a
+   NON-inline block.
+3. rg gates pass: zero hex color literals, zero arbitrary px/bracket
+   Tailwind values, zero raw font-size declarations in
+   ui/src/components/** and ui/src/pages/** outside the documented
+   allowlist in the token source.
+4. TOKEN-AUDIT.md and COMPONENT-INVENTORY.md exist at the repo root,
+   are current, and each contains a "Needs human decision" section.
 5. pnpm build, pnpm typecheck, and pnpm build-storybook all exit 0.
 
 GUARDRAILS
-- Preserve rendered output exactly. If a replacement cannot be made
-  without visual change, skip it and record it in TOKEN-AUDIT.md under
-  "Needs human decision", and move on.
+- Preserve rendered output exactly. Reuse an existing token only on
+  EXACT value match; otherwise mint a new token with the value
+  VERBATIM — no normalizing, rounding, or inventing a scale. If a
+  replacement cannot be made without visual change, skip it and log it
+  under "Needs human decision".
+- All value rewrites happen via codemod scripts committed to scripts/,
+  never file-by-file hand edits.
 - No redesign, no layout changes, no new colors/typefaces, no component
-  merges or deletions, no copy renames (including issue→task — that is
-  a separate later run), no new dependencies beyond snapshot tooling,
-  no server/app-logic changes.
-- If reality conflicts with DESIGN.md, note the conflict in
-  TOKEN-AUDIT.md instead of guessing.
-- If a phase cannot be completed, stop and report rather than partially
-  applying it.
+  merges or deletions (consolidation and shadcn swaps are
+  recommendations-only in COMPONENT-INVENTORY.md), no copy renames
+  (issue->task is a separate later run), no new dependencies beyond
+  snapshot tooling, no server or app-logic changes.
+- If reality conflicts with DESIGN.md, record the conflict in
+  TOKEN-AUDIT.md instead of guessing. If a phase cannot be completed,
+  stop and report rather than partially applying it.
 ```
+
+## Phase spec (referenced by the goal — the run reads this from disk)
+
+**Phase 0 — Baseline (before changing ANY component):**
+- Set up Storybook visual snapshot testing (Storybook test-runner with image snapshots, or equivalent already-compatible tooling; Storybook lives at `ui/storybook/`, launched via `pnpm storybook`).
+- Coverage scope: the shared primitives in `ui/src/components/ui/` (add a minimal story for any of the ~24 that lack one) plus all existing stories under `ui/storybook/stories/`. Do NOT write stories for the ~277 feature components in this run.
+- Commit passing baseline snapshots. Every later phase must keep snapshots matching this baseline.
+
+**Phase 1 — Audit (no code changes; delegate to token-auditor):**
+- Produce `TOKEN-AUDIT.md` at the repo root: every hardcoded color/spacing/radius/type/shadow value in `ui/src/`, its frequency, file locations, and near-duplicate clusters (e.g. 13/14/15px used interchangeably). Flag clusters for human review — do NOT merge them. Cross-reference the ~80 existing tokens in `ui/src/index.css`: for each hardcoded value, note whether it exactly matches an existing token.
+- Produce `COMPONENT-INVENTORY.md`: all components, their variants, and suspected duplicates with evidence (similar props, similar rendered output, copy-pasted origins). Include a "shadcn candidates" section: (a) custom components duplicating an available shadcn primitive, (b) installed shadcn components drifted from the registry (`npx shadcn@latest diff` where available), (c) raw Radix/plain elements where an installed shadcn wrapper exists. For each, state the recommended replacement and expected visual impact. ALL consolidation and swap items are RECOMMENDATIONS ONLY.
+
+**Phase 2 — Extraction (mechanical, via codemod; delegate to codemod-runner):**
+- Token destination is `ui/src/index.css` (Tailwind v4; optionally a `tokens.css` imported by index.css). Do NOT create a parallel token source. Tokens that must be runtime-tunable go in a NON-inline block (`@theme inline` bakes literals).
+- Exact-match values → existing token reference; everything else → new verbatim token. Ugly values stay ugly; they are the audit.
+- Codemod scripts committed to `scripts/` perform the replacements; run them; no hand-edits.
+- Third-party overrides that cannot use tokens go on a documented allowlist in the token source, each with an inline comment saying why.
 
 ## After the run (human steps)
 
