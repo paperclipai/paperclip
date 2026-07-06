@@ -44,6 +44,7 @@ Node.js 20+, Express, TypeScript (ES2023/NodeNext), Drizzle ORM, React 19, Vite,
 5. **DB changes.** Edit schema -> export from index.ts -> `pnpm db:generate` -> `pnpm -r typecheck`.
 6. **Modes.** `local_trusted` (loopback, no login) | `authenticated/private` (LAN/Tailscale) | `authenticated/public` (internet).
 7. **No lockfile commits.** CI owns `pnpm-lock.yaml`.
+8. **`gh` needs `--repo adacovsk/paperclip`.** `origin` here is `adacovsk/paperclip`, but bare `gh` (`gh pr create`/`merge`/`repo view`) resolves this dir to `paperclipai/paperclip` and fails with `No commits between master and <branch>`. Always pass `--repo adacovsk/paperclip` explicitly; default branch is `master`.
 
 ## Done When
 
