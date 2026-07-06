@@ -14,6 +14,7 @@ import {
   useHostNavigation,
   type FileTreeNode,
   type ManagedRoutinesListItem,
+  type PluginDetailTabProps,
   type PluginPageProps,
   type PluginRouteSidebarProps,
   type PluginSettingsPageProps,
@@ -316,6 +317,8 @@ type WikiSpace = {
   ownerUserId: string | null;
   ownerAgentId: string | null;
   teamKey: string | null;
+  bindingKind?: string;
+  projectId?: string | null;
   settings: Record<string, unknown>;
   status: string;
   createdAt: string | null;
@@ -1372,6 +1375,138 @@ export function SettingsPage({ context }: PluginSettingsPageProps) {
     <main style={{ padding: isMobile ? 16 : 24, maxWidth: isMobile ? "none" : 1040, minWidth: 0, fontFamily: fontStack, color: tokens.fg }}>
       <SettingsBody context={context} />
     </main>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Project detail tab: the project's wiki space at a glance — quick links,
+// recent pages, and a jump into the full wiki scoped to that space.
+// ---------------------------------------------------------------------------
+
+const PROJECT_TAB_QUICK_LINKS: ReadonlyArray<{ label: string; path: string }> = [
+  { label: "Overview", path: "wiki/index.md" },
+  { label: "Decisions", path: "wiki/decisions.md" },
+  { label: "Log", path: "wiki/log.md" },
+];
+
+function ProjectSpacePages({ companyId, space }: { companyId: string; space: WikiSpace }) {
+  const hostNavigation = useHostNavigation();
+  const params = useMemo(() => ({ companyId, spaceSlug: space.slug }), [companyId, space.slug]);
+  const pages = usePluginData<PagesData>("pages", params);
+
+  if (pages.loading && !pages.data) {
+    return <div style={{ color: tokens.muted, fontSize: 13 }}>Loading pages…</div>;
+  }
+  if (pages.error) {
+    return <div style={{ color: tokens.destructive, fontSize: 13 }}>Failed to load pages: {pages.error.message}</div>;
+  }
+  const rows = (pages.data?.pages ?? [])
+    .filter((page) => page.path !== "wiki/log.md" && page.path !== "wiki/index.md")
+    .slice(0, 25);
+  if (rows.length === 0) {
+    return (
+      <div style={{ color: tokens.muted, fontSize: 13 }}>
+        No pages yet. Capture a transcript or ask an agent to record a decision, and it will land here.
+      </div>
+    );
+  }
+  return (
+    <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 2 }} aria-label="Project wiki pages">
+      {rows.map((page) => (
+        <li key={page.path}>
+          <a
+            {...hostNavigation.linkProps(buildPageHref(page.path, space.slug))}
+            style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "6px 8px", borderRadius: 6, color: tokens.fg, textDecoration: "none", fontSize: 13 }}
+          >
+            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {page.title ?? page.path}
+            </span>
+            <span style={{ color: tokens.muted, fontSize: 11, flexShrink: 0 }}>{page.path}</span>
+          </a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function ProjectWikiTab({ context }: PluginDetailTabProps) {
+  const hostNavigation = useHostNavigation();
+  const companyId = context.companyId ?? null;
+  const projectId = context.entityId;
+  const spaces = useSpaces(companyId);
+  const reconcileProjectSpaces = usePluginAction("reconcile-project-spaces");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  if (!companyId) return null;
+  if (spaces.loading && !spaces.data) {
+    return <div style={{ fontFamily: fontStack, color: tokens.muted, fontSize: 13 }}>Loading wiki…</div>;
+  }
+  if (spaces.error) {
+    return <div style={{ fontFamily: fontStack, color: tokens.destructive, fontSize: 13 }}>Failed to load wiki spaces: {spaces.error.message}</div>;
+  }
+
+  const space = (spaces.data?.spaces ?? []).find((entry) => entry.projectId === projectId && entry.status !== "archived") ?? null;
+
+  if (!space) {
+    return (
+      <section style={{ fontFamily: fontStack, color: tokens.fg, display: "grid", gap: 10, maxWidth: 640, border: `1px solid ${tokens.border}`, borderRadius: 10, padding: 16, background: tokens.card }}>
+        <div style={{ fontSize: 14, fontWeight: 650 }}>No wiki space for this project yet</div>
+        <div style={{ fontSize: 13, color: tokens.muted }}>
+          Every project gets a shared wiki space for decisions, meeting notes, and durable context. Create it now — agents pick it up automatically.
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button
+            type="button"
+            disabled={creating}
+            onClick={() => {
+              setCreating(true);
+              setCreateError(null);
+              reconcileProjectSpaces({ companyId })
+                .then(() => spaces.refresh())
+                .catch((error) => setCreateError(error instanceof Error ? error.message : String(error)))
+                .finally(() => setCreating(false));
+            }}
+            style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${tokens.border}`, background: tokens.primary, color: tokens.primaryFg, fontSize: 13, fontWeight: 600, cursor: creating ? "default" : "pointer", opacity: creating ? 0.7 : 1 }}
+          >
+            {creating ? "Creating…" : "Create project wiki"}
+          </button>
+          {createError ? <span style={{ color: tokens.destructive, fontSize: 12 }}>{createError}</span> : null}
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section style={{ fontFamily: fontStack, color: tokens.fg, display: "grid", gap: 14, maxWidth: 960 }}>
+      <header style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
+          <span aria-hidden="true" style={{ color: tokens.muted }}><BookOpenIcon /></span>
+          <span style={{ fontSize: 15, fontWeight: 650, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{space.displayName}</span>
+          <span style={{ color: tokens.muted, fontSize: 12 }}>{space.slug}</span>
+        </div>
+        <a
+          {...hostNavigation.linkProps(buildSpacePrefix(space.slug))}
+          style={{ padding: "6px 14px", borderRadius: 8, border: `1px solid ${tokens.border}`, background: tokens.primary, color: tokens.primaryFg, fontSize: 13, fontWeight: 600, textDecoration: "none" }}
+        >
+          Open wiki
+        </a>
+      </header>
+      <nav aria-label="Wiki quick links" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {PROJECT_TAB_QUICK_LINKS.map((link) => (
+          <a
+            key={link.path}
+            {...hostNavigation.linkProps(buildPageHref(link.path, space.slug))}
+            style={{ padding: "4px 12px", borderRadius: 999, border: `1px solid ${tokens.border}`, color: tokens.fg, fontSize: 12, textDecoration: "none", background: tokens.accent }}
+          >
+            {link.label}
+          </a>
+        ))}
+      </nav>
+      <div style={{ border: `1px solid ${tokens.border}`, borderRadius: 10, padding: 10, background: tokens.card }}>
+        <ProjectSpacePages companyId={companyId} space={space} />
+      </div>
+    </section>
   );
 }
 
