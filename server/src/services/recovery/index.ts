@@ -50,6 +50,8 @@ export {
   SUCCESSFUL_RUN_HANDOFF_OPTIONS,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
+  ROUTINE_EXECUTION_ORIGIN_KIND,
+  activeRoutineContinuationWhere,
   buildFinishSuccessfulRunHandoffIdempotencyKey,
   buildSuccessfulRunHandoffExhaustedNotice,
   buildSuccessfulRunHandoffInstruction,

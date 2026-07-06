@@ -44,6 +44,7 @@ import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
+  activeRoutineContinuationWhere,
   buildSuccessfulRunHandoffExhaustedNotice,
   noticeMetadataReferencesRecoveryAction,
   type SuccessfulRunHandoffNotice,
@@ -606,19 +607,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
-  // A tracker issue whose continuation path is a bound, active routine is not
+  // An issue whose continuation path is a bound, active routine is not
   // "stranded" — the routine (its cron/webhook triggers) is what drives it forward.
   // Nagging it as continuation-needed pushes agents to mis-park it as `blocked`.
-  async function hasActiveBoundRoutine(companyId: string, issueId: string) {
+  // Covers both the routine's parent tracker AND live routine-execution instances
+  // (see activeRoutineContinuationWhere — TWX-1228).
+  async function hasActiveBoundRoutine(issue: {
+    companyId: string;
+    id: string;
+    originKind: string | null;
+    originId: string | null;
+  }) {
     return db
       .select({ id: routines.id })
       .from(routines)
       .where(
-        and(
-          eq(routines.companyId, companyId),
-          eq(routines.parentIssueId, issueId),
-          eq(routines.status, "active"),
-        ),
+        activeRoutineContinuationWhere({
+          companyId: issue.companyId,
+          issueId: issue.id,
+          originKind: issue.originKind,
+          originId: issue.originId,
+        }),
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
@@ -2779,7 +2788,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
-      if (await hasActiveBoundRoutine(issue.companyId, issue.id)) {
+      if (await hasActiveBoundRoutine(issue)) {
         result.skipped += 1;
         continue;
       }

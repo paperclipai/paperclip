@@ -146,6 +146,7 @@ import {
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   RUN_LIVENESS_CONTINUATION_REASON,
+  activeRoutineContinuationWhere,
   buildRunLivenessContinuationIdempotencyKey,
   buildFinishSuccessfulRunHandoffIdempotencyKey,
   buildSuccessfulRunHandoffRequiredNotice,
@@ -5718,6 +5719,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
         projectId: issues.projectId,
+        originKind: issues.originKind,
+        originId: issues.originId,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -5872,11 +5875,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .select({ id: routines.id })
           .from(routines)
           .where(
-            and(
-              eq(routines.companyId, issue.companyId),
-              eq(routines.parentIssueId, issue.id),
-              eq(routines.status, "active"),
-            ),
+            activeRoutineContinuationWhere({
+              companyId: issue.companyId,
+              issueId: issue.id,
+              originKind: issue.originKind,
+              originId: issue.originId,
+            }),
           )
           .limit(1)
           .then((rows) => rows[0] ?? null)

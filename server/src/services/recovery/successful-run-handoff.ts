@@ -1,6 +1,6 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agentWakeupRequests, agents, heartbeatRuns, issues, routines } from "@paperclipai/db";
 import type { IssueCommentMetadata, IssueCommentPresentation, RunLivenessState } from "@paperclipai/shared";
 import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
 
@@ -40,6 +40,42 @@ const IDEMPOTENT_HANDOFF_WAKE_STATUS_SET = new Set<string>(IDEMPOTENT_HANDOFF_WA
 
 export function isIdempotentFinishSuccessfulRunHandoffWakeStatus(status: string) {
   return IDEMPOTENT_HANDOFF_WAKE_STATUS_SET.has(status);
+}
+
+export const ROUTINE_EXECUTION_ORIGIN_KIND = "routine_execution";
+
+/**
+ * Drizzle `where` for "an active routine drives this issue's next action".
+ *
+ * A routine's continuation path binds to an issue in two ways, and BOTH must be
+ * treated as routine-driven so the successful-run-handoff resolver and the
+ * stranded-issue-recovery sweep skip them (TWX-1228):
+ *   1. the issue is the routine's parent tracker (`routines.parentIssueId`), or
+ *   2. the issue is a live routine-execution instance (`originKind ===
+ *      "routine_execution"`, `originId === routine.id`) that the routine
+ *      re-wakes / coalesces into on each fire.
+ *
+ * Case 2 was previously missed: a routine-execution issue left `in_progress`
+ * (the intended posture between fires) was nagged for a disposition, which
+ * agents mis-resolved as `blocked`, triggering CEO recovery — the loop this
+ * helper closes.
+ */
+export function activeRoutineContinuationWhere(input: {
+  companyId: string;
+  issueId: string;
+  originKind: string | null;
+  originId: string | null;
+}) {
+  const boundToTracker = eq(routines.parentIssueId, input.issueId);
+  const boundToExecutionInstance =
+    input.originKind === ROUTINE_EXECUTION_ORIGIN_KIND && input.originId
+      ? eq(routines.id, input.originId)
+      : null;
+  return and(
+    eq(routines.companyId, input.companyId),
+    eq(routines.status, "active"),
+    boundToExecutionInstance ? or(boundToTracker, boundToExecutionInstance) : boundToTracker,
+  );
 }
 
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
