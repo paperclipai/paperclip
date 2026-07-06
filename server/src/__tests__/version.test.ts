@@ -21,9 +21,25 @@ describe("parseGitDescribeVersion", () => {
   it("returns null for unparseable describe output so callers can fall back", () => {
     expect(parseGitDescribeVersion("canary/v2026.706.0-canary.1")).toBeNull();
   });
+
+  it("appends dirty suffix even when on-tag (zero commits since tag)", () => {
+    expect(parseGitDescribeVersion("v2026.626.0-0-g012345678-dirty\n")).toBe(
+      "2026.626.0+0.git.012345678.dirty",
+    );
+  });
 });
 
 describe("resolveServerVersion", () => {
+  it("returns the parsed git-derived version when git describe succeeds", () => {
+    expect(
+      resolveServerVersion({
+        packageVersion: "2026.706.0",
+        gitDescribeCommand: () => "v2026.626.0-58-g518fc71ce\n",
+        debugLog: vi.fn(),
+      }),
+    ).toBe("2026.626.0+58.git.518fc71ce");
+  });
+
   it("falls back to package version without throwing when git is unavailable", () => {
     const debugLog = vi.fn();
 

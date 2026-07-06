@@ -1,6 +1,5 @@
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { logger } from "./middleware/logger.js";
 
 type PackageJson = {
   version?: string;
@@ -14,6 +13,10 @@ const pkg = requirePackage("../package.json") as PackageJson;
 
 const GIT_DESCRIBE_RE =
   /^v(?<publicVersion>\d+\.\d+\.\d+)-(?<commitsSinceTag>\d+)-g(?<sha>[0-9a-f]{7,40})(?<dirty>-dirty)?$/i;
+
+function defaultDebugLog(fields: Record<string, unknown>, message: string): void {
+  console.debug(message, fields);
+}
 
 function defaultGitDescribeCommand(): string {
   return execFileSync(
@@ -52,7 +55,7 @@ export function resolveServerVersion(
 ): string {
   const packageVersion = opts.packageVersion ?? pkg.version ?? "0.0.0";
   const gitDescribeCommand = opts.gitDescribeCommand ?? defaultGitDescribeCommand;
-  const debugLog = opts.debugLog ?? logger.debug.bind(logger);
+  const debugLog = opts.debugLog ?? defaultDebugLog;
 
   try {
     const parsedVersion = parseGitDescribeVersion(gitDescribeCommand());
