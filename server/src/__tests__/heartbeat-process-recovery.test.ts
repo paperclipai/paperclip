@@ -4460,4 +4460,214 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  it("caps stranded_issue_recovery recursion at 5 and surfaces a single cap-exceeded alert (SIN-62364)", async () => {
+    const companyId = randomUUID();
+    const workerAgentId = randomUUID();
+    const ceoAgentId = randomUUID();
+    const rootIssueId = randomUUID();
+    const recoveryIds = Array.from({ length: 5 }, () => randomUUID());
+    const leafIssueId = randomUUID();
+    const leafRunId = randomUUID();
+    const leafWakeupId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const seededAt = new Date("2026-03-19T00:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: workerAgentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: ceoAgentId,
+        companyId,
+        name: "ChiefRecoveryOfficer",
+        role: "ceo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    // Original non-recovery work item that the cascade was first created for.
+    await db.insert(issues).values({
+      id: rootIssueId,
+      companyId,
+      title: "Original stranded source",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: null,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    // Chain of 5 stranded_issue_recovery issues linked via parentId.
+    // recoveryIds[0] is the cascade root (shallowest, parent = original source);
+    // recoveryIds[4] is the deepest recovery (closest to the leaf source) and is the alert idempotency key.
+    for (let i = 0; i < recoveryIds.length; i += 1) {
+      const id = recoveryIds[i];
+      const parentId = i === 0 ? rootIssueId : recoveryIds[i - 1];
+      await db.insert(issues).values({
+        id,
+        companyId,
+        parentId,
+        title: `Stranded recovery layer ${i + 1}`,
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: null,
+        originKind: "stranded_issue_recovery",
+        originId: parentId,
+        originFingerprint: `stranded_issue_recovery:${companyId}:${parentId}:no-run`,
+        issueNumber: i + 2,
+        identifier: `${issuePrefix}-${i + 2}`,
+      });
+    }
+
+    // The "deepest leaf" newly stranded source whose parentId chain has 5 recoveries above it.
+    await db.insert(agentWakeupRequests).values({
+      id: leafWakeupId,
+      companyId,
+      agentId: workerAgentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assignment_recovery",
+      payload: { issueId: leafIssueId },
+      status: "failed",
+      runId: leafRunId,
+      claimedAt: seededAt,
+      finishedAt: new Date("2026-03-19T00:05:00.000Z"),
+      error: "run failed before issue advanced",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: leafRunId,
+      companyId,
+      agentId: workerAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "failed",
+      wakeupRequestId: leafWakeupId,
+      contextSnapshot: {
+        issueId: leafIssueId,
+        taskId: leafIssueId,
+        wakeReason: "issue_assignment_recovery",
+        retryReason: "assignment_recovery",
+      },
+      startedAt: seededAt,
+      finishedAt: new Date("2026-03-19T00:05:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:05:00.000Z"),
+      errorCode: "process_lost",
+      error: "run failed before issue advanced",
+    });
+
+    await db.insert(issues).values({
+      id: leafIssueId,
+      companyId,
+      parentId: recoveryIds[recoveryIds.length - 1],
+      title: "Deepest leaf newly stranded under 5-deep cascade",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: workerAgentId,
+      issueNumber: recoveryIds.length + 2,
+      identifier: `${issuePrefix}-${recoveryIds.length + 2}`,
+    });
+
+    const heartbeat = heartbeatService(db);
+
+    const firstResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(firstResult.escalated).toBe(1);
+    expect(firstResult.issueIds).toContain(leafIssueId);
+
+    // Cap fires: no NEW stranded_issue_recovery issue was created.
+    const recoveriesAfter = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveriesAfter).toHaveLength(recoveryIds.length);
+
+    // Exactly one stranded_recovery_cap_exceeded alert exists, keyed off the deepest recovery ancestor.
+    const alertsAfterFirst = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_recovery_cap_exceeded")));
+    expect(alertsAfterFirst).toHaveLength(1);
+    const alert = alertsAfterFirst[0];
+    expect(alert).toMatchObject({
+      companyId,
+      originKind: "stranded_recovery_cap_exceeded",
+      originId: recoveryIds[recoveryIds.length - 1],
+      priority: "critical",
+      parentId: null,
+      assigneeAgentId: ceoAgentId,
+    });
+    // Alert is created as "todo"; the same reconcile pass may dispatch it to the
+    // CEO assignee, advancing it to "in_progress". Either is healthy — what matters
+    // is that it's not already terminal.
+    expect(alert.status === "todo" || alert.status === "in_progress").toBe(true);
+    expect(alert.title).toContain("Stranded recovery cap exceeded");
+    expect(alert.description).toContain("Configured cap: `5`");
+    expect(alert.description).toContain(recoveryIds[0]);
+    expect(alert.description).toContain("Triggering source issue");
+    expect(alert.description).toContain(`${issuePrefix}-${recoveryIds.length + 2}`);
+
+    const leafAfterFirst = await db.select().from(issues).where(eq(issues.id, leafIssueId)).then((rows) => rows[0]);
+    expect(leafAfterFirst?.status).toBe("blocked");
+
+    // Settle any wake the cap-exceeded alert may have spawned for its assignee.
+    const ceoWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, ceoAgentId));
+    for (const wake of ceoWakeups) {
+      if (wake.runId) await waitForRunToSettle(heartbeat, wake.runId);
+    }
+
+    // Idempotency: reset the leaf to todo and reconcile again. The cap walks the same
+    // chain, finds the existing alert keyed by the deepest recovery, and does NOT create another.
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, leafIssueId));
+    // The previous escalation may have wired the leaf's blockers via issue_relations; clear those too so
+    // reconcile re-evaluates the leaf cleanly.
+    await db.delete(issueRelations).where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.relatedIssueId, leafIssueId)));
+
+    const secondResult = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(secondResult.escalated).toBeGreaterThanOrEqual(1);
+
+    const alertsAfterSecond = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_recovery_cap_exceeded")));
+    expect(alertsAfterSecond).toHaveLength(1);
+    expect(alertsAfterSecond[0]?.id).toBe(alert.id);
+
+    const recoveriesAfterSecond = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveriesAfterSecond).toHaveLength(recoveryIds.length);
+
+    // Settle any further wakes the second pass may have spawned.
+    const allWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    for (const wake of allWakeups) {
+      if (wake.runId) await waitForRunToSettle(heartbeat, wake.runId);
+    }
+  });
 });

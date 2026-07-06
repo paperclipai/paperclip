@@ -76,7 +76,11 @@ export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
+const STRANDED_RECOVERY_CAP_EXCEEDED_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedRecoveryCapExceeded;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
+// A healthy adapter resolves a stranded source within 1–2 recovery hops. Cap at 5 to
+// surface a single CEO-visible alert instead of letting a failing adapter cascade.
+export const STRANDED_ISSUE_RECOVERY_DEPTH_CAP = 5;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
@@ -2164,6 +2168,214 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return null;
   }
 
+  async function walkStrandedIssueRecoveryAncestors(
+    companyId: string,
+    sourceIssue: Pick<typeof issues.$inferSelect, "id" | "originKind" | "parentId">,
+  ): Promise<{ count: number; chain: string[]; deepestRecoveryId: string | null }> {
+    // Walks parentId from source upward, collecting any contiguous run of
+    // stranded_issue_recovery ancestors. The first recovery encountered (closest to
+    // the source = greatest tree depth) is the alert's idempotency anchor.
+    const chain: string[] = [];
+    let cursor: Pick<typeof issues.$inferSelect, "id" | "originKind" | "parentId"> | null = sourceIssue;
+    // Hard stop guards against pathological tree depths or unexpected cycles.
+    const safetyLimit = Math.max(STRANDED_ISSUE_RECOVERY_DEPTH_CAP, 1) * 4;
+
+    for (let hops = 0; cursor && hops <= safetyLimit; hops += 1) {
+      if (isStrandedIssueRecoveryOriginKind(cursor.originKind)) {
+        chain.push(cursor.id);
+      } else if (chain.length > 0) {
+        // Non-recovery ancestor terminates the contiguous recovery chain.
+        break;
+      }
+
+      if (!cursor.parentId) break;
+      cursor = await db
+        .select({
+          id: issues.id,
+          originKind: issues.originKind,
+          parentId: issues.parentId,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, cursor.parentId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+    }
+
+    return { count: chain.length, chain, deepestRecoveryId: chain[0] ?? null };
+  }
+
+  async function findOpenStrandedRecoveryCapExceededAlertIssue(
+    companyId: string,
+    deepestRecoveryId: string,
+  ) {
+    return db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, STRANDED_RECOVERY_CAP_EXCEEDED_ORIGIN_KIND),
+          eq(issues.originId, deepestRecoveryId),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .orderBy(desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  function buildStrandedRecoveryCapExceededDescription(input: {
+    sourceIssue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    chain: string[];
+    deepestRecoveryId: string;
+    cap: number;
+    prefix: string;
+  }) {
+    const sourceLink = issueUiLink(
+      { identifier: input.sourceIssue.identifier, id: input.sourceIssue.id },
+      input.prefix,
+    );
+    const deepestLink = `[${input.deepestRecoveryId}](/${input.prefix}/issues/${input.deepestRecoveryId})`;
+    const runLink = input.latestRun
+      ? `[\`${input.latestRun.id}\`](/${input.prefix}/agents/${input.latestRun.agentId}/runs/${input.latestRun.id})`
+      : "none";
+    const errorCode = readNonEmptyString(input.latestRun?.errorCode) ?? "unknown";
+    const runStatus = input.latestRun?.status ?? "unknown";
+    const chainList = input.chain
+      .map((id, idx) => `  ${idx + 1}. [${id}](/${input.prefix}/issues/${id})`)
+      .join("\n");
+
+    return [
+      `Paperclip detected a chain of \`${input.cap}\` or more \`stranded_issue_recovery\` issues without resolution. The recursive recovery path was halted; this alert is the single hand-off for the cascade.`,
+      "",
+      "## Cap",
+      "",
+      `- Configured cap: \`${input.cap}\``,
+      `- Deepest recovery ancestor (idempotency key): ${deepestLink}`,
+      `- Triggering source issue: ${sourceLink}`,
+      `- Latest source run: ${runLink}`,
+      `- Latest source run status: \`${runStatus}\``,
+      `- Latest source run errorCode: \`${errorCode}\``,
+      "",
+      "## Recovery chain (source → cascade root)",
+      "",
+      chainList,
+      "",
+      "## Required action",
+      "",
+      "- Investigate the underlying adapter or runtime failure that prevented earlier recoveries from succeeding.",
+      "- Resolve or cancel the cascade chain manually so future stranded sources do not re-trip this cap.",
+      "- When the root cause is fixed and the chain is in a terminal state, mark this alert issue done.",
+    ].join("\n");
+  }
+
+  async function ensureStrandedRecoveryCapExceededAlertIssue(input: {
+    sourceIssue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    recoveryChain: string[];
+    deepestRecoveryId: string;
+  }) {
+    const existing = await findOpenStrandedRecoveryCapExceededAlertIssue(
+      input.sourceIssue.companyId,
+      input.deepestRecoveryId,
+    );
+    if (existing) return existing;
+
+    const deepestRecovery = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, input.sourceIssue.companyId),
+          eq(issues.id, input.deepestRecoveryId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    // Reuse the regular recovery routing convention so the alert lands with the same
+    // CEO/CTO-tier candidate that would normally own a recovery.
+    const ownerSeed = deepestRecovery ?? input.sourceIssue;
+    const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(ownerSeed);
+    if (!ownerAgentId) return null;
+
+    const prefix = await getCompanyIssuePrefix(input.sourceIssue.companyId);
+    const description = buildStrandedRecoveryCapExceededDescription({
+      sourceIssue: input.sourceIssue,
+      latestRun: input.latestRun,
+      chain: input.recoveryChain,
+      deepestRecoveryId: input.deepestRecoveryId,
+      cap: STRANDED_ISSUE_RECOVERY_DEPTH_CAP,
+      prefix,
+    });
+
+    const alert = await issuesSvc.create(input.sourceIssue.companyId, {
+      title: "Stranded recovery cap exceeded — likely failing adapter",
+      description,
+      status: "todo",
+      priority: "critical",
+      parentId: null,
+      projectId: input.sourceIssue.projectId,
+      goalId: input.sourceIssue.goalId,
+      assigneeAgentId: ownerAgentId,
+      originKind: STRANDED_RECOVERY_CAP_EXCEEDED_ORIGIN_KIND,
+      originId: input.deepestRecoveryId,
+      originRunId: input.latestRun?.id ?? null,
+      originFingerprint: [
+        STRANDED_RECOVERY_CAP_EXCEEDED_ORIGIN_KIND,
+        input.sourceIssue.companyId,
+        input.deepestRecoveryId,
+      ].join(":"),
+      billingCode: input.sourceIssue.billingCode,
+    });
+
+    await deps.enqueueWakeup(ownerAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: {
+        issueId: alert.id,
+        sourceIssueId: input.sourceIssue.id,
+        deepestRecoveryId: input.deepestRecoveryId,
+      },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: {
+        issueId: alert.id,
+        taskId: alert.id,
+        wakeReason: "issue_assigned",
+        source: STRANDED_RECOVERY_CAP_EXCEEDED_ORIGIN_KIND,
+        sourceIssueId: input.sourceIssue.id,
+        deepestRecoveryId: input.deepestRecoveryId,
+      },
+    });
+
+    await logActivity(db, {
+      companyId: input.sourceIssue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: null,
+      runId: null,
+      action: "issue.created",
+      entityType: "issue",
+      entityId: alert.id,
+      details: {
+        identifier: alert.identifier,
+        source: "recovery.stranded_recovery_cap_exceeded",
+        cap: STRANDED_ISSUE_RECOVERY_DEPTH_CAP,
+        deepestRecoveryId: input.deepestRecoveryId,
+        sourceIssueId: input.sourceIssue.id,
+        recoveryChain: input.recoveryChain,
+        latestRunId: input.latestRun?.id ?? null,
+        latestRunErrorCode: input.latestRun?.errorCode ?? null,
+      },
+    });
+
+    return alert;
+  }
+
   function buildStrandedIssueRecoveryDescription(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
@@ -2258,6 +2470,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
+    // Cap recursion: if the source issue already sits under a chain of
+    // STRANDED_ISSUE_RECOVERY_DEPTH_CAP or more recovery ancestors, do not create
+    // another recovery — surface a single CEO-routed alert instead. Defends
+    // against the adapter-failure cascade documented in SIN-62359.
+    const ancestry = await walkStrandedIssueRecoveryAncestors(input.issue.companyId, input.issue);
+    if (ancestry.count >= STRANDED_ISSUE_RECOVERY_DEPTH_CAP && ancestry.deepestRecoveryId) {
+      // Returning the alert lets the caller block the source on it via
+      // blockedByIssueIds without making the alert a child of the cascade chain.
+      return ensureStrandedRecoveryCapExceededAlertIssue({
+        sourceIssue: input.issue,
+        latestRun: input.latestRun,
+        recoveryChain: ancestry.chain,
+        deepestRecoveryId: ancestry.deepestRecoveryId,
+      });
+    }
+
     if (isStrandedIssueRecoveryIssue(input.issue)) return null;
 
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
