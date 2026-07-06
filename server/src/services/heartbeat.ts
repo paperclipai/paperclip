@@ -270,7 +270,7 @@ const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_r
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
-const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
+const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress", "in_review"] as const;
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -8659,6 +8659,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   function parseHeartbeatPolicy(agent: typeof agents.$inferSelect) {
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
+    const allowIdleTimerWakes = asBoolean(
+      heartbeat.allowIdleTimerWakes ??
+        heartbeat.allowGenericTimerWakes ??
+        heartbeat.allowIdleHeartbeat,
+      false,
+    );
 
     return {
       enabled: asBoolean(heartbeat.enabled, false),
@@ -8669,7 +8675,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         heartbeat.skipTimerWhenNoActionableWork ??
           heartbeat.requireActionableTimerWork ??
           heartbeat.issueOnlyTimer,
-        false,
+        !allowIdleTimerWakes,
       ),
       maxDailyRuns: normalizeOptionalNonNegativeInteger(
         heartbeat.maxDailyRuns ?? heartbeat.dailyRunLimit ?? heartbeat.dailyRunCap ?? heartbeat.maxRunsPerDay,
@@ -13219,7 +13225,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       !readNonEmptyString(enrichedContextSnapshot.taskKey);
     if (policy.skipTimerWhenNoActionableWork && genericTimerWake && !(await hasActionableTimerWork(agent))) {
       await writeSkippedHeartbeatRequest("heartbeat.timer.no_actionable_work", {
-        reason: "No assigned todo or in_progress issue requires this agent before timer adapter invocation.",
+        reason: "No assigned todo, in_progress, or in_review issue requires this agent before timer adapter invocation.",
       });
       await markTimerHeartbeatChecked(agentId, source);
       return null;
