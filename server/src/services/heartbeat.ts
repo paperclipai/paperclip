@@ -231,11 +231,14 @@ import {
   type EffectiveRunConfigSecretManifestEntry,
 } from "./effective-run-config-fingerprints.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { loadConfig } from "../config.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
+const CONTINUATION_BACKOFF_MAX_MS = 600_000;
+const delayedQueuedRunStarts = new Map<string, number>();
 
 export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   summary: string,
@@ -4794,9 +4797,16 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
+  issueContinuationCap?: number;
+  continuationBaseDelayMs?: number;
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
+  const config = loadConfig();
+  const issueContinuationCap = Math.max(1, Math.min(200, Math.floor(options.issueContinuationCap ?? config.issueContinuationCap)));
+  const continuationBaseDelayMs = Math.max(0, Math.min(CONTINUATION_BACKOFF_MAX_MS, Math.floor(
+    options.continuationBaseDelayMs ?? config.continuationBaseDelayMs,
+  )));
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -9780,6 +9790,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.reconcileIssueGraphLiveness(opts);
   }
 
+  function continuationStartDelayMs(existingAutomationRunCount: number) {
+    if (existingAutomationRunCount <= 0 || continuationBaseDelayMs <= 0) return 0;
+    return Math.min(
+      continuationBaseDelayMs * (2 ** existingAutomationRunCount),
+      CONTINUATION_BACKOFF_MAX_MS,
+    );
+  }
+
+  function scheduleDelayedQueuedRunStart(run: typeof heartbeatRuns.$inferSelect, delayMs: number) {
+    if (delayMs <= 0) return;
+    const notBeforeMs = Date.now() + delayMs;
+    delayedQueuedRunStarts.set(run.id, notBeforeMs);
+    // The delay is process-local by design; if the server restarts,
+    // resumeQueuedRuns picks the queued run up on the next scheduler sweep.
+    const timeout = setTimeout(() => {
+      delayedQueuedRunStarts.delete(run.id);
+      void startNextQueuedRunForAgent(run.agentId).catch((err) => {
+        logger.error(
+          { err, runId: run.id, agentId: run.agentId, delayMs },
+          "delayed continuation queued run start failed",
+        );
+      });
+    }, delayMs);
+    timeout.unref?.();
+  }
+
   async function updateRuntimeState(
     agent: typeof agents.$inferSelect,
     run: typeof heartbeatRuns.$inferSelect,
@@ -9856,11 +9892,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
         .orderBy(asc(heartbeatRuns.createdAt));
-      if (queuedRuns.length === 0) return [];
+      const nowMs = Date.now();
+      const startableQueuedRuns = queuedRuns.filter((queuedRun) => {
+        const notBeforeMs = delayedQueuedRunStarts.get(queuedRun.id);
+        if (notBeforeMs === undefined) return true;
+        if (nowMs >= notBeforeMs) {
+          delayedQueuedRunStarts.delete(queuedRun.id);
+          return true;
+        }
+        return false;
+      });
+      if (startableQueuedRuns.length === 0) return [];
 
-      const dependencyReadiness = await listQueuedRunDependencyReadiness(agent.companyId, queuedRuns);
+      const dependencyReadiness = await listQueuedRunDependencyReadiness(agent.companyId, startableQueuedRuns);
       const queuedIssueIds = [...new Set(
-        queuedRuns
+        startableQueuedRuns
           .map((run) => readNonEmptyString(parseObject(run.contextSnapshot).issueId))
           .filter((issueId): issueId is string => Boolean(issueId)),
       )];
@@ -9878,7 +9924,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
+      const prioritizedRuns = [...startableQueuedRuns].sort((left, right) => {
         const leftIssueId = readNonEmptyString(parseObject(left.contextSnapshot).issueId);
         const rightIssueId = readNonEmptyString(parseObject(right.contextSnapshot).issueId);
         const leftReadiness = leftIssueId ? dependencyReadiness.get(leftIssueId) : null;
@@ -12842,15 +12888,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
-      const shouldBlockImmediately =
-        !recoveryAgentInvokable ||
-        !recoveryAgent ||
-        isWorkspaceValidationFailedRun(run) ||
-        isConfigurationIncompleteFailedRun(run) ||
-        didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
-      if (shouldBlockImmediately) {
-        const workspaceValidationFailure = isWorkspaceValidationFailedRun(run);
-        const configurationIncompleteFailure = isConfigurationIncompleteFailedRun(run);
+      const blockedPromotion = (
+        recoveryCause?: typeof WORKSPACE_VALIDATION_RECOVERY_CAUSE | typeof CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE,
+      ) => {
+        const workspaceValidationFailure = recoveryCause === WORKSPACE_VALIDATION_RECOVERY_CAUSE;
+        const configurationIncompleteFailure = recoveryCause === CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE;
         const comment = workspaceValidationFailure
           ? buildWorkspaceValidationRecoveryComment({ latestRun: run })
           : configurationIncompleteFailure
@@ -12870,6 +12912,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
               : undefined,
         };
+      };
+
+      const shouldBlockImmediately =
+        !recoveryAgentInvokable ||
+        !recoveryAgent ||
+        isWorkspaceValidationFailedRun(run) ||
+        isConfigurationIncompleteFailedRun(run) ||
+        didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
+      if (shouldBlockImmediately) {
+        return blockedPromotion(
+          isWorkspaceValidationFailedRun(run)
+            ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
+            : isConfigurationIncompleteFailedRun(run)
+              ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
+              : undefined,
+        );
+      }
+
+      const recoveryAgentPolicy = parseHeartbeatPolicy(recoveryAgent);
+      if (!recoveryAgentPolicy.wakeOnDemand) {
+        logger.warn(
+          { agentId: recoveryAgent.id, issueId: issue.id },
+          `wakeOnDemand disabled for agent ${recoveryAgent.id} - not auto-continuing issue ${issue.id}`,
+        );
+        return blockedPromotion();
+      }
+
+      const automationRunCountRow = await tx
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, issue.companyId),
+            eq(heartbeatRuns.invocationSource, "automation"),
+            eq(heartbeatRuns.triggerDetail, "system"),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      const automationRunCount = Number(automationRunCountRow?.count ?? 0);
+      if (automationRunCount >= issueContinuationCap) {
+        logger.warn(
+          { issueId: issue.id, automationRunCount, issueContinuationCap },
+          `continuation budget exhausted for issue ${issue.id}: ${automationRunCount} automation runs - blocking`,
+        );
+        return blockedPromotion();
       }
 
       const retryReason = issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed";
@@ -12965,6 +13053,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return {
         kind: "queued_recovery" as const,
         run: queuedRun,
+        automationRunCount,
       };
     });
 
@@ -12998,6 +13087,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const promotedRun = promotionResult?.run ?? null;
     if (!promotedRun) return;
+    const queuedRecoveryAutomationRunCount =
+      promotionResult?.kind === "queued_recovery" ? promotionResult.automationRunCount : null;
+    const queuedRecoveryStartDelayMs =
+      queuedRecoveryAutomationRunCount !== null
+        ? continuationStartDelayMs(queuedRecoveryAutomationRunCount)
+        : 0;
+    if (queuedRecoveryStartDelayMs > 0) {
+      scheduleDelayedQueuedRunStart(promotedRun, queuedRecoveryStartDelayMs);
+      logger.info(
+        {
+          runId: promotedRun.id,
+          agentId: promotedRun.agentId,
+          delayMs: queuedRecoveryStartDelayMs,
+          automationRunCount: queuedRecoveryAutomationRunCount,
+        },
+        "scheduled queued recovery run after continuation backoff",
+      );
+    }
 
     if (promotionResult?.kind === "promoted" && promotionResult.reopenedActivity) {
       await logActivity(db, promotionResult.reopenedActivity);
@@ -13015,7 +13122,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
 
-    await startNextQueuedRunForAgent(promotedRun.agentId);
+    if (queuedRecoveryStartDelayMs === 0) {
+      await startNextQueuedRunForAgent(promotedRun.agentId);
+    }
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {

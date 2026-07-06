@@ -85,8 +85,17 @@ export interface Config {
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
   heartbeatSchedulerIntervalMs: number;
+  issueContinuationCap: number;
+  continuationBaseDelayMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+}
+
+function readClampedIntegerEnv(name: string, defaultValue: number, min: number, max: number) {
+  const raw = process.env[name];
+  const parsed = raw === undefined ? NaN : Number(raw);
+  const value = Number.isFinite(parsed) ? Math.floor(parsed) : defaultValue;
+  return Math.max(min, Math.min(max, value));
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -265,6 +274,13 @@ export function loadConfig(): Config {
       fileDatabaseBackup?.dir ??
       resolveDefaultBackupDir(),
   );
+  const issueContinuationCap = readClampedIntegerEnv("PAPERCLIP_ISSUE_CONTINUATION_CAP", 10, 1, 200);
+  const continuationBaseDelayMs = readClampedIntegerEnv(
+    "PAPERCLIP_CONTINUATION_BASE_DELAY_MS",
+    15_000,
+    0,
+    600_000,
+  );
   const bindValidationErrors = validateConfiguredBindMode({
     deploymentMode,
     deploymentExposure,
@@ -331,6 +347,8 @@ export function loadConfig(): Config {
     feedbackExportBackendToken,
     heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
+    issueContinuationCap,
+    continuationBaseDelayMs,
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
   };

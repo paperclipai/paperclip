@@ -282,10 +282,13 @@ async function spawnOrphanedProcessGroup() {
 describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let previousContinuationBaseDelayMs: string | undefined;
   const childProcesses = new Set<ChildProcess>();
   const cleanupPids = new Set<number>();
 
   beforeAll(async () => {
+    previousContinuationBaseDelayMs = process.env.PAPERCLIP_CONTINUATION_BASE_DELAY_MS;
+    process.env.PAPERCLIP_CONTINUATION_BASE_DELAY_MS = "5";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
@@ -427,6 +430,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   afterAll(async () => {
+    if (previousContinuationBaseDelayMs === undefined) {
+      delete process.env.PAPERCLIP_CONTINUATION_BASE_DELAY_MS;
+    } else {
+      process.env.PAPERCLIP_CONTINUATION_BASE_DELAY_MS = previousContinuationBaseDelayMs;
+    }
     for (const child of childProcesses) {
       child.kill("SIGKILL");
     }
@@ -453,6 +461,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    runtimeConfig?: Record<string, unknown>;
     contextSnapshot?: Record<string, unknown>;
   }) {
     const companyId = randomUUID();
@@ -479,7 +488,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: input?.agentStatus ?? "paused",
       adapterType: input?.adapterType ?? "codex_local",
       adapterConfig: {},
-      runtimeConfig: {},
+      runtimeConfig: input?.runtimeConfig ?? {},
       permissions: {},
     });
 
@@ -533,6 +542,37 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
+  }
+
+  async function seedIssueAutomationRuns(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    count: number;
+  }) {
+    const now = new Date("2026-03-19T00:01:00.000Z");
+    if (input.count <= 0) return [];
+    const rows = Array.from({ length: input.count }, () => ({
+      id: randomUUID(),
+      companyId: input.companyId,
+      agentId: input.agentId,
+      invocationSource: "automation" as const,
+      triggerDetail: "system" as const,
+      status: "failed" as const,
+      contextSnapshot: {
+        issueId: input.issueId,
+        taskId: input.issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+      },
+      errorCode: "test_existing_continuation",
+      error: "existing continuation attempt",
+      startedAt: now,
+      finishedAt: now,
+      updatedAt: now,
+    }));
+    await db.insert(heartbeatRuns).values(rows);
+    return rows;
   }
 
   async function seedEnvironmentLeaseFixture(input: {
@@ -1315,6 +1355,111 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(lease?.status).toBe("failed");
     expect(lease?.releasedAt).toBeTruthy();
+  });
+
+  it("blocks direct continuation requeue when the per-issue automation budget is exhausted", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+    });
+    await seedIssueAutomationRuns({ companyId, agentId, issueId, count: 2 });
+    const heartbeat = heartbeatService(db, {
+      issueContinuationCap: 2,
+      continuationBaseDelayMs: 5,
+    });
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const directContinuations = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.retryOfRunId, runId), eq(heartbeatRuns.invocationSource, "automation")));
+    expect(directContinuations).toHaveLength(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
+    await waitForHeartbeatIdle(db);
+  });
+
+  it("leaves below-cap direct continuation queued until the exponential backoff elapses", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+    });
+    await seedIssueAutomationRuns({ companyId, agentId, issueId, count: 1 });
+    const heartbeat = heartbeatService(db, {
+      issueContinuationCap: 10,
+      continuationBaseDelayMs: 25,
+    });
+    const executeCallsBeforeReap = mockAdapterExecute.mock.calls.length;
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const [retryRun] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.retryOfRunId, runId), eq(heartbeatRuns.invocationSource, "automation")));
+    expect(retryRun).toBeTruthy();
+    expect(retryRun?.status).toBe("queued");
+    expect((retryRun?.contextSnapshot as Record<string, unknown> | undefined)?.retryReason).toBe(
+      "issue_continuation_needed",
+    );
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(executeCallsBeforeReap);
+
+    const startedRun = await waitForValue(async () => {
+      if (!retryRun) return null;
+      const row = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, retryRun.id)).then((rows) => rows[0] ?? null);
+      return row && row.status !== "queued" ? row : null;
+    }, 2_000);
+    expect(["running", "succeeded"]).toContain(startedRun?.status);
+    expect(mockAdapterExecute.mock.calls.length).toBeGreaterThan(executeCallsBeforeReap);
+    if (retryRun) {
+      const settledRun = await waitForRunToSettle(heartbeat, retryRun.id, 2_000);
+      expect(settledRun?.status).toBe("succeeded");
+    }
+  });
+
+  it("blocks direct continuation requeue when wakeOnDemand is disabled", async () => {
+    const { agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      processLossRetryCount: 1,
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: false,
+          maxConcurrentRuns: 1,
+        },
+      },
+    });
+    const heartbeat = heartbeatService(db, {
+      issueContinuationCap: 10,
+      continuationBaseDelayMs: 5,
+    });
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const directContinuations = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.retryOfRunId, runId), eq(heartbeatRuns.invocationSource, "automation")));
+    expect(directContinuations).toHaveLength(0);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.assigneeAgentId).toBe(agentId);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBeNull();
+    await waitForHeartbeatIdle(db);
   });
 
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {
