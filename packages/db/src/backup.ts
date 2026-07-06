@@ -36,7 +36,7 @@ function asPositiveInt(value: unknown): number | null {
 }
 
 function resolveEmbeddedPort(config: PartialConfig | null): number {
-  return asPositiveInt(config?.database?.embeddedPostgresPort) ?? 54329;
+  return asPositiveInt(config?.database?.embeddedPostgresPort) ?? 54000;
 }
 
 function resolveConnectionString(config: PartialConfig | null): string {
