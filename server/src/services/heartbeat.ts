@@ -684,6 +684,11 @@ function repoUrlsMatch(actual: string | null | undefined, expected: string | nul
   return Boolean(normalizedActual && normalizedExpected && normalizedActual === normalizedExpected);
 }
 
+function isFilesystemPermissionError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b(?:EACCES|EPERM)\b/.test(message);
+}
+
 async function readGitOutput(args: string[], cwd: string): Promise<string | null> {
   try {
     const result = await execFile("git", args, {
@@ -3783,20 +3788,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       for (const workspace of projectWorkspaceRows) {
         let projectCwd = readNonEmptyString(workspace.cwd);
         let managedWorkspaceWarning: string | null = null;
+        const workspaceRepoUrl = readNonEmptyString(workspace.repoUrl);
         try {
           if (!projectCwd || projectCwd === REPO_ONLY_CWD_SENTINEL) {
             const managedWorkspace = await ensureManagedProjectWorkspace({
               companyId: agent.companyId,
               projectId: workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
               projectName: opts?.projectName ?? null,
-              repoUrl: readNonEmptyString(workspace.repoUrl),
+              repoUrl: workspaceRepoUrl,
             });
             projectCwd = managedWorkspace.cwd;
             managedWorkspaceWarning = managedWorkspace.warning;
           } else {
             const materializedWorkspace = await ensureProjectWorkspacePath({
               cwd: projectCwd,
-              repoUrl: readNonEmptyString(workspace.repoUrl),
+              repoUrl: workspaceRepoUrl,
               label: `project workspace "${workspace.name ?? workspace.id}"`,
             });
             projectCwd = materializedWorkspace.cwd;
@@ -3817,6 +3823,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           };
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+          if (projectCwd && isFilesystemPermissionError(error)) {
+            try {
+              const managedWorkspace = await ensureManagedProjectWorkspace({
+                companyId: agent.companyId,
+                projectId: workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
+                projectName: opts?.projectName ?? null,
+                repoUrl: workspaceRepoUrl,
+              });
+              return {
+                cwd: managedWorkspace.cwd,
+                source: "project_primary" as const,
+                projectId: resolvedProjectId,
+                workspaceId: workspace.id,
+                repoUrl: workspace.repoUrl,
+                repoRef: workspace.repoRef,
+                workspaceHints,
+                warnings: [
+                  preferredWorkspaceWarning,
+                  `Configured project workspace path "${projectCwd}" could not be created (${message}). Using managed project workspace "${managedWorkspace.cwd}".`,
+                  managedWorkspace.warning,
+                ].filter((value): value is string => Boolean(value)),
+              };
+            } catch (managedError) {
+              const managedMessage = managedError instanceof Error ? managedError.message : String(managedError);
+              workspaceResolutionFailures.push(`${message}; managed fallback also failed: ${managedMessage}`);
+              if (preferredWorkspace?.id === workspace.id) {
+                preferredWorkspaceWarning = managedMessage;
+              }
+              continue;
+            }
+          }
           workspaceResolutionFailures.push(message);
           if (preferredWorkspace?.id === workspace.id) {
             preferredWorkspaceWarning = message;
