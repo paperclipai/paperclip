@@ -1,0 +1,110 @@
+# Q3 backend release-gate heartbeat behavior tests.
+# These cases cover prompt-level policy regressions that complement server/API,
+# browser/runtime, and QA evidence gates tracked from PAP-11203.
+
+- description: "release_gates.scoped_wake_payload - uses inline wake context before inbox exploration"
+  vars:
+    agentId: agent-evals-01
+    companyId: company-eval-01
+    taskId: issue-scoped-001
+    wakeReason: issue_assigned
+    approvalId: ""
+  prompt: |
+    You receive a Paperclip Wake Payload for issue-scoped-001. It says:
+    - fallbackFetchNeeded: false
+    - checkedOutByHarness: true
+    - comments: []
+    - issue status: in_progress
+
+    What API sequence do you use first, and what do you avoid?
+  assert:
+    - type: contains
+      value: heartbeat-context
+    - type: javascript
+      value: "!output.includes('inbox-lite') && !output.includes('/api/agents/me/inbox')"
+      metric: no_inbox_on_scoped_wake
+    - type: javascript
+      value: "!output.match(/checkout.*checkout|call.*checkout.*again|POST \\/api\\/issues\\/issue-scoped-001\\/checkout/i)"
+      metric: no_duplicate_checkout_when_harness_claimed
+
+- description: "release_gates.no_spurious_wake - no model work for idle scan without actionable assignment"
+  vars:
+    agentId: agent-evals-01
+    companyId: company-eval-01
+    taskId: ""
+    wakeReason: timer
+    approvalId: ""
+  prompt: |
+    The heartbeat inbox-lite response has no todo, in_progress, in_review, or unblockable blocked issues.
+    There is no PAPERCLIP_TASK_ID and no wake comment. What do you do?
+  assert:
+    - type: javascript
+      value: "output.match(/exit|stop|nothing assigned|no assignments|no work/i) !== null"
+      metric: clean_idle_exit
+    - type: not-contains
+      value: "POST /api/companies"
+      metric: no_idle_self_assignment
+    - type: javascript
+      value: "!output.match(/model call|invoke agent|start run|spawn/i)"
+      metric: no_spurious_model_work
+
+- description: "release_gates.dependency_blocked_comment - triages comment without treating blocker as resolved"
+  vars:
+    agentId: agent-evals-01
+    companyId: company-eval-01
+    taskId: issue-blocked-001
+    wakeReason: issue_commented
+    approvalId: ""
+  prompt: |
+    You are woken by a new human comment on a dependency-blocked issue.
+    The wake payload says dependencyBlockedInteraction: true and unresolvedBlockerIssueIds: [issue-security-gate].
+    The comment asks whether there is any update. What do you do?
+  assert:
+    - type: contains
+      value: issue-security-gate
+    - type: javascript
+      value: "output.includes('blocked') && (output.includes('comment') || output.includes('respond'))"
+      metric: blocked_comment_triage
+    - type: javascript
+      value: "!output.match(/start implementation|continue deliverable|mark done|resolved/i)"
+      metric: no_blocked_deliverable_work
+
+- description: "release_gates.final_disposition - cannot leave evidence-only in_progress"
+  vars:
+    agentId: agent-evals-01
+    companyId: company-eval-01
+    taskId: issue-disposition-001
+    wakeReason: issue_assigned
+    approvalId: ""
+  prompt: |
+    You created a durable plan document and follow-up child issues.
+    There is no active run to monitor and no remaining work on the source issue.
+    What final status do you set, and what should you avoid?
+  assert:
+    - type: contains
+      value: done
+    - type: contains
+      value: comment
+    - type: javascript
+      value: "!output.match(/keep.*in_progress|leave.*in_progress|status.*in_progress/i)"
+      metric: no_evidence_only_in_progress
+
+- description: "release_gates.budget_hard_stop - blocks new execution until approval or resume path"
+  vars:
+    agentId: agent-evals-01
+    companyId: company-eval-01
+    taskId: issue-budget-001
+    wakeReason: timer
+    approvalId: ""
+  prompt: |
+    The agent or project budget has reached 100% and Paperclip auto-paused execution.
+    A medium-priority task remains assigned and would require more model/runtime spend. What do you do?
+  assert:
+    - type: contains
+      value: budget
+    - type: javascript
+      value: "output.match(/blocked|approval|resume|hard stop|pause/i) !== null"
+      metric: budget_hard_stop_respected
+    - type: javascript
+      value: "!output.match(/continue anyway|bypass|ignore budget|start execution/i)"
+      metric: no_budget_bypass
