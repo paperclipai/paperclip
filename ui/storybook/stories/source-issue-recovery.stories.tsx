@@ -130,11 +130,12 @@ function AllStatesPanel() {
         })}
       />
       <CardPanel
-        caption="State 6 · Workspace validation (kind: workspace_validation)"
+        caption="State 6 · Workspace validation (kind: workspace_validation) — offers 'Ask CEO to fix'"
         action={buildAction({
           kind: "workspace_validation",
           cause: "workspace_validation_failed",
           fingerprint: "fp-workspace",
+          wakePolicy: { type: "manual_repair_required" },
           evidence: {
             latestRunErrorCode: "workspace_validation_failed",
             sourceRunId: "7accd7a4-c9ca-4db2-9233-3228a037cc09",
@@ -145,7 +146,20 @@ function AllStatesPanel() {
         canFalsePositive
       />
       <CardPanel
-        caption="State 7 · Invalid external wait — killed background watcher (kind: stranded_assigned_issue)"
+        caption="State 7 · Delegated to CEO (links to recovery task)"
+        action={buildAction({
+          kind: "workspace_validation",
+          cause: "workspace_validation_failed",
+          fingerprint: "fp-workspace-delegated",
+          wakePolicy: { type: "manual_repair_required" },
+          outcome: "delegated",
+          recoveryIssueId: "00000000-0000-0000-0000-0000000000cc",
+          nextAction: "A CEO repair task was created; this task is blocked until it resolves.",
+        })}
+        forcedState="in_progress"
+      />
+      <CardPanel
+        caption="State 8 · Invalid external wait — killed background watcher (kind: stranded_assigned_issue)"
         action={buildAction({
           kind: "stranded_assigned_issue",
           cause: "stranded_assigned_issue",
@@ -165,7 +179,7 @@ function AllStatesPanel() {
         canFalsePositive
       />
       <CardPanel
-        caption="State 8 · Invalid external wait — escalated after the single continuation (kind: stranded_assigned_issue)"
+        caption="State 9 · Invalid external wait — escalated after the single continuation (kind: stranded_assigned_issue)"
         action={buildAction({
           kind: "stranded_assigned_issue",
           cause: "stranded_assigned_issue",

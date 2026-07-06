@@ -39,6 +39,8 @@ const mockIssuesApi = vi.hoisted(() => ({
   uploadAttachment: vi.fn(),
   deleteAttachment: vi.fn(),
   upsertDocument: vi.fn(),
+  resolveRecoveryAction: vi.fn(),
+  delegateRecoveryAction: vi.fn(),
 }));
 
 const mockActivityApi = vi.hoisted(() => ({
@@ -2570,6 +2572,135 @@ describe("IssueDetail", () => {
         && element.textContent?.includes("Close"),
       );
     expect(footer?.className).toContain("bg-background");
+  });
+
+  function createManualRepairRecoveryAction(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "action-1",
+      companyId: "company-1",
+      sourceIssueId: "issue-1",
+      recoveryIssueId: null,
+      kind: "workspace_validation",
+      status: "active",
+      ownerType: "board",
+      ownerAgentId: null,
+      ownerUserId: null,
+      previousOwnerAgentId: null,
+      returnOwnerAgentId: null,
+      cause: "workspace_validation_failed",
+      fingerprint: "fp-1",
+      evidence: { summary: "The task's git workspace could not be validated." },
+      nextAction: "Repair the source issue workspace link before resuming.",
+      wakePolicy: { type: "manual_repair_required" },
+      monitorPolicy: null,
+      attemptCount: 1,
+      maxAttempts: 3,
+      timeoutAt: null,
+      lastAttemptAt: null,
+      outcome: null,
+      resolutionNote: null,
+      resolvedAt: null,
+      createdAt: "2026-04-21T00:00:00.000Z",
+      updatedAt: "2026-04-21T00:00:00.000Z",
+      ...overrides,
+    } as unknown as NonNullable<Issue["activeRecoveryAction"]>;
+  }
+
+  // The recovery card lives inside the mocked IssueChatThread, so we drive the wiring by
+  // invoking the onResolveRecoveryAction prop that IssueDetail passes down (the card's own
+  // menu rendering is covered in IssueRecoveryActionCard.test.tsx).
+  async function waitForRecoveryResolver(): Promise<(outcome: string) => void> {
+    let resolver: ((outcome: string) => void) | undefined;
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as
+        | { recoveryAction?: unknown; onResolveRecoveryAction?: (outcome: string) => void }
+        | undefined;
+      expect(props?.recoveryAction).toBeTruthy();
+      expect(typeof props?.onResolveRecoveryAction).toBe("function");
+      resolver = props?.onResolveRecoveryAction;
+    });
+    return resolver!;
+  }
+
+  it("delegates manual-repair recovery to the CEO and surfaces a link to the created task", async () => {
+    mockIssuesApi.get.mockResolvedValue(
+      createIssue({ status: "todo", activeRecoveryAction: createManualRepairRecoveryAction() }),
+    );
+    mockIssuesApi.delegateRecoveryAction.mockResolvedValue({
+      issue: createIssue({ status: "blocked", activeRecoveryAction: null }),
+      recoveryIssue: createIssue({ id: "rec-1", identifier: "PAP-99", title: "Repair recovery path" }),
+      recoveryAction: createManualRepairRecoveryAction({
+        status: "resolved",
+        outcome: "delegated",
+        recoveryIssueId: "rec-1",
+      }),
+      reused: false,
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const resolveRecovery = await waitForRecoveryResolver();
+    await act(async () => {
+      resolveRecovery("delegate_ceo");
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockIssuesApi.delegateRecoveryAction).toHaveBeenCalledWith("PAP-1", {
+      actionId: "action-1",
+      target: "ceo",
+    });
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Delegated to the CEO",
+      tone: "success",
+      action: { label: "View task →", href: "/issues/PAP-99" },
+    }));
+  });
+
+  it("surfaces the API error and keeps the recovery card when delegation fails", async () => {
+    mockIssuesApi.get.mockResolvedValue(
+      createIssue({ status: "todo", activeRecoveryAction: createManualRepairRecoveryAction() }),
+    );
+    mockIssuesApi.delegateRecoveryAction.mockRejectedValue(
+      new Error("No assignable CEO recovery target exists in this company"),
+    );
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const resolveRecovery = await waitForRecoveryResolver();
+    await act(async () => {
+      resolveRecovery("delegate_ceo");
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Delegation failed",
+      body: "No assignable CEO recovery target exists in this company",
+      tone: "error",
+    }));
+    // Local recovery state is untouched: the failed mutation never mutates caches, so the
+    // source issue still carries its active recovery action for the next render.
+    const latestProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as
+      | { recoveryAction?: unknown }
+      | undefined;
+    expect(latestProps?.recoveryAction).toBeTruthy();
   });
 });
 

@@ -40,6 +40,7 @@ export type RecoveryCardCardState = RecoveryDisplayState;
 export const deriveRecoveryCardState = deriveRecoveryDisplayState;
 
 export type RecoveryResolveOutcome =
+  | "delegate_ceo"
   | "todo"
   | "done"
   | "in_review"
@@ -896,6 +897,12 @@ const RESOLVE_OPTIONS: Array<{
   },
 ];
 
+const DELEGATE_CEO_OPTION = {
+  outcome: "delegate_ceo" as const,
+  label: "Ask CEO to fix",
+  description: "Create a new task for the CEO instead of retrying.",
+};
+
 export function IssueRecoveryActionCard({
   action,
   agentMap,
@@ -955,6 +962,12 @@ export function IssueRecoveryActionCard({
     if (option.boardOnly && !canFalsePositive) return false;
     return true;
   });
+  const showDelegateOption =
+    showResolveActions &&
+    cardState !== "observe_only" &&
+    readEvidenceString(action.wakePolicy?.type) === "manual_repair_required" &&
+    !action.recoveryIssueId &&
+    action.outcome !== "delegated";
   const reissueBaseRef = divergence?.reissueBaseRef ?? null;
   const showReissueAction =
     onReissueIsolated !== undefined &&
@@ -1106,6 +1119,17 @@ export function IssueRecoveryActionCard({
             ) : null}
           </span>
         </MetadataRow>
+        {action.recoveryIssueId ? (
+          <MetadataRow label="Recovery task">
+            <Link
+              to={`/issues/${action.recoveryIssueId}`}
+              className="inline-flex items-center gap-1 font-medium underline-offset-2 hover:underline"
+            >
+              View recovery task
+              <span aria-hidden>→</span>
+            </Link>
+          </MetadataRow>
+        ) : null}
         {cardState === "resolved" && action.outcome ? (
           <MetadataRow label="Resolution">
             <span className={cn("font-medium", tone.labelClass)}>
@@ -1141,6 +1165,27 @@ export function IssueRecoveryActionCard({
                   Resolve recovery
                 </div>
                 <div className="flex flex-col">
+                  {showDelegateOption ? (
+                    <button
+                      type="button"
+                      data-testid="recovery-action-delegate-ceo"
+                      onClick={() => onResolve?.(DELEGATE_CEO_OPTION.outcome)}
+                      className={cn(
+                        "flex flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+                        "hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+                      )}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <span className="font-medium leading-5">{DELEGATE_CEO_OPTION.label}</span>
+                        <span className="rounded-full border border-border bg-muted px-1.5 py-px text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-label) text-muted-foreground">
+                          Recommended
+                        </span>
+                      </span>
+                      <span className="text-(length:--text-micro) leading-4 text-muted-foreground">
+                        {DELEGATE_CEO_OPTION.description}
+                      </span>
+                    </button>
+                  ) : null}
                   {visibleResolveOptions.map((option) => (
                     <button
                       key={option.outcome}
