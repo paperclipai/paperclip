@@ -437,6 +437,28 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
     expect(container.querySelector('[data-testid="plugin-slot-mount"]')).toBeNull();
   });
 
+  it("does not render protocol-relative metadata work-product links", async () => {
+    mockRouteLocation.pathname = "/execution-workspaces/workspace-1/work-products";
+    mockIssuesApi.list.mockResolvedValue([issue()]);
+    mockExecutionWorkspacesApi.get.mockResolvedValue(workspace({
+      workProducts: [
+        workProduct({
+          id: "wp-file",
+          title: "agent-report.html",
+          metadata: {
+            openPath: "//evil.example/report.html",
+          },
+        }),
+      ],
+    }));
+
+    await render();
+
+    expect(container.textContent).toContain("agent-report.html");
+    expect(container.querySelector('a[href="//evil.example/report.html"]')).toBeNull();
+    expect(container.querySelector('a[href="https://evil.example/report.html"]')).toBeNull();
+  });
+
   it("orders execution workspace plugin tabs against built-in tabs by slot order", async () => {
     mockPluginSlotState.slots = [
       pluginSlot({ id: "default-tab", displayName: "Default" }),

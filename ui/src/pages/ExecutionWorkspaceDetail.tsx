@@ -315,7 +315,7 @@ function safeWorkProductHref(workProduct: IssueWorkProduct) {
   const metadataOpenPath = metadata && typeof metadata.openPath === "string" ? metadata.openPath : null;
   const candidate = workProduct.url ?? metadataOpenPath;
   if (!candidate) return null;
-  if (candidate.startsWith("/")) return candidate;
+  if (candidate.startsWith("/") && !candidate.startsWith("//")) return candidate;
   return isSafeExternalUrl(candidate) ? candidate : null;
 }
 
