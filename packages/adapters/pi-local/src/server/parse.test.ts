@@ -258,7 +258,7 @@ describe("parsePiJsonl", () => {
     expect(parsed.finalMessage).toBeNull();
   });
 
-  it("ignores turn-level errors with no error message", () => {
+  it("still surfaces a turn-level error with a generic fallback when errorMessage is absent", () => {
     const stdout = [
       JSON.stringify({
         type: "turn_end",
