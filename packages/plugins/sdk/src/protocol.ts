@@ -1148,6 +1148,10 @@ export interface WorkerToHostMethods {
     params: { issueId: string; companyId: string },
     result: PluginWorkspace | null,
   ];
+  "projects.create": [
+    params: { name: string; companyId: string; description?: string; metadata?: Record<string, unknown> },
+    result: Project,
+  ];
   "executionWorkspaces.get": [
     params: {
       workspaceId: string;

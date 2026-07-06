@@ -151,6 +151,60 @@ describe("createHostClientHandlers invocation company scope", () => {
     },
   );
 
+  it("rejects projects.create when the plugin lacks projects.write", async () => {
+    const projectsCreate = vi.fn(async () => ({ id: "project-a" }));
+    const services = {
+      projects: {
+        create: projectsCreate,
+      },
+    } as unknown as HostServices;
+
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["projects.read"],
+      services,
+    });
+
+    await expect(
+      handlers["projects.create"]({ name: "Project A", companyId: "company-a" }),
+    ).rejects.toBeInstanceOf(CapabilityDeniedError);
+    await expect(
+      handlers["projects.create"]({ name: "Project A", companyId: "company-a" }),
+    ).rejects.toMatchObject({
+      name: "CapabilityDeniedError",
+      message: expect.stringContaining("projects.write"),
+    });
+    expect(projectsCreate).not.toHaveBeenCalled();
+  });
+
+  it("delegates projects.create to the host service when projects.write is granted", async () => {
+    const project = { id: "project-a", name: "Project A" };
+    const projectsCreate = vi.fn(async () => project);
+    const services = {
+      projects: {
+        create: projectsCreate,
+      },
+    } as unknown as HostServices;
+
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["projects.write"],
+      services,
+    });
+
+    await expect(
+      handlers["projects.create"](
+        { name: "Project A", companyId: "company-a", description: "First project" },
+        { invocationScope: { companyId: "company-a" } },
+      ),
+    ).resolves.toEqual(project);
+    expect(projectsCreate).toHaveBeenCalledWith({
+      name: "Project A",
+      companyId: "company-a",
+      description: "First project",
+    });
+  });
+
   it("checks invocation company scope before exposing authorization data", async () => {
     const searchAudit = vi.fn(async () => []);
     const services = {

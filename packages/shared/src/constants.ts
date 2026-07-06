@@ -942,6 +942,7 @@ export const PLUGIN_CAPABILITIES = [
   "authorization.audit.read",
   "database.namespace.read",
   // Data Write
+  "projects.write",
   "issues.create",
   "issues.update",
   "issue.relations.write",

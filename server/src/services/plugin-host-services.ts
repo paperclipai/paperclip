@@ -1355,6 +1355,15 @@ export function buildHostServices(
         const project = await projects.getById(params.projectId);
         return (inCompany(project, companyId) ? project : null) as Project | null;
       },
+      async create(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const project = await projects.create(companyId, {
+          name: params.name,
+          description: params.description ?? null,
+        });
+        return project as Project;
+      },
       async listWorkspaces(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
