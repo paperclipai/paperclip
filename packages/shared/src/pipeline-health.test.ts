@@ -99,4 +99,65 @@ describe("computePipelineHealth", () => {
       "/pipelines/pipeline-1/items/case-2",
     ]);
   });
+
+  it("keeps separate warnings for the same case ID in different stages", () => {
+    const firstFailure: PipelineHealthFailedAutomationInput = {
+      stageId: "stage-1",
+      stageKey: "build",
+      stageName: "Build",
+      caseId: "case-1",
+      caseTitle: "Case 1",
+      error: "Routine timed out",
+    };
+    const secondFailure: PipelineHealthFailedAutomationInput = {
+      stageId: "stage-2",
+      stageKey: "verify",
+      stageName: "Verify",
+      caseId: "case-1",
+      caseTitle: "Case 1",
+      error: "Routine timed out",
+    };
+
+    const report = computePipelineHealth({
+      ...baseInput,
+      failedAutomations: [firstFailure, secondFailure],
+    });
+
+    const automationWarnings = report.warnings.filter((warning) => warning.code === "automation_failed");
+
+    expect(automationWarnings).toHaveLength(2);
+    expect(automationWarnings.map((warning) => warning.stageId)).toEqual(["stage-1", "stage-2"]);
+  });
+
+  it("keeps separate warnings when stage and case IDs would collide with colon-delimited keys", () => {
+    const firstFailure: PipelineHealthFailedAutomationInput = {
+      stageId: "stage:one",
+      stageKey: "build",
+      stageName: "Build",
+      caseId: "case",
+      caseTitle: "Case 1",
+      error: "Routine timed out",
+    };
+    const secondFailure: PipelineHealthFailedAutomationInput = {
+      stageId: "stage",
+      stageKey: "verify",
+      stageName: "Verify",
+      caseId: "one:case",
+      caseTitle: "Case 2",
+      error: "Routine timed out",
+    };
+
+    const report = computePipelineHealth({
+      ...baseInput,
+      failedAutomations: [firstFailure, secondFailure],
+    });
+
+    const automationWarnings = report.warnings.filter((warning) => warning.code === "automation_failed");
+
+    expect(automationWarnings).toHaveLength(2);
+    expect(automationWarnings.map((warning) => warning.href)).toEqual([
+      "/pipelines/pipeline-1/items/case",
+      "/pipelines/pipeline-1/items/one:case",
+    ]);
+  });
 });
