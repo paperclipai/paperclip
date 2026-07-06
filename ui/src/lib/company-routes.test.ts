@@ -72,6 +72,33 @@ describe("company routes", () => {
     expect(toCompanyRelativePath("/PAP/artifacts")).toBe("/artifacts");
   });
 
+  // Regression for #8931: plugin page routePaths (e.g. `browse-repo`) are not in
+  // BOARD_ROUTE_ROOTS, so the board-route heuristic left the company prefix in
+  // place. Every company switch then re-prefixed the stored path, producing
+  // `/NEX/NEX/NEX/browse-repo` → 404. With the known prefix it strips exactly
+  // once and stays idempotent.
+  it("strips the known company prefix from plugin page routes", () => {
+    expect(toCompanyRelativePath("/EXP/browse-repo", "EXP")).toBe("/browse-repo");
+    expect(toCompanyRelativePath("/EXP/browse-repo/some/file.ts", "EXP")).toBe("/browse-repo/some/file.ts");
+    expect(toCompanyRelativePath("/EXP/browse-repo?ref=main", "EXP")).toBe("/browse-repo?ref=main");
+    // Case-insensitive prefix match.
+    expect(toCompanyRelativePath("/exp/browse-repo", "EXP")).toBe("/browse-repo");
+  });
+
+  it("is idempotent for plugin page routes (no accumulation on repeated calls)", () => {
+    const once = toCompanyRelativePath("/EXP/browse-repo/some/file.ts", "EXP");
+    // Re-applying with the same prefix must not strip the plugin segment.
+    expect(toCompanyRelativePath(once, "EXP")).toBe("/browse-repo/some/file.ts");
+    // Re-applying with a different prefix (as on company switch) is also a no-op.
+    expect(toCompanyRelativePath(once, "NEX")).toBe("/browse-repo/some/file.ts");
+  });
+
+  it("still strips board-route prefixes when no company prefix is supplied", () => {
+    expect(toCompanyRelativePath("/PAP/projects")).toBe("/projects");
+    // A plugin route with an unknown prefix falls through unchanged, as before.
+    expect(toCompanyRelativePath("/EXP/browse-repo")).toBe("/EXP/browse-repo");
+  });
+
   it("preserves artifact deep-link anchors when applying the company prefix", () => {
     expect(applyCompanyPrefix("/issues/PAP-10205#work-product-wp-1", "PAP")).toBe(
       "/PAP/issues/PAP-10205#work-product-wp-1",

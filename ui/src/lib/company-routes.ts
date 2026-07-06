@@ -82,10 +82,26 @@ export function applyCompanyPrefix(path: string, companyPrefix: string | null | 
   return `/${prefix}${pathname}${search}${hash}`;
 }
 
-export function toCompanyRelativePath(path: string): string {
+export function toCompanyRelativePath(path: string, companyPrefix?: string | null): string {
   const { pathname, search, hash } = splitPath(path);
   const segments = pathname.split("/").filter(Boolean);
 
+  // Preferred: strip the leading segment only when it matches the known company
+  // prefix. This is idempotent (a path already relative to the company keeps its
+  // first segment) and — unlike the board-route heuristic below — works for
+  // plugin page routePaths, which are open-ended and never appear in
+  // BOARD_ROUTE_ROOTS. Without this, `/EXP/browse-repo` was returned unchanged,
+  // so each company switch re-prefixed it (`/NEX/NEX/browse-repo`). See #8931.
+  if (
+    companyPrefix
+    && segments.length >= 1
+    && normalizeCompanyPrefix(segments[0]!) === normalizeCompanyPrefix(companyPrefix)
+  ) {
+    return `/${segments.slice(1).join("/")}${search}${hash}`;
+  }
+
+  // Fallback when the prefix is unknown: strip the leading segment when the
+  // second segment is a known board route root.
   if (segments.length >= 2) {
     const second = segments[1]!.toLowerCase();
     if (!GLOBAL_ROUTE_ROOTS.has(segments[0]!.toLowerCase()) && BOARD_ROUTE_ROOTS.has(second)) {
