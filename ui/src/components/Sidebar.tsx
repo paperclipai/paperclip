@@ -16,6 +16,7 @@ import {
   PanelLeftClose,
   Plug,
   RefreshCw,
+  MessagesSquare,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "@/lib/router";
@@ -93,6 +94,7 @@ export function Sidebar() {
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 px-3 py-2">
         <div className="flex flex-col gap-0.5">
+          <SidebarNavItem to="/talk" label="Talk to the team" icon={MessagesSquare} />
           {/* Capture button aligned with nav items */}
           <button
             onClick={() => openNewIssue()}

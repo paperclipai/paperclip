@@ -29,6 +29,7 @@ import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Costs } from "./pages/Costs";
 import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
+import { TalkToTeam } from "./pages/TalkToTeam";
 import { CompanySettings } from "./pages/CompanySettings";
 import { CompanyEnvironments } from "./pages/CompanyEnvironments";
 import { CompanyAccess } from "./pages/CompanyAccess";
@@ -66,7 +67,8 @@ import { shouldRedirectCompanylessRouteToOnboarding } from "./lib/onboarding-rou
 function boardRoutes() {
   return (
     <>
-      <Route index element={<Navigate to="inbox/decisions" replace />} />
+      <Route index element={<Navigate to="talk" replace />} />
+      <Route path="talk" element={<TalkToTeam />} />
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="dashboard/live" element={<DashboardLive />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
@@ -210,13 +212,12 @@ function CompanyRootRedirect() {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
   }
 
-  // Logged-in users with a company land directly on the Decision Inbox so the
-  // morning question "what's blocking me?" is answered in zero clicks. Users
-  // with no company yet fall through to /home where the onboarding/company
-  // picker lives.
+  // Logged-in users with a company land on "Talk to the team" so the first move
+  // is simply telling the team what to do. Users with no company yet fall
+  // through to /home where the onboarding/company picker lives.
   const targetCompany = selectedCompany ?? companies[0] ?? null;
   if (targetCompany) {
-    return <Navigate to={`/${targetCompany.issuePrefix}/inbox/decisions`} replace />;
+    return <Navigate to={`/${targetCompany.issuePrefix}/talk`} replace />;
   }
   return <Navigate to="/home" replace />;
 }
