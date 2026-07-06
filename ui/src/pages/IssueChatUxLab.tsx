@@ -1,3 +1,7 @@
+// token-extraction: allowlisted — intentional one-off decoration (DECISION-SHEET.md B1
+// user ruling). The bg-[...gradient...] / shadow-[...] literals in this demo/UX-lab page
+// are deliberate one-off decoration, reverted from --gradient-extract-*/--shadow-extract-*
+// tokens; the file is on the check-token-gates allowlist in ui/src/index.css.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -49,7 +53,7 @@ function LabSection({
     <section
       id={id}
       className={cn(
-        "rounded-(--rad-28) border border-border/70 bg-background/80 p-4 shadow-(--shadow-extract-15) sm:p-5",
+        "rounded-(--rad-28) border border-border/70 bg-background/80 p-4 shadow-[0_24px_60px_rgba(15,23,42,0.08)] sm:p-5",
         accentClassName,
       )}
     >
@@ -136,7 +140,7 @@ export function IssueChatUxLab() {
 
   return (
     <div className="space-y-6">
-      <div className="overflow-hidden rounded-(--rad-32) border border-border/70 bg-(image:--gradient-extract-9) shadow-(--shadow-extract-17)">
+      <div className="overflow-hidden rounded-(--rad-32) border border-border/70 bg-[linear-gradient(135deg,rgba(8,145,178,0.10),transparent_28%),linear-gradient(180deg,rgba(245,158,11,0.10),transparent_44%),var(--background)] shadow-[0_30px_80px_rgba(15,23,42,0.10)]">
         <div className="grid gap-6 lg:grid-cols-(--gtc-39)">
           <div className="p-6 sm:p-7">
             <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/[0.08] px-3 py-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_24) text-cyan-700 dark:text-cyan-300">
@@ -200,7 +204,7 @@ export function IssueChatUxLab() {
         eyebrow="Animation demo"
         title="Rotating reasoning text"
         description="Isolated ticker that cycles sample reasoning lines on a timer. The outgoing line slides up and fades out while the incoming line slides up from below. Runs in a loop so you can tune timing and easing without needing a live stream."
-        accentClassName="bg-(image:--gradient-extract-10)"
+        accentClassName="bg-[linear-gradient(180deg,rgba(168,85,247,0.06),transparent_28%),var(--background)]"
       >
         <div className="space-y-4">
           <div className="rounded-xl border border-border/60 bg-accent/10 p-4">
@@ -223,7 +227,7 @@ export function IssueChatUxLab() {
         eyebrow="Status tokens"
         title="Working / Worked header verb"
         description='The "Working" token uses the shimmer-text gradient sweep to signal an active run. Once the run completes it becomes the static "Worked" token.'
-        accentClassName="bg-(image:--gradient-extract-11)"
+        accentClassName="bg-[linear-gradient(180deg,rgba(16,185,129,0.06),transparent_28%),var(--background)]"
       >
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="rounded-xl border border-border/60 bg-accent/10 p-4">
@@ -260,7 +264,7 @@ export function IssueChatUxLab() {
         eyebrow="Primary preview"
         title="Live execution thread"
         description="Shows the fully active state: timeline events, historical run marker, a running assistant reply with reasoning and tools, and a queued follow-up from the user."
-        accentClassName="bg-(image:--gradient-extract-12)"
+        accentClassName="bg-[linear-gradient(180deg,rgba(6,182,212,0.05),transparent_28%),var(--background)]"
       >
         <IssueChatThread
           comments={issueChatUxLiveComments}
@@ -291,7 +295,7 @@ export function IssueChatUxLab() {
         eyebrow="Submitting state"
         title="Pending message bubble"
         description='When a user sends a message, the bubble briefly shows a "Sending..." label at reduced opacity until the server confirms receipt. This preview renders that transient state.'
-        accentClassName="bg-(image:--gradient-extract-13)"
+        accentClassName="bg-[linear-gradient(180deg,rgba(59,130,246,0.06),transparent_28%),var(--background)]"
       >
         <IssueChatThread
           comments={issueChatUxSubmittingComments}
@@ -312,7 +316,7 @@ export function IssueChatUxLab() {
           eyebrow="Settled review"
           title="Durable comments and feedback"
           description="Shows the post-run state: assistant comment feedback controls, historical run context, and timeline reassignment without any active stream."
-          accentClassName="bg-(image:--gradient-extract-14)"
+          accentClassName="bg-[linear-gradient(180deg,rgba(168,85,247,0.05),transparent_26%),var(--background)]"
         >
           <IssueChatThread
             comments={issueChatUxReviewComments}
@@ -336,7 +340,7 @@ export function IssueChatUxLab() {
             eyebrow="Empty thread"
             title="Empty state and disabled composer"
             description="Keeps the message area visible even when there is no thread yet, and replaces the composer with an explicit warning when replies are blocked."
-            accentClassName="bg-(image:--gradient-extract-15)"
+            accentClassName="bg-[linear-gradient(180deg,rgba(245,158,11,0.08),transparent_26%),var(--background)]"
           >
             <IssueChatThread
               comments={[]}

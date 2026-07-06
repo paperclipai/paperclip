@@ -1,3 +1,7 @@
+// token-extraction: allowlisted — intentional one-off decoration (DECISION-SHEET.md B1
+// user ruling). The bg-[...gradient...] / shadow-[...] literals in this demo/UX-lab page
+// are deliberate one-off decoration, reverted from --gradient-extract-*/--shadow-extract-*
+// tokens; the file is on the check-token-gates allowlist in ui/src/index.css.
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -109,7 +113,7 @@ function LabSection({
   return (
     <section
       className={cn(
-        "rounded-(--rad-28) border border-border/70 bg-background/80 p-4 shadow-(--shadow-extract-15) sm:p-5",
+        "rounded-(--rad-28) border border-border/70 bg-background/80 p-4 shadow-[0_24px_60px_rgba(15,23,42,0.08)] sm:p-5",
         accentClassName,
       )}
     >
@@ -168,7 +172,7 @@ function InviteLandingShell({
   right: ReactNode;
 }) {
   return (
-    <div className="overflow-hidden rounded-(--rad-28) border border-zinc-800 bg-zinc-950 shadow-(--shadow-extract-16)">
+    <div className="overflow-hidden rounded-(--rad-28) border border-zinc-800 bg-zinc-950 shadow-[0_30px_80px_rgba(2,6,23,0.55)]">
       <div className="grid gap-px bg-zinc-800 lg:grid-cols-(--gtc-37)">
         <section className={cn(panelClassName, "space-y-6 bg-zinc-950")}>{left}</section>
         <section className={cn(panelClassName, "h-full bg-zinc-950")}>{right}</section>
@@ -452,7 +456,7 @@ function InviteResultPreview({
 
 function AuthScreenPreview({ mode, error }: { mode: "sign_in" | "sign_up"; error?: string }) {
   return (
-    <div className="overflow-hidden rounded-(--rad-28) border border-border/70 bg-background shadow-(--shadow-extract-15)">
+    <div className="overflow-hidden rounded-(--rad-28) border border-border/70 bg-background shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
       <div className="grid gap-px bg-border/60 md:grid-cols-2">
         <div className="flex min-h-(--sz-420px) flex-col justify-center bg-background px-8 py-10">
           <div className="mx-auto w-full max-w-md">
@@ -508,7 +512,7 @@ function AuthScreenPreview({ mode, error }: { mode: "sign_in" | "sign_up"; error
             </div>
           </div>
         </div>
-        <div className="hidden min-h-(--sz-420px) items-center justify-center bg-(image:--gradient-extract-8) px-8 py-10 md:flex">
+        <div className="hidden min-h-(--sz-420px) items-center justify-center bg-[radial-gradient(circle_at_top,rgba(8,145,178,0.18),transparent_48%),linear-gradient(180deg,rgba(15,23,42,0.96),rgba(2,6,23,1))] px-8 py-10 md:flex">
           <div className="max-w-sm space-y-4 text-zinc-200">
             <div className="inline-flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-500/[0.08] px-3 py-1 text-(length:--fs-10) uppercase tracking-(--ls-0_22) text-cyan-200">
               Auth preview
@@ -698,7 +702,7 @@ function CompanyInvitesPreview() {
 export function InviteUxLab() {
   return (
     <div className="space-y-6">
-      <div className="overflow-hidden rounded-(--rad-32) border border-border/70 bg-(image:--gradient-extract-9) shadow-(--shadow-extract-17)">
+      <div className="overflow-hidden rounded-(--rad-32) border border-border/70 bg-[linear-gradient(135deg,rgba(8,145,178,0.10),transparent_28%),linear-gradient(180deg,rgba(245,158,11,0.10),transparent_44%),var(--background)] shadow-[0_30px_80px_rgba(15,23,42,0.10)]">
         <div className="grid gap-6 lg:grid-cols-(--gtc-39)">
           <div className="p-6 sm:p-7">
             <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/[0.08] px-3 py-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_24) text-cyan-700 dark:text-cyan-300">
@@ -751,7 +755,7 @@ export function InviteUxLab() {
         eyebrow="Top-level states"
         title="Landing state coverage"
         description="Small cards for the fast-return invite states that do not render the full split-screen layout."
-        accentClassName="bg-(image:--gradient-extract-21)"
+        accentClassName="bg-[linear-gradient(180deg,rgba(59,130,246,0.05),transparent_30%),var(--background)]"
       >
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <StatusCard
@@ -805,7 +809,7 @@ export function InviteUxLab() {
         eyebrow="Invite landing"
         title="Split-screen invite flows"
         description="These frames mirror the production invite surface closely enough to review spacing, hierarchy, and control states while keeping data fixture-driven."
-        accentClassName="bg-(image:--gradient-extract-22)"
+        accentClassName="bg-[linear-gradient(180deg,rgba(234,179,8,0.06),transparent_28%),var(--background)]"
       >
         <div className="space-y-5">
           <InviteLandingShell
@@ -882,7 +886,7 @@ export function InviteUxLab() {
         eyebrow="Result states"
         title="Approval and completion screens"
         description="These are the post-submit states returned from invite acceptance, including optional claim and onboarding metadata."
-        accentClassName="bg-(image:--gradient-extract-23)"
+        accentClassName="bg-[linear-gradient(180deg,rgba(16,185,129,0.06),transparent_30%),var(--background)]"
       >
         <div className="grid gap-5 xl:grid-cols-3">
           <InviteResultPreview
@@ -907,7 +911,7 @@ export function InviteUxLab() {
         eyebrow="Standalone auth"
         title="Auth page states"
         description="The general `/auth` page uses a different composition from invite landing. These previews keep both sign-in and sign-up variants visible."
-        accentClassName="bg-(image:--gradient-extract-10)"
+        accentClassName="bg-[linear-gradient(180deg,rgba(168,85,247,0.06),transparent_28%),var(--background)]"
       >
         <div className="space-y-5">
           <AuthScreenPreview mode="sign_in" error="Invalid email or password" />
@@ -919,7 +923,7 @@ export function InviteUxLab() {
         eyebrow="Company settings"
         title="Company invite management"
         description="This section captures the board-side invite creation flow, copied-link state, audit table, and the edge states that are otherwise tedious to stage."
-        accentClassName="bg-(image:--gradient-extract-24)"
+        accentClassName="bg-[linear-gradient(180deg,rgba(244,114,182,0.06),transparent_28%),var(--background)]"
       >
         <CompanyInvitesPreview />
       </LabSection>

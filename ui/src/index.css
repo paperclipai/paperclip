@@ -1470,26 +1470,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --gradient-extract-2: linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02)); /* Costs.tsx subtle white card gradient. */
   --gradient-extract-3: radial-gradient(circle at top left,rgba(244,114,182,0.08),transparent 35%),radial-gradient(circle at bottom right,rgba(56,189,248,0.1),transparent 32%); /* AccountingModelCard.tsx decorative overlay. */
   --gradient-extract-4: linear-gradient(180deg,rgba(255,70,70,0.10),rgba(255,255,255,0.02)); /* BudgetIncidentCard.tsx incident-card gradient. */
-  --gradient-extract-5: radial-gradient(circle at top left,rgba(8,145,178,0.08),transparent 36%),radial-gradient(circle at bottom right,rgba(245,158,11,0.10),transparent 28%); /* RunTranscriptUxLab.tsx:78 hero gradient. */
-  --gradient-extract-6: linear-gradient(135deg,rgba(8,145,178,0.08),transparent 28%),linear-gradient(180deg,rgba(245,158,11,0.08),transparent 40%),var(--background); /* RunTranscriptUxLab.tsx:203 hero-card gradient. */
   --gradient-extract-7: radial-gradient(circle at top right,rgba(255,255,255,0.22),transparent 34%),radial-gradient(circle at bottom left,rgba(255,255,255,0.08),transparent 36%); /* ProfileSettings.tsx:162 decorative overlay. */
-  --gradient-extract-8: radial-gradient(circle at top,rgba(8,145,178,0.18),transparent 48%),linear-gradient(180deg,rgba(15,23,42,0.96),rgba(2,6,23,1)); /* InviteUxLab.tsx:510 dark hero gradient. */
-  --gradient-extract-9: linear-gradient(135deg,rgba(8,145,178,0.10),transparent 28%),linear-gradient(180deg,rgba(245,158,11,0.10),transparent 44%),var(--background); /* IssueChatUxLab.tsx:139 + InviteUxLab.tsx:700 hero-card gradient (identical string, 2 sites). */
-  --gradient-extract-10: linear-gradient(180deg,rgba(168,85,247,0.06),transparent 28%),var(--background); /* IssueChatUxLab.tsx:203 + InviteUxLab.tsx:909 accent gradient (identical string, 2 sites). */
-  --gradient-extract-11: linear-gradient(180deg,rgba(16,185,129,0.06),transparent 28%),var(--background); /* IssueChatUxLab.tsx:226 accent gradient. */
-  --gradient-extract-12: linear-gradient(180deg,rgba(6,182,212,0.05),transparent 28%),var(--background); /* IssueChatUxLab.tsx:263 accent gradient. */
-  --gradient-extract-13: linear-gradient(180deg,rgba(59,130,246,0.06),transparent 28%),var(--background); /* IssueChatUxLab.tsx:294 accent gradient. */
-  --gradient-extract-14: linear-gradient(180deg,rgba(168,85,247,0.05),transparent 26%),var(--background); /* IssueChatUxLab.tsx:315 accent gradient. */
-  --gradient-extract-15: linear-gradient(180deg,rgba(245,158,11,0.08),transparent 26%),var(--background); /* IssueChatUxLab.tsx:339 accent gradient. */
-  --gradient-extract-16: linear-gradient(135deg,rgba(245,158,11,0.10),transparent 28%),linear-gradient(180deg,rgba(8,145,178,0.08),transparent 44%),var(--background); /* SystemNoticeUxLab.tsx:140 hero-card gradient. */
-  --gradient-extract-17: linear-gradient(180deg,rgba(245,158,11,0.05),transparent 28%),var(--background); /* SystemNoticeUxLab.tsx:193 accent gradient. */
-  --gradient-extract-18: linear-gradient(180deg,rgba(8,145,178,0.05),transparent 28%),var(--background); /* SystemNoticeUxLab.tsx:225 accent gradient. */
-  --gradient-extract-19: linear-gradient(180deg,rgba(244,63,94,0.05),transparent 28%),var(--background); /* SystemNoticeUxLab.tsx:289 accent gradient. */
-  --gradient-extract-20: linear-gradient(180deg,rgba(16,185,129,0.05),transparent 28%),var(--background); /* SystemNoticeUxLab.tsx:331 accent gradient. */
-  --gradient-extract-21: linear-gradient(180deg,rgba(59,130,246,0.05),transparent 30%),var(--background); /* InviteUxLab.tsx:753 accent gradient. */
-  --gradient-extract-22: linear-gradient(180deg,rgba(234,179,8,0.06),transparent 28%),var(--background); /* InviteUxLab.tsx:807 accent gradient. */
-  --gradient-extract-23: linear-gradient(180deg,rgba(16,185,129,0.06),transparent 30%),var(--background); /* InviteUxLab.tsx:884 accent gradient. */
-  --gradient-extract-24: linear-gradient(180deg,rgba(244,114,182,0.06),transparent 28%),var(--background); /* InviteUxLab.tsx:921 accent gradient. */
 }
 
 /* ── Extracted verbatim TYPE tokens (Phase 2 Batch 2, design/token-extraction) ── */
@@ -1701,15 +1682,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --shadow-extract-12: 0 0 0 2px hsl(var(--background)); /* Extracted from ui/src/components/SidebarNavItem.tsx (shadow-[0_0_0_2px_hsl(var(--background))]). */
   --shadow-extract-13: 0 0 0 3px rgba(245,158,11,0.18); /* Extracted from ui/src/components/environment-variables-editor/index.tsx (shadow-[0_0_0_3px_rgba(245,158,11,0.18)]). */
   --shadow-extract-14: 0 0 12px rgba(6,182,212,0.08); /* Extracted from ui/src/pages/AgentDetail.tsx (shadow-[0_0_12px_rgba(6,182,212,0.08)]). */
-  --shadow-extract-15: 0 24px 60px rgba(15,23,42,0.08); /* Extracted from ui/src/pages/InviteUxLab.tsx (shadow-[0_24px_60px_rgba(15,23,42,0.08)]). */
-  --shadow-extract-16: 0 30px 80px rgba(2,6,23,0.55); /* Extracted from ui/src/pages/InviteUxLab.tsx (shadow-[0_30px_80px_rgba(2,6,23,0.55)]). */
-  --shadow-extract-17: 0 30px 80px rgba(15,23,42,0.10); /* Extracted from ui/src/pages/InviteUxLab.tsx (shadow-[0_30px_80px_rgba(15,23,42,0.10)]). */
   --shadow-extract-18: 0 18px 44px -28px rgba(0,0,0,0.45); /* Extracted from ui/src/pages/ProfileSettings.tsx (shadow-[0_18px_44px_-28px_rgba(0,0,0,0.45)]). */
-  --shadow-extract-19: 0 20px 50px rgba(6,182,212,0.10); /* Extracted from ui/src/pages/RunTranscriptUxLab.tsx (shadow-[0_20px_50px_rgba(6,182,212,0.10)]). */
-  --shadow-extract-20: 0 20px 40px rgba(15,23,42,0.10); /* Extracted from ui/src/pages/RunTranscriptUxLab.tsx (shadow-[0_20px_40px_rgba(15,23,42,0.10)]). */
-  --shadow-extract-21: 0 0 0 6px rgba(34,211,238,0.12); /* Extracted from ui/src/pages/RunTranscriptUxLab.tsx (shadow-[0_0_0_6px_rgba(34,211,238,0.12)]). */
-  --shadow-extract-22: 0 28px 70px rgba(15,23,42,0.10); /* Extracted from ui/src/pages/RunTranscriptUxLab.tsx (shadow-[0_28px_70px_rgba(15,23,42,0.10)]). */
-  --shadow-extract-23: 0 12px 24px rgba(6,182,212,0.12); /* Extracted from ui/src/pages/RunTranscriptUxLab.tsx (shadow-[0_12px_24px_rgba(6,182,212,0.12)]). */
 }
 
 /* ── Extracted verbatim MISC tokens (Phase 2 Batch 4, design/token-extraction) ── */
@@ -1862,6 +1835,15 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
    narrative (why each decision was made); this block is the source of truth
    for WHICH sites are exempt.
 
+   CRITERIA UPDATE (Run 2 review, DECISION-SHEET.md B1 user ruling): the
+   allowlist criteria now also include FIRST-PARTY INTENTIONAL ONE-OFF
+   DECORATION — deliberate, never-reused decorative gradients/shadows on
+   demo/UX-lab surfaces stay inline (spirit over letter of DESIGN.md
+   principle 2) rather than being minted as singleton --gradient-extract-*
+   and --shadow-extract-* tokens. Production-surface decoration tokens were
+   KEPT; only tokens whose sole consumers were *UxLab.tsx demo pages were
+   reverted to their original literal form under this rule.
+
    Format (one line per entry, do not reflow):
      * allow <repo-relative-path> — <reason>
 
@@ -1880,6 +1862,10 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
    * allow ui/src/components/ui/alert-dialog.tsx — same tw-animate-css dead-class situation as dialog.tsx (zoom-out-[0.97], zoom-in-[0.97])
    * allow ui/src/components/ProjectWorkspaceSummaryCard.tsx — min-[420px]: is a Tailwind arbitrary BREAKPOINT variant (responsive container-query-style prefix), not a value applied to a property; the variant position cannot reference a CSS custom property, so it cannot be tokenized without changing Tailwind's own variant syntax
    * allow ui/src/components/FileTree.tsx — max-[480px]: arbitrary breakpoint variant (x2), same reasoning as min-[420px] above
+   * allow ui/src/pages/RunTranscriptUxLab.tsx — first-party intentional one-off decoration (demo/UX-lab page): hero/card gradients + shadows reverted from singleton tokens per DECISION-SHEET.md B1 user ruling
+   * allow ui/src/pages/InviteUxLab.tsx — first-party intentional one-off decoration (demo/UX-lab page): hero/card gradients + shadows reverted from singleton tokens per DECISION-SHEET.md B1 user ruling
+   * allow ui/src/pages/IssueChatUxLab.tsx — first-party intentional one-off decoration (demo/UX-lab page): hero/card gradients + shadows reverted from singleton tokens per DECISION-SHEET.md B1 user ruling
+   * allow ui/src/pages/SystemNoticeUxLab.tsx — first-party intentional one-off decoration (demo/UX-lab page): hero/card gradients + shadows reverted from singleton tokens per DECISION-SHEET.md B1 user ruling
 
    Test-fixture hex-literal policy (Batch 4, resolving TOKEN-AUDIT.md section
    8 item 10 "Needs human decision" for these specific sites): the following
