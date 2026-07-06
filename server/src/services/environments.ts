@@ -46,6 +46,9 @@ export interface KubernetesEnvironmentConfigInput {
   egressAllowFqdns?: string[];
   egressAllowCidrs?: string[];
   namespacePrefix?: string;
+  companySlug?: string;
+  paperclipServerNamespace?: string;
+  serverPodAppLabel?: string;
   imageRegistry?: string;
   adapterType?: string;
   /**

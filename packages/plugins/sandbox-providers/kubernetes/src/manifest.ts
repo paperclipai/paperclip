@@ -45,6 +45,14 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             description: "Override the auto-derived company slug used in the tenant namespace name.",
           },
+          paperclipServerNamespace: {
+            type: "string",
+            description: "Namespace the paperclip-server pods run in (NetworkPolicy egress allow-list target). Default: paperclip.",
+          },
+          serverPodAppLabel: {
+            type: "string",
+            description: "Value of the `app` pod label on paperclip-server pods (NetworkPolicy egress allow-list target). Default: paperclip-server.",
+          },
           imageRegistry: {
             type: "string",
             description: "Override the default registry for agent runtime images (default: ghcr.io/paperclipai).",

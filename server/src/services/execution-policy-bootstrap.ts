@@ -110,6 +110,15 @@ export function parseExecutionPolicyBootstrapEnv(
   const namespacePrefix = env.PAPERCLIP_K8S_NAMESPACE_PREFIX?.trim();
   if (namespacePrefix) kubernetesConfig.namespacePrefix = namespacePrefix;
 
+  const companySlug = env.PAPERCLIP_K8S_COMPANY_SLUG?.trim();
+  if (companySlug) kubernetesConfig.companySlug = companySlug;
+
+  const serverNamespace = env.PAPERCLIP_K8S_SERVER_NAMESPACE?.trim();
+  if (serverNamespace) kubernetesConfig.paperclipServerNamespace = serverNamespace;
+
+  const serverPodAppLabel = env.PAPERCLIP_K8S_SERVER_POD_APP_LABEL?.trim();
+  if (serverPodAppLabel) kubernetesConfig.serverPodAppLabel = serverPodAppLabel;
+
   const imageRegistry = env.PAPERCLIP_K8S_IMAGE_REGISTRY?.trim();
   if (imageRegistry) kubernetesConfig.imageRegistry = imageRegistry;
 
