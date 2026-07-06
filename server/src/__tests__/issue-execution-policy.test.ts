@@ -132,6 +132,24 @@ describe("normalizeIssueExecutionPolicy", () => {
       },
     });
   });
+
+  it("stays lenient for stored rows: unknown monitor keys are stripped, not fatal", () => {
+    // Input strictness lives in the shared input schemas; stored
+    // execution_policy blobs written before a field was removed must keep
+    // loading. Widening this to the strict input schema would 422 reads of
+    // legacy rows.
+    const result = normalizeIssueExecutionPolicy({
+      monitor: {
+        nextCheckAt: "2026-04-11T12:30:00.000Z",
+        prompt: "legacy field",
+        intervalMinutes: 30,
+      },
+      stages: [],
+    });
+    expect(result?.monitor?.nextCheckAt).toBe("2026-04-11T12:30:00.000Z");
+    expect(result?.monitor).not.toHaveProperty("prompt");
+    expect(result?.monitor).not.toHaveProperty("intervalMinutes");
+  });
 });
 
 describe("parseIssueExecutionState", () => {

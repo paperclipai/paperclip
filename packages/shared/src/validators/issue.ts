@@ -199,6 +199,19 @@ export const issueExecutionPolicySchema = z.object({
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
 });
 
+// Input-boundary variants: unknown keys are rejected instead of silently
+// stripped, so a typo'd or unsupported monitor field (e.g. "prompt",
+// "intervalMinutes") fails the request instead of scheduling a monitor that
+// lacks it. Stored execution_policy rows must keep parsing through the
+// lenient base schemas above.
+export const issueExecutionMonitorPolicyInputSchema = issueExecutionMonitorPolicySchema.strict();
+
+export const issueExecutionPolicyInputSchema = issueExecutionPolicySchema
+  .extend({
+    monitor: issueExecutionMonitorPolicyInputSchema.optional().nullable(),
+  })
+  .strict();
+
 export const issueExecutionMonitorStateSchema = z.object({
   status: z.enum(ISSUE_EXECUTION_MONITOR_STATE_STATUSES),
   nextCheckAt: z.string().datetime().nullable(),
@@ -385,7 +398,7 @@ const createIssueBaseSchema = z.object({
   requestDepth: issueRequestDepthInputSchema.optional().default(0),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
-  executionPolicy: issueExecutionPolicySchema.optional().nullable(),
+  executionPolicy: issueExecutionPolicyInputSchema.optional().nullable(),
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
@@ -435,6 +448,13 @@ export const updateIssueSchema = createIssueBaseSchema.partial().extend({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  // Common misplacement: monitors live under executionPolicy.monitor. Without
+  // this the key is silently stripped and the PATCH succeeds with no monitor.
+  monitor: z
+    .custom<never>(() => false, {
+      message: 'Unknown top-level field "monitor" — schedule issue monitors via executionPolicy.monitor',
+    })
+    .optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;

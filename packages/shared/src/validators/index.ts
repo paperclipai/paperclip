@@ -196,6 +196,8 @@ export {
   issueBlockedInboxStateSchema,
   updateIssueSchema,
   issueExecutionPolicySchema,
+  issueExecutionPolicyInputSchema,
+  issueExecutionMonitorPolicyInputSchema,
   issueExecutionStateSchema,
   issueRecoveryActionReadModelSchema,
   resolveIssueRecoveryActionSchema,

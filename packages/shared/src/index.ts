@@ -885,6 +885,8 @@ export {
   issueBlockedInboxStateSchema,
   updateIssueSchema,
   issueExecutionPolicySchema,
+  issueExecutionPolicyInputSchema,
+  issueExecutionMonitorPolicyInputSchema,
   issueExecutionStateSchema,
   resolveIssueRecoveryActionSchema,
   issueReviewRequestSchema,
