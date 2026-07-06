@@ -127,4 +127,36 @@ describe.sequential("execution workspace routes", () => {
     expect(res.status).toBe(422);
     expect(mockExecutionWorkspaceService.listOverview).not.toHaveBeenCalled();
   });
+
+  it("returns work products on execution workspace detail responses", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      projectId: "project-1",
+      name: "Alpha",
+      workProducts: [
+        {
+          id: "work-product-1",
+          issueId: "issue-1",
+          executionWorkspaceId: "workspace-1",
+          type: "pull_request",
+          title: "PR 1",
+          url: "https://example.com/pr/1",
+        },
+      ],
+    });
+
+    const res = await request(createApp()).get("/api/execution-workspaces/workspace-1");
+
+    expect(res.status).toBe(200);
+    expect(res.body.workProducts).toEqual([
+      expect.objectContaining({
+        id: "work-product-1",
+        executionWorkspaceId: "workspace-1",
+        type: "pull_request",
+        title: "PR 1",
+      }),
+    ]);
+    expect(mockExecutionWorkspaceService.getById).toHaveBeenCalledWith("workspace-1");
+  });
 });

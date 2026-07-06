@@ -19,10 +19,12 @@ import type {
   WorkspaceRuntimeService,
   WorkspaceOverviewPrimaryService,
   WorkspaceOverviewQuery,
+  IssueWorkProduct,
 } from "@paperclipai/shared";
 import { deriveProjectUrlKey, WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT } from "@paperclipai/shared";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { workProductService } from "./work-products.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
@@ -320,6 +322,7 @@ function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeServ
 function toExecutionWorkspace(
   row: ExecutionWorkspaceRow,
   runtimeServices: WorkspaceRuntimeService[] = [],
+  workProducts?: IssueWorkProduct[],
 ): ExecutionWorkspace {
   return {
     id: row.id,
@@ -346,6 +349,7 @@ function toExecutionWorkspace(
     config: readExecutionWorkspaceConfig((row.metadata as Record<string, unknown> | null) ?? null),
     metadata: (row.metadata as Record<string, unknown> | null) ?? null,
     runtimeServices,
+    ...(workProducts ? { workProducts } : {}),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -444,6 +448,8 @@ type WorkspaceOverviewIssueRow = WorkspaceOverviewLinkedIssue & {
 };
 
 export function executionWorkspaceService(db: Db) {
+  const workProducts = workProductService(db);
+
   function buildListConditions(
     companyId: string,
     filters?: {
@@ -749,10 +755,14 @@ export function executionWorkspaceService(db: Db) {
         .where(eq(executionWorkspaces.id, id))
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
-      const runtimeServicesByWorkspaceId = await loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]);
+      const [runtimeServicesByWorkspaceId, workspaceWorkProducts] = await Promise.all([
+        loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]),
+        workProducts.listForExecutionWorkspace(row.companyId, row.id),
+      ]);
       return toExecutionWorkspace(
         row,
         (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
+        workspaceWorkProducts,
       );
     },
 
@@ -1023,7 +1033,16 @@ export function executionWorkspaceService(db: Db) {
         .where(eq(executionWorkspaces.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
-      return row ? toExecutionWorkspace(row) : null;
+      if (!row) return null;
+      const [runtimeServicesByWorkspaceId, workspaceWorkProducts] = await Promise.all([
+        loadEffectiveRuntimeServicesByExecutionWorkspace(db, row.companyId, [row]),
+        workProducts.listForExecutionWorkspace(row.companyId, row.id),
+      ]);
+      return toExecutionWorkspace(
+        row,
+        (runtimeServicesByWorkspaceId.get(row.id) ?? []).map(toRuntimeService),
+        workspaceWorkProducts,
+      );
     },
 
     clearEnvironmentSelection: async (companyId: string, environmentId: string) => {

@@ -5,6 +5,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import type { SourceTrustMetadata } from "@paperclipai/shared";
@@ -55,6 +56,13 @@ export const issueWorkProducts = pgTable(
     ),
     companyProviderExternalIdIdx: index("issue_work_products_company_provider_external_id_idx").on(
       table.companyId,
+      table.provider,
+      table.externalId,
+    ),
+    companyIssueProviderExternalUq: uniqueIndex("issue_work_products_company_issue_identity_uq").on(
+      table.companyId,
+      table.issueId,
+      table.type,
       table.provider,
       table.externalId,
     ),

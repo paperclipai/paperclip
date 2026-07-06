@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, RoutineListItem } from "@paperclipai/shared";
-import { Copy, ExternalLink, Loader2, Play, Repeat } from "lucide-react";
+import type { ExecutionWorkspace, Issue, IssueWorkProduct, Project, ProjectWorkspace, RoutineListItem } from "@paperclipai/shared";
+import { Copy, ExternalLink, FileText, GitBranch, GitCommit, GitPullRequest, Globe, Loader2, Package, Play, Repeat, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardAction } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -57,7 +57,7 @@ type WorkspaceFormState = {
   workspaceRuntime: string;
 };
 
-type ExecutionWorkspaceBaseTab = "services" | "configuration" | "runtime_logs" | "issues" | "routines";
+type ExecutionWorkspaceBaseTab = "services" | "work_products" | "configuration" | "runtime_logs" | "issues" | "routines";
 type ExecutionWorkspacePluginTab = `plugin:${string}`;
 type ExecutionWorkspaceTab = ExecutionWorkspaceBaseTab | ExecutionWorkspacePluginTab;
 type OrderedExecutionWorkspaceTabItem = {
@@ -70,8 +70,9 @@ const DEFAULT_PLUGIN_DETAIL_TAB_ORDER = 100;
 const EXECUTION_WORKSPACE_BASE_TAB_ITEMS: OrderedExecutionWorkspaceTabItem[] = [
   { value: "issues", label: "Tasks", order: 10 },
   { value: "services", label: "Services", order: 20 },
-  { value: "configuration", label: "Configuration", order: 30 },
-  { value: "runtime_logs", label: "Runtime logs", order: 40 },
+  { value: "work_products", label: "Work products", order: 30 },
+  { value: "configuration", label: "Configuration", order: 40 },
+  { value: "runtime_logs", label: "Runtime logs", order: 50 },
   { value: "routines", label: "Routines", order: 60 },
 ];
 
@@ -92,6 +93,7 @@ function resolveExecutionWorkspaceTab(pathname: string, workspaceId: string): Ex
   if (executionWorkspacesIndex === -1 || segments[executionWorkspacesIndex + 1] !== workspaceId) return null;
   const tab = segments[executionWorkspacesIndex + 2];
   if (tab === "services") return "services";
+  if (tab === "work-products") return "work_products";
   if (tab === "issues") return "issues";
   if (tab === "routines") return "routines";
   if (tab === "runtime-logs") return "runtime_logs";
@@ -100,7 +102,7 @@ function resolveExecutionWorkspaceTab(pathname: string, workspaceId: string): Ex
 }
 
 function executionWorkspaceTabPath(workspaceId: string, tab: ExecutionWorkspaceBaseTab) {
-  const segment = tab === "runtime_logs" ? "runtime-logs" : tab;
+  const segment = tab === "runtime_logs" ? "runtime-logs" : tab === "work_products" ? "work-products" : tab;
   return `/execution-workspaces/${workspaceId}/${segment}`;
 }
 
@@ -305,6 +307,173 @@ function MonoValue({ value, copy }: { value: string; copy?: boolean }) {
         </CopyText>
       ) : null}
     </div>
+  );
+}
+
+function safeWorkProductHref(workProduct: IssueWorkProduct) {
+  const metadata = workProduct.metadata;
+  const metadataOpenPath = metadata && typeof metadata.openPath === "string" ? metadata.openPath : null;
+  const candidate = workProduct.url ?? metadataOpenPath;
+  if (!candidate) return null;
+  if (candidate.startsWith("/") && !candidate.startsWith("//")) return candidate;
+  return isSafeExternalUrl(candidate) ? candidate : null;
+}
+
+function workProductTypeIcon(type: IssueWorkProduct["type"]) {
+  switch (type) {
+    case "pull_request":
+      return GitPullRequest;
+    case "preview_url":
+      return Globe;
+    case "runtime_service":
+      return Server;
+    case "branch":
+      return GitBranch;
+    case "commit":
+      return GitCommit;
+    case "artifact":
+      return Package;
+    case "document":
+      return FileText;
+    default:
+      return FileText;
+  }
+}
+
+function workProductTypeLabel(type: IssueWorkProduct["type"]) {
+  switch (type) {
+    case "preview_url":
+      return "Preview";
+    case "runtime_service":
+      return "Runtime service";
+    case "pull_request":
+      return "Pull request";
+    case "artifact":
+      return "File";
+    default:
+      return type.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+  }
+}
+
+function formatWorkProductStatus(status: string) {
+  return status.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function WorkProductSummaryItem({
+  icon: Icon,
+  label,
+}: {
+  icon: typeof Package;
+  label: string;
+}) {
+  return (
+    <div className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
+      <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function ExecutionWorkspaceWorkProductsList({
+  workspace,
+  issues,
+}: {
+  workspace: ExecutionWorkspace;
+  issues: Issue[];
+}) {
+  const workProducts = workspace.workProducts ?? [];
+  const issueById = useMemo(() => new Map(issues.map((issue) => [issue.id, issue])), [issues]);
+  const pullRequestCount = workProducts.filter((product) => product.type === "pull_request").length;
+  const previewCount = workProducts.filter((product) => product.type === "preview_url" || product.type === "runtime_service").length;
+  const fileCount = workProducts.filter((product) => product.type === "artifact").length;
+
+  return (
+    <Card className="rounded-none">
+      <CardHeader>
+        <CardTitle>Workspace work products</CardTitle>
+        <CardDescription>
+          Pull requests, previews, files, branches, commits, and documents linked to this execution workspace.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {workProducts.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 py-10 text-center">
+            <Package className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+            <p className="text-sm text-muted-foreground">
+              No work products have been linked to this execution workspace yet.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-border pb-3">
+              <WorkProductSummaryItem icon={Package} label={pluralize(workProducts.length, "work product")} />
+              {pullRequestCount > 0 ? (
+                <WorkProductSummaryItem icon={GitPullRequest} label={pluralize(pullRequestCount, "pull request")} />
+              ) : null}
+              {previewCount > 0 ? (
+                <WorkProductSummaryItem icon={Globe} label={pluralize(previewCount, "preview")} />
+              ) : null}
+              {fileCount > 0 ? (
+                <WorkProductSummaryItem icon={FileText} label={pluralize(fileCount, "file")} />
+              ) : null}
+            </div>
+
+            <div className="divide-y divide-border">
+              {workProducts.map((product) => {
+                const Icon = workProductTypeIcon(product.type);
+                const href = safeWorkProductHref(product);
+                const sourceIssue = issueById.get(product.issueId) ?? null;
+                return (
+                  <div key={product.id} className="flex flex-col gap-3 py-3 sm:flex-row sm:items-start">
+                    <Icon className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                        {href ? (
+                          <a
+                            href={href}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex min-w-0 items-center gap-1 text-sm font-medium hover:underline"
+                          >
+                            <span className="truncate">{product.title}</span>
+                            <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                          </a>
+                        ) : (
+                          <span className="min-w-0 truncate text-sm font-medium">{product.title}</span>
+                        )}
+                        {product.isPrimary ? <StatusPill>Primary</StatusPill> : null}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                        <span>{workProductTypeLabel(product.type)}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{formatWorkProductStatus(product.status)}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>Updated {formatDateTime(product.updatedAt)}</span>
+                        {sourceIssue ? (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <Link to={issueUrl(sourceIssue)} className="hover:underline">
+                              {sourceIssue.identifier ?? sourceIssue.id}
+                            </Link>
+                          </>
+                        ) : null}
+                      </div>
+                      {product.summary ? (
+                        <p className="max-w-3xl text-sm text-muted-foreground">{product.summary}</p>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1222,6 +1391,8 @@ export function ExecutionWorkspaceDetail() {
             error={linkedIssuesQuery.error as Error | null}
             project={project}
           />
+        ) : activeTab === "work_products" ? (
+          <ExecutionWorkspaceWorkProductsList workspace={workspace} issues={linkedIssues} />
         ) : activePluginTab ? (
           <PluginSlotMount
             slot={activePluginTab.slot}

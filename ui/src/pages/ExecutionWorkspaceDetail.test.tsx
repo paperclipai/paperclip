@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ExecutionWorkspace, Project } from "@paperclipai/shared";
-import { act, type ReactNode } from "react";
+import type { ExecutionWorkspace, Issue, IssueWorkProduct, Project } from "@paperclipai/shared";
+import type { ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExecutionWorkspaceDetail } from "./ExecutionWorkspaceDetail";
@@ -140,6 +141,97 @@ function workspace(overrides: Partial<ExecutionWorkspace> = {}): ExecutionWorksp
   } as ExecutionWorkspace;
 }
 
+function issue(overrides: Partial<Issue> = {}): Issue {
+  const now = new Date("2026-05-01T00:00:00Z");
+  return {
+    id: "issue-1",
+    companyId: "company-1",
+    projectId: "project-1",
+    projectWorkspaceId: null,
+    goalId: null,
+    parentId: null,
+    title: "Ship workspace outputs",
+    description: null,
+    status: "in_progress",
+    priority: "medium",
+    assigneeAgentId: null,
+    assigneeUserId: null,
+    issueNumber: 17,
+    identifier: "PAP-17",
+    originKind: "manual",
+    originId: null,
+    originRunId: null,
+    originFingerprint: null,
+    requestDepth: 0,
+    workMode: "standard",
+    billingCode: null,
+    assigneeAdapterOverrides: null,
+    executionPolicy: null,
+    executionState: null,
+    executionWorkspaceId: "workspace-1",
+    executionWorkspacePreference: "reuse_existing",
+    executionWorkspaceSettings: null,
+    checkoutRunId: null,
+    executionRunId: null,
+    executionAgentNameKey: null,
+    executionLockedAt: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    startedAt: null,
+    completedAt: null,
+    cancelledAt: null,
+    hiddenAt: null,
+    labels: [],
+    blockerAttention: { state: "none", reason: null, unresolvedBlockerCount: 0, coveredBlockerCount: 0, stalledBlockerCount: 0, attentionBlockerCount: 0, sampleBlockerIdentifier: null, sampleStalledBlockerIdentifier: null },
+    productivityReview: null,
+    scheduledRetry: null,
+    activeRecoveryAction: null,
+    blockedBy: [],
+    blocks: [],
+    children: [],
+    comments: [],
+    documents: [],
+    attachments: [],
+    workProducts: [],
+    currentExecutionWorkspace: null,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  } as Issue;
+}
+
+function workProduct(overrides: Partial<IssueWorkProduct> & { id: string }): IssueWorkProduct {
+  const now = new Date("2026-05-01T00:00:00Z");
+  const { id, ...workProductOverrides } = overrides;
+  return {
+    id,
+    companyId: "company-1",
+    projectId: "project-1",
+    issueId: "issue-1",
+    executionWorkspaceId: "workspace-1",
+    runtimeServiceId: null,
+    type: "artifact",
+    provider: "paperclip",
+    externalId: null,
+    title: "build-artifact.zip",
+    url: null,
+    status: "ready_for_review",
+    reviewState: "none",
+    isPrimary: false,
+    healthStatus: "unknown",
+    summary: null,
+    metadata: {
+      openPath: `/api/attachments/${id}/content`,
+      downloadPath: `/api/attachments/${id}/content?download=1`,
+    },
+    sourceTrust: null,
+    createdByRunId: null,
+    createdAt: now,
+    updatedAt: now,
+    ...workProductOverrides,
+  } as IssueWorkProduct;
+}
+
 function project(overrides: Partial<Project> = {}): Project {
   const now = new Date("2026-05-01T00:00:00Z");
   return {
@@ -221,7 +313,9 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
   });
 
   afterEach(() => {
-    act(() => root?.unmount());
+    if (root) {
+      flushSync(() => root?.unmount());
+    }
     root = null;
     container.remove();
     vi.clearAllMocks();
@@ -231,7 +325,7 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
 
   async function render() {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    await act(async () => {
+    flushSync(() => {
       root = createRoot(container);
       root.render(
         <QueryClientProvider client={queryClient}>
@@ -239,9 +333,7 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
         </QueryClientProvider>,
       );
     });
-    await act(async () => {
-      await flush();
-    });
+    await flush();
   }
 
   it("scopes the plugin detail-tab discovery to execution_workspace and the workspace's company", async () => {
@@ -298,6 +390,75 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
     expect(container.querySelector('[data-testid="plugin-slot-mount"]')).toBeNull();
   });
 
+  it("renders workspace work products without requiring a plugin tab", async () => {
+    mockRouteLocation.pathname = "/execution-workspaces/workspace-1/work-products";
+    mockIssuesApi.list.mockResolvedValue([issue()]);
+    mockExecutionWorkspacesApi.get.mockResolvedValue(workspace({
+      workProducts: [
+        workProduct({
+          id: "wp-pr",
+          type: "pull_request",
+          provider: "github",
+          title: "PR 42",
+          url: "https://github.com/paperclipai/paperclip/pull/42",
+          status: "ready_for_review",
+          summary: "Workspace branch is ready for review.",
+        }),
+        workProduct({
+          id: "wp-preview",
+          type: "preview_url",
+          provider: "vercel",
+          title: "Vercel preview",
+          url: "https://preview.example.com",
+          status: "active",
+        }),
+        workProduct({
+          id: "wp-file",
+          type: "artifact",
+          provider: "paperclip",
+          title: "qa-screenshot.png",
+          status: "approved",
+        }),
+      ],
+    }));
+
+    await render();
+
+    expect(container.textContent).toContain("Workspace work products");
+    expect(container.textContent).toContain("3 work products");
+    expect(container.textContent).toContain("1 pull request");
+    expect(container.textContent).toContain("1 preview");
+    expect(container.textContent).toContain("1 file");
+    expect(container.textContent).toContain("PR 42");
+    expect(container.textContent).toContain("Vercel preview");
+    expect(container.textContent).toContain("qa-screenshot.png");
+    expect(container.querySelector('a[href="https://github.com/paperclipai/paperclip/pull/42"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/issues/PAP-17"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="plugin-slot-mount"]')).toBeNull();
+  });
+
+  it("does not render protocol-relative metadata work-product links", async () => {
+    mockRouteLocation.pathname = "/execution-workspaces/workspace-1/work-products";
+    mockIssuesApi.list.mockResolvedValue([issue()]);
+    mockExecutionWorkspacesApi.get.mockResolvedValue(workspace({
+      workProducts: [
+        workProduct({
+          id: "wp-file",
+          title: "agent-report.html",
+          metadata: {
+            openPath: "//evil.example/report.html",
+          },
+        }),
+      ],
+    }));
+
+    await render();
+
+    expect(container.textContent).toContain("agent-report.html");
+    expect(container.querySelector('a[href="//evil.example/report.html"]')).toBeNull();
+    expect(container.querySelector('a[href="https://evil.example/report.html"]')).toBeNull();
+  });
+
   it("orders execution workspace plugin tabs against built-in tabs by slot order", async () => {
     mockPluginSlotState.slots = [
       pluginSlot({ id: "default-tab", displayName: "Default" }),
@@ -312,6 +473,7 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
       "Tasks",
       "Services",
       "Changes",
+      "Work products",
       "Configuration",
       "Runtime logs",
       "Inspect",

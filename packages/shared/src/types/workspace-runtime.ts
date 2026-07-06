@@ -1,4 +1,5 @@
 import type { TrustAuthorizationPolicy } from "../trust-policy.js";
+import type { IssueWorkProduct } from "./work-product.js";
 
 export type ExecutionWorkspaceStrategyType =
   | "project_primary"
@@ -257,6 +258,7 @@ export interface ExecutionWorkspace {
   config: ExecutionWorkspaceConfig | null;
   metadata: Record<string, unknown> | null;
   runtimeServices?: WorkspaceRuntimeService[];
+  workProducts?: IssueWorkProduct[];
   createdAt: Date;
   updatedAt: Date;
 }
