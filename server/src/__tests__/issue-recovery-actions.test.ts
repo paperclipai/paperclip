@@ -1438,4 +1438,81 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     expect(followup.actorType).not.toBe("user");
   });
+
+  it("rejects a follow-up comment when the requested recoveryActionId is not the active action", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:action-id-mismatch",
+      evidence: { latestIssueStatus: "in_progress" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "manual" },
+    });
+    const runId = randomUUID();
+    const app = createApp({
+      type: "agent",
+      agentId: managerId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+    await seedHeartbeatRun({
+      companyId,
+      agentId: managerId,
+      runId,
+      issueId: sourceIssueId,
+    });
+
+    const staleActionId = randomUUID();
+    const mismatch = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/comment`)
+      .send({ body: "Targeting a stale recovery action.", recoveryActionId: staleActionId })
+      .expect(409);
+    expect(mismatch.body.error).toContain("mismatch");
+    expect(mismatch.body.details).toMatchObject({
+      requestedRecoveryActionId: staleActionId,
+      activeRecoveryActionId: action.id,
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssueId));
+    expect(comments).toHaveLength(0);
+
+    const matching = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/comment`)
+      .send({ body: "Targeting the active recovery action explicitly.", recoveryActionId: action.id })
+      .expect(201);
+    expect(matching.body.recoveryActionId).toBe(action.id);
+  });
+
+  it("rejects non-agent actors on the follow-up comment endpoint even for board-owned recovery actions", async () => {
+    const { companyId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "board",
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:board-owned-user-actor",
+      evidence: { latestIssueStatus: "in_progress" },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "manual" },
+    });
+    const app = createApp({ type: "board", source: "local_implicit" });
+
+    const response = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/comment`)
+      .send({ body: "Board user trying the agent-only path." })
+      .expect(403);
+    expect(response.body.error).toContain("agent-only");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssueId));
+    expect(comments).toHaveLength(0);
+  });
 });

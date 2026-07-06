@@ -5395,6 +5395,17 @@ export function issueRoutes(
       res.status(404).json({ error: "Active recovery action not found" });
       return;
     }
+    if (req.body.recoveryActionId && req.body.recoveryActionId !== activeRecoveryAction.id) {
+      res.status(409).json({
+        error: "Recovery action mismatch: the requested recovery action is not the active action on this issue",
+        details: {
+          issueId: issue.id,
+          requestedRecoveryActionId: req.body.recoveryActionId,
+          activeRecoveryActionId: activeRecoveryAction.id,
+        },
+      });
+      return;
+    }
     if (req.actor.type === "agent") {
       const actorAgentId = req.actor.agentId;
       if (!actorAgentId) {
@@ -5414,14 +5425,16 @@ export function issueRoutes(
         });
         return;
       }
-    } else if (activeRecoveryAction.ownerType === "agent") {
-      // User/board actors cannot post follow-up comments on agent-owned recovery actions.
+    } else {
+      // Agent-only endpoint: it exists solely to give recovery-action owner
+      // agents a scoped path around the agent mutation boundary. User/board
+      // actors are not subject to that boundary and must use
+      // POST /api/issues/:id/comments instead.
       res.status(403).json({
-        error: "Recovery action is owned by an agent; only the owner agent may post follow-up comments",
+        error: "Recovery-action follow-up comments are agent-only; use POST /api/issues/:id/comments",
         details: {
           issueId: issue.id,
           recoveryActionId: activeRecoveryAction.id,
-          recoveryOwnerAgentId: activeRecoveryAction.ownerAgentId,
         },
       });
       return;
