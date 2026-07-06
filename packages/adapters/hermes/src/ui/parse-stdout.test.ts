@@ -22,7 +22,7 @@ describe("parseHermesStdoutLine — ANSI stripping", () => {
   it("strips bold yellow CSI sequence from Hermes header", () => {
     const result = parseHermesStdoutLine("\x1b[1;38;2;255;215;0m- Hermes\x1b[0m", TS);
     expect(result).toHaveLength(1);
-    expect(result[0].text).toBe("- Hermes");
+    expect(result[0]).toHaveProperty("text", "- Hermes");
   });
 
   it("strips light text CSI sequence", () => {
@@ -31,13 +31,13 @@ describe("parseHermesStdoutLine — ANSI stripping", () => {
       TS,
     );
     expect(result).toHaveLength(1);
-    expect(result[0].text).toBe("All done. Now let me verify.");
+    expect(result[0]).toHaveProperty("text", "All done. Now let me verify.");
   });
 
   it("passes through clean text unchanged", () => {
     const result = parseHermesStdoutLine("Normal text without ANSI", TS);
     expect(result).toHaveLength(1);
-    expect(result[0].text).toBe("Normal text without ANSI");
+    expect(result[0]).toHaveProperty("text", "Normal text without ANSI");
   });
 
   it("strips multiple CSI sequences on a single line", () => {
@@ -71,7 +71,7 @@ describe("parseHermesStdoutLine — ANSI stripping", () => {
   it("strips OSC title sequences", () => {
     const result = parseHermesStdoutLine("\x1b]0;Terminal Title\x07Actual content", TS);
     expect(result).toHaveLength(1);
-    expect(result[0].text).toBe("Actual content");
+    expect(result[0]).toHaveProperty("text", "Actual content");
   });
 
   it("handles empty lines after ANSI stripping", () => {
