@@ -36,4 +36,29 @@ describe("kubernetesProviderConfigSchema", () => {
       parseKubernetesProviderConfig({ inCluster: true, egressAllowCidrs: ["not-a-cidr"] }),
     ).toThrow(/CIDR/i);
   });
+
+  it("defaults paperclipServerNamespace and serverPodAppLabel", () => {
+    const parsed = parseKubernetesProviderConfig({ inCluster: true });
+    expect(parsed.paperclipServerNamespace).toBe("paperclip");
+    expect(parsed.serverPodAppLabel).toBe("paperclip-server");
+  });
+
+  it("accepts custom paperclipServerNamespace and serverPodAppLabel", () => {
+    const parsed = parseKubernetesProviderConfig({
+      inCluster: true,
+      paperclipServerNamespace: "stuff-devops",
+      serverPodAppLabel: "pc-server",
+    });
+    expect(parsed.paperclipServerNamespace).toBe("stuff-devops");
+    expect(parsed.serverPodAppLabel).toBe("pc-server");
+  });
+
+  it("rejects invalid paperclipServerNamespace", () => {
+    expect(() =>
+      parseKubernetesProviderConfig({
+        inCluster: true,
+        paperclipServerNamespace: "UPPERCASE_INVALID",
+      }),
+    ).toThrow();
+  });
 });
