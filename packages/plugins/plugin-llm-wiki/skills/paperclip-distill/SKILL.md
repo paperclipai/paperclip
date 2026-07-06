@@ -123,3 +123,5 @@ Before closing the operation issue:
 ## Tools
 
 `wiki_search`, `wiki_read_page`, `wiki_write_page`, `wiki_list_sources`, `wiki_read_source`. Always include the operation issue's `wikiId` and `spaceSlug`. The Paperclip source bundle arrives as part of the operation context — you do not need to assemble it.
+
+These `wiki_*` plugin tools are bound to the managed Wiki Maintainer agent. If they are not available in your session, use the wiki HTTP API from the `wiki` (Company Wiki) skill instead — the same read/search/write operations over `$PAPERCLIP_API_URL`.

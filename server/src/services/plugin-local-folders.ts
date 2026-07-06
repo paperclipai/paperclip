@@ -405,8 +405,27 @@ export async function resolvePluginLocalFolderPath(
       throw error;
     }
 
-    const parentRealPath = await fs.realpath(path.dirname(absolutePath));
-    const parentRelative = path.relative(rootRealPath, parentRealPath);
+    // Intermediate directories may not exist yet (e.g. the first write into a
+    // wiki space's spaces/<slug>/ tree), so walk up to the nearest existing
+    // ancestor for the symlink-escape check. The walk always terminates: the
+    // lexical containment check above guarantees rootRealPath is an ancestor,
+    // and the root itself exists.
+    let ancestorPath = path.dirname(absolutePath);
+    let ancestorRealPath: string;
+    for (;;) {
+      try {
+        ancestorRealPath = await fs.realpath(ancestorPath);
+        break;
+      } catch (ancestorError) {
+        const ancestorCode = typeof ancestorError === "object" && ancestorError && "code" in ancestorError
+          ? String((ancestorError as { code?: unknown }).code)
+          : "";
+        const nextAncestorPath = path.dirname(ancestorPath);
+        if (ancestorCode !== "ENOENT" || nextAncestorPath === ancestorPath) throw ancestorError;
+        ancestorPath = nextAncestorPath;
+      }
+    }
+    const parentRelative = path.relative(rootRealPath, ancestorRealPath);
     if (parentRelative.startsWith("..") || path.isAbsolute(parentRelative)) {
       throw forbidden("Local folder symlink escape is not allowed");
     }

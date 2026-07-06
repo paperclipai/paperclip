@@ -63,3 +63,5 @@ Before closing the operation issue:
 ## Tools
 
 `wiki_search`, `wiki_read_page`, `wiki_write_page` (for `wiki/index.md` and `wiki/log.md` only). Always include the operation issue's `wikiId` and `spaceSlug`.
+
+These `wiki_*` plugin tools are bound to the managed Wiki Maintainer agent. If they are not available in your session, use the wiki HTTP API from the `wiki` (Company Wiki) skill instead — the same read/search/write operations over `$PAPERCLIP_API_URL`.

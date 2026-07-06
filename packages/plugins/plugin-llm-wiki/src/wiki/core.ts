@@ -2054,6 +2054,34 @@ export class WikiHashConflictError extends Error {
   }
 }
 
+/**
+ * A wiki page path that has no file on disk yet. Kept distinct from generic
+ * read failures so callers (agent HTTP routes, UI) map it to 404 with a clean
+ * message — the underlying fs error embeds the host's absolute path, which must
+ * never reach an agent. The message intentionally contains "not found" so the
+ * agent-route error mapper classifies it as 404.
+ */
+export class WikiPageNotFoundError extends Error {
+  readonly path: string;
+
+  constructor(path: string) {
+    super(`Wiki page not found: ${path}`);
+    this.name = "WikiPageNotFoundError";
+    this.path = path;
+  }
+}
+
+/** True when a local-folder read failed because the target file does not exist. */
+function isFileMissingError(error: unknown): boolean {
+  if (error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "ENOENT") {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  // The error crosses the plugin RPC boundary, where `.code` may be dropped, so
+  // also match the ENOENT text and the test harness's "not found" phrasing.
+  return /ENOENT|no such file|folder file not found/i.test(message);
+}
+
 function assertExpectedHash(expectedHash: string | null | undefined, currentHash: string | null, path: string): void {
   if (expectedHash && currentHash && expectedHash !== currentHash) {
     throw new WikiHashConflictError(path, expectedHash, currentHash);
@@ -2623,6 +2651,28 @@ export async function ensureWikiRootConfigured(ctx: PluginContext, companyId: st
   await bootstrapSpaceFiles(ctx, companyId, defaultSpace);
   await upsertWikiInstance(ctx, { companyId, wikiId: DEFAULT_WIKI_ID, rootPath: folder.path });
   return folder;
+}
+
+/**
+ * Make the wiki usable for a company without any human bootstrap step: the
+ * root folder exists (auto-defaulted under the instance tree), the managed
+ * skills — including the required company-wide `wiki` skill — are installed,
+ * and every project has its space. Idempotent; safe to run on every startup
+ * and on company.created. The managed maintainer agent/routines are NOT
+ * activated here — they cost money and stay opt-in via activate-wiki-maintenance.
+ */
+export async function ensureCompanyWikiProvisioned(
+  ctx: PluginContext,
+  companyId: string,
+): Promise<{
+  folder: LocalFolderStatus;
+  managedSkills: WikiSkillResource[];
+  projectSpaces: ReconcileProjectSpacesResult;
+}> {
+  const folder = await ensureWikiRootConfigured(ctx, companyId);
+  const managedSkills = await reconcileWikiSkillResources(ctx, companyId);
+  const projectSpaces = await reconcileProjectSpaces(ctx, { companyId });
+  return { folder, managedSkills, projectSpaces };
 }
 
 export async function bootstrapWikiRoot(ctx: PluginContext, input: BootstrapInput) {
@@ -5169,12 +5219,21 @@ export async function readWikiPage(ctx: PluginContext, input: { companyId: strin
   try {
     contents = await ctx.localFolders.readText(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path));
   } catch (error) {
-    // A space row can exist before its skeleton files do (e.g. the space was
-    // auto-created while the wiki root was unconfigured, or the root was
-    // repointed later). Heal skeleton files on first read instead of failing.
-    if (!BOOTSTRAP_FILES.some((file) => file.path === path)) throw error;
-    await bootstrapSpaceFiles(ctx, input.companyId, space);
-    contents = await ctx.localFolders.readText(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path));
+    if (BOOTSTRAP_FILES.some((file) => file.path === path)) {
+      // A space row can exist before its skeleton files do (e.g. the space was
+      // auto-created while the wiki root was unconfigured, or the root was
+      // repointed later). Heal skeleton files on first read instead of failing.
+      await bootstrapSpaceFiles(ctx, input.companyId, space);
+      contents = await ctx.localFolders.readText(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, path));
+    } else if (isFileMissingError(error)) {
+      // A normal page that was never written. Surface a clean not-found error
+      // (no host filesystem path) so the documented read-before-write flow can
+      // distinguish "page does not exist yet" from a real failure — GET returns
+      // 404, the agent then creates the page with a POST and no expectedHash.
+      throw new WikiPageNotFoundError(path);
+    } else {
+      throw error;
+    }
   }
   const meta = await ctx.db.query<{ title: string | null; page_type: string | null; backlinks: unknown; source_refs: unknown; updated_at: string }>(
     `SELECT title, page_type, backlinks, source_refs, updated_at::text AS updated_at

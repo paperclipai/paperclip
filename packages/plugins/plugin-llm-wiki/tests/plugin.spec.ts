@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import type { Agent, Issue, PluginApiRequestInput, PluginManagedRoutineResolution, Project } from "@paperclipai/plugin-sdk";
+import type { Agent, Company, Issue, PluginApiRequestInput, PluginManagedRoutineResolution, Project } from "@paperclipai/plugin-sdk";
 import manifest, {
   CURSOR_WINDOW_ROUTINE_KEY,
   INDEX_REFRESH_ROUTINE_KEY,
@@ -3840,6 +3840,66 @@ describe("Project-bound wiki spaces and the agent wiki API", () => {
     expect(insert?.params?.[11]).toBe(project.id);
   });
 
+  it("provisions the wiki for a new company without any bootstrap step", async () => {
+    const harness = createTestHarness({ manifest });
+    const project = existingProject();
+    harness.seed({ projects: [project] });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.emit("company.created", { name: "New Co" }, {
+      companyId: COMPANY_ID,
+      entityId: COMPANY_ID,
+      entityType: "company",
+      eventId: "event-company-created",
+    });
+
+    const folder = await harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
+    expect(folder.configured).toBe(true);
+
+    const requiredSkill = await harness.ctx.skills.managed.get(WIKI_AGENT_SKILL_KEY, COMPANY_ID);
+    expect(requiredSkill.status).toBe("resolved");
+    for (const skillKey of WIKI_MANAGED_SKILL_KEYS) {
+      const resolved = await harness.ctx.skills.managed.get(skillKey, COMPANY_ID);
+      expect(resolved.status).toBe("resolved");
+    }
+
+    const spaceInsert = harness.dbExecutes.find((execute) =>
+      execute.sql.includes("INSERT INTO")
+      && execute.sql.includes("wiki_spaces")
+      && execute.params?.[3] === PROJECT_SPACE_SLUG);
+    expect(spaceInsert).toBeTruthy();
+
+    await expect(
+      harness.ctx.localFolders.readText(COMPANY_ID, "wiki-root", "wiki/index.md"),
+    ).resolves.toBe(DEFAULT_INDEX);
+  });
+
+  it("provisions existing companies during the startup sweep", async () => {
+    const harness = createTestHarness({ manifest });
+    const project = existingProject();
+    harness.seed({
+      companies: [{ id: COMPANY_ID, name: "Existing Co" } as unknown as Company],
+      projects: [project],
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    // The sweep is fire-and-forget; the project space insert is its last
+    // provisioning step, so wait for that before asserting the rest.
+    await vi.waitFor(() => {
+      const spaceInsert = harness.dbExecutes.find((execute) =>
+        execute.sql.includes("INSERT INTO")
+        && execute.sql.includes("wiki_spaces")
+        && execute.params?.[3] === PROJECT_SPACE_SLUG);
+      expect(spaceInsert).toBeTruthy();
+    });
+
+    const folder = await harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
+    expect(folder.configured).toBe(true);
+
+    const requiredSkill = await harness.ctx.skills.managed.get(WIKI_AGENT_SKILL_KEY, COMPANY_ID);
+    expect(requiredSkill.status).toBe("resolved");
+  });
+
   it("updates the bound space display name when the project is renamed", async () => {
     const harness = createTestHarness({ manifest });
     const renamed = { ...existingProject(), name: "Rebranded Project" };
@@ -3968,6 +4028,22 @@ describe("Project-bound wiki spaces and the agent wiki API", () => {
     }));
     expect(conflict.status).toBe(409);
     expect((conflict.body as { currentHash: string }).currentHash).toBe(firstBody.hash);
+  });
+
+  it("returns a clean 404 without a host path when reading a page that was never written", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    const response = await plugin.definition.onApiRequest!(apiRequest("agent-page", {
+      query: { companyId: COMPANY_ID, path: "wiki/decisions.md" },
+    }));
+
+    expect(response.status).toBe(404);
+    const message = (response.body as { error: string }).error;
+    expect(message).toMatch(/not found/i);
+    expect(message).toContain("wiki/decisions.md");
+    // The raw fs error embeds the host's absolute path; it must never reach an agent.
+    expect(message).not.toMatch(/ENOENT|realpath|[A-Za-z]:\\|\/tmp\/|folder file not found/);
   });
 
   it("serves company-wide body search over indexed documents", async () => {

@@ -20,6 +20,7 @@ import {
   captureWikiSource,
   createSpace,
   DEFAULT_SPACE_SLUG,
+  ensureCompanyWikiProvisioned,
   ensureProjectSpace,
   findProjectSpace,
   listAllCompanyProjects,
@@ -443,9 +444,31 @@ const plugin = definePlugin({
       });
     }
 
-    // Best-effort startup sweep so projects that existed before this plugin
-    // version (or before the plugin was enabled) get their wiki spaces, and so
-    // pre-existing wiki content lands in the body-search cache once.
+    // The wiki is default-on: newly created companies get a root folder, the
+    // managed skills (including the required company-wide `wiki` skill), and
+    // per-project spaces without any human bootstrap step.
+    ctx.events.on("company.created", async (event) => {
+      const companyId = event.companyId ?? (event.entityType === "company" ? event.entityId : null);
+      if (!companyId) return;
+      try {
+        const result = await ensureCompanyWikiProvisioned(ctx, companyId);
+        ctx.logger.info("LLM Wiki provisioned for new company", {
+          companyId,
+          folderConfigured: result.folder.configured,
+          projectSpacesCreated: result.projectSpaces.created.length,
+        });
+      } catch (error) {
+        ctx.logger.warn("LLM Wiki auto-provision for new company failed", {
+          companyId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+
+    // Best-effort startup sweep so companies and projects that existed before
+    // this plugin version (or before the plugin was enabled) get their wiki
+    // root, managed skills, and spaces, and so pre-existing wiki content lands
+    // in the body-search cache once.
     void (async () => {
       try {
         const pageSize = 100;
@@ -453,7 +476,7 @@ const plugin = definePlugin({
           const companies = await ctx.companies.list({ limit: pageSize, offset: page * pageSize });
           for (const company of companies) {
             try {
-              await reconcileProjectSpaces(ctx, { companyId: company.id });
+              await ensureCompanyWikiProvisioned(ctx, company.id);
               const backfillKey = {
                 scopeKind: "company" as const,
                 scopeId: company.id,
@@ -470,7 +493,7 @@ const plugin = definePlugin({
                 });
               }
             } catch (error) {
-              ctx.logger.warn("LLM Wiki project space reconcile failed", {
+              ctx.logger.warn("LLM Wiki company provision sweep failed", {
                 companyId: company.id,
                 error: error instanceof Error ? error.message : String(error),
               });
