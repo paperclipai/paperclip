@@ -529,6 +529,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
 
     await svc.forceReassign({
       issueId: issueId1,
+      companyId,
       fromAssigneeId: terminatedId,
       toAssigneeId: targetId,
       reason: "First override.",
@@ -539,6 +540,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
 
     await svc.forceReassign({
       issueId: issueId2,
+      companyId,
       fromAssigneeId: terminatedId,
       toAssigneeId: targetId,
       reason: "Second override.",

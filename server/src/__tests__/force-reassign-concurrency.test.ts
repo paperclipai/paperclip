@@ -322,6 +322,7 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
     const svc = forceReassignService(db);
     await svc.forceReassign({
       issueId: issue1,
+      companyId,
       fromAssigneeId: terminatedId,
       toAssigneeId: targetId,
       reason: "First.",
@@ -335,6 +336,7 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
 
     await svc.forceReassign({
       issueId: issue2,
+      companyId,
       fromAssigneeId: terminatedId,
       toAssigneeId: secondTargetId,
       reason: "Second.",

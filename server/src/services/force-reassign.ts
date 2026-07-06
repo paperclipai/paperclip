@@ -174,7 +174,7 @@ export function forceReassignService(db: Db) {
     const { issueId, companyId, fromAssigneeId, toAssigneeId, reason, idempotencyKey, actorAgentId, actorUserId } = input;
 
     const result = await db.transaction(async (tx) => {
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${companyId}))`);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${'force_reassign:' + companyId}, 0))`);
 
       await tx.execute(
         sql`select ${issues.id}, ${issues.companyId} from ${issues} where ${issues.id} = ${issueId} for update`,
