@@ -688,9 +688,16 @@ function repoUrlsMatch(actual: string | null | undefined, expected: string | nul
   return Boolean(normalizedActual && normalizedExpected && normalizedActual === normalizedExpected);
 }
 
-function isFilesystemPermissionError(error: unknown) {
+export function isProjectWorkspaceFilesystemPermissionError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  return /\b(?:EACCES|EPERM)\b/.test(message);
+  if (/\b(?:EACCES|EPERM)\b/i.test(message)) {
+    return true;
+  }
+  if (!/\b(?:permission denied|operation not permitted)\b/i.test(message)) {
+    return false;
+  }
+  return /(?:could not create work tree dir|could not create leading directories|cannot mkdir|failed to create directory|could not make directory|\bmkdir\b)/i
+    .test(message);
 }
 
 async function readGitOutput(args: string[], cwd: string): Promise<string | null> {
@@ -3915,7 +3922,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           };
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          if (projectCwd && isFilesystemPermissionError(error)) {
+          if (projectCwd && isProjectWorkspaceFilesystemPermissionError(error)) {
             try {
               const managedWorkspace = await ensureManagedProjectWorkspace({
                 companyId: agent.companyId,

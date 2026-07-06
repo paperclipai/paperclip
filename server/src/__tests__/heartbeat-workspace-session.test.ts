@@ -15,6 +15,7 @@ import {
   ensureProjectWorkspacePath,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
+  isProjectWorkspaceFilesystemPermissionError,
   mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
@@ -141,6 +142,26 @@ describe("ensureProjectWorkspacePath", () => {
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("isProjectWorkspaceFilesystemPermissionError", () => {
+  it("treats git work tree creation permission failures as filesystem errors", () => {
+    const error = new Error(
+      "Command failed: git clone https://github.com/derrick-pixel/AB.dashboard /ab_associate\n" +
+        "fatal: could not create work tree dir '/ab_associate': Permission denied",
+    );
+
+    expect(isProjectWorkspaceFilesystemPermissionError(error)).toBe(true);
+  });
+
+  it("does not treat git authentication permission failures as workspace path errors", () => {
+    const error = new Error(
+      "Command failed: git clone git@github.com:derrick-pixel/AB.dashboard.git /tmp/ab_associate\n" +
+        "git@github.com: Permission denied (publickey).",
+    );
+
+    expect(isProjectWorkspaceFilesystemPermissionError(error)).toBe(false);
   });
 });
 
