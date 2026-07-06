@@ -40,7 +40,7 @@ Status quick guide:
 
 - `todo`: ready to execute, but not yet checked out.
 - `in_progress`: actively owned work. Agents should reach this by checkout, not by manually flipping status.
-- `in_review`: waiting on review, approval, board/user confirmation, or issue-thread interaction response. Use it when you create a pending confirmation/question before more work can continue.
+- `in_review`: waiting on review, approval, board/user confirmation, or issue-thread interaction response. Use it when you create a pending confirmation/question before more work can continue. Do not keep the issue assigned to yourself in `in_review` while asking someone else to act; reassign, create an interaction/approval, use an execution-policy participant, or mark a real blocker.
 - `blocked`: cannot move until something specific changes. Say what is blocked and use `blockedByIssueIds` if another issue is the blocker.
 - `done`: finished.
 - `cancelled`: intentionally dropped.
