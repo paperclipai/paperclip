@@ -20,7 +20,7 @@ Use the Paperclip API (see the `paperclip` skill for auth and endpoints) to insp
 - `GET /api/companies/{companyId}/agents` — roster, roles, adapter state
 - `GET /api/companies/{companyId}/skills` — installed skills, source badges, compatibility
 - `GET /api/agents/{agentId}/skills` — per-agent skill assignment
-- Recent issues (`GET /api/companies/{companyId}/issues?...`), including `done`, `blocked`, and `in_review` — read child-issue descriptions and QA comments
+- Recent issues (`GET /api/companies/{companyId}/issues?...` plus `GET /api/issues/{issueId}` for sampled children), including `done`, `blocked`, and `in_review` — inspect child `executionContract` fields and QA comments
 - Agent `AGENTS.md`/instructions where accessible
 
 ## Audit areas
@@ -35,7 +35,9 @@ Root (bundled) Paperclip skills present and synced? Company skills exist for rec
 
 ### 3. Handoff quality
 
-Sample recent child execution lanes: do descriptions contain execution contracts (`## Execution Contract`)? Are source-of-truth links present and reachable? Non-goals and must-not-change constraints explicit? Did executors block on missing context, or guess?
+Sample recent child execution lanes: do issue details contain a hidden `executionContract`? Is the contract schema current (`schemaVersion`, `contractType`, `taskType`, `core`, optional `extensions`)? Are source-of-truth links present and reachable? Non-goals and must-not-change constraints explicit? Did executors block on missing context, or guess?
+
+Legacy fallback: older issues may have a `## Execution Contract` JSON block in the description. Treat that as backward-compatible evidence only. New delegations should use the hidden `executionContract` field; description-only contracts are a remediation gap.
 
 ### 4. QA quality
 
