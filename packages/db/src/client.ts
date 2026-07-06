@@ -11,7 +11,7 @@ const DRIZZLE_MIGRATIONS_TABLE = "__drizzle_migrations";
 const MIGRATIONS_JOURNAL_JSON = fileURLToPath(new URL("./migrations/meta/_journal.json", import.meta.url));
 
 function createUtilitySql(url: string) {
-  return postgres(url, { max: 1, onnotice: () => {} });
+  return postgres(url, { max: 1, onnotice: () => {}, connection: { client_encoding: "UTF8" } });
 }
 
 function isSafeIdentifier(value: string): boolean {
@@ -46,7 +46,7 @@ export type MigrationState =
     };
 
 export function createDb(url: string) {
-  const sql = postgres(url);
+  const sql = postgres(url, { connection: { client_encoding: "UTF8" } });
   return drizzlePg(sql, { schema });
 }
 
@@ -757,23 +757,34 @@ export async function migratePostgresIfEmpty(url: string): Promise<MigrationBoot
 export async function ensurePostgresDatabase(
   url: string,
   databaseName: string,
+  maxRetries = 15,
 ): Promise<"created" | "exists"> {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(databaseName)) {
     throw new Error(`Unsafe database name: ${databaseName}`);
   }
 
-  const sql = createUtilitySql(url);
-  try {
-    const existing = await sql<{ one: number }[]>`
-      select 1 as one from pg_database where datname = ${databaseName} limit 1
-    `;
-    if (existing.length > 0) return "exists";
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const sql = createUtilitySql(url);
+    try {
+      const existing = await sql<{ one: number }[]>`
+        select 1 as one from pg_database where datname = ${databaseName} limit 1
+      `;
+      if (existing.length > 0) return "exists";
 
-    await sql.unsafe(`create database "${databaseName}" encoding 'UTF8' lc_collate 'C' lc_ctype 'C' template template0`);
-    return "created";
-  } finally {
-    await sql.end();
+      await sql.unsafe(`create database "${databaseName}" encoding 'UTF8' lc_collate 'C' lc_ctype 'C' template template0`);
+      return "created";
+    } catch (err: any) {
+      if (err?.code === "57P03" && attempt < maxRetries) {
+        // The database system is starting up, retry after delay
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        continue;
+      }
+      throw err;
+    } finally {
+      await sql.end();
+    }
   }
+  throw new Error("Max retries reached while waiting for database to start.");
 }
 
 export type Db = ReturnType<typeof createDb>;

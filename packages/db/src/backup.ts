@@ -1,98 +1,203 @@
-import { existsSync, readFileSync } from "node:fs";
-import path from "node:path";
-import { formatDatabaseBackupResult, runDatabaseBackup } from "./backup-lib.js";
-import {
-  expandHomePrefix,
-  resolveDefaultBackupDir,
-  resolvePaperclipConfigPathForInstance,
-} from "@paperclipai/shared/home-paths";
+import postgres from "postgres";
+import { readFile, mkdir, readdir } from "node:fs/promises";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { applyPendingMigrations } from "./client.js";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const BACKUPS_DIR = join(__dirname, "..", "..", "data", "backups");
 
-type PartialConfig = {
-  database?: {
-    mode?: "embedded-postgres" | "postgres";
-    connectionString?: string;
-    embeddedPostgresPort?: number;
-    backup?: {
-      dir?: string;
-      retentionDays?: number;
-    };
-  };
-};
+function isSafeIdentifier(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
 
-function readConfig(configPath: string): PartialConfig | null {
-  if (!existsSync(configPath)) return null;
+function quoteIdentifier(value: string): string {
+  if (!isSafeIdentifier(value)) throw new Error(`Unsafe SQL identifier: ${value}`);
+  return `"${value.replaceAll("\"", "\"\"")}"`;
+}
+
+async function ensureBackupDir(): Promise<void> {
+  await mkdir(BACKUPS_DIR, { recursive: true });
+}
+
+function generateBackupFilename(): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  return `backup-${timestamp}.sql`;
+}
+
+export async function backupDatabase(url: string): Promise<string> {
+  await ensureBackupDir();
+
+  const sql = postgres(url, { max: 1 });
   try {
-    const parsed = JSON.parse(readFileSync(configPath, "utf8"));
-    return typeof parsed === "object" && parsed ? (parsed as PartialConfig) : null;
-  } catch {
-    return null;
+    // Get all public tables
+    const tables = await sql<{ tablename: string }[]>`
+      SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename
+    `;
+
+    if (tables.length === 0) {
+      console.log("No tables found in public schema. Nothing to backup.");
+      return "";
+    }
+
+    let dump = "-- Paperclip Database Backup\n";
+    dump += `-- Generated: ${new Date().toISOString()}\n\n`;
+
+    // We no longer dump schema (CREATE TABLE). We rely on Drizzle migrations 
+    // during restore to produce a structurally perfect database.
+    for (const table of tables) {
+      const rows = await sql.unsafe(`SELECT * FROM ${quoteIdentifier(table.tablename)}`);
+      if (rows.length > 0) {
+        dump += `-- Data: ${table.tablename} (${rows.length} rows)\n`;
+        for (const row of rows) {
+          const keys = Object.keys(row);
+          const values = keys.map((k) => {
+            const v = row[k];
+            if (v === null || v === undefined) return "NULL";
+            if (typeof v === "number") return String(v);
+            if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
+            if (Array.isArray(v)) {
+              const pgArray = "{" + v.map(item => {
+                if (item === null) return "NULL";
+                return `"${String(item).replaceAll('"', '\\"')}"`;
+              }).join(",") + "}";
+              return `'${pgArray.replaceAll("'", "''")}'`;
+            }
+            if (v instanceof Date) return `'${v.toISOString()}'`;
+            if (typeof v === "object") return `'${JSON.stringify(v).replaceAll("'", "''")}'`;
+            return `'${String(v).replaceAll("'", "''")}'`;
+          });
+          dump += `INSERT INTO ${quoteIdentifier(table.tablename)} (${keys.map(quoteIdentifier).join(", ")}) VALUES (${values.join(", ")});\n`;
+        }
+        dump += "\n";
+      }
+    }
+
+    // Save to file
+    const filename = generateBackupFilename();
+    const filePath = join(BACKUPS_DIR, filename);
+    await writeFile(filePath, dump);
+
+    console.log(`Backup saved to ${filePath} (${tables.length} tables)`);
+    return filePath;
+  } finally {
+    await sql.end();
   }
 }
 
-function asPositiveInt(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  const rounded = Math.trunc(value);
-  return rounded > 0 ? rounded : null;
+async function writeFile(path: string, content: string): Promise<void> {
+  const { writeFile: fsWriteFile } = await import("node:fs/promises");
+  await fsWriteFile(path, content, "utf8");
 }
 
-function resolveEmbeddedPort(config: PartialConfig | null): number {
-  return asPositiveInt(config?.database?.embeddedPostgresPort) ?? 54329;
-}
+export function splitSqlStatements(sqlText: string): string[] {
+  const statements: string[] = [];
+  let current = "";
+  let inString = false;
+  let inComment = false;
+  
+  for (let i = 0; i < sqlText.length; i++) {
+    const char = sqlText[i];
+    
+    if (inComment) {
+      if (char === "\n") {
+        inComment = false;
+      }
+      continue;
+    }
+    
+    if (!inString && char === "-" && sqlText[i + 1] === "-") {
+      inComment = true;
+      i++;
+      continue;
+    }
 
-function resolveConnectionString(config: PartialConfig | null): string {
-  const envUrl = process.env.DATABASE_URL?.trim();
-  if (envUrl) return envUrl;
-
-  if (config?.database?.mode === "postgres" && typeof config.database.connectionString === "string") {
-    const trimmed = config.database.connectionString.trim();
-    if (trimmed) return trimmed;
+    if (char === "'") {
+      // Handle escaped quotes
+      if (sqlText[i + 1] === "'") {
+        current += "''";
+        i++;
+        continue;
+      }
+      inString = !inString;
+    }
+    if (char === ";" && !inString) {
+      if (current.trim()) statements.push(current.trim() + ";");
+      current = "";
+    } else {
+      current += char;
+    }
   }
-
-  const port = resolveEmbeddedPort(config);
-  return `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`;
+  if (current.trim()) statements.push(current.trim());
+  return statements;
 }
 
-function resolveBackupDir(config: PartialConfig | null): string {
-  const raw = config?.database?.backup?.dir;
-  if (typeof raw === "string" && raw.trim().length > 0) {
-    return path.resolve(expandHomePrefix(raw.trim()));
-  }
-  return resolveDefaultBackupDir();
-}
+export async function restoreDatabase(url: string, backupPath: string): Promise<void> {
+  const content = await readFile(backupPath, "utf8");
+  const statements = splitSqlStatements(content);
 
-function resolveRetentionDays(config: PartialConfig | null): number {
-  return asPositiveInt(config?.database?.backup?.retentionDays) ?? 7;
-}
-
-async function main() {
-  const configPath = resolvePaperclipConfigPathForInstance();
-  const config = readConfig(configPath);
-  const connectionString = resolveConnectionString(config);
-  const backupDir = resolveBackupDir(config);
-  const retentionDays = resolveRetentionDays(config);
-
-  console.log(`Config path: ${configPath}`);
-  console.log(`Backing up database to: ${backupDir}`);
-  console.log(`Retention window: ${retentionDays} day(s)`);
-
+  console.log("Taking safety snapshot of current database state...");
   try {
-    const result = await runDatabaseBackup({
-      connectionString,
-      backupDir,
-      retention: { dailyDays: retentionDays, weeklyWeeks: 4, monthlyMonths: 1 },
-      filenamePrefix: "paperclip",
+    const snapshotPath = await backupDatabase(url);
+    if (snapshotPath) {
+      console.log(`Safety snapshot created at ${snapshotPath} before restore.`);
+    }
+  } catch (e) {
+    console.warn("Warning: Failed to take safety snapshot. Proceeding with restore anyway.", e);
+  }
+
+  const sql = postgres(url, { max: 1 });
+  try {
+    // Drop existing schemas
+    await sql.unsafe("DROP SCHEMA IF EXISTS public CASCADE;");
+    await sql.unsafe("DROP SCHEMA IF EXISTS drizzle CASCADE;");
+    await sql.unsafe("CREATE SCHEMA public;");
+
+    // Re-apply migrations to get perfect schema (sequences, constraints, indexes)
+    await applyPendingMigrations(url);
+
+    // Execute backup data statements
+    await sql.begin(async (tx) => {
+      for (const statement of statements) {
+        const trimmed = statement.trim();
+        if (trimmed) {
+          await tx.unsafe(trimmed);
+        }
+      }
+
+      // Sync sequences
+      const sequences = await tx<{ sequence_name: string; table_name: string; column_name: string }[]>`
+        SELECT
+            s.relname AS sequence_name,
+            t.relname AS table_name,
+            a.attname AS column_name
+        FROM pg_class s
+        JOIN pg_depend d ON d.objid = s.oid AND d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass
+        JOIN pg_class t ON t.oid = d.refobjid
+        JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+        WHERE s.relkind = 'S'
+      `;
+
+      for (const seq of sequences) {
+        const escapedSeqName = seq.sequence_name.replace(/'/g, "''");
+        await tx.unsafe(`SELECT setval('${escapedSeqName}', COALESCE((SELECT MAX(${quoteIdentifier(seq.column_name)}) FROM ${quoteIdentifier(seq.table_name)}), 1), true)`);
+      }
     });
 
-    console.log(`Backup saved: ${formatDatabaseBackupResult(result)}`);
-  } catch (err) {
-    console.error("Backup failed.");
-    if (err instanceof Error) {
-      console.error(err.message);
-    } else {
-      console.error(String(err));
-    }
-    process.exit(1);
+    console.log(`Database restored from ${backupPath}`);
+  } finally {
+    await sql.end();
   }
 }
 
-await main();
+export async function listBackups(): Promise<string[]> {
+  try {
+    const entries = await readdir(BACKUPS_DIR, { withFileTypes: true });
+    return entries
+      .filter((e) => e.isFile() && e.name.endsWith(".sql"))
+      .map((e) => join(BACKUPS_DIR, e.name))
+      .sort()
+      .reverse();
+  } catch {
+    return [];
+  }
+}
