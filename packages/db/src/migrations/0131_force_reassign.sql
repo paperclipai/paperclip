@@ -5,9 +5,11 @@ ALTER TABLE "issues"
   ADD COLUMN "version" integer NOT NULL DEFAULT 1;
 --> statement-breakpoint
 ALTER TABLE "agents"
-  ADD COLUMN "status_changed_by" uuid,
+  ADD COLUMN "status_changed_by_agent_id" uuid,
+  ADD COLUMN "status_changed_by_user_id" text,
   ADD COLUMN "status_changed_at" timestamp with time zone,
-  ADD COLUMN "manager_changed_by" uuid,
+  ADD COLUMN "manager_changed_by_agent_id" uuid,
+  ADD COLUMN "manager_changed_by_user_id" text,
   ADD COLUMN "manager_changed_at" timestamp with time zone;
 --> statement-breakpoint
 CREATE TABLE "security_audit_log" (
@@ -37,7 +39,7 @@ CREATE TABLE "security_audit_log" (
   "hash" text NOT NULL
 );
 --> statement-breakpoint
-CREATE INDEX "security_audit_log_tenant_seq_idx" ON "security_audit_log" USING btree ("tenant_id", "seq");
+CREATE UNIQUE INDEX "security_audit_log_tenant_seq_uq" ON "security_audit_log" USING btree ("tenant_id", "seq");
 --> statement-breakpoint
 CREATE INDEX "security_audit_log_tenant_created_idx" ON "security_audit_log" USING btree ("tenant_id", "created_at");
 --> statement-breakpoint

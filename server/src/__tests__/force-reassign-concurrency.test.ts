@@ -1,0 +1,372 @@
+import { randomUUID } from "node:crypto";
+import { describe, expect, it } from "vitest";
+import { eq, sql } from "drizzle-orm";
+import {
+  agents,
+  companies,
+  forceReassignIdempotency,
+  issues,
+  securityAuditLog,
+} from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+import { forceReassignService } from "../services/force-reassign.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describeEmbeddedPostgres("force-reassign concurrency", () => {
+  it("concurrent identical forceReassign calls are all idempotent (no duplicate audit/idempotency rows)", async () => {
+    const db = await startEmbeddedPostgresTestDatabase();
+
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "TestCo" });
+
+    const terminatedId = randomUUID();
+    const targetId = randomUUID();
+    const actorId = randomUUID();
+    await db.insert(agents).values([
+      { id: terminatedId, companyId, name: "Dead", role: "general", status: "terminated", reportsTo: null },
+      { id: targetId, companyId, name: "Target", role: "general", status: "active", reportsTo: null },
+      { id: actorId, companyId, name: "CEO", role: "ceo", status: "active", reportsTo: null },
+    ]);
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Orphaned Issue",
+      assigneeAgentId: terminatedId,
+      status: "todo",
+    });
+
+    const svc = forceReassignService(db);
+    const key = randomUUID();
+
+    const promises = Array.from({ length: 10 }, () =>
+      svc.forceReassign({
+        issueId,
+        fromAssigneeId: terminatedId,
+        toAssigneeId: targetId,
+        reason: "Concurrent reassign.",
+        idempotencyKey: key,
+        actorId,
+      }),
+    );
+
+    const results = await Promise.all(promises);
+
+    const nonIdempotentCount = results.filter((r) => !r.wasIdempotent).length;
+    expect(nonIdempotentCount).toBe(1);
+
+    const auditRows = await db
+      .select()
+      .from(securityAuditLog)
+      .where(eq(securityAuditLog.tenantId, companyId));
+    expect(auditRows.length).toBe(1);
+
+    const idempotentRows = await db
+      .select()
+      .from(forceReassignIdempotency)
+      .where(eq(forceReassignIdempotency.idempotencyKey, key));
+    expect(idempotentRows.length).toBe(1);
+
+    const updated = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    expect(updated.assigneeAgentId).toBe(targetId);
+  });
+
+  it("concurrent forceReassign with different keys fails for all-but-one", async () => {
+    const db = await startEmbeddedPostgresTestDatabase();
+
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "TestCo" });
+
+    const terminatedId = randomUUID();
+    const targetId = randomUUID();
+    const actorId = randomUUID();
+    await db.insert(agents).values([
+      { id: terminatedId, companyId, name: "Dead", role: "general", status: "terminated", reportsTo: null },
+      { id: targetId, companyId, name: "Target", role: "general", status: "active", reportsTo: null },
+      { id: actorId, companyId, name: "CEO", role: "ceo", status: "active", reportsTo: null },
+    ]);
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Orphaned Issue",
+      assigneeAgentId: terminatedId,
+      status: "todo",
+    });
+
+    const svc = forceReassignService(db);
+
+    const promises = Array.from({ length: 5 }, () =>
+      svc.forceReassign({
+        issueId,
+        fromAssigneeId: terminatedId,
+        toAssigneeId: targetId,
+        reason: "Race reassign.",
+        idempotencyKey: randomUUID(),
+        actorId,
+      }).catch((err) => err),
+    );
+
+    const results = await Promise.all(promises);
+    const successes = results.filter((r) => !(r instanceof Error));
+    expect(successes.length).toBe(1);
+
+    const failures = results.filter((r) => r instanceof Error);
+    expect(failures.length).toBe(4);
+    for (const err of failures) {
+      const msg = (err as Error).message;
+      expect(msg === "expected_from_mismatch" || msg === "issue_not_orphaned").toBe(true);
+    }
+  });
+
+  it("verifyAuditChain detects a tampered audit record", async () => {
+    const db = await startEmbeddedPostgresTestDatabase();
+
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "TestCo" });
+
+    const terminatedId = randomUUID();
+    const targetId = randomUUID();
+    const actorId = randomUUID();
+    await db.insert(agents).values([
+      { id: terminatedId, companyId, name: "Dead", role: "general", status: "terminated", reportsTo: null },
+      { id: targetId, companyId, name: "Target", role: "general", status: "active", reportsTo: null },
+      { id: actorId, companyId, name: "CEO", role: "ceo", status: "active", reportsTo: null },
+    ]);
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Orphaned Issue",
+      assigneeAgentId: terminatedId,
+      status: "todo",
+    });
+
+    const svc = forceReassignService(db);
+    await svc.forceReassign({
+      issueId,
+      fromAssigneeId: terminatedId,
+      toAssigneeId: targetId,
+      reason: "First.",
+      idempotencyKey: randomUUID(),
+      actorId,
+    });
+
+    await svc.forceReassign({
+      issueId,
+      fromAssigneeId: targetId,
+      toAssigneeId: terminatedId,
+      reason: "Second.",
+      idempotencyKey: randomUUID(),
+      actorId,
+    });
+
+    const beforeTamper = await svc.verifyAuditChain(companyId);
+    expect(beforeTamper.valid).toBe(true);
+    expect(beforeTamper.rowCount).toBe(2);
+
+    await db
+      .update(securityAuditLog)
+      .set({ hash: "tampered" })
+      .where(eq(securityAuditLog.tenantId, companyId))
+      .orderBy(sql`${securityAuditLog.seq} desc`)
+      .limit(1);
+
+    const afterTamper = await svc.verifyAuditChain(companyId);
+    expect(afterTamper.valid).toBe(false);
+    expect(afterTamper.rowCount).toBe(2);
+  });
+
+  it("verifyAuditChain detects a broken prevHash linkage", async () => {
+    const db = await startEmbeddedPostgresTestDatabase();
+
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "TestCo" });
+
+    const terminatedId = randomUUID();
+    const targetId = randomUUID();
+    const actorId = randomUUID();
+    await db.insert(agents).values([
+      { id: terminatedId, companyId, name: "Dead", role: "general", status: "terminated", reportsTo: null },
+      { id: targetId, companyId, name: "Target", role: "general", status: "active", reportsTo: null },
+      { id: actorId, companyId, name: "CEO", role: "ceo", status: "active", reportsTo: null },
+    ]);
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Orphaned Issue",
+      assigneeAgentId: terminatedId,
+      status: "todo",
+    });
+
+    const svc = forceReassignService(db);
+    await svc.forceReassign({
+      issueId,
+      fromAssigneeId: terminatedId,
+      toAssigneeId: targetId,
+      reason: "First.",
+      idempotencyKey: randomUUID(),
+      actorId,
+    });
+
+    await svc.forceReassign({
+      issueId,
+      fromAssigneeId: targetId,
+      toAssigneeId: terminatedId,
+      reason: "Second.",
+      idempotencyKey: randomUUID(),
+      actorId,
+    });
+
+    const rows = await db
+      .select()
+      .from(securityAuditLog)
+      .where(eq(securityAuditLog.tenantId, companyId))
+      .orderBy(sql`${securityAuditLog.seq} asc`);
+
+    expect(rows.length).toBe(2);
+    await db
+      .update(securityAuditLog)
+      .set({ prevHash: null })
+      .where(eq(securityAuditLog.id, rows[1]!.id));
+
+    const result = await svc.verifyAuditChain(companyId);
+    expect(result.valid).toBe(false);
+    expect(result.rowCount).toBe(2);
+  });
+
+  it("audit chain hashes are order-dependent: swapping rows breaks validation", async () => {
+    const db = await startEmbeddedPostgresTestDatabase();
+
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "TestCo" });
+
+    const terminatedId = randomUUID();
+    const targetId = randomUUID();
+    const actorId = randomUUID();
+    await db.insert(agents).values([
+      { id: terminatedId, companyId, name: "Dead", role: "general", status: "terminated", reportsTo: null },
+      { id: targetId, companyId, name: "Target", role: "general", status: "active", reportsTo: null },
+      { id: actorId, companyId, name: "CEO", role: "ceo", status: "active", reportsTo: null },
+    ]);
+
+    const issue1 = randomUUID();
+    const issue2 = randomUUID();
+    await db.insert(issues).values([
+      { id: issue1, companyId, title: "Issue 1", assigneeAgentId: terminatedId, status: "todo" },
+      { id: issue2, companyId, title: "Issue 2", assigneeAgentId: terminatedId, status: "todo" },
+    ]);
+
+    const svc = forceReassignService(db);
+    await svc.forceReassign({
+      issueId: issue1,
+      fromAssigneeId: terminatedId,
+      toAssigneeId: targetId,
+      reason: "First.",
+      idempotencyKey: randomUUID(),
+      actorId,
+    });
+    await svc.forceReassign({
+      issueId: issue2,
+      fromAssigneeId: terminatedId,
+      toAssigneeId: targetId,
+      reason: "Second.",
+      idempotencyKey: randomUUID(),
+      actorId,
+    });
+
+    const beforeSwap = await svc.verifyAuditChain(companyId);
+    expect(beforeSwap.valid).toBe(true);
+
+    const rows = await db
+      .select()
+      .from(securityAuditLog)
+      .where(eq(securityAuditLog.tenantId, companyId))
+      .orderBy(sql`${securityAuditLog.seq} asc`);
+    expect(rows.length).toBe(2);
+
+    const firstSeq = rows[0]!.seq;
+    const secondSeq = rows[1]!.seq;
+
+    // Use a temporary seq to avoid the unique (tenant_id, seq) constraint.
+    await db
+      .update(securityAuditLog)
+      .set({ seq: -1 })
+      .where(eq(securityAuditLog.id, rows[0]!.id));
+    await db
+      .update(securityAuditLog)
+      .set({ seq: firstSeq })
+      .where(eq(securityAuditLog.id, rows[1]!.id));
+    await db
+      .update(securityAuditLog)
+      .set({ seq: secondSeq })
+      .where(eq(securityAuditLog.id, rows[0]!.id));
+
+    const afterSwap = await svc.verifyAuditChain(companyId);
+    expect(afterSwap.valid).toBe(false);
+  });
+
+  it("idempotency table prevents re-execution even when the original issue is deleted", async () => {
+    const db = await startEmbeddedPostgresTestDatabase();
+
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "TestCo" });
+
+    const terminatedId = randomUUID();
+    const targetId = randomUUID();
+    const actorId = randomUUID();
+    await db.insert(agents).values([
+      { id: terminatedId, companyId, name: "Dead", role: "general", status: "terminated", reportsTo: null },
+      { id: targetId, companyId, name: "Target", role: "general", status: "active", reportsTo: null },
+      { id: actorId, companyId, name: "CEO", role: "ceo", status: "active", reportsTo: null },
+    ]);
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Orphaned Issue",
+      assigneeAgentId: terminatedId,
+      status: "todo",
+    });
+
+    const svc = forceReassignService(db);
+    const key = randomUUID();
+
+    const first = await svc.forceReassign({
+      issueId,
+      fromAssigneeId: terminatedId,
+      toAssigneeId: targetId,
+      reason: "First.",
+      idempotencyKey: key,
+      actorId,
+    });
+    expect(first.wasIdempotent).toBe(false);
+
+    await db.delete(issues).where(eq(issues.id, issueId));
+
+    const second = await svc.forceReassign({
+      issueId,
+      fromAssigneeId: terminatedId,
+      toAssigneeId: targetId,
+      reason: "Second.",
+      idempotencyKey: key,
+      actorId,
+    });
+    expect(second.wasIdempotent).toBe(true);
+  });
+});

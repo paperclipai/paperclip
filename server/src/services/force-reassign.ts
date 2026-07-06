@@ -127,22 +127,30 @@ export function forceReassignService(db: Db) {
   async function forceReassign(input: ForceReassignInput): Promise<ForceReassignOutput> {
     const { issueId, fromAssigneeId, toAssigneeId, reason, idempotencyKey, actorId } = input;
 
-    const existingIdempotent = await db
-      .select()
-      .from(forceReassignIdempotency)
-      .where(eq(forceReassignIdempotency.idempotencyKey, idempotencyKey))
-      .then((rows) => rows[0] ?? null);
-
-    if (existingIdempotent) {
-      return {
-        issueId: existingIdempotent.issueId ?? issueId,
-        fromAssigneeId,
-        toAssigneeId,
-        wasIdempotent: true,
-      };
-    }
-
     const result = await db.transaction(async (tx) => {
+      // Reserve the idempotency key first. The unique PK guarantees only one
+      // concurrent caller creates the row; conflicting callers read the stored
+      // result and return without performing duplicate side effects.
+      const idempotencyInsert = await tx
+        .insert(forceReassignIdempotency)
+        .values({ idempotencyKey, issueId: null })
+        .onConflictDoNothing({ target: forceReassignIdempotency.idempotencyKey })
+        .returning();
+
+      if (idempotencyInsert.length === 0) {
+        const existing = await tx
+          .select()
+          .from(forceReassignIdempotency)
+          .where(eq(forceReassignIdempotency.idempotencyKey, idempotencyKey))
+          .then((rows) => rows[0] ?? null);
+
+        return {
+          issueId: existing?.issueId ?? issueId,
+          fromAssigneeId,
+          toAssigneeId,
+          wasIdempotent: true,
+        };
+      }
       await tx.execute(
         sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
       );
@@ -324,9 +332,10 @@ export function forceReassignService(db: Db) {
         prevHash,
       };
 
+      const createdAt = new Date();
       const recordForHash = {
         ...auditRecord,
-        createdAt: new Date().toISOString(),
+        createdAt: createdAt.toISOString(),
       };
       const hash = sha256(canonicalJson(recordForHash) + (prevHash ?? ""));
 
@@ -334,16 +343,19 @@ export function forceReassignService(db: Db) {
         .insert(securityAuditLog)
         .values({
           ...auditRecord,
+          createdAt,
           hash,
           prevHash,
         })
         .returning();
 
-      await tx.insert(forceReassignIdempotency).values({
-        idempotencyKey,
-        issueId,
-        auditId: auditRows[0]?.id ?? null,
-      });
+      await tx
+        .update(forceReassignIdempotency)
+        .set({
+          issueId,
+          auditId: auditRows[0]?.id ?? null,
+        })
+        .where(eq(forceReassignIdempotency.idempotencyKey, idempotencyKey));
 
       return {
         issueId,
@@ -421,6 +433,10 @@ export function forceReassignService(db: Db) {
     let prevHash: string | null = null;
 
     for (const row of rows) {
+      if (row.prevHash !== prevHash) {
+        return { valid: false, rowCount: rows.length };
+      }
+
       const recordForHash = {
         seq: row.seq,
         eventType: row.eventType,

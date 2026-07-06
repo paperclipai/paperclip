@@ -1760,6 +1760,10 @@ export function agentRoutes(
           createdByUserId: actor.actorType === "user" ? actor.actorId : null,
           source: "skill-sync",
         },
+        actor: {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
       });
       if (!updated) {
         res.status(404).json({ error: "Agent not found" });
@@ -2929,6 +2933,10 @@ export function agentRoutes(
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
         source: "patch",
       },
+      actor: {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      },
     });
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -2956,7 +2964,8 @@ export function agentRoutes(
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
-    const agent = await svc.pause(id);
+    const provenanceActor = { agentId: req.actor.agentId ?? null, userId: req.actor.userId ?? null };
+    const agent = await svc.pause(id, "manual", provenanceActor);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -2989,7 +2998,8 @@ export function agentRoutes(
       });
       return;
     }
-    const agent = await svc.resume(id);
+    const provenanceActor = { agentId: req.actor.agentId ?? null, userId: req.actor.userId ?? null };
+    const agent = await svc.resume(id, provenanceActor);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -3021,7 +3031,8 @@ export function agentRoutes(
       return;
     }
 
-    const agent = await svc.clearError(id);
+    const provenanceActor = { agentId: req.actor.agentId ?? null, userId: req.actor.userId ?? null };
+    const agent = await svc.clearError(id, provenanceActor);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -3096,6 +3107,7 @@ export function agentRoutes(
   router.post("/agents/:id/terminate", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
+    const provenanceActor = { agentId: req.actor.agentId ?? null, userId: req.actor.userId ?? null };
     const existing = await getAccessibleAgent(req, res, id);
     if (!existing) {
       return;
@@ -3116,7 +3128,7 @@ export function agentRoutes(
       }
     }
     if (!agent) {
-      agent = await svc.terminate(id);
+      agent = await svc.terminate(id, provenanceActor);
     }
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });

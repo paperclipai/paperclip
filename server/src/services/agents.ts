@@ -63,8 +63,14 @@ interface RevisionMetadata {
   rolledBackFromRevisionId?: string | null;
 }
 
+interface MutationActor {
+  agentId?: string | null;
+  userId?: string | null;
+}
+
 interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
+  actor?: MutationActor;
 }
 
 interface AgentShortnameRow {
@@ -441,6 +447,24 @@ export function agentService(db: Db) {
       );
     }
 
+    const provenance: Partial<typeof agents.$inferInsert> = {};
+    if (data.status !== undefined && data.status !== existing.status) {
+      if (options?.actor?.agentId === id) {
+        throw conflict("Agents cannot change their own status");
+      }
+      provenance.statusChangedByAgentId = options?.actor?.agentId ?? null;
+      provenance.statusChangedByUserId = options?.actor?.userId ?? null;
+      provenance.statusChangedAt = new Date();
+    }
+    if (data.reportsTo !== undefined && data.reportsTo !== existing.reportsTo) {
+      if (options?.actor?.agentId === id) {
+        throw conflict("Agents cannot change their own manager");
+      }
+      provenance.managerChangedByAgentId = options?.actor?.agentId ?? null;
+      provenance.managerChangedByUserId = options?.actor?.userId ?? null;
+      provenance.managerChangedAt = new Date();
+    }
+
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
@@ -448,7 +472,7 @@ export function agentService(db: Db) {
       const txDb = tx as unknown as Db;
       const updated = await tx
         .update(agents)
-        .set({ ...normalizedPatch, updatedAt: new Date() })
+        .set({ ...normalizedPatch, ...provenance, updatedAt: new Date() })
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -546,10 +570,15 @@ export function agentService(db: Db) {
 
     update: updateAgent,
 
-    pause: async (id: string, reason: "manual" | "budget" | "system" = "manual") => {
+    pause: async (
+      id: string,
+      reason: "manual" | "budget" | "system" = "manual",
+      actor?: MutationActor,
+    ) => {
       const existing = await getById(id);
       if (!existing) return null;
       if (existing.status === "terminated") throw conflict("Cannot pause terminated agent");
+      if (actor?.agentId === id) throw conflict("Agents cannot change their own status");
 
       const updated = await db
         .update(agents)
@@ -558,6 +587,9 @@ export function agentService(db: Db) {
           pauseReason: reason,
           pausedAt: new Date(),
           errorReason: null,
+          statusChangedByAgentId: actor?.agentId ?? null,
+          statusChangedByUserId: actor?.userId ?? null,
+          statusChangedAt: new Date(),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
@@ -566,13 +598,14 @@ export function agentService(db: Db) {
       return updated ? getById(updated.id) : null;
     },
 
-    resume: async (id: string) => {
+    resume: async (id: string, actor?: MutationActor) => {
       const existing = await getById(id);
       if (!existing) return null;
       if (existing.status === "terminated") throw conflict("Cannot resume terminated agent");
       if (existing.status === "pending_approval") {
         throw conflict("Pending approval agents cannot be resumed");
       }
+      if (actor?.agentId === id) throw conflict("Agents cannot change their own status");
 
       const updated = await db
         .update(agents)
@@ -581,6 +614,9 @@ export function agentService(db: Db) {
           pauseReason: null,
           pausedAt: null,
           errorReason: null,
+          statusChangedByAgentId: actor?.agentId ?? null,
+          statusChangedByUserId: actor?.userId ?? null,
+          statusChangedAt: new Date(),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
@@ -589,7 +625,7 @@ export function agentService(db: Db) {
       return updated ? getById(updated.id) : null;
     },
 
-    clearError: async (id: string) => {
+    clearError: async (id: string, actor?: MutationActor) => {
       const existing = await getById(id);
       if (!existing) return null;
       if (existing.status === "terminated") throw conflict("Cannot clear error on terminated agent");
@@ -599,6 +635,7 @@ export function agentService(db: Db) {
       if (existing.status !== "error") {
         throw conflict("Only agents in error status can have their error cleared");
       }
+      if (actor?.agentId === id) throw conflict("Agents cannot change their own status");
 
       const updated = await db
         .update(agents)
@@ -607,6 +644,9 @@ export function agentService(db: Db) {
           pauseReason: null,
           pausedAt: null,
           errorReason: null,
+          statusChangedByAgentId: actor?.agentId ?? null,
+          statusChangedByUserId: actor?.userId ?? null,
+          statusChangedAt: new Date(),
           updatedAt: new Date(),
         })
         .where(and(eq(agents.id, id), eq(agents.status, "error")))
@@ -619,9 +659,11 @@ export function agentService(db: Db) {
       return getById(updated.id);
     },
 
-    terminate: async (id: string) => {
+    terminate: async (id: string, actor?: MutationActor) => {
       const existing = await getById(id);
       if (!existing) return null;
+
+      if (actor?.agentId === id) throw conflict("Agents cannot change their own status");
 
       await db
         .update(agents)
@@ -630,6 +672,9 @@ export function agentService(db: Db) {
           pauseReason: null,
           pausedAt: null,
           errorReason: null,
+          statusChangedByAgentId: actor?.agentId ?? null,
+          statusChangedByUserId: actor?.userId ?? null,
+          statusChangedAt: new Date(),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id));

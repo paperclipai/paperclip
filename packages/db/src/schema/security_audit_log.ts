@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, integer, jsonb, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, integer, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { issues } from "./issues.js";
 
@@ -31,7 +31,7 @@ export const securityAuditLog = pgTable(
     hash: text("hash").notNull(),
   },
   (table) => ({
-    tenantSeqIdx: index("security_audit_log_tenant_seq_idx").on(table.tenantId, table.seq),
+    tenantSeqUq: uniqueIndex("security_audit_log_tenant_seq_uq").on(table.tenantId, table.seq),
     tenantCreatedIdx: index("security_audit_log_tenant_created_idx").on(table.tenantId, table.createdAt),
     issueIdx: index("security_audit_log_issue_idx").on(table.issueId),
   }),
