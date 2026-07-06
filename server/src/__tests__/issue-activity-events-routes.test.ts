@@ -277,6 +277,44 @@ describe("issue activity event routes", () => {
     });
   }, 15_000);
 
+  it("echoes a scalar blockedByIssueIds derived from the blockedBy relation on the PATCH response (TWX-1198)", async () => {
+    const issue = makeIssue();
+    mockIssueService.getById.mockResolvedValue(issue);
+    const relations = {
+      blockedBy: [
+        {
+          id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          identifier: "PAP-11",
+          title: "Blocker",
+          status: "todo",
+          priority: "medium",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+      ],
+      blocks: [],
+    };
+    mockIssueService.getRelationSummaries.mockResolvedValue(relations);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ blockedByIssueIds: ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"] });
+
+    expect(res.status).toBe(200);
+    // Writer PATCHes a scalar blockedByIssueIds; the response must echo the same
+    // scalar shape (not only the blockedBy relation) so a round-tripping agent
+    // detects the blocker is already set and stops re-patching status=blocked.
+    expect(res.body.blockedByIssueIds).toEqual(["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]);
+    expect(res.body.blockedBy.map((relation: { id: string }) => relation.id)).toEqual([
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    ]);
+  }, 15_000);
+
   it("logs readable workspace change activity details for issue updates", async () => {
     const previousProjectWorkspaceId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const nextExecutionWorkspaceId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";

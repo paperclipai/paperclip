@@ -3518,6 +3518,10 @@ export function issueRoutes(
         goalId: goal?.id ?? issue.goalId,
         parentId: issue.parentId,
         blockedBy: relationsWithRecoveryActions.blockedBy,
+        // TWX-1198: echo the scalar blocker-id list a writer PATCHes so a
+        // round-tripping agent can detect the blocker is already set instead of
+        // re-patching status=blocked every heartbeat.
+        blockedByIssueIds: relationsWithRecoveryActions.blockedBy.map((relation) => relation.id),
         blocks: relationsWithRecoveryActions.blocks,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
@@ -3650,6 +3654,9 @@ export function issueRoutes(
       scheduledRetry,
       activeRecoveryAction: revalidatedActiveRecoveryAction,
       blockedBy: relationsWithRecoveryActions.blockedBy,
+      // TWX-1198: derive the scalar blocker-id list from the blockedBy relation
+      // so readers see the same shape they PATCH and stop re-patching blocked.
+      blockedByIssueIds: relationsWithRecoveryActions.blockedBy.map((relation) => relation.id),
       blocks: relationsWithRecoveryActions.blocks,
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
@@ -6325,6 +6332,7 @@ export function issueRoutes(
       : null;
     let issueResponse: typeof issue & {
       blockedBy?: unknown;
+      blockedByIssueIds?: string[];
       blocks?: unknown;
       activeRecoveryAction?: unknown;
       relatedWork?: Awaited<ReturnType<typeof issueReferencesSvc.listIssueReferenceSummary>>;
@@ -6336,6 +6344,9 @@ export function issueRoutes(
       issueResponse = {
         ...issue,
         blockedBy: updatedRelations.blockedBy,
+        // TWX-1198: echo the scalar so the PATCH response itself confirms the
+        // blocker set, closing the write/read asymmetry at the source.
+        blockedByIssueIds: updatedRelations.blockedBy.map((relation) => relation.id),
         blocks: updatedRelations.blocks,
       };
     }
