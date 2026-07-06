@@ -511,6 +511,44 @@ describe("renderPaperclipWakePrompt", () => {
     expect(commentPrompt).toContain("Update the plan only. Do not write code or perform implementation work.");
   });
 
+  it("renders comment attachment metadata in wake prompts", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3902",
+        title: "Review attachment context",
+        status: "todo",
+      },
+      commentIds: ["comment-1"],
+      latestCommentId: "comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [
+        {
+          id: "comment-1",
+          body: "Please check the screenshot.",
+          createdAt: "2026-07-06T05:00:00.000Z",
+          author: { type: "user", id: "user-1" },
+          attachments: [
+            {
+              id: "attachment-1",
+              filename: "issue-detail-noisy-stats.png",
+              contentType: "image/png",
+              byteSize: 2048,
+              contentPath: "/api/attachments/attachment-1/content",
+            },
+          ],
+        },
+      ],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("Attachments:");
+    expect(prompt).toContain(
+      "- issue-detail-noisy-stats.png (image/png, 2048 bytes) /api/attachments/attachment-1/content",
+    );
+  });
+
   it("does not render stale accepted-plan continuation guidance for later planning comment wakes", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_commented",

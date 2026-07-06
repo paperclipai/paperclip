@@ -117,3 +117,5 @@ QA MUST fail work that is high quality but solves the wrong problem. "Looks grea
 ## Evidence
 
 Record evidence appropriate to the task type: files changed, tests run, screenshots, API checks, logs, old-vs-new comparison, deployment URL, artifact links, remaining risks. Attach it to the issue (comments, documents, work products, attachments) before requesting review.
+
+When evidence uses attachments, reference each attachment by filename/link and exact location: screenshot region, page number, table row, timestamp, or visible UI area. Preserve those attachment links in downstream execution-contract comments so reviewers can open the same evidence from the comment that mentions it.

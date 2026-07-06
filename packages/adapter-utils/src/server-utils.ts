@@ -369,6 +369,17 @@ type PaperclipWakeExecutionStage = {
   allowedActions: string[];
 };
 
+type PaperclipWakeAttachment = {
+  id: string | null;
+  issueId: string | null;
+  issueCommentId: string | null;
+  filename: string | null;
+  contentType: string | null;
+  byteSize: number | null;
+  contentPath: string | null;
+  createdAt: string | null;
+};
+
 type PaperclipWakeComment = {
   id: string | null;
   issueId: string | null;
@@ -377,6 +388,7 @@ type PaperclipWakeComment = {
   createdAt: string | null;
   authorType: string | null;
   authorId: string | null;
+  attachments: PaperclipWakeAttachment[];
 };
 
 type PaperclipWakeContinuationSummary = {
@@ -472,6 +484,11 @@ function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | n
   const author = parseObject(comment.author);
   const body = asString(comment.body, "");
   if (!body.trim()) return null;
+  const attachments = Array.isArray(comment.attachments)
+    ? comment.attachments
+        .map((entry) => normalizePaperclipWakeAttachment(entry))
+        .filter((entry): entry is PaperclipWakeAttachment => Boolean(entry))
+    : [];
   return {
     id: asString(comment.id, "").trim() || null,
     issueId: asString(comment.issueId, "").trim() || null,
@@ -480,7 +497,31 @@ function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | n
     createdAt: asString(comment.createdAt, "").trim() || null,
     authorType: asString(author.type, "").trim() || null,
     authorId: asString(author.id, "").trim() || null,
+    attachments,
   };
+}
+
+function normalizePaperclipWakeAttachment(value: unknown): PaperclipWakeAttachment | null {
+  const attachment = parseObject(value);
+  const id = asString(attachment.id, "").trim() || null;
+  const filename =
+    asString(attachment.filename, "").trim() ||
+    asString(attachment.originalFilename, "").trim() ||
+    null;
+  const contentPath = asString(attachment.contentPath, "").trim() || null;
+  const byteSize = asNumber(attachment.byteSize, 0);
+  const normalized: PaperclipWakeAttachment = {
+    id,
+    issueId: asString(attachment.issueId, "").trim() || null,
+    issueCommentId: asString(attachment.issueCommentId, "").trim() || null,
+    filename,
+    contentType: asString(attachment.contentType, "").trim() || null,
+    byteSize: byteSize > 0 ? byteSize : null,
+    contentPath,
+    createdAt: asString(attachment.createdAt, "").trim() || null,
+  };
+  if (!normalized.id && !normalized.filename && !normalized.contentPath) return null;
+  return normalized;
 }
 
 function normalizePaperclipWakeContinuationSummary(value: unknown): PaperclipWakeContinuationSummary | null {
@@ -686,6 +727,15 @@ export function readPaperclipIssueWorkModeFromContext(value: unknown): string | 
   if (direct) return direct;
   const wake = normalizePaperclipWakePayload(context.paperclipWake);
   return wake?.issue?.workMode ?? null;
+}
+
+function formatWakeAttachmentLine(attachment: PaperclipWakeAttachment) {
+  const label = attachment.filename ?? attachment.id ?? "attachment";
+  const details = [attachment.contentType, attachment.byteSize ? `${attachment.byteSize} bytes` : null]
+    .filter((entry): entry is string => Boolean(entry));
+  const detailText = details.length > 0 ? ` (${details.join(", ")})` : "";
+  const pathText = attachment.contentPath ? ` ${attachment.contentPath}` : "";
+  return `- ${label}${detailText}${pathText}`;
 }
 
 export function renderPaperclipWakePrompt(
@@ -941,6 +991,12 @@ export function renderPaperclipWakePrompt(
     );
     if (comment.bodyTruncated) {
       lines.push("[comment body truncated]");
+    }
+    if (comment.attachments.length > 0) {
+      lines.push("Attachments:");
+      for (const attachment of comment.attachments) {
+        lines.push(formatWakeAttachmentLine(attachment));
+      }
     }
     lines.push("");
   }

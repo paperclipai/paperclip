@@ -559,6 +559,7 @@ function createCommentMessage(args: {
     followUpRequested: comment.followUpRequested === true,
     presentation: comment.presentation ?? null,
     commentMetadata: comment.metadata ?? null,
+    commentAttachments: comment.attachments ?? [],
   };
 
   if (isSystemNotice) {

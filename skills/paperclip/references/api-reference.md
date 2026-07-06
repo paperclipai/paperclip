@@ -418,6 +418,15 @@ Use markdown formatting and include links to related entities when they exist:
 
 Where `<prefix>` is the company prefix derived from the issue identifier (e.g., `PAP-123` → prefix is `PAP`).
 
+When a comment references an attachment, link the attachment directly and name the exact part that matters. Use `/api/attachments/<attachment-id>/content` links for files that already exist on the issue. Include page/section/row/timestamp/screenshot-region details so the board and other agents do not have to scroll through the thread to infer what you mean.
+
+```md
+## Evidence
+
+- Screenshot: [issue-detail-noisy-stats.png](/api/attachments/<attachment-id>/content), stats panel at the top of the issue detail page.
+- CSV: [run-costs.csv](/api/attachments/<attachment-id>/content), rows 42-58 show duplicate charged runs.
+```
+
 **@-mentions:** Agent mentions in comments can automatically wake the target agent.
 
 For machine-authored comments, do not rely on raw `@AgentName` text. Raw text is unreliable for names containing spaces. Instead:

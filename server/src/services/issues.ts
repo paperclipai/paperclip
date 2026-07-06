@@ -31,6 +31,7 @@ import {
 } from "@paperclipai/db";
 import type {
   IssueCommentAuthorType,
+  IssueAttachment,
   IssueCommentMetadata,
   IssueCommentPresentation,
   IssueBlockerAttention,
@@ -86,6 +87,21 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+const ISSUE_ATTACHMENT_CONTENT_PATH_RE = /\/api\/attachments\/([^/\s)"'`]+)\/content\b/g;
+
+function issueAttachmentContentPath(id: string) {
+  return `/api/attachments/${id}/content`;
+}
+
+function extractIssueAttachmentIdsFromText(text: string) {
+  const ids = new Set<string>();
+  for (const match of text.matchAll(ISSUE_ATTACHMENT_CONTENT_PATH_RE)) {
+    const id = match[1]?.trim();
+    if (id && isUuidLike(id)) ids.add(id);
+  }
+  return [...ids];
+}
+
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -2277,6 +2293,96 @@ export function issueService(db: Db) {
       presentation: issueCommentPresentationSchema.nullable().catch(null).parse(comment.presentation ?? null),
       metadata: issueCommentMetadataSchema.nullable().catch(null).parse(comment.metadata ?? null),
     };
+  }
+
+  async function attachIssueAttachmentsToComments<T extends { id: string; issueId: string; body: string }>(
+    comments: readonly T[],
+  ): Promise<Array<T & { attachments: IssueAttachment[] }>> {
+    if (comments.length === 0) return [];
+
+    const issueIds = [...new Set(comments.map((comment) => comment.issueId))];
+    const commentIds = comments.map((comment) => comment.id);
+    const referencedIdsByCommentId = new Map<string, string[]>();
+    const referencedAttachmentIds = new Set<string>();
+
+    for (const comment of comments) {
+      const ids = extractIssueAttachmentIdsFromText(comment.body);
+      referencedIdsByCommentId.set(comment.id, ids);
+      for (const id of ids) referencedAttachmentIds.add(id);
+    }
+
+    const directCommentCondition = commentIds.length > 0
+      ? inArray(issueAttachments.issueCommentId, commentIds)
+      : null;
+    const referencedAttachmentCondition = referencedAttachmentIds.size > 0
+      ? inArray(issueAttachments.id, [...referencedAttachmentIds])
+      : null;
+    const attachmentScopeCondition = directCommentCondition && referencedAttachmentCondition
+      ? or(directCommentCondition, referencedAttachmentCondition)!
+      : directCommentCondition ?? referencedAttachmentCondition;
+
+    if (!attachmentScopeCondition) {
+      return comments.map((comment) => ({ ...comment, attachments: [] }));
+    }
+
+    const issueCondition = issueIds.length === 1
+      ? eq(issueAttachments.issueId, issueIds[0])
+      : inArray(issueAttachments.issueId, issueIds);
+
+    const attachmentRows = await db
+      .select({
+        id: issueAttachments.id,
+        companyId: issueAttachments.companyId,
+        issueId: issueAttachments.issueId,
+        issueCommentId: issueAttachments.issueCommentId,
+        assetId: issueAttachments.assetId,
+        provider: assets.provider,
+        objectKey: assets.objectKey,
+        contentType: assets.contentType,
+        byteSize: assets.byteSize,
+        sha256: assets.sha256,
+        originalFilename: assets.originalFilename,
+        createdByAgentId: assets.createdByAgentId,
+        createdByUserId: assets.createdByUserId,
+        createdAt: issueAttachments.createdAt,
+        updatedAt: issueAttachments.updatedAt,
+      })
+      .from(issueAttachments)
+      .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
+      .where(and(issueCondition, attachmentScopeCondition));
+
+    const attachments = attachmentRows.map((row): IssueAttachment => ({
+      ...row,
+      contentPath: issueAttachmentContentPath(row.id),
+    }));
+    const attachmentById = new Map(attachments.map((attachment) => [attachment.id, attachment]));
+    const directAttachmentsByCommentId = new Map<string, IssueAttachment[]>();
+
+    for (const attachment of attachments) {
+      if (!attachment.issueCommentId) continue;
+      const current = directAttachmentsByCommentId.get(attachment.issueCommentId) ?? [];
+      current.push(attachment);
+      directAttachmentsByCommentId.set(attachment.issueCommentId, current);
+    }
+
+    return comments.map((comment) => {
+      const seen = new Set<string>();
+      const commentAttachments: IssueAttachment[] = [];
+      const addAttachment = (attachment: IssueAttachment | undefined) => {
+        if (!attachment || seen.has(attachment.id)) return;
+        seen.add(attachment.id);
+        commentAttachments.push(attachment);
+      };
+
+      for (const attachment of directAttachmentsByCommentId.get(comment.id) ?? []) {
+        addAttachment(attachment);
+      }
+      for (const id of referencedIdsByCommentId.get(comment.id) ?? []) {
+        addAttachment(attachmentById.get(id));
+      }
+
+      return { ...comment, attachments: commentAttachments };
+    });
   }
 
   async function readRunLogText(run: {
@@ -4574,7 +4680,8 @@ export function issueService(db: Db) {
       const comments = limit ? await query.limit(limit) : await query;
       const { censorUsernameInLogs } = await instanceSettings.getGeneral();
       const enrichedComments = await enrichCommentsWithDerivedAgentAttribution(comments);
-      return enrichedComments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
+      const commentsWithAttachments = await attachIssueAttachmentsToComments(enrichedComments);
+      return commentsWithAttachments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
     },
 
     getCommentCursor: async (issueId: string) => {
@@ -4614,7 +4721,8 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!comment) return null;
       const [enrichedComment] = await enrichCommentsWithDerivedAgentAttribution([comment]);
-      return redactIssueComment(enrichedComment ?? comment, censorUsernameInLogs);
+      const [commentWithAttachments] = await attachIssueAttachmentsToComments([enrichedComment ?? comment]);
+      return redactIssueComment(commentWithAttachments ?? { ...comment, attachments: [] }, censorUsernameInLogs);
     },
 
     removeComment: async (commentId: string) => {
@@ -4691,7 +4799,8 @@ export function issueService(db: Db) {
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
 
-      return redactIssueComment(comment, currentUserRedactionOptions.enabled);
+      const [commentWithAttachments] = await attachIssueAttachmentsToComments([comment]);
+      return redactIssueComment(commentWithAttachments ?? { ...comment, attachments: [] }, currentUserRedactionOptions.enabled);
     },
 
     createAttachment: async (input: {

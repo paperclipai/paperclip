@@ -456,6 +456,7 @@ export interface IssueComment {
   body: string;
   presentation: IssueCommentPresentation | null;
   metadata: IssueCommentMetadata | null;
+  attachments?: IssueAttachment[];
   followUpRequested?: boolean;
   createdAt: Date;
   updatedAt: Date;

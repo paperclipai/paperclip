@@ -10,6 +10,7 @@ import {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
   isEnvironmentDriverSupportedForAdapter,
+  isUuidLike,
   type BillingType,
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
@@ -27,8 +28,10 @@ import {
   agentWakeupRequests,
   activityLog,
   approvals,
+  assets,
   companySkills as companySkillsTable,
   documentRevisions,
+  issueAttachments,
   issueDocuments,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -212,6 +215,7 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const WAKE_ATTACHMENT_CONTENT_PATH_RE = /\/api\/attachments\/([^/\s)"'`]+)\/content\b/g;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -1196,6 +1200,19 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function wakeAttachmentContentPath(id: string) {
+  return `/api/attachments/${id}/content`;
+}
+
+function extractWakeAttachmentIdsFromText(text: string) {
+  const ids = new Set<string>();
+  for (const match of text.matchAll(WAKE_ATTACHMENT_CONTENT_PATH_RE)) {
+    const id = match[1]?.trim();
+    if (id && isUuidLike(id)) ids.add(id);
+  }
+  return [...ids];
 }
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
@@ -2246,6 +2263,57 @@ async function buildPaperclipWakePayload(input: {
           );
 
   const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
+  const commentIdsFromRows = commentRows.map((comment) => comment.id);
+  const issueIdsFromRows = [...new Set(commentRows.map((comment) => comment.issueId))];
+  const referencedAttachmentIdsByCommentId = new Map<string, string[]>();
+  const referencedAttachmentIds = new Set<string>();
+
+  for (const comment of commentRows) {
+    const ids = extractWakeAttachmentIdsFromText(comment.body);
+    referencedAttachmentIdsByCommentId.set(comment.id, ids);
+    for (const id of ids) referencedAttachmentIds.add(id);
+  }
+
+  const directCommentAttachmentCondition = commentIdsFromRows.length > 0
+    ? inArray(issueAttachments.issueCommentId, commentIdsFromRows)
+    : null;
+  const referencedAttachmentCondition = referencedAttachmentIds.size > 0
+    ? inArray(issueAttachments.id, [...referencedAttachmentIds])
+    : null;
+  const attachmentScopeCondition = directCommentAttachmentCondition && referencedAttachmentCondition
+    ? or(directCommentAttachmentCondition, referencedAttachmentCondition)!
+    : directCommentAttachmentCondition ?? referencedAttachmentCondition;
+  const issueAttachmentRows = attachmentScopeCondition && issueIdsFromRows.length > 0
+    ? await input.db
+        .select({
+          id: issueAttachments.id,
+          issueId: issueAttachments.issueId,
+          issueCommentId: issueAttachments.issueCommentId,
+          contentType: assets.contentType,
+          byteSize: assets.byteSize,
+          originalFilename: assets.originalFilename,
+          createdAt: issueAttachments.createdAt,
+        })
+        .from(issueAttachments)
+        .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
+        .where(and(
+          eq(issueAttachments.companyId, input.companyId),
+          issueIdsFromRows.length === 1
+            ? eq(issueAttachments.issueId, issueIdsFromRows[0]!)
+            : inArray(issueAttachments.issueId, issueIdsFromRows),
+          attachmentScopeCondition,
+        ))
+    : [];
+  const attachmentById = new Map(issueAttachmentRows.map((attachment) => [attachment.id, attachment]));
+  const directAttachmentsByCommentId = new Map<string, typeof issueAttachmentRows>();
+
+  for (const attachment of issueAttachmentRows) {
+    if (!attachment.issueCommentId) continue;
+    const current = directAttachmentsByCommentId.get(attachment.issueCommentId) ?? [];
+    current.push(attachment);
+    directAttachmentsByCommentId.set(attachment.issueCommentId, current);
+  }
+
   const comments: Array<Record<string, unknown>> = [];
   let remainingBodyChars = MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS;
   let truncated = false;
@@ -2274,6 +2342,29 @@ async function buildPaperclipWakePayload(input: {
     const bodyTruncated = body.length < fullBody.length;
     if (bodyTruncated) truncated = true;
     remainingBodyChars -= body.length;
+    const seenAttachmentIds = new Set<string>();
+    const commentAttachments: Array<Record<string, unknown>> = [];
+    const addCommentAttachment = (attachment: typeof issueAttachmentRows[number] | undefined) => {
+      if (!attachment || seenAttachmentIds.has(attachment.id)) return;
+      seenAttachmentIds.add(attachment.id);
+      commentAttachments.push({
+        id: attachment.id,
+        issueId: attachment.issueId,
+        issueCommentId: attachment.issueCommentId,
+        filename: attachment.originalFilename,
+        contentType: attachment.contentType,
+        byteSize: attachment.byteSize,
+        contentPath: wakeAttachmentContentPath(attachment.id),
+        createdAt: attachment.createdAt.toISOString(),
+      });
+    };
+
+    for (const attachment of directAttachmentsByCommentId.get(row.id) ?? []) {
+      addCommentAttachment(attachment);
+    }
+    for (const id of referencedAttachmentIdsByCommentId.get(row.id) ?? []) {
+      addCommentAttachment(attachmentById.get(id));
+    }
 
     comments.push({
       id: row.id,
@@ -2283,6 +2374,7 @@ async function buildPaperclipWakePayload(input: {
       bodyTruncated,
       presentation: row.presentation ?? null,
       metadata: row.metadata ?? null,
+      attachments: commentAttachments,
       createdAt: row.createdAt.toISOString(),
       author: row.authorAgentId
         ? { type: "agent", id: row.authorAgentId }

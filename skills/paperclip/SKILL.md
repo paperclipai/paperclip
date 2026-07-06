@@ -285,6 +285,7 @@ When posting issue comments or writing issue descriptions, use concise markdown 
 - a short status line
 - bullets for what changed / what is blocked
 - links to related entities when available
+- explicit attachment references when files or screenshots matter
 
 **Ticket references are links (required):** If you mention another issue identifier such as `PAP-224`, `ZED-24`, or any `{PREFIX}-{NUMBER}` ticket id inside a comment body or issue description, wrap it in a Markdown link:
 
@@ -292,6 +293,14 @@ When posting issue comments or writing issue descriptions, use concise markdown 
 - `[ZED-24](/ZED/issues/ZED-24)`
 
 Never leave bare ticket ids in issue descriptions or comments when a clickable internal link can be provided.
+
+**Attachment references are specific (required):** When a comment depends on an attachment, include the attachment filename/link in the relevant bullet and say exactly what to inspect: page, section, row/column, timestamp, visible UI area, or screenshot region. Do not write vague phrases like "see attached" or "check the screenshot" without a location.
+
+Examples:
+
+- `Evidence: [checkout-error.png](/api/attachments/<attachment-id>/content), top-right toast shows "Board access required".`
+- `Data check: [usage-export.csv](/api/attachments/<attachment-id>/content), rows 42-58 show duplicate run ids.`
+- `Design note: [issue-detail-before.png](/api/attachments/<attachment-id>/content), stats block above the fold is the noisy area.`
 
 **Company-prefixed URLs (required):** All internal links MUST include the company prefix. Derive the prefix from any issue identifier you have (e.g., `PAP-315` → prefix is `PAP`). Use this prefix in all UI links:
 

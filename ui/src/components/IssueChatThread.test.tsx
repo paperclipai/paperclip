@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, IssueAttachment } from "@paperclipai/shared";
 import {
   IssueChatThread,
   VIRTUALIZED_THREAD_ROW_THRESHOLD,
@@ -341,6 +341,72 @@ describe("IssueChatThread", () => {
     expect(viewport).not.toBeNull();
     expect(viewport?.className).not.toContain("overflow-y-auto");
     expect(viewport?.className).not.toContain("max-h-[70vh]");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders comment attachments inline with the owning comment", () => {
+    const root = createRoot(container);
+    const attachment: IssueAttachment = {
+      id: "attachment-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      issueCommentId: "comment-with-attachment",
+      assetId: "asset-1",
+      provider: "local",
+      objectKey: "issues/issue-detail-noisy-stats.png",
+      contentType: "image/png",
+      byteSize: 2048,
+      sha256: "sha",
+      originalFilename: "issue-detail-noisy-stats.png",
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      createdAt: new Date("2026-07-06T05:00:00.000Z"),
+      updatedAt: new Date("2026-07-06T05:00:00.000Z"),
+      contentPath: "/api/attachments/attachment-1/content",
+    };
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[
+              {
+                id: "comment-with-attachment",
+                companyId: "company-1",
+                issueId: "issue-1",
+                authorAgentId: "agent-1",
+                authorUserId: null,
+                body: "Evidence attached below.",
+                authorType: "agent",
+                presentation: null,
+                metadata: null,
+                attachments: [attachment],
+                createdAt: new Date("2026-07-06T05:00:00.000Z"),
+                updatedAt: new Date("2026-07-06T05:00:00.000Z"),
+              },
+            ]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const attachmentStrip = container.querySelector('[data-testid="issue-chat-comment-attachments"]');
+    expect(attachmentStrip?.textContent).toContain("issue-detail-noisy-stats.png");
+    expect(attachmentStrip?.textContent).toContain("PNG image");
+    expect(attachmentStrip?.textContent).toContain("2.0 KB");
+    expect(attachmentStrip?.querySelector("img")?.getAttribute("src")).toBe("/api/attachments/attachment-1/content");
+    expect(
+      attachmentStrip?.querySelector<HTMLAnchorElement>('a[aria-label="Open issue-detail-noisy-stats.png"]')?.getAttribute("href"),
+    ).toBe("/api/attachments/attachment-1/content");
 
     act(() => {
       root.unmount();

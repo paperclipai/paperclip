@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  assets,
   companies,
   createDb,
   environments,
@@ -13,6 +14,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueComments,
+  issueAttachments,
   issueInboxArchives,
   issueRelations,
   issues,
@@ -205,6 +207,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueAttachments);
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
@@ -214,6 +217,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(goals);
+    await db.delete(assets);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
@@ -1412,6 +1416,98 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     expect(comments.map((comment) => comment.id)).toEqual([firstCommentId]);
+  });
+
+  it("includes direct and markdown-referenced attachments on comment rows", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+    const directAssetId = randomUUID();
+    const linkedAssetId = randomUUID();
+    const directAttachmentId = randomUUID();
+    const linkedAttachmentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Attachment comments issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      body: `Please inspect [trace.csv](/api/attachments/${linkedAttachmentId}/content), rows 4-9.`,
+      createdAt: new Date("2026-03-26T12:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T12:00:00.000Z"),
+    });
+
+    await db.insert(assets).values([
+      {
+        id: directAssetId,
+        companyId,
+        provider: "local",
+        objectKey: "issues/direct-screenshot.png",
+        contentType: "image/png",
+        byteSize: 1234,
+        sha256: "direct-sha",
+        originalFilename: "direct-screenshot.png",
+      },
+      {
+        id: linkedAssetId,
+        companyId,
+        provider: "local",
+        objectKey: "issues/trace.csv",
+        contentType: "text/csv",
+        byteSize: 4567,
+        sha256: "linked-sha",
+        originalFilename: "trace.csv",
+      },
+    ]);
+
+    await db.insert(issueAttachments).values([
+      {
+        id: directAttachmentId,
+        companyId,
+        issueId,
+        assetId: directAssetId,
+        issueCommentId: commentId,
+      },
+      {
+        id: linkedAttachmentId,
+        companyId,
+        issueId,
+        assetId: linkedAssetId,
+        issueCommentId: null,
+      },
+    ]);
+
+    const comments = await svc.listComments(issueId, { order: "asc" });
+
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.attachments?.map((attachment) => attachment.id)).toEqual([
+      directAttachmentId,
+      linkedAttachmentId,
+    ]);
+    expect(comments[0]?.attachments?.[0]).toMatchObject({
+      originalFilename: "direct-screenshot.png",
+      contentPath: `/api/attachments/${directAttachmentId}/content`,
+      issueCommentId: commentId,
+    });
+    expect(comments[0]?.attachments?.[1]).toMatchObject({
+      originalFilename: "trace.csv",
+      contentPath: `/api/attachments/${linkedAttachmentId}/content`,
+      issueCommentId: null,
+    });
   });
 
   it("includes blockedBy summaries on list rows in one batched pass", async () => {
