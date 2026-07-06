@@ -1597,7 +1597,7 @@ export interface PluginGoalsClient {
     goalId: string,
     patch: Partial<Pick<
       Goal,
-      "title" | "description" | "level" | "status" | "parentId" | "ownerAgentId"
+      "title" | "description" | "level" | "status" | "parentId" | "ownerAgentId" | "metadata"
     >>,
     companyId: string,
   ): Promise<Goal>;

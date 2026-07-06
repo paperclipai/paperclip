@@ -6601,6 +6601,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: {
         runId: run.id,
         agentId: run.agentId,
+        companyId: run.companyId,
         status: run.status,
         invocationSource: run.invocationSource,
         triggerDetail: run.triggerDetail,
