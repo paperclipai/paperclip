@@ -115,15 +115,17 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.from) conditions.push(gte(costEvents.occurredAt, range.from));
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
-      const [{ total }] = await db
-        .select({
-          total: sumAsNumber(costEvents.costCents),
-        })
-        .from(costEvents)
-        .where(and(...conditions));
+      const [[{ total }], budgetCents] = await Promise.all([
+        db
+          .select({
+            total: sumAsNumber(costEvents.costCents),
+          })
+          .from(costEvents)
+          .where(and(...conditions)),
+        getCompanyBudgetAggregateCents(db, company),
+      ]);
 
       const spendCents = Number(total);
-      const budgetCents = await getCompanyBudgetAggregateCents(db, company);
       const utilization =
         budgetCents > 0
           ? (spendCents / budgetCents) * 100

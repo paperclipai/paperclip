@@ -129,12 +129,14 @@ export function dashboardService(db: Db) {
         bucket.total += count;
       }
 
-      const budgetMonthlyCents = await getCompanyBudgetAggregateCents(db, company);
+      const [budgetMonthlyCents, budgetOverview] = await Promise.all([
+        getCompanyBudgetAggregateCents(db, company),
+        budgets.overview(companyId),
+      ]);
       const utilization =
         budgetMonthlyCents > 0
           ? (monthSpendCents / budgetMonthlyCents) * 100
           : 0;
-      const budgetOverview = await budgets.overview(companyId);
 
       return {
         companyId,
