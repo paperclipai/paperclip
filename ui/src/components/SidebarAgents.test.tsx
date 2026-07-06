@@ -233,18 +233,28 @@ describe("SidebarAgents", () => {
     };
     mockResourceMembershipsApi.listMine.mockImplementation(() => Promise.resolve(memberships));
     mockResourceMembershipsApi.updateAgent.mockImplementation((_companyId, agentId, data) => {
+      const previousState = memberships.agentMemberships[agentId] ?? "joined";
+      const nextState = data.starred === true ? "joined" : data.state ?? previousState;
+      const starredAgentIds = memberships.starredAgentIds ?? [];
+      const nextStarredAgentIds = data.starred === true
+        ? starredAgentIds.includes(agentId) ? starredAgentIds : [agentId, ...starredAgentIds]
+        : data.starred === false || nextState === "left"
+          ? starredAgentIds.filter((id) => id !== agentId)
+          : starredAgentIds;
       memberships = {
         ...memberships,
         agentMemberships: {
           ...memberships.agentMemberships,
-          [agentId]: data.state,
+          [agentId]: nextState,
         },
+        starredAgentIds: nextStarredAgentIds,
         updatedAt: new Date(),
       };
       return Promise.resolve({
         resourceType: "agent",
         resourceId: agentId,
-        state: data.state,
+        state: nextState,
+        starredAt: data.starred === true ? new Date() : null,
       });
     });
     localStorage.clear();
@@ -358,6 +368,27 @@ describe("SidebarAgents", () => {
     // The starred row offers an explicit "Remove from starred" menu action.
     await openAgentMenu("Open actions for Bravo");
     expect(document.body.textContent).toContain("Remove from starred");
+  });
+
+  it("offers star agent from an unstarred sidebar agent menu", async () => {
+    await renderSidebarAgents();
+    await openAgentMenu();
+
+    const starItem = Array.from(document.body.querySelectorAll('[data-slot="dropdown-menu-item"]'))
+      .find((element) => element.textContent?.includes("Star agent"));
+    expect(starItem).toBeTruthy();
+
+    await act(async () => {
+      starItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockResourceMembershipsApi.updateAgent).toHaveBeenCalledWith(
+      "company-1",
+      "agent-1",
+      { state: undefined, starred: true },
+    );
+    expect(document.body.querySelector('button[aria-label="Unstar Alpha"]')).not.toBeNull();
   });
 
   it("keeps the agent starred and toasts when an unstar request fails", async () => {

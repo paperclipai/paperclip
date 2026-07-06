@@ -112,8 +112,8 @@ function SidebarAgentItem({
   runCount,
   setSidebarOpen,
   starred = false,
-  onUnstar,
-  unstarPending = false,
+  onToggleStar,
+  starPending = false,
 }: {
   activeAgentId: string | null;
   activeTab: string | null;
@@ -127,8 +127,8 @@ function SidebarAgentItem({
   runCount: number;
   setSidebarOpen: (open: boolean) => void;
   starred?: boolean;
-  onUnstar?: (agent: Agent) => void;
-  unstarPending?: boolean;
+  onToggleStar?: (agent: Agent, starred: boolean) => void;
+  starPending?: boolean;
 }) {
   const routeRef = agentRouteRef(agent);
   const href = activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent);
@@ -207,16 +207,16 @@ function SidebarAgentItem({
         link
       )}
 
-      {!rail && starred && !isMobile && onUnstar ? (
+      {!rail && starred && !isMobile && onToggleStar ? (
         // Desktop: quiet inline unstar, left of the ⋯ menu, revealed on hover/focus.
         <span className="absolute right-8 top-1/2 -translate-y-1/2">
           <StarToggle
             size="row"
             quiet
             starred
-            pending={unstarPending}
+            pending={starPending}
             resourceName={agent.name}
-            onToggle={() => onUnstar(agent)}
+            onToggle={() => onToggleStar(agent, false)}
             revealClassName={AGENT_STAR_ROW_REVEAL}
           />
         </span>
@@ -240,21 +240,21 @@ function SidebarAgentItem({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-48">
-          {starred && onUnstar ? (
+          {onToggleStar ? (
             <>
               <DropdownMenuItem
                 onClick={() => {
-                  if (unstarPending) return;
-                  onUnstar(agent);
+                  if (starPending) return;
+                  onToggleStar(agent, !starred);
                 }}
-                disabled={unstarPending}
+                disabled={starPending}
               >
-                {unstarPending ? (
+                {starPending ? (
                   <Loader2 className="size-4 motion-safe:animate-spin" />
                 ) : (
-                  <Star className="size-4 fill-amber-500 text-amber-500" />
+                  <Star className={cn("size-4", starred && "fill-amber-500 text-amber-500")} />
                 )}
-                <span>Remove from starred</span>
+                <span>{starred ? "Remove from starred" : "Star agent"}</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
             </>
@@ -495,21 +495,21 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     [membershipMutation.isPending, membershipMutation.variables],
   );
 
-  const unstarAgent = useCallback(
-    (agent: Agent) => membershipMutation.mutate({
+  const toggleStarAgent = useCallback(
+    (agent: Agent, starred: boolean) => membershipMutation.mutate({
       resourceType: "agent",
       resourceId: agent.id,
       resourceName: agent.name,
-      starred: false,
+      starred,
     }),
     [membershipMutation],
   );
-  const agentUnstarPending = useCallback(
+  const agentStarPending = useCallback(
     (agent: Agent) =>
       membershipMutation.isPending &&
       membershipMutation.variables?.resourceType === "agent" &&
       membershipMutation.variables.resourceId === agent.id &&
-      membershipMutation.variables.starred === false,
+      membershipMutation.variables.starred !== undefined,
     [membershipMutation.isPending, membershipMutation.variables],
   );
 
@@ -543,8 +543,8 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
       runCount={liveCountByAgent.get(agent.id) ?? 0}
       setSidebarOpen={setSidebarOpen}
       starred={isStarredRow || isStarred(membershipsQuery.data, "agent", agent.id)}
-      onUnstar={unstarAgent}
-      unstarPending={agentUnstarPending(agent)}
+      onToggleStar={toggleStarAgent}
+      starPending={agentStarPending(agent)}
     />
   );
 
