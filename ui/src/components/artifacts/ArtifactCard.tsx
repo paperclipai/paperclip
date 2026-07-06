@@ -197,7 +197,7 @@ export function ArtifactCard({ artifact }: ArtifactCardProps) {
       disableIssueQuicklook
       data-testid="artifact-card"
       data-media-kind={artifact.mediaKind}
-      className="group flex flex-col overflow-hidden rounded-[8px] border border-border bg-card transition-colors hover:border-foreground/20"
+      className="group flex flex-col overflow-hidden rounded-(--rad-8) border border-border bg-card transition-colors hover:border-foreground/20"
     >
       <ArtifactPreview artifact={artifact} />
 

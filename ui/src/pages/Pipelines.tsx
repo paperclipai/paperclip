@@ -733,7 +733,7 @@ export function PipelinesIndexTable({
         <EmptyState icon={Hexagon} message="No pipelines match your search." />
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[780px] border-collapse text-sm">
+          <table className="w-full min-w-(--sz-780px) border-collapse text-sm">
             <thead>
               <tr className="border-b border-border text-left text-(length:--fs-11) font-semibold uppercase tracking-widest text-muted-foreground">
                 <th className="py-2 pl-3 pr-4">Name</th>
@@ -1324,7 +1324,7 @@ function PipelineBoardColumn({
       key={stage.id}
       aria-label={`${stage.name} column`}
       className={cn(
-        "flex min-w-[260px] max-w-[320px] shrink-0 flex-col rounded-md border",
+        "flex min-w-(--sz-260px) max-w-(--sz-320px) shrink-0 flex-col rounded-md border",
         tone.outer,
         isBlockedDropTarget && "ring-1 ring-red-500/45",
       )}
@@ -1380,7 +1380,7 @@ function PipelineBoardColumn({
       <div
         ref={setNodeRef}
         className={cn(
-          "min-h-[160px] flex-1 space-y-2 rounded-b-md px-2 py-2 transition-colors",
+          "min-h-(--sz-160px) flex-1 space-y-2 rounded-b-md px-2 py-2 transition-colors",
           isBlockedDropTarget ? "bg-red-50 dark:bg-red-950/30" : isOver ? tone.bodyOver : tone.body,
         )}
       >
@@ -1749,7 +1749,7 @@ function PipelineBoard({ pipelineId }: { pipelineId: string }) {
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
           <Select value={groupBy} onValueChange={handleGroupByChange}>
-            <SelectTrigger className="h-9 w-[148px]" aria-label="Group by" title="Group by">
+            <SelectTrigger className="h-9 w-(--sz-148px)" aria-label="Group by" title="Group by">
               <Layers className="h-4 w-4 text-muted-foreground" />
               <SelectValue />
             </SelectTrigger>
@@ -3850,7 +3850,7 @@ function OutputLink({
 }
 
 function OutputMetaDot() {
-  return <span className="inline-block h-[3px] w-[3px] shrink-0 rounded-full bg-muted-foreground/60" aria-hidden />;
+  return <span className="inline-block h-(--sz-3px) w-(--sz-3px) shrink-0 rounded-full bg-muted-foreground/60" aria-hidden />;
 }
 
 function OutputDeliverableTag({ label }: { label: string }) {
@@ -3908,7 +3908,7 @@ function ItemOutputDocumentRow({ item }: { item: PipelineCaseDocumentOutputItem 
   const lowTrust = isLowTrustOutput(item);
   const href = documentAnchorPath(item);
   return (
-    <div className="group flex items-start gap-[11px] py-2.5 hover:bg-accent/50">
+    <div className="group flex items-start gap-(--sz-11px) py-2.5 hover:bg-accent/50">
       <FileText
         className={cn("mt-0.5 h-4 w-4 shrink-0", deliverable ? "text-green-600 dark:text-green-400" : "text-muted-foreground")}
       />
@@ -3925,7 +3925,7 @@ function ItemOutputDocumentRow({ item }: { item: PipelineCaseDocumentOutputItem 
       </div>
       <Link
         to={href}
-        className="inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+        className="inline-flex h-(--sz-30px) w-(--sz-30px) shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
         aria-label={`Open ${item.title}`}
         title="Open document"
       >
@@ -3939,7 +3939,7 @@ function ItemOutputWorkProductRow({ item }: { item: PipelineCaseWorkProductOutpu
   const lowTrust = isLowTrustOutput(item);
   const href = item.url ?? issueDetailPath({ id: item.sourceIssueId, identifier: item.sourceIssueIdentifier });
   return (
-    <div className="group flex items-start gap-[11px] py-2.5 hover:bg-accent/50">
+    <div className="group flex items-start gap-(--sz-11px) py-2.5 hover:bg-accent/50">
       <Package className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
@@ -3953,7 +3953,7 @@ function ItemOutputWorkProductRow({ item }: { item: PipelineCaseWorkProductOutpu
       </div>
       <OutputLink
         to={href}
-        className="inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+        className="inline-flex h-(--sz-30px) w-(--sz-30px) shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
         ariaLabel={`Open ${item.title}`}
         title="Open work product"
       >
@@ -3969,14 +3969,14 @@ function ItemOutputAttachmentRow({ item }: { item: PipelineCaseAttachmentOutputI
   return (
     <div
       id={`linked-attachment-${item.attachmentId}`}
-      className="group flex items-start gap-[11px] py-2.5 hover:bg-accent/50"
+      className="group flex items-start gap-(--sz-11px) py-2.5 hover:bg-accent/50"
     >
       {isImage ? (
         <a
           href={item.openPath}
           target="_blank"
           rel="noreferrer"
-          className="mt-0.5 block h-[30px] w-10 shrink-0 overflow-hidden rounded-sm border border-border bg-accent/10"
+          className="mt-0.5 block h-(--sz-30px) w-10 shrink-0 overflow-hidden rounded-sm border border-border bg-accent/10"
           aria-label={`Open ${filename}`}
         >
           <img src={item.contentPath} alt={filename} className="h-full w-full object-cover" loading="lazy" />
@@ -4006,7 +4006,7 @@ function ItemOutputAttachmentRow({ item }: { item: PipelineCaseAttachmentOutputI
           href={item.openPath}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="inline-flex h-(--sz-30px) w-(--sz-30px) items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
           aria-label={`Open ${filename}`}
           title="Open"
         >
@@ -4014,7 +4014,7 @@ function ItemOutputAttachmentRow({ item }: { item: PipelineCaseAttachmentOutputI
         </a>
         <a
           href={item.downloadPath}
-          className="inline-flex h-[30px] w-[30px] items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="inline-flex h-(--sz-30px) w-(--sz-30px) items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
           aria-label={`Download ${filename}`}
           title="Download"
         >
@@ -4083,8 +4083,8 @@ function ItemOutputsSection({
         <div className="divide-y divide-border">
           {[0, 1, 2].map((index) => (
             <div key={index} className="py-2.5">
-              <div className="h-[11px] w-1/2 rounded bg-muted" />
-              <div className="mt-1.5 h-[9px] w-1/4 rounded bg-muted opacity-70" />
+              <div className="h-(--sz-11px) w-1/2 rounded bg-muted" />
+              <div className="mt-1.5 h-(--sz-9px) w-1/4 rounded bg-muted opacity-70" />
             </div>
           ))}
         </div>

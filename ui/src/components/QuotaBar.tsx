@@ -55,7 +55,7 @@ export function QuotaBar({
         {/* deficit notch — 2px wide, sits at the fill tip */}
         {showDeficitNotch && clampedPct > 0 && (
           <div
-            className="absolute inset-y-0 w-[2px] bg-destructive z-10"
+            className="absolute inset-y-0 w-(--sz-2px) bg-destructive z-10"
             style={{ left: `${notchLeft}%` }}
           />
         )}

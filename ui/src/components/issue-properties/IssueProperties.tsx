@@ -1947,7 +1947,7 @@ export function IssueProperties({
           onOpenChange={(open) => { setProjectOpen(open); if (!open) setProjectSearch(""); }}
           triggerContent={projectTrigger}
           triggerClassName="min-w-0 max-w-full"
-          popoverClassName="w-fit min-w-[11rem]"
+          popoverClassName="w-fit min-w-(--sz-11rem)"
           extra={issue.projectId ? (
             <Link
               to={projectLink(issue.projectId)!}
@@ -2143,7 +2143,7 @@ export function IssueProperties({
             onOpenChange={setScheduledRetryOpen}
             triggerContent={scheduledRetryTrigger}
             triggerClassName="min-w-0 max-w-full"
-            popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-[32rem]")}
+            popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-(--sz-32rem)")}
             extra={scheduledRetryAttemptBadge}
           >
             {scheduledRetryContent}
@@ -2157,7 +2157,7 @@ export function IssueProperties({
           onOpenChange={setMonitorOpen}
           triggerContent={monitorTrigger}
           triggerClassName="min-w-0 max-w-full"
-          popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-[32rem]")}
+          popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-(--sz-32rem)")}
           extra={monitorAttemptBadge}
         >
           {monitorContent}

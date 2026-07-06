@@ -322,7 +322,7 @@ function EnvironmentVariablesEditorShowcase() {
     STRIPE_API_KEY: { type: "plain", value: "sk-live-51H8xL0aBcDeFgHiJkLmNoPq" },
   });
   return (
-    <div className="max-w-[640px] rounded-md border border-border p-4">
+    <div className="max-w-(--sz-640px) rounded-md border border-border p-4">
       <EnvironmentVariablesEditor
         value={env}
         secrets={DESIGN_GUIDE_SECRETS}
@@ -1621,7 +1621,7 @@ export function DesignGuide() {
         </p>
 
         <SubSection title="TeamRow (browse list)">
-          <div className="w-[28rem] rounded-md border border-border">
+          <div className="w-(--sz-28rem) rounded-md border border-border">
             <div className="px-3 py-2 text-(length:--fs-11) font-semibold uppercase tracking-wide text-muted-foreground">
               Bundled · 1
             </div>

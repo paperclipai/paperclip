@@ -257,7 +257,7 @@ export function SecretPicker({
       searchPlaceholder="Search secrets…"
       emptyMessage="No matching secrets"
       triggerClassName={cn(
-        "h-[34px] min-h-[34px] font-mono text-sm",
+        "h-(--sz-34px) min-h-(--sz-34px) font-mono text-sm",
         boundMissing && "border-destructive text-destructive",
         boundSecret && boundSecret.status !== "active" && "border-amber-500/60",
         triggerClassName,

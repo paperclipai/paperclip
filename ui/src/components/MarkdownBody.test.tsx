@@ -283,7 +283,7 @@ describe("MarkdownBody", () => {
     expect(html).toContain('data-workspace-file-link="true"');
     expect(html).toContain('data-workspace-file-path="videos/90-days-paperclip/out/90-days-paperclip-1x1.mp4"');
     expect(html).toContain("videos/90-days-paperclip/out/90-days-paperclip-1x1.mp4");
-    expect(html).not.toContain("max-w-[38ch]");
+    expect(html).not.toContain("max-w-(--sz-38ch)");
     expect(html).not.toContain("paperclip-markdown-issue-ref");
     expect(html).not.toContain('href="/issues/PAP-10306"');
   });

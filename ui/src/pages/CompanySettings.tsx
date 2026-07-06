@@ -217,7 +217,7 @@ export function CompanySettings() {
                 companyName={companyName || selectedCompany.name}
                 logoUrl={logoUrl || null}
                 brandColor={brandColor || null}
-                className="rounded-[14px]"
+                className="rounded-(--rad-14)"
               />
             </div>
             <div className="flex-1 space-y-3">

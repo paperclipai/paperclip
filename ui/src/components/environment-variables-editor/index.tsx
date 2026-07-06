@@ -464,7 +464,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
           className="mt-3 flex w-full flex-col gap-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-amber-950 shadow-sm dark:bg-amber-500/15 dark:text-amber-100 @[34rem]/env:flex-row @[34rem]/env:items-center @[34rem]/env:justify-between"
         >
           <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
-            <span className="size-2 rounded-full bg-amber-500 shadow-[0_0_0_3px_rgba(245,158,11,0.18)]" />
+            <span className="size-2 rounded-full bg-amber-500 shadow-(--shadow-extract-13)" />
             <span>Unsaved changes</span>
           </div>
           <div className="flex items-center gap-2">

@@ -388,7 +388,7 @@ function CatalogFilterMenu({
           ) : null}
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="max-h-[min(28rem,70vh)] w-56 overflow-y-auto">
+      <DropdownMenuContent align="end" className="max-h-(--sz-calc-32) w-56 overflow-y-auto">
         <DropdownMenuLabel>Type</DropdownMenuLabel>
         <DropdownMenuRadioGroup value={kindFilter} onValueChange={(next) => onKindChange(next as "all" | "bundled" | "optional")}>
           <DropdownMenuRadioItem value="all">All</DropdownMenuRadioItem>
@@ -804,7 +804,7 @@ function SkillCard({ card, onOpen }: { card: DiscoveryCard; onOpen: (card: Disco
       type="button"
       onClick={() => onOpen(card)}
       className={cn(
-        "group flex h-full min-h-[11.5rem] flex-col rounded-md border border-border p-4 text-left transition-colors hover:border-primary hover:bg-accent/30 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "group flex h-full min-h-(--sz-11_5rem) flex-col rounded-md border border-border p-4 text-left transition-colors hover:border-primary hover:bg-accent/30 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         card.required && "bg-muted/30",
       )}
     >
@@ -997,7 +997,7 @@ export function DiscoveryGrid({
     // On desktop the store is bounded to the viewport so the category sidebar
     // and the results pane each scroll independently (PAP-10907). Mobile keeps
     // the natural page flow.
-    <div className="flex min-h-[calc(100vh-12rem)] md:h-[calc(100dvh-6rem)] md:min-h-0 md:overflow-hidden">
+    <div className="flex min-h-(--sz-calc-30) md:h-(--sz-calc-33) md:min-h-0 md:overflow-hidden">
       {/* Secondary category sidebar — the main app nav collapses to a rail while
           this is present (handled in Layout). */}
       <aside className="hidden w-60 shrink-0 flex-col overflow-hidden border-r border-border md:flex">
@@ -1021,7 +1021,7 @@ export function DiscoveryGrid({
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Search + sort + actions */}
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
-          <div className="flex h-9 min-w-[12rem] flex-1 items-center gap-2 rounded-md border border-border px-2.5">
+          <div className="flex h-9 min-w-(--sz-12rem) flex-1 items-center gap-2 rounded-md border border-border px-2.5">
             <Search className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             <input
               value={search}
@@ -1451,7 +1451,7 @@ function NewSkillWizard({
           <Textarea
             value={draft.markdown}
             onChange={(event) => patchDraft({ markdown: event.target.value })}
-            className="h-[clamp(14rem,45vh,28rem)] resize-y font-mono text-xs"
+            className="h-(--sz-calc-34) resize-y font-mono text-xs"
           />
         </div>
       ) : (
@@ -1817,7 +1817,7 @@ function CatalogDetailPane({
         <div className="truncate font-mono text-sm">{selectedPath}</div>
       </div>
 
-      <div className="min-h-[400px] px-5 py-5">
+      <div className="min-h-(--sz-400px) px-5 py-5">
         {fileQuery.isLoading ? (
           <PageSkeleton variant="detail" />
         ) : fileQuery.error ? (
@@ -2473,7 +2473,7 @@ function SkillVersionDiffDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] w-full !max-w-[90%] flex-col overflow-hidden">
+      <DialogContent className="flex max-h-(--sz-85vh) w-full !max-w-(--pct-90) flex-col overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <DialogHeader className="shrink-0">
             <DialogTitle>Diff · skill files</DialogTitle>
@@ -2732,7 +2732,7 @@ export function SkillDetailPage({
 
   function renderFilesBody() {
     return (
-      <div className="grid min-h-[560px] gap-0 lg:grid-cols-[13rem_minmax(0,1fr)]">
+      <div className="grid min-h-(--sz-560px) gap-0 lg:grid-cols-[13rem_minmax(0,1fr)]">
         <aside className="border-b border-border pb-3 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-3">
           <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Files</div>
           <SkillTree
@@ -2788,12 +2788,12 @@ export function SkillDetailPage({
             <div className="text-sm text-muted-foreground">Select a file to inspect.</div>
           ) : editMode && file.editable ? (
             file.markdown ? (
-              <MarkdownEditor value={draft} onChange={setDraft} bordered={false} className="min-h-[520px]" />
+              <MarkdownEditor value={draft} onChange={setDraft} bordered={false} className="min-h-(--sz-520px)" />
             ) : (
               <Textarea
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
-                className="min-h-[520px] rounded-none border-0 bg-transparent px-0 py-0 font-mono text-sm shadow-none focus-visible:ring-0"
+                className="min-h-(--sz-520px) rounded-none border-0 bg-transparent px-0 py-0 font-mono text-sm shadow-none focus-visible:ring-0"
               />
             )
           ) : file.markdown && viewMode === "preview" ? (
@@ -2966,7 +2966,7 @@ export function SkillDetailPage({
         : renderOverviewBody();
 
   return (
-    <div className="min-h-[calc(100vh-12rem)]">
+    <div className="min-h-(--sz-calc-30)">
       <div className="border-b border-border px-4 py-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
@@ -3485,7 +3485,7 @@ function SkillPane({
                 {detail.sourcePath && displaySourcePath ? (
                   <>
                     <span
-                      className="block min-w-0 max-w-[min(34rem,55vw)] truncate font-mono text-xs text-muted-foreground"
+                      className="block min-w-0 max-w-(--sz-calc-35) truncate font-mono text-xs text-muted-foreground"
                       title={detail.sourcePath}
                     >
                       {displaySourcePath}
@@ -3643,7 +3643,7 @@ function SkillPane({
         </div>
       </div>
 
-      <div className="min-h-[560px] px-5 py-5">
+      <div className="min-h-(--sz-560px) px-5 py-5">
         {fileLoading ? (
           <PageSkeleton variant="detail" />
         ) : !file ? (
@@ -3654,13 +3654,13 @@ function SkillPane({
               value={draft}
               onChange={setDraft}
               bordered={false}
-              className="min-h-[520px]"
+              className="min-h-(--sz-520px)"
             />
           ) : (
             <Textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
-              className="min-h-[520px] rounded-none border-0 bg-transparent px-0 py-0 font-mono text-sm shadow-none focus-visible:ring-0"
+              className="min-h-(--sz-520px) rounded-none border-0 bg-transparent px-0 py-0 font-mono text-sm shadow-none focus-visible:ring-0"
             />
           )
         ) : file.markdown && viewMode === "preview" ? (
@@ -4555,7 +4555,7 @@ export function CompanySkills() {
       />
 
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-        <DialogContent className="flex max-h-[85vh] flex-col overflow-y-auto sm:max-w-3xl">
+        <DialogContent className="flex max-h-(--sz-85vh) flex-col overflow-y-auto sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>{createDraft.forkedFromSkillId ? "Fork skill" : "Create a new skill"}</DialogTitle>
             <DialogDescription>
@@ -4703,7 +4703,7 @@ export function CompanySkills() {
       ) : selectedCatalogRef ? (
         // Catalog / optional / bundled skills open as a regular full page in the
         // new store — no modal, no legacy split view (PAP-10907).
-        <div className="min-h-[calc(100vh-12rem)]">
+        <div className="min-h-(--sz-calc-30)">
           <div className="border-b border-border px-4 py-3">
             <Link
               to={backToStoreHref}
@@ -4757,7 +4757,7 @@ export function CompanySkills() {
           )}
         </div>
       ) : (
-        <div className="min-h-[calc(100vh-12rem)]">
+        <div className="min-h-(--sz-calc-30)">
           {skillsQuery.isLoading ? (
             <PageSkeleton variant="detail" />
           ) : (

@@ -528,7 +528,7 @@ function ExportPreviewPane({
       <div className="border-b border-border px-5 py-3">
         <div className="truncate font-mono text-sm">{selectedFile}</div>
       </div>
-      <div className="min-h-[560px] px-5 py-5">
+      <div className="min-h-(--sz-560px) px-5 py-5">
         {parsed ? (
           <>
             <FrontmatterCard data={parsed.data} onSkillClick={onSkillClick} />
@@ -537,8 +537,8 @@ function ExportPreviewPane({
         ) : isMarkdown ? (
           <MarkdownBody resolveImageSrc={resolveImageSrc} softBreaks={false} linkIssueReferences={false}>{textContent ?? ""}</MarkdownBody>
         ) : imageSrc ? (
-          <div className="flex min-h-[520px] items-center justify-center rounded-lg border border-border bg-accent/10 p-6">
-            <img src={imageSrc} alt={selectedFile} className="max-h-[480px] max-w-full object-contain" />
+          <div className="flex min-h-(--sz-520px) items-center justify-center rounded-lg border border-border bg-accent/10 p-6">
+            <img src={imageSrc} alt={selectedFile} className="max-h-(--sz-480px) max-w-full object-contain" />
           </div>
         ) : textContent !== null ? (
           <pre className="overflow-x-auto whitespace-pre-wrap break-words border-0 bg-transparent p-0 font-mono text-sm text-foreground">
@@ -969,8 +969,8 @@ export function CompanyExport() {
       )}
 
       {/* Two-column layout */}
-      <div className="grid gap-4 xl:h-[calc(100vh-12rem)] xl:grid-cols-[19rem_minmax(0,1fr)] xl:gap-0">
-        <aside className="flex max-h-[24rem] flex-col overflow-hidden border-b border-border xl:max-h-none xl:border-b-0 xl:border-r">
+      <div className="grid gap-4 xl:h-(--sz-calc-30) xl:grid-cols-[19rem_minmax(0,1fr)] xl:gap-0">
+        <aside className="flex max-h-(--sz-24rem) flex-col overflow-hidden border-b border-border xl:max-h-none xl:border-b-0 xl:border-r">
           <div className="border-b border-border px-4 py-3 shrink-0">
             <h2 className="text-base font-semibold">Package files</h2>
           </div>

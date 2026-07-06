@@ -228,7 +228,7 @@ const IssueChatCtx = createContext<IssueChatMessageContext>({
   successfulRunHandoff: null,
 });
 
-const AGENT_COMMENT_BUBBLE_WIDTH_CLASS = "max-w-[calc(100%-0.5rem)] sm:max-w-[85%]";
+const AGENT_COMMENT_BUBBLE_WIDTH_CLASS = "max-w-(--sz-calc-7) sm:max-w-(--pct-85)";
 
 export type IssueChatRunFinalizationAction = {
   id: "cancel" | "done";
@@ -1426,7 +1426,7 @@ function IssueChatUserMessage({
     void onDeleteComment?.(commentId);
   };
   const messageBody = (
-    <div className={cn("flex min-w-0 max-w-[85%] flex-col", isCurrentUser && "items-end")}>
+    <div className={cn("flex min-w-0 max-w-(--pct-85) flex-col", isCurrentUser && "items-end")}>
       <div className={cn("mb-1 flex items-center gap-2 px-1", isCurrentUser ? "justify-end" : "justify-start")}>
         <span className="text-sm font-medium text-foreground">{resolvedAuthorName}</span>
         <SourceTrustBadge sourceTrust={sourceTrust} artifactLabel="comment" />
@@ -1441,7 +1441,7 @@ function IssueChatUserMessage({
           "min-w-0 max-w-full overflow-hidden break-all rounded-2xl px-4 py-2.5",
           // Tail-hugging corner: flatten the bottom corner nearest the avatar so
           // the bubble points at it (bottom-right for the right-aligned human).
-          isCurrentUser ? "rounded-br-[4px]" : "rounded-bl-[4px]",
+          isCurrentUser ? "rounded-br-(--rad-4)" : "rounded-bl-(--rad-4)",
           queued
             ? "bg-amber-50/80 dark:bg-amber-500/10"
             : deleted
@@ -2676,7 +2676,7 @@ function IssueChatMetadataRow({
   return (
     <div id={anchorId} data-testid={testid}>
       <div className="ml-3 flex items-start gap-2.5 border-l-2 border-border/50 py-0.5 pl-3">
-        <span className="mt-px flex size-[18px] shrink-0 items-center justify-center rounded-full border border-border/70 bg-muted/30 text-muted-foreground/60">
+        <span className="mt-px flex size-(--sz-18px) shrink-0 items-center justify-center rounded-full border border-border/70 bg-muted/30 text-muted-foreground/60">
           {icon}
         </span>
         <div className="min-w-0 flex-1 space-y-1">{children}</div>
@@ -3852,9 +3852,9 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       data-testid="issue-chat-composer"
       data-pending-work-mode={pendingWorkMode}
       className={cn(
-        "relative rounded-md border border-border/70 bg-background/95 p-[15px] shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]",
+        "relative rounded-md border border-border/70 bg-background/95 p-(--sz-15px) shadow-(--shadow-extract-4) backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-(--shadow-extract-5)",
         pendingWorkModeMeta.classes.container,
-        isDragOver && "border-primary/45 bg-background shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]",
+        isDragOver && "border-primary/45 bg-background shadow-(--shadow-extract-7)",
       )}
       onKeyDownCapture={handleComposerKeyDown}
       onDragEnterCapture={handleFileDragEnter}
@@ -3891,7 +3891,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         imageUploadHandler={onImageUpload}
         fileDropTarget="parent"
         bordered={false}
-        contentClassName="max-h-[28dvh] overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
+        contentClassName="max-h-(--sz-28dvh) overflow-y-auto pr-1 pb-2 text-sm scrollbar-auto-hide"
       />
 
       {coachVisible && plainNameCandidate ? (
@@ -4928,7 +4928,7 @@ export function IssueChatThread({
           <div
             ref={composerViewportAnchorRef}
             data-testid="issue-chat-composer-dock"
-            className="sticky bottom-[calc(env(safe-area-inset-bottom)+20px)] z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
+            className="sticky bottom-(--sz-calc-8) z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
           >
             <IssueChatComposer
               ref={composerRef}

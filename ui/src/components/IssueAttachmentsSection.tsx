@@ -134,7 +134,7 @@ function MarkdownAttachmentCard({
           <p className="px-1 py-2 text-xs text-destructive">Could not load markdown preview.</p>
         ) : (
           <FoldCurtain>
-            <MarkdownBody className="paperclip-edit-in-place-content min-h-[220px] text-(length:--fs-15) leading-7" softBreaks={false}>
+            <MarkdownBody className="paperclip-edit-in-place-content min-h-(--sz-220px) text-(length:--fs-15) leading-7" softBreaks={false}>
               {data ?? ""}
             </MarkdownBody>
           </FoldCurtain>

@@ -762,7 +762,7 @@ export function IssueDocumentsSection({
 
   const documentBodyShellClassName = "mt-3";
   const documentBodyPaddingClassName = "";
-  const documentBodyContentClassName = "paperclip-edit-in-place-content min-h-[220px] text-(length:--fs-15) leading-7";
+  const documentBodyContentClassName = "paperclip-edit-in-place-content min-h-(--sz-220px) text-(length:--fs-15) leading-7";
   const toggleFoldedDocument = (key: string) => {
     setFoldedDocumentKeys((current) =>
       current.includes(key)
@@ -850,7 +850,7 @@ export function IssueDocumentsSection({
             placeholder="Markdown body"
             bordered={false}
             className="bg-transparent"
-            contentClassName="min-h-[220px] text-(length:--fs-15) leading-7"
+            contentClassName="min-h-(--sz-220px) text-(length:--fs-15) leading-7"
             mentions={mentions}
             imageUploadHandler={imageUploadHandler}
             onSubmit={() => void commitDraft(draft, { clearAfterSave: false, trackAutosave: false })}

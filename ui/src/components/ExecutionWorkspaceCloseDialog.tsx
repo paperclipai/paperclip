@@ -89,7 +89,7 @@ export function ExecutionWorkspaceCloseDialog({
     <Dialog open={open} onOpenChange={(nextOpen) => {
       if (!closeWorkspace.isPending) onOpenChange(nextOpen);
     }}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>{actionLabel}</DialogTitle>
           <DialogDescription className="break-words">

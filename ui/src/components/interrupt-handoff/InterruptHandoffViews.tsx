@@ -61,7 +61,7 @@ export function AssigneeChip({
       <span className={cn(CHIP_CLASS, className)} data-testid="handoff-assignee-chip" data-kind="agent">
         <span className="sr-only">Agent </span>
         <AgentIcon icon={agentIcon(assignee.agentId, resolvers)} className="h-3 w-3 shrink-0 text-muted-foreground" />
-        <span className="max-w-[12rem] truncate">{agentName(assignee.agentId, resolvers)}</span>
+        <span className="max-w-(--sz-12rem) truncate">{agentName(assignee.agentId, resolvers)}</span>
       </span>
     );
   }
@@ -70,7 +70,7 @@ export function AssigneeChip({
       <span className={cn(CHIP_CLASS, className)} data-testid="handoff-assignee-chip" data-kind="user">
         <span className="sr-only">User </span>
         <User className="h-3 w-3 shrink-0 text-muted-foreground" />
-        <span className="max-w-[12rem] truncate">{userLabel(assignee.userId, resolvers)}</span>
+        <span className="max-w-(--sz-12rem) truncate">{userLabel(assignee.userId, resolvers)}</span>
       </span>
     );
   }

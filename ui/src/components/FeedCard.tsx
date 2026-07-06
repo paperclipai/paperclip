@@ -436,7 +436,7 @@ export function FeedCard({
     <div
       data-fc="card"
       className={cn(
-        "group ml-3 mr-3 md:ml-0 my-2 flex items-center gap-2 rounded-lg border bg-card p-[18px] text-xs",
+        "group ml-3 mr-3 md:ml-0 my-2 flex items-center gap-2 rounded-lg border bg-card p-(--sz-18px) text-xs",
         "transition-[background-color,border-color] duration-150",
         content.link && "cursor-pointer hover:bg-accent hover:border-muted-foreground/30",
         className,

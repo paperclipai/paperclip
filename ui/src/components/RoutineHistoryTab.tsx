@@ -818,7 +818,7 @@ function RoutineRevisionDiffModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="!max-w-[90%] w-full max-h-[85vh] overflow-hidden flex flex-col">
+      <DialogContent className="!max-w-(--pct-90) w-full max-h-(--sz-85vh) overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle>Compare routine revisions</DialogTitle>
         </DialogHeader>
@@ -919,7 +919,7 @@ function RevisionPicker({
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="h-8 min-w-[12rem] rounded-md border border-border/60 bg-background px-2 text-xs"
+        className="h-8 min-w-(--sz-12rem) rounded-md border border-border/60 bg-background px-2 text-xs"
       >
         {revisions.map((revision) => (
           <option key={revision.id} value={revision.id}>

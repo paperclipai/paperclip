@@ -530,7 +530,7 @@ export function PluginSettings() {
                   </div>
                   <div className="flex justify-between gap-3">
                     <span>NPM Package</span>
-                    <span className="max-w-[170px] truncate text-right text-xs" title={plugin.packageName}>
+                    <span className="max-w-(--sz-170px) truncate text-right text-xs" title={plugin.packageName}>
                       {plugin.packageName}
                     </span>
                   </div>

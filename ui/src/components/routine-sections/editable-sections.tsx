@@ -254,7 +254,7 @@ export function OverviewSection({
               onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
               placeholder="Add instructions..."
               bordered={false}
-              contentClassName="min-h-[120px] text-(length:--fs-15) leading-7"
+              contentClassName="min-h-(--sz-120px) text-(length:--fs-15) leading-7"
               mentions={mentionOptions}
               onSubmit={() => {
                 if (!saveRoutine.isPending && editDraft.title.trim()) {
@@ -270,7 +270,7 @@ export function OverviewSection({
             onChange={(description) => setEditDraft((current) => ({ ...current, description }))}
             placeholder="Add instructions..."
             bordered={false}
-            contentClassName="min-h-[120px] text-(length:--fs-15) leading-7"
+            contentClassName="min-h-(--sz-120px) text-(length:--fs-15) leading-7"
             mentions={mentionOptions}
             onSubmit={() => {
               if (!saveRoutine.isPending && editDraft.title.trim()) {

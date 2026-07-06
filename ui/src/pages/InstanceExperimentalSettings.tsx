@@ -62,7 +62,7 @@ function RecoveryPreviewDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="max-h-[min(28rem,65vh)] space-y-3 overflow-y-auto pr-1">
+        <div className="max-h-(--sz-calc-36) space-y-3 overflow-y-auto pr-1">
           {preview && preview.items.length === 0 ? (
             <div className="rounded-md border border-border bg-muted/30 px-3 py-4 text-sm text-muted-foreground">
               No recovery tasks would be created right now. Auto-recovery can still run for future liveness incidents in

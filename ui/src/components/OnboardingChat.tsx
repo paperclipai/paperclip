@@ -259,7 +259,7 @@ export function OnboardingChat({
       {/* Messages */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-y-auto space-y-3 mb-3 min-h-[180px] max-h-[320px] pr-1"
+        className="flex-1 overflow-y-auto space-y-3 mb-3 min-h-(--sz-180px) max-h-(--sz-320px) pr-1"
       >
         {/* CEO welcome message + chips — delayed reveal */}
         <WelcomeMessage

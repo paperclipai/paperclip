@@ -189,7 +189,7 @@ export function IssueBlockedNotice({
         className="inline-flex max-w-full items-center gap-1 rounded-md border border-amber-300/70 bg-background/80 px-2 py-1 font-mono text-xs text-amber-950 transition-colors hover:border-amber-500 hover:bg-amber-100 hover:underline dark:border-amber-500/40 dark:bg-background/40 dark:text-amber-100 dark:hover:bg-amber-500/15"
       >
         <span>{blocker.identifier ?? blocker.id.slice(0, 8)}</span>
-        <span className="max-w-[18rem] truncate font-sans text-(length:--fs-11) text-amber-800 dark:text-amber-200">
+        <span className="max-w-(--sz-18rem) truncate font-sans text-(length:--fs-11) text-amber-800 dark:text-amber-200">
           {blocker.title}
         </span>
         {recoveryAction ? <BlockerRecoveryIndicator action={recoveryAction} /> : null}

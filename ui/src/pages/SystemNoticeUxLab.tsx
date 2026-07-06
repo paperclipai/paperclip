@@ -32,7 +32,7 @@ function LabSection({
     <section
       id={id}
       className={cn(
-        "rounded-[28px] border border-border/70 bg-background/85 p-4 shadow-[0_24px_60px_rgba(15,23,42,0.08)] sm:p-5",
+        "rounded-(--rad-28) border border-border/70 bg-background/85 p-4 shadow-(--shadow-extract-15) sm:p-5",
         accentClassName,
       )}
     >
@@ -78,7 +78,7 @@ function MockUserBubble({
           <AvatarFallback>{authorName.slice(0, 2).toUpperCase()}</AvatarFallback>
         </Avatar>
       ) : null}
-      <div className={cn("flex min-w-0 max-w-[85%] flex-col", alignEnd && "items-end")}>
+      <div className={cn("flex min-w-0 max-w-(--pct-85) flex-col", alignEnd && "items-end")}>
         <div
           className={cn(
             "mb-1 px-1 text-sm font-medium text-foreground",
@@ -106,7 +106,7 @@ function MockAgentBubble({ agentName, body }: { agentName: string; body: string 
       <Avatar size="sm" className="shrink-0">
         <AvatarFallback>{agentName.slice(0, 2).toUpperCase()}</AvatarFallback>
       </Avatar>
-      <div className="flex min-w-0 max-w-[85%] flex-col">
+      <div className="flex min-w-0 max-w-(--pct-85) flex-col">
         <div className="mb-1 px-1 text-sm font-medium text-foreground">{agentName}</div>
         <div className="min-w-0 max-w-full rounded-2xl border border-border/70 bg-background px-4 py-2.5 text-sm leading-6 text-foreground">
           {body}
@@ -137,7 +137,7 @@ export function SystemNoticeUxLab() {
 
   return (
     <div className="space-y-6">
-      <div className="overflow-hidden rounded-[32px] border border-border/70 bg-(image:--gradient-extract-16) shadow-[0_30px_80px_rgba(15,23,42,0.10)]">
+      <div className="overflow-hidden rounded-(--rad-32) border border-border/70 bg-(image:--gradient-extract-16) shadow-(--shadow-extract-17)">
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_320px]">
           <div className="p-6 sm:p-7">
             <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/25 bg-amber-500/[0.08] px-3 py-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_24) text-amber-700 dark:text-amber-300">
@@ -293,7 +293,7 @@ export function SystemNoticeUxLab() {
               <Avatar size="sm" className="shrink-0">
                 <AvatarFallback>YO</AvatarFallback>
               </Avatar>
-              <div className="flex min-w-0 max-w-[85%] flex-col">
+              <div className="flex min-w-0 max-w-(--pct-85) flex-col">
                 <div className="mb-1 px-1 text-sm font-medium text-foreground">You</div>
                 <div className="min-w-0 max-w-full rounded-2xl bg-muted px-4 py-2.5 text-sm leading-6 text-foreground">
                   <div className="rounded-md border border-red-500/35 bg-red-500/10 px-3 py-2.5 text-sm text-red-950 dark:text-red-100">

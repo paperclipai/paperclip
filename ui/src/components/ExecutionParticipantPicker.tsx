@@ -105,7 +105,7 @@ export function ExecutionParticipantPicker({
         >
           <Icon className="h-3 w-3" />
           {values.length > 0 ? (
-            <span className="truncate max-w-[100px]">
+            <span className="truncate max-w-(--sz-100px)">
               {values.map(participantLabel).join(", ")}
             </span>
           ) : (

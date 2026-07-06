@@ -145,7 +145,7 @@ export function IssueScheduledRetryCard({
               </span>
             )}
           </Button>
-          <span className="text-right text-xs text-muted-foreground sm:max-w-[12rem]">
+          <span className="text-right text-xs text-muted-foreground sm:max-w-(--sz-12rem)">
             {retryNow.isPending
               ? "Promoting scheduled retry"
               : isSuccessTransient

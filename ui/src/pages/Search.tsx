@@ -581,7 +581,7 @@ function SearchTabContent({
   if (!hasResults) return null;
 
   return (
-    <div className="flex w-full max-w-[960px] flex-col px-2 sm:px-4" data-testid="search-results">
+    <div className="flex w-full max-w-(--sz-960px) flex-col px-2 sm:px-4" data-testid="search-results">
       <div className="flex items-center justify-between py-2 text-(length:--fs-11) uppercase tracking-wide text-muted-foreground">
         <span>
           {totalResults === 1 ? "1 result" : `${totalResults} results`} · sorted by relevance

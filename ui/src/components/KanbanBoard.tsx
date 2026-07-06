@@ -153,7 +153,7 @@ function KanbanColumn({
       <div
         ref={setNodeRef}
         className={cn(
-          "flex min-h-[220px] w-[52px] shrink-0 flex-col items-center rounded-md border px-1.5 py-2 transition-colors",
+          "flex min-h-(--sz-220px) w-(--sz-52px) shrink-0 flex-col items-center rounded-md border px-1.5 py-2 transition-colors",
           tone.rail,
           isOver && tone.railOver,
         )}
@@ -171,7 +171,7 @@ function KanbanColumn({
   }
 
   return (
-    <div className={`flex flex-col shrink-0 transition-[width,min-width] ${isEmpty && !isOver ? "min-w-[48px] w-[48px]" : "min-w-[260px] w-[260px]"}`}>
+    <div className={`flex flex-col shrink-0 transition-[width,min-width] ${isEmpty && !isOver ? "min-w-(--sz-48px) w-(--sz-48px)" : "min-w-(--sz-260px) w-(--sz-260px)"}`}>
       <div className={`flex items-center gap-2 px-2 py-2 mb-1 ${isEmpty && !isOver ? "justify-center" : ""}`}>
         <StatusIcon status={status} />
         {(!isEmpty || isOver) && (
@@ -188,7 +188,7 @@ function KanbanColumn({
       <div
         ref={setNodeRef}
         className={cn(
-          "flex-1 min-h-[120px] rounded-md p-1 space-y-1 transition-colors",
+          "flex-1 min-h-(--sz-120px) rounded-md p-1 space-y-1 transition-colors",
           isOver ? tone.bodyOver : tone.body,
         )}
       >

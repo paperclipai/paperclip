@@ -1235,7 +1235,7 @@ function TeamInstallerDialog({
   const body = (
     <>
         {phase === "form" && (
-          <div className="space-y-4 overflow-auto pr-1 md:max-h-[60vh]">
+          <div className="space-y-4 overflow-auto pr-1 md:max-h-(--sz-60vh)">
             {currentStep === "target_manager" && (
               <StepTargetManager
                 team={team}
@@ -1357,7 +1357,7 @@ function TeamInstallerDialog({
   if (isMobileSheet) {
     return (
       <Sheet open={open} onOpenChange={(next) => { if (!next && dismissable) onClose(); }}>
-        <SheetContent side="bottom" className="flex h-[100dvh] flex-col gap-0 p-0">
+        <SheetContent side="bottom" className="flex h-(--sz-100dvh) flex-col gap-0 p-0">
           <SheetHeader className="border-b border-border">
             <SheetTitle>{headerTitle}</SheetTitle>
             {headerDescription && <SheetDescription>{headerDescription}</SheetDescription>}
@@ -1675,7 +1675,7 @@ function PlanRow({
         <Input
           value={override ?? plannedName}
           onChange={(e) => onRename(slug, e.target.value)}
-          className="h-7 max-w-[14rem] font-mono text-xs"
+          className="h-7 max-w-(--sz-14rem) font-mono text-xs"
         />
       ) : (
         <span className="font-mono text-xs">{plannedName}</span>
@@ -2396,7 +2396,7 @@ export function TeamCatalog() {
         {/* List column — full width on < lg, fixed rail on >= lg (design §11) */}
         <div
           className={cn(
-            "w-full overflow-auto border-r border-border lg:w-[28rem] lg:shrink-0",
+            "w-full overflow-auto border-r border-border lg:w-(--sz-28rem) lg:shrink-0",
             !isDesktop && selectedTeam && "hidden",
           )}
         >

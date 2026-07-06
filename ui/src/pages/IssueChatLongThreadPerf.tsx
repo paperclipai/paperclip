@@ -122,7 +122,7 @@ export function IssueChatLongThreadPerf() {
             sub-issues, and sidebar context.
           </p>
         </div>
-        <div className="grid min-w-[280px] grid-cols-2 gap-2">
+        <div className="grid min-w-(--sz-280px) grid-cols-2 gap-2">
           <MetricTile label="Fixture rows" value={String(rowTarget)} testId="perf-fixture-row-target" />
           <MetricTile label="Markdown rows" value={String(LONG_THREAD_MARKDOWN_COMMENT_COUNT)} testId="perf-fixture-markdown-rows" />
         </div>

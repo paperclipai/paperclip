@@ -901,7 +901,7 @@ export function OnboardingWizard() {
                   <div className="group">
                     <label className="text-xs text-muted-foreground mb-1 block">What are your current workflows?</label>
                     <textarea
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
+                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-(--sz-60px)"
                       placeholder="e.g. Manual content creation, spreadsheet tracking, email outreach"
                       value={growWorkflows}
                       onChange={(e) => setGrowWorkflows(e.target.value)}
@@ -910,7 +910,7 @@ export function OnboardingWizard() {
                   <div className="group">
                     <label className="text-xs text-muted-foreground mb-1 block">What pain points would you solve with AI?</label>
                     <textarea
-                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
+                      className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-(--sz-60px)"
                       placeholder="e.g. Can't produce content fast enough, no time for social media"
                       value={growPainPoints}
                       onChange={(e) => setGrowPainPoints(e.target.value)}
@@ -945,7 +945,7 @@ export function OnboardingWizard() {
                         <div className="group">
                           <label className="text-xs text-foreground mb-1 block">Generated mission — edit however you like:</label>
                           <textarea
-                            className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
+                            className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-(--sz-60px)"
                             value={companyGoal}
                             onChange={(e) => setCompanyGoal(e.target.value)}
                           />
@@ -1080,7 +1080,7 @@ export function OnboardingWizard() {
                           Mission
                         </label>
                         <textarea
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[60px]"
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-(--sz-60px)"
                           placeholder="What is your team trying to achieve?"
                           value={companyGoal}
                           onChange={(e) => setCompanyGoal(e.target.value)}
@@ -1178,7 +1178,7 @@ export function OnboardingWizard() {
                           Here's your draft mission — edit it however you like:
                         </label>
                         <textarea
-                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-[80px]"
+                          className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50 resize-none min-h-(--sz-80px)"
                           value={companyGoal}
                           onChange={(e) => setCompanyGoal(e.target.value)}
                           autoFocus
@@ -1369,7 +1369,7 @@ export function OnboardingWizard() {
                             </button>
                           </PopoverTrigger>
                           <PopoverContent
-                            className="w-[var(--radix-popover-trigger-width)] p-1"
+                            className="w-(--radix-popover-trigger-width) p-1"
                             align="start"
                           >
                             <input
@@ -1393,7 +1393,7 @@ export function OnboardingWizard() {
                                 Default
                               </button>
                             )}
-                            <div className="max-h-[240px] overflow-y-auto">
+                            <div className="max-h-(--sz-240px) overflow-y-auto">
                               {groupedModels.map((group) => (
                                 <div
                                   key={group.provider}

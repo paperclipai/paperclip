@@ -142,7 +142,7 @@ export function IssuePlanDecompositionsSection({
                         <span className="font-medium">
                           {child.identifier ?? child.id.slice(0, 8)}
                         </span>
-                        <span className="truncate max-w-[24ch] text-muted-foreground">
+                        <span className="truncate max-w-(--sz-24ch) text-muted-foreground">
                           {child.title}
                         </span>
                         <ChevronRight className="h-3 w-3 text-muted-foreground" />

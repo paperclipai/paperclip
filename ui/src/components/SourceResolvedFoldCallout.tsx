@@ -63,7 +63,7 @@ export function SourceResolvedFoldCallout({
       aria-label="Source-resolved watchdog fold"
       data-source-resolved-fold
       className={cn(
-        "relative w-full overflow-hidden rounded-lg border text-sm shadow-[0_1px_0_rgba(15,23,42,0.02)]",
+        "relative w-full overflow-hidden rounded-lg border text-sm shadow-(--shadow-extract-8)",
         "border-emerald-300/70 bg-emerald-50/80 text-emerald-950",
         "dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100",
         className,

@@ -1197,7 +1197,7 @@ function StageSubSidebar({
       </div>
       <nav
         aria-label="Stage sections"
-        className="sticky top-14 hidden max-h-[calc(100dvh-3.5rem)] w-52 shrink-0 flex-col gap-4 self-start overflow-y-auto border-r border-border bg-sidebar/30 px-3 py-4 md:flex"
+        className="sticky top-14 hidden max-h-(--sz-calc-39) w-52 shrink-0 flex-col gap-4 self-start overflow-y-auto border-r border-border bg-sidebar/30 px-3 py-4 md:flex"
       >
         {groups.map((group) => (
           <div key={group.label} className="flex flex-col gap-0.5">
@@ -2780,7 +2780,7 @@ export function PipelineSettings() {
                                   <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
                                 </Button>
                               </DropdownMenuTrigger>
-                              <DropdownMenuContent align="start" className="w-[min(24rem,calc(100vw-2rem))]">
+                              <DropdownMenuContent align="start" className="w-(--sz-calc-40)">
                                 <DropdownMenuRadioGroup value={stageKind} onValueChange={setStageKindWithDefaults}>
                                   {STAGE_KIND_OPTIONS.map((option) => {
                                     const Icon = option.icon;
@@ -3093,7 +3093,7 @@ export function PipelineSettings() {
                                   : "Tell the agent exactly what to do when an item enters this step..."
                               }
                               bordered={false}
-                              contentClassName="min-h-[120px] text-(length:--fs-15) leading-7"
+                              contentClassName="min-h-(--sz-120px) text-(length:--fs-15) leading-7"
                               mentions={mentionOptions}
                               onSubmit={() => {
                                 if (!saveStage.isPending && stageName.trim() && !reviewTargetsMissing && canSaveAutomationWorkspace) {

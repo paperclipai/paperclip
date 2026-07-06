@@ -1298,7 +1298,7 @@ function LatestRunCard({ runs, agentId }: { runs: HeartbeatRun[]; agentId: strin
         to={`/agents/${agentId}/runs/${run.id}`}
         className={cn(
           "block border rounded-lg p-4 space-y-2 w-full no-underline transition-colors hover:bg-muted/50 cursor-pointer",
-          isLive ? "border-cyan-500/30 shadow-[0_0_12px_rgba(6,182,212,0.08)]" : "border-border"
+          isLive ? "border-cyan-500/30 shadow-(--shadow-extract-14)" : "border-border"
         )}
       >
         <div className="flex items-center gap-2">
@@ -2531,7 +2531,7 @@ function PromptsTab({
               onChange={(value) => setDraft(value ?? "")}
               placeholder="# Agent instructions"
               className="min-w-0 overflow-hidden"
-              contentClassName="min-h-[420px] max-w-full break-words text-sm font-mono"
+              contentClassName="min-h-(--sz-420px) max-w-full break-words text-sm font-mono"
               imageUploadHandler={async (file) => {
                 const namespace = `agents/${agent.id}/instructions/${selectedOrEntryFile.replaceAll("/", "-")}`;
                 const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
@@ -2542,7 +2542,7 @@ function PromptsTab({
             <textarea
               value={displayValue}
               onChange={(event) => setDraft(event.target.value)}
-              className="min-h-[420px] w-full min-w-0 rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
+              className="min-h-(--sz-420px) w-full min-w-0 rounded-md border border-border bg-transparent px-3 py-2 font-mono text-sm outline-none"
               placeholder="File contents"
             />
           )}
@@ -2560,7 +2560,7 @@ function PromptsTabSkeleton() {
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-2">
             <Skeleton className="h-4 w-40" />
-            <Skeleton className="h-4 w-[30rem] max-w-full" />
+            <Skeleton className="h-4 w-(--sz-30rem) max-w-full" />
           </div>
           <Skeleton className="h-4 w-16" />
         </div>
@@ -2602,7 +2602,7 @@ function PromptEditorSkeleton() {
   return (
     <div className="space-y-3">
       <Skeleton className="h-10 w-full" />
-      <Skeleton className="h-[420px] w-full" />
+      <Skeleton className="h-(--sz-420px) w-full" />
     </div>
   );
 }
@@ -4142,7 +4142,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           )}
         </div>
       </div>
-      <div className="max-h-[38rem] overflow-y-auto rounded-2xl border border-border/70 bg-background/40 p-3 sm:p-4">
+      <div className="max-h-(--sz-38rem) overflow-y-auto rounded-2xl border border-border/70 bg-background/40 p-3 sm:p-4">
         <RunTranscriptView
           entries={transcript}
           mode={transcriptMode}

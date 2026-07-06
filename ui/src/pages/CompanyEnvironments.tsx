@@ -621,7 +621,7 @@ function EnvironmentCustomImageBrowserTerminal({
           tabIndex={0}
           onFocus={() => xtermRef.current?.focus()}
           onClick={() => xtermRef.current?.focus()}
-          className="h-[18rem] w-full overflow-hidden bg-neutral-950 outline-none sm:h-[22rem] [&_.xterm-cursor-bar]:!border-l-2 [&_.xterm-cursor-bar]:!border-l-cyan-300 [&_.xterm-cursor-layer_.xterm-cursor]:!bg-cyan-300 [&_.xterm-helper-textarea]:!opacity-0 [&_.xterm-screen]:focus:outline-none [&_.xterm-viewport]:!overflow-y-auto [&_.xterm]:h-full"
+          className="h-(--sz-18rem) w-full overflow-hidden bg-neutral-950 outline-none sm:h-(--sz-22rem) [&_.xterm-cursor-bar]:!border-l-2 [&_.xterm-cursor-bar]:!border-l-cyan-300 [&_.xterm-cursor-layer_.xterm-cursor]:!bg-cyan-300 [&_.xterm-helper-textarea]:!opacity-0 [&_.xterm-screen]:focus:outline-none [&_.xterm-viewport]:!overflow-y-auto [&_.xterm]:h-full"
         />
       </div>
       {errorMessage ? (
@@ -1378,7 +1378,7 @@ export function CompanyEnvironments() {
             <div className="space-y-1">
               <div className="text-sm font-medium">Default</div>
             </div>
-            <div className="min-w-[18rem] flex-1">
+            <div className="min-w-(--sz-18rem) flex-1">
               <select
                 className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                 value={instanceDefaultEnvironmentId}
@@ -1495,7 +1495,7 @@ export function CompanyEnvironments() {
           closeEnvironmentDialog();
         }}
       >
-        <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
+        <DialogContent className="flex max-h-(--sz-calc-18) flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
           <DialogHeader className="border-b border-border/60 px-6 pb-4 pr-12 pt-6">
             <DialogTitle>{editingEnvironmentId ? "Edit environment" : "Add environment"}</DialogTitle>
             <DialogDescription>

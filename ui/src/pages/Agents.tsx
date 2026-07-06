@@ -287,7 +287,7 @@ export function Agents() {
         // Fixed (truncating) title width so the `meta` group starts at a
         // constant x on every row — that's what makes the model + timestamp
         // columns line up vertically. Agent names vary in width, so
-        // a content-sized title (`min-w-[7rem]`) shifted meta's start per row.
+        // a content-sized title (`min-w-(--sz-7rem)`) shifted meta's start per row.
         titleClassName="w-56"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
@@ -544,7 +544,7 @@ function OrgTreeNode({
         ) : (
           <AgentStatusCapsule status={node.status} />
         )}
-        <div className="flex-1 min-w-[7rem]">
+        <div className="flex-1 min-w-(--sz-7rem)">
           <span className="text-sm font-medium">{node.name}</span>
           <span className="text-xs text-muted-foreground ml-2">
             {roleLabels[node.role] ?? node.role}

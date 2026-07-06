@@ -140,7 +140,7 @@ function UsageChart({ points }: { points: UserProfileDailyPoint[] }) {
           <span className="h-2 w-2 bg-foreground/80" /> tokens / day
         </span>
         <span className="inline-flex items-center gap-1.5">
-          <span className="h-[3px] w-4 rounded-full bg-emerald-500/80" /> completions
+          <span className="h-(--sz-3px) w-4 rounded-full bg-emerald-500/80" /> completions
         </span>
       </div>
     </section>

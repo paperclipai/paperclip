@@ -147,7 +147,7 @@ export function SetMyUserSecretDialog({
                   value={value}
                   onChange={(event) => setValue(event.target.value)}
                   placeholder="Paste your token or credential"
-                  className="font-mono text-sm min-h-[80px]"
+                  className="font-mono text-sm min-h-(--sz-80px)"
                   autoFocus
                 />
                 <p className="text-(length:--fs-11) text-muted-foreground">

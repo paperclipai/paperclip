@@ -242,7 +242,7 @@ export function PipelineItemBodyDocument({
     [conversationIssueId, doc?.latestRevisionId, latestBody, onStartConversation, pushToast, saveMutation],
   );
 
-  const bodyContentClassName = "paperclip-edit-in-place-content min-h-[220px] text-(length:--fs-15) leading-7";
+  const bodyContentClassName = "paperclip-edit-in-place-content min-h-(--sz-220px) text-(length:--fs-15) leading-7";
 
   const renderReadOnlyBody = (body: string) => (
     <FoldCurtain className="max-w-3xl">
@@ -268,7 +268,7 @@ export function PipelineItemBodyDocument({
             onChange={setDraftBody}
             placeholder="Write the item body in Markdown…"
             bordered={false}
-            className="min-h-[220px] bg-transparent"
+            className="min-h-(--sz-220px) bg-transparent"
             contentClassName={bodyContentClassName}
             mentions={mentions}
             imageUploadHandler={imageUploadHandler}

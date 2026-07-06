@@ -215,7 +215,7 @@ export function Timeline() {
             setRangePreset("custom");
             setDateRange((prev) => ({ ...prev, fromDate: event.target.value }));
           }}
-          className="h-8 w-[150px] text-xs"
+          className="h-8 w-(--sz-150px) text-xs"
           aria-label="Timeline start date"
         />
         <span>to</span>
@@ -226,7 +226,7 @@ export function Timeline() {
             setRangePreset("custom");
             setDateRange((prev) => ({ ...prev, toDate: event.target.value }));
           }}
-          className="h-8 w-[150px] text-xs"
+          className="h-8 w-(--sz-150px) text-xs"
           aria-label="Timeline end date"
         />
       </label>

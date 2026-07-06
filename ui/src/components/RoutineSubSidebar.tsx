@@ -110,7 +110,7 @@ export function RoutineSubSidebar({
   return (
     <nav
       aria-label="Routine sections"
-      className="sticky top-0 hidden max-h-[100dvh] w-52 shrink-0 flex-col gap-4 self-start overflow-y-auto border-r border-border bg-sidebar/30 px-3 py-4 md:flex"
+      className="sticky top-0 hidden max-h-(--sz-100dvh) w-52 shrink-0 flex-col gap-4 self-start overflow-y-auto border-r border-border bg-sidebar/30 px-3 py-4 md:flex"
     >
       {NAV_GROUPS.map((group) => (
         <div key={group.label} className="flex flex-col gap-0.5">

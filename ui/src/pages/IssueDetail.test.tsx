@@ -2367,7 +2367,7 @@ describe("IssueDetail", () => {
 
     const dialogContent = container.querySelector('[data-slot="dialog-content"]') as HTMLDivElement | null;
     expect(dialogContent).toBeTruthy();
-    expect(dialogContent!.className).toContain("max-h-[calc(100dvh-2rem)]");
+    expect(dialogContent!.className).toContain("max-h-(--sz-calc-18)");
     expect(dialogContent!.className).toContain("overflow-hidden");
     expect(dialogContent!.className).toContain("flex-col");
 

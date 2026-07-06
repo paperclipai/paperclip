@@ -396,7 +396,7 @@ const IssueDescriptionEditor = memo(function IssueDescriptionEditor({
       placeholder="Add description..."
       bordered={false}
       mentions={mentions}
-      contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-[220px]" : "min-h-[120px]")}
+      contentClassName={cn("text-sm text-muted-foreground pb-12", expanded ? "min-h-(--sz-220px)" : "min-h-(--sz-120px)")}
       imageUploadHandler={imageUploadHandler}
     />
   );
@@ -1268,9 +1268,9 @@ export function NewIssueDialog() {
         aria-describedby={undefined}
         style={{ "--new-issue-dialog-height": MOBILE_DIALOG_HEIGHT } as CSSProperties}
         className={cn(
-          "flex h-[var(--new-issue-dialog-height)] max-h-[var(--new-issue-dialog-height)] flex-col gap-0 overflow-hidden p-0 sm:h-auto",
+          "flex h-(--new-issue-dialog-height) max-h-(--new-issue-dialog-height) flex-col gap-0 overflow-hidden p-0 sm:h-auto",
           expanded
-            ? "sm:max-w-2xl sm:h-[var(--new-issue-dialog-height)]"
+            ? "sm:max-w-2xl sm:h-(--new-issue-dialog-height)"
             : "sm:max-w-lg"
         )}
         onKeyDown={handleKeyDown}
@@ -2252,7 +2252,7 @@ export function NewIssueDialog() {
             </div>
             <Button
               size="sm"
-              className="min-w-[8.5rem] disabled:opacity-100"
+              className="min-w-(--sz-8_5rem) disabled:opacity-100"
               disabled={!titleHasText || createIssue.isPending}
               onClick={handleSubmit}
               aria-busy={createIssue.isPending}

@@ -388,7 +388,7 @@ export function WorkTimelineChart({
     <div className="relative">
       <div
         ref={scrollRef}
-        className="max-h-[70vh] overflow-auto"
+        className="max-h-(--sz-70vh) overflow-auto"
         data-testid="work-timeline-scroll"
         onScroll={(e) => {
           setScrollLeft(e.currentTarget.scrollLeft);
@@ -721,7 +721,7 @@ function Tooltip({ tooltip, now }: { tooltip: TooltipState; now: number }) {
   const left = Math.min(tooltip.x + 14, (typeof window !== "undefined" ? window.innerWidth : 1200) - 300);
   return (
     <div
-      className="pointer-events-none fixed z-50 max-w-[280px] rounded-md border border-foreground bg-card px-2.5 py-2 text-xs shadow-md"
+      className="pointer-events-none fixed z-50 max-w-(--sz-280px) rounded-md border border-foreground bg-card px-2.5 py-2 text-xs shadow-md"
       style={{ left, top: tooltip.y + 14 }}
     >
       <div className="text-(length:--fs-13) font-medium text-foreground">{truncate(title)}</div>

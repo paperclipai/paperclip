@@ -343,7 +343,7 @@ export function FailedRunInboxRow({
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <StatusBadge status={run.status} />
               {linkedAgentName && issue ? <span>{linkedAgentName}</span> : null}
-              <span className="truncate max-w-[300px]">{displayError}</span>
+              <span className="truncate max-w-(--sz-300px)">{displayError}</span>
               <span>{timeAgo(run.createdAt)}</span>
             </span>
           </span>
@@ -2062,7 +2062,7 @@ export function Inbox() {
                   e.currentTarget.blur();
                 }
               }}
-              className="h-8 w-[220px] pl-8 text-xs"
+              className="h-8 w-(--sz-220px) pl-8 text-xs"
               data-page-search-target="true"
             />
           </div>
@@ -2275,7 +2275,7 @@ export function Inbox() {
             value={allCategoryFilter}
             onValueChange={(value) => updateAllCategoryFilter(value as InboxCategoryFilter)}
           >
-            <SelectTrigger className="h-8 w-[170px] text-xs">
+            <SelectTrigger className="h-8 w-(--sz-170px) text-xs">
               <SelectValue placeholder="Category" />
             </SelectTrigger>
             <SelectContent>
@@ -2293,7 +2293,7 @@ export function Inbox() {
               value={allApprovalFilter}
               onValueChange={(value) => updateAllApprovalFilter(value as InboxApprovalFilter)}
             >
-              <SelectTrigger className="h-8 w-[170px] text-xs">
+              <SelectTrigger className="h-8 w-(--sz-170px) text-xs">
                 <SelectValue placeholder="Approval status" />
               </SelectTrigger>
               <SelectContent>

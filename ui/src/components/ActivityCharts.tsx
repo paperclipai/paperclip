@@ -19,7 +19,7 @@ function formatDayLabel(dateStr: string): string {
 
 function DateLabels({ days }: { days: string[] }) {
   return (
-    <div className="flex gap-[3px] mt-1.5">
+    <div className="flex gap-(--sz-3px) mt-1.5">
       {days.map((day, i) => (
         <div key={day} className="flex-1 text-center">
           {(i === 0 || i === 6 || i === 13) ? (
@@ -96,7 +96,7 @@ export function RunActivityChart(props: RunChartProps) {
 
   return (
     <div>
-      <div className="flex items-end gap-[3px] h-20">
+      <div className="flex items-end gap-(--sz-3px) h-20">
         {days.map(day => {
           const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
           const total = entry.total;
@@ -148,7 +148,7 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
 
   return (
     <div>
-      <div className="flex items-end gap-[3px] h-20">
+      <div className="flex items-end gap-(--sz-3px) h-20">
         {days.map(day => {
           const entry = grouped.get(day)!;
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
@@ -215,7 +215,7 @@ export function IssueStatusChart({ issues }: { issues: { status: string; created
 
   return (
     <div>
-      <div className="flex items-end gap-[3px] h-20">
+      <div className="flex items-end gap-(--sz-3px) h-20">
         {days.map(day => {
           const entry = grouped.get(day)!;
           const total = Object.values(entry).reduce((a, b) => a + b, 0);
@@ -251,7 +251,7 @@ export function SuccessRateChart(props: RunChartProps) {
 
   return (
     <div>
-      <div className="flex items-end gap-[3px] h-20">
+      <div className="flex items-end gap-(--sz-3px) h-20">
         {days.map(day => {
           const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
           const rate = entry.total > 0 ? entry.succeeded / entry.total : 0;

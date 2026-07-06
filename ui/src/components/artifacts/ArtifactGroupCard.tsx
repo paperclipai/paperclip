@@ -29,12 +29,12 @@ export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
           <div
             aria-hidden="true"
             data-testid="artifact-stack-layer"
-            className="pointer-events-none absolute inset-0 translate-x-[8px] translate-y-[8px] rounded-[8px] border border-border bg-muted/40 shadow-sm"
+            className="pointer-events-none absolute inset-0 translate-x-(--sz-8px) translate-y-(--sz-8px) rounded-(--rad-8) border border-border bg-muted/40 shadow-sm"
           />
           <div
             aria-hidden="true"
             data-testid="artifact-stack-layer"
-            className="pointer-events-none absolute inset-0 translate-x-[4px] translate-y-[4px] rounded-[8px] border border-border bg-muted/70 shadow-sm"
+            className="pointer-events-none absolute inset-0 translate-x-(--sz-4px) translate-y-(--sz-4px) rounded-(--rad-8) border border-border bg-muted/70 shadow-sm"
           />
         </>
       ) : null}
@@ -46,7 +46,7 @@ export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
         data-group-id={group.id}
         data-count={group.count}
         data-stacked={stacked ? "true" : "false"}
-        className="group relative flex flex-col overflow-hidden rounded-[8px] border border-border bg-card transition-colors hover:border-foreground/20"
+        className="group relative flex flex-col overflow-hidden rounded-(--rad-8) border border-border bg-card transition-colors hover:border-foreground/20"
       >
         <div className="relative">
           {preview ? (

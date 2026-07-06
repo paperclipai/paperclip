@@ -109,7 +109,7 @@ function LabSection({
   return (
     <section
       className={cn(
-        "rounded-[28px] border border-border/70 bg-background/80 p-4 shadow-[0_24px_60px_rgba(15,23,42,0.08)] sm:p-5",
+        "rounded-(--rad-28) border border-border/70 bg-background/80 p-4 shadow-(--shadow-extract-15) sm:p-5",
         accentClassName,
       )}
     >
@@ -146,7 +146,7 @@ function StatusCard({
   }[tone];
 
   return (
-    <Card className={cn("rounded-[24px] shadow-none", toneClassName)}>
+    <Card className={cn("rounded-(--rad-24) shadow-none", toneClassName)}>
       <CardHeader className="space-y-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-full border border-current/10 bg-background/70 text-muted-foreground">
           {icon}
@@ -168,7 +168,7 @@ function InviteLandingShell({
   right: ReactNode;
 }) {
   return (
-    <div className="overflow-hidden rounded-[28px] border border-zinc-800 bg-zinc-950 shadow-[0_30px_80px_rgba(2,6,23,0.55)]">
+    <div className="overflow-hidden rounded-(--rad-28) border border-zinc-800 bg-zinc-950 shadow-(--shadow-extract-16)">
       <div className="grid gap-px bg-zinc-800 lg:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
         <section className={cn(panelClassName, "space-y-6 bg-zinc-950")}>{left}</section>
         <section className={cn(panelClassName, "h-full bg-zinc-950")}>{right}</section>
@@ -452,9 +452,9 @@ function InviteResultPreview({
 
 function AuthScreenPreview({ mode, error }: { mode: "sign_in" | "sign_up"; error?: string }) {
   return (
-    <div className="overflow-hidden rounded-[28px] border border-border/70 bg-background shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
+    <div className="overflow-hidden rounded-(--rad-28) border border-border/70 bg-background shadow-(--shadow-extract-15)">
       <div className="grid gap-px bg-border/60 md:grid-cols-2">
-        <div className="flex min-h-[420px] flex-col justify-center bg-background px-8 py-10">
+        <div className="flex min-h-(--sz-420px) flex-col justify-center bg-background px-8 py-10">
           <div className="mx-auto w-full max-w-md">
             <div className="mb-8 flex items-center gap-2">
               <FlaskConical className="h-4 w-4 text-muted-foreground" />
@@ -508,7 +508,7 @@ function AuthScreenPreview({ mode, error }: { mode: "sign_in" | "sign_up"; error
             </div>
           </div>
         </div>
-        <div className="hidden min-h-[420px] items-center justify-center bg-(image:--gradient-extract-8) px-8 py-10 md:flex">
+        <div className="hidden min-h-(--sz-420px) items-center justify-center bg-(image:--gradient-extract-8) px-8 py-10 md:flex">
           <div className="max-w-sm space-y-4 text-zinc-200">
             <div className="inline-flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-500/[0.08] px-3 py-1 text-(length:--fs-10) uppercase tracking-(--ls-0_22) text-cyan-200">
               Auth preview
@@ -527,7 +527,7 @@ function AuthScreenPreview({ mode, error }: { mode: "sign_in" | "sign_up"; error
 function CompanyInvitesPreview() {
   return (
     <div className="grid gap-5 xl:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
-      <Card className="rounded-[28px] shadow-none">
+      <Card className="rounded-(--rad-28) shadow-none">
         <CardHeader className="space-y-3">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <MailPlus className="h-4 w-4" />
@@ -610,7 +610,7 @@ function CompanyInvitesPreview() {
         </CardContent>
       </Card>
 
-      <Card className="rounded-[28px] shadow-none">
+      <Card className="rounded-(--rad-28) shadow-none">
         <CardHeader className="space-y-3">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -698,7 +698,7 @@ function CompanyInvitesPreview() {
 export function InviteUxLab() {
   return (
     <div className="space-y-6">
-      <div className="overflow-hidden rounded-[32px] border border-border/70 bg-(image:--gradient-extract-9) shadow-[0_30px_80px_rgba(15,23,42,0.10)]">
+      <div className="overflow-hidden rounded-(--rad-32) border border-border/70 bg-(image:--gradient-extract-9) shadow-(--shadow-extract-17)">
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_320px]">
           <div className="p-6 sm:p-7">
             <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/[0.08] px-3 py-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_24) text-cyan-700 dark:text-cyan-300">

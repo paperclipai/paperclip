@@ -60,7 +60,7 @@ function RunDetailPreview({
   density: TranscriptDensity;
 }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-border/70 bg-background/80 shadow-[0_24px_60px_rgba(15,23,42,0.08)]">
+    <div className="overflow-hidden rounded-xl border border-border/70 bg-background/80 shadow-(--shadow-extract-15)">
       <div className="border-b border-border/60 bg-background/90 px-5 py-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline" className="uppercase tracking-(--ls-0_18) text-(length:--fs-10)">
@@ -75,7 +75,7 @@ function RunDetailPreview({
           Transcript ({runTranscriptFixtureEntries.length})
         </div>
       </div>
-      <div className="max-h-[720px] overflow-y-auto bg-(image:--gradient-extract-5) p-5">
+      <div className="max-h-(--sz-720px) overflow-y-auto bg-(image:--gradient-extract-5) p-5">
         <RunTranscriptView
           entries={runTranscriptFixtureEntries}
           mode={mode}
@@ -97,7 +97,7 @@ function LiveWidgetPreview({
   density: TranscriptDensity;
 }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-cyan-500/25 bg-background/85 shadow-[0_20px_50px_rgba(6,182,212,0.10)]">
+    <div className="overflow-hidden rounded-xl border border-cyan-500/25 bg-background/85 shadow-(--shadow-extract-19)">
       <div className="border-b border-border/60 bg-cyan-500/[0.05] px-5 py-4">
         <div className="text-xs font-semibold uppercase tracking-(--ls-0_2) text-cyan-700 dark:text-cyan-300">
           Live Runs
@@ -123,7 +123,7 @@ function LiveWidgetPreview({
             <ExternalLink className="h-3 w-3" />
           </span>
         </div>
-        <div className="max-h-[460px] overflow-y-auto pr-1">
+        <div className="max-h-(--sz-460px) overflow-y-auto pr-1">
           <RunTranscriptView
             entries={previewEntries("live")}
             mode={mode}
@@ -149,7 +149,7 @@ function DashboardPreview({
   return (
     <div className="max-w-md">
       <div className={cn(
-        "flex h-[320px] flex-col overflow-hidden rounded-xl border shadow-[0_20px_40px_rgba(15,23,42,0.10)]",
+        "flex h-(--sz-320px) flex-col overflow-hidden rounded-xl border shadow-(--shadow-extract-20)",
         streaming
           ? "border-cyan-500/25 bg-cyan-500/[0.04]"
           : "border-border bg-background/75",
@@ -160,7 +160,7 @@ function DashboardPreview({
               <div className="flex items-center gap-2">
                 <span className={cn(
                   "inline-flex h-2.5 w-2.5 rounded-full",
-                  streaming ? "bg-cyan-500 shadow-[0_0_0_6px_rgba(34,211,238,0.12)]" : "bg-muted-foreground/35",
+                  streaming ? "bg-cyan-500 shadow-(--shadow-extract-21)" : "bg-muted-foreground/35",
                 )} />
                 <Identity name={runTranscriptFixtureMeta.agentName} size="sm" />
               </div>
@@ -200,7 +200,7 @@ export function RunTranscriptUxLab() {
 
   return (
     <div className="space-y-6">
-      <div className="overflow-hidden rounded-2xl border border-border/70 bg-(image:--gradient-extract-6) shadow-[0_28px_70px_rgba(15,23,42,0.10)]">
+      <div className="overflow-hidden rounded-2xl border border-border/70 bg-(image:--gradient-extract-6) shadow-(--shadow-extract-22)">
         <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
           <aside className="border-b border-border/60 bg-background/75 p-5 lg:border-b-0 lg:border-r">
             <div className="mb-5">
@@ -225,7 +225,7 @@ export function RunTranscriptUxLab() {
                     className={cn(
                       "w-full rounded-xl border px-4 py-3 text-left transition-all",
                       selectedSurface === option.id
-                        ? "border-cyan-500/35 bg-cyan-500/[0.10] shadow-[0_12px_24px_rgba(6,182,212,0.12)]"
+                        ? "border-cyan-500/35 bg-cyan-500/[0.10] shadow-(--shadow-extract-23)"
                         : "border-border/70 bg-background/70 hover:border-cyan-500/20 hover:bg-cyan-500/[0.04]",
                     )}
                   >

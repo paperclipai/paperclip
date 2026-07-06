@@ -454,7 +454,7 @@ export function DocumentAnnotationLayer({
                       : isStale
                         ? "bg-yellow-200 outline outline-2 outline-dashed outline-offset-0 outline-yellow-700/65 dark:bg-yellow-600 dark:outline-yellow-200/70"
                         : isFocused
-                          ? "bg-yellow-300 outline outline-2 outline-offset-0 outline-yellow-700/85 shadow-[0_0_0_1px_var(--color-background)] dark:bg-yellow-500 dark:outline-yellow-200/85"
+                          ? "bg-yellow-300 outline outline-2 outline-offset-0 outline-yellow-700/85 shadow-(--shadow-extract-6) dark:bg-yellow-500 dark:outline-yellow-200/85"
                           : "bg-yellow-200 dark:bg-yellow-600",
                   )}
                   style={{

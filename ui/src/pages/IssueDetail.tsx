@@ -626,7 +626,7 @@ function IssueChatSkeleton() {
           </div>
           <Skeleton className="h-8 w-8 rounded-full" />
         </div>
-        <Skeleton className="ml-auto h-16 w-[85%] rounded-xl" />
+        <Skeleton className="ml-auto h-16 w-(--pct-85) rounded-xl" />
       </div>
       <div className="space-y-2 border-t border-border pt-3">
         <Skeleton className="h-3 w-28" />
@@ -694,12 +694,12 @@ function IssueDetailLoadingState({
             <h2 className="text-xl font-bold leading-tight">{headerSeed.title}</h2>
             <div className="space-y-2">
               <Skeleton className="h-4 w-full max-w-xl" />
-              <Skeleton className="h-4 w-[72%]" />
+              <Skeleton className="h-4 w-(--pct-72)" />
             </div>
           </>
         ) : (
           <>
-            <Skeleton className="h-8 w-[min(100%,22rem)]" />
+            <Skeleton className="h-8 w-(--sz-calc-37)" />
             <Skeleton className="h-16 w-full" />
           </>
         )}
@@ -3751,7 +3751,7 @@ export function IssueDetail() {
                     resolvedIssueDetailState ?? location.state,
                     location.search,
                   )}
-                className="hover:text-foreground transition-colors truncate max-w-[200px]"
+                className="hover:text-foreground transition-colors truncate max-w-(--sz-200px)"
                 title={ancestor.title}
               >
                 {ancestor.title}
@@ -3759,7 +3759,7 @@ export function IssueDetail() {
             </span>
           ))}
           <ChevronRight className="h-3 w-3 shrink-0" />
-          <span className="text-foreground/60 truncate max-w-[200px]">{issue.title}</span>
+          <span className="text-foreground/60 truncate max-w-(--sz-200px)">{issue.title}</span>
         </nav>
       )}
 
@@ -4543,7 +4543,7 @@ export function IssueDetail() {
       </Tabs>
 
       <Dialog open={treeControlOpen} onOpenChange={setTreeControlOpen}>
-        <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[560px]">
+        <DialogContent className="flex max-h-(--sz-calc-18) flex-col gap-0 overflow-hidden p-0 sm:max-w-(--sz-560px)">
           <DialogHeader className="border-b border-border/60 px-6 pb-4 pr-12 pt-6">
             <DialogTitle>{issueTreeControlLabel(treeControlMode, treeControlScope)}</DialogTitle>
             <DialogDescription>
@@ -4565,7 +4565,7 @@ export function IssueDetail() {
                 value={treeControlReason}
                 onChange={(event) => setTreeControlReason(event.target.value)}
                 placeholder="Explain why this subtree control is being applied..."
-                className="min-h-[88px]"
+                className="min-h-(--sz-88px)"
               />
             </div>
 
@@ -4698,7 +4698,7 @@ export function IssueDetail() {
 
       {/* Mobile properties drawer */}
       <Sheet open={mobilePropsOpen} onOpenChange={setMobilePropsOpen}>
-        <SheetContent side="bottom" className="max-h-[85dvh] pb-[env(safe-area-inset-bottom)]">
+        <SheetContent side="bottom" className="max-h-(--sz-85dvh) pb-(--sz-safe-bottom)">
           <SheetHeader>
             <SheetTitle className="text-sm">Properties</SheetTitle>
           </SheetHeader>

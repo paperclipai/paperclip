@@ -649,7 +649,7 @@ export function ImportFromVaultDialog({
     >
       <DialogContent
         showCloseButton={false}
-        className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"
+        className="flex max-h-(--sz-85vh) flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"
         data-testid="import-from-vault-dialog"
       >
         <header className="flex items-start justify-between gap-3 border-b border-border/60 px-5 py-4">
@@ -1417,7 +1417,7 @@ function ResultGroup({
                 {row.reason && (
                   <span
                     className={cn(
-                      "max-w-[24rem] truncate",
+                      "max-w-(--sz-24rem) truncate",
                       row.status === "error"
                         ? "text-destructive"
                         : "text-muted-foreground",

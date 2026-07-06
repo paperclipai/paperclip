@@ -1035,7 +1035,7 @@ export function CommentThread({
             mentions={mentions}
             onSubmit={handleSubmit}
             imageUploadHandler={imageUploadHandler}
-            contentClassName="min-h-[60px] text-sm"
+            contentClassName="min-h-(--sz-60px) text-sm"
           />
           <div className="flex items-center justify-end gap-3">
             {(imageUploadHandler || onAttachImage) && (

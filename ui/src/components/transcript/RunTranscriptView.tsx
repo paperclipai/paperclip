@@ -1145,7 +1145,7 @@ function TranscriptEventRow({
         ) : block.tone === "warn" ? (
           <TerminalSquare className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         ) : (
-          <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-current/50" />
+          <span className="mt-(--sz-7px) h-1.5 w-1.5 shrink-0 rounded-full bg-current/50" />
         )}
         <div className="min-w-0 flex-1">
           {block.label === "result" && block.tone !== "error" ? (

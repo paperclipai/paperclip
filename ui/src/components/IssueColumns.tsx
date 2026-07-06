@@ -93,7 +93,7 @@ export function IssueColumnPicker({
           {!iconOnly && "Columns"}
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-[300px] rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">
+      <DropdownMenuContent align="end" className="w-(--sz-300px) rounded-xl border-border/70 p-1.5 shadow-xl shadow-black/10">
         <DropdownMenuLabel className="px-2 pb-1 pt-1.5">
           <div className="space-y-1">
             <div className="text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_22) text-muted-foreground">

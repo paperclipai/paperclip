@@ -295,7 +295,7 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
                   setForm((current) => ({ ...current, usageGuidance: event.target.value }))
                 }
                 placeholder="Tell members how to create their token, required scopes, etc."
-                className="min-h-[70px] text-sm"
+                className="min-h-(--sz-70px) text-sm"
               />
             </div>
             {editing ? (

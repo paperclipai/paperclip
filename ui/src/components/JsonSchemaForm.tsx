@@ -597,7 +597,7 @@ const SecretField = React.memo(({
           onChange={(e) => onChange(e.target.value)}
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
-          className="min-h-[140px] pr-10 font-mono text-xs"
+          className="min-h-(--sz-140px) pr-10 font-mono text-xs"
           aria-invalid={!!error}
         />
       ) : (
@@ -614,7 +614,7 @@ const SecretField = React.memo(({
           readOnly
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
-          className="min-h-[140px] pr-10 font-mono text-xs italic text-muted-foreground"
+          className="min-h-(--sz-140px) pr-10 font-mono text-xs italic text-muted-foreground"
           aria-invalid={!!error}
         />
       )}
@@ -837,7 +837,7 @@ const StringField = React.memo(({
           onChange={(e) => onChange(e.target.value)}
           placeholder={String(defaultValue ?? "")}
           disabled={disabled}
-          className="min-h-[100px]"
+          className="min-h-(--sz-100px)"
           aria-invalid={!!error}
         />
       ) : (

@@ -983,7 +983,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 value={eff("identity", "capabilities", props.agent.capabilities ?? "") ?? ""}
                 onChange={(v) => mark("identity", "capabilities", v || null)}
                 placeholder="Describe what this agent can do..."
-                contentClassName="min-h-[44px] text-sm font-mono"
+                contentClassName="min-h-(--sz-44px) text-sm font-mono"
                 imageUploadHandler={async (file) => {
                   const asset = await uploadMarkdownImage.mutateAsync({
                     file,
@@ -1004,7 +1004,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     )}
                     onChange={(v) => mark("adapterConfig", "promptTemplate", v ?? "")}
                     placeholder="You are agent {{ agent.name }}. Your role is {{ agent.role }}..."
-                    contentClassName="min-h-[88px] text-sm font-mono"
+                    contentClassName="min-h-(--sz-88px) text-sm font-mono"
                     imageUploadHandler={async (file) => {
                       const namespace = `agents/${props.agent.id}/prompt-template`;
                       const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
@@ -1345,7 +1345,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         mark("adapterConfig", "bootstrapPromptTemplate", v || undefined)
                       }
                       placeholder="Optional initial setup prompt for the first run"
-                      contentClassName="min-h-[44px] text-sm font-mono"
+                      contentClassName="min-h-(--sz-44px) text-sm font-mono"
                       imageUploadHandler={async (file) => {
                         const namespace = `agents/${props.agent.id}/bootstrap-prompt`;
                         const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
@@ -1632,7 +1632,7 @@ function AdapterTypeDropdown({
           <ChevronDown className="h-3 w-3 text-muted-foreground" />
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
+      <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
         {adapterList.map((item) => (
           <button
             key={item.value}
@@ -1802,7 +1802,7 @@ function ModelDropdown({
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
         </PopoverTrigger>
-        <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
+        <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
           <div className="relative mb-1">
             <input
               className="w-full px-2 py-1.5 pr-6 text-xs bg-transparent outline-none border-b border-border placeholder:text-muted-foreground/50"
@@ -1920,7 +1920,7 @@ function ModelDropdown({
                 </button>
               );
             })}
-          <div className="max-h-[240px] overflow-y-auto">
+          <div className="max-h-(--sz-240px) overflow-y-auto">
             {allowDefault && (
               <button
                 type="button"
@@ -2083,7 +2083,7 @@ function ThinkingEffortDropdown({
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
         </PopoverTrigger>
-        <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-1" align="start">
+        <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
           {options.map((option) => (
             <button
               key={option.id || "auto"}

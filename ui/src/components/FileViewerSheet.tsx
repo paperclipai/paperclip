@@ -223,7 +223,7 @@ export function FileViewerMetadataRow({
   state: FileViewerUrlState | null;
 }) {
   return (
-    <div className="flex min-h-[18px] flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+    <div className="flex min-h-(--sz-18px) flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
       {resolvedResource ? (
         <>
           {resolvedResource.previewKind ? <span className="capitalize">{resolvedResource.previewKind}</span> : null}
@@ -734,7 +734,7 @@ export function FileViewerSheet({
   return (
     <Dialog open={computedOpen} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="flex h-[min(840px,calc(100dvh-2rem))] w-[calc(100vw-2rem)] max-w-[min(1280px,calc(100vw-2rem))] flex-col gap-0 overflow-hidden p-0 sm:w-[94vw] sm:max-w-[1280px]"
+        className="flex h-(--sz-calc-3) w-(--sz-calc-4) max-w-(--sz-calc-5) flex-col gap-0 overflow-hidden p-0 sm:w-(--sz-94vw) sm:max-w-(--sz-1280px)"
         aria-labelledby={FILE_VIEWER_LABELLED_BY_ID}
         aria-describedby={FILE_VIEWER_DESCRIBED_BY_ID}
         showCloseButton={false}

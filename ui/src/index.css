@@ -1524,3 +1524,189 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --ls-0_1: 0.1em; /* Extracted from ui/src/components/transcript/RunTranscriptView.tsx (tracking-[0.1em]). */
   --ls-0_24: 0.24em; /* Extracted from ui/src/pages/InviteLanding.tsx (tracking-[0.24em]). */
 }
+
+/* ── Extracted verbatim SIZE/SPACING/RADIUS/SHADOW tokens (Phase 2 Batch 3, design/token-extraction) ── */
+/* Batch 3/4: width/height/min/max, padding/margin/gap/inset/translate,
+   radius, ring/outline-width, and shadow literals, verbatim (no
+   normalizing — the human scale-collapse decision comes later per
+   DESIGN.md/TOKEN-AUDIT.md). --sz-* is ONE shared family across
+   w/h/p/m/gap/inset/translate so identical values dedupe regardless of
+   which property used them. --rad-* is likewise shared across
+   rounded, ring, and outline widths.
+
+   Allowlist (sites intentionally left as hardcoded / functional literals
+   or var()-only passthrough with no new token minted):
+   - components/ui/scroll-area.tsx (rounded-[inherit]) — CSS keyword, not a
+     literal value; nothing to extract.
+   - Bracket values that only wrap var(--radix-*-trigger-width/height) or
+     var(--new-issue-dialog-height) etc. are rewritten to the bare paren
+     form directly (e.g. w-(--radix-popover-trigger-width)) — these are
+     runtime library/component variables, not design values, so no new
+     --sz-* token is minted for them (see TOKEN-AUDIT.md extraction log
+     for the full site list).
+*/
+:root {
+  --sz-320px: 320px; /* Extracted from ui/src/components/ActiveAgentsPanel.tsx (h-[320px]). */
+  --sz-3px: 3px; /* Extracted from ui/src/components/ActivityCharts.tsx (gap-[3px]). */
+  --sz-calc-1: calc(100% - 1.5rem); /* Extracted from ui/src/components/ActivityFeed.tsx (w-[calc(100%-1.5rem)]). */
+  --sz-calc-2: calc(100% - 0.75rem); /* Extracted from ui/src/components/ActivityFeed.tsx (w-[calc(100%-0.75rem)]). */
+  --sz-16rem: 16rem; /* Extracted from ui/src/components/ActivityFeed.tsx (max-w-[16rem]). */
+  --sz-18px: 18px; /* Extracted from ui/src/components/ActivityFeed.tsx (p-[18px]). */
+  --sz-44px: 44px; /* Extracted from ui/src/components/AgentConfigForm.tsx (min-h-[44px]). */
+  --sz-88px: 88px; /* Extracted from ui/src/components/AgentConfigForm.tsx (min-h-[88px]). */
+  --sz-240px: 240px; /* Extracted from ui/src/components/AgentConfigForm.tsx (max-h-[240px]). */
+  --sz-10_5rem: 10.5rem; /* Extracted from ui/src/components/BlockedInboxView.tsx (w-[10.5rem]). */
+  --sz-150px: 150px; /* Extracted from ui/src/components/BlockedInboxView.tsx (w-[150px]). */
+  --sz-5_75rem: 5.75rem; /* Extracted from ui/src/components/BlockedInboxView.tsx (w-[5.75rem]). */
+  --sz-12rem: 12rem; /* Extracted from ui/src/components/BlockedInboxView.tsx (max-w-[12rem]). */
+  --sz-200px: 200px; /* Extracted from ui/src/components/ChatComposer.test.tsx (max-h-[200px]). */
+  --sz-22px: 22px; /* Extracted from ui/src/components/ChatComposer.test.tsx (max-h-[22px]). */
+  --sz-60px: 60px; /* Extracted from ui/src/components/CommentThread.tsx (min-h-[60px]). */
+  --sz-220px: 220px; /* Extracted from ui/src/components/CompanySwitcher.tsx (w-[220px]). */
+  --sz-88vh: 88vh; /* Extracted from ui/src/components/DocumentAnnotationPanel.tsx (max-h-[88vh]). */
+  --sz-80vh: 80vh; /* Extracted from ui/src/components/DocumentAnnotationPanel.tsx (max-h-[80vh]). */
+  --sz-360px: 360px; /* Extracted from ui/src/components/DocumentAnnotationPanel.tsx (w-[360px]). */
+  --sz-85vh: 85vh; /* Extracted from ui/src/components/DocumentDiffModal.tsx (max-h-[85vh]). */
+  --sz-1px: 1px; /* Extracted from ui/src/components/EntityRow.tsx (top-[1px]). */
+  --sz-100px: 100px; /* Extracted from ui/src/components/ExecutionParticipantPicker.tsx (max-w-[100px]). */
+  --sz-calc-3: min(840px,calc(100dvh - 2rem)); /* Extracted from ui/src/components/FileViewerSheet.tsx (h-[min(840px,calc(100dvh-2rem))]). */
+  --sz-calc-4: calc(100vw - 2rem); /* Extracted from ui/src/components/FileViewerSheet.tsx (w-[calc(100vw-2rem)]). */
+  --sz-calc-5: min(1280px,calc(100vw - 2rem)); /* Extracted from ui/src/components/FileViewerSheet.tsx (max-w-[min(1280px,calc(100vw-2rem))]). */
+  --sz-94vw: 94vw; /* Extracted from ui/src/components/FileViewerSheet.tsx (w-[94vw]). */
+  --sz-1280px: 1280px; /* Extracted from ui/src/components/FileViewerSheet.tsx (max-w-[1280px]). */
+  --sz-60vh: 60vh; /* Extracted from ui/src/components/FrontDoor.tsx (min-h-[60vh]). */
+  --sz-calc-6: min(20rem,calc(100vw - 2rem)); /* Extracted from ui/src/components/InlineEntitySelector.tsx (w-[min(20rem,calc(100vw-2rem))]). */
+  --sz-18rem: 18rem; /* Extracted from ui/src/components/IssueBlockedNotice.tsx (max-w-[18rem]). */
+  --sz-70vh: 70vh; /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-h-[70vh]). */
+  --sz-calc-7: calc(100% - 0.5rem); /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-w-[calc(100%-0.5rem)]). */
+  --sz-28dvh: 28dvh; /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-h-[28dvh]). */
+  --sz-72px: 72px; /* Extracted from ui/src/components/IssueChatThread.test.tsx (min-h-[72px]). */
+  --sz-15px: 15px; /* Extracted from ui/src/components/IssueChatThread.test.tsx (p-[15px]). */
+  --sz-calc-8: calc(env(safe-area-inset-bottom) + 20px); /* Extracted from ui/src/components/IssueChatThread.test.tsx (bottom-[calc(env(safe-area-inset-bottom)+20px)]). */
+  --sz-300px: 300px; /* Extracted from ui/src/components/IssueColumns.tsx (w-[300px]). */
+  --sz-calc-9: min(80vh,42rem); /* Extracted from ui/src/components/IssueFiltersPopover.test.tsx (max-h-[min(80vh,42rem)]). */
+  --sz-calc-10: min(780px,calc(100vw - 2rem)); /* Extracted from ui/src/components/IssueFiltersPopover.tsx (w-[min(780px,calc(100vw-2rem))]). */
+  --sz-24ch: 24ch; /* Extracted from ui/src/components/IssuePlanDecompositionsSection.tsx (max-w-[24ch]). */
+  --sz-calc-11: calc(0.5rem - 2px); /* Extracted from ui/src/components/IssueRow.tsx (pl-[calc(theme(spacing.2)-2px)]). */
+  --sz-calc-12: calc(0.25rem - 2px); /* Extracted from ui/src/components/IssueRow.tsx (pl-[calc(theme(spacing.1)-2px)]). */
+  --sz-calc-13: calc(0.75rem + 0.5rem); /* Extracted from ui/src/components/IssueRow.tsx (ml-[calc(theme(spacing.3)+theme(spacing.2))]). */
+  --sz-140px: 140px; /* Extracted from ui/src/components/JsonSchemaForm.tsx (min-h-[140px]). */
+  --sz-52px: 52px; /* Extracted from ui/src/components/KanbanBoard.tsx (w-[52px]). */
+  --sz-48px: 48px; /* Extracted from ui/src/components/KanbanBoard.tsx (min-w-[48px]). */
+  --sz-260px: 260px; /* Extracted from ui/src/components/KanbanBoard.tsx (min-w-[260px]). */
+  --sz-120px: 120px; /* Extracted from ui/src/components/KanbanBoard.tsx (min-h-[120px]). */
+  --sz-safe-top: env(safe-area-inset-top); /* Extracted from ui/src/components/Layout.tsx (pt-[env(safe-area-inset-top)]). */
+  --sz-calc-14: calc(5rem + env(safe-area-inset-bottom)); /* Extracted from ui/src/components/Layout.tsx (pb-[calc(5rem+env(safe-area-inset-bottom))]). */
+  --sz-38ch: 38ch; /* Extracted from ui/src/components/MarkdownBody.test.tsx (max-w-[38ch]). */
+  --sz-208px: 208px; /* Extracted from ui/src/components/MarkdownEditor.test.tsx (max-h-[208px]). */
+  --sz-180px: 180px; /* Extracted from ui/src/components/MarkdownEditor.tsx (min-w-[180px]). */
+  --sz-calc-15: calc(100vw - 16px); /* Extracted from ui/src/components/MarkdownEditor.tsx (max-w-[calc(100vw-16px)]). */
+  --sz-66px: 66px; /* Extracted from ui/src/components/MembershipAction.tsx (w-[66px]). */
+  --sz-safe-bottom: env(safe-area-inset-bottom); /* Extracted from ui/src/components/MobileBottomNav.tsx (pb-[env(safe-area-inset-bottom)]). */
+  --sz-calc-16: min(calc(100dvh - 2rem),46rem); /* Extracted from ui/src/components/NewAgentDialog.tsx (max-h-[min(calc(100dvh-2rem),46rem)]). */
+  --sz-24rem: 24rem; /* Extracted from ui/src/components/NewAgentDialog.tsx (h-[24rem]). */
+  --sz-50vh: 50vh; /* Extracted from ui/src/components/NewGoalDialog.tsx (max-h-[50vh]). */
+  --sz-8_5rem: 8.5rem; /* Extracted from ui/src/components/NewIssueDialog.tsx (min-w-[8.5rem]). */
+  --sz-160px: 160px; /* Extracted from ui/src/components/NewProjectDialog.tsx (max-w-[160px]). */
+  --sz-80px: 80px; /* Extracted from ui/src/components/OnboardingWizard.tsx (min-h-[80px]). */
+  --sz-calc-17: calc(100vh - 4rem); /* Extracted from ui/src/components/PageSkeleton.tsx (h-[calc(100vh-4rem)]). */
+  --sz-2px: 2px; /* Extracted from ui/src/components/QuotaBar.tsx (w-[2px]). */
+  --sz-calc-18: calc(100dvh - 2rem); /* Extracted from ui/src/components/RoutineRunVariablesDialog.test.tsx (max-h-[calc(100dvh-2rem)]). */
+  --sz-calc-19: calc(1rem + env(safe-area-inset-bottom)); /* Extracted from ui/src/components/RoutineRunVariablesDialog.test.tsx (pb-[calc(1rem+env(safe-area-inset-bottom))]). */
+  --sz-calc-20: min(calc(100dvh - 2rem),42rem); /* Extracted from ui/src/components/RoutineRunVariablesDialog.tsx (max-h-[min(calc(100dvh-2rem),42rem)]). */
+  --sz-100dvh: 100dvh; /* Extracted from ui/src/components/RoutineSubSidebar.tsx (max-h-[100dvh]). */
+  --sz-calc-21: calc(1.5rem + 5rem + env(safe-area-inset-bottom)); /* Extracted from ui/src/components/ScrollToBottom.tsx (bottom-[calc(1.5rem+5rem+env(safe-area-inset-bottom))]). */
+  --sz-calc-22: calc(320px + 1.5rem); /* Extracted from ui/src/components/ScrollToBottom.tsx (right-[calc(320px+1.5rem)]). */
+  --sz-calc-23: min(32rem,calc(100vw - 2rem)); /* Extracted from ui/src/components/SearchableSelect.tsx (max-w-[min(32rem,calc(100vw-2rem))]). */
+  --sz-277px: 277px; /* Extracted from ui/src/components/SidebarAccountMenu.test.tsx (w-[277px]). */
+  --sz-calc-24: calc(100vw - 1rem); /* Extracted from ui/src/components/SidebarAccountMenu.tsx (max-w-[calc(100vw-1rem)]). */
+  --sz-36px: 36px; /* Extracted from ui/src/components/WorkspaceFileBrowser.tsx (min-h-[36px]). */
+  --sz-32px: 32px; /* Extracted from ui/src/components/WorkspaceFileBrowser.tsx (min-h-[32px]). */
+  --sz-30px: 30px; /* Extracted from ui/src/components/WorkspaceFileBrowser.tsx (min-h-[30px]). */
+  --sz-8px: 8px; /* Extracted from ui/src/components/artifacts/ArtifactGroupCard.tsx (translate-x-[8px]). */
+  --sz-4px: 4px; /* Extracted from ui/src/components/artifacts/ArtifactGroupCard.tsx (translate-x-[4px]). */
+  --sz-34px: 34px; /* Extracted from ui/src/components/environment-variables-editor/SecretPicker.tsx (h-[34px]). */
+  --sz-11rem: 11rem; /* Extracted from ui/src/components/issue-properties/IssueProperties.tsx (min-w-[11rem]). */
+  --sz-32rem: 32rem; /* Extracted from ui/src/components/issue-properties/IssueProperties.tsx (w-[32rem]). */
+  --sz-280px: 280px; /* Extracted from ui/src/components/timeline/WorkTimelineChart.tsx (max-w-[280px]). */
+  --sz-7px: 7px; /* Extracted from ui/src/components/transcript/RunTranscriptView.tsx (mt-[7px]). */
+  --sz-calc-25: calc(100% - 2rem); /* Extracted from ui/src/components/ui/alert-dialog.tsx (max-w-[calc(100%-2rem)]). */
+  --sz-calc-26: max(1rem,env(safe-area-inset-top)); /* Extracted from ui/src/components/ui/alert-dialog.tsx (top-[max(1rem,env(safe-area-inset-top))]). */
+  --sz-8rem: 8rem; /* Extracted from ui/src/components/ui/dropdown-menu.tsx (min-w-[8rem]). */
+  --sz-calc-27: calc(100% - 1px); /* Extracted from ui/src/components/ui/tabs.tsx (h-[calc(100%-1px)]). */
+  --sz-neg-5px: -5px; /* Extracted from ui/src/components/ui/tabs.tsx (bottom-[-5px]). */
+  --sz-calc-28: calc(-50% - 2px); /* Extracted from ui/src/components/ui/tooltip.tsx (translate-y-[calc(-50%_-_2px)]). */
+  --sz-420px: 420px; /* Extracted from ui/src/pages/AgentDetail.tsx (min-h-[420px]). */
+  --sz-30rem: 30rem; /* Extracted from ui/src/pages/AgentDetail.tsx (w-[30rem]). */
+  --sz-38rem: 38rem; /* Extracted from ui/src/pages/AgentDetail.tsx (max-h-[38rem]). */
+  --sz-7rem: 7rem; /* Extracted from ui/src/pages/Agents.test.tsx (min-w-[7rem]). */
+  --sz-calc-29: calc(100% + 3rem); /* Extracted from ui/src/pages/BoardChat.tsx (h-[calc(100%+3rem)]). */
+  --sz-22rem: 22rem; /* Extracted from ui/src/pages/CompanyEnvironments.tsx (h-[22rem]). */
+  --sz-560px: 560px; /* Extracted from ui/src/pages/CompanyExport.tsx (min-h-[560px]). */
+  --sz-520px: 520px; /* Extracted from ui/src/pages/CompanyExport.tsx (min-h-[520px]). */
+  --sz-480px: 480px; /* Extracted from ui/src/pages/CompanyExport.tsx (max-h-[480px]). */
+  --sz-calc-30: calc(100vh - 12rem); /* Extracted from ui/src/pages/CompanyExport.tsx (h-[calc(100vh-12rem)]). */
+  --sz-calc-31: calc(100vh - 16rem); /* Extracted from ui/src/pages/CompanyImport.tsx (h-[calc(100vh-16rem)]). */
+  --sz-calc-32: min(28rem,70vh); /* Extracted from ui/src/pages/CompanySkills.tsx (max-h-[min(28rem,70vh)]). */
+  --sz-11_5rem: 11.5rem; /* Extracted from ui/src/pages/CompanySkills.tsx (min-h-[11.5rem]). */
+  --sz-calc-33: calc(100dvh - 6rem); /* Extracted from ui/src/pages/CompanySkills.tsx (h-[calc(100dvh-6rem)]). */
+  --sz-calc-34: clamp(14rem,45vh,28rem); /* Extracted from ui/src/pages/CompanySkills.tsx (h-[clamp(14rem,45vh,28rem)]). */
+  --sz-400px: 400px; /* Extracted from ui/src/pages/CompanySkills.tsx (min-h-[400px]). */
+  --sz-calc-35: min(34rem,55vw); /* Extracted from ui/src/pages/CompanySkills.tsx (max-w-[min(34rem,55vw)]). */
+  --sz-640px: 640px; /* Extracted from ui/src/pages/DesignGuide.tsx (max-w-[640px]). */
+  --sz-28rem: 28rem; /* Extracted from ui/src/pages/DesignGuide.tsx (w-[28rem]). */
+  --sz-170px: 170px; /* Extracted from ui/src/pages/Inbox.tsx (w-[170px]). */
+  --sz-calc-36: min(28rem,65vh); /* Extracted from ui/src/pages/InstanceExperimentalSettings.tsx (max-h-[min(28rem,65vh)]). */
+  --sz-calc-37: min(100%,22rem); /* Extracted from ui/src/pages/IssueDetail.tsx (w-[min(100%,22rem)]). */
+  --sz-85dvh: 85dvh; /* Extracted from ui/src/pages/IssueDetail.tsx (max-h-[85dvh]). */
+  --sz-calc-38: calc(100dvh - 9rem); /* Extracted from ui/src/pages/OrgChart.tsx (h-[calc(100dvh-9rem)]). */
+  --sz-calc-39: calc(100dvh - 3.5rem); /* Extracted from ui/src/pages/PipelineSettings.tsx (max-h-[calc(100dvh-3.5rem)]). */
+  --sz-calc-40: min(24rem,calc(100vw - 2rem)); /* Extracted from ui/src/pages/PipelineSettings.tsx (w-[min(24rem,calc(100vw-2rem))]). */
+  --sz-780px: 780px; /* Extracted from ui/src/pages/Pipelines.tsx (min-w-[780px]). */
+  --sz-148px: 148px; /* Extracted from ui/src/pages/Pipelines.tsx (w-[148px]). */
+  --sz-11px: 11px; /* Extracted from ui/src/pages/Pipelines.tsx (h-[11px]). */
+  --sz-9px: 9px; /* Extracted from ui/src/pages/Pipelines.tsx (h-[9px]). */
+  --sz-720px: 720px; /* Extracted from ui/src/pages/RunTranscriptUxLab.tsx (max-h-[720px]). */
+  --sz-460px: 460px; /* Extracted from ui/src/pages/RunTranscriptUxLab.tsx (max-h-[460px]). */
+  --sz-960px: 960px; /* Extracted from ui/src/pages/Search.tsx (max-w-[960px]). */
+  --sz-70px: 70px; /* Extracted from ui/src/pages/Secrets.tsx (min-h-[70px]). */
+  --sz-calc-41: min(520px,calc(100vw - 2rem)); /* Extracted from ui/src/pages/Secrets.tsx (w-[min(520px,calc(100vw-2rem))]). */
+  --sz-calc-42: min(80vh,34rem); /* Extracted from ui/src/pages/Secrets.tsx (max-h-[min(80vh,34rem)]). */
+  --sz-14rem: 14rem; /* Extracted from ui/src/pages/TeamCatalog.tsx (max-w-[14rem]). */
+  --rad-3: 3px; /* Extracted from ui/src/components/ExternalObjectPill.tsx (ring-[3px]). */
+  --rad-4: 4px; /* Extracted from ui/src/components/IssueChatThread.tsx (rounded-br-[4px]). */
+  --rad-2: 2px; /* Extracted from ui/src/components/SidebarCompanyMenu.tsx (ring-[2px]). */
+  --rad-8: 8px; /* Extracted from ui/src/components/artifacts/ArtifactCard.test.tsx (rounded-[8px]). */
+  --rad-14: 14px; /* Extracted from ui/src/pages/CompanySettings.tsx (rounded-[14px]). */
+  --rad-28: 28px; /* Extracted from ui/src/pages/InviteUxLab.tsx (rounded-[28px]). */
+  --rad-24: 24px; /* Extracted from ui/src/pages/InviteUxLab.tsx (rounded-[24px]). */
+  --rad-32: 32px; /* Extracted from ui/src/pages/InviteUxLab.tsx (rounded-[32px]). */
+  --pct-90: 90%; /* Extracted from ui/src/components/DocumentDiffModal.tsx (max-w-[90%]). */
+  --pct-50: 50%; /* Extracted from ui/src/components/ImageGalleryModal.tsx (max-w-[50%]). */
+  --pct-85: 85%; /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-w-[85%]). */
+  --pct-neg-50: -50%; /* Extracted from ui/src/components/ui/alert-dialog.tsx (translate-x-[-50%]). */
+  --pct-72: 72%; /* Extracted from ui/src/pages/IssueDetail.tsx (w-[72%]). */
+  --shadow-extract-1: 0 16px 40px rgba(6,182,212,0.08); /* Extracted from ui/src/components/ActiveAgentsPanel.tsx (shadow-[0_16px_40px_rgba(6,182,212,0.08)]). */
+  --shadow-extract-2: 0 20px 80px -40px rgba(0,0,0,0.55); /* Extracted from ui/src/components/BudgetPolicyCard.tsx (shadow-[0_20px_80px_-40px_rgba(0,0,0,0.55)]). */
+  --shadow-extract-3: 0 0 0 1px rgba(255,255,255,0.08); /* Extracted from ui/src/components/BudgetSidebarMarker.tsx (shadow-[0_0_0_1px_rgba(255,255,255,0.08)]). */
+  --shadow-extract-4: 0 -12px 28px rgba(15,23,42,0.08); /* Extracted from ui/src/components/ChatComposer.test.tsx (shadow-[0_-12px_28px_rgba(15,23,42,0.08)]). */
+  --shadow-extract-5: 0 -12px 28px rgba(0,0,0,0.28); /* Extracted from ui/src/components/ChatComposer.test.tsx (shadow-[0_-12px_28px_rgba(0,0,0,0.28)]). */
+  --shadow-extract-6: 0 0 0 1px var(--color-background); /* Extracted from ui/src/components/DocumentAnnotationLayer.tsx (shadow-[0_0_0_1px_var(--color-background)]). */
+  --shadow-extract-7: 0 -12px 28px rgba(15,23,42,0.08),0 0 0 1px hsl(var(--primary)/0.16); /* Extracted from ui/src/components/IssueChatThread.tsx (shadow-[0_-12px_28px_rgba(15,23,42,0.08),0_0_0_1px_hsl(var(--primary)/0.16)]). */
+  --shadow-extract-8: 0 1px 0 rgba(15,23,42,0.02); /* Extracted from ui/src/components/IssueRecoveryActionCard.tsx (shadow-[0_1px_0_rgba(15,23,42,0.02)]). */
+  --shadow-extract-9: 0 18px 42px rgba(15,23,42,0.06); /* Extracted from ui/src/components/IssueThreadInteractionCard.tsx (shadow-[0_18px_42px_rgba(15,23,42,0.06)]). */
+  --shadow-extract-10: 0 1px 0 1px hsl(var(--border)); /* Extracted from ui/src/components/KeyboardShortcutsCheatsheet.tsx (shadow-[0_1px_0_1px_hsl(var(--border))]). */
+  --shadow-extract-11: 0 18px 50px rgba(6,182,212,0.08); /* Extracted from ui/src/components/LiveRunWidget.tsx (shadow-[0_18px_50px_rgba(6,182,212,0.08)]). */
+  --shadow-extract-12: 0 0 0 2px hsl(var(--background)); /* Extracted from ui/src/components/SidebarNavItem.tsx (shadow-[0_0_0_2px_hsl(var(--background))]). */
+  --shadow-extract-13: 0 0 0 3px rgba(245,158,11,0.18); /* Extracted from ui/src/components/environment-variables-editor/index.tsx (shadow-[0_0_0_3px_rgba(245,158,11,0.18)]). */
+  --shadow-extract-14: 0 0 12px rgba(6,182,212,0.08); /* Extracted from ui/src/pages/AgentDetail.tsx (shadow-[0_0_12px_rgba(6,182,212,0.08)]). */
+  --shadow-extract-15: 0 24px 60px rgba(15,23,42,0.08); /* Extracted from ui/src/pages/InviteUxLab.tsx (shadow-[0_24px_60px_rgba(15,23,42,0.08)]). */
+  --shadow-extract-16: 0 30px 80px rgba(2,6,23,0.55); /* Extracted from ui/src/pages/InviteUxLab.tsx (shadow-[0_30px_80px_rgba(2,6,23,0.55)]). */
+  --shadow-extract-17: 0 30px 80px rgba(15,23,42,0.10); /* Extracted from ui/src/pages/InviteUxLab.tsx (shadow-[0_30px_80px_rgba(15,23,42,0.10)]). */
+  --shadow-extract-18: 0 18px 44px -28px rgba(0,0,0,0.45); /* Extracted from ui/src/pages/ProfileSettings.tsx (shadow-[0_18px_44px_-28px_rgba(0,0,0,0.45)]). */
+  --shadow-extract-19: 0 20px 50px rgba(6,182,212,0.10); /* Extracted from ui/src/pages/RunTranscriptUxLab.tsx (shadow-[0_20px_50px_rgba(6,182,212,0.10)]). */
+  --shadow-extract-20: 0 20px 40px rgba(15,23,42,0.10); /* Extracted from ui/src/pages/RunTranscriptUxLab.tsx (shadow-[0_20px_40px_rgba(15,23,42,0.10)]). */
+  --shadow-extract-21: 0 0 0 6px rgba(34,211,238,0.12); /* Extracted from ui/src/pages/RunTranscriptUxLab.tsx (shadow-[0_0_0_6px_rgba(34,211,238,0.12)]). */
+  --shadow-extract-22: 0 28px 70px rgba(15,23,42,0.10); /* Extracted from ui/src/pages/RunTranscriptUxLab.tsx (shadow-[0_28px_70px_rgba(15,23,42,0.10)]). */
+  --shadow-extract-23: 0 12px 24px rgba(6,182,212,0.12); /* Extracted from ui/src/pages/RunTranscriptUxLab.tsx (shadow-[0_12px_24px_rgba(6,182,212,0.12)]). */
+}

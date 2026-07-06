@@ -226,7 +226,7 @@ export function NewAgentDialog() {
       <DialogContent
         showCloseButton={false}
         className={cn(
-          "max-h-[min(calc(100dvh-2rem),46rem)] p-0 gap-0 overflow-hidden flex flex-col",
+          "max-h-(--sz-calc-16) p-0 gap-0 overflow-hidden flex flex-col",
           mode === "invite" || mode === "prompt" ? "sm:max-w-2xl" : "sm:max-w-md",
         )}
       >
@@ -395,7 +395,7 @@ export function NewAgentDialog() {
               <Textarea
                 readOnly
                 value={latestAgentPrompt ?? ""}
-                className="h-[24rem] resize-y font-mono text-xs"
+                className="h-(--sz-24rem) resize-y font-mono text-xs"
               />
               <Button
                 size="sm"

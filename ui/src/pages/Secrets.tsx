@@ -2038,7 +2038,7 @@ export function Secrets() {
       )}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto p-4 sm:max-w-lg sm:p-6">
+        <DialogContent className="max-h-(--sz-calc-18) overflow-y-auto p-4 sm:max-w-lg sm:p-6">
           <DialogHeader>
             <DialogTitle>{editingDefinition ? "Edit user-provided secret" : "Create secret"}</DialogTitle>
             <DialogDescription>
@@ -2296,7 +2296,7 @@ export function Secrets() {
                       setCreateForm((current) => ({ ...current, usageGuidance: event.target.value }))
                     }
                     placeholder="Tell members how to create their token, required scopes, etc."
-                    className="min-h-[70px] text-sm"
+                    className="min-h-(--sz-70px) text-sm"
                   />
                 </div>
               </>
@@ -2335,7 +2335,7 @@ export function Secrets() {
       </Dialog>
 
       <Dialog open={vaultDialogOpen} onOpenChange={setVaultDialogOpen}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+        <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{editingVault ? "Edit provider vault" : "Create provider vault"}</DialogTitle>
             <DialogDescription>
@@ -2716,7 +2716,7 @@ function SecretsFiltersPopover({
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="w-[min(520px,calc(100vw-2rem))] max-h-[min(80vh,34rem)] overflow-y-auto overscroll-contain p-0"
+        className="w-(--sz-calc-41) max-h-(--sz-calc-42) overflow-y-auto overscroll-contain p-0"
       >
         <div className="space-y-3 p-3">
           <div className="flex items-center justify-between">
