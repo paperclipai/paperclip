@@ -4030,6 +4030,22 @@ describe("Project-bound wiki spaces and the agent wiki API", () => {
     expect((conflict.body as { currentHash: string }).currentHash).toBe(firstBody.hash);
   });
 
+  it("returns a clean 404 without a host path when reading a page that was never written", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    const response = await plugin.definition.onApiRequest!(apiRequest("agent-page", {
+      query: { companyId: COMPANY_ID, path: "wiki/decisions.md" },
+    }));
+
+    expect(response.status).toBe(404);
+    const message = (response.body as { error: string }).error;
+    expect(message).toMatch(/not found/i);
+    expect(message).toContain("wiki/decisions.md");
+    // The raw fs error embeds the host's absolute path; it must never reach an agent.
+    expect(message).not.toMatch(/ENOENT|realpath|[A-Za-z]:\\|\/tmp\/|folder file not found/);
+  });
+
   it("serves company-wide body search over indexed documents", async () => {
     const harness = createTestHarness({ manifest });
     const project = existingProject();
