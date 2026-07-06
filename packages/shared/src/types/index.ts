@@ -312,6 +312,8 @@ export type {
   IssueReferenceSource,
   IssueRelatedWorkItem,
   IssueRelatedWorkSummary,
+  IssuePendingApprovalSummary,
+  IssuePendingInteractionSummary,
   IssueRelation,
   IssueRelationIssueSummary,
   IssueExecutionMonitorPolicy,

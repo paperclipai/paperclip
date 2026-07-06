@@ -671,6 +671,8 @@ export type {
   IssueExecutionMonitorPolicy,
   IssueExecutionMonitorState,
   IssueRelation,
+  IssuePendingApprovalSummary,
+  IssuePendingInteractionSummary,
   IssueRelationIssueSummary,
   IssueExecutionPolicy,
   IssueExecutionState,

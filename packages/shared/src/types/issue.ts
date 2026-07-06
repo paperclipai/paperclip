@@ -21,6 +21,8 @@ import type {
   IssueRecoveryActionStatus,
   IssueWorkMode,
   ModelProfileKey,
+  ApprovalStatus,
+  ApprovalType,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionKind,
   IssueThreadInteractionStatus,
@@ -529,6 +531,33 @@ export interface IssueWatchdog extends IssueWatchdogSummary {
   updatedByRunId: string | null;
 }
 
+/**
+ * Compact projection of a single pending issue-thread interaction, surfaced on
+ * the issue-detail GET so a consumer reading only that payload can detect a
+ * structured wait without a second call to `/issues/:id/interactions`.
+ * Only interactions with `status === "pending"` are included.
+ */
+export interface IssuePendingInteractionSummary {
+  id: string;
+  kind: IssueThreadInteractionKind;
+  status: IssueThreadInteractionStatus;
+  continuationPolicy: IssueThreadInteractionContinuationPolicy;
+  title: string | null;
+  createdAt: Date | string;
+}
+
+/**
+ * Compact projection of a single pending approval linked to an issue, surfaced
+ * on the issue-detail GET alongside {@link IssuePendingInteractionSummary}.
+ * Only approvals with `status === "pending"` are included.
+ */
+export interface IssuePendingApprovalSummary {
+  id: string;
+  type: ApprovalType;
+  status: ApprovalStatus;
+  createdAt: Date | string;
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -596,6 +625,20 @@ export interface Issue {
   goal?: Goal | null;
   currentExecutionWorkspace?: ExecutionWorkspace | null;
   workProducts?: IssueWorkProduct[];
+  /**
+   * Pending structured interactions (request_confirmation, ask_user_questions,
+   * suggest_tasks, …) on this issue. Present on issue-detail GET only. An empty
+   * array means "no pending interaction"; absence means the field was not
+   * projected (e.g. list endpoints). The full interaction objects live at
+   * `GET /issues/:id/interactions`.
+   */
+  pendingInteractions?: IssuePendingInteractionSummary[];
+  /** Pending approvals linked to this issue. Present on issue-detail GET only. */
+  pendingApprovals?: IssuePendingApprovalSummary[];
+  /** Count of {@link Issue.pendingInteractions}; present on issue-detail GET only. */
+  pendingInteractionCount?: number;
+  /** Count of {@link Issue.pendingApprovals}; present on issue-detail GET only. */
+  pendingApprovalCount?: number;
   mentionedProjects?: Project[];
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;

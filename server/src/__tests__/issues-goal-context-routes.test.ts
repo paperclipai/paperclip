@@ -93,6 +93,17 @@ const mockWorkProductService = vi.hoisted(() => ({
 
 const mockEnvironmentService = vi.hoisted(() => ({}));
 
+const mockIssueApprovalService = vi.hoisted(() => ({
+  listApprovalsForIssue: vi.fn(async () => [] as any[]),
+}));
+
+const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  listForIssue: vi.fn(async () => [] as any[]),
+  expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(async () => []),
+}));
+
 const mockDb = vi.hoisted(() => ({
   select: vi.fn(),
   execute: vi.fn(),
@@ -112,16 +123,12 @@ vi.mock("../services/index.js", () => ({
   goalService: () => mockGoalService,
   heartbeatService: () => mockHeartbeatService,
   instanceSettingsService: () => mockInstanceSettingsService,
-  issueApprovalService: () => ({}),
+  issueApprovalService: () => mockIssueApprovalService,
   issueRecoveryActionService: () => ({
     getActiveForIssue: vi.fn(async () => null),
     listActiveForIssues: vi.fn(async () => new Map()),
   }),
-  issueThreadInteractionService: () => ({
-    listForIssue: vi.fn(async () => []),
-    expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
-    expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
-  }),
+  issueThreadInteractionService: () => mockIssueThreadInteractionService,
   issueReferenceService: () => mockIssueReferenceService,
   issueService: () => mockIssueService,
   logActivity: mockLogActivity,
@@ -277,6 +284,77 @@ describe.sequential("issue goal context routes", () => {
       { includeCommentBodies: false },
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
+  });
+
+  it("returns empty pending summaries on GET /issues/:id when nothing is pending", async () => {
+    const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
+
+    expect(res.status).toBe(200);
+    expect(res.body.pendingInteractions).toEqual([]);
+    expect(res.body.pendingApprovals).toEqual([]);
+    expect(res.body.pendingInteractionCount).toBe(0);
+    expect(res.body.pendingApprovalCount).toBe(0);
+  });
+
+  it("surfaces pending structured waits on GET /issues/:id", async () => {
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValueOnce([
+      {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        title: "Restart approval",
+        createdAt: new Date("2026-06-20T00:00:00Z"),
+      },
+      {
+        // resolved interaction must NOT be reported as pending
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        kind: "ask_user_questions",
+        status: "answered",
+        continuationPolicy: "none",
+        title: null,
+        createdAt: new Date("2026-06-19T00:00:00Z"),
+      },
+    ] as any[]);
+    mockIssueApprovalService.listApprovalsForIssue.mockResolvedValueOnce([
+      {
+        id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        type: "agent_restart",
+        status: "pending",
+        createdAt: new Date("2026-06-20T01:00:00Z"),
+      },
+      {
+        // approved approval must NOT be reported as pending
+        id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        type: "agent_restart",
+        status: "approved",
+        createdAt: new Date("2026-06-18T00:00:00Z"),
+      },
+    ] as any[]);
+
+    const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
+
+    expect(res.status).toBe(200);
+    expect(res.body.pendingInteractionCount).toBe(1);
+    expect(res.body.pendingInteractions).toEqual([
+      {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        title: "Restart approval",
+        createdAt: "2026-06-20T00:00:00.000Z",
+      },
+    ]);
+    expect(res.body.pendingApprovalCount).toBe(1);
+    expect(res.body.pendingApprovals).toEqual([
+      {
+        id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        type: "agent_restart",
+        status: "pending",
+        createdAt: "2026-06-20T01:00:00.000Z",
+      },
+    ]);
   });
 
   it("surfaces the project goal from GET /issues/:id/heartbeat-context", async () => {
