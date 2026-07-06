@@ -254,6 +254,7 @@ export const pluginManagedSkillDeclarationSchema = z.object({
   description: z.string().max(2000).nullable().optional(),
   markdown: z.string().max(200_000).optional(),
   files: z.array(pluginManagedSkillFileDeclarationSchema).max(50).optional(),
+  required: z.boolean().optional(),
 }).superRefine((value, ctx) => {
   const paths = (value.files ?? []).map((file) => file.path);
   const duplicates = paths.filter((path, index) => paths.indexOf(path) !== index);

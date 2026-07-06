@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  companySkills,
   pluginManagedResources,
 } from "@paperclipai/db";
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
@@ -115,6 +116,7 @@ function buildSkillDefaults(
     slug: declaration.slug ?? declaration.skillKey,
     description: declaration.description ?? null,
     canonicalKey: canonicalSkillKey(pluginKey, declaration.skillKey),
+    required: declaration.required === true,
     files: [
       "SKILL.md",
       ...(declaration.files ?? []).map((file) => file.path),
@@ -224,6 +226,30 @@ export function pluginManagedSkillService(
     return skills.getById(companyId, skillId);
   }
 
+  // managedByPluginKey/required in company_skills.metadata drive the runtime
+  // required-skill computation; imported frontmatter cannot set them, only this
+  // plugin-managed path can.
+  async function ensureManagedSkillMetadata(
+    companyId: string,
+    skill: CompanySkill,
+    declaration: PluginManagedSkillDeclaration,
+  ): Promise<CompanySkill> {
+    const required = declaration.required === true;
+    const current = (skill.metadata ?? {}) as Record<string, unknown>;
+    if (current.managedByPluginKey === options.pluginKey && (current.required === true) === required) {
+      return skill;
+    }
+    const metadata = { ...current, managedByPluginKey: options.pluginKey, required };
+    await db
+      .update(companySkills)
+      .set({ metadata })
+      .where(and(
+        eq(companySkills.companyId, companyId),
+        eq(companySkills.id, skill.id),
+      ));
+    return { ...skill, metadata };
+  }
+
   async function managedSkillDefaultDrift(
     companyId: string,
     skill: CompanySkill | null,
@@ -281,7 +307,8 @@ export function pluginManagedSkillService(
       : null;
     if (beforeByKey) {
       await upsertBinding(companyId, declaration, beforeByKey.id);
-      return { skill: beforeByKey, status: "relinked" as const };
+      const skill = await ensureManagedSkillMetadata(companyId, beforeByKey, declaration);
+      return { skill, status: "relinked" as const };
     }
     const results = await skills.importPackageFiles(
       companyId,
@@ -297,8 +324,9 @@ export function pluginManagedSkillService(
       throw notFound(`Managed skill was not imported: ${declaration.skillKey}`);
     }
     await upsertBinding(companyId, declaration, imported.id);
+    const skill = await ensureManagedSkillMetadata(companyId, imported, declaration);
     const status: PluginManagedSkillResolution["status"] = mode === "reset" ? "reset" : "created";
-    return { skill: imported, status };
+    return { skill, status };
   }
 
   async function get(skillKey: string, companyId: string) {
@@ -314,7 +342,8 @@ export function pluginManagedSkillService(
     const current = await get(skillKey, companyId);
     if (current.skill) {
       await upsertBinding(companyId, declaration, current.skill.id);
-      return current;
+      const skill = await ensureManagedSkillMetadata(companyId, current.skill, declaration);
+      return skill === current.skill ? current : { ...current, skill };
     }
     const imported = await importDeclaredSkill(companyId, declaration, "reconcile");
     await logActivity(db, {

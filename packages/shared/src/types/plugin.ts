@@ -234,6 +234,12 @@ export interface PluginManagedSkillDeclaration {
   markdown?: string;
   /** Additional files installed with the skill. */
   files?: PluginManagedSkillFileDeclaration[];
+  /**
+   * When true, the imported skill is force-synced to every agent in the
+   * company (same treatment as Paperclip-bundled skills). Honored only for
+   * plugin-managed imports; regular skill imports cannot self-elevate.
+   */
+  required?: boolean;
 }
 
 export type PluginManagedResourceKind = "agent" | "project" | "routine" | "skill";

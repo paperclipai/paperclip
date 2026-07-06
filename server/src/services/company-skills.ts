@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companies, companySkills } from "@paperclipai/db";
+import { companies, companySkills, pluginManagedResources } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import type {
@@ -133,6 +133,8 @@ type SkillSourceMeta = {
   workspaceId?: string;
   workspaceName?: string;
   workspaceCwd?: string;
+  managedByPluginKey?: string;
+  required?: boolean;
 };
 
 export type LocalSkillInventoryMode = "full" | "project_root";
@@ -899,6 +901,14 @@ async function collectLocalSkillInventory(
     .sort((left, right) => left.path.localeCompare(right.path));
 }
 
+// managedByPluginKey/required force-sync a skill to every agent; only the
+// plugin-managed import path may set them, never imported frontmatter.
+function stripReservedSkillMetadata(metadata: Record<string, unknown> | null): Record<string, unknown> {
+  const { managedByPluginKey: _reservedManagedBy, required: _reservedRequired, ...safe } =
+    (metadata ?? {}) as Record<string, unknown>;
+  return safe;
+}
+
 export async function readLocalSkillImportFromDirectory(
   companyId: string,
   skillDir: string,
@@ -916,7 +926,7 @@ export async function readLocalSkillImportFromDirectory(
   const skillKey = readCanonicalSkillKey(parsed.frontmatter, parsedMetadata);
   const metadata = {
     ...(skillKey ? { skillKey } : {}),
-    ...(parsedMetadata ?? {}),
+    ...stripReservedSkillMetadata(parsedMetadata),
     sourceKind: "local_path",
     ...(options?.metadata ?? {}),
   };
@@ -988,7 +998,7 @@ async function readLocalSkillImports(companyId: string, sourcePath: string): Pro
     const skillKey = readCanonicalSkillKey(parsed.frontmatter, parsedMetadata);
     const metadata = {
       ...(skillKey ? { skillKey } : {}),
-      ...(parsedMetadata ?? {}),
+      ...stripReservedSkillMetadata(parsedMetadata),
       sourceKind: "local_path",
     };
     const inventory: CompanySkillFileInventoryEntry[] = [
@@ -2169,9 +2179,27 @@ export function companySkillService(db: Db) {
   ): Promise<PaperclipSkillEntry[]> {
     const skills = await listFull(companyId);
 
+    // metadata.required is only honored for skills with a real plugin-managed
+    // binding, so stale or frontmatter-injected metadata can never force-sync
+    // a skill onto every agent.
+    const managedBindings = await db
+      .select({
+        resourceId: pluginManagedResources.resourceId,
+        pluginKey: pluginManagedResources.pluginKey,
+      })
+      .from(pluginManagedResources)
+      .where(and(
+        eq(pluginManagedResources.companyId, companyId),
+        eq(pluginManagedResources.resourceKind, "skill"),
+      ));
+    const managedPluginKeyBySkillId = new Map(
+      managedBindings.map((binding) => [binding.resourceId, binding.pluginKey]),
+    );
+
     const out: PaperclipSkillEntry[] = [];
     for (const skill of skills) {
-      const sourceKind = asString(getSkillMeta(skill).sourceKind);
+      const meta = getSkillMeta(skill);
+      const sourceKind = asString(meta.sourceKind);
       let source = normalizeSkillDirectory(skill);
       if (!source) {
         source = options.materializeMissing === false
@@ -2180,15 +2208,19 @@ export function companySkillService(db: Db) {
       }
       if (!source) continue;
 
-      const required = sourceKind === "paperclip_bundled";
+      const managedByPluginKey = managedPluginKeyBySkillId.get(skill.id) ?? null;
+      const pluginRequired = Boolean(managedByPluginKey) && meta.required === true;
+      const required = sourceKind === "paperclip_bundled" || pluginRequired;
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
         source,
         required,
-        requiredReason: required
+        requiredReason: sourceKind === "paperclip_bundled"
           ? "Bundled Paperclip skills are always available for local adapters."
-          : null,
+          : pluginRequired
+            ? `Required for all agents by the ${managedByPluginKey} plugin.`
+            : null,
       });
     }
 

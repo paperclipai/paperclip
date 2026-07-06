@@ -1859,6 +1859,10 @@ export function pluginLoader(
         env: {
           PAPERCLIP_DEPLOYMENT_MODE: instanceInfo.deploymentMode ?? "",
           PAPERCLIP_DEPLOYMENT_EXPOSURE: instanceInfo.deploymentExposure ?? "",
+          // Workers that manage instance-local data (e.g. plugin local-folder
+          // defaults) must resolve the same home/instance tree as the host.
+          ...(process.env.PAPERCLIP_HOME ? { PAPERCLIP_HOME: process.env.PAPERCLIP_HOME } : {}),
+          ...(process.env.PAPERCLIP_INSTANCE_ID ? { PAPERCLIP_INSTANCE_ID: process.env.PAPERCLIP_INSTANCE_ID } : {}),
         },
       };
 
