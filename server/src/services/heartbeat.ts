@@ -2036,25 +2036,45 @@ export function heartbeatService(db: Db) {
         return [];
       }
       const policy = parseHeartbeatPolicy(agent);
-      const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
-      if (availableSlots <= 0) return [];
 
-      const queuedRuns = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
-        .orderBy(asc(heartbeatRuns.createdAt))
-        .limit(availableSlots);
-      if (queuedRuns.length === 0) return [];
+      // Enforce maxConcurrentRuns durably. `withAgentStartLock` only serializes
+      // within this process; the count-then-claim below is a TOCTOU that a second
+      // process, or this process across a restart that clears the in-memory lock,
+      // would race — letting two wakes for the same agent (e.g. concurrent
+      // Coordinator fires on different parent issues) each claim a slot and exceed
+      // the cap. A transaction-scoped Postgres advisory lock keyed on the agent id
+      // serializes the critical section cluster-wide. The count/claim run on the
+      // autocommit pool (not this transaction) on purpose: each claim commits
+      // immediately, so the running-count is durable and visible to the next lock
+      // holder by the time this transaction commits and releases the lock.
+      const claimedRuns = await db.transaction(async (lockTx) => {
+        await lockTx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${agentId}::text, 0::int8))`,
+        );
 
-      const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of queuedRuns) {
-        const claimed = await claimQueuedRun(queuedRun);
-        if (claimed) claimedRuns.push(claimed);
-      }
+        const runningCount = await countRunningRunsForAgent(agentId);
+        const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+        if (availableSlots <= 0) return [];
+
+        const queuedRuns = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
+          .orderBy(asc(heartbeatRuns.createdAt))
+          .limit(availableSlots);
+        if (queuedRuns.length === 0) return [];
+
+        const claimed: Array<typeof heartbeatRuns.$inferSelect> = [];
+        for (const queuedRun of queuedRuns) {
+          const claimedRun = await claimQueuedRun(queuedRun);
+          if (claimedRun) claimed.push(claimedRun);
+        }
+        return claimed;
+      });
       if (claimedRuns.length === 0) return [];
 
+      // Fire executions after the advisory lock has been released (transaction
+      // committed) so long-running adapter work never holds the per-agent lock.
       for (const claimedRun of claimedRuns) {
         void executeRun(claimedRun.id).catch((err) => {
           logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
