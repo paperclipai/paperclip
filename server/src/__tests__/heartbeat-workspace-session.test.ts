@@ -16,6 +16,7 @@ import {
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
   isProjectWorkspaceFilesystemPermissionError,
+  isProjectWorkspaceRepoAccessError,
   mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
@@ -143,6 +144,28 @@ describe("ensureProjectWorkspacePath", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("uses an empty isolated workspace with a warning when the repo cannot be cloned", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-path-"));
+    try {
+      const target = path.join(root, "managed", "ab-dashboard");
+      const missingRepo = path.join(root, "missing-repo");
+
+      const result = await ensureProjectWorkspacePath({
+        cwd: target,
+        repoUrl: missingRepo,
+        label: "AB Associate workspace",
+      });
+
+      await expect(fs.stat(result.cwd)).resolves.toEqual(expect.objectContaining({}));
+      await expect(fs.readdir(result.cwd)).resolves.toEqual([]);
+      expect(result.cwd).toBe(target);
+      expect(result.warning).toContain("Could not clone AB Associate workspace repo");
+      expect(result.warning).toContain("Using empty project workspace");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("isProjectWorkspaceFilesystemPermissionError", () => {
@@ -162,6 +185,26 @@ describe("isProjectWorkspaceFilesystemPermissionError", () => {
     );
 
     expect(isProjectWorkspaceFilesystemPermissionError(error)).toBe(false);
+  });
+});
+
+describe("isProjectWorkspaceRepoAccessError", () => {
+  it("treats GitHub HTTPS auth failures as repo access errors", () => {
+    const error = new Error(
+      "Command failed: git clone https://github.com/derrick-pixel/AB.dashboard /tmp/ab_associate\n" +
+        "fatal: could not read Username for 'https://github.com': No such device or address",
+    );
+
+    expect(isProjectWorkspaceRepoAccessError(error)).toBe(true);
+  });
+
+  it("does not treat local worktree permission failures as repo access errors", () => {
+    const error = new Error(
+      "Command failed: git clone https://github.com/derrick-pixel/AB.dashboard /ab_associate\n" +
+        "fatal: could not create work tree dir '/ab_associate': Permission denied",
+    );
+
+    expect(isProjectWorkspaceRepoAccessError(error)).toBe(false);
   });
 });
 

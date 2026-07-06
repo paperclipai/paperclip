@@ -700,6 +700,12 @@ export function isProjectWorkspaceFilesystemPermissionError(error: unknown) {
     .test(message);
 }
 
+export function isProjectWorkspaceRepoAccessError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:could not read Username|Authentication failed|Repository not found|repository ['"].+['"] does not exist|Permission denied \(publickey\)|Please make sure you have the correct access rights|could not read from remote repository|terminal prompts disabled|support for password authentication was removed)/i
+    .test(message);
+}
+
 async function readGitOutput(args: string[], cwd: string): Promise<string | null> {
   try {
     const result = await execFile("git", args, {
@@ -740,6 +746,25 @@ async function cloneProjectWorkspaceRepo(input: {
   }
 }
 
+async function useEmptyProjectWorkspaceAfterRepoAccessFailure(input: {
+  repoUrl: string;
+  cwd: string;
+  label: string;
+  error: unknown;
+}): Promise<{ cwd: string; warning: string | null }> {
+  if (!isProjectWorkspaceRepoAccessError(input.error)) {
+    throw input.error;
+  }
+  await fs.rm(input.cwd, { recursive: true, force: true });
+  await fs.mkdir(input.cwd, { recursive: true });
+  return {
+    cwd: input.cwd,
+    warning:
+      `Could not clone ${input.label} repo "${input.repoUrl}" because Git could not authenticate or access the repository. ` +
+      `Using empty project workspace "${input.cwd}" instead; configure repository credentials to populate it.`,
+  };
+}
+
 export async function ensureProjectWorkspacePath(input: {
   cwd: string;
   repoUrl: string | null;
@@ -761,7 +786,11 @@ export async function ensureProjectWorkspacePath(input: {
   }
 
   if (!stats) {
-    await cloneProjectWorkspaceRepo({ repoUrl, cwd, label });
+    try {
+      await cloneProjectWorkspaceRepo({ repoUrl, cwd, label });
+    } catch (error) {
+      return useEmptyProjectWorkspaceAfterRepoAccessFailure({ repoUrl, cwd, label, error });
+    }
     return { cwd, warning: null };
   }
 
@@ -771,7 +800,11 @@ export async function ensureProjectWorkspacePath(input: {
 
   const entries = await fs.readdir(cwd).catch(() => []);
   if (entries.length === 0) {
-    await cloneProjectWorkspaceRepo({ repoUrl, cwd, label });
+    try {
+      await cloneProjectWorkspaceRepo({ repoUrl, cwd, label });
+    } catch (error) {
+      return useEmptyProjectWorkspaceAfterRepoAccessFailure({ repoUrl, cwd, label, error });
+    }
     return { cwd, warning: null };
   }
 
