@@ -25,6 +25,8 @@ import type {
   Project,
   Issue,
   IssueComment,
+  IssueCommentPresentation,
+  IssueCommentMetadata,
   IssueDocument,
   IssueDocumentSummary,
   IssueAssigneeAdapterOverrides,
@@ -1376,7 +1378,14 @@ export interface WorkerToHostMethods {
     result: IssueComment[],
   ];
   "issues.createComment": [
-    params: { issueId: string; body: string; companyId: string; authorAgentId?: string },
+    params: {
+      issueId: string;
+      body: string;
+      companyId: string;
+      authorAgentId?: string;
+      presentation?: IssueCommentPresentation | null;
+      metadata?: IssueCommentMetadata | null;
+    },
     result: IssueComment,
   ];
   "issues.createInteraction": [

@@ -1042,3 +1042,37 @@ export function buildIssueChatMessages(args: {
     })
     .map((entry) => entry.message);
 }
+
+// A phase section groups everything between two "phase_boundary" system
+// notices (see IssueCommentPresentation) — typically a plugin's workflow
+// transition comment — so a ticket spanning many phases (PRD, design, dev,
+// QA...) can be rendered as collapsible sections instead of one flat scroll.
+// The section before the first boundary (if any) has no boundary message.
+export interface ThreadMessageSection {
+  key: string;
+  boundaryMessage: ThreadMessage | null;
+  boundaryTitle: string | null;
+  messages: ThreadMessage[];
+}
+
+function messagePresentation(message: ThreadMessage): { kind?: string; title?: string | null } | null {
+  const custom = (message.metadata as { custom?: Record<string, unknown> } | undefined)?.custom;
+  const presentation = custom?.presentation as { kind?: string; title?: string | null } | null | undefined;
+  return presentation ?? null;
+}
+
+export function groupMessagesIntoPhaseSections(messages: readonly ThreadMessage[]): ThreadMessageSection[] {
+  const sections: ThreadMessageSection[] = [];
+  let current: ThreadMessageSection = { key: "prelude", boundaryMessage: null, boundaryTitle: null, messages: [] };
+  for (const message of messages) {
+    const presentation = messagePresentation(message);
+    if (presentation?.kind === "phase_boundary") {
+      if (current.messages.length > 0) sections.push(current);
+      current = { key: message.id, boundaryMessage: message, boundaryTitle: presentation.title ?? null, messages: [message] };
+    } else {
+      current.messages.push(message);
+    }
+  }
+  if (current.messages.length > 0) sections.push(current);
+  return sections;
+}
