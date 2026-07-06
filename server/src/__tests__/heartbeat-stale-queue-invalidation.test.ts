@@ -12,6 +12,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueRelations,
   issues,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
@@ -325,7 +326,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
     expect(wakeup?.payload).toMatchObject({
       heartbeatSkip: {
-        reason: expect.stringContaining("No assigned todo or in_progress issue"),
+        reason: expect.stringContaining("No assigned todo or in_progress issue is dependency-ready"),
       },
     });
     expect(runRows).toHaveLength(0);
@@ -382,6 +383,129 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       priority: "high",
       assigneeAgentId: agentId,
     });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "schedule",
+    });
+
+    expect(run).not.toBeNull();
+    await waitForCondition(async () => countExecuteCallsForRun(run!.id) > 0);
+
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
+  });
+
+  it("skips generic timer wakes when assigned todo work is blocked by dependencies", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        skipTimerWhenNoActionableWork: true,
+      },
+    });
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Blocking issue",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked assigned work",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "schedule",
+    });
+
+    expect(run).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const [wakeup] = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    const runRows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
+
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.timer.no_actionable_work",
+    });
+    expect(wakeup?.payload).toMatchObject({
+      heartbeatSkip: {
+        reason: expect.stringContaining("No assigned todo or in_progress issue is dependency-ready"),
+      },
+    });
+    expect(runRows).toHaveLength(0);
+  });
+
+  it("allows generic timer wakes when only newer assigned work is dependency-ready", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        skipTimerWhenNoActionableWork: true,
+      },
+    });
+    const blockerId = randomUUID();
+    const blockedIssueIds = Array.from({ length: 50 }, () => randomUUID());
+    const readyIssueId = randomUUID();
+    const oldUpdatedAt = new Date("2026-01-01T00:00:00.000Z");
+    const readyUpdatedAt = new Date("2026-01-02T00:00:00.000Z");
+
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Blocking issue",
+        status: "todo",
+        priority: "high",
+      },
+      ...blockedIssueIds.map((issueId, index) => ({
+        id: issueId,
+        companyId,
+        title: `Blocked assigned work ${index + 1}`,
+        status: "todo" as const,
+        priority: "high" as const,
+        assigneeAgentId: agentId,
+        updatedAt: new Date(oldUpdatedAt.getTime() + index),
+      })),
+      {
+        id: readyIssueId,
+        companyId,
+        title: "Ready assigned work",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+        updatedAt: readyUpdatedAt,
+      },
+    ]);
+    await db.insert(issueRelations).values(
+      blockedIssueIds.map((blockedIssueId) => ({
+        companyId,
+        issueId: blockerId,
+        relatedIssueId: blockedIssueId,
+        type: "blocks",
+      })),
+    );
 
     const run = await heartbeat.wakeup(agentId, {
       source: "timer",
