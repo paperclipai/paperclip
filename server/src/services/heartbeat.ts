@@ -4916,6 +4916,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     ] = await Promise.all([
       // Most recent successful_run_missing_state handoff wake already queued for this
       // issue across ANY source run — used to enforce the per-issue recovery cooldown.
+      // Cancelled wakes never delivered a corrective nudge, so they must not arm
+      // the cooldown (a cancelled prior wake is exactly the requeue case).
       issue
         ? db
           .select({ createdAt: agentWakeupRequests.createdAt })
@@ -4924,6 +4926,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             and(
               eq(agentWakeupRequests.companyId, issue.companyId),
               eq(agentWakeupRequests.reason, FINISH_SUCCESSFUL_RUN_HANDOFF_REASON),
+              notInArray(agentWakeupRequests.status, ["cancelled"]),
               sql`(
                 ${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}
                 or ${agentWakeupRequests.payload} ->> 'taskId' = ${issue.id}
