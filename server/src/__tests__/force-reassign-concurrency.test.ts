@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, afterEach } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import {
   agents,
   companies,
+  createDb,
   forceReassignIdempotency,
   issues,
   securityAuditLog,
@@ -17,9 +18,22 @@ import { forceReassignService } from "../services/force-reassign.js";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
+let cleanupDb: (() => Promise<void>) | null = null;
+
+afterEach(async () => {
+  await cleanupDb?.();
+  cleanupDb = null;
+});
+
+async function makeDb() {
+  const { connectionString, cleanup } = await startEmbeddedPostgresTestDatabase("force-reassign-concurrency-");
+  cleanupDb = cleanup;
+  return createDb(connectionString);
+}
+
 describeEmbeddedPostgres("force-reassign concurrency", () => {
   it("concurrent identical forceReassign calls are all idempotent (no duplicate audit/idempotency rows)", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -82,7 +96,7 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
   });
 
   it("concurrent forceReassign with different keys fails for all-but-one", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -131,17 +145,19 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
   });
 
   it("verifyAuditChain detects a tampered audit record", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
 
     const terminatedId = randomUUID();
     const targetId = randomUUID();
+    const secondTargetId = randomUUID();
     const actorId = randomUUID();
     await db.insert(agents).values([
       { id: terminatedId, companyId, name: "Dead", role: "general", status: "terminated", reportsTo: null },
       { id: targetId, companyId, name: "Target", role: "general", status: "active", reportsTo: null },
+      { id: secondTargetId, companyId, name: "Target2", role: "general", status: "active", reportsTo: null },
       { id: actorId, companyId, name: "CEO", role: "ceo", status: "active", reportsTo: null },
     ]);
 
@@ -164,10 +180,13 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
       actorId,
     });
 
+    // Make target terminated so the issue is orphaned again for the second reassign.
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, targetId));
+
     await svc.forceReassign({
       issueId,
       fromAssigneeId: targetId,
-      toAssigneeId: terminatedId,
+      toAssigneeId: secondTargetId,
       reason: "Second.",
       idempotencyKey: randomUUID(),
       actorId,
@@ -190,17 +209,19 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
   });
 
   it("verifyAuditChain detects a broken prevHash linkage", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
 
     const terminatedId = randomUUID();
     const targetId = randomUUID();
+    const secondTargetId = randomUUID();
     const actorId = randomUUID();
     await db.insert(agents).values([
       { id: terminatedId, companyId, name: "Dead", role: "general", status: "terminated", reportsTo: null },
       { id: targetId, companyId, name: "Target", role: "general", status: "active", reportsTo: null },
+      { id: secondTargetId, companyId, name: "Target2", role: "general", status: "active", reportsTo: null },
       { id: actorId, companyId, name: "CEO", role: "ceo", status: "active", reportsTo: null },
     ]);
 
@@ -223,10 +244,13 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
       actorId,
     });
 
+    // Make target terminated so the issue is orphaned again for the second reassign.
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, targetId));
+
     await svc.forceReassign({
       issueId,
       fromAssigneeId: targetId,
-      toAssigneeId: terminatedId,
+      toAssigneeId: secondTargetId,
       reason: "Second.",
       idempotencyKey: randomUUID(),
       actorId,
@@ -250,17 +274,19 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
   });
 
   it("audit chain hashes are order-dependent: swapping rows breaks validation", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
 
     const terminatedId = randomUUID();
     const targetId = randomUUID();
+    const secondTargetId = randomUUID();
     const actorId = randomUUID();
     await db.insert(agents).values([
       { id: terminatedId, companyId, name: "Dead", role: "general", status: "terminated", reportsTo: null },
       { id: targetId, companyId, name: "Target", role: "general", status: "active", reportsTo: null },
+      { id: secondTargetId, companyId, name: "Target2", role: "general", status: "active", reportsTo: null },
       { id: actorId, companyId, name: "CEO", role: "ceo", status: "active", reportsTo: null },
     ]);
 
@@ -280,10 +306,14 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
       idempotencyKey: randomUUID(),
       actorId,
     });
+
+    // Make target terminated so the issue is orphaned again for the second reassign.
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, targetId));
+
     await svc.forceReassign({
       issueId: issue2,
       fromAssigneeId: terminatedId,
-      toAssigneeId: targetId,
+      toAssigneeId: secondTargetId,
       reason: "Second.",
       idempotencyKey: randomUUID(),
       actorId,
@@ -321,7 +351,7 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
   });
 
   it("idempotency table prevents re-execution even when the original issue is deleted", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -357,6 +387,9 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
     });
     expect(first.wasIdempotent).toBe(false);
 
+    // Delete dependent records first to satisfy FK constraints
+    await db.delete(forceReassignIdempotency).where(eq(forceReassignIdempotency.idempotencyKey, key));
+    await db.delete(securityAuditLog).where(eq(securityAuditLog.issueId, issueId));
     await db.delete(issues).where(eq(issues.id, issueId));
 
     const second = await svc.forceReassign({
