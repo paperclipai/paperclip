@@ -1078,6 +1078,47 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
+  it("skips automation wakeups for terminal issues before inserting a run", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Already-completed continuation",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: { issueId },
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_continuation_needed",
+      },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+    });
+
+    expect(run).toBeNull();
+
+    const [runs, wakeups] = await Promise.all([
+      db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)),
+      db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId)),
+    ]);
+
+    expect(runs).toHaveLength(0);
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({
+      status: "skipped",
+      reason: "issue_terminal_status",
+      error: "issue.closed: done",
+    });
+  });
+
   it("cancels queued runs when the issue reaches a terminal status before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
@@ -1090,41 +1131,55 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       assigneeAgentId: agentId,
     });
 
-    const { runId, wakeupRequestId } = await seedQueuedRun({
-      companyId,
-      agentId,
-      issueId,
-      wakeReason: "issue_assigned",
-    });
+    const seededRuns = await Promise.all([
+      seedQueuedRun({
+        companyId,
+        agentId,
+        issueId,
+        wakeReason: "issue_assigned",
+      }),
+      seedQueuedRun({
+        companyId,
+        agentId,
+        issueId,
+        wakeReason: "issue_assigned",
+      }),
+      seedQueuedRun({
+        companyId,
+        agentId,
+        issueId,
+        wakeReason: "issue_assigned",
+      }),
+    ]);
 
     await heartbeat.resumeQueuedRuns();
 
     await waitForCondition(async () => {
-      const run = await db
+      const runs = await db
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runId))
-        .then((rows) => rows[0] ?? null);
-      return run?.status === "cancelled";
+        .where(eq(heartbeatRuns.companyId, companyId));
+      return runs.length === seededRuns.length && runs.every((run) => run.status === "cancelled");
     });
 
-    const [run, wakeup] = await Promise.all([
+    const [runs, wakeups] = await Promise.all([
       db
-        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
         .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runId))
-        .then((rows) => rows[0] ?? null),
+        .where(eq(heartbeatRuns.companyId, companyId)),
       db
-        .select({ status: agentWakeupRequests.status })
+        .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status })
         .from(agentWakeupRequests)
-        .where(eq(agentWakeupRequests.id, wakeupRequestId))
-        .then((rows) => rows[0] ?? null),
+        .where(eq(agentWakeupRequests.companyId, companyId)),
     ]);
 
-    expect(run?.status).toBe("cancelled");
-    expect(run?.errorCode).toBe("issue_terminal_status");
-    expect(wakeup?.status).toBe("skipped");
-    expect(countExecuteCallsForRun(runId)).toBe(0);
+    expect(runs).toHaveLength(seededRuns.length);
+    expect(wakeups).toHaveLength(seededRuns.length);
+    expect(runs.every((run) => run.status === "cancelled" && run.errorCode === "issue_terminal_status")).toBe(true);
+    expect(wakeups.every((wakeup) => wakeup.status === "skipped")).toBe(true);
+    for (const { runId } of seededRuns) {
+      expect(countExecuteCallsForRun(runId)).toBe(0);
+    }
   });
 
   it("cancels queued max-turn continuations when the issue is no longer in_progress before the run starts", async () => {

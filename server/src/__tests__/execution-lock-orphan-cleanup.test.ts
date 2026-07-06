@@ -90,6 +90,86 @@ describeEmbeddedPostgres("execution lock orphan cleanup", () => {
   }
 
   describe("heartbeat run finalization", () => {
+    it("cancels deferred wakes when the issue is terminal before finalization promotion", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId, "Closer");
+      const issueId = await seedIssue(companyId, {
+        assigneeAgentId: agentId,
+      });
+
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "running",
+        contextSnapshot: { issueId },
+      });
+      await db
+        .update(issues)
+        .set({
+          executionRunId: runId,
+          executionAgentNameKey: "closer",
+          executionLockedAt: new Date(),
+        })
+        .where(eq(issues.id, issueId));
+
+      const deferredWakeId = randomUUID();
+      await db.insert(agentWakeupRequests).values({
+        id: deferredWakeId,
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: {
+          issueId,
+          _paperclipWakeContext: {
+            issueId,
+            wakeReason: "issue_commented",
+          },
+        },
+        status: "deferred_issue_execution",
+      });
+
+      await db
+        .update(issues)
+        .set({
+          status: "done",
+          completedAt: new Date(),
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, issueId));
+
+      await heartbeatService(db).cancelRun(runId);
+
+      const [issueAfter] = await db.select().from(issues).where(eq(issues.id, issueId));
+      const [deferredAfter] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, deferredWakeId));
+      const runsAfter = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+
+      expect(issueAfter).toMatchObject({
+        status: "done",
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+      });
+      expect(deferredAfter).toMatchObject({
+        status: "cancelled",
+        reason: "issue_terminal_status",
+        runId: null,
+      });
+      expect(deferredAfter?.error).toContain("terminal status (done)");
+      expect(runsAfter).toHaveLength(1);
+      expect(runsAfter[0]).toMatchObject({
+        id: runId,
+        status: "cancelled",
+      });
+    });
+
     it("clears execution_run_id on every issue that references the finalized run, not just the run's contextSnapshot issue", async () => {
       // Regression test for the "stale execution lock" bug:
       //
