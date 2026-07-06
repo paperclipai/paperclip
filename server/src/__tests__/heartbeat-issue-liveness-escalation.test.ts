@@ -499,6 +499,85 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     );
   });
 
+  it("falls back to top-level escalation when the recovery target is nested below a child issue", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const rootIssueId = randomUUID();
+
+    await db.insert(issues).values({
+      id: rootIssueId,
+      companyId,
+      title: "Root parent",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db
+      .update(issues)
+      .set({ parentId: rootIssueId })
+      .where(eq(issues.id, blockedIssueId));
+    await db
+      .update(issues)
+      .set({ parentId: blockedIssueId })
+      .where(eq(issues.id, blockerIssueId));
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(1);
+    expect(result.escalationsCreated).toBe(1);
+    expect(result.failed).toBe(0);
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toMatchObject({
+      parentId: null,
+      assigneeAgentId: managerId,
+    });
+  });
+
+  it("falls back to top-level escalation when the preferred parent is at the lane cap", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    await db
+      .update(issues)
+      .set({ parentId: blockedIssueId })
+      .where(eq(issues.id, blockerIssueId));
+    await db.insert(issues).values(
+      Array.from({ length: 9 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        parentId: blockedIssueId,
+        title: `Existing lane ${index + 1}`,
+        status: "done",
+        priority: "medium",
+      })),
+    );
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(1);
+    expect(result.escalationsCreated).toBe(1);
+    expect(result.failed).toBe(0);
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toMatchObject({
+      parentId: null,
+      assigneeAgentId: managerId,
+    });
+
+    const blockers = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, blockedIssueId));
+    expect(blockers.map((row) => row.blockerIssueId).sort()).toEqual(
+      [blockerIssueId, escalations[0]!.id].sort(),
+    );
+  });
+
   it("skips budget-blocked direct owners and assigns recovery to the manager fallback", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain();

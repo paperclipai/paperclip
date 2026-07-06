@@ -24,7 +24,7 @@ import {
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
-import { forbidden, notFound } from "../../errors.js";
+import { forbidden, HttpError, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
@@ -264,6 +264,13 @@ function unwrapDatabaseConflictError(error: unknown) {
     constraint_name?: string;
     message?: string;
   };
+}
+
+function isLivenessEscalationPlacementError(error: unknown): error is HttpError {
+  if (!(error instanceof HttpError) || error.status !== 422) return false;
+  return error.message ===
+    "Execution lanes cannot create sub-issues. Paperclip supports only one child level under a main parent issue." ||
+    /^Parent issue already has the maximum \d+ direct execution lanes\.$/.test(error.message);
 }
 
 function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) {
@@ -3058,45 +3065,68 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryIssue,
       ownerAgentId: ownerSelection.agentId,
     });
-    const escalationParentIssueId = recoveryIssue.parentId ?? recoveryIssue.id;
+    let escalationParentIssueId: string | null = recoveryIssue.parentId ?? recoveryIssue.id;
+    let escalationParentSource: "recovery_issue" | "recovery_issue_parent" | "top_level_fallback" =
+      recoveryIssue.parentId ? "recovery_issue_parent" : "recovery_issue";
+    let escalationParentFallbackReason: string | null = null;
 
-    let escalation: Awaited<ReturnType<typeof issuesSvc.create>>;
-    try {
-      escalation = await issuesSvc.create(issue.companyId, {
-        title: `Unblock liveness incident for ${recoveryIssue.identifier ?? recoveryIssue.title}`,
-        description: buildLivenessEscalationDescription(input.finding),
-        status: "todo",
-        priority: "high",
-        parentId: escalationParentIssueId,
-        projectId: recoveryIssue.projectId,
-        goalId: recoveryIssue.goalId,
-        assigneeAgentId: ownerSelection.agentId,
-        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides(),
-        originKind: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
-        originId: input.finding.incidentKey,
-        originFingerprint: livenessRecoveryLeafFingerprint(input.finding),
-        billingCode: recoveryIssue.billingCode,
-        ...(reuseRecoveryExecutionWorkspace
-          ? { inheritExecutionWorkspaceFromIssueId: recoveryIssue.id }
-          : {
-            executionWorkspaceId: null,
-            executionWorkspacePreference: null,
-            executionWorkspaceSettings: null,
-          }),
-      });
-    } catch (error) {
-      if (!isUniqueLivenessRecoveryConflict(error)) throw error;
+    async function findOpenEscalationAfterCreateConflict() {
       const raced =
         await findOpenLivenessEscalation(issue.companyId, input.finding.incidentKey) ??
         await findOpenLivenessRecoveryIssueForLeaf(input.finding);
-      if (!raced) throw error;
+      if (!raced) throw new Error("Liveness escalation create conflict did not expose an open escalation");
       await ensureIssueBlockedByEscalation({
         issue,
         escalationIssueId: raced.id,
         finding: input.finding,
         runId: input.runId ?? null,
       });
-      return { kind: "existing" as const, escalationIssueId: raced.id };
+      return raced;
+    }
+
+    const buildEscalationInput = (parentId: string | null) => ({
+      title: `Unblock liveness incident for ${recoveryIssue.identifier ?? recoveryIssue.title}`,
+      description: buildLivenessEscalationDescription(input.finding),
+      status: "todo",
+      priority: "high",
+      parentId,
+      projectId: recoveryIssue.projectId,
+      goalId: recoveryIssue.goalId,
+      assigneeAgentId: ownerSelection.agentId,
+      assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides(),
+      originKind: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+      originId: input.finding.incidentKey,
+      originFingerprint: livenessRecoveryLeafFingerprint(input.finding),
+      billingCode: recoveryIssue.billingCode,
+      ...(reuseRecoveryExecutionWorkspace
+        ? { inheritExecutionWorkspaceFromIssueId: recoveryIssue.id }
+        : {
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+          executionWorkspaceSettings: null,
+        }),
+    });
+
+    let escalation: Awaited<ReturnType<typeof issuesSvc.create>>;
+    try {
+      escalation = await issuesSvc.create(issue.companyId, buildEscalationInput(escalationParentIssueId));
+    } catch (error) {
+      if (isUniqueLivenessRecoveryConflict(error)) {
+        const raced = await findOpenEscalationAfterCreateConflict();
+        return { kind: "existing" as const, escalationIssueId: raced.id };
+      }
+      if (!isLivenessEscalationPlacementError(error)) throw error;
+
+      escalationParentFallbackReason = error.message;
+      escalationParentIssueId = null;
+      escalationParentSource = "top_level_fallback";
+      try {
+        escalation = await issuesSvc.create(issue.companyId, buildEscalationInput(null));
+      } catch (fallbackError) {
+        if (!isUniqueLivenessRecoveryConflict(fallbackError)) throw fallbackError;
+        const raced = await findOpenEscalationAfterCreateConflict();
+        return { kind: "existing" as const, escalationIssueId: raced.id };
+      }
     }
 
     await ensureIssueBlockedByEscalation({
@@ -3132,7 +3162,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         escalationIssueId: escalation.id,
         escalationIdentifier: escalation.identifier,
         escalationParentIssueId,
-        escalationParentSource: recoveryIssue.parentId ? "recovery_issue_parent" : "recovery_issue",
+        escalationParentSource,
+        escalationParentFallbackReason,
         dependencyPath: input.finding.dependencyPath,
         ownerSelection: {
           selectedAgentId: ownerSelection.agentId,
@@ -3220,6 +3251,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       obsoleteRecoveryBlockerRelationsRemoved: obsoleteRecoveryCleanup.blockerRelationsRemoved,
       issueIds: [] as string[],
       escalationIssueIds: [] as string[],
+      failed: 0,
+      failedIssueIds: [] as string[],
       retiredRecoveryIssueIds: obsoleteRecoveryCleanup.retiredIssueIds,
     };
 
@@ -3234,10 +3267,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.skipped += 1;
         continue;
       }
-      const escalation = await createIssueGraphLivenessEscalation({
-        finding,
-        runId: opts?.runId ?? null,
-      });
+      let escalation: Awaited<ReturnType<typeof createIssueGraphLivenessEscalation>>;
+      try {
+        escalation = await createIssueGraphLivenessEscalation({
+          finding,
+          runId: opts?.runId ?? null,
+        });
+      } catch (error) {
+        result.failed += 1;
+        result.skipped += 1;
+        result.failedIssueIds.push(finding.issueId);
+        logger.warn({
+          err: error,
+          incidentKey: finding.incidentKey,
+          findingState: finding.state,
+          sourceIssueId: finding.issueId,
+          recoveryIssueId: finding.recoveryIssueId,
+        }, "issue graph liveness escalation failed for finding");
+        continue;
+      }
       if (escalation.kind === "created") {
         result.escalationsCreated += 1;
         result.issueIds.push(finding.issueId);
