@@ -18,7 +18,8 @@ CREATE TABLE "security_audit_log" (
   "event_type" text NOT NULL DEFAULT 'ISSUE_FORCE_REASSIGN',
   "tenant_id" text NOT NULL,
   "issue_id" uuid REFERENCES "issues"("id"),
-  "actor_id" text NOT NULL,
+  "actor_agent_id" uuid,
+  "actor_user_id" text,
   "actor_role" text,
   "actor_scopes" jsonb,
   "from_assignee_id" uuid REFERENCES "agents"("id"),
@@ -46,11 +47,13 @@ CREATE INDEX "security_audit_log_tenant_created_idx" ON "security_audit_log" USI
 CREATE INDEX "security_audit_log_issue_idx" ON "security_audit_log" USING btree ("issue_id");
 --> statement-breakpoint
 CREATE TABLE "force_reassign_idempotency" (
-  "idempotency_key" text PRIMARY KEY NOT NULL,
+  "company_id" text NOT NULL,
+  "idempotency_key" text NOT NULL,
   "issue_id" uuid REFERENCES "issues"("id"),
   "response_body" jsonb,
   "audit_id" uuid REFERENCES "security_audit_log"("id"),
-  "created_at" timestamp with time zone NOT NULL DEFAULT now()
+  "created_at" timestamp with time zone NOT NULL DEFAULT now(),
+  PRIMARY KEY ("company_id", "idempotency_key")
 );
 --> statement-breakpoint
 CREATE INDEX "force_reassign_idempotency_created_idx" ON "force_reassign_idempotency" USING btree ("created_at");

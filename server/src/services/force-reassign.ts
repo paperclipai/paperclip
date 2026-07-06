@@ -39,11 +39,13 @@ type OrphanEvidence = {
 
 type ForceReassignInput = {
   issueId: string;
+  companyId: string;
   fromAssigneeId: string;
   toAssigneeId: string;
   reason: string;
   idempotencyKey: string;
-  actorId: string;
+  actorAgentId: string | null;
+  actorUserId: string | null;
 };
 
 type ForceReassignOutput = {
@@ -51,6 +53,24 @@ type ForceReassignOutput = {
   fromAssigneeId: string;
   toAssigneeId: string;
   wasIdempotent: boolean;
+  /**
+   * The monotonic per-tenant seq of the `security_audit_log` row
+   * this reassign produced. `null` when `wasIdempotent === true`
+   * (no new audit row was written) or when the write failed
+   * mid-transaction. Callers use this to:
+   *
+   *   - Build the `activity.logged` event details so the
+   *     force-reassign volume signal hook ([RAM-979](/RAM/issues/RAM-979),
+   *     [RAM-982](/RAM/issues/RAM-982)) can dedup by seq.
+   *   - Build a deep link to the audit log row.
+   */
+  auditSeq: number | null;
+  /**
+   * The `security_audit_log.id` (UUID) of the audit row this
+   * reassign produced. `null` for the idempotent-replay path.
+   * Used to build the audit-log deep link in the page payload.
+   */
+  auditId: string | null;
 };
 
 export function forceReassignService(db: Db) {
@@ -151,23 +171,31 @@ export function forceReassignService(db: Db) {
   }
 
   async function forceReassign(input: ForceReassignInput): Promise<ForceReassignOutput> {
-    const { issueId, fromAssigneeId, toAssigneeId, reason, idempotencyKey, actorId } = input;
+    const { issueId, companyId, fromAssigneeId, toAssigneeId, reason, idempotencyKey, actorAgentId, actorUserId } = input;
 
     const result = await db.transaction(async (tx) => {
-      // Reserve the idempotency key first. The unique PK guarantees only one
-      // concurrent caller creates the row; conflicting callers read the stored
-      // result and return without performing duplicate side effects.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${companyId}))`);
+
+      await tx.execute(
+        sql`select ${issues.id}, ${issues.companyId} from ${issues} where ${issues.id} = ${issueId} for update`,
+      );
+
       const idempotencyInsert = await tx
         .insert(forceReassignIdempotency)
-        .values({ idempotencyKey, issueId: null })
-        .onConflictDoNothing({ target: forceReassignIdempotency.idempotencyKey })
+        .values({ companyId, idempotencyKey, issueId: null })
+        .onConflictDoNothing({ target: [forceReassignIdempotency.companyId, forceReassignIdempotency.idempotencyKey] })
         .returning();
 
       if (idempotencyInsert.length === 0) {
         const existing = await tx
           .select()
           .from(forceReassignIdempotency)
-          .where(eq(forceReassignIdempotency.idempotencyKey, idempotencyKey))
+          .where(
+            and(
+              eq(forceReassignIdempotency.companyId, companyId),
+              eq(forceReassignIdempotency.idempotencyKey, idempotencyKey),
+            ),
+          )
           .then((rows) => rows[0] ?? null);
 
         return {
@@ -175,11 +203,10 @@ export function forceReassignService(db: Db) {
           fromAssigneeId,
           toAssigneeId,
           wasIdempotent: true,
+          auditSeq: null,
+          auditId: existing?.auditId ?? null,
         };
       }
-      await tx.execute(
-        sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`,
-      );
 
       const issueResult = await tx
         .select()
@@ -196,14 +223,14 @@ export function forceReassignService(db: Db) {
       const targetResult = await tx
         .select({ id: agents.id, status: agents.status, companyId: agents.companyId })
         .from(agents)
-        .where(and(eq(agents.id, toAssigneeId), eq(agents.companyId, issue.companyId)));
+        .where(and(eq(agents.id, toAssigneeId), eq(agents.companyId, companyId)));
 
       const target = targetResult[0];
       if (!target) throw new Error("target_not_found");
-      if (target.companyId !== issue.companyId) throw new Error("tenant_isolation_violation");
+      if (target.companyId !== companyId) throw new Error("tenant_isolation_violation");
       if (!LIVE_STATUSES.has(target.status)) throw new Error("target_not_invokable");
 
-      const { orphaned, evidence } = await isOrphaned(issue.companyId, fromAssigneeId, tx as unknown as typeof db);
+      const { orphaned, evidence } = await isOrphaned(companyId, fromAssigneeId, tx as unknown as typeof db);
 
       if (!orphaned) {
         throw new Error("issue_not_orphaned");
@@ -226,7 +253,7 @@ export function forceReassignService(db: Db) {
             companyId: agents.companyId,
           })
           .from(agents)
-          .where(and(eq(agents.id, chainId), eq(agents.companyId, issue.companyId)));
+          .where(and(eq(agents.id, chainId), eq(agents.companyId, companyId)));
 
         const agentRow = agentRows[0];
         if (!agentRow) break;
@@ -260,7 +287,7 @@ export function forceReassignService(db: Db) {
       const prevHashRows = await tx
         .select({ hash: securityAuditLog.hash })
         .from(securityAuditLog)
-        .where(eq(securityAuditLog.tenantId, issue.companyId))
+        .where(eq(securityAuditLog.tenantId, companyId))
         .orderBy(sql`${securityAuditLog.seq} desc`)
         .limit(1);
 
@@ -269,16 +296,17 @@ export function forceReassignService(db: Db) {
       const maxSeqRows = await tx
         .select({ max: sql<number>`coalesce(max(${securityAuditLog.seq}), 0)` })
         .from(securityAuditLog)
-        .where(eq(securityAuditLog.tenantId, issue.companyId));
+        .where(eq(securityAuditLog.tenantId, companyId));
 
       const nextSeq = (maxSeqRows[0]?.max ?? 0) + 1;
 
       const auditRecord = {
         seq: nextSeq,
         eventType: "ISSUE_FORCE_REASSIGN",
-        tenantId: issue.companyId,
+        tenantId: companyId,
         issueId: issue.id,
-        actorId,
+        actorAgentId: actorAgentId ?? null,
+        actorUserId: actorUserId ?? null,
         actorRole: null,
         actorScopes: ["issue:force_reassign"] as string[],
         fromAssigneeId: fromAssigneeId,
@@ -320,13 +348,20 @@ export function forceReassignService(db: Db) {
           issueId,
           auditId: auditRows[0]?.id ?? null,
         })
-        .where(eq(forceReassignIdempotency.idempotencyKey, idempotencyKey));
+        .where(
+          and(
+            eq(forceReassignIdempotency.companyId, companyId),
+            eq(forceReassignIdempotency.idempotencyKey, idempotencyKey),
+          ),
+        );
 
       return {
         issueId,
         fromAssigneeId,
         toAssigneeId,
         wasIdempotent: false,
+        auditSeq: nextSeq,
+        auditId: auditRows[0]?.id ?? null,
       };
     });
 
@@ -410,7 +445,8 @@ export function forceReassignService(db: Db) {
         eventType: row.eventType,
         tenantId: row.tenantId,
         issueId: row.issueId,
-        actorId: row.actorId,
+        actorAgentId: row.actorAgentId,
+        actorUserId: row.actorUserId,
         actorRole: row.actorRole,
         actorScopes: row.actorScopes,
         fromAssigneeId: row.fromAssigneeId,

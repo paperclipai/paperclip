@@ -7280,13 +7280,17 @@ export function issueRoutes(
 
     try {
       const actorId = req.actor.userId ?? req.actor.agentId ?? "board";
+      const actorAgentId = req.actor.agentId ?? null;
+      const actorUserId = req.actor.userId ?? null;
       const result = await forceReassignSvc.forceReassign({
         issueId: id,
+        companyId: existing.companyId,
         fromAssigneeId: existing.assigneeAgentId ?? "",
         toAssigneeId: targetAssigneeId,
         reason: reason.trim(),
         idempotencyKey,
-        actorId,
+        actorAgentId,
+        actorUserId,
       });
 
       const actor = getActorInfo(req);
@@ -7304,6 +7308,15 @@ export function issueRoutes(
           toAssigneeId: targetAssigneeId,
           reason: reason.trim(),
           wasIdempotent: result.wasIdempotent,
+          // The monotonic per-tenant seq of the security_audit_log
+          // row this reassign produced. Required by the force-reassign
+          // volume signal hook ([RAM-979](/RAM/issues/RAM-979),
+          // [RAM-982](/RAM/issues/RAM-982)) to dedup by seq.
+          // null on the idempotent-replay path (no new audit row).
+          auditSeq: result.auditSeq,
+          // The security_audit_log row UUID; used to build the
+          // deep link in the page payload.
+          auditId: result.auditId,
         },
       });
 
@@ -7312,6 +7325,8 @@ export function issueRoutes(
         fromAssigneeId: result.fromAssigneeId,
         toAssigneeId: result.toAssigneeId,
         wasIdempotent: result.wasIdempotent,
+        auditSeq: result.auditSeq,
+        auditId: result.auditId,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";

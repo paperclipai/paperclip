@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, afterEach } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -62,12 +62,14 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
     const promises = Array.from({ length: 10 }, () =>
       svc.forceReassign({
         issueId,
+        companyId,
         fromAssigneeId: terminatedId,
         toAssigneeId: targetId,
         reason: "Concurrent reassign.",
         idempotencyKey: key,
-        actorId,
-      }),
+        actorAgentId: actorId,
+        actorUserId: null,
+    }),
     );
 
     const results = await Promise.all(promises);
@@ -84,7 +86,12 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
     const idempotentRows = await db
       .select()
       .from(forceReassignIdempotency)
-      .where(eq(forceReassignIdempotency.idempotencyKey, key));
+      .where(
+        and(
+          eq(forceReassignIdempotency.companyId, companyId),
+          eq(forceReassignIdempotency.idempotencyKey, key),
+        ),
+      );
     expect(idempotentRows.length).toBe(1);
 
     const updated = await db
@@ -124,11 +131,13 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
     const promises = Array.from({ length: 5 }, () =>
       svc.forceReassign({
         issueId,
+        companyId,
         fromAssigneeId: terminatedId,
         toAssigneeId: targetId,
         reason: "Race reassign.",
         idempotencyKey: randomUUID(),
-        actorId,
+        actorAgentId: actorId,
+        actorUserId: null,
       }).catch((err) => err),
     );
 
@@ -173,11 +182,13 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
     const svc = forceReassignService(db);
     await svc.forceReassign({
       issueId,
+        companyId,
       fromAssigneeId: terminatedId,
       toAssigneeId: targetId,
       reason: "First.",
       idempotencyKey: randomUUID(),
-      actorId,
+        actorAgentId: actorId,
+        actorUserId: null,
     });
 
     // Make target terminated so the issue is orphaned again for the second reassign.
@@ -185,11 +196,13 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
 
     await svc.forceReassign({
       issueId,
+        companyId,
       fromAssigneeId: targetId,
       toAssigneeId: secondTargetId,
       reason: "Second.",
       idempotencyKey: randomUUID(),
-      actorId,
+        actorAgentId: actorId,
+        actorUserId: null,
     });
 
     const beforeTamper = await svc.verifyAuditChain(companyId);
@@ -242,11 +255,13 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
     const svc = forceReassignService(db);
     await svc.forceReassign({
       issueId,
+        companyId,
       fromAssigneeId: terminatedId,
       toAssigneeId: targetId,
       reason: "First.",
       idempotencyKey: randomUUID(),
-      actorId,
+        actorAgentId: actorId,
+        actorUserId: null,
     });
 
     // Make target terminated so the issue is orphaned again for the second reassign.
@@ -254,11 +269,13 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
 
     await svc.forceReassign({
       issueId,
+        companyId,
       fromAssigneeId: targetId,
       toAssigneeId: secondTargetId,
       reason: "Second.",
       idempotencyKey: randomUUID(),
-      actorId,
+        actorAgentId: actorId,
+        actorUserId: null,
     });
 
     const rows = await db
@@ -309,7 +326,8 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
       toAssigneeId: targetId,
       reason: "First.",
       idempotencyKey: randomUUID(),
-      actorId,
+        actorAgentId: actorId,
+        actorUserId: null,
     });
 
     // Make target terminated so the issue is orphaned again for the second reassign.
@@ -321,7 +339,8 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
       toAssigneeId: secondTargetId,
       reason: "Second.",
       idempotencyKey: randomUUID(),
-      actorId,
+        actorAgentId: actorId,
+        actorUserId: null,
     });
 
     const beforeSwap = await svc.verifyAuditChain(companyId);
@@ -377,6 +396,7 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
     const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
+        companyId,
       companyId,
       title: "Nested JSON Test",
       assigneeAgentId: terminatedId,
@@ -386,11 +406,13 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
     const svc = forceReassignService(db);
     await svc.forceReassign({
       issueId,
+        companyId,
       fromAssigneeId: terminatedId,
       toAssigneeId: targetId,
       reason: "Override with deep chain snapshot.",
       idempotencyKey: randomUUID(),
-      actorId,
+        actorAgentId: actorId,
+        actorUserId: null,
     });
 
     // Chain validation should pass: the fromChainSnapshot has nested objects
@@ -439,11 +461,13 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
 
     const first = await svc.forceReassign({
       issueId,
+        companyId,
       fromAssigneeId: terminatedId,
       toAssigneeId: targetId,
       reason: "First.",
       idempotencyKey: key,
-      actorId,
+      actorAgentId: actorId,
+      actorUserId: null,
     });
     expect(first.wasIdempotent).toBe(false);
 
@@ -451,17 +475,27 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
     // idempotency row so the second call hits the ON CONFLICT path.
     await db.update(forceReassignIdempotency)
       .set({ auditId: null, issueId: null })
-      .where(eq(forceReassignIdempotency.idempotencyKey, key));
-    await db.delete(securityAuditLog).where(eq(securityAuditLog.issueId, issueId));
+      .where(
+        and(
+          eq(forceReassignIdempotency.companyId, companyId),
+          eq(forceReassignIdempotency.idempotencyKey, key),
+        ),
+      );
+    await db.update(securityAuditLog)
+      .set({ issueId: null })
+      .where(eq(securityAuditLog.issueId, issueId));
+    await db.delete(securityAuditLog).where(eq(securityAuditLog.tenantId, companyId));
     await db.delete(issues).where(eq(issues.id, issueId));
 
     const second = await svc.forceReassign({
       issueId,
+        companyId,
       fromAssigneeId: terminatedId,
       toAssigneeId: targetId,
       reason: "Second.",
       idempotencyKey: key,
-      actorId,
+      actorAgentId: actorId,
+      actorUserId: null,
     });
     expect(second.wasIdempotent).toBe(true);
 

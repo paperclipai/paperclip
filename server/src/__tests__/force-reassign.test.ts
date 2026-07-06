@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, afterEach } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -48,6 +48,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
     const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
+        companyId,
       companyId,
       title: "Test Issue",
       assigneeAgentId: assigneeId,
@@ -197,6 +198,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
     const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
+        companyId,
       companyId,
       title: "Orphaned Issue",
       assigneeAgentId: terminatedId,
@@ -207,17 +209,28 @@ describeEmbeddedPostgres("force-reassign service", () => {
     const key = randomUUID();
     const result = await svc.forceReassign({
       issueId,
+        companyId,
       fromAssigneeId: terminatedId,
       toAssigneeId: targetId,
       reason: "Terminated agent, must reassign to restore liveness.",
       idempotencyKey: key,
-      actorId,
+      actorAgentId: actorId,
+      actorUserId: null,
     });
 
     expect(result.issueId).toBe(issueId);
     expect(result.fromAssigneeId).toBe(terminatedId);
     expect(result.toAssigneeId).toBe(targetId);
     expect(result.wasIdempotent).toBe(false);
+    // The audit-row seq + id are threaded back to the caller so the
+    // route can include them in the activity.logged event for the
+    // force-reassign volume signal hook ([RAM-979](/RAM/issues/RAM-979),
+    // [RAM-982](/RAM/issues/RAM-982)). Assert the first reassign on
+    // a fresh tenant yields seq=1 + a non-null auditId.
+    expect(result.auditSeq).toBe(1);
+    expect(result.auditId).not.toBeNull();
+    expect(typeof result.auditId).toBe("string");
+    expect((result.auditId as string).length).toBeGreaterThan(0);
 
     const updated = await db
       .select()
@@ -242,11 +255,18 @@ describeEmbeddedPostgres("force-reassign service", () => {
     expect(auditRows[0].reason).toBe("Terminated agent, must reassign to restore liveness.");
     expect(auditRows[0].prevHash).toBeNull();
     expect(auditRows[0].hash).toBeTruthy();
+    expect(auditRows[0].seq).toBe(1);
+    expect(auditRows[0].id).toBe(result.auditId);
 
     const idempotentRows = await db
       .select()
       .from(forceReassignIdempotency)
-      .where(eq(forceReassignIdempotency.idempotencyKey, key));
+      .where(
+        and(
+          eq(forceReassignIdempotency.companyId, companyId),
+          eq(forceReassignIdempotency.idempotencyKey, key),
+        ),
+      );
 
     expect(idempotentRows.length).toBe(1);
   });
@@ -269,6 +289,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
     const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
+        companyId,
       companyId,
       title: "Orphaned Issue",
       assigneeAgentId: terminatedId,
@@ -279,23 +300,35 @@ describeEmbeddedPostgres("force-reassign service", () => {
 
     const first = await svc.forceReassign({
       issueId,
+        companyId,
       fromAssigneeId: terminatedId,
       toAssigneeId: targetId,
       reason: "First attempt.",
       idempotencyKey: key,
-      actorId,
+      actorAgentId: actorId,
+      actorUserId: null,
     });
     expect(first.wasIdempotent).toBe(false);
+    expect(first.auditSeq).toBe(1);
+    expect(first.auditId).not.toBeNull();
 
     const second = await svc.forceReassign({
       issueId,
+        companyId,
       fromAssigneeId: terminatedId,
       toAssigneeId: targetId,
       reason: "Second attempt.",
       idempotencyKey: key,
-      actorId,
+      actorAgentId: actorId,
+      actorUserId: null,
     });
     expect(second.wasIdempotent).toBe(true);
+    // Idempotent replay: no new audit row, so the caller cannot
+    // thread a fresh seq/id into a new activity.logged event.
+    // The CISO's volume signal hook dedup-by-seq key naturally
+    // falls out of this — the idempotent replay never publishes.
+    expect(second.auditSeq).toBeNull();
+    expect(second.auditId).toBe(first.auditId);
   });
 
   it("forceReassign throws issue_not_orphaned for a healthy issue", async () => {
@@ -318,6 +351,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
     const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
+        companyId,
       companyId,
       title: "Healthy Issue",
       assigneeAgentId: healthyId,
@@ -328,11 +362,13 @@ describeEmbeddedPostgres("force-reassign service", () => {
     await expect(
       svc.forceReassign({
         issueId,
+        companyId,
         fromAssigneeId: healthyId,
         toAssigneeId: targetId,
         reason: "Should not work.",
         idempotencyKey: randomUUID(),
-        actorId,
+        actorAgentId: actorId,
+        actorUserId: null,
       }),
     ).rejects.toThrow("issue_not_orphaned");
   });
@@ -357,6 +393,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
     const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
+        companyId,
       companyId,
       title: "Issue with terminated but chain-valid assignee",
       assigneeAgentId: terminatedId,
@@ -373,11 +410,13 @@ describeEmbeddedPostgres("force-reassign service", () => {
     await expect(
       svc.forceReassign({
         issueId,
+        companyId,
         fromAssigneeId: terminatedId,
         toAssigneeId: targetId,
         reason: "Should be rejected.",
         idempotencyKey: randomUUID(),
-        actorId,
+        actorAgentId: actorId,
+        actorUserId: null,
       }),
     ).rejects.toThrow("issue_not_orphaned");
   });
@@ -402,6 +441,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
     const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
+        companyId,
       companyId,
       title: "Orphaned Issue",
       assigneeAgentId: terminatedId,
@@ -412,11 +452,13 @@ describeEmbeddedPostgres("force-reassign service", () => {
     await expect(
       svc.forceReassign({
         issueId,
+        companyId,
         fromAssigneeId: wrongId,
         toAssigneeId: targetId,
         reason: "Wrong from.",
         idempotencyKey: randomUUID(),
-        actorId,
+        actorAgentId: actorId,
+        actorUserId: null,
       }),
     ).rejects.toThrow("expected_from_mismatch");
   });
@@ -439,6 +481,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
     const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
+        companyId,
       companyId,
       title: "Orphaned Issue",
       assigneeAgentId: terminatedId,
@@ -449,11 +492,13 @@ describeEmbeddedPostgres("force-reassign service", () => {
     await expect(
       svc.forceReassign({
         issueId,
+        companyId,
         fromAssigneeId: terminatedId,
         toAssigneeId: targetTerminatedId,
         reason: "Target is dead too.",
         idempotencyKey: randomUUID(),
-        actorId,
+        actorAgentId: actorId,
+        actorUserId: null,
       }),
     ).rejects.toThrow("target_not_invokable");
   });
@@ -488,7 +533,8 @@ describeEmbeddedPostgres("force-reassign service", () => {
       toAssigneeId: targetId,
       reason: "First override.",
       idempotencyKey: randomUUID(),
-      actorId,
+      actorAgentId: actorId,
+      actorUserId: null,
     });
 
     await svc.forceReassign({
@@ -497,7 +543,8 @@ describeEmbeddedPostgres("force-reassign service", () => {
       toAssigneeId: targetId,
       reason: "Second override.",
       idempotencyKey: randomUUID(),
-      actorId,
+      actorAgentId: actorId,
+      actorUserId: null,
     });
 
     const auditResult = await svc.verifyAuditChain(companyId);
@@ -524,6 +571,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
     const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
+        companyId,
       companyId,
       title: "Orphaned Issue",
       assigneeAgentId: terminatedId,
