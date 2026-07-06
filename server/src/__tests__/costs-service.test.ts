@@ -507,6 +507,83 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
   });
 
+  it("derives the cost summary budget aggregate from live agent seat budgets", async () => {
+    const companyId = randomUUID();
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      budgetMonthlyCents: 0,
+    });
+    await db.insert(agents).values([
+      {
+        id: firstAgentId,
+        companyId,
+        name: "First Seat",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+        budgetMonthlyCents: 10_000,
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "Second Seat",
+        role: "engineer",
+        status: "running",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+        budgetMonthlyCents: 20_000,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        name: "Terminated Seat",
+        role: "engineer",
+        status: "terminated",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+        budgetMonthlyCents: 50_000,
+      },
+    ]);
+    await db.insert(costEvents).values({
+      companyId,
+      agentId: firstAgentId,
+      provider: "openai",
+      biller: "openai",
+      billingType: "metered_api",
+      model: "gpt-5",
+      inputTokens: 10,
+      cachedInputTokens: 0,
+      outputTokens: 2,
+      costCents: 7_500,
+      occurredAt: new Date("2026-04-10T00:00:00.000Z"),
+    });
+
+    const summary = await costs.summary(companyId, {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-30T23:59:59.999Z"),
+    });
+
+    expect(summary).toEqual({
+      companyId,
+      spendCents: 7_500,
+      budgetCents: 30_000,
+      utilizationPercent: 25,
+    });
+  });
+
   it("aggregates issue costs across recursive descendants only", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

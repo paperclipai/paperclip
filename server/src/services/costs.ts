@@ -3,6 +3,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
+import { getCompanyBudgetAggregateCents } from "./budget-aggregates.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 
 export interface CostDateRange {
@@ -122,15 +123,16 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         .where(and(...conditions));
 
       const spendCents = Number(total);
+      const budgetCents = await getCompanyBudgetAggregateCents(db, company);
       const utilization =
-        company.budgetMonthlyCents > 0
-          ? (spendCents / company.budgetMonthlyCents) * 100
+        budgetCents > 0
+          ? (spendCents / budgetCents) * 100
           : 0;
 
       return {
         companyId,
         spendCents,
-        budgetCents: company.budgetMonthlyCents,
+        budgetCents,
         utilizationPercent: Number(utilization.toFixed(2)),
       };
     },
