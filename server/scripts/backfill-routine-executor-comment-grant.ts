@@ -6,13 +6,13 @@
 // Idempotent: re-running is a no-op once the row exists.
 //
 // Usage:
-//   pnpm tsx scripts/backfill-routine-executor-comment-grant.ts \
+//   pnpm tsx server/scripts/backfill-routine-executor-comment-grant.ts \
 //     --company 73419cf3-bd37-4a7c-8782-311ccb47fced \
 //     --agent   2b9152a6-07f6-4ae9-87fa-c824012c9ff6
 
 import { and, eq } from "drizzle-orm";
-import { agents, companies, createDb, principalPermissionGrants } from "../packages/db/src/index.js";
-import { loadConfig } from "../server/src/config.js";
+import { agents, companies, createDb, principalPermissionGrants } from "../../packages/db/src/index.js";
+import { loadConfig } from "../src/config.js";
 
 function parseFlag(name: string): string | null {
   const index = process.argv.indexOf(name);
