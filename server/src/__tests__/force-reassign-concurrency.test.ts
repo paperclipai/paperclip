@@ -196,12 +196,17 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
     expect(beforeTamper.valid).toBe(true);
     expect(beforeTamper.rowCount).toBe(2);
 
-    await db
-      .update(securityAuditLog)
-      .set({ hash: "tampered" })
-      .where(eq(securityAuditLog.tenantId, companyId))
-      .orderBy(sql`${securityAuditLog.seq} desc`)
-      .limit(1);
+    await db.execute(
+      sql`update ${securityAuditLog}
+          set hash = 'tampered'
+          where tenant_id = ${companyId}
+          and id = (
+            select id from ${securityAuditLog}
+            where tenant_id = ${companyId}
+            order by seq desc
+            limit 1
+          )`,
+    );
 
     const afterTamper = await svc.verifyAuditChain(companyId);
     expect(afterTamper.valid).toBe(false);
@@ -364,7 +369,7 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
     await db.insert(agents).values([
       { id: rootId, companyId, name: "CEO", role: "ceo", status: "active", reportsTo: null },
       { id: midId, companyId, name: "Mid", role: "general", status: "active", reportsTo: rootId },
-      { id: terminatedId, companyId, name: "Dead", role: "general", status: "terminated", reportsTo: midId },
+      { id: terminatedId, companyId, name: "Dead", role: "general", status: "terminated", reportsTo: null },
       { id: targetId, companyId, name: "Target", role: "general", status: "active", reportsTo: rootId },
       { id: actorId, companyId, name: "Board", role: "ceo", status: "active", reportsTo: null },
     ]);
@@ -442,8 +447,11 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
     });
     expect(first.wasIdempotent).toBe(false);
 
-    // Delete dependent records first to satisfy FK constraints
-    await db.delete(forceReassignIdempotency).where(eq(forceReassignIdempotency.idempotencyKey, key));
+    // Delete dependent records first to satisfy FK constraints, but keep the
+    // idempotency row so the second call hits the ON CONFLICT path.
+    await db.update(forceReassignIdempotency)
+      .set({ auditId: null, issueId: null })
+      .where(eq(forceReassignIdempotency.idempotencyKey, key));
     await db.delete(securityAuditLog).where(eq(securityAuditLog.issueId, issueId));
     await db.delete(issues).where(eq(issues.id, issueId));
 
@@ -456,5 +464,12 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
       actorId,
     });
     expect(second.wasIdempotent).toBe(true);
+
+    // The second call must not have created any new side effects.
+    const auditRowsAfter = await db
+      .select()
+      .from(securityAuditLog)
+      .where(eq(securityAuditLog.tenantId, companyId));
+    expect(auditRowsAfter.length).toBe(0);
   });
 });

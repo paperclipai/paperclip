@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, afterEach } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   agents,
   companies,
+  createDb,
   forceReassignIdempotency,
   issues,
   securityAuditLog,
@@ -17,9 +18,22 @@ import { forceReassignService } from "../services/force-reassign.js";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
+let cleanupDb: (() => Promise<void>) | null = null;
+
+afterEach(async () => {
+  await cleanupDb?.();
+  cleanupDb = null;
+});
+
+async function makeDb() {
+  const { connectionString, cleanup } = await startEmbeddedPostgresTestDatabase("force-reassign-");
+  cleanupDb = cleanup;
+  return createDb(connectionString);
+}
+
 describeEmbeddedPostgres("force-reassign service", () => {
   it("isOrphaned returns false for an issue with a healthy assignee and valid chain", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -48,7 +62,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
   });
 
   it("isOrphaned returns true for an issue assigned to a missing/deleted agent", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -62,7 +76,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
   });
 
   it("isOrphaned returns true for an issue assigned to a terminated agent with broken chain", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -85,7 +99,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
   });
 
   it("isOrphaned returns false for terminated agent when a valid chain exists", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -105,7 +119,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
   });
 
   it("chainReachesLiveRoot returns false for cyclic reporting chain", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -124,7 +138,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
   });
 
   it("chainReachesLiveRoot returns false when a manager in the chain is terminated", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -145,7 +159,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
   });
 
   it("chainReachesLiveRoot returns true for a valid chain from leaf to root", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -166,7 +180,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
   });
 
   it("forceReassign reassigns an orphaned issue and writes audit + idempotency records", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -238,7 +252,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
   });
 
   it("forceReassign returns idempotent result for the same key", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -285,7 +299,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
   });
 
   it("forceReassign throws issue_not_orphaned for a healthy issue", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -324,7 +338,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
   });
 
   it("forceReassign throws issue_not_orphaned for a terminated assignee with a valid manager chain", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -369,7 +383,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
   });
 
   it("forceReassign throws expected_from_mismatch when assignee doesn't match", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -408,7 +422,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
   });
 
   it("forceReassign throws target_not_invokable when target is terminated", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -445,7 +459,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
   });
 
   it("verifyAuditChain validates a correct hash chain", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
@@ -492,7 +506,7 @@ describeEmbeddedPostgres("force-reassign service", () => {
   });
 
   it("sweepOrphanedIssues flags orphaned issues with liveness status", async () => {
-    const db = await startEmbeddedPostgresTestDatabase();
+    const db = await makeDb();
 
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "TestCo" });
