@@ -755,6 +755,13 @@ function agentConfigRequiresReviewBeforeDone(agent: unknown): boolean {
   ].some((candidate) => recordRequiresReviewBeforeDone(readRecord(candidate)));
 }
 
+function isCLevelAgent(agent: unknown): boolean {
+  const record = readRecord(agent);
+  if (!record) return false;
+  const role = normalizeAgentAuthorityValue(record.role);
+  return /^c[a-z]+o$/.test(role) || (role.startsWith("chief_") && role.endsWith("_officer"));
+}
+
 function hasIssueWorkspaceAuditChange(previous: Record<string, unknown>) {
   return Object.keys(previous).some((key) => ISSUE_WORKSPACE_AUDIT_FIELDS.has(key));
 }
@@ -1014,7 +1021,7 @@ const INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE =
   "invalid_issue_disposition: Agent-authored updates that move an issue to in_review must include a real review path. " +
   "This request would leave the issue in_review without anyone or anything owning the next action. " +
   "Keep working instead of moving to review, create a request_confirmation or ask_user_questions interaction, " +
-  "link or request a pending approval, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
+  "link or request a pending approval, assign a manager/agent reviewer with assigneeAgentId, assign a human reviewer with assigneeUserId, set a typed executionState.currentParticipant through an execution policy, " +
   "or schedule an issue monitor for an external review/check. After creating one of those review paths, retry the status update.";
 
 function executionPrincipalsEqual(
@@ -1598,50 +1605,249 @@ export function issueRoutes(
     );
   }
 
-  async function assertAgentInReviewReviewPath(input: {
+  type DefaultReviewHandoff =
+    | {
+        reviewerType: "agent";
+        reviewerAgentId: string;
+        reviewerSource: string;
+      }
+    | {
+        reviewerType: "user";
+        reviewerUserId: string;
+        reviewerSource: string;
+      };
+
+  async function hasAgentInReviewReviewPath(input: {
     existing: {
       id: string;
-      companyId: string;
-      status: string;
+      assigneeAgentId?: string | null;
       assigneeUserId?: string | null;
       executionState?: unknown;
       monitorNextCheckAt?: Date | null;
     };
     updateFields: Record<string, unknown>;
-    actorType: string;
+    actorAgentId: string | null;
   }) {
-    const nextStatus = typeof input.updateFields.status === "string"
-      ? input.updateFields.status
-      : input.existing.status;
-    if (input.actorType !== "agent" || input.existing.status === "in_review" || nextStatus !== "in_review") return;
-
     const nextAssigneeUserId = input.updateFields.assigneeUserId === undefined
       ? input.existing.assigneeUserId
       : input.updateFields.assigneeUserId;
-    if (typeof nextAssigneeUserId === "string" && nextAssigneeUserId.trim().length > 0) return;
+    if (typeof nextAssigneeUserId === "string" && nextAssigneeUserId.trim().length > 0) return true;
+
+    const nextAssigneeAgentId = input.updateFields.assigneeAgentId === undefined
+      ? input.existing.assigneeAgentId
+      : input.updateFields.assigneeAgentId;
+    if (
+      typeof nextAssigneeAgentId === "string" &&
+      nextAssigneeAgentId.trim().length > 0 &&
+      nextAssigneeAgentId !== input.actorAgentId
+    ) {
+      return true;
+    }
 
     const nextExecutionState = input.updateFields.executionState === undefined
       ? input.existing.executionState
       : input.updateFields.executionState;
-    if (hasExecutionParticipant(nextExecutionState)) return;
+    if (hasExecutionParticipant(nextExecutionState)) return true;
 
     const nextExecutionPolicy = input.updateFields.executionPolicy;
     if (hasScheduledMonitor({
       existingMonitorNextCheckAt: input.existing.monitorNextCheckAt ?? null,
       patchMonitorNextCheckAt: input.updateFields.monitorNextCheckAt,
       executionPolicy: nextExecutionPolicy,
-    })) return;
+    })) return true;
 
     const interactions = await issueThreadInteractionService(db).listForIssue(input.existing.id);
-    if (interactions.some((interaction) => interaction.status === "pending")) return;
+    if (interactions.some((interaction) => interaction.status === "pending")) return true;
 
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(input.existing.id);
-    if (approvals.some((approval) => ACTIVE_REVIEW_APPROVAL_STATUSES.has(String(approval.status)))) return;
+    if (approvals.some((approval) => ACTIVE_REVIEW_APPROVAL_STATUSES.has(String(approval.status)))) return true;
+
+    return false;
+  }
+
+  function buildDefaultReviewHandoffExecutionState(input: {
+    issueExecutionState: unknown;
+    actorAgentId: string;
+    participant: NonNullable<ParsedExecutionState["currentParticipant"]>;
+    instructions: string;
+  }) {
+    const previousState = parseIssueExecutionState(input.issueExecutionState);
+    return {
+      status: "pending",
+      currentStageId: randomUUID(),
+      currentStageIndex: 0,
+      currentStageType: REVIEW_REQUIRED_COMPLETION_STAGE_TYPE,
+      currentParticipant: input.participant,
+      returnAssignee: { type: "agent", agentId: input.actorAgentId, userId: null },
+      reviewRequest: {
+        instructions: input.instructions,
+      },
+      completedStageIds: previousState?.completedStageIds ?? [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+      monitor: previousState?.monitor ?? null,
+    };
+  }
+
+  function isAssignableReviewAgent(agent: unknown, companyId: string) {
+    const record = readRecord(agent);
+    if (!record) return false;
+    if (readNonEmptyString(record.companyId) !== companyId) return false;
+    const status = readNonEmptyString(record.status);
+    return status !== "terminated" && status !== "pending_approval";
+  }
+
+  async function resolveDefaultReviewHandoff(input: {
+    existing: {
+      id: string;
+      companyId: string;
+      parentId?: string | null;
+      assigneeAgentId?: string | null;
+      createdByAgentId?: string | null;
+      createdByUserId?: string | null;
+    };
+    actorAgentId: string;
+    actorAgent: unknown;
+  }): Promise<DefaultReviewHandoff | null> {
+    const parentId = readNonEmptyString(input.existing.parentId);
+    const actorAgentRecord = readRecord(input.actorAgent);
+
+    if (!parentId && isCLevelAgent(actorAgentRecord)) {
+      const createdByUserId = readNonEmptyString(input.existing.createdByUserId);
+      if (createdByUserId) {
+        return {
+          reviewerType: "user",
+          reviewerUserId: createdByUserId,
+          reviewerSource: "top_level_c_level_board_confirmation",
+        };
+      }
+    }
+
+    const reportsTo = readNonEmptyString(actorAgentRecord?.reportsTo);
+    if (reportsTo && reportsTo !== input.actorAgentId) {
+      const manager = await agentsSvc.getById(reportsTo);
+      if (isAssignableReviewAgent(manager, input.existing.companyId)) {
+        return { reviewerType: "agent", reviewerAgentId: reportsTo, reviewerSource: "agent_reports_to" };
+      }
+    }
+
+    if (parentId) {
+      const parent = await svc.getById(parentId);
+      if (parent?.companyId === input.existing.companyId) {
+        const parentAssigneeAgentId = readNonEmptyString(parent.assigneeAgentId);
+        if (parentAssigneeAgentId && parentAssigneeAgentId !== input.actorAgentId) {
+          return { reviewerType: "agent", reviewerAgentId: parentAssigneeAgentId, reviewerSource: "parent_assignee" };
+        }
+        const parentCreatorAgentId = readNonEmptyString(parent.createdByAgentId);
+        if (parentCreatorAgentId && parentCreatorAgentId !== input.actorAgentId) {
+          return { reviewerType: "agent", reviewerAgentId: parentCreatorAgentId, reviewerSource: "parent_creator" };
+        }
+      }
+    }
+
+    const creatorAgentId = readNonEmptyString(input.existing.createdByAgentId);
+    if (creatorAgentId && creatorAgentId !== input.actorAgentId) {
+      return { reviewerType: "agent", reviewerAgentId: creatorAgentId, reviewerSource: "issue_creator" };
+    }
+
+    const currentAssigneeAgentId = readNonEmptyString(input.existing.assigneeAgentId);
+    if (currentAssigneeAgentId && currentAssigneeAgentId !== input.actorAgentId) {
+      return { reviewerType: "agent", reviewerAgentId: currentAssigneeAgentId, reviewerSource: "current_assignee" };
+    }
+
+    return null;
+  }
+
+  async function applyDefaultAgentReviewHandoff(input: {
+    existing: {
+      id: string;
+      companyId: string;
+      status: string;
+      parentId?: string | null;
+      assigneeAgentId?: string | null;
+      assigneeUserId?: string | null;
+      createdByAgentId?: string | null;
+      createdByUserId?: string | null;
+      executionState?: unknown;
+      monitorNextCheckAt?: Date | null;
+    };
+    updateFields: Record<string, unknown>;
+    actor: ReturnType<typeof getActorInfo>;
+  }): Promise<DefaultReviewHandoff | null> {
+    const nextStatus = typeof input.updateFields.status === "string"
+      ? input.updateFields.status
+      : input.existing.status;
+    if (input.actor.actorType !== "agent" || !input.actor.agentId || input.existing.status === "in_review" || nextStatus !== "in_review") {
+      return null;
+    }
+
+    const alreadyHasReviewPath = await hasAgentInReviewReviewPath({
+      existing: input.existing,
+      updateFields: input.updateFields,
+      actorAgentId: input.actor.agentId,
+    });
+    if (alreadyHasReviewPath) return null;
+
+    const actorAgent = await agentsSvc.getById(input.actor.agentId);
+    const reviewer = await resolveDefaultReviewHandoff({
+      existing: input.existing,
+      actorAgentId: input.actor.agentId,
+      actorAgent,
+    });
+    if (!reviewer) return null;
+
+    const instructions =
+      reviewer.reviewerType === "user"
+        ? "This top-level C-level review is awaiting board confirmation. Review the issue evidence and approve by marking it done if acceptable, or request changes if more agent work is needed."
+        : "This issue was moved to review by the executor. Review the work evidence, approve by marking the issue done if it is acceptable, or request changes/reassign if it is not.";
+
+    input.updateFields.status = "in_review";
+    input.updateFields.assigneeAgentId = reviewer.reviewerType === "agent" ? reviewer.reviewerAgentId : null;
+    input.updateFields.assigneeUserId = reviewer.reviewerType === "user" ? reviewer.reviewerUserId : null;
+    input.updateFields.executionState = buildDefaultReviewHandoffExecutionState({
+      issueExecutionState: input.existing.executionState,
+      actorAgentId: input.actor.agentId,
+      participant: reviewer.reviewerType === "agent"
+        ? { type: "agent", agentId: reviewer.reviewerAgentId, userId: null }
+        : { type: "user", agentId: null, userId: reviewer.reviewerUserId },
+      instructions,
+    });
+
+    return reviewer;
+  }
+
+  async function assertAgentInReviewReviewPath(input: {
+    existing: {
+      id: string;
+      companyId: string;
+      status: string;
+      assigneeAgentId?: string | null;
+      assigneeUserId?: string | null;
+      executionState?: unknown;
+      monitorNextCheckAt?: Date | null;
+    };
+    updateFields: Record<string, unknown>;
+    actorType: string;
+    actorAgentId: string | null;
+  }) {
+    const nextStatus = typeof input.updateFields.status === "string"
+      ? input.updateFields.status
+      : input.existing.status;
+    if (input.actorType !== "agent" || input.existing.status === "in_review" || nextStatus !== "in_review") return;
+
+    if (await hasAgentInReviewReviewPath({
+      existing: input.existing,
+      updateFields: input.updateFields,
+      actorAgentId: input.actorAgentId,
+    })) {
+      return;
+    }
 
     throw unprocessable(INVALID_AGENT_IN_REVIEW_DISPOSITION_MESSAGE, {
       code: "invalid_issue_disposition",
       missing: "review_path",
       validReviewPaths: [
+        "manager_or_reviewer_assignee_agent_id",
         "pending_issue_thread_interaction",
         "linked_pending_approval",
         "human_assignee_user_id",
@@ -1835,77 +2041,6 @@ export function issueRoutes(
     return recordRequiresReviewBeforeDone(readRecord(runRecord.contextSnapshot));
   }
 
-  async function resolveReviewRequiredCompletionReviewer(input: {
-    existing: {
-      id: string;
-      companyId: string;
-      parentId?: string | null;
-      assigneeAgentId?: string | null;
-      createdByAgentId?: string | null;
-    };
-    actorAgentId: string;
-    actorAgent: unknown;
-  }): Promise<{ agentId: string; source: string } | null> {
-    const parentId = readNonEmptyString(input.existing.parentId);
-    if (parentId) {
-      const parent = await svc.getById(parentId);
-      if (parent?.companyId === input.existing.companyId) {
-        const parentAssigneeAgentId = readNonEmptyString(parent.assigneeAgentId);
-        if (parentAssigneeAgentId && parentAssigneeAgentId !== input.actorAgentId) {
-          return { agentId: parentAssigneeAgentId, source: "parent_assignee" };
-        }
-        const parentCreatorAgentId = readNonEmptyString(parent.createdByAgentId);
-        if (parentCreatorAgentId && parentCreatorAgentId !== input.actorAgentId) {
-          return { agentId: parentCreatorAgentId, source: "parent_creator" };
-        }
-      }
-    }
-
-    const actorAgentRecord = readRecord(input.actorAgent);
-    const reportsTo = readNonEmptyString(actorAgentRecord?.reportsTo);
-    if (reportsTo && reportsTo !== input.actorAgentId) {
-      return { agentId: reportsTo, source: "reports_to" };
-    }
-
-    const creatorAgentId = readNonEmptyString(input.existing.createdByAgentId);
-    if (creatorAgentId && creatorAgentId !== input.actorAgentId) {
-      return { agentId: creatorAgentId, source: "issue_creator" };
-    }
-
-    const currentAssigneeAgentId = readNonEmptyString(input.existing.assigneeAgentId);
-    if (currentAssigneeAgentId && currentAssigneeAgentId !== input.actorAgentId) {
-      return { agentId: currentAssigneeAgentId, source: "current_assignee" };
-    }
-
-    return null;
-  }
-
-  function buildReviewRequiredCompletionExecutionState(input: {
-    issueExecutionState: unknown;
-    actorAgentId: string;
-    reviewerAgentId: string;
-  }) {
-    const previousState = parseIssueExecutionState(input.issueExecutionState);
-    return {
-      status: "pending",
-      currentStageId: randomUUID(),
-      currentStageIndex: 0,
-      currentStageType: REVIEW_REQUIRED_COMPLETION_STAGE_TYPE,
-      currentParticipant: { type: "agent", agentId: input.reviewerAgentId, userId: null },
-      returnAssignee: { type: "agent", agentId: input.actorAgentId, userId: null },
-      reviewRequest: {
-        instructions: [
-          REVIEW_REQUIRED_COMPLETION_MESSAGE,
-          "Verify the work evidence, approve by marking the issue done if it is acceptable, or request changes/reassign if it is not.",
-        ].join(" "),
-      },
-      completedStageIds: previousState?.completedStageIds ?? [],
-      lastDecisionId: null,
-      lastDecisionOutcome: null,
-      monitor: previousState?.monitor ?? null,
-    };
-  }
-
   async function applyReviewRequiredCompletionGate(input: {
     existing: {
       id: string;
@@ -1915,12 +2050,13 @@ export function issueRoutes(
       assigneeAgentId?: string | null;
       assigneeUserId?: string | null;
       createdByAgentId?: string | null;
+      createdByUserId?: string | null;
       executionState?: unknown;
       workItemType?: string | null;
     };
     updateFields: Record<string, unknown>;
     actor: ReturnType<typeof getActorInfo>;
-  }): Promise<{ actorAgentId: string; reviewerAgentId: string; reviewerSource: string } | null> {
+  }): Promise<({ actorAgentId: string } & DefaultReviewHandoff) | null> {
     const nextStatus = typeof input.updateFields.status === "string"
       ? input.updateFields.status
       : input.existing.status;
@@ -1936,7 +2072,7 @@ export function issueRoutes(
       });
     if (!requiresReview) return null;
 
-    const reviewer = await resolveReviewRequiredCompletionReviewer({
+    const reviewer = await resolveDefaultReviewHandoff({
       existing: input.existing,
       actorAgentId: input.actor.agentId,
       actorAgent,
@@ -1944,10 +2080,11 @@ export function issueRoutes(
     if (!reviewer) {
       throw unprocessable("Review-required agent cannot mark issue done without a reviewer path", {
         code: "review_required_before_done",
-        missing: "reviewer_agent",
+        missing: "reviewer",
         validReviewerPaths: [
-          "parent_assignee_agent",
           "agent_reports_to",
+          "top_level_c_level_board_confirmation",
+          "parent_assignee_agent",
           "issue_creator_agent",
           "different_current_assignee_agent",
         ],
@@ -1955,18 +2092,25 @@ export function issueRoutes(
     }
 
     input.updateFields.status = "in_review";
-    input.updateFields.assigneeAgentId = reviewer.agentId;
-    input.updateFields.assigneeUserId = null;
-    input.updateFields.executionState = buildReviewRequiredCompletionExecutionState({
+    input.updateFields.assigneeAgentId = reviewer.reviewerType === "agent" ? reviewer.reviewerAgentId : null;
+    input.updateFields.assigneeUserId = reviewer.reviewerType === "user" ? reviewer.reviewerUserId : null;
+    input.updateFields.executionState = buildDefaultReviewHandoffExecutionState({
       issueExecutionState: input.existing.executionState,
       actorAgentId: input.actor.agentId,
-      reviewerAgentId: reviewer.agentId,
+      participant: reviewer.reviewerType === "agent"
+        ? { type: "agent", agentId: reviewer.reviewerAgentId, userId: null }
+        : { type: "user", agentId: null, userId: reviewer.reviewerUserId },
+      instructions: [
+        REVIEW_REQUIRED_COMPLETION_MESSAGE,
+        reviewer.reviewerType === "user"
+          ? "This top-level C-level completion needs board confirmation. Verify the work evidence, approve by marking the issue done if it is acceptable, or request changes/reassign if it is not."
+          : "Verify the work evidence, approve by marking the issue done if it is acceptable, or request changes/reassign if it is not.",
+      ].join(" "),
     });
 
     return {
       actorAgentId: input.actor.agentId,
-      reviewerAgentId: reviewer.agentId,
-      reviewerSource: reviewer.source,
+      ...reviewer,
     };
   }
 
@@ -2861,11 +3005,17 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
-    const updateFields = sourceIssueStatus ? { status: sourceIssueStatus } : {};
+    const updateFields: Record<string, unknown> = sourceIssueStatus ? { status: sourceIssueStatus } : {};
+    const defaultReviewHandoff = await applyDefaultAgentReviewHandoff({
+      existing,
+      updateFields,
+      actor,
+    });
     await assertAgentInReviewReviewPath({
       existing,
       updateFields,
       actorType: req.actor.type,
+      actorAgentId: actor.agentId ?? null,
     });
 
     const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
@@ -2894,7 +3044,7 @@ export function issueRoutes(
         const updatedIssue = await svc.update(
           id,
           {
-            status: sourceIssueStatus,
+            ...updateFields,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
           },
@@ -2937,6 +3087,7 @@ export function issueRoutes(
           status: result.issue.status,
           source: "recovery_action_resolution",
           recoveryActionId: result.recoveryAction.id,
+          ...(defaultReviewHandoff ? { defaultReviewHandoff } : {}),
           _previous: {
             status: existing.status,
           },
@@ -2959,6 +3110,7 @@ export function issueRoutes(
         recoveryActionStatus: result.recoveryAction.status,
         outcome: result.recoveryAction.outcome,
         sourceIssueStatus: sourceIssueStatus ?? null,
+        ...(defaultReviewHandoff ? { defaultReviewHandoff } : {}),
         resolutionNote: result.recoveryAction.resolutionNote,
       },
     });
@@ -4114,11 +4266,19 @@ export function issueRoutes(
       updateFields,
       actor,
     });
+    const defaultReviewHandoff = reviewRequiredCompletionGate
+      ? null
+      : await applyDefaultAgentReviewHandoff({
+          existing,
+          updateFields,
+          actor,
+        });
 
     await assertAgentInReviewReviewPath({
       existing,
       updateFields,
       actorType: req.actor.type,
+      actorAgentId: actor.agentId ?? null,
     });
 
     const nextAssigneeAgentId =
@@ -4136,7 +4296,7 @@ export function issueRoutes(
       !!existing.createdByUserId &&
       nextAssigneeUserId === existing.createdByUserId;
 
-    if (assigneeWillChange && !transition.workflowControlledAssignment && !reviewRequiredCompletionGate) {
+    if (assigneeWillChange && !transition.workflowControlledAssignment && !reviewRequiredCompletionGate && !defaultReviewHandoff) {
       if (!isAgentReturningIssueToCreator) {
         await assertCanAssignTasks(req, existing.companyId);
       }
@@ -4358,6 +4518,7 @@ export function issueRoutes(
         ...(cancelledStatusRunId ? { cancelledStatusRunId } : {}),
         ...(workspaceChange ? { workspaceChange } : {}),
         ...(reviewRequiredCompletionGate ? { reviewRequiredCompletionGate } : {}),
+        ...(defaultReviewHandoff ? { defaultReviewHandoff } : {}),
         _previous: hasFieldChanges ? previous : undefined,
         ...summarizeIssueReferenceActivityDetails(
           updateReferenceDiff

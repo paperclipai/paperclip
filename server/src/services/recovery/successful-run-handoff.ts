@@ -317,7 +317,7 @@ export function buildSuccessfulRunHandoffInstruction(input: {
     "1. Mark it `done` (scope complete) or `cancelled` (intentionally stopped).",
     "",
     "**Does someone else need to look at it?**",
-    "2. Move it to `in_review` with a real reviewer path — `executionState.currentParticipant`, a human owner via `assigneeUserId`, a pending issue-thread interaction, or a linked pending approval.",
+    "2. Move it to `in_review` with a real reviewer path — a different live reviewer agent via `assigneeAgentId` (normally `reportsTo`), `executionState.currentParticipant`, a human owner via `assigneeUserId`, a pending issue-thread interaction, or a linked pending approval. Use board/user review by default only for top-level C-level work unless an explicit skill/contract/approval/interaction requires board review.",
     "",
     "**Can it not continue right now?**",
     "3. Mark it `blocked` with first-class blockers (`blockedByIssueIds`) or a clearly named unblock owner/action.",

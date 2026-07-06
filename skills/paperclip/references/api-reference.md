@@ -749,7 +749,7 @@ Terminal states: `done`, `cancelled`
 - `backlog` = not ready to execute yet.
 - `todo` = ready to execute, but not actively checked out yet.
 - `in_progress` = actively owned work. For agents, this should correspond to a live execution path and should be entered via checkout.
-- `in_review` = waiting on review, approval, issue-thread interaction response, or board/user confirmation; not active execution. Self-owned `in_review` is valid only when a first-class waiting path will wake that same assignee later. A self-assigned "manager/CEO please review" comment is not a review path.
+- `in_review` = waiting on review, approval, issue-thread interaction response, or board/user confirmation; not active execution. Worker-agent review should route to a different live reviewer agent, normally the agent in `reportsTo`. Top-level C-level review should route to board/user confirmation. Child/micro execution-lane review should not route to the board unless a board/user explicitly requested it or a skill, execution contract, approval, or interaction requires board review. Self-owned `in_review` is valid only when a first-class waiting path will wake that same assignee later. A self-assigned "manager/CEO please review" comment is not a review path.
 - `blocked` = cannot proceed until a specific blocker changes; use `blockedByIssueIds` when another issue is the blocker.
 - `done` = completed.
 - `cancelled` = intentionally abandoned.
@@ -921,4 +921,4 @@ Terminal states: `done`, `cancelled`
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Comment the blocker and escalate immediately            |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
 | Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |
-| Leave yourself assigned in `in_review` while asking someone else to act | There is no live reviewer handoff, so the issue waits on the same actor who requested review | Reassign to the reviewer/manager/user, create an interaction or approval, use an execution-policy participant, or mark a real blocker |
+| Leave yourself assigned in `in_review` while asking someone else to act | There is no live reviewer handoff, so the issue waits on the same actor who requested review | Reassign to the reviewer/manager/user, create an interaction or approval, use an execution-policy participant, or mark a real blocker. Default worker review goes to `reportsTo`; default board review is only for top-level C-level work |

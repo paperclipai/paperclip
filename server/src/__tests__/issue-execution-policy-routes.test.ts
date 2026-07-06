@@ -31,12 +31,21 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockValidateDelegatedIssueExecutionContract = vi.hoisted(() => vi.fn(() => ({
+  valid: true,
+  warnings: [],
+})));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   listForIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
 }));
 const mockIssueApprovalService = vi.hoisted(() => ({
   listApprovalsForIssue: vi.fn(async () => []),
+}));
+const mockAgentService = vi.hoisted(() => ({
+  getById: vi.fn(async (_id: string): Promise<any> => null),
+  list: vi.fn(async (_companyId?: string): Promise<any[]> => []),
+  resolveByReference: vi.fn(async (_companyId: string, _reference: string): Promise<any> => ({ agent: null, ambiguous: false })),
 }));
 
 function registerModuleMocks() {
@@ -48,9 +57,7 @@ function registerModuleMocks() {
       upsertPolicy: vi.fn(async () => undefined),
     }),
     accessService: () => mockAccessService,
-    agentService: () => ({
-      getById: vi.fn(async () => null),
-    }),
+    agentService: () => mockAgentService,
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
@@ -97,6 +104,7 @@ function registerModuleMocks() {
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
+    validateDelegatedIssueExecutionContract: mockValidateDelegatedIssueExecutionContract,
     workProductService: () => ({}),
     issueVisibilityService: () => ({
       canSeeIssue: vi.fn(async () => true),
@@ -168,12 +176,20 @@ describe("issue execution policy routes", () => {
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
+    mockAgentService.getById.mockResolvedValue(null);
+    mockAgentService.list.mockResolvedValue([]);
+    mockAgentService.resolveByReference.mockResolvedValue({ agent: null, ambiguous: false });
+    mockValidateDelegatedIssueExecutionContract.mockReturnValue({ valid: true, warnings: [] });
     mockIssueService.createChild.mockResolvedValue({
       issue: {
         id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         companyId: "company-1",
         identifier: "PAP-1002",
         title: "Child issue",
+        status: "in_review",
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        assigneeUserId: null,
+        executionContract: null,
       },
       parentBlockerAdded: false,
     });
@@ -212,6 +228,188 @@ describe("issue execution policy routes", () => {
       code: "invalid_issue_disposition",
       missing: "review_path",
     });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("auto-routes worker-authored in_review to the actor reportsTo reviewer", async () => {
+    const workerId = "33333333-3333-4333-8333-333333333333";
+    const managerId = "44444444-4444-4444-8444-444444444444";
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: workerId,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      createdByAgentId: null,
+      parentId: null,
+      identifier: "PAP-1010",
+      title: "Ready for manager review",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === workerId) {
+        return {
+          id: workerId,
+          companyId: "company-1",
+          role: "engineer",
+          status: "idle",
+          reportsTo: managerId,
+          permissions: {},
+        };
+      }
+      if (id === managerId) {
+        return {
+          id: managerId,
+          companyId: "company-1",
+          role: "cto",
+          status: "idle",
+          reportsTo: null,
+          permissions: {},
+        };
+      }
+      return null;
+    });
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: workerId,
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: managerId,
+        assigneeUserId: null,
+        executionState: expect.objectContaining({
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: managerId, userId: null },
+          returnAssignee: { type: "agent", agentId: workerId, userId: null },
+        }),
+      }),
+    );
+  });
+
+  it("auto-routes top-level C-level in_review to board confirmation", async () => {
+    const ctoId = "33333333-3333-4333-8333-333333333333";
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: ctoId,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      createdByAgentId: null,
+      parentId: null,
+      identifier: "PAP-1011",
+      title: "CTO decision review",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockAgentService.getById.mockResolvedValue({
+      id: ctoId,
+      companyId: "company-1",
+      role: "cto",
+      status: "idle",
+      reportsTo: "55555555-5555-4555-8555-555555555555",
+      permissions: {},
+    });
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: ctoId,
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: null,
+        assigneeUserId: "local-board",
+        executionState: expect.objectContaining({
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "user", agentId: null, userId: "local-board" },
+          returnAssignee: { type: "agent", agentId: ctoId, userId: null },
+        }),
+      }),
+    );
+  });
+
+  it("does not auto-route child C-level in_review to the board without an explicit board path", async () => {
+    const ceoId = "33333333-3333-4333-8333-333333333333";
+    const child = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      parentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      assigneeAgentId: ceoId,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      createdByAgentId: null,
+      identifier: "PAP-1012",
+      title: "CEO child lane review",
+      executionPolicy: null,
+      executionState: null,
+    };
+    const parent = {
+      ...child,
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      parentId: null,
+      assigneeAgentId: ceoId,
+      identifier: "PAP-1011",
+      title: "Parent lane",
+    };
+    mockAgentService.getById.mockResolvedValue({
+      id: ceoId,
+      companyId: "company-1",
+      role: "ceo",
+      status: "idle",
+      reportsTo: null,
+      permissions: {},
+    });
+    mockIssueService.getById.mockImplementation(async (id: string) => {
+      if (id === child.id) return child;
+      if (id === parent.id) return parent;
+      return null;
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: ceoId,
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_review" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("invalid_issue_disposition");
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 

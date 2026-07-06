@@ -74,6 +74,8 @@ This is the right state for:
 
 Execution work is paused because the next move belongs to a reviewer or approver, not the current executor.
 
+Default review routing follows the org chain: worker-agent review goes to the agent in `reportsTo`. Top-level C-level review goes to board/user confirmation. Child execution-lane review does not go to the board by default; it needs an explicit board request, skill, execution contract, approval, or interaction.
+
 An external review service can also be a valid review path when the issue keeps an agent assignee and has an active one-shot monitor that will wake that assignee to check the service later.
 
 ### `done`
@@ -240,11 +242,12 @@ A healthy `in_review` issue has at least one valid action path:
 - a typed execution-policy participant who can approve or request changes
 - a pending issue-thread interaction or linked approval waiting for a named responder
 - a human owner via `assigneeUserId`
+- a different live reviewer agent via `assigneeAgentId`, normally the executor's `reportsTo`
 - an active run or queued wake that is expected to process the review state
 - an active one-shot monitor for an external service or async review loop that the assignee owns
 - an open explicit recovery action for an ambiguous review handoff
 
-Agent-assigned `in_review` with no typed participant is only healthy when one of the other paths exists. Assignment to the same agent that produced the handoff is not, by itself, a review path.
+Agent-assigned `in_review` with no typed participant is healthy only when the assignee is a different live reviewer agent or one of the other paths exists. Assignment to the same agent that produced the handoff is not, by itself, a review path.
 
 An `in_review` issue is stalled when it has no typed participant, no pending interaction or approval, no user owner, no active monitor, no active run, no queued wake, and no explicit recovery action. Paperclip should surface that state as recovery work rather than silently completing the issue or leaving blocker chains parked indefinitely.
 
