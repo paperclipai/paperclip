@@ -1379,13 +1379,11 @@ function resolveEffectiveWorkspaceStrategyType(
   config: Record<string, unknown>,
 ): string {
   const workspaceStrategy = parseObject(config.workspaceStrategy);
+  // Default mirrors workspace-runtime.ts realizeExecutionWorkspace: missing type → "project_primary".
+  // agent_default is a metadata-only mode that never creates a worktree, so it keeps "adapter_managed".
   return (
     readNonEmptyString(workspaceStrategy.type) ??
-    (mode === "agent_default"
-      ? "adapter_managed"
-      : mode === "isolated_workspace" || mode === "operator_branch"
-        ? "git_worktree"
-        : "project_primary")
+    (mode === "agent_default" ? "adapter_managed" : "project_primary")
   );
 }
 

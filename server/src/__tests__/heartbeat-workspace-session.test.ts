@@ -610,6 +610,52 @@ describe("assertGitWorktreeBaseWorkspaceReady", () => {
       await fs.rm(cwd, { recursive: true, force: true });
     }
   });
+
+  it("allows isolated workspace with no explicit strategy type even when base is agent_home", async () => {
+    // No workspaceStrategy.type → realizeExecutionWorkspace defaults to project_primary (not git_worktree),
+    // so the guard must not fire. This prevents false workspace_validation_failed for configs that omit type.
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+    await expect(assertGitWorktreeBaseWorkspaceReady({
+      requestedExecutionWorkspaceMode: "isolated_workspace",
+      config: {},
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        projectId: null,
+        projectWorkspaceId: null,
+      },
+      base: {
+        baseCwd: fallbackCwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+    })).resolves.toBeUndefined();
+  });
+
+  it("allows operator-branch workspace with no explicit strategy type even when base is agent_home", async () => {
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+    await expect(assertGitWorktreeBaseWorkspaceReady({
+      requestedExecutionWorkspaceMode: "operator_branch",
+      config: {},
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        projectId: null,
+        projectWorkspaceId: null,
+      },
+      base: {
+        baseCwd: fallbackCwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+    })).resolves.toBeUndefined();
+  });
 });
 
 describe("assertPushCapabilityCheckoutValid", () => {
