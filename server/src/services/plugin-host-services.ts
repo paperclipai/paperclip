@@ -140,7 +140,7 @@ function isPrivateIP(ip: string): boolean {
  * @returns Request-routing metadata used to connect directly to the resolved IP
  *          while preserving the original hostname for HTTP Host and TLS SNI.
  */
-interface ValidatedFetchTarget {
+export interface ValidatedFetchTarget {
   parsedUrl: URL;
   resolvedAddress: string;
   hostHeader: string;
@@ -148,7 +148,7 @@ interface ValidatedFetchTarget {
   useTls: boolean;
 }
 
-async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
+export async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedFetchTarget> {
   let parsed: URL;
   try {
     parsed = new URL(urlString);
@@ -189,6 +189,35 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     // to both private and public addresses.
     const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
     if (safeResults.length === 0) {
+      // Allow a plugin to call back into this same host process on its own
+      // listening port (e.g. a plugin's configured paperclipBaseUrl
+      // defaulting to http://localhost:<port>). This does not widen SSRF
+      // exposure: it matches only the exact port this process is bound to
+      // (not any other loopback service), and the call still goes through
+      // the same host-RPC auth/permission checks as any other request.
+      const loopbackResult = results.find(
+        (entry) => entry.address === "127.0.0.1" || entry.address === "::1",
+      );
+      const ownListenPort = Number(process.env.PAPERCLIP_LISTEN_PORT);
+      const requestPort = parsed.port
+        ? Number(parsed.port)
+        : parsed.protocol === "https:" ? 443 : 80;
+      if (
+        loopbackResult &&
+        Number.isFinite(ownListenPort) &&
+        ownListenPort > 0 &&
+        requestPort === ownListenPort
+      ) {
+        return {
+          parsedUrl: parsed,
+          resolvedAddress: loopbackResult.address,
+          hostHeader,
+          tlsServername: parsed.protocol === "https:" && isIP(originalHostname) === 0
+            ? originalHostname
+            : undefined,
+          useTls: parsed.protocol === "https:",
+        };
+      }
       throw new Error(
         `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
       );
