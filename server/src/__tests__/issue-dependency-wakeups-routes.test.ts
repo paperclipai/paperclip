@@ -552,7 +552,7 @@ describe("issue dependency wakeups in issue routes", () => {
     await vi.waitFor(() => {
       expect(mockIssueService.addComment).toHaveBeenCalledWith(
         "parent-1",
-        expect.stringContaining("Child blocked escalation: `child-1:child-comment-1`"),
+        expect.stringContaining("Child blocked escalation: `child-1:no-blocker`"),
         {},
         expect.objectContaining({
           authorType: "system",
@@ -565,6 +565,9 @@ describe("issue dependency wakeups in issue routes", () => {
                   expect.objectContaining({ type: "key_value", label: "kind", value: "child_blocked_without_first_class_blocker" }),
                   expect.objectContaining({ type: "key_value", label: "childIssueId", value: "child-1" }),
                   expect.objectContaining({ type: "key_value", label: "sourceCommentId", value: "child-comment-1" }),
+                  expect.objectContaining({ type: "key_value", label: "sourceCommentExcerpt", value: "QA failed; FE needs to repair the visible hero." }),
+                  expect.objectContaining({ type: "key_value", label: "dedupeKey", value: "parent-1:child-1:no-blocker" }),
+                  expect.objectContaining({ type: "key_value", label: "cooldownMinutes", value: "60" }),
                 ]),
               }),
             ]),
@@ -575,6 +578,7 @@ describe("issue dependency wakeups in issue routes", () => {
         "ceo-agent",
         expect.objectContaining({
           reason: "child_blocked_without_first_class_blocker",
+          idempotencyKey: "child_blocked_without_first_class_blocker:parent-1:child-1:no-blocker",
           payload: expect.objectContaining({
             issueId: "parent-1",
             childIssueId: "child-1",
@@ -589,6 +593,97 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
+  });
+
+  it("dedupes repeated blocked-child notices for the same child within the cooldown window", async () => {
+    mockIssueService.getById
+      .mockResolvedValueOnce({
+        id: "child-1",
+        companyId: "company-1",
+        identifier: "PAP-202",
+        title: "QA lane",
+        description: null,
+        status: "blocked",
+        priority: "medium",
+        parentId: "parent-1",
+        assigneeAgentId: "cmo-agent",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      })
+      .mockResolvedValueOnce({
+        id: "parent-1",
+        companyId: "company-1",
+        identifier: "PAP-200",
+        title: "Parent delivery",
+        description: null,
+        status: "blocked",
+        priority: "medium",
+        parentId: null,
+        assigneeAgentId: "ceo-agent",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      });
+    mockIssueService.update.mockResolvedValue({
+      id: "child-1",
+      companyId: "company-1",
+      identifier: "PAP-202",
+      title: "QA lane",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: "parent-1",
+      assigneeAgentId: "cmo-agent",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.addComment.mockResolvedValueOnce({
+      id: "child-comment-2",
+      body: "Still blocked on the same missing dependency edge.",
+      issueId: "child-1",
+    });
+    mockIssueService.listComments.mockResolvedValueOnce([
+      {
+        id: "parent-comment-old",
+        body: "Paperclip escalated a blocked child lane.\nChild blocked escalation: `child-1:child-comment-1`",
+        createdAt: new Date(),
+      },
+    ]);
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "cmo-agent",
+      companyId: "company-1",
+      source: "api_key",
+      runId: "run-1",
+    });
+    const res = await request(app)
+      .patch("/api/issues/child-1")
+      .send({ status: "blocked", comment: "Still blocked on the same missing dependency edge." });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockIssueService.listComments).toHaveBeenCalledWith("parent-1", { order: "desc", limit: 50 });
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "ceo-agent",
+        expect.objectContaining({
+          idempotencyKey: "child_blocked_without_first_class_blocker:parent-1:child-1:no-blocker",
+          reason: "child_blocked_without_first_class_blocker",
+        }),
+      );
+    });
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
   });
 
   it("does not escalate a blocked child lane that has a real unresolved blocker", async () => {

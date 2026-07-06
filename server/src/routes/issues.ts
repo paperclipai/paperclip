@@ -232,13 +232,14 @@ function normalizeAgentAuthorityValue(value: unknown) {
 }
 
 const CHILD_BLOCKED_ESCALATION_MARKER = "Child blocked escalation";
+const CHILD_BLOCKED_ESCALATION_COOLDOWN_MS = 60 * 60 * 1000;
 const CHILD_REVIEW_ESCALATION_MARKER = "Child review escalation";
 const REVIEW_REQUIRED_COMPLETION_STAGE_TYPE = "review";
 const REVIEW_REQUIRED_COMPLETION_MESSAGE =
   "This agent is configured to require review before it can mark issue work done.";
 
-function buildChildBlockedEscalationMarker(input: { childIssueId: string; sourceCommentId?: string | null }) {
-  return `${CHILD_BLOCKED_ESCALATION_MARKER}: \`${input.childIssueId}:${input.sourceCommentId ?? "status"}\``;
+function buildChildBlockedEscalationMarker(input: { childIssueId: string }) {
+  return `${CHILD_BLOCKED_ESCALATION_MARKER}: \`${input.childIssueId}:no-blocker\``;
 }
 
 function buildChildReviewEscalationMarker(input: { childIssueId: string; sourceCommentId?: string | null }) {
@@ -247,6 +248,29 @@ function buildChildReviewEscalationMarker(input: { childIssueId: string; sourceC
 
 function issueLabel(issue: { identifier?: string | null; id: string }) {
   return issue.identifier ?? issue.id;
+}
+
+function collapseWhitespace(value: string) {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function childBlockedEscalationCommentMatches(input: {
+  comment: { body: string; createdAt?: Date | string | null };
+  childIssueId: string;
+  now: Date;
+}) {
+  const markerPrefix = `${CHILD_BLOCKED_ESCALATION_MARKER}: \`${input.childIssueId}:`;
+  if (!input.comment.body.includes(markerPrefix)) return false;
+
+  const createdAt =
+    input.comment.createdAt instanceof Date
+      ? input.comment.createdAt
+      : typeof input.comment.createdAt === "string"
+        ? new Date(input.comment.createdAt)
+        : null;
+  if (!createdAt || Number.isNaN(createdAt.getTime())) return true;
+
+  return input.now.getTime() - createdAt.getTime() <= CHILD_BLOCKED_ESCALATION_COOLDOWN_MS;
 }
 
 function buildChildBlockedEscalationComment(input: {
@@ -266,21 +290,11 @@ function buildChildBlockedEscalationComment(input: {
   childComment: { id: string; body: string } | null;
   marker: string;
 }) {
-  const childCommentSnippet = input.childComment?.body.trim().slice(0, 700) ?? "";
   return [
-    "Paperclip escalated a blocked child lane without a first-class blocker.",
-    "",
-    `- Parent issue: ${issueLabel(input.parent)} ${input.parent.title}`,
-    `- Child issue: ${issueLabel(input.child)} ${input.child.title}`,
-    `- Child assignee: ${input.child.assigneeAgentId ?? "unassigned"}`,
-    `- Blocking actor: ${input.actorAgentId ?? "unknown"}`,
-    "- Reason: child lane is `blocked`, but it has no unresolved `blockedByIssueIds`, so there is no automatic dependency wake path.",
-    input.childComment
-      ? `- Source child comment: \`${input.childComment.id}\`${childCommentSnippet ? `\n\n${childCommentSnippet}` : ""}`
-      : "- Source child comment: none",
-    "",
-    "Manager next action: decide the next owner/path now. Reassign the child, create or repair a real blocker issue, create a sibling follow-up lane from the parent, escalate to board/user if an outside decision is needed, or record an intentional manual resolution. Do not leave the parent waiting on a silent blocked child lane.",
-    "",
+    "Paperclip found a blocked child with no blocker edge.",
+    `Child: ${issueLabel(input.child)} ${input.child.title}`,
+    `Parent: ${issueLabel(input.parent)} ${input.parent.title}`,
+    "Action needed: add a real blocker, convert to review/owner decision, reassign, or resolve manually.",
     input.marker,
   ].join("\n");
 }
@@ -2324,7 +2338,6 @@ export function issueRoutes(
         identifier: issue.identifier,
         title: issue.title,
         description: issue.description,
-        executionContract: issue.executionContract ?? null,
         status: issue.status,
         workMode: issue.workMode,
         ...(blockerAttention ? { blockerAttention } : {}),
@@ -4429,14 +4442,19 @@ export function issueRoutes(
               issueAllowsAgentWakeups(parent) &&
               !["done", "cancelled"].includes(parent.status)
             ) {
-              const marker = buildChildBlockedEscalationMarker({
-                childIssueId: issue.id,
-                sourceCommentId: comment?.id ?? null,
-              });
+              const marker = buildChildBlockedEscalationMarker({ childIssueId: issue.id });
               const recentParentComments = await svc.listComments(parent.id, { order: "desc", limit: 50 });
-              const alreadyEscalated = recentParentComments.some((candidate) => candidate.body.includes(marker));
+              const now = new Date();
+              const alreadyEscalated = recentParentComments.some((candidate) =>
+                childBlockedEscalationCommentMatches({
+                  comment: candidate,
+                  childIssueId: issue.id,
+                  now,
+                }),
+              );
               let escalationCommentId: string | null = null;
               if (!alreadyEscalated) {
+                const sourceCommentExcerpt = comment ? collapseWhitespace(comment.body).slice(0, 500) : null;
                 const escalationComment = await svc.addComment(
                   parent.id,
                   buildChildBlockedEscalationComment({
@@ -4469,7 +4487,10 @@ export function issueRoutes(
                             { type: "key_value", label: "childIssueId", value: issue.id },
                             { type: "key_value", label: "childIdentifier", value: issue.identifier ?? issue.id },
                             { type: "key_value", label: "sourceCommentId", value: comment?.id ?? "none" },
+                            { type: "key_value", label: "sourceCommentExcerpt", value: sourceCommentExcerpt ?? "none" },
                             { type: "key_value", label: "actorAgentId", value: actor.agentId ?? "unknown" },
+                            { type: "key_value", label: "dedupeKey", value: `${parent.id}:${issue.id}:no-blocker` },
+                            { type: "key_value", label: "cooldownMinutes", value: "60" },
                           ],
                         },
                       ],
@@ -4503,6 +4524,7 @@ export function issueRoutes(
                 source: "automation",
                 triggerDetail: "system",
                 reason: "child_blocked_without_first_class_blocker",
+                idempotencyKey: `child_blocked_without_first_class_blocker:${parent.id}:${issue.id}:no-blocker`,
                 payload: {
                   issueId: parent.id,
                   childIssueId: issue.id,
