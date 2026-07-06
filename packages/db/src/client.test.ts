@@ -541,4 +541,131 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     },
     20_000,
   );
+
+  it(
+    "replays the run responsible user repair migration when heartbeat run issue refs are identifiers",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const runResponsibleUserRepairHash = await migrationHash(
+          "0131_repair_run_responsible_user_context_refs.sql",
+        );
+
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES ('00000000-0000-0000-0000-000000000130', 'Migration Test Co', 'TST130', now(), now())
+        `);
+        await sql.unsafe(`
+          INSERT INTO "company_memberships" (
+            "id",
+            "company_id",
+            "principal_type",
+            "principal_id",
+            "status",
+            "membership_role",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000131',
+            '00000000-0000-0000-0000-000000000130',
+            'user',
+            'owner-user',
+            'active',
+            'owner',
+            now(),
+            now()
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "agents" ("id", "company_id", "name", "role", "adapter_type", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000132',
+            '00000000-0000-0000-0000-000000000130',
+            'Migration Agent',
+            'general',
+            'process',
+            now(),
+            now()
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issues" (
+            "id",
+            "company_id",
+            "title",
+            "status",
+            "responsible_user_id",
+            "identifier",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000133',
+            '00000000-0000-0000-0000-000000000130',
+            'Identifier referenced issue',
+            'todo',
+            'issue-user',
+            'TST130-1',
+            now(),
+            now()
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "heartbeat_runs" (
+            "id",
+            "company_id",
+            "agent_id",
+            "status",
+            "responsible_user_id",
+            "context_snapshot",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000134',
+            '00000000-0000-0000-0000-000000000130',
+            '00000000-0000-0000-0000-000000000132',
+            'completed',
+            NULL,
+            '{"issueId":"TST130-1"}'::jsonb,
+            now(),
+            now()
+          )
+        `);
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${runResponsibleUserRepairHash}'`,
+        );
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0131_repair_run_responsible_user_context_refs.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const runs = await verifySql.unsafe<{ responsible_user_id: string | null }[]>(`
+          SELECT "responsible_user_id"
+          FROM "heartbeat_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000134'
+        `);
+        expect(runs).toEqual([{ responsible_user_id: "issue-user" }]);
+
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
 });

@@ -7,6 +7,7 @@ import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
+  ADAPTER_AGNOSTIC_KEYS,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   createAgentKeySchema,
   createAgentHireSchema,
@@ -170,6 +171,7 @@ export function agentRoutes(
     "instructionsFilePath",
     "agentsMdPath",
   ] as const;
+  const KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET: ReadonlySet<string> = new Set(KNOWN_INSTRUCTIONS_BUNDLE_KEYS);
 
   const router = Router();
   const svc = agentService(db);
@@ -2871,15 +2873,8 @@ export function agentRoutes(
         // Preserve adapter-agnostic keys (env, cwd, etc.) from the existing config
         // when the adapter type changes. Without this, a PATCH that includes
         // adapterConfig but omits these keys would silently drop them.
-        // `paperclipSkillSync` holds the agent's desired-skill selection, which is
-        // a company-level (adapter-agnostic) choice even though it is persisted
-        // inside the per-adapter config; switching adapters must not wipe it.
-        const ADAPTER_AGNOSTIC_KEYS = [
-          "env", "cwd", "timeoutSec", "graceSec",
-          "promptTemplate", "bootstrapPromptTemplate",
-          "paperclipSkillSync",
-        ] as const;
         for (const key of ADAPTER_AGNOSTIC_KEYS) {
+          if (KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET.has(key)) continue;
           if (rawEffectiveAdapterConfig[key] === undefined && existingAdapterConfig[key] !== undefined) {
             rawEffectiveAdapterConfig = { ...rawEffectiveAdapterConfig, [key]: existingAdapterConfig[key] };
           }
