@@ -39,6 +39,8 @@ Sample recent child execution lanes: do issue details contain a hidden `executio
 
 Legacy fallback: older issues may have a `## Execution Contract` JSON block in the description. Treat that as backward-compatible evidence only. New delegations should use the hidden `executionContract` field; description-only contracts are a remediation gap.
 
+Sample agent-to-agent progress comments that contain `Next owner:`. A healthy company uses first-class handoffs: the named owner resolves to one live agent, the issue assignee/status changes, and a `next_owner_handoff` wake exists. Prose-only "Next owner" text that leaves the issue assigned to the old agent is a structural orchestration gap.
+
 ### 4. QA quality
 
 Do QA comments reference the contract's acceptance checks? Is evidence linked? Any passes where output plausibly solved a different problem than the objective? Does QA ever fail work (a QA lane that never fails anything is a gap, not a strength)?

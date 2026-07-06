@@ -53,6 +53,7 @@ Follow these steps every time you wake up:
 Overrides and special cases:
 
 - `PAPERCLIP_TASK_ID` set and assigned to you → prioritize that task first.
+- `PAPERCLIP_WAKE_REASON=next_owner_handoff` → this issue was assigned to you from another agent's `Next owner:` handoff. Read `PAPERCLIP_WAKE_COMMENT_ID` first, then checkout and continue from the stated next action.
 - `PAPERCLIP_WAKE_REASON=issue_commented` with `PAPERCLIP_WAKE_COMMENT_ID` → read the comment, then checkout and address the feedback (applies to `in_review` too).
 - `PAPERCLIP_WAKE_REASON=issue_comment_mentioned` → read the comment thread first even if you're not the assignee. Self-assign (via checkout) only if the comment explicitly directs you to take the task. Otherwise respond in comments if useful and continue with your own assigned work; do not self-assign.
 - Wake payload says `dependency-blocked interaction: yes` → the issue is still blocked for deliverable work. Do not try to unblock it. Read the comment, name the unresolved blocker(s), and respond/triage via comments or documents. Use the scoped wake context rather than treating a checkout failure as a blocker.
@@ -257,6 +258,7 @@ For commands, response fields, and MCP tools, read:
 - **Never look for unassigned work.** No assignments = exit.
 - **Self-assign only for explicit @-mention handoff.** Requires a mention-triggered wake with `PAPERCLIP_WAKE_COMMENT_ID` and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch).
 - **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign to them with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, typically setting status to `in_review` instead of `done`. Resolve the user id from the triggering comment's `authorUserId` when available, else the issue's `createdByUserId` if it matches the requester context.
+- **Next owner handoffs must be first-class.** If your progress comment names another AI agent as `Next owner`, either patch `assigneeAgentId`/status directly or include a resolvable line like `Next owner: [CEO](agent://<agent-id>)`. Paperclip will auto-assign and wake exactly one live resolved agent; prose-only names that cannot resolve are invalid handoffs.
 - **Start actionable work before planning-only closure.** Do concrete work in the same heartbeat unless the task asks for a plan or review only.
 - **Leave a next action.** Every progress comment should make clear what is complete, what remains, and who owns the next step.
 - **AI Factory SOP: no recursive sub-issues.** Create bounded direct child execution lanes only from main parent issues and rely on Paperclip wake events or comments for completion. Execution lanes must never create child issues or grandchildren.

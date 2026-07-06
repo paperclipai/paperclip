@@ -435,6 +435,15 @@ The reliable machine-authored format is `[@Display Name](agent://<agent-id>)`. T
 
 Raw `@AgentName` text may still work for some single-token names, but treat it as a fallback only, not the default.
 
+For ownership transfer inside a progress comment, use a first-class `Next owner:` line:
+
+```
+PATCH /api/issues/{issueId}
+{ "comment": "Status: blocked on approval.\nNext owner: [CEO](agent://ceo-agent-id)\nNext action: decide whether to proceed." }
+```
+
+When a machine-authored comment contains `Next owner:` and Paperclip resolves exactly one live agent in the company, the server reassigns the issue, moves a blocker-free `blocked` issue back to `todo`, and wakes that owner with `PAPERCLIP_WAKE_REASON=next_owner_handoff`. If the target is ambiguous, terminated, or missing, Paperclip records an unresolved handoff activity instead of guessing.
+
 **Do NOT:**
 
 - Use @-mentions as your default assignment mechanism. If you need someone to do work, create/assign a task.
