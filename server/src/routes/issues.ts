@@ -306,6 +306,20 @@ type NextOwnerHandoffResolution =
       candidateAgentIds: string[];
       ambiguousReferences: string[];
     };
+type NextOwnerHandoffApplied = {
+  agentId: string;
+  agentName: string;
+  commentId: string;
+  sourceLine: string;
+  references: string[];
+  previousAssigneeAgentId: string | null;
+  previousAssigneeUserId: string | null;
+  previousStatus: string;
+  nextStatus: string;
+  unresolvedBlockerCount: number | null;
+};
+type IssueRouteIssue = NonNullable<Awaited<ReturnType<ReturnType<typeof issueService>["getById"]>>>;
+type IssueRouteComment = Awaited<ReturnType<ReturnType<typeof issueService>["addComment"]>>;
 
 const NEXT_OWNER_ROLE_ALIASES = new Map<string, string>([
   ["ceo", "ceo"],
@@ -415,6 +429,147 @@ async function resolveNextOwnerHandoff(input: {
 
 function normalizeAgentAuthorityValue(value: unknown) {
   return typeof value === "string" ? value.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
+}
+
+async function applyNextOwnerHandoff(input: {
+  db: Db;
+  issue: IssueRouteIssue;
+  comment: IssueRouteComment;
+  actor: ReturnType<typeof getActorInfo>;
+  issues: Pick<ReturnType<typeof issueService>, "getDependencyReadiness" | "update">;
+  agents: NextOwnerAgentResolver;
+  visibility: Pick<ReturnType<typeof issueVisibilityService>, "ensureCollaborator">;
+}): Promise<{ issue: IssueRouteIssue; applied: NextOwnerHandoffApplied | null }> {
+  if (
+    input.actor.actorType !== "agent" ||
+    !issueAllowsAgentWakeups(input.issue) ||
+    isClosedIssueStatus(input.issue.status)
+  ) {
+    return { issue: input.issue, applied: null };
+  }
+
+  const nextOwnerResolution = await resolveNextOwnerHandoff({
+    companyId: input.issue.companyId,
+    body: input.comment.body,
+    agents: input.agents,
+  });
+
+  if (nextOwnerResolution.kind === "resolved") {
+    const targetAgent = nextOwnerResolution.agent;
+    let unresolvedBlockerCount: number | null = null;
+    let nextStatus: string | undefined;
+    if (input.issue.status === "blocked") {
+      const readiness = await input.issues.getDependencyReadiness(input.issue.id);
+      unresolvedBlockerCount = readiness.unresolvedBlockerCount;
+      if (readiness.unresolvedBlockerCount === 0) {
+        nextStatus = "todo";
+      }
+    }
+
+    const needsAssigneeChange =
+      input.issue.assigneeAgentId !== targetAgent.id || input.issue.assigneeUserId !== null;
+    const needsStatusChange = nextStatus !== undefined && nextStatus !== input.issue.status;
+    if (!needsAssigneeChange && !needsStatusChange) {
+      return { issue: input.issue, applied: null };
+    }
+
+    const previousAssigneeAgentId = input.issue.assigneeAgentId;
+    const previousAssigneeUserId = input.issue.assigneeUserId;
+    const previousStatus = input.issue.status;
+    const handoffPatch: {
+      assigneeAgentId: string;
+      assigneeUserId: null;
+      actorAgentId: string | null;
+      actorUserId: null;
+      status?: string;
+    } = {
+      assigneeAgentId: targetAgent.id,
+      assigneeUserId: null,
+      actorAgentId: input.actor.agentId ?? null,
+      actorUserId: null,
+    };
+    if (nextStatus) {
+      handoffPatch.status = nextStatus;
+    }
+
+    const handoffIssue = await input.issues.update(input.issue.id, handoffPatch);
+    if (!handoffIssue) {
+      return { issue: input.issue, applied: null };
+    }
+
+    await input.visibility.ensureCollaborator({
+      companyId: handoffIssue.companyId,
+      issueId: handoffIssue.id,
+      principalType: "agent",
+      principalId: targetAgent.id,
+      reason: "assignment",
+      addedByUserId: null,
+      addedByAgentId: input.actor.agentId,
+    });
+
+    const applied: NextOwnerHandoffApplied = {
+      agentId: targetAgent.id,
+      agentName: targetAgent.name,
+      commentId: input.comment.id,
+      sourceLine: nextOwnerResolution.handoff.line,
+      references: nextOwnerResolution.references,
+      previousAssigneeAgentId,
+      previousAssigneeUserId,
+      previousStatus,
+      nextStatus: handoffIssue.status,
+      unresolvedBlockerCount,
+    };
+
+    await logActivity(input.db, {
+      companyId: handoffIssue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "issue.next_owner_handoff_applied",
+      entityType: "issue",
+      entityId: handoffIssue.id,
+      details: {
+        identifier: handoffIssue.identifier,
+        commentId: input.comment.id,
+        sourceLine: nextOwnerResolution.handoff.line,
+        references: nextOwnerResolution.references,
+        previousAssigneeAgentId,
+        previousAssigneeUserId,
+        nextAssigneeAgentId: targetAgent.id,
+        nextAssigneeAgentName: targetAgent.name,
+        previousStatus,
+        nextStatus: handoffIssue.status,
+        unresolvedBlockerCount,
+      },
+    });
+
+    return { issue: handoffIssue, applied };
+  }
+
+  if (nextOwnerResolution.kind === "unresolved") {
+    await logActivity(input.db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: input.actor.agentId,
+      runId: input.actor.runId,
+      action: "issue.next_owner_handoff_unresolved",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        commentId: input.comment.id,
+        reason: nextOwnerResolution.reason,
+        references: nextOwnerResolution.references,
+        candidateAgentIds: nextOwnerResolution.candidateAgentIds,
+        ambiguousReferences: nextOwnerResolution.ambiguousReferences,
+        sourceLines: nextOwnerResolution.handoffs.map((handoff) => handoff.line),
+      },
+    });
+  }
+
+  return { issue: input.issue, applied: null };
 }
 
 const CHILD_BLOCKED_ESCALATION_MARKER = "Child blocked escalation";
@@ -4378,18 +4533,7 @@ export function issueRoutes(
       }
     }
 
-    let nextOwnerHandoffApplied: {
-      agentId: string;
-      agentName: string;
-      commentId: string;
-      sourceLine: string;
-      references: string[];
-      previousAssigneeAgentId: string | null;
-      previousAssigneeUserId: string | null;
-      previousStatus: string;
-      nextStatus: string;
-      unresolvedBlockerCount: number | null;
-    } | null = null;
+    let nextOwnerHandoffApplied: NextOwnerHandoffApplied | null = null;
     let comment = null;
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
@@ -4463,122 +4607,19 @@ export function issueRoutes(
         source: "issue.comment",
       });
 
-      if (actor.actorType === "agent" && issueAllowsAgentWakeups(issue) && !isClosedIssueStatus(issue.status)) {
-        const nextOwnerResolution = await resolveNextOwnerHandoff({
-          companyId: issue.companyId,
-          body: comment.body,
-          agents: agentsSvc,
-        });
-
-        if (nextOwnerResolution.kind === "resolved") {
-          const targetAgent = nextOwnerResolution.agent;
-          let unresolvedBlockerCount: number | null = null;
-          let nextStatus: string | undefined;
-          if (issue.status === "blocked") {
-            const readiness = await svc.getDependencyReadiness(issue.id);
-            unresolvedBlockerCount = readiness.unresolvedBlockerCount;
-            if (readiness.unresolvedBlockerCount === 0) {
-              nextStatus = "todo";
-            }
-          }
-
-          const needsAssigneeChange =
-            issue.assigneeAgentId !== targetAgent.id || issue.assigneeUserId !== null;
-          const needsStatusChange = nextStatus !== undefined && nextStatus !== issue.status;
-
-          if (needsAssigneeChange || needsStatusChange) {
-            const previousAssigneeAgentId = issue.assigneeAgentId;
-            const previousAssigneeUserId = issue.assigneeUserId;
-            const previousStatus = issue.status;
-            const handoffPatch: {
-              assigneeAgentId: string;
-              assigneeUserId: null;
-              actorAgentId: string | null;
-              actorUserId: null;
-              status?: string;
-            } = {
-              assigneeAgentId: targetAgent.id,
-              assigneeUserId: null,
-              actorAgentId: actor.agentId ?? null,
-              actorUserId: null,
-            };
-            if (nextStatus) {
-              handoffPatch.status = nextStatus;
-            }
-
-            const handoffIssue = await svc.update(issue.id, handoffPatch);
-            if (handoffIssue) {
-              issue = handoffIssue;
-              issueResponse = { ...issueResponse, ...handoffIssue };
-              await visibility.ensureCollaborator({
-                companyId: issue.companyId,
-                issueId: issue.id,
-                principalType: "agent",
-                principalId: targetAgent.id,
-                reason: "assignment",
-                addedByUserId: null,
-                addedByAgentId: actor.agentId,
-              });
-
-              nextOwnerHandoffApplied = {
-                agentId: targetAgent.id,
-                agentName: targetAgent.name,
-                commentId: comment.id,
-                sourceLine: nextOwnerResolution.handoff.line,
-                references: nextOwnerResolution.references,
-                previousAssigneeAgentId,
-                previousAssigneeUserId,
-                previousStatus,
-                nextStatus: issue.status,
-                unresolvedBlockerCount,
-              };
-
-              await logActivity(db, {
-                companyId: issue.companyId,
-                actorType: "system",
-                actorId: "system",
-                agentId: actor.agentId,
-                runId: actor.runId,
-                action: "issue.next_owner_handoff_applied",
-                entityType: "issue",
-                entityId: issue.id,
-                details: {
-                  identifier: issue.identifier,
-                  commentId: comment.id,
-                  sourceLine: nextOwnerResolution.handoff.line,
-                  references: nextOwnerResolution.references,
-                  previousAssigneeAgentId,
-                  previousAssigneeUserId,
-                  nextAssigneeAgentId: targetAgent.id,
-                  nextAssigneeAgentName: targetAgent.name,
-                  previousStatus,
-                  nextStatus: issue.status,
-                  unresolvedBlockerCount,
-                },
-              });
-            }
-          }
-        } else if (nextOwnerResolution.kind === "unresolved") {
-          await logActivity(db, {
-            companyId: issue.companyId,
-            actorType: "system",
-            actorId: "system",
-            agentId: actor.agentId,
-            runId: actor.runId,
-            action: "issue.next_owner_handoff_unresolved",
-            entityType: "issue",
-            entityId: issue.id,
-            details: {
-              identifier: issue.identifier,
-              commentId: comment.id,
-              reason: nextOwnerResolution.reason,
-              references: nextOwnerResolution.references,
-              candidateAgentIds: nextOwnerResolution.candidateAgentIds,
-              ambiguousReferences: nextOwnerResolution.ambiguousReferences,
-              sourceLines: nextOwnerResolution.handoffs.map((handoff) => handoff.line),
-            },
-          });
-        }
+      const nextOwnerHandoff = await applyNextOwnerHandoff({
+        db,
+        issue,
+        comment,
+        actor,
+        issues: svc,
+        agents: agentsSvc,
+        visibility,
+      });
+      issue = nextOwnerHandoff.issue;
+      if (nextOwnerHandoff.applied) {
+        issueResponse = { ...issueResponse, ...issue };
+        nextOwnerHandoffApplied = nextOwnerHandoff.applied;
       }
 
     } else if (updateReferenceSummaryAfter) {
@@ -6048,6 +6089,7 @@ export function issueRoutes(
     let reopened = false;
     let reopenFromStatus: string | null = null;
     let interruptedRunId: string | null = null;
+    let nextOwnerHandoffApplied: NextOwnerHandoffApplied | null = null;
     let currentIssue = issue;
     const commentReferenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
 
@@ -6209,6 +6251,18 @@ export function issueRoutes(
       source: "issue.comment",
     });
 
+    const nextOwnerHandoff = await applyNextOwnerHandoff({
+      db,
+      issue: currentIssue,
+      comment,
+      actor,
+      issues: svc,
+      agents: agentsSvc,
+      visibility,
+    });
+    currentIssue = nextOwnerHandoff.issue;
+    nextOwnerHandoffApplied = nextOwnerHandoff.applied;
+
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
@@ -6217,7 +6271,49 @@ export function issueRoutes(
       const actorIsAgent = actor.actorType === "agent";
       const selfComment = actorIsAgent && actor.actorId === assigneeId;
       const skipWake = selfComment || isClosed;
-      if (allowDirectAgentWakeups && assigneeId && (reopened || !skipWake)) {
+      if (allowDirectAgentWakeups && nextOwnerHandoffApplied && assigneeId) {
+        wakeups.set(assigneeId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "next_owner_handoff",
+          idempotencyKey: `next_owner_handoff:${currentIssue.id}:${nextOwnerHandoffApplied.commentId}:${assigneeId}`,
+          payload: {
+            issueId: currentIssue.id,
+            commentId: nextOwnerHandoffApplied.commentId,
+            mutation: "next_owner_handoff",
+            assignmentHandoff: true,
+            sourceLine: nextOwnerHandoffApplied.sourceLine,
+            references: nextOwnerHandoffApplied.references,
+            previousAssigneeAgentId: nextOwnerHandoffApplied.previousAssigneeAgentId,
+            previousAssigneeUserId: nextOwnerHandoffApplied.previousAssigneeUserId,
+            previousStatus: nextOwnerHandoffApplied.previousStatus,
+            nextStatus: nextOwnerHandoffApplied.nextStatus,
+            unresolvedBlockerCount: nextOwnerHandoffApplied.unresolvedBlockerCount,
+            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+            ...(interruptedRunId ? { interruptedRunId } : {}),
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: currentIssue.id,
+            taskId: currentIssue.id,
+            commentId: nextOwnerHandoffApplied.commentId,
+            wakeCommentId: nextOwnerHandoffApplied.commentId,
+            wakeReason: "next_owner_handoff",
+            source: "issue.next_owner_handoff",
+            assignmentHandoff: true,
+            sourceLine: nextOwnerHandoffApplied.sourceLine,
+            references: nextOwnerHandoffApplied.references,
+            previousAssigneeAgentId: nextOwnerHandoffApplied.previousAssigneeAgentId,
+            previousAssigneeUserId: nextOwnerHandoffApplied.previousAssigneeUserId,
+            previousStatus: nextOwnerHandoffApplied.previousStatus,
+            nextStatus: nextOwnerHandoffApplied.nextStatus,
+            unresolvedBlockerCount: nextOwnerHandoffApplied.unresolvedBlockerCount,
+            ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+            ...(interruptedRunId ? { interruptedRunId } : {}),
+          },
+        });
+      } else if (allowDirectAgentWakeups && assigneeId && (reopened || !skipWake)) {
         if (reopened) {
           wakeups.set(assigneeId, {
             source: "automation",

@@ -468,4 +468,86 @@ describe("issue update comment wakeups", () => {
       }),
     );
   });
+
+  it("applies pure agent Next owner comments as assignment handoffs and wakes the resolved owner", async () => {
+    const authorAgentId = "44444444-4444-4444-8444-444444444444";
+    const ceoAgentId = "55555555-5555-4555-8555-555555555555";
+    const existing = makeIssue({
+      status: "blocked",
+      assigneeAgentId: authorAgentId,
+      assigneeUserId: null,
+      parentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    });
+    const commentBody = [
+      "Status: waiting on a business decision.",
+      "Next owner: Chrysler_Codex (or CEO/Chrysler)",
+      "Next action: choose the canonical doc ID.",
+    ].join("\n");
+    const afterHandoff = makeIssue({
+      ...existing,
+      status: "todo",
+      assigneeAgentId: ceoAgentId,
+      assigneeUserId: null,
+    });
+
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(afterHandoff);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-next-owner-only",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: commentBody,
+    });
+    const ceoAgent = { id: ceoAgentId, companyId: "company-1", name: "CEO", status: "running", role: "ceo" };
+    mockAgentService.list.mockResolvedValue([ceoAgent]);
+    mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, raw: string) => ({
+      ambiguous: false,
+      agent: raw === "CEO" ? ceoAgent : null,
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: authorAgentId,
+      companyId: "company-1",
+      runId: "run-next-owner-comment",
+    }))
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({
+        body: commentBody,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      existing.id,
+      expect.objectContaining({
+        assigneeAgentId: ceoAgentId,
+        assigneeUserId: null,
+        actorAgentId: authorAgentId,
+        status: "todo",
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ceoAgentId,
+      expect.objectContaining({
+        source: "assignment",
+        reason: "next_owner_handoff",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          commentId: "comment-next-owner-only",
+          mutation: "next_owner_handoff",
+          assignmentHandoff: true,
+          previousAssigneeAgentId: authorAgentId,
+          previousStatus: "blocked",
+          nextStatus: "todo",
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: existing.id,
+          wakeReason: "next_owner_handoff",
+          source: "issue.next_owner_handoff",
+          assignmentHandoff: true,
+        }),
+      }),
+    );
+  });
 });

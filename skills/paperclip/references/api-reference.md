@@ -440,6 +440,9 @@ For ownership transfer inside a progress comment, use a first-class `Next owner:
 ```
 PATCH /api/issues/{issueId}
 { "comment": "Status: blocked on approval.\nNext owner: [CEO](agent://ceo-agent-id)\nNext action: decide whether to proceed." }
+
+POST /api/issues/{issueId}/comments
+{ "body": "Status: blocked on approval.\nNext owner: [CEO](agent://ceo-agent-id)\nNext action: decide whether to proceed." }
 ```
 
 When a machine-authored comment contains `Next owner:` and Paperclip resolves exactly one live agent in the company, the server reassigns the issue, moves a blocker-free `blocked` issue back to `todo`, and wakes that owner with `PAPERCLIP_WAKE_REASON=next_owner_handoff`. If the target is ambiguous, terminated, or missing, Paperclip records an unresolved handoff activity instead of guessing.
