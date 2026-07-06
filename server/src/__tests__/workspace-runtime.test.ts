@@ -1500,6 +1500,99 @@ describe("realizeExecutionWorkspace", () => {
     );
   }, 30_000);
 
+  it("reinstalls worktree-local pnpm dependencies when package metadata changes", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-stale-deps-"));
+    const baseRoot = path.join(tempRoot, "base");
+    const worktreeRoot = path.join(tempRoot, "worktree");
+    const fakeBin = path.join(tempRoot, "bin");
+    const fakePnpmPath = path.join(fakeBin, "pnpm");
+    const scriptPath = path.join(worktreeRoot, "provision-worktree.sh");
+    const installLogPath = path.join(tempRoot, "install.log");
+
+    try {
+      await fs.mkdir(path.join(baseRoot, "node_modules"), { recursive: true });
+      await fs.mkdir(path.join(worktreeRoot, "node_modules"), { recursive: true });
+      await fs.mkdir(path.join(worktreeRoot, "ui"), { recursive: true });
+      await fs.mkdir(fakeBin, { recursive: true });
+      await fs.copyFile(provisionWorktreeScriptPath, scriptPath);
+      await fs.chmod(scriptPath, 0o755);
+      await fs.writeFile(
+        path.join(worktreeRoot, "package.json"),
+        JSON.stringify(
+          {
+            name: "workspace-root",
+            private: true,
+            packageManager: "pnpm@9.15.4",
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(worktreeRoot, "pnpm-lock.yaml"),
+        ["lockfileVersion: '9.0'", "", "importers:", "  .: {}", ""].join("\n"),
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(worktreeRoot, "ui", "package.json"),
+        JSON.stringify({ name: "ui", private: true, dependencies: {} }, null, 2),
+        "utf8",
+      );
+      await fs.writeFile(
+        fakePnpmPath,
+        [
+          "#!/bin/sh",
+          "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"--help\" ]; then",
+          "  exit 1",
+          "fi",
+          "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--prod=false\" ] && [ \"$3\" = \"--frozen-lockfile\" ]; then",
+          "  mkdir -p \"$PWD/node_modules\"",
+          `  echo "install:$*" >> ${JSON.stringify(installLogPath)}`,
+          "  exit 0",
+          "fi",
+          "exit 1",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await fs.chmod(fakePnpmPath, 0o755);
+
+      const runScript = () => execFileAsync(scriptPath, [], {
+        cwd: worktreeRoot,
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+          PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
+          PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
+        },
+      });
+
+      await runScript();
+      await runScript();
+      await expect(fs.readFile(installLogPath, "utf8")).resolves.toBe(
+        "install:install --prod=false --frozen-lockfile\n",
+      );
+
+      await fs.writeFile(
+        path.join(worktreeRoot, "ui", "package.json"),
+        JSON.stringify(
+          { name: "ui", private: true, dependencies: { "@xterm/addon-fit": "^0.11.0" } },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+
+      await runScript();
+      await expect(fs.readFile(installLogPath, "utf8")).resolves.toBe(
+        "install:install --prod=false --frozen-lockfile\ninstall:install --prod=false --frozen-lockfile\n",
+      );
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("fails instead of writing an unseeded fallback config when worktree init errors after CLI detection succeeds", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-provision-fail-"));
     const baseRoot = path.join(tempRoot, "base");
@@ -1686,11 +1779,11 @@ describe("realizeExecutionWorkspace", () => {
           "if [ \"$1\" = \"paperclipai\" ] && [ \"$2\" = \"--help\" ]; then",
           "  exit 1",
           "fi",
-          "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--frozen-lockfile\" ]; then",
+          "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--prod=false\" ] && [ \"$3\" = \"--frozen-lockfile\" ]; then",
           "  echo \"ERR_PNPM_OUTDATED_LOCKFILE\" >&2",
           "  exit 1",
           "fi",
-          "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--no-frozen-lockfile\" ]; then",
+          "if [ \"$1\" = \"install\" ] && [ \"$2\" = \"--prod=false\" ] && [ \"$3\" = \"--no-frozen-lockfile\" ]; then",
           "  mkdir -p \"$PWD/node_modules\"",
           "  : > \"$PWD/node_modules/.retry-success\"",
           "  exit 0",

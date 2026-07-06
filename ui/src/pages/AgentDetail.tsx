@@ -38,6 +38,7 @@ import { MarkdownBody } from "../components/MarkdownBody";
 import { CopyText } from "../components/CopyText";
 import { EntityRow } from "../components/EntityRow";
 import { MembershipAction } from "../components/MembershipAction";
+import { StarToggle } from "../components/StarToggle";
 import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentActionButtons } from "../components/AgentActionButtons";
@@ -101,6 +102,7 @@ import { buildPermissionsForTrustPreset, getTrustPreset } from "../lib/trust-pol
 import { redactHomePathUserSegments, redactHomePathUserSegmentsInValue } from "@paperclipai/adapter-utils";
 import { agentRouteRef } from "../lib/utils";
 import {
+  isStarred,
   resourceMembershipState,
   useResourceMembershipMutation,
   useResourceMemberships,
@@ -954,6 +956,9 @@ export function AgentDetail() {
     membershipMutation.isPending &&
     membershipMutation.variables?.resourceType === "agent" &&
     membershipMutation.variables.resourceId === agent.id;
+  const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
+  const agentStarPending = agentMembershipPending && membershipMutation.variables?.starred !== undefined;
+  const agentJoinLeavePending = agentMembershipPending && membershipMutation.variables?.starred === undefined;
 
   return (
     <div className={cn("space-y-6", isMobile && showConfigActionBar && "pb-24")}>
@@ -965,8 +970,8 @@ export function AgentDetail() {
           <MembershipAction
             compact
             state="left"
-            pending={agentMembershipPending}
-            pendingState={agentMembershipPending ? membershipMutation.variables?.state : null}
+            pending={agentJoinLeavePending}
+            pendingState={agentJoinLeavePending ? membershipMutation.variables?.state : null}
             resourceName={agent.name}
             onJoin={() => membershipMutation.mutate({
               resourceType: "agent",
@@ -1031,29 +1036,43 @@ export function AgentDetail() {
             </p>
           </div>
         </div>
-        <AgentActionButtons
-          agent={agent}
-          companyId={resolvedCompanyId}
-          assignLabel="Assign Task"
-          runLabel="Run Heartbeat"
-          actionsDisabled={agentAction.isPending}
-          workActionsDisabled={hasInvalidOrgChain}
-          workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
-          onActionError={setActionError}
-        >
-          {mobileLiveRun && (
-            <Link
-              to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}
-              className="sm:hidden flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
-            >
-              <span className="relative flex h-2 w-2">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
-              </span>
-              <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">Live</span>
-            </Link>
-          )}
-        </AgentActionButtons>
+        <div className="flex items-center gap-2 shrink-0">
+          <StarToggle
+            size="button"
+            starred={agentStarred}
+            pending={agentStarPending}
+            resourceName={agent.name}
+            onToggle={(next) => membershipMutation.mutate({
+              resourceType: "agent",
+              resourceId: agent.id,
+              resourceName: agent.name,
+              starred: next,
+            })}
+          />
+          <AgentActionButtons
+            agent={agent}
+            companyId={resolvedCompanyId}
+            assignLabel="Assign Task"
+            runLabel="Run Heartbeat"
+            actionsDisabled={agentAction.isPending}
+            workActionsDisabled={hasInvalidOrgChain}
+            workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
+            onActionError={setActionError}
+          >
+            {mobileLiveRun && (
+              <Link
+                to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}
+                className="sm:hidden flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
+              >
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                </span>
+                <span className="text-[11px] font-medium text-blue-600 dark:text-blue-400">Live</span>
+              </Link>
+            )}
+          </AgentActionButtons>
+        </div>
       </div>
 
       {!urlRunId && (

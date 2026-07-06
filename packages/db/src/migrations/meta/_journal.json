@@ -925,6 +925,13 @@
       "when": 1783025424120,
       "tag": "0132_issue_comment_derived_attribution_fast",
       "breakpoints": true
+    },
+    {
+      "idx": 133,
+      "version": "7",
+      "when": 1783034521000,
+      "tag": "0133_resource_membership_stars",
+      "breakpoints": true
     }
   ]
 }
