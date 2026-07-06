@@ -188,7 +188,7 @@ export function PluginSettings() {
           <div className="space-y-8">
             <section className="space-y-5">
               <h2 className="text-base font-semibold">About</h2>
-              <div className="grid gap-8 lg:grid-cols-[minmax(0,1.4fr)_minmax(220px,0.8fr)]">
+              <div className="grid gap-8 lg:grid-cols-(--gtc-52)">
                 <div className="space-y-2">
                   <h3 className="text-sm font-medium text-muted-foreground">Description</h3>
                   <p className="text-sm leading-6 text-foreground/90">{pluginDescription}</p>
@@ -275,7 +275,7 @@ export function PluginSettings() {
         </TabsContent>
 
         <TabsContent value="status" className="space-y-6">
-          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_320px]">
+          <div className="grid gap-6 xl:grid-cols-(--gtc-39)">
             <div className="space-y-6">
               <Card>
                 <CardHeader>

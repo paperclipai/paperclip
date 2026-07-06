@@ -199,8 +199,8 @@ export function EnvironmentVariableRow({
   return (
     <div
       className={cn(
-        "group/row grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-1.5 gap-y-1 rounded-md px-1 py-1",
-        "@[40rem]/env:grid-cols-[minmax(160px,2fr)_minmax(240px,3fr)_32px] @[40rem]/env:items-center",
+        "group/row grid grid-cols-(--gtc-13) items-start gap-x-1.5 gap-y-1 rounded-md px-1 py-1",
+        "@[40rem]/env:grid-cols-(--gtc-14) @[40rem]/env:items-center",
         isDirty && "bg-amber-500/[0.06] ring-1 ring-amber-500/20",
       )}
     >
@@ -419,7 +419,7 @@ export function EnvironmentVariableRow({
                   ) : null}
                 </div>
               ) : (
-                <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto]">
+                <div className="grid min-w-0 flex-1 grid-cols-(--gtc-13)">
                   {userSecretsEnabled ? (
                     <select
                       aria-label="User secret"

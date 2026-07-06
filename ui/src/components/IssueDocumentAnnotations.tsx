@@ -344,7 +344,7 @@ export function IssueDocumentAnnotations({
         className="relative min-w-0"
         data-testid={`document-annotation-body-${doc.key}`}
       >
-        <div className="relative z-[1]">
+        <div className="relative z-(--z-1)">
           {children}
         </div>
         {!historicalPreview && doc.latestRevisionId ? (
@@ -368,7 +368,7 @@ export function IssueDocumentAnnotations({
       {panelOpen && !isMobile && renderedDesktopPanelFrame ? (
         <div
           data-testid="document-annotation-panel-anchor"
-          className="pointer-events-auto fixed z-[60] hidden lg:block"
+          className="pointer-events-auto fixed z-(--z-60) hidden lg:block"
           style={{
             left: renderedDesktopPanelFrame.left,
             maxHeight: renderedDesktopPanelFrame.maxHeight,

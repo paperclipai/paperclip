@@ -1523,7 +1523,7 @@ export function Secrets() {
                 >
                   <div
                     role="row"
-                    className="grid grid-cols-[minmax(12rem,2.4fr)_minmax(5.25rem,0.75fr)_minmax(7rem,1fr)_minmax(5rem,0.7fr)_2.75rem] items-center gap-3 bg-muted/40 px-3 py-2 text-xs uppercase tracking-wide text-muted-foreground"
+                    className="grid grid-cols-(--gtc-54) items-center gap-3 bg-muted/40 px-3 py-2 text-xs uppercase tracking-wide text-muted-foreground"
                   >
                     <div role="columnheader" className="font-medium">Secret</div>
                     <div role="columnheader" className="font-medium">Status</div>
@@ -1548,7 +1548,7 @@ export function Secrets() {
                           key={row.id}
                           role="row"
                           className={cn(
-                            "grid cursor-pointer grid-cols-[minmax(12rem,2.4fr)_minmax(5.25rem,0.75fr)_minmax(7rem,1fr)_minmax(5rem,0.7fr)_2.75rem] items-center gap-3 border-b border-border/60 px-3 py-3 hover:bg-accent/40",
+                            "grid cursor-pointer grid-cols-(--gtc-54) items-center gap-3 border-b border-border/60 px-3 py-3 hover:bg-accent/40",
                             row.kind === "company" && selectedSecretId === row.secret.id && "bg-accent/60",
                             row.kind === "user" && selectedDefinitionId === row.definition.id && "bg-accent/60",
                           )}
@@ -3668,7 +3668,7 @@ function SecretDetailsTab({
 
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-[8rem_minmax(0,1fr)] gap-3 py-2">
+    <div className="grid grid-cols-(--gtc-55) gap-3 py-2">
       <dt className="text-(length:--fs-11) uppercase tracking-wide text-muted-foreground">{label}</dt>
       <dd className="min-w-0 text-foreground">{children}</dd>
     </div>

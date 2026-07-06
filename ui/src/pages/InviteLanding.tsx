@@ -537,7 +537,7 @@ export function InviteLandingPage() {
   return (
     <div className="min-h-screen bg-zinc-950 px-6 py-12 text-zinc-100">
       <div className="mx-auto max-w-5xl">
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
+        <div className="grid gap-6 lg:grid-cols-(--gtc-36)">
           <section className={`${panelClassName} space-y-6`}>
             <div className="flex items-start gap-4">
               <InviteCompanyLogo

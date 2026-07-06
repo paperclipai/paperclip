@@ -102,7 +102,7 @@ export function BudgetPolicyCard({
       <div className={cn("h-2 overflow-hidden rounded-full", isPlain ? "bg-border/70" : "bg-muted/70")}>
         <div
           className={cn(
-            "h-full rounded-full transition-[width,background-color] duration-200",
+            "h-full rounded-full transition-(--tp-width-background-color) duration-200",
             summary.status === "hard_stop"
               ? "bg-red-400"
               : summary.status === "warning"

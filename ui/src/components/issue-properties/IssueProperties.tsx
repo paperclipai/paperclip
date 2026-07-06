@@ -1060,7 +1060,7 @@ export function IssueProperties({
           </span>
         ) : null}
       </div>
-      <dl className="grid grid-cols-[6rem_1fr] gap-y-1">
+      <dl className="grid grid-cols-(--gtc-15) gap-y-1">
         {scheduledRetryReasonLabel ? (
           <>
             <dt className="text-muted-foreground">Reason</dt>

@@ -480,7 +480,7 @@ export function ProjectWorkspaceDetail() {
       </Tabs>
 
       {activeTab === "configuration" ? (
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.9fr)]">
+      <div className="grid gap-6 lg:grid-cols-(--gtc-53)">
         <div className="space-y-6">
           <div className="rounded-2xl border border-border bg-card p-5">
             <p className="max-w-2xl text-sm text-muted-foreground">
@@ -531,7 +531,7 @@ export function ProjectWorkspaceDetail() {
                 </select>
               </Field>
 
-              <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
+              <div className="grid gap-4 md:grid-cols-(--gtc-13)">
                 <Field label="Local path">
                   <input
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"

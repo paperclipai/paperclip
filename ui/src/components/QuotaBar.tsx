@@ -47,7 +47,7 @@ export function QuotaBar({
         {/* fill */}
         <div
           className={cn(
-            "absolute inset-y-0 left-0 transition-[width,background-color] duration-150",
+            "absolute inset-y-0 left-0 transition-(--tp-width-background-color) duration-150",
             fillColor(clampedPct),
           )}
           style={{ width: `${clampedPct}%` }}

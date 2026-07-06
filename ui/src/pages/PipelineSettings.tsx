@@ -1074,7 +1074,7 @@ function FieldRow({
   children: ReactNode;
 }) {
   return (
-    <div className="grid gap-2 py-3 text-sm sm:grid-cols-[10rem_minmax(0,1fr)] sm:items-center">
+    <div className="grid gap-2 py-3 text-sm sm:grid-cols-(--gtc-41) sm:items-center">
       <div className="font-medium text-muted-foreground">{label}</div>
       <div className="min-w-0">{children}</div>
     </div>
@@ -1249,7 +1249,7 @@ function StageEventsList({
       {events.map((event) => (
         <div
           key={event.id}
-          className="grid min-h-11 grid-cols-[6rem_1fr] items-center gap-3 border-b border-border/70 px-3 py-2 text-sm last:border-b-0"
+          className="grid min-h-11 grid-cols-(--gtc-15) items-center gap-3 border-b border-border/70 px-3 py-2 text-sm last:border-b-0"
         >
           <span className="text-xs text-muted-foreground" title={new Date(event.createdAt).toLocaleString()}>
             {relativeTime(event.createdAt)}
@@ -2585,7 +2585,7 @@ export function PipelineSettings() {
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
-        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
+        <div className="grid gap-3 md:grid-cols-(--gtc-13) md:items-end">
           <div className="space-y-3">
             <label className="block space-y-1.5 text-sm font-medium">
               <span className="sr-only">Pipeline name</span>
@@ -2854,7 +2854,7 @@ export function PipelineSettings() {
                               ] as const).map(([label, value, setValue, emptyLabel]) => (
                                 <div
                                   key={label}
-                                  className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[minmax(0,1fr)_240px]"
+                                  className="grid grid-cols-1 items-center gap-2 sm:grid-cols-(--gtc-42)"
                                 >
                                   <span className="text-sm font-medium">{label}</span>
                                   <select
@@ -2870,13 +2870,13 @@ export function PipelineSettings() {
                                   </select>
                                 </div>
                               ))}
-                              <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[minmax(0,1fr)_240px]">
+                              <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-(--gtc-42)">
                                 <span className="text-sm font-medium">Ask for a note when requesting changes</span>
                                 <div className="sm:justify-self-start">
                                   <ToggleSwitch checked={requireRequestChangesReason} onCheckedChange={setRequireRequestChangesReason} />
                                 </div>
                               </div>
-                              <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[minmax(0,1fr)_240px]">
+                              <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-(--gtc-42)">
                                 <span className="text-sm font-medium">Ask for a note when declining</span>
                                 <div className="sm:justify-self-start">
                                   <ToggleSwitch checked={requireRejectReason} onCheckedChange={setRequireRejectReason} />
@@ -2941,7 +2941,7 @@ export function PipelineSettings() {
                         <>
                           <div className="divide-y divide-border border-y border-border">
                             <FieldRow label="Project context">
-                              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                              <div className="grid gap-2 sm:grid-cols-(--gtc-43)">
                                 <InlineEntitySelector
                                   value={stageProjectId}
                                   options={projectOptions}
@@ -3007,7 +3007,7 @@ export function PipelineSettings() {
 
                             {selectedAutomationProject && selectedProjectSupportsExecutionWorkspace ? (
                               <FieldRow label="Execution workspace">
-                                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                                <div className="grid gap-2 sm:grid-cols-(--gtc-43)">
                                   <select
                                     aria-label="Execution workspace mode"
                                     value={stageExecutionWorkspacePreference || "shared_workspace"}
@@ -3228,7 +3228,7 @@ export function PipelineSettings() {
                                   Advance when the last child is done
                                 </span>
                               </div>
-                              <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[5rem_240px]">
+                              <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-(--gtc-44)">
                                 <span className="text-sm font-medium text-muted-foreground">Move to</span>
                                 <select
                                   aria-label="Move to stage when children finish"

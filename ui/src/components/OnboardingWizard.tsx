@@ -783,7 +783,7 @@ export function OnboardingWizard() {
           {step !== 0 && (
           <div
             className={cn(
-              "w-full flex flex-col overflow-y-auto transition-[width] duration-500 ease-in-out",
+              "w-full flex flex-col overflow-y-auto transition-(--tp-width) duration-500 ease-in-out",
               step === 1 || step === 2 ? "md:w-1/2" : "md:w-full"
             )}
           >
@@ -1719,7 +1719,7 @@ export function OnboardingWizard() {
               name + mission steps) */}
           <div
             className={cn(
-              "hidden md:block overflow-hidden bg-(--hex-1d1d1d) transition-[width,opacity] duration-500 ease-in-out",
+              "hidden md:block overflow-hidden bg-(--hex-1d1d1d) transition-(--tp-width-opacity) duration-500 ease-in-out",
               step === 1 || step === 2 ? "w-1/2 opacity-100" : "w-0 opacity-0"
             )}
           >

@@ -2397,7 +2397,7 @@ function StaleDispositionWarningMetadataRow({ row }: { row: SystemNoticeMetadata
   })();
 
   return (
-    <div className="grid grid-cols-[7.5rem_minmax(0,1fr)] gap-2 text-xs leading-5">
+    <div className="grid grid-cols-(--gtc-7) gap-2 text-xs leading-5">
       {label}
       <div className="min-w-0 break-words text-foreground/80">{value}</div>
     </div>
@@ -3852,7 +3852,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       data-testid="issue-chat-composer"
       data-pending-work-mode={pendingWorkMode}
       className={cn(
-        "relative rounded-md border border-border/70 bg-background/95 p-(--sz-15px) shadow-(--shadow-extract-4) backdrop-blur transition-[border-color,background-color,box-shadow] duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-(--shadow-extract-5)",
+        "relative rounded-md border border-border/70 bg-background/95 p-(--sz-15px) shadow-(--shadow-extract-4) backdrop-blur transition-(--tp-border-color-background-color-box-shadow) duration-150 supports-[backdrop-filter]:bg-background/85 dark:shadow-(--shadow-extract-5)",
         pendingWorkModeMeta.classes.container,
         isDragOver && "border-primary/45 bg-background shadow-(--shadow-extract-7)",
       )}
@@ -3865,7 +3865,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
       {isDragOver && canAcceptFiles ? (
         <div
           data-testid="issue-chat-composer-drop-overlay"
-          className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-sm border border-dashed border-primary/55 bg-background/75 px-4 py-3 text-center shadow-sm backdrop-blur-[2px] dark:bg-background/65"
+          className="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-sm border border-dashed border-primary/55 bg-background/75 px-4 py-3 text-center shadow-sm backdrop-blur-(--blur-2px) dark:bg-background/65"
         >
           <div className="flex max-w-md items-center gap-3 rounded-md bg-background/80 px-3 py-2 text-left shadow-sm ring-1 ring-border/60">
             <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">

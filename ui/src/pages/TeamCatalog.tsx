@@ -1872,7 +1872,7 @@ export function StepPreview({
             const visible = Boolean(visibleSecretKeys[formKey]);
             const missingRequired = input.requirement === "required" && (secretValues[formKey] ?? "").trim().length === 0;
             return (
-              <li key={formKey} className="grid gap-2 px-3 py-2 text-sm sm:grid-cols-[minmax(0,1fr)_minmax(14rem,18rem)] sm:items-center">
+              <li key={formKey} className="grid gap-2 px-3 py-2 text-sm sm:grid-cols-(--gtc-56) sm:items-center">
                 <div className="flex min-w-0 items-center gap-2">
                   <KeyRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <span className="font-mono text-xs uppercase tracking-wide">{input.key}</span>

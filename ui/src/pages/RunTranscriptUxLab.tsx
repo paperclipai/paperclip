@@ -201,7 +201,7 @@ export function RunTranscriptUxLab() {
   return (
     <div className="space-y-6">
       <div className="overflow-hidden rounded-2xl border border-border/70 bg-(image:--gradient-extract-6) shadow-(--shadow-extract-22)">
-        <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+        <div className="grid gap-6 lg:grid-cols-(--gtc-19)">
           <aside className="border-b border-border/60 bg-background/75 p-5 lg:border-b-0 lg:border-r">
             <div className="mb-5">
               <div className="inline-flex items-center gap-2 rounded-full border border-cyan-500/25 bg-cyan-500/[0.08] px-3 py-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_24) text-cyan-700 dark:text-cyan-300">

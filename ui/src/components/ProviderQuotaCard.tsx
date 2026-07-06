@@ -205,7 +205,7 @@ export function ProviderQuotaCard({
                       </div>
                       <div className="h-2 w-full border border-border overflow-hidden">
                         <div
-                          className="h-full bg-primary/60 transition-[width] duration-150"
+                          className="h-full bg-primary/60 transition-(--tp-width) duration-150"
                           style={{ width: `${barPct}%` }}
                         />
                       </div>
@@ -242,7 +242,7 @@ export function ProviderQuotaCard({
                 <>
                   <div className="h-1.5 w-full border border-border overflow-hidden">
                     <div
-                      className="h-full bg-primary/60 transition-[width] duration-150"
+                      className="h-full bg-primary/60 transition-(--tp-width) duration-150"
                       style={{ width: `${subSharePct}%` }}
                     />
                   </div>
@@ -286,13 +286,13 @@ export function ProviderQuotaCard({
                     {/* token share bar */}
                     <div className="relative h-2 w-full border border-border overflow-hidden">
                       <div
-                        className="absolute inset-y-0 left-0 bg-primary/60 transition-[width] duration-150"
+                        className="absolute inset-y-0 left-0 bg-primary/60 transition-(--tp-width) duration-150"
                         style={{ width: `${tokenPct}%` }}
                         title={`${Math.round(tokenPct)}% of provider tokens`}
                       />
                       {/* cost share overlay — narrower, opaque, shows relative cost weight */}
                       <div
-                        className="absolute inset-y-0 left-0 bg-primary/85 transition-[width] duration-150"
+                        className="absolute inset-y-0 left-0 bg-primary/85 transition-(--tp-width) duration-150"
                         style={{ width: `${costPct}%` }}
                         title={`${Math.round(costPct)}% of provider cost`}
                       />
@@ -356,7 +356,7 @@ export function ProviderQuotaCard({
                           {qw.usedPercent != null && fillColor != null && (
                             <div className="h-2 w-full border border-border overflow-hidden">
                               <div
-                                className={`h-full transition-[width] duration-150 ${fillColor}`}
+                                className={`h-full transition-(--tp-width) duration-150 ${fillColor}`}
                                 style={{ width: `${qw.usedPercent}%` }}
                               />
                             </div>

@@ -34,7 +34,7 @@ function MetaRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="grid grid-cols-[10rem_1fr] gap-x-3 gap-y-0 py-1 text-xs sm:grid-cols-[12rem_1fr]">
+    <div className="grid grid-cols-(--gtc-10) gap-x-3 gap-y-0 py-1 text-xs sm:grid-cols-(--gtc-11)">
       <dt className="truncate text-(length:--fs-11) font-medium uppercase tracking-(--ls-0_08) text-emerald-900/70 dark:text-emerald-200/70">
         {label}
       </dt>

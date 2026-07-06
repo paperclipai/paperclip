@@ -386,7 +386,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
       {hasRows ? (
         <>
           {/* Header (desktop only) */}
-          <div className="hidden gap-x-1.5 @[40rem]/env:grid @[40rem]/env:grid-cols-[minmax(160px,2fr)_minmax(240px,3fr)_32px]">
+          <div className="hidden gap-x-1.5 @[40rem]/env:grid @[40rem]/env:grid-cols-(--gtc-14)">
             <span className="text-(length:--fs-11) font-medium uppercase tracking-wide text-muted-foreground">Name</span>
             <span className="text-(length:--fs-11) font-medium uppercase tracking-wide text-muted-foreground">Value</span>
             <span />

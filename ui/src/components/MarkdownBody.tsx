@@ -827,10 +827,10 @@ function MarkdownBodyImpl({
       const isGitHubLink = isGitHubUrl(href);
       const isExternal = isExternalHttpUrl(href);
       const leadingIcon = isGitHubLink ? (
-        <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-[-0.125em]" />
+        <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)" />
       ) : null;
       const trailingIcon = isExternal && !isGitHubLink ? (
-        <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-[-0.125em]" />
+        <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-(--va-0_125em)" />
       ) : null;
       return (
         <a

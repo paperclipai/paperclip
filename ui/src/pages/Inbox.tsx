@@ -2411,7 +2411,7 @@ export function Inbox() {
                       selected={selected}
                       className={
                         isArchiving
-                          ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                          ? "pointer-events-none -translate-x-4 scale-(--s-0_98) opacity-0 transition-all duration-200 ease-out"
                           : "transition-all duration-200 ease-out"
                       }
                       desktopMetaLeading={
@@ -2624,7 +2624,7 @@ export function Inbox() {
                           archiveDisabled={isArchiving}
                           className={
                             isArchiving
-                              ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                              ? "pointer-events-none -translate-x-4 scale-(--s-0_98) opacity-0 transition-all duration-200 ease-out"
                               : "transition-all duration-200 ease-out"
                           }
                         />
@@ -2662,7 +2662,7 @@ export function Inbox() {
                           archiveDisabled={isArchiving}
                           className={
                             isArchiving
-                              ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                              ? "pointer-events-none -translate-x-4 scale-(--s-0_98) opacity-0 transition-all duration-200 ease-out"
                               : "transition-all duration-200 ease-out"
                           }
                         />
@@ -2697,7 +2697,7 @@ export function Inbox() {
                           archiveDisabled={isArchiving}
                           className={
                             isArchiving
-                              ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                              ? "pointer-events-none -translate-x-4 scale-(--s-0_98) opacity-0 transition-all duration-200 ease-out"
                               : "transition-all duration-200 ease-out"
                           }
                         />

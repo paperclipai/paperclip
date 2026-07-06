@@ -360,7 +360,7 @@ export function PipelineItemBodyDocument({
         className="relative min-w-0"
         data-testid="pipeline-item-body-unlinked"
       >
-        <div className="relative z-[1]">{renderReadOnlyBody(displayedBody)}</div>
+        <div className="relative z-(--z-1)">{renderReadOnlyBody(displayedBody)}</div>
         <DocumentAnnotationLayer
           containerRef={containerRef}
           markdown={displayedBody}

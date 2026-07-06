@@ -1481,7 +1481,7 @@ function RawTranscriptView({
           key={`${entry.kind}-${entry.ts}-${range.start + idx}`}
           className={cn(
             "grid gap-x-3",
-            "grid-cols-[auto_1fr]",
+            "grid-cols-(--gtc-16)",
           )}
         >
           <span className="text-(length:--fs-10) uppercase tracking-(--ls-0_18) text-muted-foreground">

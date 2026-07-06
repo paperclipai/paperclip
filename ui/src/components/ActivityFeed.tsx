@@ -268,7 +268,7 @@ function CollapsedFeedGroup({
         onClick={() => setExpanded((e) => !e)}
         data-fc="card"
         className={cn(
-          "group ml-3 mr-3 md:ml-0 my-2 flex w-(--sz-calc-1) md:w-(--sz-calc-2) items-center gap-2 rounded-lg border bg-card p-(--sz-18px) text-left text-xs transition-[background-color,border-color] duration-150",
+          "group ml-3 mr-3 md:ml-0 my-2 flex w-(--sz-calc-1) md:w-(--sz-calc-2) items-center gap-2 rounded-lg border bg-card p-(--sz-18px) text-left text-xs transition-(--tp-background-color-border-color) duration-150",
           "cursor-pointer hover:bg-accent hover:border-muted-foreground/30",
         )}
       >

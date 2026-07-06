@@ -1306,7 +1306,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           <div
             data-paperclip-floating-ui=""
             data-testid="mention-autocomplete-menu"
-            className="pointer-events-auto fixed z-[9999] min-w-(--sz-180px) max-w-(--sz-calc-15) max-h-(--sz-208px) overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+            className="pointer-events-auto fixed z-(--z-9999) min-w-(--sz-180px) max-w-(--sz-calc-15) max-h-(--sz-208px) overflow-y-auto rounded-md border border-border bg-popover shadow-md"
             style={{
               top: mentionMenuPosition.top,
               left: mentionMenuPosition.left,

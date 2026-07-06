@@ -1456,7 +1456,7 @@ function NewSkillWizard({
         </div>
       ) : (
         <div className="space-y-4 text-sm">
-          <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-y-2">
+          <div className="grid grid-cols-(--gtc-26) gap-y-2">
             <span className="text-muted-foreground">Name</span>
             <span>{draft.name || "Untitled"}</span>
             <span className="text-muted-foreground">Slug</span>
@@ -1589,7 +1589,7 @@ function CatalogList({
       <div key={skill.id} className="border-b border-border">
         <div
           className={cn(
-            "group grid grid-cols-[minmax(0,1fr)_2.25rem] items-center gap-x-1 px-3 py-1.5 hover:bg-accent/30",
+            "group grid grid-cols-(--gtc-3) items-center gap-x-1 px-3 py-1.5 hover:bg-accent/30",
             isSelected && "text-foreground",
           )}
         >
@@ -1609,7 +1609,7 @@ function CatalogList({
           </Link>
           <button
             type="button"
-            className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-sm text-muted-foreground opacity-80 transition-[background-color,color,opacity] hover:bg-accent hover:text-foreground group-hover:opacity-100"
+            className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-sm text-muted-foreground opacity-80 transition-(--tp-background-color-color-opacity) hover:bg-accent hover:text-foreground group-hover:opacity-100"
             onClick={() => onToggleSkill(skill.id)}
             aria-label={expanded ? `Collapse ${skill.name}` : `Expand ${skill.name}`}
           >
@@ -1619,8 +1619,8 @@ function CatalogList({
         <div
           aria-hidden={!expanded}
           className={cn(
-            "grid overflow-hidden transition-[grid-template-rows,opacity] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
-            expanded ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+            "grid overflow-hidden transition-(--tp-grid-template-rows-opacity) duration-200 ease-(--e-cubic-bezier-0_16-1-0_3-1)",
+            expanded ? "grid-rows-(--gtr-2) opacity-100" : "grid-rows-(--gtr-3) opacity-0",
           )}
         >
           <div className="min-h-0 overflow-hidden">
@@ -1901,7 +1901,7 @@ function InstallPreviewDialog({
 
         <div className="space-y-4 text-sm">
           <div className="rounded-md border border-border p-3">
-            <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-y-2 text-xs">
+            <div className="grid grid-cols-(--gtc-26) gap-y-2 text-xs">
               <div className="text-muted-foreground">Trust</div>
               <div className="flex items-center gap-2">
                 <TrustChip level={skill.trustLevel} />
@@ -1942,7 +1942,7 @@ function InstallPreviewDialog({
             </div>
             <div className="max-h-48 overflow-y-auto">
               {skill.files.map((file) => (
-                <div key={file.path} className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-3 border-b border-border/50 px-3 py-1.5 text-xs last:border-b-0">
+                <div key={file.path} className="grid grid-cols-(--gtc-27) items-center gap-x-3 border-b border-border/50 px-3 py-1.5 text-xs last:border-b-0">
                   <span className="truncate font-mono text-muted-foreground">{file.path}</span>
                   <span className="rounded border border-border bg-muted/40 px-1 py-0.5 text-(length:--fs-10) uppercase text-muted-foreground">{file.kind}</span>
                   <span className="text-(length:--fs-11) text-muted-foreground">{formatBytes(file.sizeBytes)}</span>
@@ -2195,7 +2195,7 @@ function SkillTree({
             <div key={node.path ?? node.name}>
               <div
                 className={cn(
-                  "group grid w-full grid-cols-[minmax(0,1fr)_2.25rem] items-center gap-x-1 pr-3 text-left text-sm text-muted-foreground hover:bg-accent/30 hover:text-foreground",
+                  "group grid w-full grid-cols-(--gtc-3) items-center gap-x-1 pr-3 text-left text-sm text-muted-foreground hover:bg-accent/30 hover:text-foreground",
                   SKILL_TREE_ROW_HEIGHT_CLASS,
                 )}
               >
@@ -2212,7 +2212,7 @@ function SkillTree({
                 </button>
                 <button
                   type="button"
-                  className="flex h-9 w-9 items-center justify-center self-center rounded-sm text-muted-foreground opacity-70 transition-[background-color,color,opacity] hover:bg-accent hover:text-foreground group-hover:opacity-100"
+                  className="flex h-9 w-9 items-center justify-center self-center rounded-sm text-muted-foreground opacity-70 transition-(--tp-background-color-color-opacity) hover:bg-accent hover:text-foreground group-hover:opacity-100"
                   onClick={() => node.path && onToggleDir(node.path)}
                 >
                   {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
@@ -2323,7 +2323,7 @@ function SkillList({
           <div key={skill.id} className="border-b border-border">
             <div
               className={cn(
-                "group grid grid-cols-[minmax(0,1fr)_2.25rem] items-center gap-x-1 px-3 py-1.5 hover:bg-accent/30",
+                "group grid grid-cols-(--gtc-3) items-center gap-x-1 px-3 py-1.5 hover:bg-accent/30",
                 skill.id === selectedSkillId && "text-foreground",
               )}
             >
@@ -2349,7 +2349,7 @@ function SkillList({
               </Link>
               <button
                 type="button"
-                className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-sm text-muted-foreground opacity-80 transition-[background-color,color,opacity] hover:bg-accent hover:text-foreground group-hover:opacity-100"
+                className="flex h-9 w-9 shrink-0 items-center justify-center self-center rounded-sm text-muted-foreground opacity-80 transition-(--tp-background-color-color-opacity) hover:bg-accent hover:text-foreground group-hover:opacity-100"
                 onClick={() => onToggleSkill(skill.id)}
                 aria-label={expanded ? `Collapse ${skill.name}` : `Expand ${skill.name}`}
               >
@@ -2359,8 +2359,8 @@ function SkillList({
             <div
               aria-hidden={!expanded}
               className={cn(
-                "grid overflow-hidden transition-[grid-template-rows,opacity] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)]",
-                expanded ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+                "grid overflow-hidden transition-(--tp-grid-template-rows-opacity) duration-200 ease-(--e-cubic-bezier-0_16-1-0_3-1)",
+                expanded ? "grid-rows-(--gtr-2) opacity-100" : "grid-rows-(--gtr-3) opacity-0",
               )}
             >
               <div className="min-h-0 overflow-hidden">
@@ -2530,7 +2530,7 @@ function SkillVersionDiffDialog({
               <div className="p-6 text-center text-sm text-muted-foreground">Both sides are the same version.</div>
             ) : (
               <div className="font-mono text-(length:--fs-12) leading-6">
-                <div className="grid grid-cols-[56px_56px_24px_minmax(0,1fr)] border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--fs-11) uppercase tracking-wide text-muted-foreground">
+                <div className="grid grid-cols-(--gtc-1) border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--fs-11) uppercase tracking-wide text-muted-foreground">
                   <span>Old</span>
                   <span>New</span>
                   <span />
@@ -2539,7 +2539,7 @@ function SkillVersionDiffDialog({
                 {diffRows.map((row, index) => (
                   <div
                     key={`${row.kind}-${index}-${row.oldLineNumber ?? "x"}-${row.newLineNumber ?? "x"}`}
-                    className={cn("grid grid-cols-[56px_56px_24px_minmax(0,1fr)] gap-0 border-b border-border/30 px-3", lineClassesByKind[row.kind])}
+                    className={cn("grid grid-cols-(--gtc-1) gap-0 border-b border-border/30 px-3", lineClassesByKind[row.kind])}
                   >
                     <span className="select-none border-r border-border/30 pr-3 text-right text-muted-foreground">{row.oldLineNumber ?? ""}</span>
                     <span className="select-none border-r border-border/30 px-3 text-right text-muted-foreground">{row.newLineNumber ?? ""}</span>
@@ -2732,7 +2732,7 @@ export function SkillDetailPage({
 
   function renderFilesBody() {
     return (
-      <div className="grid min-h-(--sz-560px) gap-0 lg:grid-cols-[13rem_minmax(0,1fr)]">
+      <div className="grid min-h-(--sz-560px) gap-0 lg:grid-cols-(--gtc-28)">
         <aside className="border-b border-border pb-3 lg:border-b-0 lg:border-r lg:pb-0 lg:pr-3">
           <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Files</div>
           <SkillTree
@@ -2867,7 +2867,7 @@ export function SkillDetailPage({
             <div className="py-6 text-sm text-muted-foreground">No saved versions yet.</div>
           ) : (
             sortedVersions.map((version) => (
-              <div key={version.id} className="grid gap-2 border-b border-border px-0 py-3 text-sm last:border-b-0 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <div key={version.id} className="grid gap-2 border-b border-border px-0 py-3 text-sm last:border-b-0 sm:grid-cols-(--gtc-13)">
                 <div className="min-w-0">
                   <div className="font-medium">{versionLabel(version)}</div>
                   <div className="mt-1 text-xs text-muted-foreground">
@@ -3089,7 +3089,7 @@ export function SkillDetailPage({
         </div>
       </div>
 
-      <div className="grid gap-6 px-4 py-4 xl:grid-cols-[minmax(0,1fr)_18rem]">
+      <div className="grid gap-6 px-4 py-4 xl:grid-cols-(--gtc-29)">
         <main className="min-w-0">
           <Tabs value={activeTab} onValueChange={(value) => onTabChange(value as SkillDetailTab)}>
             {/* Underlined tab strip: the bottom padding keeps the active-tab
@@ -4718,7 +4718,7 @@ export function CompanySkills() {
           ) : !selectedCatalogSkill ? (
             <EmptyState icon={Boxes} message="Catalog skill not found." />
           ) : (
-            <div className="grid gap-0 xl:grid-cols-[14rem_minmax(0,1fr)]">
+            <div className="grid gap-0 xl:grid-cols-(--gtc-30)">
               <aside className="border-b border-border px-3 py-4 xl:border-b-0 xl:border-r">
                 <div className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Files</div>
                 <SkillTree

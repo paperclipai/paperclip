@@ -250,7 +250,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       {isDragOver && canAttach ? (
         <div
           data-testid="chat-composer-drop-overlay"
-          className="pointer-events-none absolute inset-1.5 z-20 flex items-center justify-center rounded-lg border border-dashed border-muted-foreground/50 bg-background/80 text-xs text-muted-foreground backdrop-blur-[1px]"
+          className="pointer-events-none absolute inset-1.5 z-20 flex items-center justify-center rounded-lg border border-dashed border-muted-foreground/50 bg-background/80 text-xs text-muted-foreground backdrop-blur-(--blur-1px)"
         >
           <span className="inline-flex items-center gap-2">
             <Paperclip className="h-3.5 w-3.5" />

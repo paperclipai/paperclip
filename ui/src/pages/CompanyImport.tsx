@@ -115,7 +115,7 @@ const ACTION_COLORS: Record<string, string> = {
 function FrontmatterCard({ data }: { data: FrontmatterData }) {
   return (
     <div className="rounded-md border border-border bg-accent/20 px-4 py-3 mb-4">
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm">
+      <dl className="grid grid-cols-(--gtc-5) gap-x-4 gap-y-1.5 text-sm">
         {Object.entries(data).map(([key, value]) => (
           <div key={key} className="contents">
             <dt className="text-muted-foreground whitespace-nowrap py-0.5">
@@ -1319,7 +1319,7 @@ export function CompanyImport() {
           )}
 
           {/* Two-column layout */}
-          <div className="grid gap-4 xl:h-(--sz-calc-31) xl:grid-cols-[19rem_minmax(0,1fr)] xl:gap-0">
+          <div className="grid gap-4 xl:h-(--sz-calc-31) xl:grid-cols-(--gtc-25) xl:gap-0">
             <aside className="flex max-h-(--sz-24rem) flex-col overflow-hidden border-b border-border xl:max-h-none xl:border-b-0 xl:border-r">
               <div className="border-b border-border px-4 py-3 shrink-0">
                 <h2 className="text-base font-semibold">Package files</h2>

@@ -2784,7 +2784,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
 
   return (
     <div className="mx-auto max-w-6xl px-6 py-8">
-      <div className="mb-6 grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px] lg:items-start lg:gap-8">
+      <div className="mb-6 grid gap-5 lg:grid-cols-(--gtc-45) lg:items-start lg:gap-8">
         <div className="min-w-0">
           <div className="mb-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
             <Link to="/pipelines" className="hover:text-foreground">Pipelines</Link>
@@ -3084,7 +3084,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
                         <label
                           key={option.id}
                           className={cn(
-                            "grid grid-cols-[18px_minmax(0,1fr)] gap-3 py-1.5 text-sm",
+                            "grid grid-cols-(--gtc-46) gap-3 py-1.5 text-sm",
                             option.disabled && !option.required ? "text-muted-foreground" : "text-foreground",
                           )}
                         >
@@ -3230,7 +3230,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
         </section>
       ) : null}
 
-      <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="grid gap-8 lg:grid-cols-(--gtc-45)">
         <main className="min-w-0 space-y-8">
           <PipelineItemBodyDocument
             caseId={caseId}
@@ -3385,7 +3385,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
             {itemFields.length > 0 ? (
               <dl className="divide-y divide-border">
                 {itemFields.map((field) => (
-                  <div key={field.key} className="grid grid-cols-[120px_1fr] gap-3 py-2 text-sm">
+                  <div key={field.key} className="grid grid-cols-(--gtc-47) gap-3 py-2 text-sm">
                     <dt className="text-muted-foreground">{field.label}</dt>
                     <dd className="min-w-0 text-foreground [overflow-wrap:anywhere]">{field.value}</dd>
                   </div>
@@ -3508,7 +3508,7 @@ function WaitingChildRow({
     <li>
       <Link
         to={`/pipelines/${row.case.pipelineId}/items/${row.case.id}`}
-        className="grid grid-cols-[18px_minmax(0,1fr)_auto] items-start gap-3 py-2 text-sm"
+        className="grid grid-cols-(--gtc-48) items-start gap-3 py-2 text-sm"
       >
         <GitBranch className="h-4 w-4 text-muted-foreground" />
         <span className="min-w-0">
@@ -4132,7 +4132,7 @@ function BuiltFromTree({
         <li key={row.case.id}>
           <Link
             to={`/pipelines/${row.case.pipelineId}/items/${row.case.id}`}
-            className="grid grid-cols-[18px_1fr_auto] items-center gap-3 py-3 text-sm hover:bg-muted/40"
+            className="grid grid-cols-(--gtc-49) items-center gap-3 py-3 text-sm hover:bg-muted/40"
           >
             <GitBranch className="h-4 w-4 text-muted-foreground" />
             <span className="min-w-0">
@@ -4323,7 +4323,7 @@ function DraftItemRow({
 
   return (
     <section className={cn("border border-border bg-background", row.expanded && "border-primary")}>
-      <div className="grid grid-cols-[1fr_auto] items-center gap-3 px-4 py-3">
+      <div className="grid grid-cols-(--gtc-17) items-center gap-3 px-4 py-3">
         <button type="button" className="min-w-0 text-left" onClick={onToggle}>
           <span className="block text-xs font-semibold uppercase tracking-(--ls-0_14) text-muted-foreground">Item {index + 1}</span>
           <span className="block truncate text-sm font-semibold text-foreground">{title}</span>
@@ -4341,7 +4341,7 @@ function DraftItemRow({
       </div>
 
       {row.expanded ? (
-        <div className="grid gap-5 border-t border-border px-4 py-4 lg:grid-cols-[1fr_280px]">
+        <div className="grid gap-5 border-t border-border px-4 py-4 lg:grid-cols-(--gtc-50)">
           <div className="grid gap-4 md:grid-cols-2">
             {fields.map((field) => (
               <GeneratedField
@@ -4622,7 +4622,7 @@ function ReviewQueueDetailDialog({
             {fields.length > 0 ? (
               <div className="divide-y divide-border rounded-md border border-border">
                 {fields.map(([key, value]) => (
-                  <div key={key} className="grid grid-cols-[160px_1fr] gap-3 px-3 py-2 text-sm">
+                  <div key={key} className="grid grid-cols-(--gtc-51) gap-3 px-3 py-2 text-sm">
                     <span className="text-muted-foreground">{humanizeFieldLabel(key)}</span>
                     <span className="text-foreground">{String(value)}</span>
                   </div>
@@ -4736,7 +4736,7 @@ function ReviewQueueSection({
               tabIndex={0}
               aria-current={active ? "true" : undefined}
               className={cn(
-                "grid min-h-10 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-2 py-2 text-sm outline-none transition-colors",
+                "grid min-h-10 grid-cols-(--gtc-13) items-center gap-3 px-2 py-2 text-sm outline-none transition-colors",
                 active ? "bg-accent/60" : "hover:bg-accent/40",
               )}
               onMouseEnter={() => onActivate(row.id)}
@@ -5221,7 +5221,7 @@ export function Learnings() {
                     <div
                       key={event.id}
                       className={cn(
-                        "grid min-h-11 grid-cols-[6rem_1fr] items-center gap-3 border-b border-border/70 px-3 py-2 text-sm last:border-b-0",
+                        "grid min-h-11 grid-cols-(--gtc-15) items-center gap-3 border-b border-border/70 px-3 py-2 text-sm last:border-b-0",
                         forcedMove && "border-l-2 border-l-amber-400 bg-amber-50/50 dark:bg-amber-400/10",
                       )}
                     >

@@ -2173,7 +2173,7 @@ function PromptsTab({
         </CollapsibleTrigger>
         <CollapsibleContent className="pt-4 pb-6">
           <TooltipProvider>
-            <div className="grid gap-x-6 gap-y-4 md:grid-cols-[auto_minmax(0,1fr)_minmax(12rem,0.65fr)]">
+            <div className="grid gap-x-6 gap-y-4 md:grid-cols-(--gtc-18)">
               <label className="space-y-1.5 min-w-0">
                 <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
                   Mode
@@ -2573,7 +2573,7 @@ function PromptsTabSkeleton() {
           ))}
         </div>
       </div>
-      <div className="grid gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+      <div className="grid gap-4 lg:grid-cols-(--gtc-19)">
         <div className="rounded-lg border border-border p-3 space-y-3">
           <div className="flex items-center justify-between">
             <Skeleton className="h-4 w-12" />

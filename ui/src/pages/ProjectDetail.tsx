@@ -148,7 +148,7 @@ function ProjectTilePicker({
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="shrink-0 rounded-lg cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-[box-shadow]"
+          className="shrink-0 rounded-lg cursor-pointer hover:ring-2 hover:ring-foreground/20 transition-(--tp-box-shadow)"
           aria-label="Change project icon and color"
         >
           <ProjectTile color={color} icon={icon} size="md" />
@@ -192,7 +192,7 @@ function ProjectTilePicker({
             <button
               type="button"
               onClick={() => onSelectColor(null)}
-              className={`h-6 w-6 cursor-pointer transition-[transform,box-shadow] duration-150 hover:scale-110 ${
+              className={`h-6 w-6 cursor-pointer transition-(--tp-transform-box-shadow) duration-150 hover:scale-110 ${
                 color === null
                   ? "ring-2 ring-foreground ring-offset-1 ring-offset-background rounded-md"
                   : ""
@@ -207,7 +207,7 @@ function ProjectTilePicker({
                 key={swatch}
                 type="button"
                 onClick={() => onSelectColor(swatch)}
-                className={`h-6 w-6 rounded-md cursor-pointer transition-[transform,box-shadow] duration-150 hover:scale-110 ${
+                className={`h-6 w-6 rounded-md cursor-pointer transition-(--tp-transform-box-shadow) duration-150 hover:scale-110 ${
                   swatch === color
                     ? "ring-2 ring-foreground ring-offset-1 ring-offset-background"
                     : "hover:ring-2 hover:ring-foreground/30"

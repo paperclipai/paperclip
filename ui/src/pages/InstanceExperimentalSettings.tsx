@@ -541,7 +541,7 @@ export function InstanceExperimentalSettings() {
             />
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-[minmax(10rem,14rem)_1fr] sm:items-end">
+          <div className="grid gap-3 sm:grid-cols-(--gtc-35) sm:items-end">
             <label className="space-y-1.5">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 <Clock className="h-3.5 w-3.5" />

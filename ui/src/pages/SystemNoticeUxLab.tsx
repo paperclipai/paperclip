@@ -138,7 +138,7 @@ export function SystemNoticeUxLab() {
   return (
     <div className="space-y-6">
       <div className="overflow-hidden rounded-(--rad-32) border border-border/70 bg-(image:--gradient-extract-16) shadow-(--shadow-extract-17)">
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_320px]">
+        <div className="grid gap-6 lg:grid-cols-(--gtc-39)">
           <div className="p-6 sm:p-7">
             <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/25 bg-amber-500/[0.08] px-3 py-1 text-(length:--fs-10) font-semibold uppercase tracking-(--ls-0_24) text-amber-700 dark:text-amber-300">
               <FlaskConical className="h-3.5 w-3.5" />

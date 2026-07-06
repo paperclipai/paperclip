@@ -113,7 +113,7 @@ function formatTimestamp(ts: string) {
 
 function MetadataRow({ row, tone }: { row: SystemNoticeMetadataRow; tone: ToneTokens }) {
   return (
-    <div className="grid grid-cols-[7.5rem_1fr] gap-x-3 gap-y-0.5 px-3 py-1.5 text-xs">
+    <div className="grid grid-cols-(--gtc-8) gap-x-3 gap-y-0.5 px-3 py-1.5 text-xs">
       <div className="truncate text-(length:--fs-11) font-medium uppercase tracking-(--ls-0_08) text-muted-foreground">
         {row.label}
       </div>
@@ -289,7 +289,7 @@ export function SystemNotice({
             aria-expanded={open}
             aria-controls={detailsId}
             className={cn(
-              "ml-1 inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-transparent px-2 text-(length:--fs-11) font-medium uppercase tracking-(--ls-0_12) text-muted-foreground transition-[background-color,border-color,color]",
+              "ml-1 inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-transparent px-2 text-(length:--fs-11) font-medium uppercase tracking-(--ls-0_12) text-muted-foreground transition-(--tp-background-color-border-color-color)",
               "hover:border-border/70 hover:bg-background/70 hover:text-foreground",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
             )}

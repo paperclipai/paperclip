@@ -184,7 +184,7 @@ export function RoutineHistoryTab({
 
   if (revisionsQuery.isLoading) {
     return (
-      <div className="grid gap-5 md:grid-cols-[300px_minmax(0,1fr)]">
+      <div className="grid gap-5 md:grid-cols-(--gtc-9)">
         <div className="space-y-2">
           {Array.from({ length: 5 }).map((_, idx) => (
             <Skeleton key={idx} className="h-10 w-full" />
@@ -216,7 +216,7 @@ export function RoutineHistoryTab({
   const onlyBootstrapRevision = revisions.length <= 1;
 
   return (
-    <div className="grid gap-5 md:grid-cols-[300px_minmax(0,1fr)]">
+    <div className="grid gap-5 md:grid-cols-(--gtc-9)">
       <RevisionList
         revisions={visibleRevisions}
         latestRevisionId={routine.latestRevisionId}
@@ -951,7 +951,7 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
   };
   return (
     <div className="rounded-md border border-border text-xs font-mono leading-6 overflow-hidden">
-      <div className="grid grid-cols-[56px_56px_24px_minmax(0,1fr)] border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--fs-11) uppercase tracking-wide text-muted-foreground">
+      <div className="grid grid-cols-(--gtc-1) border-b border-border/60 bg-muted/30 px-3 py-2 text-(length:--fs-11) uppercase tracking-wide text-muted-foreground">
         <span>Old</span>
         <span>New</span>
         <span />
@@ -960,7 +960,7 @@ function DiffTable({ rows }: { rows: DiffRow[] }) {
       {rows.map((row, index) => (
         <div
           key={`${row.kind}-${index}-${row.oldLineNumber ?? "x"}-${row.newLineNumber ?? "x"}`}
-          className={`grid grid-cols-[56px_56px_24px_minmax(0,1fr)] gap-0 border-b border-border/30 px-3 ${lineClassesByKind[row.kind]}`}
+          className={`grid grid-cols-(--gtc-1) gap-0 border-b border-border/30 px-3 ${lineClassesByKind[row.kind]}`}
         >
           <span className="select-none border-r border-border/30 pr-3 text-right text-muted-foreground">
             {row.oldLineNumber ?? ""}

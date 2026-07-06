@@ -128,7 +128,7 @@ export function IssueChatLongThreadPerf() {
         </div>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="grid gap-4 xl:grid-cols-(--gtc-40)">
         <main className="min-w-0 space-y-4">
           <Card className="border-border/70">
             <CardHeader className="pb-2">

@@ -104,7 +104,7 @@ function UsageChart({ points }: { points: UserProfileDailyPoint[] }) {
           <span>tokens total</span>
         </div>
       </div>
-      <div className="mt-6 grid grid-cols-[repeat(14,minmax(0,1fr))] items-end gap-1.5 sm:gap-2">
+      <div className="mt-6 grid grid-cols-(--gtc-57) items-end gap-1.5 sm:gap-2">
         {points.map((point) => {
           const tokens = totalTokens(point);
           const heightPct = tokens === 0 ? 0 : Math.max(2, Math.round((tokens / maxTokens) * 100));
@@ -128,7 +128,7 @@ function UsageChart({ points }: { points: UserProfileDailyPoint[] }) {
           );
         })}
       </div>
-      <div className="mt-2 grid grid-cols-[repeat(14,minmax(0,1fr))] gap-1.5 text-(length:--fs-10) tabular-nums text-muted-foreground sm:gap-2">
+      <div className="mt-2 grid grid-cols-(--gtc-57) gap-1.5 text-(length:--fs-10) tabular-nums text-muted-foreground sm:gap-2">
         {points.map((point, index) => (
           <div key={point.date} className="text-center">
             {index === 0 || index === 6 || index === 13 ? formatShortDate(point.date) : null}
@@ -177,7 +177,7 @@ function UsageList({
       ) : (
         <ul className="divide-y divide-border">
           {rows.map((row) => (
-            <li key={row.key} className="grid gap-2 py-2.5 sm:grid-cols-[1fr_auto] sm:items-center">
+            <li key={row.key} className="grid gap-2 py-2.5 sm:grid-cols-(--gtc-17) sm:items-center">
               <div className="min-w-0">
                 <div className="truncate text-sm font-medium">{row.label}</div>
                 <div className="truncate text-xs text-muted-foreground">{row.sublabel}</div>
@@ -310,7 +310,7 @@ export function UserProfile() {
                 <li key={issue.id}>
                   <Link
                     to={issueUrl(issue)}
-                    className="grid gap-2 py-2.5 transition-colors hover:bg-accent/40 sm:grid-cols-[auto_1fr_auto] sm:items-center"
+                    className="grid gap-2 py-2.5 transition-colors hover:bg-accent/40 sm:grid-cols-(--gtc-58) sm:items-center"
                   >
                     <span className="font-mono text-xs text-muted-foreground">{issue.identifier ?? issue.id.slice(0, 8)}</span>
                     <span className="truncate text-sm">{issue.title}</span>
@@ -335,7 +335,7 @@ export function UserProfile() {
           ) : (
             <ul className="divide-y divide-border">
               {data.recentActivity.map((event) => (
-                <li key={event.id} className="grid gap-2 py-2.5 sm:grid-cols-[1fr_auto] sm:items-center">
+                <li key={event.id} className="grid gap-2 py-2.5 sm:grid-cols-(--gtc-17) sm:items-center">
                   <div className="min-w-0">
                     <div className="truncate text-sm">{event.action.replaceAll("_", " ")}</div>
                     <div className="truncate text-xs text-muted-foreground">

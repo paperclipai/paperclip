@@ -470,7 +470,7 @@ export function DocumentAnnotationLayer({
         </div>
       ) : null}
       <div
-        className="paperclip-doc-annotation-layer pointer-events-none absolute inset-0 z-[2]"
+        className="paperclip-doc-annotation-layer pointer-events-none absolute inset-0 z-(--z-2)"
         aria-hidden="true"
       >
         <div ref={overlayRef} className="relative h-full w-full">

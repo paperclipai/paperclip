@@ -655,7 +655,7 @@ export function Costs() {
                 </div>
               ) : null}
 
-              <div className="grid gap-4 xl:grid-cols-[1.3fr,1fr]">
+              <div className="grid gap-4 xl:grid-cols-(--gtc-31)">
                 <Card>
                   <CardHeader className="px-5 pt-5 pb-2">
                     <CardTitle className="text-base">Inference ledger</CardTitle>
@@ -687,7 +687,7 @@ export function Costs() {
                         <div className="h-2 overflow-hidden bg-muted">
                           <div
                             className={cn(
-                              "h-full transition-[width,background-color] duration-150",
+                              "h-full transition-(--tp-width-background-color) duration-150",
                               spendData.summary.utilizationPercent > 90
                                 ? "bg-red-400"
                                 : spendData.summary.utilizationPercent > 70
@@ -714,7 +714,7 @@ export function Costs() {
                 />
               </div>
 
-              <div className="grid gap-4 xl:grid-cols-[1.25fr,0.95fr]">
+              <div className="grid gap-4 xl:grid-cols-(--gtc-32)">
                 <Card>
                   <CardHeader className="px-5 pt-5 pb-2">
                     <CardTitle className="text-base">By agent</CardTitle>
@@ -1074,7 +1074,7 @@ export function Costs() {
                 eventCount={financeData?.summary.eventCount ?? 0}
               />
 
-              <div className="grid gap-4 xl:grid-cols-[1.2fr,0.95fr]">
+              <div className="grid gap-4 xl:grid-cols-(--gtc-33)">
                 <div className="space-y-4">
                   <Card>
                     <CardHeader className="px-5 pt-5 pb-2">
