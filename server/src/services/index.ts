@@ -19,6 +19,7 @@ export {
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
   issueService,
+  validateDelegatedIssueExecutionContract,
   type IssueFilters,
 } from "./issues.js";
 export { issueVisibilityService, type VisibilityPrincipal, type CollaboratorReason } from "./issue-visibility.js";

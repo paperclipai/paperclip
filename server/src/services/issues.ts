@@ -515,6 +515,94 @@ function resolveExecutionContractFields(input: {
   return { description };
 }
 
+export type DelegatedIssueExecutionContractValidation = {
+  valid: boolean;
+  warnings: string[];
+};
+
+function readContractField(record: Record<string, unknown> | null | undefined, ...keys: string[]) {
+  if (!record) return undefined;
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(record, key)) return record[key];
+  }
+  return undefined;
+}
+
+function readContractString(record: Record<string, unknown> | null | undefined, ...keys: string[]) {
+  const value = readContractField(record, ...keys);
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function hasContractContent(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (typeof value === "number" || typeof value === "boolean") return true;
+  if (Array.isArray(value)) return value.some(hasContractContent);
+  if (isRecord(value)) return Object.values(value).some(hasContractContent);
+  return false;
+}
+
+export function validateDelegatedIssueExecutionContract(
+  executionContract: Record<string, unknown> | null | undefined,
+): DelegatedIssueExecutionContractValidation {
+  const warnings: string[] = [];
+  if (!executionContract) {
+    return {
+      valid: false,
+      warnings: ["executionContract is required for agent-created child issues"],
+    };
+  }
+
+  const schemaVersion = readContractField(executionContract, "schemaVersion", "schema_version");
+  if (
+    typeof schemaVersion !== "number" ||
+    !Number.isInteger(schemaVersion) ||
+    schemaVersion < 1
+  ) {
+    warnings.push("executionContract.schemaVersion must be a positive integer");
+  }
+
+  if (!readContractString(executionContract, "contractType", "contract_type")) {
+    warnings.push("executionContract.contractType is required");
+  }
+  if (!readContractString(executionContract, "taskType", "task_type")) {
+    warnings.push("executionContract.taskType is required");
+  }
+
+  const coreValue = readContractField(executionContract, "core");
+  if (!isRecord(coreValue)) {
+    warnings.push("executionContract.core is required");
+    return { valid: false, warnings };
+  }
+
+  if (!readContractString(coreValue, "objective")) {
+    warnings.push("executionContract.core.objective is required");
+  }
+  if (!readContractString(coreValue, "why")) {
+    warnings.push("executionContract.core.why is required");
+  }
+
+  const sourceOfTruth = readContractField(coreValue, "sourceOfTruth", "source_of_truth");
+  if (!hasContractContent(sourceOfTruth)) {
+    warnings.push("executionContract.core.sourceOfTruth must contain at least one source");
+  }
+
+  const acceptanceChecks = readContractField(coreValue, "acceptanceChecks", "acceptance_checks");
+  if (!hasContractContent(acceptanceChecks)) {
+    warnings.push("executionContract.core.acceptanceChecks must contain at least one check");
+  }
+
+  const handoffNotesValue = readContractField(coreValue, "handoffNotes", "handoff_notes");
+  const handoffNotes = isRecord(handoffNotesValue) ? handoffNotesValue : null;
+  if (!readContractString(handoffNotes, "managerReasoning", "manager_reasoning")) {
+    warnings.push("executionContract.core.handoffNotes.managerReasoning is required");
+  }
+
+  return {
+    valid: warnings.length === 0,
+    warnings,
+  };
+}
+
 function createIssueDependencyReadiness(issueId: string): IssueDependencyReadiness {
   return {
     issueId,

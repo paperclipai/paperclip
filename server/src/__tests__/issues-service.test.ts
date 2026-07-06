@@ -31,6 +31,7 @@ import {
   MAX_DIRECT_CHILD_ISSUES_PER_PARENT,
   issueService,
   parseWorkItemTypeFilter,
+  validateDelegatedIssueExecutionContract,
 } from "../services/issues.ts";
 import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
@@ -46,6 +47,63 @@ describe("issue list limit helpers", () => {
 
   it("parses comma-separated work item filters and ignores unknown values", () => {
     expect(parseWorkItemTypeFilter("initiative,human_task,unknown")).toEqual(["initiative", "human_task"]);
+  });
+});
+
+describe("validateDelegatedIssueExecutionContract", () => {
+  it("accepts a complete core contract while leaving extensions open", () => {
+    expect(validateDelegatedIssueExecutionContract({
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "qa",
+      core: {
+        objective: "Verify the lane against the source issue.",
+        why: "The executor must preserve the parent intent during handoff.",
+        sourceOfTruth: {
+          links: ["https://paper.zenova.id/SIX/issues/SIX-3697"],
+        },
+        acceptanceChecks: ["The issue has no visible description contract block."],
+        handoffNotes: {
+          managerReasoning: "The child lane needs the hidden contract to avoid context loss.",
+        },
+      },
+      extensions: {
+        qa: {
+          reviewMode: "contract_fidelity",
+        },
+      },
+    })).toEqual({ valid: true, warnings: [] });
+  });
+
+  it("warns when an agent-created child issue has no execution contract", () => {
+    expect(validateDelegatedIssueExecutionContract(null)).toEqual({
+      valid: false,
+      warnings: ["executionContract is required for agent-created child issues"],
+    });
+  });
+
+  it("warns for missing required core handoff fields", () => {
+    const result = validateDelegatedIssueExecutionContract({
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "implementation",
+      core: {
+        objective: "Build the change.",
+        sourceOfTruth: {
+          files: [],
+        },
+        acceptanceChecks: [],
+        handoffNotes: {},
+      },
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.warnings).toEqual([
+      "executionContract.core.why is required",
+      "executionContract.core.sourceOfTruth must contain at least one source",
+      "executionContract.core.acceptanceChecks must contain at least one check",
+      "executionContract.core.handoffNotes.managerReasoning is required",
+    ]);
   });
 });
 

@@ -74,6 +74,7 @@ import {
   issueService,
   issueVisibilityService,
   clampIssueListLimit,
+  validateDelegatedIssueExecutionContract,
   documentService,
   logActivity,
   projectService,
@@ -217,6 +218,49 @@ function buildCreateIssueActivityStatusDetails(
         : "no_agent_assignee"
       : null,
   };
+}
+
+type IssueRouteActor = ReturnType<typeof getActorInfo>;
+
+async function logDelegatedIssueExecutionContractWarning(db: Db, input: {
+  companyId: string;
+  issue: {
+    id: string;
+    identifier: string | null;
+    title: string;
+    executionContract: Record<string, unknown> | null;
+  };
+  parentId: string;
+  actor: IssueRouteActor;
+}) {
+  if (input.actor.actorType !== "agent") return;
+  const validation = validateDelegatedIssueExecutionContract(input.issue.executionContract);
+  if (validation.valid) return;
+
+  logger.warn({
+    issueId: input.issue.id,
+    parentId: input.parentId,
+    warnings: validation.warnings,
+  }, "agent-created child issue has invalid execution contract");
+
+  await logActivity(db, {
+    companyId: input.companyId,
+    actorType: input.actor.actorType,
+    actorId: input.actor.actorId,
+    agentId: input.actor.agentId,
+    runId: input.actor.runId,
+    action: "issue.execution_contract_warning",
+    entityType: "issue",
+    entityId: input.issue.id,
+    details: {
+      mode: "warn",
+      parentId: input.parentId,
+      identifier: input.issue.identifier,
+      title: input.issue.title,
+      missingExecutionContract: input.issue.executionContract == null,
+      warnings: validation.warnings,
+    },
+  });
 }
 
 function isHumanControlWorkItemType(value: unknown) {
@@ -3373,6 +3417,15 @@ export function issueRoutes(
       },
     });
 
+    if (issue.parentId) {
+      await logDelegatedIssueExecutionContractWarning(db, {
+        companyId,
+        issue,
+        parentId: issue.parentId,
+        actor,
+      });
+    }
+
     if (executionPolicy?.monitor) {
       await logActivity(db, {
         companyId,
@@ -3463,6 +3516,13 @@ export function issueRoutes(
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
         ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
       },
+    });
+
+    await logDelegatedIssueExecutionContractWarning(db, {
+      companyId: parent.companyId,
+      issue,
+      parentId: parent.id,
+      actor,
     });
 
     if (executionPolicy?.monitor) {
