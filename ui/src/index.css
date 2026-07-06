@@ -1842,9 +1842,11 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --blur-2px: 2px; /* Extracted from ui/src/components/IssueChatThread.tsx (backdrop-blur-[2px]). */
   --drop-shadow-extract-1: 0 1px 2px rgba(0,0,0,0.65); /* Extracted from ui/src/components/CompanyPatternIcon.tsx (drop-shadow-[0_1px_2px_rgba(0,0,0,0.65)]). */
   --code-bg-resolved: var(--paperclip-code-bg, var(--muted)); /* Extracted from ui/src/components/FileViewerSheet.tsx (bg-[var(--paperclip-code-bg,theme(colors.muted.DEFAULT))]). */
-  --code-highlight-bg-resolved: var(--paperclip-code-highlight-bg, rgba(250,204,21,0.12)); /* Extracted from ui/src/components/FileViewerSheet.tsx (bg-[var(--paperclip-code-highlight-bg,rgba(250,204,21,0.12))]). */
+  --paperclip-code-highlight-bg: rgba(250,204,21,0.12); /* DECISION-SHEET.md A5: FileViewerSheet.tsx referenced this var without it ever being defined, relying on the var() fallback; minted here at exactly the former fallback value (zero pixels). */
+  --paperclip-code-highlight-border: rgb(234,179,8); /* DECISION-SHEET.md A5: same as --paperclip-code-highlight-bg — minted at the former fallback value. */
+  --code-highlight-bg-resolved: var(--paperclip-code-highlight-bg); /* Extracted from ui/src/components/FileViewerSheet.tsx; fallback dropped in A5 now that --paperclip-code-highlight-bg is a real token (was var(--paperclip-code-highlight-bg, rgba(250,204,21,0.12))). */
   --code-gutter-fg-resolved: var(--paperclip-code-gutter-fg, var(--muted-foreground)); /* Extracted from ui/src/components/FileViewerSheet.tsx (text-[var(--paperclip-code-gutter-fg,theme(colors.muted.foreground))]). */
-  --code-highlight-border-resolved: var(--paperclip-code-highlight-border, rgb(234,179,8)); /* Extracted from ui/src/components/FileViewerSheet.tsx (border-[var(--paperclip-code-highlight-border,rgb(234,179,8))]). */
+  --code-highlight-border-resolved: var(--paperclip-code-highlight-border); /* Extracted from ui/src/components/FileViewerSheet.tsx; fallback dropped in A5 now that --paperclip-code-highlight-border is a real token (was var(--paperclip-code-highlight-border, rgb(234,179,8))). */
   --gradient-extract-25: linear-gradient(135deg,hsl(var(--primary)) 0%,hsl(var(--accent)) 55%,hsl(var(--muted)) 100%); /* Extracted from ui/src/components/SidebarAccountMenu.tsx (bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--accent))_55%,hsl(var(--muted))_100%)]). */
   --gradient-extract-26: linear-gradient(135deg,hsl(var(--primary)) 0%,hsl(var(--accent)) 58%,color-mix(in oklab,hsl(var(--background)) 76%,white 24%) 100%); /* Extracted from ui/src/pages/ProfileSettings.tsx (bg-[linear-gradient(135deg,hsl(var(--primary))_0%,hsl(var(--accent))_58%,color-mix(in_oklab,hsl(var(--background))_76%,white_24%)_100%)]). */
 }
