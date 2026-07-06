@@ -25,6 +25,9 @@ env:
 
 jobs:
   build-and-sign:
+    # Fork: skip. Publishes to ghcr.io/paperclipai (upstream registry) — the fork
+    # has no write access, so this fails on every push. Runs on upstream only.
+    if: github.repository_owner == 'paperclipai'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7

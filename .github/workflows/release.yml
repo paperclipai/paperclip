@@ -27,7 +27,8 @@ concurrency:
 
 jobs:
   verify_canary:
-    if: github.event_name == 'push'
+    # Fork: skip. Upstream @paperclipai/* canary release path (publish_canary needs this).
+    if: github.event_name == 'push' && github.repository_owner == 'paperclipai'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -129,7 +130,8 @@ jobs:
           git push origin "refs/tags/${tag}"
 
   verify_stable:
-    if: github.event_name == 'workflow_dispatch'
+    # Fork: skip. Upstream stable release path (preview/publish_stable need this).
+    if: github.event_name == 'workflow_dispatch' && github.repository_owner == 'paperclipai'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

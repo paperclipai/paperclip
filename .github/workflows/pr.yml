@@ -63,9 +63,12 @@ jobs:
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
 
       - name: Validate release package manifest
+        # Fork: skip upstream @paperclipai/* release-registry checks.
+        if: github.repository_owner == 'paperclipai'
         run: node ./scripts/release-package-map.mjs check
 
       - name: Verify release package bootstrap for changed manifests
+        if: github.repository_owner == 'paperclipai'
         run: |
           mapfile -t changed_paths < <(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")
           PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
@@ -131,6 +134,8 @@ jobs:
         run: pnpm run typecheck:build-gaps
 
       - name: Verify release registry test coverage
+        # Fork: skip upstream @paperclipai/* release-registry coverage check.
+        if: github.repository_owner == 'paperclipai'
         run: pnpm run test:release-registry
 
   general_tests:
@@ -301,6 +306,8 @@ jobs:
 
   canary_dry_run:
     name: Canary Dry Run
+    # Fork: skip. Dry-runs the upstream @paperclipai/* canary publish path.
+    if: github.repository_owner == 'paperclipai'
     needs: [policy]
     runs-on: ubuntu-latest
     timeout-minutes: 20
