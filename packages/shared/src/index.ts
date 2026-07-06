@@ -1,5 +1,11 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
+  isSovereignAgentModelValue,
+  isSovereignAgentModel,
+  filterSovereignAgentModels,
+} from "./sovereign-models.js";
+export type { AgentModelLike } from "./sovereign-models.js";
+export {
   getAgentOrgChainHealth,
   getAgentWorkEligibility,
   isAgentAssignableToWork,

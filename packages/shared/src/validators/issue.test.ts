@@ -356,7 +356,7 @@ describe("issue validators", () => {
             enabled: true,
             label: "Cheap Codex",
             adapterConfig: {
-              model: "gpt-5.3-codex-spark",
+              model: "sovereign-codex-spark",
             },
           },
         },
@@ -364,7 +364,7 @@ describe("issue validators", () => {
     });
 
     expect(parsed.runtimeConfig.modelProfiles?.cheap?.adapterConfig).toEqual({
-      model: "gpt-5.3-codex-spark",
+      model: "sovereign-codex-spark",
     });
     expect(parsed.runtimeConfig.heartbeat).toEqual({ enabled: true });
   });
