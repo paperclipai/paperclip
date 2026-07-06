@@ -42,6 +42,8 @@ import type {
   PrincipalPermissionGrant,
   PermissionKey,
   PrincipalType,
+  PluginAcceptedPlanDecomposition,
+  PluginIssuesClient,
 } from "./types.js";
 import type {
   PluginEnvironmentValidateConfigParams,
@@ -493,6 +495,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const issueComments = new Map<string, IssueComment[]>();
   const issueInteractions = new Map<string, IssueThreadInteraction[]>();
   const issueDocuments = new Map<string, IssueDocument>();
+  const acceptedPlanDecompositions = new Map<string, PluginAcceptedPlanDecomposition & { requestFingerprint: string }>();
   const agents = new Map<string, Agent>();
   const goals = new Map<string, Goal>();
   const accessMembers = new Map<string, PluginAccessMember>();
@@ -1728,6 +1731,76 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         current.push(created);
         issueInteractions.set(issueId, current);
         return created;
+      },
+      async decomposeAcceptedPlan(sourceIssueId, input, companyId, actor) {
+        requireCapability(manifest, capabilitySet, "issues.create");
+        const sourceIssue = issues.get(sourceIssueId);
+        if (!isInCompany(sourceIssue, companyId)) {
+          throw new Error(`Issue not found: ${sourceIssueId}`);
+        }
+        const fingerprint = JSON.stringify({
+          acceptedPlanRevisionId: input.acceptedPlanRevisionId,
+          children: input.children,
+        });
+        const key = `${sourceIssueId}:${input.acceptedPlanRevisionId}`;
+        const existing = acceptedPlanDecompositions.get(key);
+        if (existing) {
+          if (existing.requestFingerprint !== fingerprint) {
+            throw new Error("Accepted-plan decomposition already exists for this revision with a different child set");
+          }
+          const childIssues = existing.childIssueIds
+            .map((id) => issues.get(id))
+            .filter((issue): issue is Issue => Boolean(issue));
+          return { decomposition: existing, childIssueIds: existing.childIssueIds, childIssues, newlyCreatedIssues: [] };
+        }
+        const now = new Date();
+        const newlyCreatedIssues: Issue[] = [];
+        for (const child of input.children) {
+          const created = await (this as PluginIssuesClient).create({
+            companyId: sourceIssue.companyId,
+            projectId: sourceIssue.projectId ?? undefined,
+            goalId: sourceIssue.goalId ?? undefined,
+            parentId: sourceIssue.id,
+            title: child.title,
+            description: child.description,
+            status: child.status,
+            priority: child.priority,
+            assigneeAgentId: child.assigneeAgentId,
+            assigneeUserId: child.assigneeUserId,
+            billingCode: child.billingCode,
+            surfaceVisibility: child.surfaceVisibility,
+            originKind: child.originKind,
+            originId: child.originId,
+            blockedByIssueIds: child.blockedByIssueIds,
+            labelIds: child.labelIds,
+            actor,
+          });
+          newlyCreatedIssues.push(created);
+        }
+        const decomposition: PluginAcceptedPlanDecomposition & { requestFingerprint: string } = {
+          id: randomUUID(),
+          companyId: sourceIssue.companyId,
+          sourceIssueId: sourceIssue.id,
+          acceptedPlanRevisionId: input.acceptedPlanRevisionId,
+          acceptedInteractionId: randomUUID(),
+          status: "completed",
+          requestedChildCount: input.children.length,
+          childIssueIds: newlyCreatedIssues.map((issue) => issue.id),
+          ownerAgentId: actor?.actorAgentId ?? null,
+          ownerUserId: actor?.actorUserId ?? null,
+          ownerRunId: actor?.actorRunId ?? null,
+          completedAt: now.toISOString(),
+          createdAt: now.toISOString(),
+          updatedAt: now.toISOString(),
+          requestFingerprint: fingerprint,
+        };
+        acceptedPlanDecompositions.set(key, decomposition);
+        return {
+          decomposition,
+          childIssueIds: decomposition.childIssueIds,
+          childIssues: newlyCreatedIssues,
+          newlyCreatedIssues,
+        };
       },
       async suggestTasks(issueId, interaction, companyId, options) {
         return this.createInteraction(issueId, { ...interaction, kind: "suggest_tasks" }, companyId, options) as Promise<any>;

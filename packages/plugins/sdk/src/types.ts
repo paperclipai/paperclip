@@ -46,6 +46,7 @@ import type {
   PermissionKey,
   PrincipalPermissionGrant,
   PrincipalType,
+  AcceptedPlanDecomposition,
 } from "@paperclipai/shared";
 import type { PluginPerformActionContext } from "./protocol.js";
 
@@ -1315,6 +1316,46 @@ export interface PluginIssueSummariesClient {
 }
 
 /**
+ * A single child issue to create as part of an accepted-plan decomposition.
+ * Mirrors the fields accepted by `ctx.issues.create`, minus `companyId` (the
+ * source issue's company is used) and `actor` (the decomposition call's own
+ * actor fields apply to every created child).
+ */
+export interface PluginAcceptedPlanDecompositionChildInput {
+  title: string;
+  description?: string;
+  status?: Issue["status"];
+  priority?: Issue["priority"];
+  assigneeAgentId?: string;
+  assigneeUserId?: string | null;
+  billingCode?: string | null;
+  surfaceVisibility?: IssueSurfaceVisibility;
+  originKind?: PluginIssueOriginKind;
+  originId?: string | null;
+  blockedByIssueIds?: string[];
+  labelIds?: string[];
+  acceptanceCriteria?: string[];
+}
+
+export interface PluginAcceptedPlanDecompositionInput {
+  /** The `documentRevisions.id` of the accepted `key: "plan"` document revision on the source issue. */
+  acceptedPlanRevisionId: string;
+  /** The full, stable child set for this revision — see idempotency notes below. */
+  children: PluginAcceptedPlanDecompositionChildInput[];
+}
+
+/** Plugin-facing alias of core's `AcceptedPlanDecomposition` (same shape, re-exported for SDK consumers). */
+export type PluginAcceptedPlanDecomposition = AcceptedPlanDecomposition;
+
+export interface PluginAcceptedPlanDecompositionResult {
+  decomposition: PluginAcceptedPlanDecomposition;
+  childIssueIds: string[];
+  childIssues: Issue[];
+  /** Only the children actually created by *this* call — empty on a fully-cached repeat call. */
+  newlyCreatedIssues: Issue[];
+}
+
+/**
  * `ctx.issues` — read and mutate issues plus comments.
  *
  * Requires:
@@ -1329,6 +1370,7 @@ export interface PluginIssueSummariesClient {
  * - `issue.interactions.create` for `createInteraction`, `suggestTasks`, `askUserQuestions`, `requestConfirmation`, and `requestCheckboxConfirmation`
  * - `issue.documents.read` for `documents.list` and `documents.get`
  * - `issue.documents.write` for `documents.upsert` and `documents.delete`
+ * - `issues.create` for `decomposeAcceptedPlan` (it creates child issues)
  */
 export interface PluginIssuesClient {
   list(input: {
@@ -1465,6 +1507,25 @@ export interface PluginIssuesClient {
     companyId: string,
     options?: { authorAgentId?: string },
   ): Promise<RequestCheckboxConfirmationInteraction>;
+  /**
+   * Idempotently create the child issues for an accepted plan document revision.
+   *
+   * `acceptedPlanRevisionId` must belong to a `key: "plan"` document on
+   * `sourceIssueId`, and that revision must have an accepted
+   * `request_confirmation` interaction targeting it — otherwise this throws.
+   * Calling this repeatedly with the SAME revision id and the SAME `children`
+   * array (compared by a stable content fingerprint) is a safe no-op / resumes
+   * from wherever a prior partial call left off. Calling it again for the same
+   * revision with a DIFFERENT `children` array throws a conflict — this is the
+   * guarantee that prevents duplicate child issues when multiple pipeline runs
+   * race to decompose the same epic. Requires `issues.create`.
+   */
+  decomposeAcceptedPlan(
+    sourceIssueId: string,
+    input: PluginAcceptedPlanDecompositionInput,
+    companyId: string,
+    actor?: PluginIssueMutationActor,
+  ): Promise<PluginAcceptedPlanDecompositionResult>;
   /** Read and write issue documents. Requires `issue.documents.read` / `issue.documents.write`. */
   documents: PluginIssueDocumentsClient;
   /** Read and write blocker relationships. */
