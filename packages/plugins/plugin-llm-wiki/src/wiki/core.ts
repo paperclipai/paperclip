@@ -2625,6 +2625,28 @@ export async function ensureWikiRootConfigured(ctx: PluginContext, companyId: st
   return folder;
 }
 
+/**
+ * Make the wiki usable for a company without any human bootstrap step: the
+ * root folder exists (auto-defaulted under the instance tree), the managed
+ * skills — including the required company-wide `wiki` skill — are installed,
+ * and every project has its space. Idempotent; safe to run on every startup
+ * and on company.created. The managed maintainer agent/routines are NOT
+ * activated here — they cost money and stay opt-in via activate-wiki-maintenance.
+ */
+export async function ensureCompanyWikiProvisioned(
+  ctx: PluginContext,
+  companyId: string,
+): Promise<{
+  folder: LocalFolderStatus;
+  managedSkills: WikiSkillResource[];
+  projectSpaces: ReconcileProjectSpacesResult;
+}> {
+  const folder = await ensureWikiRootConfigured(ctx, companyId);
+  const managedSkills = await reconcileWikiSkillResources(ctx, companyId);
+  const projectSpaces = await reconcileProjectSpaces(ctx, { companyId });
+  return { folder, managedSkills, projectSpaces };
+}
+
 export async function bootstrapWikiRoot(ctx: PluginContext, input: BootstrapInput) {
   const wikiId = DEFAULT_WIKI_ID;
   const defaultSpace = await ensureDefaultSpace(ctx, { companyId: input.companyId, wikiId });
