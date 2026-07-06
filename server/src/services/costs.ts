@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
+import { resolveCostEventCostCents } from "./model-costs.js";
 
 export interface CostDateRange {
   from?: Date;
@@ -63,14 +64,27 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         throw unprocessable("Agent does not belong to company");
       }
 
+      const billingType = data.billingType ?? "unknown";
+      const cachedInputTokens = data.cachedInputTokens ?? 0;
+      const costCents = resolveCostEventCostCents({
+        costCents: data.costCents,
+        billingType,
+        provider: data.provider,
+        model: data.model,
+        inputTokens: data.inputTokens,
+        cachedInputTokens,
+        outputTokens: data.outputTokens,
+      });
+
       const event = await db
         .insert(costEvents)
         .values({
           ...data,
           companyId,
           biller: data.biller ?? data.provider,
-          billingType: data.billingType ?? "unknown",
-          cachedInputTokens: data.cachedInputTokens ?? 0,
+          billingType,
+          cachedInputTokens,
+          costCents,
         })
         .returning()
         .then((rows) => rows[0]);

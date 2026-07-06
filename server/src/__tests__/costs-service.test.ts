@@ -432,6 +432,74 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     await tempDb?.cleanup();
   });
 
+  it("estimates zero-cost subscription-backed model usage toward spend while preserving subscription attribution", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Subscription Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "pi_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "completed",
+      startedAt: new Date(),
+      finishedAt: new Date(),
+    });
+
+    await costs.createEvent(companyId, {
+      heartbeatRunId: runId,
+      agentId,
+      provider: "clawrouter",
+      biller: "claude-bridge",
+      billingType: "subscription_included",
+      model: "clawrouter/claude-opus-4-8-200k",
+      inputTokens: 454,
+      cachedInputTokens: 9_093_372,
+      outputTokens: 138_628,
+      costCents: 0,
+      occurredAt: new Date(),
+    });
+
+    const summary = await costs.summary(companyId);
+    const [agentRow] = await costs.byAgent(companyId);
+    const [providerRow] = await costs.byProvider(companyId);
+
+    expect(summary.spendCents).toBe(801);
+    expect(agentRow).toMatchObject({
+      agentId,
+      costCents: 801,
+      subscriptionRunCount: 1,
+      subscriptionInputTokens: 454,
+      subscriptionCachedInputTokens: 9_093_372,
+      subscriptionOutputTokens: 138_628,
+    });
+    expect(providerRow).toMatchObject({
+      provider: "clawrouter",
+      biller: "claude-bridge",
+      billingType: "subscription_included",
+      model: "clawrouter/claude-opus-4-8-200k",
+      costCents: 801,
+    });
+  });
+
   it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

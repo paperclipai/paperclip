@@ -16,6 +16,7 @@ export interface CostEvent {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+  /** Budget/control-plane valuation for the underlying model call; may be non-zero for subscription-backed usage. */
   costCents: number;
   occurredAt: Date;
   createdAt: Date;

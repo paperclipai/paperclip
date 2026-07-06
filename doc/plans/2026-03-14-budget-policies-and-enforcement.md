@@ -78,12 +78,13 @@ They should come later as advisory usage controls once the money-based system is
 
 ### Subscription Usage Decision
 
-Paperclip should separate subscription-included usage from billed spend:
+Paperclip should separate subscription-included usage from invoice spend while still giving budgets a model-equivalent valuation:
 
 - `subscription_included`
   - visible in reporting
   - visible in usage summaries
-  - does not count against money budget
+  - may count against agent/company budgets via non-zero model-equivalent `cost_cents`
+  - remains distinguishable from separately invoiced API spend through `billing_type`
 - `subscription_overage`
   - visible in reporting
   - counts against money budget
@@ -508,11 +509,12 @@ For V1.5 enforcement, include:
 
 - `metered_api` cost events
 - `subscription_overage` cost events
-- any future request-scoped cost event with non-zero billed cents
+- `subscription_included` cost events with non-zero model-equivalent `cost_cents`
+- any future request-scoped cost event with non-zero budget valuation
 
 Do not include:
 
-- `subscription_included` cost events with zero billed cents
+- subscription events that still have zero `cost_cents` after model-equivalent estimation
 - advisory quota rows
 - account-level finance events unless and until company-level financial budgets are added explicitly
 
@@ -523,8 +525,8 @@ Token budgets should not be the first hard-stop because:
 - providers count tokens differently
 - cached tokens complicate simple totals
 - some future charges are not token-based
-- subscription tokens do not necessarily imply spend
-- money remains the cleanest cross-provider enforcement metric
+- subscription tokens need model-equivalent pricing before they can drive money-shaped budgets
+- money-valued usage remains the cleanest cross-provider enforcement metric
 
 ### Future Budget Metrics
 
@@ -580,8 +582,8 @@ Required coverage:
 - agent monthly budget hard-stop at 100%
 - project lifetime budget soft alert
 - project lifetime budget hard-stop
-- `subscription_included` usage does not consume money budget
-- `subscription_overage` does consume money budget
+- `subscription_included` usage with non-zero model-equivalent `cost_cents` consumes budget
+- `subscription_overage` consumes budget
 - hard-stop creates one incident per threshold per window
 - hard-stop creates approval and pauses correct scope
 - paused project blocks new issue execution

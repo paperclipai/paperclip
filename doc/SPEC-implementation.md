@@ -289,6 +289,7 @@ Invariants:
 - `provider` text not null
 - `model` text not null
 - `input_tokens` int not null default 0
+- `cached_input_tokens` int not null default 0
 - `output_tokens` int not null default 0
 - `cost_cents` int not null
 - `occurred_at` timestamptz not null
@@ -955,6 +956,8 @@ Validation:
 - non-negative token counts
 - `costCents >= 0`
 - company ownership checks for all linked entities
+
+`costCents` is the budget/control-plane valuation for the underlying model usage. It may be non-zero for `subscription_included` usage so agent and company budgets can control subscription-backed model burn even when no separate API invoice is produced. When a subscription-backed cost event reports tokens with zero cost for a known Anthropic/OpenAI model family, Paperclip may estimate this value from underlying model pricing.
 
 ## 13.4 Rollups
 
