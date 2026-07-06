@@ -102,6 +102,22 @@ export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
 );
 
+// OTL-138: liveness-gated auto-timeout for dead runs holding checkout locks.
+// A run SIGKILLed without a terminal status leaves `sweepStaleIssueLocks()`'s
+// status gate unable to release its lock — held forever. When enabled,
+// `autoTimeoutDeadSilentRuns()` transitions such a run to `timed_out` ONLY when
+// it is silent past this TTL AND provably process-dead (mandatory pid/pgid
+// liveness gate), so the existing terminal-gated sweep releases the lock on the
+// same tick. The TTL is a pre-filter, never the kill criterion — process death
+// is. Ships dark: the enable flag is read at call time (see the function) so it
+// defaults off and can be flipped/rolled back without a redeploy. Floored at 60s
+// so misconfiguration can't make the gate fire on sub-minute silence.
+export const DEAD_RUN_AUTO_TIMEOUT_ENV = "PAPERCLIP_DEAD_RUN_AUTO_TIMEOUT";
+export const DEAD_RUN_SILENCE_TTL_MS = Math.max(
+  60_000,
+  Number(process.env.PAPERCLIP_DEAD_RUN_SILENCE_TTL_MS) || 15 * 60 * 1000,
+);
+
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -1269,13 +1285,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
   }
 
-  async function finalizeAgentAfterSourceResolvedRun(run: typeof heartbeatRuns.$inferSelect, status: "succeeded" | "cancelled") {
+  async function finalizeAgentAfterSourceResolvedRun(run: typeof heartbeatRuns.$inferSelect, status: "succeeded" | "cancelled" | "timed_out") {
     const [runningCountRow] = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, "running")));
     const runningCount = Number(runningCountRow?.count ?? 0);
-    const nextStatus = runningCount > 0 ? "running" : status === "succeeded" || status === "cancelled" ? "idle" : "error";
+    const nextStatus =
+      runningCount > 0
+        ? "running"
+        : status === "succeeded" || status === "cancelled" || status === "timed_out"
+          ? "idle"
+          : "error";
     await db
       .update(agents)
       .set({
@@ -4377,6 +4398,125 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   // releaseIssueExecutionAndPromote / clearCheckoutRunIfTerminal / adoption.
   // Idempotent and safe: clears at most one row's worth of lock columns per
   // candidate, and only when the referenced run row is unambiguously terminal.
+  // OTL-138: transition provably-dead silent runs to `timed_out` so the
+  // terminal-gated `sweepStaleIssueLocks()` (which runs immediately after this
+  // in the same recovery tick) can release the checkout lock they would
+  // otherwise hold forever. A healthy-but-quiet run has a live pid and is
+  // skipped every tick, which is what makes the OTL-131 snapshot-race false
+  // positive structurally impossible: silence is only a pre-filter; OS-level
+  // process death, re-checked here at decision time, is the actual criterion.
+  async function autoTimeoutDeadSilentRuns(opts?: { now?: Date; companyId?: string }) {
+    const result = { scanned: 0, timedOut: 0, runIds: [] as string[] };
+
+    // Read the flag at call time so it ships dark and can be flipped/rolled
+    // back without a redeploy.
+    const enabled =
+      (process.env[DEAD_RUN_AUTO_TIMEOUT_ENV] ?? "false").toLowerCase() === "true";
+    if (!enabled) return result;
+
+    const now = opts?.now ?? new Date();
+    const cutoff = new Date(now.getTime() - DEAD_RUN_SILENCE_TTL_MS);
+
+    const candidates = await db
+      .select({ run: heartbeatRuns, adapterType: agents.adapterType })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+      .where(
+        and(
+          opts?.companyId ? eq(heartbeatRuns.companyId, opts.companyId) : undefined,
+          eq(heartbeatRuns.status, "running"),
+          sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${cutoff.toISOString()}::timestamptz`,
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.createdAt))
+      .limit(100);
+
+    result.scanned = candidates.length;
+
+    for (const { run, adapterType } of candidates) {
+      // Adapter gate: only sessioned local adapters expose a trustworthy OS pid.
+      if (!SESSIONED_LOCAL_ADAPTERS.has(adapterType)) continue;
+
+      const handle = runningProcesses.get(run.id);
+      const pid = handle?.child.pid ?? run.processPid ?? null;
+      const processGroupId = handle?.processGroupId ?? run.processGroupId ?? null;
+
+      // MANDATORY liveness gate: without process metadata we cannot PROVE death,
+      // so we never time the run out. This — plus the live re-check below — is
+      // what prevents a false positive on a healthy-but-quiet run (OTL-131).
+      if (typeof pid !== "number" && typeof processGroupId !== "number") continue;
+
+      const alive =
+        (typeof pid === "number" && isPidAlive(pid)) ||
+        (typeof processGroupId === "number" && isProcessGroupAlive(processGroupId));
+      if (alive) continue;
+
+      // Provably dead. Compare-and-swap to `timed_out`; if another path already
+      // finalized the run the guarded update returns nothing and we skip it.
+      const finalized = await db
+        .update(heartbeatRuns)
+        .set({
+          status: "timed_out",
+          finishedAt: now,
+          errorCode: "dead_run_auto_timeout",
+          resultJson: {
+            ...parseObject(run.resultJson),
+            deadRunAutoTimeout: {
+              pid,
+              processGroupId,
+              ttlMs: DEAD_RUN_SILENCE_TTL_MS,
+              detectedAt: now.toISOString(),
+              source: "recovery.auto_timeout_dead_silent_runs",
+            },
+          },
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(heartbeatRuns.id, run.id),
+            eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.status, "running"),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (!finalized) continue;
+
+      runningProcesses.delete(run.id);
+      await finalizeAgentAfterSourceResolvedRun(finalized, "timed_out");
+
+      result.timedOut += 1;
+      result.runIds.push(run.id);
+
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "heartbeat.dead_run_auto_timed_out",
+        entityType: "heartbeat_run",
+        entityId: run.id,
+        details: {
+          source: "recovery.auto_timeout_dead_silent_runs",
+          pid,
+          processGroupId,
+          ttlMs: DEAD_RUN_SILENCE_TTL_MS,
+        },
+      });
+    }
+
+    if (result.timedOut > 0) {
+      logger.warn(
+        { timedOut: result.timedOut, runIds: result.runIds },
+        "auto-timed-out provably-dead silent runs",
+      );
+    }
+
+    return result;
+  }
+
   async function sweepStaleIssueLocks() {
     const result = {
       cleared: 0,
@@ -4487,6 +4627,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
+    autoTimeoutDeadSilentRuns,
     sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileIssueGraphLiveness,

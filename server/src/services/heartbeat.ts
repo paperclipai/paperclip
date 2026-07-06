@@ -9733,6 +9733,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.sweepStaleIssueLocks();
   }
 
+  async function autoTimeoutDeadSilentRuns(opts?: { now?: Date; companyId?: string }) {
+    return recovery.autoTimeoutDeadSilentRuns(opts);
+  }
+
   function issueIdFromRunContext(contextSnapshot: unknown) {
     const context = parseObject(contextSnapshot);
     return readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -14533,6 +14537,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     reconcileStrandedAssignedIssues,
+
+    autoTimeoutDeadSilentRuns,
 
     sweepStaleIssueLocks,
 
