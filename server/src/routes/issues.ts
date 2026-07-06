@@ -7317,6 +7317,13 @@ export function issueRoutes(
           // The security_audit_log row UUID; used to build the
           // deep link in the page payload.
           auditId: result.auditId,
+          // The owning project id. The force-reassign volume
+          // hook asserts per-tenant payload isolation at emit
+          // ([G3 rule](/RAM/issues/RAM-6)); threading the
+          // project id through the event lets the hook carry
+          // it into the paging record for the IR responder's
+          // per-project read path.
+          projectId: existing.projectId,
         },
       });
 
