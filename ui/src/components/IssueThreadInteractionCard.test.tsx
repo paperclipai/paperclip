@@ -318,7 +318,7 @@ describe("IssueThreadInteractionCard", () => {
     );
   });
 
-  it("labels accept-only continuation policies in the card header", () => {
+  it("does not expose continuation wake policy labels in the card header", () => {
     const host = renderCard({
       interaction: {
         ...pendingRequestConfirmationInteraction,
@@ -326,7 +326,8 @@ describe("IssueThreadInteractionCard", () => {
       },
     });
 
-    expect(host.textContent).toContain("Wakes on confirm");
+    expect(host.textContent).not.toContain("Wakes on confirm");
+    expect(host.textContent).not.toContain("Wakes assignee");
   });
 
   it("renders request confirmation target links and stale-target expiry", () => {
