@@ -29,6 +29,48 @@ async function migrationHash(migrationFile: string): Promise<string> {
   return createHash("sha256").update(content).digest("hex");
 }
 
+const userVisibleUpdatedAtTables = new Set([
+  "companies",
+  "heartbeat_runs",
+  "issue_comments",
+  "issues",
+  "routine_runs",
+  "routines",
+]);
+
+const migrationUpdatedAtUpdateAllowlist = new Map<string, ReadonlySet<string>>([
+  [
+    "0105_instance_scoped_environments.sql",
+    new Set(["issues"]),
+  ],
+  [
+    "0131_repair_run_responsible_user_context_refs.sql",
+    new Set(["heartbeat_runs"]),
+  ],
+]);
+
+function findUserVisibleUpdatedAtBackfillViolations(
+  migrationFile: string,
+  content: string,
+): string[] {
+  const allowedTables = migrationUpdatedAtUpdateAllowlist.get(migrationFile) ?? new Set<string>();
+  const violations: string[] = [];
+
+  for (const statement of content.split("--> statement-breakpoint")) {
+    const updateMatch = statement.match(/\bUPDATE\s+"([^"]+)"/i);
+    if (!updateMatch) continue;
+
+    const tableName = updateMatch[1];
+    if (!userVisibleUpdatedAtTables.has(tableName)) continue;
+    if (!/\bSET\b[\s\S]*"updated_at"\s*=/i.test(statement)) continue;
+    if (allowedTables.has(tableName)) continue;
+
+    violations.push(`${migrationFile}: UPDATE "${tableName}" sets updated_at`);
+  }
+
+  return violations;
+}
+
 afterEach(async () => {
   while (cleanups.length > 0) {
     const cleanup = cleanups.pop();
@@ -43,6 +85,35 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
+  it("rejects unallowlisted migration backfills that bump updated_at on user-visible tables", async () => {
+    const entries = await fs.promises.readdir(new URL("./migrations", import.meta.url), {
+      withFileTypes: true,
+    });
+    const violations: string[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".sql")) continue;
+      const content = await fs.promises.readFile(
+        new URL(`./migrations/${entry.name}`, import.meta.url),
+        "utf8",
+      );
+      violations.push(...findUserVisibleUpdatedAtBackfillViolations(entry.name, content));
+    }
+
+    expect(violations).toEqual([]);
+    expect(
+      findUserVisibleUpdatedAtBackfillViolations(
+        "9999_bad_backfill.sql",
+        `
+          UPDATE "issues" AS i
+          SET "responsible_user_id" = 'owner-user',
+              "updated_at" = now()
+          WHERE i."responsible_user_id" IS NULL;
+        `,
+      ),
+    ).toEqual(['9999_bad_backfill.sql: UPDATE "issues" sets updated_at']);
+  });
+
   it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
@@ -535,6 +606,139 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
             "plugin_migrations_status_idx",
           ]),
         );
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "replays migration 0130 without bumping issue updated_at for inbox archives",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const runResponsibleUserHash = await migrationHash(
+          "0130_run_responsible_user_invariant.sql",
+        );
+
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000120',
+            'Migration Inbox Co',
+            'TST120',
+            '2026-03-26T09:00:00.000Z',
+            '2026-03-26T09:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "company_memberships" (
+            "id",
+            "company_id",
+            "principal_type",
+            "principal_id",
+            "status",
+            "membership_role",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000121',
+            '00000000-0000-0000-0000-000000000120',
+            'user',
+            'owner-user',
+            'active',
+            'owner',
+            '2026-03-26T09:00:00.000Z',
+            '2026-03-26T09:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issues" (
+            "id",
+            "company_id",
+            "title",
+            "status",
+            "responsible_user_id",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000122',
+            '00000000-0000-0000-0000-000000000120',
+            'Archived issue needing responsible user backfill',
+            'todo',
+            NULL,
+            '2026-03-26T10:00:00.000Z',
+            '2026-03-26T10:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issue_inbox_archives" (
+            "id",
+            "company_id",
+            "issue_id",
+            "user_id",
+            "archived_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000123',
+            '00000000-0000-0000-0000-000000000120',
+            '00000000-0000-0000-0000-000000000122',
+            'owner-user',
+            '2026-03-26T12:00:00.000Z',
+            '2026-03-26T12:00:00.000Z',
+            '2026-03-26T12:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${runResponsibleUserHash}'`,
+        );
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0130_run_responsible_user_invariant.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const rows = await verifySql.unsafe<{
+          responsible_user_id: string | null;
+          updated_at: Date;
+          inbox_archive_still_current: boolean;
+        }[]>(`
+          SELECT
+            i."responsible_user_id",
+            i."updated_at",
+            EXISTS (
+              SELECT 1
+              FROM "issue_inbox_archives" AS archive
+              WHERE archive."company_id" = i."company_id"
+                AND archive."issue_id" = i."id"
+                AND archive."user_id" = 'owner-user'
+                AND archive."archived_at" >= i."updated_at"
+            ) AS "inbox_archive_still_current"
+          FROM "issues" AS i
+          WHERE i."id" = '00000000-0000-0000-0000-000000000122'
+        `);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.responsible_user_id).toBe("owner-user");
+        expect(rows[0]?.updated_at.toISOString()).toBe("2026-03-26T10:00:00.000Z");
+        expect(rows[0]?.inbox_archive_still_current).toBe(true);
       } finally {
         await verifySql.end();
       }
