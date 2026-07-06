@@ -129,19 +129,36 @@ WHERE h."retry_of_run_id" = original."id"
   AND h."responsible_user_id" IS NULL
   AND original."responsible_user_id" IS NOT NULL;
 --> statement-breakpoint
-UPDATE "heartbeat_runs" AS h
-SET "responsible_user_id" = i."responsible_user_id",
-    "updated_at" = now()
-FROM "issues" AS i
-WHERE h."company_id" = i."company_id"
-  AND h."responsible_user_id" IS NULL
-  AND i."responsible_user_id" IS NOT NULL
-  AND (
-    h."context_snapshot" ->> 'issueId' = i."id"::text
-    OR h."context_snapshot" ->> 'taskId' = i."id"::text
-    OR h."context_snapshot" ->> 'issueId' = i."identifier"
-    OR h."context_snapshot" ->> 'taskId' = i."identifier"
-  );
+-- BTCAAAAA-38908: guard the heartbeat_runs × issues join. Without functional
+-- indexes on context_snapshot->>'issueId' / ->>'taskId', the 4-way OR predicate
+-- produces an O(heartbeats × issues) nested loop with four JSON extractions per
+-- pair. If no issues carry a responsible_user_id yet, the UPDATE matches zero
+-- rows, so skip the work entirely. Same guard added upstream in paperclip PR
+-- that ships 0130.
+DO $guard$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM "issues"
+    WHERE "responsible_user_id" IS NOT NULL
+    LIMIT 1
+  ) THEN
+    UPDATE "heartbeat_runs" AS h
+    SET "responsible_user_id" = i."responsible_user_id",
+        "updated_at" = now()
+    FROM "issues" AS i
+    WHERE h."company_id" = i."company_id"
+      AND h."responsible_user_id" IS NULL
+      AND i."responsible_user_id" IS NOT NULL
+      AND (
+        h."context_snapshot" ->> 'issueId' = i."id"::text
+        OR h."context_snapshot" ->> 'taskId' = i."id"::text
+        OR h."context_snapshot" ->> 'issueId' = i."identifier"
+        OR h."context_snapshot" ->> 'taskId' = i."identifier"
+      );
+  END IF;
+END
+$guard$;
 --> statement-breakpoint
 UPDATE "heartbeat_runs" AS h
 SET "responsible_user_id" = awr."requested_by_actor_id",
