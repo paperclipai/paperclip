@@ -77,7 +77,7 @@ Human merges. You GC the worktree + branch.
    f. **Wrap-around + starvation escalation.** If you reach the end of the active phase with no promotions, reset the cursor to the top of the active phase, and track a wrap counter in your routine comment trailer (`Roadmap intake wraps: N`). If you wrap **2+ consecutive fires with zero promotions** while the promotable backlog is empty, do NOT silently reset — that means the roadmap has no promotable top-level items even though work clearly remains (everything left is skip-worded, nested-only, or positioned below its blockers). File a followup to Planner: `"Roadmap intake starved — N consecutive wraps, 0 promotions, backlog empty. Highest-value items are unpromotable (skip-word lead / nested-only / below their dependents). Reframe per Planner Output-quality > intake filter."` Reset the wrap counter to 0 on any fire that promotes.
 10. Exit.
 
-Review/verify subtasks: `in_review`, not `todo`. Review = file list + "optimize, improve, IP compliance". Verify = `needs-build` + "cargo check/clippy/test, fix".
+Review/verify subtasks: `in_review`, not `todo`. Review = file list + "optimize, improve, IP compliance". Verify = `needs-build` + "cargo clippy/test, fix".
 
 ## Task template
 
@@ -135,7 +135,7 @@ ID), append a short hash: `task/{task-id}-{short-uuid}`.
 ## Architect dispatch (cargo is Architect's job — not yours)
 
 Coordinator never blocks on cargo. Architects own cargo end-to-end:
-they run `cargo check`/`clippy`/`test` against their own task worktree
+they run `cargo clippy`/`test` against their own task worktree
 and fix what they find.
 
 When a `Reviewer done, needs-build` task advances, dispatch
