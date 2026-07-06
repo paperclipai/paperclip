@@ -3058,6 +3058,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryIssue,
       ownerAgentId: ownerSelection.agentId,
     });
+    const escalationParentIssueId = recoveryIssue.parentId ?? recoveryIssue.id;
 
     let escalation: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
@@ -3066,7 +3067,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         description: buildLivenessEscalationDescription(input.finding),
         status: "todo",
         priority: "high",
-        parentId: recoveryIssue.id,
+        parentId: escalationParentIssueId,
         projectId: recoveryIssue.projectId,
         goalId: recoveryIssue.goalId,
         assigneeAgentId: ownerSelection.agentId,
@@ -3130,6 +3131,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         recoveryIdentifier: recoveryIssue.identifier,
         escalationIssueId: escalation.id,
         escalationIdentifier: escalation.identifier,
+        escalationParentIssueId,
+        escalationParentSource: recoveryIssue.parentId ? "recovery_issue_parent" : "recovery_issue",
         dependencyPath: input.finding.dependencyPath,
         ownerSelection: {
           selectedAgentId: ownerSelection.agentId,
