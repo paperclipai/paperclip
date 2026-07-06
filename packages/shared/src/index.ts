@@ -266,6 +266,7 @@ export {
   type AgentStatus,
   type AgentAdapterType,
   type AgentRole,
+  type AdapterAgnosticKey,
   type ModelProfileKey,
   type AgentIconName,
   type ProjectIconName,
