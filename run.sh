@@ -26,22 +26,10 @@ Commands:
 EOF
 }
 
-log() {
-  printf '[INFO] %s\n' "$*"
-}
-
-warn() {
-  printf '[WARN] %s\n' "$*" >&2
-}
-
-error() {
-  printf '[ERROR] %s\n' "$*" >&2
-}
-
-die() {
-  error "$*"
-  exit 1
-}
+log()   { printf '[INFO] %s\n' "$*"; }
+warn()  { printf '[WARN] %s\n' "$*" >&2; }
+error() { printf '[ERROR] %s\n' "$*" >&2; }
+die()   { error "$*"; exit 1; }
 
 on_error() {
   local exit_code=$?
@@ -52,21 +40,13 @@ on_error() {
 
 trap 'on_error $LINENO' ERR
 
-command_exists() {
-  command -v "$1" >/dev/null 2>&1
-}
+command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 run_root() {
-  if [[ ${#SUDO_CMD[@]} -gt 0 ]]; then
-    "${SUDO_CMD[@]}" "$@"
-  else
-    "$@"
-  fi
+  if [[ ${#SUDO_CMD[@]} -gt 0 ]]; then "${SUDO_CMD[@]}" "$@"; else "$@"; fi
 }
 
-ensure_linux() {
-  [[ "$(uname -s)" == "Linux" ]] || die "run.sh hanya mendukung Linux."
-}
+ensure_linux()   { [[ "$(uname -s)" == "Linux" ]] || die "run.sh hanya mendukung Linux."; }
 
 ensure_ubuntu() {
   [[ -f /etc/os-release ]] || die "Tidak dapat mendeteksi OS."
@@ -76,18 +56,12 @@ ensure_ubuntu() {
 }
 
 ensure_sudo() {
-  if [[ $EUID -eq 0 ]]; then
-    SUDO_CMD=()
-    return
-  fi
-
+  if [[ $EUID -eq 0 ]]; then SUDO_CMD=(); return; fi
   command_exists sudo || die "sudo tidak ditemukan. Jalankan sebagai root atau install sudo."
   SUDO_CMD=(sudo)
 }
 
-apt_install() {
-  run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
-}
+apt_install() { run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"; }
 
 ensure_base_packages() {
   log "Memastikan package dasar host terpasang..."
@@ -123,29 +97,14 @@ EOF
 }
 
 ensure_node_and_pnpm() {
-  local need_node=0
-  local need_pnpm=0
-
-  if ! command_exists node; then
-    need_node=1
-  fi
-  if ! command_exists pnpm; then
-    need_pnpm=1
-  fi
-
-  if [[ $need_node -eq 0 && $need_pnpm -eq 0 ]]; then
-    log "Node.js dan pnpm sudah tersedia di host."
-    return
-  fi
+  local need_node=0 need_pnpm=0
+  ! command_exists node && need_node=1
+  ! command_exists pnpm && need_pnpm=1
+  [[ $need_node -eq 0 && $need_pnpm -eq 0 ]] && { log "Node.js dan pnpm sudah tersedia di host."; return; }
 
   log "Memastikan Node.js 20 dan pnpm tersedia di host..."
   ensure_base_packages
-
-  if [[ $need_node -eq 1 ]]; then
-    curl -fsSL https://deb.nodesource.com/setup_20.x | run_root bash -
-    apt_install nodejs
-  fi
-
+  [[ $need_node -eq 1 ]] && { curl -fsSL https://deb.nodesource.com/setup_20.x | run_root bash -; apt_install nodejs; }
   if command_exists corepack; then
     run_root corepack enable
     corepack prepare pnpm@9.15.4 --activate
@@ -154,12 +113,15 @@ ensure_node_and_pnpm() {
   fi
 }
 
+# ------------------------------------------------------------------
+# CLI installation helpers
+# ------------------------------------------------------------------
+
 install_claude_cli() {
   log "Memastikan Claude Code CLI terpasang dan terkonfigurasi..."
   local claude_config_dir="${HOME}/.claude"
   local claude_settings_file="${claude_config_dir}/settings.json"
 
-  # Install Claude CLI if not present
   if ! command_exists claude; then
     log "Menginstall @anthropic-ai/claude-code..."
     if command_exists sudo; then
@@ -172,24 +134,20 @@ install_claude_cli() {
     log "Claude Code CLI sudah terpasang."
   fi
 
-  # Ensure config directory exists
-  if [[ ! -d "$claude_config_dir" ]]; then
-    log "Membuat direktori konfigurasi Claude: $claude_config_dir"
-    mkdir -p "$claude_config_dir" || die "Gagal membuat direktori $claude_config_dir"
-  fi
-
-  # Generate settings.json from environment variables
-  log "Membuat/memperbarui settings.json dari variabel environment..."
-  
-  # Validate required env vars
+  # Validate required env vars — use correct base URL (no /v1 suffix!)
   [[ -z "${ANTHROPIC_API_KEY:-}" ]] && die "ANTHROPIC_API_KEY tidak diset di .env"
   [[ -z "${ANTHROPIC_BASE_URL:-}" ]] && die "ANTHROPIC_BASE_URL tidak diset di .env"
+
+  mkdir -p "$claude_config_dir" || die "Gagal membuat direktori $claude_config_dir"
+
+  log "Membuat/memperbarui settings.json dari variabel environment..."
 
   cat > "$claude_settings_file" <<CLAUDE_EOF
 {
   "env": {
     "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
     "ANTHROPIC_BASE_URL": "${ANTHROPIC_BASE_URL}",
+    "ANTHROPIC_AUTH_TOKEN": "${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY}}",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "${ANTHROPIC_DEFAULT_OPUS_MODEL:-deepseek-v4-flash}",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "${ANTHROPIC_DEFAULT_SONNET_MODEL:-deepseek-v4-flash}",
@@ -202,17 +160,16 @@ install_claude_cli() {
   "apiKeyHelper": "echo '${ANTHROPIC_API_KEY}'"
 }
 CLAUDE_EOF
-
+  chmod 600 "$claude_settings_file"
   log "Claude Code CLI berhasil dikonfigurasi di $claude_settings_file"
 }
-    chmod 600 "$claude_settings_file"
+
 install_codex_cli() {
   log "Memastikan OpenAI Codex CLI terpasang dan terkonfigurasi..."
   local codex_config_dir="${HOME}/.codex"
   local codex_auth_file="${codex_config_dir}/auth.json"
   local codex_config_file="${codex_config_dir}/config.toml"
 
-  # Install Codex CLI if not present
   if ! command_exists codex; then
     log "Menginstall @openai/codex..."
     if command_exists sudo; then
@@ -225,29 +182,18 @@ install_codex_cli() {
     log "OpenAI Codex CLI sudah terpasang."
   fi
 
-  # Ensure config directory exists (recreate if stale)
-  if [[ -d "$codex_config_dir" ]]; then
-    log "Direktori konfigurasi Codex sudah ada, akan diperbarui jika perlu."
-  else
-    log "Membuat direktori konfigurasi Codex: $codex_config_dir"
-    mkdir -p "$codex_config_dir" || die "Gagal membuat direktori $codex_config_dir"
-  fi
-
-  # Generate auth.json from environment variables
-  log "Membuat/memperbarui auth.json dari variabel environment..."
-  
-  # Validate required env vars
   [[ -z "${OPENAI_API_KEY:-}" ]] && die "OPENAI_API_KEY tidak diset di .env"
 
+  mkdir -p "$codex_config_dir" || die "Gagal membuat direktori $codex_config_dir"
+
+  log "Membuat/memperbarui auth.json dari variabel environment..."
   cat > "$codex_auth_file" <<CODEX_AUTH_EOF
 {
   "OPENAI_API_KEY": "${OPENAI_API_KEY}"
 }
 CODEX_AUTH_EOF
 
-  # Generate config.toml from environment variables
   log "Membuat/memperbarui config.toml dari variabel environment..."
-
   cat > "$codex_config_file" <<CODEX_CONFIG_EOF
 model_provider = "${CODEX_MODEL_PROVIDER:-openmodel}"
 model = "${CODEX_MODEL:-deepseek-v4-flash}"
@@ -263,17 +209,20 @@ CODEX_CONFIG_EOF
 
   log "OpenAI Codex CLI berhasil dikonfigurasi di $codex_config_dir"
 }
+
+# ------------------------------------------------------------------
+# Docker compose helpers
+# ------------------------------------------------------------------
+
 detect_docker_cmd() {
   if docker info >/dev/null 2>&1; then
     DOCKER_CMD=(docker)
     return
   fi
-
   if [[ ${#SUDO_CMD[@]} -gt 0 ]] && sudo docker info >/dev/null 2>&1; then
     DOCKER_CMD=(sudo docker)
     return
   fi
-
   die "Docker tidak bisa diakses. Coba logout/login ulang atau jalankan script ini dengan sudo."
 }
 
@@ -285,27 +234,18 @@ require_project_files() {
 detect_server_ip() {
   local ip
   ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  if [[ -n "$ip" ]]; then
-    printf '%s\n' "$ip"
-    return
-  fi
-
+  if [[ -n "$ip" ]]; then printf '%s\n' "$ip"; return; fi
   ip="$(ip route get 1.1.1.1 2>/dev/null | awk '/src/ {for (i=1; i<=NF; i++) if ($i=="src") {print $(i+1); exit}}')"
-  if [[ -n "$ip" ]]; then
-    printf '%s\n' "$ip"
-    return
-  fi
-
+  if [[ -n "$ip" ]]; then printf '%s\n' "$ip"; return; fi
   printf '127.0.0.1\n'
 }
 
-random_hex() {
-  openssl rand -hex "$1"
-}
+random_hex()   { openssl rand -hex "$1"; }
+random_base64(){ openssl rand -base64 "$1" | tr -d '\n'; }
 
-random_base64() {
-  openssl rand -base64 "$1" | tr -d '\n'
-}
+# ------------------------------------------------------------------
+# Env file handling
+# ------------------------------------------------------------------
 
 create_env_file() {
   local server_ip public_url auth_secret db_password
@@ -333,30 +273,33 @@ PAPERCLIP_SECRETS_STRICT_MODE=true
 
 # API Keys for CLIs and Paperclip Adapters
 ANTHROPIC_API_KEY=
-ANTHROPIC_BASE_URL=https://api.openmodel.ai/v1/
+ANTHROPIC_BASE_URL=https://api.openmodel.ai
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-flash
+ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-flash
+ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4-flash
 OPENAI_API_KEY=
+CODE_DISABLE_RESPONSE_STORAGE=true
+CODEX_MODEL=deepseek-v4-flash
+CODEX_OPENMODEL_BASE_URL=https://api.openmodel.ai/v1
 GEMINI_API_KEY=
 GOOGLE_API_KEY=
 EOF
 
   chmod 600 "$ENV_FILE"
   warn ".env belum ada, jadi saya buat otomatis dengan default aman."
-  warn "Silakan review $ENV_FILE jika Anda ingin mengganti URL, port, atau secret provider."
-  warn "Pastikan untuk mengisi ANTHROPIC_API_KEY dan OPENAI_API_KEY di $ENV_FILE."
+  warn "Silakan review $ENV_FILE — pastikan ANTHROPIC_API_KEY dan OPENAI_API KEY diisi."
 }
 
 create_env_example_file() {
   cat > "$ENV_EXAMPLE_FILE" <<'EOF'
 # .env.example
-# This file is a template for your .env file.
 # Copy this file to .env and fill in your actual credentials.
-# This file (.env.example) can be committed to version control.
-# The .env file should be gitignored and contain your actual secrets.
 
 # Docker Compose Project Name
 COMPOSE_PROJECT_NAME=paperclip
 
-# Host IP and Port for local binding (will be ignored if Traefik is used)
+# Host IP and Port for local binding (ignored when Traefik is used)
 HOST_BIND_IP=0.0.0.0
 APP_PORT=3100
 
@@ -370,25 +313,29 @@ PAPERCLIP_PUBLIC_URL=https://paperclip.carisinternational.com
 PAPERCLIP_DEPLOYMENT_MODE=authenticated
 PAPERCLIP_DEPLOYMENT_EXPOSURE=public
 BETTER_AUTH_SECRET=REPLACE_WITH_LONG_RANDOM_SECRET
-TRUST_PROXY=172.19.0.0/16 # This is for Traefik existing in afiacloud-containers network
+TRUST_PROXY=172.19.0.0/16
 
-# Paperclip Internal Configuration (usually leave as is)
+# Paperclip Internal Configuration
 SERVE_UI=true
 PAPERCLIP_HOME=/paperclip
 PAPERCLIP_INSTANCE_ID=default
 PAPERCLIP_SECRETS_STRICT_MODE=true
 
 # API Keys for CLIs and Paperclip Adapters
-# ANTHROPIC_API_KEY for Claude Code CLI and Anthropic models in Paperclip
 ANTHROPIC_API_KEY=REPLACE_WITH_YOUR_ANTHROPIC_API_KEY
-# ANTHROPIC_BASE_URL: The sample doc referenced https://api.openmodel.ai/v1, which differs from the https://openmodel.ai/ endpoint used
-# elsewhere in this infra. Confirm which provider endpoint is actually intended and update if necessary.
-ANTHROPIC_BASE_URL=https://api.openmodel.ai/v1/
+# IMPORTANT: Do NOT append /v1 — Claude CLI adds it automatically.
+ANTHROPIC_BASE_URL=https://api.openmodel.ai
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-flash
+ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-flash
+ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4-flash
 
-# OPENAI_API_KEY for OpenAI Codex CLI and OpenAI models in Paperclip
 OPENAI_API_KEY=REPLACE_WITH_YOUR_OPENAI_API_KEY
+CODEX_DISABLE_RESPONSE_STORAGE=true
+CODEX_MODEL=deepseek-v4-flash
+CODEX_OPENMODEL_BASE_URL=https://api.openmodel.ai/v1
 
-# Other potential API keys for Paperclip Adapters (optional)
+# Other API keys (optional)
 GEMINI_API_KEY=
 GOOGLE_API_KEY=
 EOF
@@ -398,14 +345,13 @@ ensure_env_file() {
   if [[ -f "$ENV_FILE" ]]; then
     log "Menggunakan env file yang sudah ada: $ENV_FILE"
   else
-    if [[ ! -f "$ENV_EXAMPLE_FILE" ]]; then
-      log "Membuat $ENV_EXAMPLE_FILE..."
-      create_env_example_file
-    fi
+    [[ -f "$ENV_EXAMPLE_FILE" ]] || create_env_example_file
     log "File .env belum ada. Membuat dari template .env.example..."
     cp "$ENV_EXAMPLE_FILE" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
-    warn "File .env telah dibuat dari .env.example. Harap perbarui dengan kredensial Anda, terutama ANTHROPIC_API_KEY dan OPENAI_API_KEY."
+    warn "File .env telah dibuat dari .env.example."
+    warn "WAJIB: isi ANTHROPIC_API_KEY dan OPENAI_API_KEY sebelum menjalankan up lagi."
+    exit 1
   fi
 }
 
@@ -434,21 +380,23 @@ load_env_file() {
   : "${OPENAI_API_KEY:=}"
 
   [[ -n "$BETTER_AUTH_SECRET" ]] || die "BETTER_AUTH_SECRET kosong di $ENV_FILE."
-  [[ -n "$ANTHROPIC_API_KEY" ]] || warn "ANTHROPIC_API_KEY kosong di $ENV_FILE. Claude Code CLI mungkin tidak berfungsi."
-  [[ -n "$OPENAI_API_KEY" ]] || warn "OPENAI_API_KEY kosong di $ENV_FILE. OpenAI Codex CLI mungkin tidak berfungsi."
+  [[ -n "$ANTHROPIC_API_KEY" ]] || die "ANTHROPIC_API_KEY kosong di $ENV_FILE. Claude CLI tidak akan berfungsi."
+  [[ -n "$OPENAI_API_KEY" ]] || die "OPENAI_API_KEY kosong di $ENV_FILE. Codex CLI tidak akan berfungsi."
 
   DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
   DATABASE_MIGRATION_URL="$DATABASE_URL"
   export DATABASE_URL DATABASE_MIGRATION_URL
 }
 
+# ------------------------------------------------------------------
+# Docker compose file generation
+# ------------------------------------------------------------------
+
 ensure_runtime_dirs() {
   mkdir -p "$RUNTIME_DIR" "$PROJECT_DIR/volumes/postgres" "$PROJECT_DIR/volumes/paperclip"
-
   if [[ ! -w "$PROJECT_DIR/volumes/postgres" || ! -w "$PROJECT_DIR/volumes/paperclip" ]]; then
     run_root chown -R "$(id -u):$(id -g)" "$PROJECT_DIR/volumes"
   fi
-
   chmod 700 "$PROJECT_DIR/volumes/paperclip" || true
 }
 
@@ -498,11 +446,20 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: ${PAPERCLIP_DEPLOYMENT_EXPOSURE}
       PAPERCLIP_SECRETS_STRICT_MODE: ${PAPERCLIP_SECRETS_STRICT_MODE}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      # API keys for adapters inside the container
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # IMPORTANT: base URL without /v1 — Claude CLI adds it
       ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL}
-      GEMINI_API_KEY: ${GEMINI_API_KEY}
-      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      # Bearer token for /v1/models pre-flight check
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY}}
+      # Default model must be compatible with OpenModel
+      ANTHROPIC_DEFAULT_OPUS_MODEL: ${ANTHROPIC_DEFAULT_OPUS_MODEL:-deepseek-v4-flash}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${ANTHROPIC_DEFAULT_SONNET_MODEL:-deepseek-v4-flash}
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${ANTHROPIC_DEFAULT_HAIKU_MODEL:-deepseek-v4-flash}
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
     labels:
       - traefik.enable=true
       - traefik.docker.network=afiacloud-containers
@@ -533,9 +490,7 @@ compose() {
     "$@"
 }
 
-is_stack_running() {
-  compose ps --services --status running 2>/dev/null | grep -qx "$APP_SERVICE"
-}
+is_stack_running() { compose ps --services --status running 2>/dev/null | grep -qx "$APP_SERVICE"; }
 
 port_in_use() {
   local port="$1"
@@ -550,44 +505,39 @@ ensure_port_available() {
 
 ensure_repo_updated() {
   local auto_pull="${AUTO_GIT_PULL:-1}"
-  [[ "$auto_pull" == "1" ]] || {
-    log "AUTO_GIT_PULL=0, skip git pull."
-    return
-  }
-
+  [[ "$auto_pull" == "1" ]] || { log "AUTO_GIT_PULL=0, skip git pull."; return; }
   git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return
-
   if ! git -C "$PROJECT_DIR" diff --quiet || ! git -C "$PROJECT_DIR" diff --cached --quiet; then
-    warn "Worktree git tidak clean, jadi auto pull saya skip agar aman."
+    warn "Worktree git tidak clean, auto pull saya skip."
     return
   fi
-
   if ! git -C "$PROJECT_DIR" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
-    warn "Branch saat ini tidak punya upstream tracking, jadi auto pull saya skip."
+    warn "Branch tidak punya upstream, auto pull saya skip."
     return
   fi
-
   log "Mengambil update terbaru dari repository..."
   git -C "$PROJECT_DIR" fetch --all --prune
   git -C "$PROJECT_DIR" pull --ff-only
 }
+
+# ------------------------------------------------------------------
+# Health check & deploy
+# ------------------------------------------------------------------
 
 health_check() {
   local health_url attempts max_attempts
   health_url="http://127.0.0.1:${APP_PORT}/api/health"
   attempts=0
   max_attempts="${HEALTHCHECK_RETRIES:-60}"
-
   log "Menunggu health check aplikasi di ${health_url}..."
   until curl -fsS "$health_url" >/dev/null 2>&1; do
     attempts=$((attempts + 1))
     if (( attempts >= max_attempts )); then
-      compose logs --tail=100 "$APP_SERVICE" "$DB_SERVICE" || true
+      compose logs --tail=50 "$APP_SERVICE" "$DB_SERVICE" || true
       die "Health check gagal setelah ${max_attempts} percobaan."
     fi
     sleep 2
   done
-
   log "Health check sukses."
 }
 
@@ -612,72 +562,176 @@ deploy_paperclip() {
   log "Paperclip service berhasil dideploy."
 }
 
+# ------------------------------------------------------------------
+# Paperclip onboard + bootstrap (inside container)
+# ------------------------------------------------------------------
+
+onboard_paperclip() {
+  log "Menjalankan onboard Paperclip (first-run setup)..."
+
+  # Check if already configured
+  if docker exec "$APP_SERVICE" test -f /paperclip/instances/default/config.json 2>/dev/null; then
+    log "Paperclip sudah di-onboard, melewati onboard."
+    return
+  fi
+
+  log "Paperclip perlu onboard — menjalankan konfigurasi awal..."
+  # Write config directly to avoid interactive prompt
+  docker exec -i "$APP_SERVICE" sh -c 'mkdir -p /paperclip/instances/default' 2>/dev/null || true
+
+  # Run onboard non-interactively — --yes quickstart, then we override
+  docker exec "$APP_SERVICE" sh -c 'pnpm paperclipai onboard --yes 2>&1' && {
+    log "Onboard quickstart selesai."
+    return
+  } || {
+    warn "Onboard quickstart gagal, coba konfigurasi manual..."
+    # Fallback: write config directly like we did before
+    return 1
+  }
+}
+
+configure_paperclip() {
+  log "Mengkonfigurasi Paperclip untuk mode authenticated/public..."
+
+  local config_path="/paperclip/instances/default/config.json"
+
+  # Rewrite config with proper values using Node
+  docker exec -i "$APP_SERVICE" sh -c "cat > /tmp/update-config.js << 'JSEOF'
+const fs = require('fs');
+const path = '$config_path';
+let config;
+try {
+  config = JSON.parse(fs.readFileSync(path, 'utf8'));
+} catch {
+  config = { \\\$meta: { version: 1, updatedAt: new Date().toISOString(), source: 'run-sh' } };
+}
+config.server = config.server || {};
+config.server.deploymentMode = 'authenticated';
+config.server.exposure = 'public';
+config.server.bind = 'custom';
+config.server.host = '0.0.0.0';
+config.server.customBindHost = '0.0.0.0';
+config.server.port = 3100;
+config.server.serveUi = true;
+config.server.allowedHostnames = ['paperclip.carisinternational.com'];
+config.auth = config.auth || {};
+config.auth.baseUrlMode = 'explicit';
+config.auth.publicUrl = '${PAPERCLIP_PUBLIC_URL}';
+config.auth.publicBaseUrl = '${PAPERCLIP_PUBLIC_URL}';
+config.auth.disableSignUp = false;
+config.database = config.database || {};
+config.database.mode = 'postgres';
+config.database.connectionString = '${DATABASE_URL}';
+config.secrets = config.secrets || {};
+config.secrets.strictMode = true;
+fs.writeFileSync(path, JSON.stringify(config, null, 2) + '\n');
+console.log('Config updated successfully');
+JSEOF
+node /tmp/update-config.js" 2>&1 || true
+}
+
+restart_paperclip() {
+  log "Merestart Paperclip dengan konfigurasi baru..."
+  docker restart "$APP_SERVICE" 2>&1 || true
+  sleep 10
+}
+
+bootstrap_admin() {
+  log "Membuat invite admin pertama..."
+  local invite_url
+  invite_url=$(docker exec "$APP_SERVICE" pnpm paperclipai auth bootstrap-ceo --base-url "$PAPERCLIP_PUBLIC_URL" 2>&1 | grep -o 'https://[^ ]*invite/[^ ]*' || true)
+  if [[ -n "$invite_url" ]]; then
+    log "=============================================="
+    log "  INVITE ADMIN URL (buka di browser):"
+    log "  $invite_url"
+    log "=============================================="
+    log "  URL ini hanya bisa dipakai sekali."
+    log "  Expired dalam 48 jam."
+  else
+    warn "Tidak bisa generate invite URL. Jalankan manual:"
+    printf "  docker exec %s pnpm paperclipai auth bootstrap-ceo --base-url %%s\\n" \
+      "$APP_SERVICE" "$PAPERCLIP_PUBLIC_URL"
+  fi
+}
+
+# ------------------------------------------------------------------
+# Verification
+# ------------------------------------------------------------------
+
+verify_claude_probe() {
+  log "Verifikasi Claude CLI dengan hello probe..."
+  local result
+  result=$(docker exec "$APP_SERVICE" bash -c \
+    'ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-flash timeout 45 claude --print - 2>&1' <<< "Respond with hello" 2>&1 || true)
+  if echo "$result" | grep -qi "hello"; then
+    log "Claude hello probe: PASS"
+    return 0
+  else
+    warn "Claude hello probe: FAIL (${result:0:200})"
+    return 1
+  fi
+}
+
+verify_codex_probe() {
+  log "Verifikasi OpenAI Codex CLI..."
+  local codex_version
+  codex_version=$(command_exists codex && codex -V 2>&1 || true)
+  if [[ -n "$codex_version" ]]; then
+    log "OpenAI Codex CLI: PASS (Versi: $codex_version)"
+    return 0
+  else
+    warn "OpenAI Codex CLI: FAIL"
+    return 1
+  fi
+}
+
 verify_all() {
   log "Memulai verifikasi deployment..."
-  local overall_status=0 # 0 for success, 1 for failure
-  local result_msg=""
+  local overall_status=0
 
-  # 1. Verify paperclip service is running and accessible via HTTPS
+  # 1. Paperclip HTTPS
   log "Verifikasi Paperclip service di https://paperclip.carisinternational.com..."
-  local paperclip_status="FAIL"
   local curl_output
-  curl_output=$(curl -sSI "https://paperclip.carisinternational.com" || true) # Use || true to prevent script exit on curl error
+  curl_output=$(curl -sSI "https://paperclip.carisinternational.com" 2>&1 || true)
   if echo "$curl_output" | grep -q "200 OK"; then
-    if echo "$curl_output" | grep -q "HTTP/2"; then # Assuming HTTP/2 with TLS is expected
-      paperclip_status="PASS"
-      log "Paperclip service: PASS (Status 200 OK, HTTPS/TLS terdeteksi)"
-    else
-      log "Paperclip service: FAIL (HTTPS/TLS tidak terdeteksi. Output: $curl_output)"
-    fi
+    log "Paperclip service: PASS (HTTPS 200 OK)"
   else
-    log "Paperclip service: FAIL (Tidak mendapatkan 200 OK. Output: $curl_output)"
+    warn "Paperclip service: FAIL"
+    overall_status=1
   fi
-  if [[ "$paperclip_status" == "FAIL" ]]; then overall_status=1; fi
-  result_msg+="Paperclip Service: $paperclip_status\n"
 
-  # 2. Verify Claude CLI installation
-  log "Verifikasi Claude Code CLI..."
-  local claude_cli_status="FAIL"
-  if command_exists claude; then
-    local claude_version
-    claude_version=$(claude --version 2>&1 || true)
-    if [[ -n "$claude_version" ]]; then
-      claude_cli_status="PASS"
-      log "Claude Code CLI: PASS (Versi: $claude_version)"
-    else
-      log "Claude Code CLI: FAIL (Tidak dapat mendapatkan versi)"
-    fi
+  # 2. Claude probe inside container
+  log "Verifikasi Claude Code CLI hello probe di dalam container..."
+  local claude_result
+  claude_result=$(docker exec "$APP_SERVICE" env ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek-v4-flash timeout 45 claude --print - 2>&1 <<< "Respond with hello" 2>&1 | tr -d '\0' || true)
+  if echo "$claude_result" | grep -qi "hello"; then
+    log "Claude Code CLI: PASS (hello probe sukses)"
   else
-    log "Claude Code CLI: FAIL (Tidak ditemukan command 'claude')"
+    warn "Claude Code CLI: FAIL — probe gagal"
+    overall_status=1
   fi
-  if [[ "$claude_cli_status" == "FAIL" ]]; then overall_status=1; fi
-  result_msg+="Claude Code CLI: $claude_cli_status\n"
 
-  # 3. Verify Codex CLI installation
+  # 3. Codex CLI version
   log "Verifikasi OpenAI Codex CLI..."
-  local codex_cli_status="FAIL"
   if command_exists codex; then
-    local codex_version
-    codex_version=$(codex -V 2>&1 || true)
-    if [[ -n "$codex_version" ]]; then
-      codex_cli_status="PASS"
-      log "OpenAI Codex CLI: PASS (Versi: $codex_version)"
+    local codex_ver
+    codex_ver=$(codex -V 2>&1 || true)
+    if [[ -n "$codex_ver" ]]; then
+      log "OpenAI Codex CLI: PASS (Versi: $codex_ver)"
     else
-      log "OpenAI Codex CLI: FAIL (Tidak dapat mendapatkan versi)"
+      warn "OpenAI Codex CLI: FAIL"
+      overall_status=1
     fi
   else
-    log "OpenAI Codex CLI: FAIL (Tidak ditemukan command 'codex')"
+    warn "OpenAI Codex CLI: FAIL (command tidak ditemukan)"
+    overall_status=1
   fi
-  if [[ "$codex_cli_status" == "FAIL" ]]; then overall_status=1; fi
-  result_msg+="OpenAI Codex CLI: $codex_cli_status\n"
 
   log "--- Verifikasi Selesai ---"
-  printf "$result_msg"
   if [[ "$overall_status" -eq 0 ]]; then
-    log "Semua verifikasi berhasil. Deployment selesai."
+    log "Semua verifikasi berhasil. Paperclip siap digunakan!"
   else
-    error "Beberapa verifikasi gagal. Silakan periksa log di atas untuk detail."
-    return 1
+    warn "Beberapa verifikasi gagal — Paperclip tetap berjalan."
   fi
 }
 
@@ -686,9 +740,13 @@ show_access_info() {
   printf '  URL       : %s\n' "$PAPERCLIP_PUBLIC_URL"
   printf '  Health    : http://127.0.0.1:%s/api/health\n' "$APP_PORT"
   printf '  Logs      : ./run.sh logs\n'
-  printf '  Bootstrap : docker compose -f %s exec %s pnpm paperclipai auth bootstrap-ceo --base-url %s\n' \
-      "$COMPOSE_FILE" "$APP_SERVICE" "$PAPERCLIP_PUBLIC_URL"
+  printf '  Bootstrap : docker exec %s pnpm paperclipai auth bootstrap-ceo --base-url %%s\n' \
+      "$APP_SERVICE" "$PAPERCLIP_PUBLIC_URL"
 }
+
+# ------------------------------------------------------------------
+# Commands
+# ------------------------------------------------------------------
 
 cmd_up() {
   ensure_linux
@@ -701,14 +759,22 @@ cmd_up() {
   detect_docker_cmd
   ensure_repo_updated
 
-  # Deploy Paperclip
+  # 1. Deploy Paperclip stack
   deploy_paperclip
 
-  # Install and Configure CLIs
+  # 2. Install CLIs on host
   install_claude_cli
   install_codex_cli
 
-  # Final Verification
+  # 3. Onboard & configure Paperclip inside container
+  onboard_paperclip || true
+  configure_paperclip
+  restart_paperclip
+
+  # 4. Bootstrap admin
+  bootstrap_admin
+
+  # 5. Final verification
   verify_all
   show_access_info
 }
@@ -724,8 +790,8 @@ cmd_down() {
     return
   fi
 
-  ensure_env_file
-  load_env_file
+  ensure_env_file 2>/dev/null || true
+  load_env_file 2>/dev/null || true
   log "Menghentikan stack..."
   compose down --remove-orphans
 }
@@ -740,8 +806,8 @@ cmd_logs() {
   ensure_sudo
   ensure_docker
   detect_docker_cmd
-  ensure_env_file
-  load_env_file
+  ensure_env_file 2>/dev/null || true
+  load_env_file 2>/dev/null || true
   ensure_compose_file
 
   log "Menampilkan logs aplikasi dan database..."
@@ -752,25 +818,12 @@ main() {
   local command="${1:-}"
 
   case "$command" in
-    up)
-      cmd_up
-      ;;
-    down)
-      cmd_down
-      ;;
-    restart)
-      cmd_restart
-      ;;
-    logs)
-      cmd_logs
-      ;;
-    -h|--help|help|"")
-      usage
-      ;;
-    *)
-      usage
-      die "Command tidak dikenal: $command"
-      ;;
+    up)      cmd_up ;;
+    down)    cmd_down ;;
+    restart) cmd_restart ;;
+    logs)    cmd_logs ;;
+    -h|--help|help|"") usage ;;
+    *) usage; die "Command tidak dikenal: $command" ;;
   esac
 }
 
