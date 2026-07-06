@@ -1,4 +1,7 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { resolvePaperclipEnvPath } from "./paths.js";
 
 interface JwtHeader {
   alg: string;
@@ -20,6 +23,12 @@ export interface LocalAgentJwtClaims {
 
 const JWT_ALGORITHM = "HS256";
 
+const LOCAL_AGENT_JWT_SECRET_FILENAME = "agent-jwt-secret";
+
+// Cache only the auto-provisioned file secret. Explicitly configured env
+// secrets are always re-read so tests / runtime overrides stay dynamic.
+let cachedLocalFileSecret: string | undefined;
+
 function parseNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
@@ -32,8 +41,82 @@ function parseBooleanEnv(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 }
 
+/**
+ * Resolve the HMAC secret used to sign and verify per-run agent JWTs.
+ *
+ * Priority:
+ *   1. PAPERCLIP_AGENT_JWT_SECRET / BETTER_AUTH_SECRET (explicit config).
+ *   2. local_trusted only: a persistent, machine-local secret auto-provisioned
+ *      next to the Paperclip env file. In local_trusted the same server process
+ *      both signs and verifies the token, so a self-generated secret is
+ *      sufficient and removes the need to run onboarding just to get correct
+ *      agent attribution in local dev. Without this, every agent run fails to
+ *      mint a token, no PAPERCLIP_API_KEY is injected, and API calls fall back
+ *      to the local-board admin actor (see BMAAA-17).
+ *
+ * Returns null when no secret is available (e.g. authenticated deployments,
+ * which must use an explicitly configured secret), preserving prior behaviour
+ * for non-local deployments.
+ */
+function resolveAgentJwtSecret(): string | null {
+  const configured =
+    process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim();
+  if (configured) return configured;
+
+  const deploymentMode = process.env.PAPERCLIP_DEPLOYMENT_MODE?.trim() || "local_trusted";
+  if (deploymentMode !== "local_trusted") return null;
+
+  if (cachedLocalFileSecret) return cachedLocalFileSecret;
+
+  try {
+    const secretPath = join(dirname(resolvePaperclipEnvPath()), LOCAL_AGENT_JWT_SECRET_FILENAME);
+    if (existsSync(secretPath)) {
+      const existing = readFileSync(secretPath, "utf8").trim();
+      if (existing) {
+        cachedLocalFileSecret = existing;
+        return existing;
+      }
+    }
+    // Atomically create the secret file so two processes racing on first
+    // boot do not each cache a different secret. The loser gets EEXIST and
+    // re-reads the winner's value rather than clobbering it.
+    const generated = randomBytes(48).toString("base64url");
+    mkdirSync(dirname(secretPath), { recursive: true });
+    try {
+      writeFileSync(secretPath, `${generated}\n`, { flag: "wx", mode: 0o600 });
+      cachedLocalFileSecret = generated;
+      return generated;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+        const winner = readFileSync(secretPath, "utf8").trim();
+        if (winner) {
+          cachedLocalFileSecret = winner;
+          return winner;
+        }
+      }
+      throw err;
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Diagnostic summary of the agent JWT secret source, for the startup banner.
+ */
+export function describeAgentJwtSecret(): { status: "pass" | "warn"; message: string } {
+  if (process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim()) {
+    return { status: "pass", message: "set" };
+  }
+  const deploymentMode = process.env.PAPERCLIP_DEPLOYMENT_MODE?.trim() || "local_trusted";
+  if (deploymentMode === "local_trusted" && resolveAgentJwtSecret()) {
+    return { status: "pass", message: "auto-provisioned (local_trusted)" };
+  }
+  return { status: "warn", message: "missing (run `pnpm paperclipai onboard`)" };
+}
+
 function jwtConfig() {
-  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim();
+  const secret = resolveAgentJwtSecret();
   if (!secret) return null;
 
   return {
