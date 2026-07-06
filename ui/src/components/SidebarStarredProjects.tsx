@@ -109,6 +109,8 @@ export function SidebarStarredProjects() {
         const routeRef = projectRouteRef(project);
         const isActive = activeProjectRef === routeRef || activeProjectRef === project.id;
         const pending = pendingFor(project);
+        const unstarPending = pending && membershipMutation.variables?.starred === false;
+        const leavePending = pending && membershipMutation.variables?.state === "left";
         const starred = isStarred(membershipsQuery.data, "project", project.id);
 
         const link = (
@@ -153,7 +155,7 @@ export function SidebarStarredProjects() {
                   size="row"
                   quiet
                   starred={starred}
-                  pending={pending && membershipMutation.variables?.starred === false}
+                  pending={unstarPending}
                   resourceName={project.name}
                   onToggle={() => unstar(project)}
                   revealClassName={STAR_ROW_REVEAL}
@@ -182,7 +184,11 @@ export function SidebarStarredProjects() {
                     }}
                     disabled={pending}
                   >
-                    <Star className="size-4 fill-amber-500 text-amber-500" />
+                    {unstarPending ? (
+                      <Loader2 className="size-4 motion-safe:animate-spin" />
+                    ) : (
+                      <Star className="size-4 fill-amber-500 text-amber-500" />
+                    )}
                     <span>Remove from starred</span>
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
@@ -193,7 +199,7 @@ export function SidebarStarredProjects() {
                     }}
                     disabled={pending}
                   >
-                    {pending && membershipMutation.variables?.state === "left" ? (
+                    {leavePending ? (
                       <Loader2 className="size-4 motion-safe:animate-spin" />
                     ) : (
                       <LogOut className="size-4" />
