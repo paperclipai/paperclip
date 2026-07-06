@@ -750,6 +750,13 @@
       "when": 1783305600000,
       "tag": "0106_company_mcp_servers",
       "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1783305660000,
+      "tag": "0107_attachment_upload_limit_30mib",
+      "breakpoints": true
     }
   ]
 }

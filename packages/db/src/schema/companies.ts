@@ -17,7 +17,7 @@ export const companies = pgTable(
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
     attachmentMaxBytes: integer("attachment_max_bytes")
       .notNull()
-      .default(10 * 1024 * 1024),
+      .default(30 * 1024 * 1024),
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")
       .notNull()
       .default(false),
