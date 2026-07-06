@@ -82,8 +82,8 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Automatic self-healing orchestration (auto-reassign/retry planners)
 
 Role-based human permission granularity is V1 — see the `humans-and-permissions`
-plan and `principal_permission_grants`. Per-user opt-out scoping for
-`tasks:view_all` and `agents:view_all` ships alongside it.
+plan, the `principal_permission_grants` table, and the `PERMISSION_KEYS` set
+in `packages/shared/src/constants.ts`.
 
 ## 6. Architecture
 
