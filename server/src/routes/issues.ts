@@ -5652,6 +5652,16 @@ export function issueRoutes(
 
       const actor = getActorInfo(req);
       const assigneeAgentId = await resolveDelegatedRecoveryTargetAgentId(existing.companyId, target);
+      await assertCanAssignTasks(req, existing.companyId, {
+        projectId: await resolveAssignmentProjectId({
+          companyId: existing.companyId,
+          projectId: existing.projectId,
+          parentIssueId: existing.parentId,
+        }),
+        parentIssueId: existing.parentId ?? null,
+        assigneeAgentId,
+        assigneeUserId: null,
+      });
       const fingerprint = delegatedRecoveryFingerprint(actionId, target);
       let recoveryIssue = await getDelegatedRecoveryIssue(existing.companyId, fingerprint);
       let createdRecoveryIssue = false;

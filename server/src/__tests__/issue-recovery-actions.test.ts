@@ -1568,6 +1568,69 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(actionRow?.status).toBe("active");
   });
 
+  it("enforces assignment authorization when delegating recovery to a protected CEO", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db.insert(agents).values({
+      id: randomUUID(),
+      companyId,
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      reportsTo: null,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {
+        authorizationPolicy: {
+          assignmentPolicy: { mode: "protected" },
+        },
+      },
+    });
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "workspace_validation_failed",
+      fingerprint: "workspace-validation:protected-ceo",
+      evidence: { reason: "git_worktree_branch_incoherence" },
+      nextAction: "Repair the source issue workspace link before resuming.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    const runId = randomUUID();
+    await seedHeartbeatRun({
+      companyId,
+      agentId: coderId,
+      runId,
+      issueId: sourceIssueId,
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: coderId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/delegate`)
+      .send({ actionId: action.id, target: "ceo" })
+      .expect(403);
+
+    const delegatedIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "delegated_recovery")));
+    expect(delegatedIssues).toHaveLength(0);
+    const [actionRow] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(actionRow?.status).toBe("active");
+  });
+
   it("resolves an active recovery action and removes it from active projections", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const recoveryActionSvc = issueRecoveryActionService(db);
