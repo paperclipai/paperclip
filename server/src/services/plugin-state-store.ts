@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { plugins, pluginState } from "@paperclipai/db";
 import type {
@@ -57,6 +57,15 @@ function scopeConditions(
  * `plugin_state` table. Each plugin's data is strictly namespaced by
  * `pluginId` so plugins cannot read or write each other's state.
  *
+ * The unique key is `(plugin_id, scope_kind, scope_id, namespace, state_key)`
+ * and the underlying DB constraint must use `NULLS NOT DISTINCT` so that
+ * `instance`-scope rows (where `scope_id IS NULL`) actually collide on
+ * upsert. Migration 0131 installs that constraint; if you're running
+ * against a database created before that migration, `get()` still does
+ * the right thing by ordering `updated_at DESC` and limiting to one row,
+ * but `set()` will keep accumulating duplicates until the migration
+ * runs.
+ *
  * This service implements the server-side backing for the `ctx.state` SDK
  * client exposed to plugin workers. The host is responsible for:
  * - enforcing `plugin.state.read` capability before calling `get` / `list`
@@ -109,10 +118,19 @@ export function pluginStateStore(db: Db) {
         namespace = DEFAULT_NAMESPACE,
       }: { scopeId?: string; namespace?: string } = {},
     ): Promise<unknown> => {
+      // Order by updated_at DESC and limit 1 so callers always see the
+      // most recent write even if the unique constraint isn't enforced
+      // (e.g. databases predating the migration that added NULLS NOT
+      // DISTINCT — see migration 0131). Without this, a stale row could
+      // be picked at random and the UI would render old data (e.g. a
+      // week-old `running: true` flag) until a fresh write happens to
+      // win the race.
       const rows = await db
         .select()
         .from(pluginState)
-        .where(scopeConditions(pluginId, scopeKind, scopeId, namespace, stateKey));
+        .where(scopeConditions(pluginId, scopeKind, scopeId, namespace, stateKey))
+        .orderBy(desc(pluginState.updatedAt))
+        .limit(1);
 
       return rows[0]?.valueJson ?? null;
     },
