@@ -8,8 +8,10 @@ import {
   computeMentionMenuPosition,
   findClosestAutocompleteAnchor,
   findMentionMatch,
+  isPasteableLinkUrl,
   isSameAutocompleteSession,
   issueMentionTitle,
+  looksLikeUrl,
   MarkdownEditor,
   type MentionOption,
   placeCaretAfterMentionAnchor,
@@ -991,5 +993,48 @@ describe("MarkdownEditor", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+});
+
+describe("looksLikeUrl / isPasteableLinkUrl (paste-over-selection gate, issue #2930)", () => {
+  // These strings must NOT be treated as link targets, otherwise pasting them
+  // over highlighted text wraps the selection in a link instead of replacing it.
+  const notUrls = [
+    "hello",
+    "hello world",
+    "replace this text",
+    "Some sentence with a period.",
+    "v1.2.3",
+    "",
+    "   ",
+    "name@example", // missing a real domain/scheme; not a paste-to-link target
+    "C:\\Users\\foo",
+  ];
+  it.each(notUrls)("treats %p as plain text, not a URL", (value) => {
+    expect(looksLikeUrl(value)).toBe(false);
+    expect(isPasteableLinkUrl(value)).toBe(false);
+  });
+
+  const urls = [
+    "https://example.com",
+    "http://example.com/path?q=1#frag",
+    "https://sub.example.co.uk/a/b",
+    "ftp://files.example.com/x",
+    "mailto:foo@bar.com",
+    "tel:+15551234567",
+    "//cdn.example.com/app.js",
+    "www.example.com",
+    "www.example.com/path",
+  ];
+  it.each(urls)("treats %p as a URL", (value) => {
+    expect(looksLikeUrl(value)).toBe(true);
+    expect(isPasteableLinkUrl(value)).toBe(true);
+  });
+
+  it("rejects dangerous schemes even when URL-shaped", () => {
+    // looksLikeUrl may match the shape, but the safety gate must veto it so the
+    // selection is never wrapped in a javascript:/data: link.
+    expect(isPasteableLinkUrl("javascript://alert(1)")).toBe(false);
+    expect(isPasteableLinkUrl("vbscript://x")).toBe(false);
   });
 });

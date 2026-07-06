@@ -176,6 +176,42 @@ function isSafeMarkdownLinkUrl(url: string): boolean {
   return !/^(javascript|data|vbscript):/i.test(trimmed);
 }
 
+/**
+ * Whether a pasted string is unambiguously a URL.
+ *
+ * Lexical's `LinkPlugin` registers a paste handler that, when text is selected,
+ * wraps the selection in a link if `validateUrl(clipboardText)` is true instead
+ * of replacing it. `isSafeMarkdownLinkUrl` alone is far too permissive for that
+ * gate — it returns true for any non-dangerous string — so pasting *any* plain
+ * text over highlighted text silently turned it into a link (rendered as an
+ * underline) rather than replacing it (issue #2930). Keep the implicit
+ * paste-to-link behavior only for things that clearly are URLs; everything else
+ * falls through to the normal "replace the selection" paste.
+ */
+export function looksLikeUrl(value: string): boolean {
+  const trimmed = value.trim();
+  // URLs never contain whitespace; sentences/most prose are excluded here.
+  if (!trimmed || /\s/.test(trimmed)) return false;
+  // Explicit scheme with an authority, e.g. https://example.com, ftp://host.
+  if (/^[a-z][a-z0-9+.-]*:\/\/\S/i.test(trimmed)) return true;
+  // Schemes without an authority, e.g. mailto:foo@bar.com, tel:+1234.
+  if (/^(mailto|tel):\S/i.test(trimmed)) return true;
+  // Protocol-relative URL, e.g. //cdn.example.com/app.js.
+  if (/^\/\/\S+/.test(trimmed)) return true;
+  // www-prefixed bare domain, e.g. www.example.com/path?q=1.
+  if (/^www\.[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}([/?#:].*)?$/i.test(trimmed)) return true;
+  return false;
+}
+
+/**
+ * Validator handed to the link plugin. Used both to gate paste-to-link and to
+ * validate programmatic link toggles, so it must reject unsafe schemes *and*
+ * anything that isn't actually a URL.
+ */
+export function isPasteableLinkUrl(url: string): boolean {
+  return isSafeMarkdownLinkUrl(url) && looksLikeUrl(url);
+}
+
 /* ---- Mention detection helpers ---- */
 
 interface MentionState {
@@ -805,7 +841,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       listsPlugin(),
       quotePlugin(),
       tablePlugin(),
-      linkPlugin({ validateUrl: isSafeMarkdownLinkUrl }),
+      linkPlugin({ validateUrl: isPasteableLinkUrl }),
       linkDialogPlugin(),
       mentionDeletionPlugin(),
       pasteNormalizationPlugin(),
