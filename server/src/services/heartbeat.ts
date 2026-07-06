@@ -1374,6 +1374,21 @@ async function hasGitPushRemote(cwd: string | null | undefined) {
   return false;
 }
 
+function resolveEffectiveWorkspaceStrategyType(
+  mode: ReturnType<typeof resolveExecutionWorkspaceMode>,
+  config: Record<string, unknown>,
+): string {
+  const workspaceStrategy = parseObject(config.workspaceStrategy);
+  return (
+    readNonEmptyString(workspaceStrategy.type) ??
+    (mode === "agent_default"
+      ? "adapter_managed"
+      : mode === "isolated_workspace" || mode === "operator_branch"
+        ? "git_worktree"
+        : "project_primary")
+  );
+}
+
 export async function assertGitWorktreeBaseWorkspaceReady(input: {
   requestedExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode>;
   config: Record<string, unknown>;
@@ -1395,13 +1410,10 @@ export async function assertGitWorktreeBaseWorkspaceReady(input: {
     return;
   }
 
-  const workspaceStrategy = parseObject(input.config.workspaceStrategy);
-  const strategyType =
-    readNonEmptyString(workspaceStrategy.type) ??
-    (input.requestedExecutionWorkspaceMode === "isolated_workspace" ||
-        input.requestedExecutionWorkspaceMode === "operator_branch"
-      ? "git_worktree"
-      : null);
+  const strategyType = resolveEffectiveWorkspaceStrategyType(
+    input.requestedExecutionWorkspaceMode,
+    input.config,
+  );
   if (strategyType !== "git_worktree") return;
 
   const issueLabel = input.issue.identifier ?? input.issue.id;
@@ -10650,14 +10662,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const workspaceStrategyForFingerprint = parseObject(hostExecutionWorkspaceConfig.workspaceStrategy);
     const workspaceStrategyFingerprintValue =
       Object.keys(workspaceStrategyForFingerprint).length > 0 ? workspaceStrategyForFingerprint : null;
-    const latestWorkspaceStrategyType =
-      readNonEmptyString(workspaceStrategyForFingerprint.type) ??
-      (requestedExecutionWorkspaceMode === "agent_default"
-        ? "adapter_managed"
-        : requestedExecutionWorkspaceMode === "isolated_workspace" ||
-            requestedExecutionWorkspaceMode === "operator_branch"
-          ? "git_worktree"
-          : "project_primary");
+    const latestWorkspaceStrategyType = resolveEffectiveWorkspaceStrategyType(
+      requestedExecutionWorkspaceMode,
+      hostExecutionWorkspaceConfig,
+    );
     const selectedEnvironmentConfigForFingerprint = parseObject(selectedEnvironmentForConfig?.config);
     const workspaceEnvironmentFingerprint = selectedEnvironmentForConfig
       ? {
