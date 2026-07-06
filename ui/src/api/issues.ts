@@ -29,7 +29,7 @@ export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
 };
 
-// TON-2266 Phase 2/3: heuristic project classifier suggestions for an issue.
+// Heuristic project classifier suggestions for an issue.
 export type ProjectSuggestion = {
   projectId: string;
   projectName: string;
@@ -139,10 +139,10 @@ export const issuesApi = {
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
   get: (id: string) => api.get<Issue>(`/issues/${id}`),
-  getProjectSuggestions: (id: string) =>
-    api.get<IssueProjectSuggestionsResponse>(`/issues/${id}/project-suggestions`),
   markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
   markUnread: (id: string) => api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
+  getProjectSuggestions: (id: string) =>
+    api.get<IssueProjectSuggestionsResponse>(`/issues/${id}/project-suggestions`),
   archiveFromInbox: (id: string) =>
     api.post<{ id: string; archivedAt: Date }>(`/issues/${id}/inbox-archive`, {}),
   unarchiveFromInbox: (id: string) =>

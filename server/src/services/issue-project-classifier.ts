@@ -1,13 +1,13 @@
 /**
  * Issue → Project auto-classification (heuristic / rules engine).
  *
- * TON-2266: one-click suggestion of a project for unclassified issues.
+ * One-click suggestion of a project for unclassified issues.
  *
  * This module is intentionally a pure, dependency-free function: it takes the
  * candidate projects and (optionally) the already-classified issues that anchor
  * each project, and returns a ranked, *explainable* set of suggestions. No LLM
  * call, no network, no DB access — deterministic and unit-testable. The board's
- * rules-vs-model decision (TON-2266) can layer an LLM tie-breaker on top later
+ * rules-vs-model decision can layer an LLM tie-breaker on top later
  * without changing this contract; see the scoping note on the issue.
  *
  * Scoring is a lightweight TF-IDF-style weighted term overlap between the issue

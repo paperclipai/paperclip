@@ -6,7 +6,7 @@ import {
   type ProjectSuggestion,
 } from "./issue-project-classifier.js";
 
-// Fixtures modelled on the real Tony AI Lab project set (TON-2266 grounding).
+// Fixtures modelled on a real small-fleet workspace (5 projects, mixed EN/KO).
 const PROJECTS: ClassifierProject[] = [
   { id: "p-onboard", name: "Onboarding", description: "", status: "in_progress" },
   {

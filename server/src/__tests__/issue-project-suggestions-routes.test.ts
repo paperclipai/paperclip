@@ -19,7 +19,7 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-describeEmbeddedPostgres("issue project-suggestions routes (TON-2266 Phase 2)", () => {
+describeEmbeddedPostgres("issue project-suggestions routes", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 

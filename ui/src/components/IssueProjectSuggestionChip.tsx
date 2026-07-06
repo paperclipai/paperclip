@@ -12,7 +12,7 @@ import {
 } from "./ui/dropdown-menu";
 
 /**
- * TON-2266 Phase 3: one-click project classification for an unclassified issue.
+ * One-click project classification for an unclassified issue.
  *
  * Renders in place of the "No project" placeholder. Pulls ranked suggestions
  * from the heuristic classifier (`GET /issues/:id/project-suggestions`) and:
