@@ -630,7 +630,7 @@ describe("issue execution policy transitions", () => {
           actor: { agentId: qaAgentId },
           commentBody: "",
         }),
-      ).toThrow("requires a comment");
+      ).toThrow(/Approving a review or approval stage requires a comment.*same PATCH request.*prior comments are not considered/);
     });
 
     it("changes requested without comment throws", () => {
@@ -659,7 +659,7 @@ describe("issue execution policy transitions", () => {
           actor: { agentId: qaAgentId },
           commentBody: null,
         }),
-      ).toThrow("requires a comment");
+      ).toThrow(/Requesting changes requires a comment.*same PATCH request.*prior comments are not considered/);
     });
 
     it("whitespace-only comment is treated as empty", () => {

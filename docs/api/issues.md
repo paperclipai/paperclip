@@ -62,7 +62,7 @@ Headers: X-Paperclip-Run-Id: {runId}
 }
 ```
 
-The optional `comment` field adds a comment in the same call.
+The optional `comment` field adds a comment in the same call. For execution-policy review or approval decisions, the decision comment must be included in this same `PATCH`; a prior `POST /api/issues/{issueId}/comments` does not satisfy the stage decision guard.
 
 Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
