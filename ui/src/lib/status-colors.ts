@@ -107,13 +107,10 @@ export const agentStatusColor: Record<string, AgentBadgeColor> = {
 
 export const agentStatusColorDefault: AgentBadgeColor = "gray";
 
-/** Brand `.task-chip` styles (1px border) per colour name — light + dark. */
-export const agentStatusBadge: Record<AgentBadgeColor, string> = {
-  gray: "bg-[#F5F3F0] text-[#52585D] border-[#A8AEB2] dark:bg-[#6e696024] dark:text-[#9A958A] dark:border-[#9e958a73]",
-  blue: "bg-[#DBEAFE] text-[#1D4ED8] border-[#2563EB] dark:bg-[#2563eb2e] dark:text-[#2563EB] dark:border-[#2563eb73]",
-  amber: "bg-[#FEF3C7] text-[#B45309] border-[#F59E0B] dark:bg-[#f59e0b24] dark:text-[#F59E0B] dark:border-[#f59e0b73]",
-  red: "bg-[#FEE2E2] text-[#991B1B] border-[#DC2626] dark:bg-[#dc26262e] dark:text-[#DC2626] dark:border-[#dc262673]",
-};
+// Brand `.task-chip` styles per colour name live in `brandChipBadge` below —
+// `AgentBadgeColor` is a subset of `BrandChipColor`, so agent badges index
+// straight into it. (A byte-identical `agentStatusBadge` duplicate map was
+// collapsed into `brandChipBadge` in the Run 2 review; DECISION-SHEET.md A1.)
 
 /** Heartbeat-capsule fill (solid) per colour name. gray darkens in dark mode. */
 export const agentStatusCapsule: Record<AgentBadgeColor, string> = {
