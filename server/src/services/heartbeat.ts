@@ -210,6 +210,9 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const DETACHED_PROCESS_STALLED_ERROR_CODE = "process_detached_stalled";
+const DEFAULT_DETACHED_PROCESS_STALL_MS = 15 * 60 * 1000;
+const DETACHED_PROCESS_TERMINATION_GRACE_MS = 15 * 1000;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -221,6 +224,10 @@ const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_r
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+const DETACHED_PROCESS_STALL_MS = readPositiveIntegerEnv(
+  "PAPERCLIP_DETACHED_PROCESS_STALL_MS",
+  DEFAULT_DETACHED_PROCESS_STALL_MS,
+);
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -1240,6 +1247,32 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number) {
+  const raw = process.env[name];
+  if (typeof raw !== "string" || raw.trim().length === 0) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
+function silenceStartedAtForDetachedRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">,
+) {
+  return run.lastOutputAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
+}
+
+function detachedRunSilenceAgeMs(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">,
+  now: Date,
+) {
+  const startedAt = silenceStartedAtForDetachedRun(run);
+  return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
+}
+
+function formatDurationMinutes(ms: number) {
+  return `${Math.max(1, Math.round(ms / 60_000))} minutes`;
 }
 
 function wakeAttachmentContentPath(id: string) {
@@ -2647,6 +2680,17 @@ function buildProcessLossMessage(run: {
     return `Process lost -- process group ${run.processGroupId} is no longer running`;
   }
   return "Process lost -- server may have restarted";
+}
+
+function buildDetachedProcessStalledMessage(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "processPid" | "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">,
+  silenceAgeMs: number,
+) {
+  const silenceStartedAt = silenceStartedAtForDetachedRun(run);
+  const detail = silenceStartedAt
+    ? ` since ${silenceStartedAt.toISOString()}`
+    : "";
+  return `Detached process stalled -- child pid ${run.processPid ?? "unknown"} stayed alive with no recorded output${detail} (${formatDurationMinutes(silenceAgeMs)})`;
 }
 
 function truncateDisplayId(value: string | null | undefined, max = 128) {
@@ -7050,6 +7094,71 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
+        const silenceAgeMs = detachedRunSilenceAgeMs(run, now);
+        if (
+          run.errorCode === DETACHED_PROCESS_ERROR_CODE &&
+          silenceAgeMs !== null &&
+          silenceAgeMs >= DETACHED_PROCESS_STALL_MS
+        ) {
+          const stalledMessage = buildDetachedProcessStalledMessage(run, silenceAgeMs);
+          await terminateHeartbeatRunProcess({
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+            graceMs: DETACHED_PROCESS_TERMINATION_GRACE_MS,
+          });
+
+          let finalizedRun = await setRunStatus(run.id, "failed", {
+            error: stalledMessage,
+            errorCode: DETACHED_PROCESS_STALLED_ERROR_CODE,
+            finishedAt: now,
+            resultJson: mergeRunStopMetadataForAgent(
+              { adapterType, adapterConfig },
+              "failed",
+              {
+                resultJson: parseObject(run.resultJson),
+                errorCode: DETACHED_PROCESS_STALLED_ERROR_CODE,
+                errorMessage: stalledMessage,
+              },
+            ),
+          });
+          await setWakeupStatus(run.wakeupRequestId, "failed", {
+            finishedAt: now,
+            error: stalledMessage,
+          });
+          if (!finalizedRun) finalizedRun = await getRun(run.id);
+          if (!finalizedRun) continue;
+          finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
+          await releaseEnvironmentLeasesForRun({
+            runId: finalizedRun.id,
+            companyId: finalizedRun.companyId,
+            agentId: finalizedRun.agentId,
+            status: finalizedRun.status,
+            failureReason: finalizedRun.error ?? undefined,
+          });
+          await releaseIssueExecutionAndPromote(finalizedRun);
+
+          await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "error",
+            message: stalledMessage,
+            payload: {
+              processPid: run.processPid,
+              ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+              silenceAgeMs,
+              stallThresholdMs: DETACHED_PROCESS_STALL_MS,
+              lastOutputAt: run.lastOutputAt?.toISOString() ?? null,
+              processStartedAt: run.processStartedAt?.toISOString() ?? null,
+            },
+          });
+
+          await finalizeAgentStatus(run.agentId, "failed");
+          await startNextQueuedRunForAgent(run.agentId);
+          runningProcesses.delete(run.id);
+          reaped.push(run.id);
+          continue;
+        }
+
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {

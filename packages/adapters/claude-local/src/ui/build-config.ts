@@ -69,7 +69,7 @@ export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, un
   if (v.model) ac.model = v.model;
   if (v.thinkingEffort) ac.effort = v.thinkingEffort;
   if (v.chrome) ac.chrome = true;
-  ac.timeoutSec = 0;
+  ac.timeoutSec = 3600;
   ac.graceSec = 15;
   const env = parseEnvBindings(v.envBindings);
   const legacy = parseEnvVars(v.envVars);

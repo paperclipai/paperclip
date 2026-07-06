@@ -405,6 +405,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
+    startedAt?: Date;
+    updatedAt?: Date;
+    processStartedAt?: Date | null;
+    lastOutputAt?: Date | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -457,11 +461,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       contextSnapshot: input?.includeIssue === false ? {} : { issueId },
       processPid: input?.processPid ?? null,
       processGroupId: input?.processGroupId ?? null,
+      processStartedAt: input && "processStartedAt" in input ? input.processStartedAt ?? null : null,
+      lastOutputAt: input && "lastOutputAt" in input ? input.lastOutputAt ?? null : null,
       processLossRetryCount: input?.processLossRetryCount ?? 0,
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
-      startedAt: now,
-      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      startedAt: input?.startedAt ?? now,
+      updatedAt: input?.updatedAt ?? new Date("2026-03-19T00:00:00.000Z"),
     });
 
     if (input?.includeIssue !== false) {
@@ -915,6 +921,55 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.status).toBe("claimed");
+  });
+
+  it("reaps a detached local run when the child pid stays alive without output", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const staleAt = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const staleUpdatedAt = new Date(Date.now() - 10 * 60 * 1000);
+    const { runId, wakeupRequestId, issueId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      runErrorCode: "process_detached",
+      runError: `Lost in-memory process handle, but child pid ${child.pid} is still alive`,
+      startedAt: staleAt,
+      processStartedAt: staleAt,
+      lastOutputAt: staleAt,
+      updatedAt: staleUpdatedAt,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 });
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+    expect(await waitForPidExit(child.pid!, 3_000)).toBe(true);
+    childProcesses.delete(child);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("process_detached_stalled");
+    expect(run?.error).toContain("Detached process stalled");
+    expect(run?.resultJson).toMatchObject({
+      stopReason: "process_detached_stalled",
+      timeoutConfigured: false,
+      timeoutFired: false,
+    });
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("failed");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
   });
 
   it("queues exactly one retry when the recorded local pid is dead", async () => {

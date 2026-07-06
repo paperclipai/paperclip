@@ -50,8 +50,7 @@ export function buildPiLocalConfig(v: CreateConfigValues): Record<string, unknow
   if (v.model) ac.model = v.model;
   if (v.thinkingEffort) ac.thinking = v.thinkingEffort;
   
-  // Pi sessions can run until the CLI exits naturally; keep timeout disabled (0)
-  ac.timeoutSec = 0;
+  ac.timeoutSec = 3600;
   ac.graceSec = 20;
   
   const env = parseEnvBindings(v.envBindings);

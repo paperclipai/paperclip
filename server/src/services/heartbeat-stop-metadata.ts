@@ -8,6 +8,7 @@ export type HeartbeatRunStopReason =
   | "paused"
   | "max_turns_exhausted"
   | "process_lost"
+  | "process_detached_stalled"
   | "adapter_failed";
 
 export interface HeartbeatRunTimeoutPolicy {
@@ -87,6 +88,7 @@ export function inferHeartbeatRunStopReason(input: {
   if (maxTurnStopReason) return maxTurnStopReason;
   if (input.outcome === "timed_out") return "timeout";
   if (input.outcome === "failed" && input.errorCode === "process_lost") return "process_lost";
+  if (input.outcome === "failed" && input.errorCode === "process_detached_stalled") return "process_detached_stalled";
   if (input.outcome === "cancelled") {
     const message = (input.errorMessage ?? "").toLowerCase();
     if (message.includes("budget")) return "budget_paused";
