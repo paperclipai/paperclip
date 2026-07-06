@@ -595,6 +595,122 @@ describe("issue dependency wakeups in issue routes", () => {
     });
   });
 
+  it("prefers the child assignee reporting manager for blocked-child escalation", async () => {
+    mockIssueService.getById
+      .mockResolvedValueOnce({
+        id: "child-1",
+        companyId: "company-1",
+        identifier: "PAP-203",
+        title: "Implementation lane",
+        description: null,
+        status: "blocked",
+        priority: "medium",
+        parentId: "parent-1",
+        assigneeAgentId: "engineer-agent",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      })
+      .mockResolvedValueOnce({
+        id: "parent-1",
+        companyId: "company-1",
+        identifier: "PAP-200",
+        title: "Parent delivery",
+        description: null,
+        status: "blocked",
+        priority: "medium",
+        parentId: null,
+        assigneeAgentId: "ceo-agent",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      });
+    mockIssueService.update.mockResolvedValue({
+      id: "child-1",
+      companyId: "company-1",
+      identifier: "PAP-203",
+      title: "Implementation lane",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: "parent-1",
+      assigneeAgentId: "engineer-agent",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockAgentService.getById.mockImplementation(async (agentId: string) => {
+      if (agentId === "engineer-agent") {
+        return {
+          id: "engineer-agent",
+          companyId: "company-1",
+          name: "Engineer",
+          status: "idle",
+          reportsTo: "cto-agent",
+        };
+      }
+      if (agentId === "cto-agent") {
+        return {
+          id: "cto-agent",
+          companyId: "company-1",
+          name: "CTO",
+          status: "idle",
+          reportsTo: "ceo-agent",
+        };
+      }
+      return null;
+    });
+    mockIssueService.addComment
+      .mockResolvedValueOnce({ id: "child-comment-1", body: "Blocked on a deploy decision.", issueId: "child-1" })
+      .mockResolvedValueOnce({ id: "parent-comment-1", body: "Paperclip escalated a blocked child lane.", issueId: "parent-1" });
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "engineer-agent",
+      companyId: "company-1",
+      source: "api_key",
+      runId: "run-1",
+    });
+    const res = await request(app)
+      .patch("/api/issues/child-1")
+      .send({ status: "blocked", comment: "Blocked on a deploy decision." });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "cto-agent",
+        expect.objectContaining({
+          reason: "child_blocked_without_first_class_blocker",
+          payload: expect.objectContaining({
+            issueId: "parent-1",
+            childIssueId: "child-1",
+            escalationAgentId: "cto-agent",
+            escalationTargetSource: "child_assignee_reports_to",
+          }),
+          contextSnapshot: expect.objectContaining({
+            issueId: "parent-1",
+            childIssueId: "child-1",
+            escalationAgentId: "cto-agent",
+            escalationTargetSource: "child_assignee_reports_to",
+          }),
+        }),
+      );
+    });
+    expect(mockWakeup).not.toHaveBeenCalledWith(
+      "ceo-agent",
+      expect.objectContaining({ reason: "child_blocked_without_first_class_blocker" }),
+    );
+  });
+
   it("dedupes repeated blocked-child notices for the same child within the cooldown window", async () => {
     mockIssueService.getById
       .mockResolvedValueOnce({

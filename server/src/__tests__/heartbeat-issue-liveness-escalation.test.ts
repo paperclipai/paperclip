@@ -11,6 +11,7 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   issueComments,
+  issueRecoveryActions,
   issueRelations,
   issueTreeHolds,
   issues,
@@ -409,6 +410,55 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       },
     });
     expect(events.filter((event) => event.action === "issue.blockers.updated")).toHaveLength(1);
+  });
+
+  it("does not let an active source recovery action owned by an errored agent mask liveness", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, coderId, blockedIssueId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "blocked",
+      blockerAssigneeAgentId: "coder",
+    });
+    await db.update(agents).set({ status: "error" }).where(eq(agents.id, coderId));
+    await db.insert(issueRecoveryActions).values({
+      id: randomUUID(),
+      companyId,
+      sourceIssueId: blockerIssueId,
+      recoveryIssueId: null,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: coderId,
+      ownerUserId: null,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "stranded_assigned_issue",
+      fingerprint: `source_scoped_recovery:${companyId}:${blockerIssueId}:stranded_assigned_issue`,
+      evidence: { latestRunErrorCode: "process_lost" },
+      nextAction: "Restore a live execution path.",
+      attemptCount: 1,
+      lastAttemptAt: new Date(),
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(1);
+    expect(result.escalationsCreated).toBe(1);
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toMatchObject({
+      parentId: blockerIssueId,
+      assigneeAgentId: managerId,
+      originId: [
+        "harness_liveness",
+        companyId,
+        blockedIssueId,
+        "blocked_by_uninvokable_assignee",
+        blockerIssueId,
+      ].join(":"),
+    });
   });
 
   it("skips budget-blocked direct owners and assigns recovery to the manager fallback", async () => {

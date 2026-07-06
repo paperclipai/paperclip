@@ -68,6 +68,7 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const ISSUE_GRAPH_LIVENESS_RECOVERY_ACTION_OWNER_STATUSES = new Set(["active", "idle", "running"]);
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -2563,8 +2564,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               companyId: issueRecoveryActions.companyId,
               issueId: issueRecoveryActions.sourceIssueId,
               status: issueRecoveryActions.status,
+              ownerAgentId: issueRecoveryActions.ownerAgentId,
+              ownerUserId: issueRecoveryActions.ownerUserId,
+              ownerAgentCompanyId: agents.companyId,
+              ownerAgentStatus: agents.status,
             })
             .from(issueRecoveryActions)
+            .leftJoin(agents, eq(agents.id, issueRecoveryActions.ownerAgentId))
             .where(
               and(
                 inArray(issueRecoveryActions.status, ["active", "escalated"]),
@@ -2601,6 +2607,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         status: row.status,
       }];
     });
+    const activeRecoveryActionWaitingPaths = recoveryActionRows.flatMap((row) => {
+      if (row.ownerUserId) {
+        return [{ companyId: row.companyId, issueId: row.issueId, status: row.status }];
+      }
+      if (
+        row.ownerAgentId &&
+        row.ownerAgentCompanyId === row.companyId &&
+        row.ownerAgentStatus &&
+        ISSUE_GRAPH_LIVENESS_RECOVERY_ACTION_OWNER_STATUSES.has(row.ownerAgentStatus)
+      ) {
+        return [{ companyId: row.companyId, issueId: row.issueId, status: row.status }];
+      }
+      return [];
+    });
 
     return classifyIssueGraphLiveness({
       issues: issueRows,
@@ -2625,7 +2645,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       })),
       pendingInteractions: interactionRows,
       pendingApprovals: approvalRows,
-      openRecoveryIssues: openRecoveryIssues.concat(recoveryActionRows),
+      openRecoveryIssues: openRecoveryIssues.concat(activeRecoveryActionWaitingPaths),
       now: new Date(),
     });
   }

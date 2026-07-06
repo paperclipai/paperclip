@@ -5014,11 +5014,25 @@ export function issueRoutes(
           const readiness = await svc.getDependencyReadiness(issue.id);
           if (readiness.unresolvedBlockerCount === 0) {
             const parent = await svc.getById(issue.parentId!);
+            const parentAssigneeAgentId = readNonEmptyString(parent?.assigneeAgentId);
             if (
-              parent?.assigneeAgentId &&
+              parent &&
+              parentAssigneeAgentId &&
               issueAllowsAgentWakeups(parent) &&
               !["done", "cancelled"].includes(parent.status)
             ) {
+              let escalationAgentId = parentAssigneeAgentId;
+              let escalationTargetSource = "parent_assignee";
+              const childAssigneeAgentId = readNonEmptyString(issue.assigneeAgentId) ?? readNonEmptyString(actor.agentId);
+              const childAssignee = childAssigneeAgentId ? await agentsSvc.getById(childAssigneeAgentId) : null;
+              const childManagerAgentId = readNonEmptyString(readRecord(childAssignee)?.reportsTo);
+              if (childManagerAgentId && childManagerAgentId !== actor.agentId) {
+                const childManager = await agentsSvc.getById(childManagerAgentId);
+                if (isAssignableReviewAgent(childManager, issue.companyId)) {
+                  escalationAgentId = childManagerAgentId;
+                  escalationTargetSource = "child_assignee_reports_to";
+                }
+              }
               const marker = buildChildBlockedEscalationMarker({ childIssueId: issue.id });
               const recentParentComments = await svc.listComments(parent.id, { order: "desc", limit: 50 });
               const now = new Date();
@@ -5089,7 +5103,9 @@ export function issueRoutes(
                     childIssueId: issue.id,
                     childIdentifier: issue.identifier,
                     childAssigneeAgentId: issue.assigneeAgentId,
-                    parentAssigneeAgentId: parent.assigneeAgentId,
+                    parentAssigneeAgentId,
+                    escalationAgentId,
+                    escalationTargetSource,
                     escalationCommentId,
                     sourceCommentId: comment?.id ?? null,
                     reason: "child_blocked_without_first_class_blocker",
@@ -5097,7 +5113,7 @@ export function issueRoutes(
                 });
               }
 
-              addWakeup(parent.assigneeAgentId, {
+              addWakeup(escalationAgentId, {
                 source: "automation",
                 triggerDetail: "system",
                 reason: "child_blocked_without_first_class_blocker",
@@ -5108,6 +5124,8 @@ export function issueRoutes(
                   childIdentifier: issue.identifier,
                   sourceCommentId: comment?.id ?? null,
                   escalationCommentId,
+                  escalationAgentId,
+                  escalationTargetSource,
                   mutation: "child_blocked_escalation",
                 },
                 requestedByActorType: actor.actorType,
@@ -5121,6 +5139,8 @@ export function issueRoutes(
                   childIdentifier: issue.identifier,
                   sourceCommentId: comment?.id ?? null,
                   escalationCommentId,
+                  escalationAgentId,
+                  escalationTargetSource,
                 },
               });
             }
