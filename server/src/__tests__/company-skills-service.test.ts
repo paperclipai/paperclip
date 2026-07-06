@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { companies, companySkills, createDb } from "@paperclipai/db";
 import {
@@ -95,5 +96,44 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       status: 404,
       message: "Company not found",
     });
+  });
+
+  it("prevents deleting bundled Paperclip skills even when no agent uses them", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-bundled-skill-"));
+    cleanupDirs.add(skillDir);
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "# Paperclip Company Audit\n", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: "paperclipai/paperclip/paperclip-company-audit",
+      slug: "paperclip-company-audit",
+      name: "Paperclip Company Audit",
+      description: "Root Paperclip audit skill.",
+      markdown: "# Paperclip Company Audit\n",
+      sourceType: "local_path",
+      sourceLocator: skillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "paperclip_bundled" },
+    });
+
+    await expect(svc.deleteSkill(companyId, skillId)).rejects.toMatchObject({
+      status: 422,
+      message: "Bundled Paperclip skills are managed by Paperclip and cannot be deleted.",
+    });
+
+    const remaining = await db.select().from(companySkills).where(eq(companySkills.id, skillId));
+    expect(remaining).toHaveLength(1);
   });
 });

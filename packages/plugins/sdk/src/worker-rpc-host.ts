@@ -752,6 +752,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             requestDepth: input.requestDepth,
             billingCode: input.billingCode,
             assigneeAdapterOverrides: input.assigneeAdapterOverrides,
+            executionContract: input.executionContract,
             surfaceVisibility: input.surfaceVisibility,
             originKind: input.originKind,
             originId: input.originId,

@@ -289,13 +289,13 @@ describe("issue attachment routes", () => {
     const app = await createApp(storage);
     const res = await request(app)
       .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
-      .attach("file", Buffer.alloc(10 * 1024 * 1024 + 1), {
+      .attach("file", Buffer.alloc(30 * 1024 * 1024 + 1), {
         filename: "large.bin",
         contentType: "application/octet-stream",
       });
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toBe("Attachment exceeds 10485760 bytes");
+    expect(res.body.error).toBe("Attachment exceeds 31457280 bytes");
     expect(storage.__calls.putFile).toBeUndefined();
   });
 

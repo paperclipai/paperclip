@@ -1285,6 +1285,7 @@ export interface PluginIssuesClient {
     requestDepth?: number;
     billingCode?: string | null;
     assigneeAdapterOverrides?: IssueAssigneeAdapterOverrides | null;
+    executionContract?: Record<string, unknown> | null;
     surfaceVisibility?: IssueSurfaceVisibility;
     originKind?: PluginIssueOriginKind;
     originId?: string | null;

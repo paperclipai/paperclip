@@ -10,6 +10,7 @@ import {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
   isEnvironmentDriverSupportedForAdapter,
+  isUuidLike,
   type BillingType,
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
@@ -27,8 +28,10 @@ import {
   agentWakeupRequests,
   activityLog,
   approvals,
+  assets,
   companySkills as companySkillsTable,
   documentRevisions,
+  issueAttachments,
   issueDocuments,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -207,16 +210,24 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const DETACHED_PROCESS_STALLED_ERROR_CODE = "process_detached_stalled";
+const DEFAULT_DETACHED_PROCESS_STALL_MS = 15 * 60 * 1000;
+const DETACHED_PROCESS_TERMINATION_GRACE_MS = 15 * 1000;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const WAKE_ATTACHMENT_CONTENT_PATH_RE = /\/api\/attachments\/([^/\s)"'`]+)\/content\b/g;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const HEARTBEAT_RUN_TERMINAL_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
+const DETACHED_PROCESS_STALL_MS = readPositiveIntegerEnv(
+  "PAPERCLIP_DETACHED_PROCESS_STALL_MS",
+  DEFAULT_DETACHED_PROCESS_STALL_MS,
+);
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -661,55 +672,215 @@ function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   }
 }
 
-async function ensureManagedProjectWorkspace(input: {
-  companyId: string;
-  projectId: string;
-  repoUrl: string | null;
+function normalizeRepoUrlForComparison(repoUrl: string | null | undefined): string | null {
+  const trimmed = repoUrl?.trim();
+  if (!trimmed) return null;
+  const withoutTrailingGit = (value: string) => value.replace(/\.git$/i, "").replace(/\/+$/g, "");
+  try {
+    const parsed = new URL(trimmed);
+    const pathname = withoutTrailingGit(parsed.pathname.replace(/^\/+/, ""));
+    return `${parsed.host.toLowerCase()}/${pathname}`.toLowerCase();
+  } catch {
+    const scpLike = trimmed.match(/^(?:[^@]+@)?([^:]+):(.+)$/);
+    if (scpLike) {
+      return `${scpLike[1]}/${withoutTrailingGit(scpLike[2] ?? "")}`.toLowerCase();
+    }
+    return withoutTrailingGit(trimmed).toLowerCase();
+  }
+}
+
+function repoUrlsMatch(actual: string | null | undefined, expected: string | null | undefined) {
+  const normalizedActual = normalizeRepoUrlForComparison(actual);
+  const normalizedExpected = normalizeRepoUrlForComparison(expected);
+  return Boolean(normalizedActual && normalizedExpected && normalizedActual === normalizedExpected);
+}
+
+export function isProjectWorkspaceFilesystemPermissionError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/\b(?:EACCES|EPERM)\b/i.test(message)) {
+    return true;
+  }
+  if (!/\b(?:permission denied|operation not permitted)\b/i.test(message)) {
+    return false;
+  }
+  return /(?:could not create work tree dir|could not create leading directories|cannot mkdir|failed to create directory|could not make directory|\bmkdir\b)/i
+    .test(message);
+}
+
+export function isProjectWorkspaceRepoAccessError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:could not read Username|Authentication failed|Repository not found|repository ['"].+['"] does not exist|Permission denied \(publickey\)|Please make sure you have the correct access rights|could not read from remote repository|terminal prompts disabled|support for password authentication was removed)/i
+    .test(message);
+}
+
+async function readGitOutput(args: string[], cwd: string): Promise<string | null> {
+  try {
+    const result = await execFile("git", args, {
+      cwd,
+      env: sanitizeRuntimeServiceBaseEnv(process.env),
+      timeout: 30_000,
+    });
+    return String(result.stdout ?? "").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+async function inspectProjectWorkspaceGit(cwd: string): Promise<{ isRepoRoot: boolean; originUrl: string | null }> {
+  const topLevel = await readGitOutput(["rev-parse", "--show-toplevel"], cwd);
+  const resolvedTopLevel = topLevel ? await fs.realpath(topLevel).catch(() => path.resolve(topLevel)) : null;
+  const resolvedCwd = await fs.realpath(cwd).catch(() => path.resolve(cwd));
+  const isRepoRoot = resolvedTopLevel !== null && resolvedTopLevel === resolvedCwd;
+  const originUrl = isRepoRoot ? await readGitOutput(["config", "--get", "remote.origin.url"], cwd) : null;
+  return { isRepoRoot, originUrl };
+}
+
+async function cloneProjectWorkspaceRepo(input: {
+  repoUrl: string;
+  cwd: string;
+  label: string;
+}) {
+  await fs.mkdir(path.dirname(input.cwd), { recursive: true });
+  await fs.rm(input.cwd, { recursive: true, force: true });
+  try {
+    await execFile("git", ["clone", input.repoUrl, input.cwd], {
+      env: sanitizeRuntimeServiceBaseEnv(process.env),
+      timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to prepare ${input.label} checkout for "${input.repoUrl}" at "${input.cwd}": ${reason}`);
+  }
+}
+
+async function useEmptyProjectWorkspaceAfterRepoAccessFailure(input: {
+  repoUrl: string;
+  cwd: string;
+  label: string;
+  error: unknown;
 }): Promise<{ cwd: string; warning: string | null }> {
-  const cwd = resolveManagedProjectWorkspaceDir({
-    companyId: input.companyId,
-    projectId: input.projectId,
-    repoName: deriveRepoNameFromRepoUrl(input.repoUrl),
-  });
-  await fs.mkdir(path.dirname(cwd), { recursive: true });
+  if (!isProjectWorkspaceRepoAccessError(input.error)) {
+    throw input.error;
+  }
+  await fs.rm(input.cwd, { recursive: true, force: true });
+  await fs.mkdir(input.cwd, { recursive: true });
+  return {
+    cwd: input.cwd,
+    warning:
+      `Could not clone ${input.label} repo "${input.repoUrl}" because Git could not authenticate or access the repository. ` +
+      `Using empty project workspace "${input.cwd}" instead; configure repository credentials to populate it.`,
+  };
+}
+
+export async function ensureProjectWorkspacePath(input: {
+  cwd: string;
+  repoUrl: string | null;
+  label?: string | null;
+}): Promise<{ cwd: string; warning: string | null }> {
+  const cwd = path.resolve(input.cwd);
+  const repoUrl = input.repoUrl?.trim() || null;
+  const label = input.label?.trim() || "project workspace";
   const stats = await fs.stat(cwd).catch(() => null);
 
-  if (!input.repoUrl) {
+  if (!repoUrl) {
+    if (stats && !stats.isDirectory()) {
+      throw new Error(`Configured ${label} path "${cwd}" exists but is not a directory.`);
+    }
     if (!stats) {
       await fs.mkdir(cwd, { recursive: true });
     }
     return { cwd, warning: null };
   }
 
-  const gitDirExists = await fs
-    .stat(path.resolve(cwd, ".git"))
-    .then((entry) => entry.isDirectory())
-    .catch(() => false);
-  if (gitDirExists) {
-    return { cwd, warning: null };
-  }
-
-  if (stats) {
-    const entries = await fs.readdir(cwd).catch(() => []);
-    if (entries.length > 0) {
-      return {
-        cwd,
-        warning: `Managed workspace path "${cwd}" already exists but is not a git checkout. Using it as-is.`,
-      };
+  if (!stats) {
+    try {
+      await cloneProjectWorkspaceRepo({ repoUrl, cwd, label });
+    } catch (error) {
+      return useEmptyProjectWorkspaceAfterRepoAccessFailure({ repoUrl, cwd, label, error });
     }
-    await fs.rm(cwd, { recursive: true, force: true });
+    return { cwd, warning: null };
   }
 
-  try {
-    await execFile("git", ["clone", input.repoUrl, cwd], {
-      env: sanitizeRuntimeServiceBaseEnv(process.env),
-      timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
-    });
-    return { cwd, warning: null };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to prepare managed checkout for "${input.repoUrl}" at "${cwd}": ${reason}`);
+  if (!stats.isDirectory()) {
+    throw new Error(`Configured ${label} path "${cwd}" exists but is not a directory.`);
   }
+
+  const entries = await fs.readdir(cwd).catch(() => []);
+  if (entries.length === 0) {
+    try {
+      await cloneProjectWorkspaceRepo({ repoUrl, cwd, label });
+    } catch (error) {
+      return useEmptyProjectWorkspaceAfterRepoAccessFailure({ repoUrl, cwd, label, error });
+    }
+    return { cwd, warning: null };
+  }
+
+  const git = await inspectProjectWorkspaceGit(cwd);
+  if (!git.isRepoRoot) {
+    throw new Error(`Configured ${label} path "${cwd}" exists but is not a git checkout for "${repoUrl}".`);
+  }
+
+  if (!repoUrlsMatch(git.originUrl, repoUrl)) {
+    throw new Error(
+      `Configured ${label} path "${cwd}" is a git checkout for "${git.originUrl ?? "unknown origin"}" but project expects "${repoUrl}".`,
+    );
+  }
+
+  return { cwd, warning: null };
+}
+
+async function isPersistedExecutionWorkspaceReusable(workspace: ExecutionWorkspace): Promise<{ reusable: boolean; reason: string | null }> {
+  const cwd = readNonEmptyString(workspace.cwd) ?? readNonEmptyString(workspace.providerRef);
+  if (!cwd) {
+    return { reusable: false, reason: "persisted execution workspace has no cwd" };
+  }
+
+  const resolvedCwd = path.resolve(cwd);
+  const stats = await fs.stat(resolvedCwd).catch(() => null);
+  if (!stats?.isDirectory()) {
+    return { reusable: false, reason: `persisted execution workspace path "${resolvedCwd}" is not available` };
+  }
+
+  const repoUrl = readNonEmptyString(workspace.repoUrl);
+  if (!repoUrl) {
+    return { reusable: true, reason: null };
+  }
+
+  const git = await inspectProjectWorkspaceGit(resolvedCwd);
+  if (!git.isRepoRoot) {
+    return {
+      reusable: false,
+      reason: `persisted execution workspace path "${resolvedCwd}" is not a git checkout for "${repoUrl}"`,
+    };
+  }
+
+  if (!repoUrlsMatch(git.originUrl, repoUrl)) {
+    return {
+      reusable: false,
+      reason: `persisted execution workspace path "${resolvedCwd}" is a git checkout for "${git.originUrl ?? "unknown origin"}" but expects "${repoUrl}"`,
+    };
+  }
+
+  return { reusable: true, reason: null };
+}
+
+async function ensureManagedProjectWorkspace(input: {
+  companyId: string;
+  projectId: string;
+  projectName?: string | null;
+  repoUrl: string | null;
+}): Promise<{ cwd: string; warning: string | null }> {
+  const cwd = resolveManagedProjectWorkspaceDir({
+    companyId: input.companyId,
+    projectId: input.projectId,
+    projectName: input.projectName,
+    repoName: deriveRepoNameFromRepoUrl(input.repoUrl),
+  });
+  return ensureProjectWorkspacePath({
+    cwd,
+    repoUrl: input.repoUrl,
+    label: "managed project workspace",
+  });
 }
 
 const heartbeatRunProcessGroupIdColumn =
@@ -1076,6 +1247,45 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number) {
+  const raw = process.env[name];
+  if (typeof raw !== "string" || raw.trim().length === 0) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
+function silenceStartedAtForDetachedRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">,
+) {
+  return run.lastOutputAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
+}
+
+function detachedRunSilenceAgeMs(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">,
+  now: Date,
+) {
+  const startedAt = silenceStartedAtForDetachedRun(run);
+  return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
+}
+
+function formatDurationMinutes(ms: number) {
+  return `${Math.max(1, Math.round(ms / 60_000))} minutes`;
+}
+
+function wakeAttachmentContentPath(id: string) {
+  return `/api/attachments/${id}/content`;
+}
+
+function extractWakeAttachmentIdsFromText(text: string) {
+  const ids = new Set<string>();
+  for (const match of text.matchAll(WAKE_ATTACHMENT_CONTENT_PATH_RE)) {
+    const id = match[1]?.trim();
+    if (id && isUuidLike(id)) ids.add(id);
+  }
+  return [...ids];
 }
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
@@ -2075,6 +2285,7 @@ async function buildPaperclipWakePayload(input: {
         status: string;
         priority: string;
         workMode: string;
+        executionContract?: Record<string, unknown> | null;
       }
     | null;
 }) {
@@ -2093,6 +2304,7 @@ async function buildPaperclipWakePayload(input: {
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
+            executionContract: issues.executionContract,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
@@ -2124,6 +2336,57 @@ async function buildPaperclipWakePayload(input: {
           );
 
   const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
+  const commentIdsFromRows = commentRows.map((comment) => comment.id);
+  const issueIdsFromRows = [...new Set(commentRows.map((comment) => comment.issueId))];
+  const referencedAttachmentIdsByCommentId = new Map<string, string[]>();
+  const referencedAttachmentIds = new Set<string>();
+
+  for (const comment of commentRows) {
+    const ids = extractWakeAttachmentIdsFromText(comment.body);
+    referencedAttachmentIdsByCommentId.set(comment.id, ids);
+    for (const id of ids) referencedAttachmentIds.add(id);
+  }
+
+  const directCommentAttachmentCondition = commentIdsFromRows.length > 0
+    ? inArray(issueAttachments.issueCommentId, commentIdsFromRows)
+    : null;
+  const referencedAttachmentCondition = referencedAttachmentIds.size > 0
+    ? inArray(issueAttachments.id, [...referencedAttachmentIds])
+    : null;
+  const attachmentScopeCondition = directCommentAttachmentCondition && referencedAttachmentCondition
+    ? or(directCommentAttachmentCondition, referencedAttachmentCondition)!
+    : directCommentAttachmentCondition ?? referencedAttachmentCondition;
+  const issueAttachmentRows = attachmentScopeCondition && issueIdsFromRows.length > 0
+    ? await input.db
+        .select({
+          id: issueAttachments.id,
+          issueId: issueAttachments.issueId,
+          issueCommentId: issueAttachments.issueCommentId,
+          contentType: assets.contentType,
+          byteSize: assets.byteSize,
+          originalFilename: assets.originalFilename,
+          createdAt: issueAttachments.createdAt,
+        })
+        .from(issueAttachments)
+        .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
+        .where(and(
+          eq(issueAttachments.companyId, input.companyId),
+          issueIdsFromRows.length === 1
+            ? eq(issueAttachments.issueId, issueIdsFromRows[0]!)
+            : inArray(issueAttachments.issueId, issueIdsFromRows),
+          attachmentScopeCondition,
+        ))
+    : [];
+  const attachmentById = new Map(issueAttachmentRows.map((attachment) => [attachment.id, attachment]));
+  const directAttachmentsByCommentId = new Map<string, typeof issueAttachmentRows>();
+
+  for (const attachment of issueAttachmentRows) {
+    if (!attachment.issueCommentId) continue;
+    const current = directAttachmentsByCommentId.get(attachment.issueCommentId) ?? [];
+    current.push(attachment);
+    directAttachmentsByCommentId.set(attachment.issueCommentId, current);
+  }
+
   const comments: Array<Record<string, unknown>> = [];
   let remainingBodyChars = MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS;
   let truncated = false;
@@ -2152,6 +2415,29 @@ async function buildPaperclipWakePayload(input: {
     const bodyTruncated = body.length < fullBody.length;
     if (bodyTruncated) truncated = true;
     remainingBodyChars -= body.length;
+    const seenAttachmentIds = new Set<string>();
+    const commentAttachments: Array<Record<string, unknown>> = [];
+    const addCommentAttachment = (attachment: typeof issueAttachmentRows[number] | undefined) => {
+      if (!attachment || seenAttachmentIds.has(attachment.id)) return;
+      seenAttachmentIds.add(attachment.id);
+      commentAttachments.push({
+        id: attachment.id,
+        issueId: attachment.issueId,
+        issueCommentId: attachment.issueCommentId,
+        filename: attachment.originalFilename,
+        contentType: attachment.contentType,
+        byteSize: attachment.byteSize,
+        contentPath: wakeAttachmentContentPath(attachment.id),
+        createdAt: attachment.createdAt.toISOString(),
+      });
+    };
+
+    for (const attachment of directAttachmentsByCommentId.get(row.id) ?? []) {
+      addCommentAttachment(attachment);
+    }
+    for (const id of referencedAttachmentIdsByCommentId.get(row.id) ?? []) {
+      addCommentAttachment(attachmentById.get(id));
+    }
 
     comments.push({
       id: row.id,
@@ -2161,6 +2447,7 @@ async function buildPaperclipWakePayload(input: {
       bodyTruncated,
       presentation: row.presentation ?? null,
       metadata: row.metadata ?? null,
+      attachments: commentAttachments,
       createdAt: row.createdAt.toISOString(),
       author: row.authorAgentId
         ? { type: "agent", id: row.authorAgentId }
@@ -2172,6 +2459,7 @@ async function buildPaperclipWakePayload(input: {
 
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
+    executionContract: issueSummary?.executionContract ?? null,
     issue: issueSummary
       ? {
           id: issueSummary.id,
@@ -2180,6 +2468,7 @@ async function buildPaperclipWakePayload(input: {
           status: issueSummary.status,
           priority: issueSummary.priority,
           workMode: issueSummary.workMode,
+          executionContract: issueSummary.executionContract ?? null,
         }
       : null,
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
@@ -2391,6 +2680,17 @@ function buildProcessLossMessage(run: {
     return `Process lost -- process group ${run.processGroupId} is no longer running`;
   }
   return "Process lost -- server may have restarted";
+}
+
+function buildDetachedProcessStalledMessage(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "processPid" | "lastOutputAt" | "processStartedAt" | "startedAt" | "createdAt">,
+  silenceAgeMs: number,
+) {
+  const silenceStartedAt = silenceStartedAtForDetachedRun(run);
+  const detail = silenceStartedAt
+    ? ` since ${silenceStartedAt.toISOString()}`
+    : "";
+  return `Detached process stalled -- child pid ${run.processPid ?? "unknown"} stayed alive with no recorded output${detail} (${formatDurationMinutes(silenceAgeMs)})`;
 }
 
 function truncateDisplayId(value: string | null | undefined, max = 128) {
@@ -2610,6 +2910,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         identifier: issues.identifier,
         title: issues.title,
         description: issues.description,
+        executionContract: issues.executionContract,
         status: issues.status,
         workMode: issues.workMode,
         priority: issues.priority,
@@ -3604,7 +3905,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null },
+    opts?: { useProjectWorkspace?: boolean | null; projectName?: string | null },
   ): Promise<ResolvedWorkspaceForRun> {
     const issueId = readNonEmptyString(context.issueId);
     const contextProjectId = readNonEmptyString(context.projectId);
@@ -3654,9 +3955,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const preferredWorkspace = preferredProjectWorkspaceId
         ? projectWorkspaceRows.find((workspace) => workspace.id === preferredProjectWorkspaceId) ?? null
         : null;
-      const missingProjectCwds: string[] = [];
-      let hasConfiguredProjectCwd = false;
       let preferredWorkspaceWarning: string | null = null;
+      const workspaceResolutionFailures: string[] = [];
       if (preferredProjectWorkspaceId && !preferredWorkspace) {
         preferredWorkspaceWarning =
           `Selected project workspace "${preferredProjectWorkspaceId}" is not available on this project.`;
@@ -3664,28 +3964,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       for (const workspace of projectWorkspaceRows) {
         let projectCwd = readNonEmptyString(workspace.cwd);
         let managedWorkspaceWarning: string | null = null;
-        if (!projectCwd || projectCwd === REPO_ONLY_CWD_SENTINEL) {
-          try {
+        const workspaceRepoUrl = readNonEmptyString(workspace.repoUrl);
+        try {
+          if (!projectCwd || projectCwd === REPO_ONLY_CWD_SENTINEL) {
             const managedWorkspace = await ensureManagedProjectWorkspace({
               companyId: agent.companyId,
               projectId: workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
-              repoUrl: readNonEmptyString(workspace.repoUrl),
+              projectName: opts?.projectName ?? null,
+              repoUrl: workspaceRepoUrl,
             });
             projectCwd = managedWorkspace.cwd;
             managedWorkspaceWarning = managedWorkspace.warning;
-          } catch (error) {
-            if (preferredWorkspace?.id === workspace.id) {
-              preferredWorkspaceWarning = error instanceof Error ? error.message : String(error);
-            }
-            continue;
+          } else {
+            const materializedWorkspace = await ensureProjectWorkspacePath({
+              cwd: projectCwd,
+              repoUrl: workspaceRepoUrl,
+              label: `project workspace "${workspace.name ?? workspace.id}"`,
+            });
+            projectCwd = materializedWorkspace.cwd;
+            managedWorkspaceWarning = materializedWorkspace.warning;
           }
-        }
-        hasConfiguredProjectCwd = true;
-        const projectCwdExists = await fs
-          .stat(projectCwd)
-          .then((stats) => stats.isDirectory())
-          .catch(() => false);
-        if (projectCwdExists) {
+
           return {
             cwd: projectCwd,
             source: "project_primary" as const,
@@ -3698,49 +3997,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               (value): value is string => Boolean(value),
             ),
           };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (projectCwd && isProjectWorkspaceFilesystemPermissionError(error)) {
+            try {
+              const managedWorkspace = await ensureManagedProjectWorkspace({
+                companyId: agent.companyId,
+                projectId: workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
+                projectName: opts?.projectName ?? null,
+                repoUrl: workspaceRepoUrl,
+              });
+              return {
+                cwd: managedWorkspace.cwd,
+                source: "project_primary" as const,
+                projectId: resolvedProjectId,
+                workspaceId: workspace.id,
+                repoUrl: workspace.repoUrl,
+                repoRef: workspace.repoRef,
+                workspaceHints,
+                warnings: [
+                  preferredWorkspaceWarning,
+                  `Configured project workspace path "${projectCwd}" could not be created (${message}). Using managed project workspace "${managedWorkspace.cwd}".`,
+                  managedWorkspace.warning,
+                ].filter((value): value is string => Boolean(value)),
+              };
+            } catch (managedError) {
+              const managedMessage = managedError instanceof Error ? managedError.message : String(managedError);
+              workspaceResolutionFailures.push(`${message}; managed fallback also failed: ${managedMessage}`);
+              if (preferredWorkspace?.id === workspace.id) {
+                preferredWorkspaceWarning = managedMessage;
+              }
+              continue;
+            }
+          }
+          workspaceResolutionFailures.push(message);
+          if (preferredWorkspace?.id === workspace.id) {
+            preferredWorkspaceWarning = message;
+          }
         }
-        if (preferredWorkspace?.id === workspace.id) {
-          preferredWorkspaceWarning =
-            `Selected project workspace path "${projectCwd}" is not available yet.`;
-        }
-        missingProjectCwds.push(projectCwd);
       }
 
-      const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
-      await fs.mkdir(fallbackCwd, { recursive: true });
-      const warnings: string[] = [];
-      if (preferredWorkspaceWarning) {
-        warnings.push(preferredWorkspaceWarning);
-      }
-      if (missingProjectCwds.length > 0) {
-        const firstMissing = missingProjectCwds[0];
-        const extraMissingCount = Math.max(0, missingProjectCwds.length - 1);
-        warnings.push(
-          extraMissingCount > 0
-            ? `Project workspace path "${firstMissing}" and ${extraMissingCount} other configured path(s) are not available yet. Using fallback workspace "${fallbackCwd}" for this run.`
-            : `Project workspace path "${firstMissing}" is not available yet. Using fallback workspace "${fallbackCwd}" for this run.`,
-        );
-      } else if (!hasConfiguredProjectCwd) {
-        warnings.push(
-          `Project workspace has no local cwd configured. Using fallback workspace "${fallbackCwd}" for this run.`,
-        );
-      }
-      return {
-        cwd: fallbackCwd,
-        source: "project_primary" as const,
-        projectId: resolvedProjectId,
-        workspaceId: projectWorkspaceRows[0]?.id ?? null,
-        repoUrl: projectWorkspaceRows[0]?.repoUrl ?? null,
-        repoRef: projectWorkspaceRows[0]?.repoRef ?? null,
-        workspaceHints,
-        warnings,
-      };
+      const failureSummary = preferredWorkspaceWarning
+        ?? workspaceResolutionFailures[0]
+        ?? "No project workspace could be prepared.";
+      throw new Error(
+        `Project workspace could not be prepared for this run: ${failureSummary}`,
+      );
     }
 
     if (workspaceProjectId) {
       const managedWorkspace = await ensureManagedProjectWorkspace({
         companyId: agent.companyId,
         projectId: workspaceProjectId,
+        projectName: opts?.projectName ?? null,
         repoUrl: null,
       });
       return {
@@ -6785,6 +7094,71 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (processPidAlive) {
+        const silenceAgeMs = detachedRunSilenceAgeMs(run, now);
+        if (
+          run.errorCode === DETACHED_PROCESS_ERROR_CODE &&
+          silenceAgeMs !== null &&
+          silenceAgeMs >= DETACHED_PROCESS_STALL_MS
+        ) {
+          const stalledMessage = buildDetachedProcessStalledMessage(run, silenceAgeMs);
+          await terminateHeartbeatRunProcess({
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+            graceMs: DETACHED_PROCESS_TERMINATION_GRACE_MS,
+          });
+
+          let finalizedRun = await setRunStatus(run.id, "failed", {
+            error: stalledMessage,
+            errorCode: DETACHED_PROCESS_STALLED_ERROR_CODE,
+            finishedAt: now,
+            resultJson: mergeRunStopMetadataForAgent(
+              { adapterType, adapterConfig },
+              "failed",
+              {
+                resultJson: parseObject(run.resultJson),
+                errorCode: DETACHED_PROCESS_STALLED_ERROR_CODE,
+                errorMessage: stalledMessage,
+              },
+            ),
+          });
+          await setWakeupStatus(run.wakeupRequestId, "failed", {
+            finishedAt: now,
+            error: stalledMessage,
+          });
+          if (!finalizedRun) finalizedRun = await getRun(run.id);
+          if (!finalizedRun) continue;
+          finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
+          await releaseEnvironmentLeasesForRun({
+            runId: finalizedRun.id,
+            companyId: finalizedRun.companyId,
+            agentId: finalizedRun.agentId,
+            status: finalizedRun.status,
+            failureReason: finalizedRun.error ?? undefined,
+          });
+          await releaseIssueExecutionAndPromote(finalizedRun);
+
+          await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "error",
+            message: stalledMessage,
+            payload: {
+              processPid: run.processPid,
+              ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+              silenceAgeMs,
+              stallThresholdMs: DETACHED_PROCESS_STALL_MS,
+              lastOutputAt: run.lastOutputAt?.toISOString() ?? null,
+              processStartedAt: run.processStartedAt?.toISOString() ?? null,
+            },
+          });
+
+          await finalizeAgentStatus(run.agentId, "failed");
+          await startNextQueuedRunForAgent(run.agentId);
+          runningProcesses.delete(run.id);
+          reaped.push(run.id);
+          continue;
+        }
+
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
@@ -7183,6 +7557,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ? await db
           .select({
             id: projects.id,
+            name: projects.name,
             executionWorkspacePolicy: projects.executionWorkspacePolicy,
             env: projects.env,
           })
@@ -7222,7 +7597,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agent,
       context,
       previousSessionParams,
-      { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
+      {
+        useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default",
+        projectName: projectContext?.name ?? null,
+      },
     );
     const issueRef = issueContext
       ? {
@@ -7233,6 +7611,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           priority: issueContext.priority,
           workMode: issueContext.workMode,
           description: issueContext.description,
+          executionContract: issueContext.executionContract ?? null,
           projectId: issueContext.projectId,
           projectWorkspaceId: issueContext.projectWorkspaceId,
           executionWorkspaceId: issueContext.executionWorkspaceId,
@@ -7265,6 +7644,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: issueRef.status,
             priority: issueRef.priority,
             workMode: issueRef.workMode,
+            executionContract: issueRef.executionContract ?? null,
           }
         : null,
     });
@@ -7295,6 +7675,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         identifier: issueRef.identifier,
         title: issueRef.title,
         description: issueRef.description,
+        executionContract: issueRef.executionContract ?? null,
         workMode: issueRef.workMode,
       };
     } else {
@@ -7312,10 +7693,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     const existingExecutionWorkspace =
       issueRef?.executionWorkspaceId ? await executionWorkspacesSvc.getById(issueRef.executionWorkspaceId) : null;
-    const shouldReuseExisting =
-      issueRef?.executionWorkspacePreference === "reuse_existing" &&
-      existingExecutionWorkspace !== null &&
-      existingExecutionWorkspace.status !== "archived";
+    let existingExecutionWorkspaceReuseWarning: string | null = null;
+    let shouldReuseExisting =
+      issueRef?.executionWorkspacePreference === "reuse_existing"
+      && existingExecutionWorkspace !== null
+      && existingExecutionWorkspace.status !== "archived";
+    if (shouldReuseExisting && existingExecutionWorkspace) {
+      const reuseCheck = await isPersistedExecutionWorkspaceReusable(existingExecutionWorkspace);
+      shouldReuseExisting = reuseCheck.reusable;
+      existingExecutionWorkspaceReuseWarning = reuseCheck.reason;
+    }
     const reusableExecutionWorkspaceConfig = shouldReuseExisting
       ? existingExecutionWorkspace?.config ?? null
       : null;
@@ -7531,6 +7918,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           },
           recorder: workspaceOperationRecorder,
         });
+    if (existingExecutionWorkspaceReuseWarning) {
+      executionWorkspace.warnings.push(existingExecutionWorkspaceReuseWarning);
+    }
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace = null;

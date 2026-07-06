@@ -138,7 +138,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
-import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Hammer, Loader2, Maximize2, Minimize2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
+import { AlertTriangle, ArrowRight, Brain, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Copy, Download, ExternalLink, FileText, Hammer, ImageIcon, Loader2, Maximize2, Minimize2, MoreHorizontal, Paperclip, PauseCircle, Search, Square, ThumbsDown, ThumbsUp } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 import { IssueRecoveryActionCard, type RecoveryResolveOutcome } from "./IssueRecoveryActionCard";
@@ -221,6 +221,158 @@ export function canStopIssueChatRun(args: {
   if (!runId) return false;
   if (activeRunIds.has(runId)) return true;
   return runStatus === "queued" || runStatus === "running";
+}
+
+function isIssueChatCommentAttachment(value: unknown): value is IssueAttachment {
+  if (!value || typeof value !== "object") return false;
+  const attachment = value as Partial<IssueAttachment>;
+  return typeof attachment.id === "string"
+    && typeof attachment.objectKey === "string"
+    && typeof attachment.contentPath === "string"
+    && typeof attachment.contentType === "string"
+    && typeof attachment.byteSize === "number";
+}
+
+function issueChatMessageAttachments(message: ThreadMessage): IssueAttachment[] {
+  const custom = issueChatMessageCustom(message);
+  if (!Array.isArray(custom.commentAttachments)) return [];
+  return custom.commentAttachments.filter(isIssueChatCommentAttachment);
+}
+
+function issueAttachmentDisplayName(attachment: IssueAttachment) {
+  return attachment.originalFilename?.trim() || attachment.objectKey.split("/").pop() || attachment.id;
+}
+
+function issueAttachmentTypeLabel(attachment: IssueAttachment) {
+  if (attachment.contentType.startsWith("image/")) {
+    const subtype = attachment.contentType.split("/")[1]?.toUpperCase();
+    return subtype ? `${subtype} image` : "Image";
+  }
+  return attachment.contentType || "Attachment";
+}
+
+function formatIssueAttachmentByteSize(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB"];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function IssueChatCommentAttachments({
+  message,
+  align = "left",
+}: {
+  message: ThreadMessage;
+  align?: "left" | "right";
+}) {
+  const { onImageClick, resolveImageSrc } = useContext(IssueChatCtx);
+  const attachments = issueChatMessageAttachments(message);
+  if (attachments.length === 0) return null;
+
+  return (
+    <div
+      className={cn("grid max-w-full gap-2", align === "right" ? "justify-items-end" : "justify-items-start")}
+      data-testid="issue-chat-comment-attachments"
+    >
+      {attachments.map((attachment) => {
+        const displayName = issueAttachmentDisplayName(attachment);
+        const typeLabel = issueAttachmentTypeLabel(attachment);
+        const sizeLabel = formatIssueAttachmentByteSize(attachment.byteSize);
+        const isImage = attachment.contentType.startsWith("image/");
+        const imageSrc = resolveImageSrc?.(attachment.contentPath) ?? attachment.contentPath;
+        const handlePreview = () => {
+          if (isImage && onImageClick) {
+            onImageClick(attachment.contentPath);
+            return;
+          }
+          window.open(attachment.contentPath, "_blank", "noopener,noreferrer");
+        };
+
+        return (
+          <div
+            key={attachment.id}
+            className="flex w-full max-w-[min(34rem,100%)] items-center gap-2 rounded-md border border-border/70 bg-background/85 p-2 text-xs shadow-sm"
+          >
+            {isImage ? (
+              <button
+                type="button"
+                className="h-12 w-12 shrink-0 overflow-hidden rounded border border-border bg-muted"
+                aria-label={`Preview ${displayName}`}
+                onClick={handlePreview}
+              >
+                <img
+                  src={imageSrc}
+                  alt={displayName}
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="flex h-12 w-12 shrink-0 items-center justify-center rounded border border-border bg-muted text-muted-foreground transition-colors hover:text-foreground"
+                aria-label={`Open ${displayName}`}
+                onClick={handlePreview}
+              >
+                <FileText className="h-5 w-5" />
+              </button>
+            )}
+
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center gap-1.5">
+                {isImage ? (
+                  <ImageIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                ) : (
+                  <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                )}
+                <span className="min-w-0 truncate font-medium text-foreground">{displayName}</span>
+              </div>
+              <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
+                <span className="truncate">{typeLabel}</span>
+                {sizeLabel ? <span>{sizeLabel}</span> : null}
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-1">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <a
+                    href={attachment.contentPath}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    aria-label={`Open ${displayName}`}
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs">Open attachment</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <a
+                    href={attachment.contentPath}
+                    download={displayName}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                    aria-label={`Download ${displayName}`}
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </a>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="text-xs">Download attachment</TooltipContent>
+              </Tooltip>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function findCoTSegmentIndex(
@@ -1612,6 +1764,7 @@ function IssueChatUserMessage({
         ) : null}
         <div className="min-w-0 max-w-full space-y-3">
           <IssueChatTextParts message={message} />
+          <IssueChatCommentAttachments message={message} align={isCurrentUser ? "right" : "left"} />
         </div>
       </div>
 
@@ -1886,6 +2039,7 @@ function IssueChatAssistantMessage({
             <>
               <div className="space-y-3">
                 <IssueChatAssistantParts message={displayMessage} hasCoT={hasCoT} />
+                <IssueChatCommentAttachments message={displayMessage} />
                 {isLazyTranscriptLoading ? (
                   <div
                     className="flex items-center gap-2.5 rounded-lg border border-border/60 bg-accent/20 px-3 py-2 text-sm text-muted-foreground"
@@ -2630,12 +2784,15 @@ function SystemNoticeCommentRow({
     presentation,
     metadata: commentMetadata,
     body: (
-      <IssueChatMarkdownText
-        text={bodyText}
-        className="text-sm leading-6"
-        softBreaks
-        onImageClick={onImageClick}
-      />
+      <div className="space-y-3">
+        <IssueChatMarkdownText
+          text={bodyText}
+          className="text-sm leading-6"
+          softBreaks
+          onImageClick={onImageClick}
+        />
+        <IssueChatCommentAttachments message={message} />
+      </div>
     ),
     timestamp: message.createdAt ? new Date(message.createdAt).toISOString() : undefined,
     source,

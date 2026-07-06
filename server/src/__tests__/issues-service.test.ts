@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  assets,
   companies,
   createDb,
   environments,
@@ -13,6 +14,7 @@ import {
   heartbeatRuns,
   instanceSettings,
   issueComments,
+  issueAttachments,
   issueInboxArchives,
   issueRelations,
   issues,
@@ -31,6 +33,7 @@ import {
   MAX_DIRECT_CHILD_ISSUES_PER_PARENT,
   issueService,
   parseWorkItemTypeFilter,
+  validateDelegatedIssueExecutionContract,
 } from "../services/issues.ts";
 import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 
@@ -48,6 +51,83 @@ describe("issue list limit helpers", () => {
     expect(parseWorkItemTypeFilter("initiative,human_task,unknown")).toEqual(["initiative", "human_task"]);
   });
 });
+
+describe("validateDelegatedIssueExecutionContract", () => {
+  it("accepts a complete core contract while leaving extensions open", () => {
+    expect(validateDelegatedIssueExecutionContract({
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "qa",
+      core: {
+        objective: "Verify the lane against the source issue.",
+        why: "The executor must preserve the parent intent during handoff.",
+        sourceOfTruth: {
+          links: ["https://paper.zenova.id/SIX/issues/SIX-3697"],
+        },
+        acceptanceChecks: ["The issue has no visible description contract block."],
+        handoffNotes: {
+          managerReasoning: "The child lane needs the hidden contract to avoid context loss.",
+        },
+      },
+      extensions: {
+        qa: {
+          reviewMode: "contract_fidelity",
+        },
+      },
+    })).toEqual({ valid: true, warnings: [] });
+  });
+
+  it("warns when an agent-created child issue has no execution contract", () => {
+    expect(validateDelegatedIssueExecutionContract(null)).toEqual({
+      valid: false,
+      warnings: ["executionContract is required for agent-created child issues"],
+    });
+  });
+
+  it("warns for missing required core handoff fields", () => {
+    const result = validateDelegatedIssueExecutionContract({
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "implementation",
+      core: {
+        objective: "Build the change.",
+        sourceOfTruth: {
+          files: [],
+        },
+        acceptanceChecks: [],
+        handoffNotes: {},
+      },
+    });
+
+    expect(result.valid).toBe(false);
+    expect(result.warnings).toEqual([
+      "executionContract.core.why is required",
+      "executionContract.core.sourceOfTruth must contain at least one source",
+      "executionContract.core.acceptanceChecks must contain at least one check",
+      "executionContract.core.handoffNotes.managerReasoning is required",
+    ]);
+  });
+});
+
+function makeValidExecutionContract(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: 2,
+    contractType: "delegated_task",
+    taskType: "implementation",
+    core: {
+      objective: "Build the delegated lane.",
+      why: "The executor needs the manager intent without rereading the parent thread.",
+      sourceOfTruth: {
+        links: ["https://paper.zenova.id/PAP/issues/PAP-100"],
+      },
+      acceptanceChecks: ["The delegated work satisfies the parent intent."],
+      handoffNotes: {
+        managerReasoning: "This lane is the concrete executable slice of the parent issue.",
+      },
+    },
+    ...overrides,
+  };
+}
 
 describe("deriveIssueCommentRunLogAttribution", () => {
   it("recovers agent attribution from run logs that printed the posted comment id", () => {
@@ -147,6 +227,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueAttachments);
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
@@ -156,6 +237,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(goals);
+    await db.delete(assets);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
@@ -1356,6 +1438,98 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(comments.map((comment) => comment.id)).toEqual([firstCommentId]);
   });
 
+  it("includes direct and markdown-referenced attachments on comment rows", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const commentId = randomUUID();
+    const directAssetId = randomUUID();
+    const linkedAssetId = randomUUID();
+    const directAttachmentId = randomUUID();
+    const linkedAttachmentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Attachment comments issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      body: `Please inspect [trace.csv](/api/attachments/${linkedAttachmentId}/content), rows 4-9.`,
+      createdAt: new Date("2026-03-26T12:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T12:00:00.000Z"),
+    });
+
+    await db.insert(assets).values([
+      {
+        id: directAssetId,
+        companyId,
+        provider: "local",
+        objectKey: "issues/direct-screenshot.png",
+        contentType: "image/png",
+        byteSize: 1234,
+        sha256: "direct-sha",
+        originalFilename: "direct-screenshot.png",
+      },
+      {
+        id: linkedAssetId,
+        companyId,
+        provider: "local",
+        objectKey: "issues/trace.csv",
+        contentType: "text/csv",
+        byteSize: 4567,
+        sha256: "linked-sha",
+        originalFilename: "trace.csv",
+      },
+    ]);
+
+    await db.insert(issueAttachments).values([
+      {
+        id: directAttachmentId,
+        companyId,
+        issueId,
+        assetId: directAssetId,
+        issueCommentId: commentId,
+      },
+      {
+        id: linkedAttachmentId,
+        companyId,
+        issueId,
+        assetId: linkedAssetId,
+        issueCommentId: null,
+      },
+    ]);
+
+    const comments = await svc.listComments(issueId, { order: "asc" });
+
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.attachments?.map((attachment) => attachment.id)).toEqual([
+      directAttachmentId,
+      linkedAttachmentId,
+    ]);
+    expect(comments[0]?.attachments?.[0]).toMatchObject({
+      originalFilename: "direct-screenshot.png",
+      contentPath: `/api/attachments/${directAttachmentId}/content`,
+      issueCommentId: commentId,
+    });
+    expect(comments[0]?.attachments?.[1]).toMatchObject({
+      originalFilename: "trace.csv",
+      contentPath: `/api/attachments/${linkedAttachmentId}/content`,
+      issueCommentId: null,
+    });
+  });
+
   it("includes blockedBy summaries on list rows in one batched pass", async () => {
     const companyId = randomUUID();
     const blockerId = randomUUID();
@@ -2311,6 +2485,212 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
         title: "Child helper",
       }),
     ]);
+  });
+
+  it("stores explicit execution contracts as hidden issue data", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const executionContract = {
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "qa",
+      core: {
+        objective: "Verify the child lane against the source contract.",
+        acceptanceChecks: ["Contract is available to QA"],
+      },
+      extensions: {
+        qa: {
+          reviewMode: "contract_fidelity",
+        },
+      },
+    };
+
+    const issue = await svc.create(companyId, {
+      title: "QA lane",
+      status: "todo",
+      description: "Human-readable QA brief.",
+      executionContract,
+    });
+
+    expect(issue.description).toBe("Human-readable QA brief.");
+    expect(issue.executionContract).toEqual(executionContract);
+  });
+
+  it("extracts legacy markdown execution contracts from descriptions on create", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Implementation lane",
+      status: "todo",
+      description: [
+        "Build the handoff storage.",
+        "",
+        "## Execution Contract",
+        "",
+        "```json",
+        JSON.stringify({
+          schemaVersion: 2,
+          contractType: "delegated_task",
+          taskType: "implementation",
+          core: {
+            objective: "Store execution contracts outside descriptions.",
+            acceptanceChecks: ["Issue description stays human-readable"],
+          },
+        }),
+        "```",
+        "",
+        "## Acceptance Criteria",
+        "",
+        "- The contract is hidden from the description",
+      ].join("\n"),
+    });
+
+    expect(issue.description).toBe([
+      "Build the handoff storage.",
+      "",
+      "## Acceptance Criteria",
+      "",
+      "- The contract is hidden from the description",
+    ].join("\n"));
+    expect(issue.executionContract).toMatchObject({
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "implementation",
+    });
+  });
+
+  it("rejects agent-created child issues without a valid execution contract", async () => {
+    const companyId = randomUUID();
+    const parentIssueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    await expect(svc.create(companyId, {
+      parentId: parentIssueId,
+      title: "Direct child without contract",
+      status: "todo",
+      priority: "medium",
+      createdByAgentId: randomUUID(),
+    })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "invalid_execution_contract",
+        missingExecutionContract: true,
+        warnings: ["executionContract is required for agent-created child issues"],
+      },
+    });
+
+    await expect(svc.createChild(parentIssueId, {
+      title: "Helper child without contract",
+      status: "todo",
+      actorAgentId: randomUUID(),
+    })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "invalid_execution_contract",
+        missingExecutionContract: true,
+        warnings: ["executionContract is required for agent-created child issues"],
+      },
+    });
+  });
+
+  it("allows human-created child issues to omit execution contracts", async () => {
+    const companyId = randomUUID();
+    const parentIssueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const directChild = await svc.create(companyId, {
+      parentId: parentIssueId,
+      title: "Human direct child",
+      status: "todo",
+      priority: "medium",
+      createdByUserId: "board-user",
+    });
+    const helperChild = await svc.createChild(parentIssueId, {
+      title: "Human helper child",
+      status: "todo",
+      actorUserId: "board-user",
+    });
+
+    expect(directChild.parentId).toBe(parentIssueId);
+    expect(directChild.executionContract).toBeNull();
+    expect(helperChild.issue.parentId).toBe(parentIssueId);
+    expect(helperChild.issue.executionContract).toBeNull();
+  });
+
+  it("allows agent-created child issues with legacy markdown execution contracts", async () => {
+    const companyId = randomUUID();
+    const parentIssueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Parent issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const { issue } = await svc.createChild(parentIssueId, {
+      title: "Legacy contract child",
+      status: "todo",
+      actorAgentId: randomUUID(),
+      description: [
+        "Human-readable brief.",
+        "",
+        "## Execution Contract",
+        "",
+        "```json",
+        JSON.stringify(makeValidExecutionContract()),
+        "```",
+      ].join("\n"),
+    });
+
+    expect(issue.description).toBe("Human-readable brief.");
+    expect(issue.executionContract).toMatchObject({
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "implementation",
+    });
   });
 
   it("clamps helper-created child requestDepth to the safe maximum", async () => {

@@ -10,7 +10,8 @@ import { queryKeys } from "../lib/queryKeys";
 import { orderReusableExecutionWorkspaces } from "../lib/reusable-execution-workspaces";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { Button } from "@/components/ui/button";
-import { Check, Copy, GitBranch, FolderOpen, Pencil, X } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Check, ChevronRight, Copy, GitBranch, FolderOpen, Pencil, X } from "lucide-react";
 
 /* -------------------------------------------------------------------------- */
 /*  Utility helpers (mirrored from IssueProperties for self-containment)      */
@@ -205,6 +206,7 @@ export function IssueWorkspaceCard({
   const { selectedCompanyId } = useCompany();
   const companyId = issue.companyId ?? selectedCompanyId;
   const [editing, setEditing] = useState(initialEditing);
+  const [detailsOpen, setDetailsOpen] = useState(initialEditing || livePreview);
 
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
@@ -356,19 +358,25 @@ export function IssueWorkspaceCard({
     setEditing(false);
   }, [currentSelection, issue.executionWorkspaceId, issue.executionWorkspaceSettings?.environmentId]);
 
-  if (!policyEnabled || !project) return null;
-
   const showEditingControls = livePreview || editing;
 
+  useEffect(() => {
+    if (showEditingControls) setDetailsOpen(true);
+  }, [showEditingControls]);
+
+  if (!policyEnabled || !project) return null;
+
   return (
-    <div className="rounded-lg border border-border p-3 space-y-2">
+    <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen} className="rounded-lg border border-border p-3 space-y-2">
       {/* Header row */}
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+        <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-foreground">
           <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
-          {activeNonDefaultWorkspace && workspace
-            ? workspaceModeLabel(workspace.mode)
-            : configuredWorkspaceLabel(currentSelection, selectedReusableExecutionWorkspace)}
+          <span className="truncate">
+            {activeNonDefaultWorkspace && workspace
+              ? workspaceModeLabel(workspace.mode)
+              : configuredWorkspaceLabel(currentSelection, selectedReusableExecutionWorkspace)}
+          </span>
           {workspace ? statusBadge(workspace.status) : statusBadge("idle")}
         </div>
         <div className="flex items-center gap-1">
@@ -392,85 +400,102 @@ export function IssueWorkspaceCard({
               </Button>
             </>
           ) : (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 px-2 text-xs text-muted-foreground"
-              onClick={() => setEditing(true)}
-            >
-              <Pencil className="h-3 w-3 mr-1" />Edit
-            </Button>
+            <>
+              <CollapsibleTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  className="text-muted-foreground"
+                  aria-expanded={detailsOpen}
+                  aria-label={detailsOpen ? "Hide workspace details" : "Show workspace details"}
+                >
+                  <ChevronRight className={cn("h-3 w-3 transition-transform", detailsOpen && "rotate-90")} />
+                  Details
+                </Button>
+              </CollapsibleTrigger>
+              <Button
+                variant="ghost"
+                size="xs"
+                className="text-muted-foreground"
+                onClick={() => setEditing(true)}
+              >
+                <Pencil className="h-3 w-3" />Edit
+              </Button>
+            </>
           )}
         </div>
       </div>
 
       {/* Read-only info */}
-      {!showEditingControls && (
-        <div className="space-y-1.5 text-xs">
-          {workspace?.branchName && (
-            <div className="flex items-center gap-1.5">
-              <GitBranch className="h-3 w-3 text-muted-foreground shrink-0" />
-              <CopyableInline value={workspace.branchName} mono />
-            </div>
-          )}
-          {workspace?.cwd && (
-            <div className="flex items-center gap-1.5">
-              <FolderOpen className="h-3 w-3 text-muted-foreground shrink-0" />
-              <CopyableInline value={workspace.cwd} mono />
-            </div>
-          )}
-          {workspace?.repoUrl && (
-            <div className="flex items-center gap-1.5 text-muted-foreground">
-              <span className="text-[11px]">Repo:</span>
-              <CopyableInline value={workspace.repoUrl} mono />
-            </div>
-          )}
-          {environmentsEnabled && currentEnvironmentId && (
-            <div className="text-muted-foreground" style={{ overflowWrap: "anywhere" }}>
-              Environment: <span className="text-foreground">{currentEnvironment?.name ?? currentEnvironmentId}</span>
-              {currentSelection === "reuse_existing" && currentReusableEnvironmentId === currentEnvironmentId
-                ? " · reused workspace"
-                : !issue.executionWorkspaceSettings?.environmentId && projectEnvironmentId === currentEnvironmentId
-                ? " · project default"
-                : null}
-            </div>
-          )}
-          {!workspace && (
-            <div className="text-muted-foreground">
-              {currentSelection === "isolated_workspace"
-                ? "A fresh isolated workspace will be created when this issue runs."
-                : currentSelection === "reuse_existing"
-                  ? "This issue will reuse an existing workspace when it runs."
-                  : "This issue will use the project default workspace configuration when it runs."}
-            </div>
-          )}
-          {currentSelection === "reuse_existing" && selectedReusableExecutionWorkspace && (
-            <div className="text-muted-foreground" style={{ overflowWrap: "anywhere" }}>
-              Reusing:{" "}
-              {selectedReusableWorkspaceLink ? (
-                <Link
-                  to={selectedReusableWorkspaceLink}
-                  className="hover:text-foreground hover:underline"
-                >
+      {!showEditingControls ? (
+        <CollapsibleContent>
+          <div className="space-y-1.5 pt-1 text-xs">
+            {workspace?.branchName && (
+              <div className="flex items-center gap-1.5">
+                <GitBranch className="h-3 w-3 text-muted-foreground shrink-0" />
+                <CopyableInline value={workspace.branchName} mono />
+              </div>
+            )}
+            {workspace?.cwd && (
+              <div className="flex items-center gap-1.5">
+                <FolderOpen className="h-3 w-3 text-muted-foreground shrink-0" />
+                <CopyableInline value={workspace.cwd} mono />
+              </div>
+            )}
+            {workspace?.repoUrl && (
+              <div className="flex items-center gap-1.5 text-muted-foreground">
+                <span className="text-[11px]">Repo:</span>
+                <CopyableInline value={workspace.repoUrl} mono />
+              </div>
+            )}
+            {environmentsEnabled && currentEnvironmentId && (
+              <div className="text-muted-foreground" style={{ overflowWrap: "anywhere" }}>
+                Environment: <span className="text-foreground">{currentEnvironment?.name ?? currentEnvironmentId}</span>
+                {currentSelection === "reuse_existing" && currentReusableEnvironmentId === currentEnvironmentId
+                  ? " · reused workspace"
+                  : !issue.executionWorkspaceSettings?.environmentId && projectEnvironmentId === currentEnvironmentId
+                  ? " · project default"
+                  : null}
+              </div>
+            )}
+            {!workspace && (
+              <div className="text-muted-foreground">
+                {currentSelection === "isolated_workspace"
+                  ? "A fresh isolated workspace will be created when this issue runs."
+                  : currentSelection === "reuse_existing"
+                    ? "This issue will reuse an existing workspace when it runs."
+                    : "This issue will use the project default workspace configuration when it runs."}
+              </div>
+            )}
+            {currentSelection === "reuse_existing" && selectedReusableExecutionWorkspace && (
+              <div className="text-muted-foreground" style={{ overflowWrap: "anywhere" }}>
+                Reusing:{" "}
+                {selectedReusableWorkspaceLink ? (
+                  <Link
+                    to={selectedReusableWorkspaceLink}
+                    className="hover:text-foreground hover:underline"
+                  >
+                    <BreakablePath text={selectedReusableExecutionWorkspace.name} />
+                  </Link>
+                ) : (
                   <BreakablePath text={selectedReusableExecutionWorkspace.name} />
+                )}
+              </div>
+            )}
+            {workspace && currentWorkspaceLink && (
+              <div className="pt-0.5">
+                <Link
+                  to={currentWorkspaceLink}
+                  className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+                >
+                  View workspace details →
                 </Link>
-              ) : (
-                <BreakablePath text={selectedReusableExecutionWorkspace.name} />
-              )}
-            </div>
-          )}
-          {workspace && currentWorkspaceLink && (
-            <div className="pt-0.5">
-              <Link
-                to={currentWorkspaceLink}
-                className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
-              >
-                View workspace details →
-              </Link>
-            </div>
-          )}
-        </div>
-      )}
+              </div>
+            )}
+          </div>
+        </CollapsibleContent>
+      ) : null}
 
       {/* Editing controls */}
       {editing && (
@@ -572,6 +597,6 @@ export function IssueWorkspaceCard({
           )}
         </div>
       )}
-    </div>
+    </Collapsible>
   );
 }

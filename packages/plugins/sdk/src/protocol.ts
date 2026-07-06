@@ -877,6 +877,7 @@ export interface WorkerToHostMethods {
       requestDepth?: number;
       billingCode?: string | null;
       assigneeAdapterOverrides?: IssueAssigneeAdapterOverrides | null;
+      executionContract?: Record<string, unknown> | null;
       surfaceVisibility?: string | null;
       originKind?: string | null;
       originId?: string | null;

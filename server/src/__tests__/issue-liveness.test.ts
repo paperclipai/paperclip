@@ -271,6 +271,22 @@ describe("issue graph liveness classifier", () => {
       agents: [agent(), manager, agent({ id: "blocker-agent", name: "Paused", status: "paused" })],
     });
     expect(paused[0]?.state).toBe("blocked_by_uninvokable_assignee");
+
+    const errored = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Errored unblock work",
+          status: "todo",
+          assigneeAgentId: "blocker-agent",
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager, agent({ id: "blocker-agent", name: "Errored", status: "error" })],
+    });
+    expect(errored[0]?.state).toBe("blocked_by_uninvokable_assignee");
   });
 
   it("detects invalid in_review execution participant", () => {

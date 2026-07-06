@@ -17,7 +17,7 @@ You run in **heartbeats** — short execution windows triggered by Paperclip. Ea
 
 Env vars auto-injected: `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, `PAPERCLIP_API_URL`, `PAPERCLIP_RUN_ID`. Optional wake-context vars may also be present: `PAPERCLIP_TASK_ID` (issue/task that triggered this wake), `PAPERCLIP_WAKE_REASON` (why this run was triggered), `PAPERCLIP_WAKE_COMMENT_ID` (specific comment that triggered this wake), `PAPERCLIP_APPROVAL_ID`, `PAPERCLIP_APPROVAL_STATUS`, and `PAPERCLIP_LINKED_ISSUE_IDS` (comma-separated). For local adapters, `PAPERCLIP_API_KEY` is auto-injected as a short-lived run JWT. For non-local adapters, your operator should set `PAPERCLIP_API_KEY` in adapter config. All requests use `Authorization: Bearer $PAPERCLIP_API_KEY`. All endpoints under `/api`, all JSON. Never hard-code the API URL.
 
-Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes. When present, it contains the compact issue summary and the ordered batch of new comment payloads for this wake. Use it first. For comment wakes, treat that batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
+Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on scoped wakes. When present, it contains the compact issue summary, the hidden `executionContract` when one exists, and the ordered batch of new comment payloads for this wake. Use it first. For delegated work, treat `executionContract` as the source-of-truth handoff before the human issue description or thread memory. For comment wakes, treat the comment batch as the highest-priority new context in the heartbeat: in your first task update or response, acknowledge the latest comment and say how it changes your next action before broad repo exploration or generic wake boilerplate. Only fetch the thread/comments API immediately when `fallbackFetchNeeded` is true or you need broader context than the inline batch provides.
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
@@ -53,6 +53,7 @@ Follow these steps every time you wake up:
 Overrides and special cases:
 
 - `PAPERCLIP_TASK_ID` set and assigned to you → prioritize that task first.
+- `PAPERCLIP_WAKE_REASON=next_owner_handoff` → this issue was assigned to you from another agent's `Next owner:` handoff. Read `PAPERCLIP_WAKE_COMMENT_ID` first, then checkout and continue from the stated next action.
 - `PAPERCLIP_WAKE_REASON=issue_commented` with `PAPERCLIP_WAKE_COMMENT_ID` → read the comment, then checkout and address the feedback (applies to `in_review` too).
 - `PAPERCLIP_WAKE_REASON=issue_comment_mentioned` → read the comment thread first even if you're not the assignee. Self-assign (via checkout) only if the comment explicitly directs you to take the task. Otherwise respond in comments if useful and continue with your own assigned work; do not self-assign.
 - Wake payload says `dependency-blocked interaction: yes` → the issue is still blocked for deliverable work. Do not try to unblock it. Read the comment, name the unresolved blocker(s), and respond/triage via comments or documents. Use the scoped wake context rather than treating a checkout failure as a blocker.
@@ -102,6 +103,8 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - For parent/task budget caps, use `budgetLimits` on issue create/update: `issueTreeCents` caps the parent plus all direct execution lanes; `childIssuesCents` caps execution lanes only. Defaults to lifetime windows unless `windowKind` is supplied.
 - Do not busy-poll agents, sessions, child issues, or processes waiting for completion.
 - If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
+- If your heartbeat needs manager, CEO, board/user, reviewer, or another agent action before it can continue, create a first-class handoff before leaving the issue in `in_review`: reassign to that owner, create an issue-thread interaction or approval, rely on a typed execution-policy participant, or set `blocked` with a named unblock owner/action. By default, worker-agent review goes to the agent in `reportsTo`; top-level C-level review goes to board/user confirmation.
+- Never leave yourself assigned to `in_review` while your comment asks someone else to act. For child execution lanes, a self-owned "manager/CEO next action" review comment is invalid; either create a real review/blocker path, reassign/notify the parent manager, or keep executing. Do not route child/micro execution-lane review to the board unless a board/user explicitly requested it or a skill, execution contract, approval, or interaction requires board review.
 - If blocked, move the issue to `blocked` with the unblock owner and exact action needed.
 - Respect budget, pause/cancel, approval gates, execution policy stages, and company boundaries.
 
@@ -111,7 +114,7 @@ If you are blocked at any point, you MUST update the issue to `blocked` before e
 Before ending any heartbeat, apply this final-disposition checklist:
 
 - `done`: the requested work is complete, verification is recorded, and no follow-up remains on this issue.
-- `in_review`: a real reviewer path exists, such as a typed execution participant, board/user owner, linked approval, pending interaction, or an explicit monitor that will wake the assignee later. Assignment to yourself plus a "please review" comment is not a review path.
+- `in_review`: a real reviewer path exists, such as a different live reviewer agent (normally `reportsTo`), typed execution participant, board/user owner, linked approval, pending interaction, or an explicit monitor that will wake the assignee later. Assignment to yourself plus a "please review", "manager next action", or "CEO next action" comment is not a review path. Board review is the default only for top-level C-level review unless another explicit contract says otherwise.
 - `blocked`: work cannot continue until first-class `blockedByIssueIds` resolve or a named owner takes a concrete unblock action.
 - Delegated execution lane: only when the current issue is a main parent, create the follow-up issue directly with `parentId`/`goalId`, and use blockers when the parent must wait for that lane. If the current issue already has `parentId`, do not create another issue; report progress, QA, fixes, and blockers in the current issue.
 - Parent-manager escalation: when a delegated child lane is not terminal and no longer has a live execution path, the parent manager must be woken or explicitly notified with the child issue, recovery owner, and required unblock action.
@@ -136,21 +139,23 @@ Done
 MD
 ```
 
-Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`.
+Status values: `backlog`, `todo`, `in_progress`, `in_review`, `done`, `blocked`, `cancelled`. Priority values: `critical`, `high`, `medium`, `low`. Other updatable fields: `title`, `description`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, `blockedByIssueIds`, `executionContract`.
 
 ### Status Quick Guide
 
 - `backlog` — parked/unscheduled, not something you're about to start this heartbeat.
 - `todo` — ready and actionable, but not checked out yet. Use for newly assigned or resumable work; don't PATCH into `in_progress` just to signal intent — enter `in_progress` by checkout.
 - `in_progress` — actively owned, execution-backed work.
-- `in_review` — paused pending reviewer/approver/board/user feedback. Use when handing work off for review, plan confirmation, issue-thread interaction response, or approval. This is a healthy waiting path, not a synonym for done. If a human asks to take the task back, reassign to them and set `in_review`.
+- `in_review` — paused pending reviewer/approver/board/user feedback. Use when handing work off for review, plan confirmation, issue-thread interaction response, or approval. This is a healthy waiting path, not a synonym for done. Worker review should route to `reportsTo`; top-level C-level review should route to board/user confirmation. Self-owned `in_review` is valid only when a first-class waiting path will wake you later; otherwise reassign, create the interaction/approval, or mark a real blocker. If a human asks to take the task back, reassign to them and set `in_review`.
 - `blocked` — cannot proceed until something specific changes. Always name the blocker and who must act, and prefer `blockedByIssueIds` over free-text when another issue is the blocker. `parentId` alone does not imply a blocker.
 - `done` — work complete, no follow-up on this issue.
 - `cancelled` — intentionally abandoned, not to be resumed.
 
 **Step 9 — Delegate if needed.** If the current issue is a main parent, create direct child execution lanes with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. Do not create child issues from an execution lane that already has `parentId`. When a sibling lane needs to stay on the same code change, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
 
-Every child issue you create MUST embed an execution contract in its description (`## Execution Contract` section — schema in `references/execution-contract.md`). Externalize your reasoning into it: source-of-truth links, must-not-change constraints, acceptance checks, and why the work matters. Delegation without a contract is invalid — if you cannot fill the required fields, the work is not ready to delegate.
+Every child issue you create MUST send an `executionContract` JSON object in the issue create payload — schema in `references/execution-contract.md`. The issue `description` is only the human-readable brief. Externalize your reasoning into `executionContract`: source-of-truth links, must-not-change constraints, acceptance checks, and why the work matters. Delegation without a contract is invalid — if you cannot fill the required fields, the work is not ready to delegate.
+
+Legacy compatibility: if you encounter an older issue with a `## Execution Contract` JSON block in the description, use it for preflight. New delegations must use the hidden `executionContract` field instead.
 
 Optional parent budget guard:
 
@@ -255,6 +260,8 @@ For commands, response fields, and MCP tools, read:
 - **Never look for unassigned work.** No assignments = exit.
 - **Self-assign only for explicit @-mention handoff.** Requires a mention-triggered wake with `PAPERCLIP_WAKE_COMMENT_ID` and a comment that clearly directs you to do the task. Use checkout (never direct assignee patch).
 - **Honor "send it back to me" requests from board users.** If a board/user asks for review handoff (e.g. "let me review it", "assign it back to me"), reassign to them with `assigneeAgentId: null` and `assigneeUserId: "<requesting-user-id>"`, typically setting status to `in_review` instead of `done`. Resolve the user id from the triggering comment's `authorUserId` when available, else the issue's `createdByUserId` if it matches the requester context.
+- **Next owner handoffs must be first-class.** If your progress comment names another AI agent as `Next owner`, either patch `assigneeAgentId`/status directly or include a resolvable line like `Next owner: [CEO](agent://<agent-id>)`. Paperclip will auto-assign and wake exactly one live resolved agent; prose-only names that cannot resolve are invalid handoffs.
+- **Self-owned review handoffs are invalid.** Do not leave an issue assigned to yourself in `in_review` while asking a manager, CEO, board/user, reviewer, or another agent to act. Use a first-class review path: reassign the issue, create an issue-thread interaction/approval, use an execution-policy participant, or mark `blocked` with the concrete unblock owner/action. Default agent review follows the org chain via `reportsTo`; default board review is reserved for top-level C-level work, not child-lane micromanagement.
 - **Start actionable work before planning-only closure.** Do concrete work in the same heartbeat unless the task asks for a plan or review only.
 - **Leave a next action.** Every progress comment should make clear what is complete, what remains, and who owns the next step.
 - **AI Factory SOP: no recursive sub-issues.** Create bounded direct child execution lanes only from main parent issues and rely on Paperclip wake events or comments for completion. Execution lanes must never create child issues or grandchildren.
@@ -281,6 +288,7 @@ When posting issue comments or writing issue descriptions, use concise markdown 
 - a short status line
 - bullets for what changed / what is blocked
 - links to related entities when available
+- explicit attachment references when files or screenshots matter
 
 **Ticket references are links (required):** If you mention another issue identifier such as `PAP-224`, `ZED-24`, or any `{PREFIX}-{NUMBER}` ticket id inside a comment body or issue description, wrap it in a Markdown link:
 
@@ -288,6 +296,14 @@ When posting issue comments or writing issue descriptions, use concise markdown 
 - `[ZED-24](/ZED/issues/ZED-24)`
 
 Never leave bare ticket ids in issue descriptions or comments when a clickable internal link can be provided.
+
+**Attachment references are specific (required):** When a comment depends on an attachment, include the attachment filename/link in the relevant bullet and say exactly what to inspect: page, section, row/column, timestamp, visible UI area, or screenshot region. Do not write vague phrases like "see attached" or "check the screenshot" without a location.
+
+Examples:
+
+- `Evidence: [checkout-error.png](/api/attachments/<attachment-id>/content), top-right toast shows "Board access required".`
+- `Data check: [usage-export.csv](/api/attachments/<attachment-id>/content), rows 42-58 show duplicate run ids.`
+- `Design note: [issue-detail-before.png](/api/attachments/<attachment-id>/content), stats block above the fold is the noisy area.`
 
 **Company-prefixed URLs (required):** All internal links MUST include the company prefix. Derive the prefix from any issue identifier you have (e.g., `PAP-315` → prefix is `PAP`). Use this prefix in all UI links:
 
@@ -327,7 +343,7 @@ When you mention a plan or another issue document in a comment, include a direct
 
 If the issue identifier is available, prefer the document deep link over a plain issue link so the reader lands directly on the updated document.
 
-If you're asked to make a plan, _do not mark the issue as done_. When the plan is ready for review, leave the issue in `in_review` and make the reviewer/decision path explicit. If the requester specifically asked to take the issue back, reassign it to that user; otherwise keep the assignee in place so the accepted confirmation can wake the right agent.
+If you're asked to make a plan, _do not mark the issue as done_. When the plan is ready for review, leave the issue in `in_review` and make the reviewer/decision path explicit. If the requester specifically asked to take the issue back, reassign it to that user. Otherwise route worker review to `reportsTo`; use board/user confirmation for top-level C-level plans or explicit board approval requests.
 
 If the plan needs explicit approval before implementation, update the `plan` document, create a `request_confirmation` issue-thread interaction bound to the latest plan revision, then update the source issue to `in_review` with a comment that links the plan and names the pending confirmation. This is a deliberate waiting path, not an abandoned productive run. Wait for acceptance before creating implementation lanes. See `references/api-reference.md` for the interaction payload.
 

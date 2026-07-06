@@ -106,8 +106,7 @@ export interface IssueGraphLivenessInput {
   now?: Date | string;
 }
 
-const INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running", "error"]);
-const BLOCKING_AGENT_STATUSES = new Set(["paused", "terminated", "pending_approval"]);
+const INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running"]);
 
 function issueLabel(issue: IssueLivenessIssueInput) {
   return issue.identifier ?? issue.id;
@@ -532,7 +531,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     if (!blocker.assigneeAgentId) return null;
 
     const blockerAgent = agentsById.get(blocker.assigneeAgentId);
-    if (!blockerAgent || blockerAgent.companyId !== source.companyId || BLOCKING_AGENT_STATUSES.has(blockerAgent.status)) {
+    if (!blockerAgent || blockerAgent.companyId !== source.companyId || !isInvokableAgent(blockerAgent)) {
       return finding({
         issue: source,
         state: "blocked_by_uninvokable_assignee",

@@ -30,6 +30,65 @@ describe("issue validators", () => {
       .toBeUndefined();
   });
 
+  it("accepts extensible execution contracts on create and update", () => {
+    const contract = {
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "qa",
+      core: {
+        objective: "Review the implementation against the source contract.",
+        acceptanceChecks: ["Fails wrong-problem work"],
+      },
+      extensions: {
+        qa: {
+          reviewMode: "contract_fidelity",
+        },
+      },
+    };
+
+    expect(createIssueSchema.parse({ title: "QA lane", executionContract: contract }).executionContract)
+      .toEqual(contract);
+    expect(updateIssueSchema.parse({ executionContract: contract }).executionContract)
+      .toEqual(contract);
+  });
+
+  it("accepts execution contracts on suggested task drafts", () => {
+    const contract = {
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "implementation",
+      core: {
+        objective: "Build the suggested execution lane.",
+        why: "The child issue needs the manager handoff.",
+        sourceOfTruth: { links: ["/PAP/issues/PAP-100"] },
+        acceptanceChecks: ["Created child issue stores the contract"],
+        handoffNotes: { managerReasoning: "This task was proposed from the parent plan." },
+      },
+    };
+
+    expect(suggestedTaskDraftSchema.parse({
+      clientKey: "task-1",
+      title: "Implementation lane",
+      executionContract: contract,
+    }).executionContract).toEqual(contract);
+  });
+
+  it("rejects malformed execution contract envelopes", () => {
+    expect(createIssueSchema.safeParse({
+      title: "QA lane",
+      executionContract: {
+        schemaVersion: "2",
+      },
+    }).success).toBe(false);
+
+    expect(updateIssueSchema.safeParse({
+      executionContract: {
+        schemaVersion: 2,
+        extensions: ["qa"],
+      },
+    }).success).toBe(false);
+  });
+
   it("normalizes JSON-escaped line breaks in issue descriptions", () => {
     const parsed = createIssueSchema.parse({
       title: "Follow up PR",

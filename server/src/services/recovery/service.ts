@@ -24,7 +24,7 @@ import {
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
-import { forbidden, notFound } from "../../errors.js";
+import { forbidden, HttpError, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
@@ -68,6 +68,7 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+const ISSUE_GRAPH_LIVENESS_RECOVERY_ACTION_OWNER_STATUSES = new Set(["active", "idle", "running"]);
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -265,6 +266,13 @@ function unwrapDatabaseConflictError(error: unknown) {
   };
 }
 
+function isLivenessEscalationPlacementError(error: unknown): error is HttpError {
+  if (!(error instanceof HttpError) || error.status !== 422) return false;
+  return error.message ===
+    "Execution lanes cannot create sub-issues. Paperclip supports only one child level under a main parent issue." ||
+    /^Parent issue already has the maximum \d+ direct execution lanes\.$/.test(error.message);
+}
+
 function isAgentInvokable(agent: typeof agents.$inferSelect | null | undefined) {
   return Boolean(agent && !["paused", "terminated", "pending_approval"].includes(agent.status));
 }
@@ -427,35 +435,45 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
-  async function hasActiveExecutionPath(companyId: string, issueId: string) {
-    const [run, deferredWake] = await Promise.all([
-      db
-        .select({ id: heartbeatRuns.id })
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, companyId),
-            inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null),
-      db
-        .select({ id: agentWakeupRequests.id })
-        .from(agentWakeupRequests)
-        .where(
-          and(
-            eq(agentWakeupRequests.companyId, companyId),
-            eq(agentWakeupRequests.status, "deferred_issue_execution"),
-            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null),
-    ]);
+  async function getActiveExecutionRun(companyId: string, issueId: string) {
+    return db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
 
-    return Boolean(run || deferredWake);
+  async function hasActiveExecutionPath(companyId: string, issueId: string) {
+    return Boolean(await getActiveExecutionRun(companyId, issueId));
+  }
+
+  async function failOrphanedDeferredIssueWakes(companyId: string, issueId: string) {
+    if (await getActiveExecutionRun(companyId, issueId)) return [];
+    const now = new Date();
+    return db
+      .update(agentWakeupRequests)
+      .set({
+        status: "failed",
+        finishedAt: now,
+        error:
+          "Deferred issue execution wake was orphaned after the issue lost its active execution run; stranded issue recovery will requeue the current assignee.",
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .returning({ id: agentWakeupRequests.id });
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string) {
@@ -2174,6 +2192,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       productiveContinuationObserved: 0,
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
+      orphanedDeferredWakesFailed: 0,
       successfulRunHandoffEscalated: 0,
       escalated: 0,
       skipped: 0,
@@ -2197,6 +2216,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.skipped += 1;
         continue;
       }
+      const orphanedDeferredWakes = await failOrphanedDeferredIssueWakes(issue.companyId, issue.id);
+      result.orphanedDeferredWakesFailed += orphanedDeferredWakes.length;
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
         result.skipped += 1;
@@ -2550,8 +2571,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               companyId: issueRecoveryActions.companyId,
               issueId: issueRecoveryActions.sourceIssueId,
               status: issueRecoveryActions.status,
+              ownerAgentId: issueRecoveryActions.ownerAgentId,
+              ownerUserId: issueRecoveryActions.ownerUserId,
+              ownerAgentCompanyId: agents.companyId,
+              ownerAgentStatus: agents.status,
             })
             .from(issueRecoveryActions)
+            .leftJoin(agents, eq(agents.id, issueRecoveryActions.ownerAgentId))
             .where(
               and(
                 inArray(issueRecoveryActions.status, ["active", "escalated"]),
@@ -2588,6 +2614,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         status: row.status,
       }];
     });
+    const activeRecoveryActionWaitingPaths = recoveryActionRows.flatMap((row) => {
+      if (row.ownerUserId) {
+        return [{ companyId: row.companyId, issueId: row.issueId, status: row.status }];
+      }
+      if (
+        row.ownerAgentId &&
+        row.ownerAgentCompanyId === row.companyId &&
+        row.ownerAgentStatus &&
+        ISSUE_GRAPH_LIVENESS_RECOVERY_ACTION_OWNER_STATUSES.has(row.ownerAgentStatus)
+      ) {
+        return [{ companyId: row.companyId, issueId: row.issueId, status: row.status }];
+      }
+      return [];
+    });
 
     return classifyIssueGraphLiveness({
       issues: issueRows,
@@ -2612,7 +2652,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       })),
       pendingInteractions: interactionRows,
       pendingApprovals: approvalRows,
-      openRecoveryIssues: openRecoveryIssues.concat(recoveryActionRows),
+      openRecoveryIssues: openRecoveryIssues.concat(activeRecoveryActionWaitingPaths),
       now: new Date(),
     });
   }
@@ -3025,44 +3065,68 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryIssue,
       ownerAgentId: ownerSelection.agentId,
     });
+    let escalationParentIssueId: string | null = recoveryIssue.parentId ?? recoveryIssue.id;
+    let escalationParentSource: "recovery_issue" | "recovery_issue_parent" | "top_level_fallback" =
+      recoveryIssue.parentId ? "recovery_issue_parent" : "recovery_issue";
+    let escalationParentFallbackReason: string | null = null;
 
-    let escalation: Awaited<ReturnType<typeof issuesSvc.create>>;
-    try {
-      escalation = await issuesSvc.create(issue.companyId, {
-        title: `Unblock liveness incident for ${recoveryIssue.identifier ?? recoveryIssue.title}`,
-        description: buildLivenessEscalationDescription(input.finding),
-        status: "todo",
-        priority: "high",
-        parentId: recoveryIssue.id,
-        projectId: recoveryIssue.projectId,
-        goalId: recoveryIssue.goalId,
-        assigneeAgentId: ownerSelection.agentId,
-        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides(),
-        originKind: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
-        originId: input.finding.incidentKey,
-        originFingerprint: livenessRecoveryLeafFingerprint(input.finding),
-        billingCode: recoveryIssue.billingCode,
-        ...(reuseRecoveryExecutionWorkspace
-          ? { inheritExecutionWorkspaceFromIssueId: recoveryIssue.id }
-          : {
-            executionWorkspaceId: null,
-            executionWorkspacePreference: null,
-            executionWorkspaceSettings: null,
-          }),
-      });
-    } catch (error) {
-      if (!isUniqueLivenessRecoveryConflict(error)) throw error;
+    async function findOpenEscalationAfterCreateConflict() {
       const raced =
         await findOpenLivenessEscalation(issue.companyId, input.finding.incidentKey) ??
         await findOpenLivenessRecoveryIssueForLeaf(input.finding);
-      if (!raced) throw error;
+      if (!raced) throw new Error("Liveness escalation create conflict did not expose an open escalation");
       await ensureIssueBlockedByEscalation({
         issue,
         escalationIssueId: raced.id,
         finding: input.finding,
         runId: input.runId ?? null,
       });
-      return { kind: "existing" as const, escalationIssueId: raced.id };
+      return raced;
+    }
+
+    const buildEscalationInput = (parentId: string | null) => ({
+      title: `Unblock liveness incident for ${recoveryIssue.identifier ?? recoveryIssue.title}`,
+      description: buildLivenessEscalationDescription(input.finding),
+      status: "todo",
+      priority: "high",
+      parentId,
+      projectId: recoveryIssue.projectId,
+      goalId: recoveryIssue.goalId,
+      assigneeAgentId: ownerSelection.agentId,
+      assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides(),
+      originKind: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+      originId: input.finding.incidentKey,
+      originFingerprint: livenessRecoveryLeafFingerprint(input.finding),
+      billingCode: recoveryIssue.billingCode,
+      ...(reuseRecoveryExecutionWorkspace
+        ? { inheritExecutionWorkspaceFromIssueId: recoveryIssue.id }
+        : {
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+          executionWorkspaceSettings: null,
+        }),
+    });
+
+    let escalation: Awaited<ReturnType<typeof issuesSvc.create>>;
+    try {
+      escalation = await issuesSvc.create(issue.companyId, buildEscalationInput(escalationParentIssueId));
+    } catch (error) {
+      if (isUniqueLivenessRecoveryConflict(error)) {
+        const raced = await findOpenEscalationAfterCreateConflict();
+        return { kind: "existing" as const, escalationIssueId: raced.id };
+      }
+      if (!isLivenessEscalationPlacementError(error)) throw error;
+
+      escalationParentFallbackReason = error.message;
+      escalationParentIssueId = null;
+      escalationParentSource = "top_level_fallback";
+      try {
+        escalation = await issuesSvc.create(issue.companyId, buildEscalationInput(null));
+      } catch (fallbackError) {
+        if (!isUniqueLivenessRecoveryConflict(fallbackError)) throw fallbackError;
+        const raced = await findOpenEscalationAfterCreateConflict();
+        return { kind: "existing" as const, escalationIssueId: raced.id };
+      }
     }
 
     await ensureIssueBlockedByEscalation({
@@ -3097,6 +3161,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         recoveryIdentifier: recoveryIssue.identifier,
         escalationIssueId: escalation.id,
         escalationIdentifier: escalation.identifier,
+        escalationParentIssueId,
+        escalationParentSource,
+        escalationParentFallbackReason,
         dependencyPath: input.finding.dependencyPath,
         ownerSelection: {
           selectedAgentId: ownerSelection.agentId,
@@ -3184,6 +3251,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       obsoleteRecoveryBlockerRelationsRemoved: obsoleteRecoveryCleanup.blockerRelationsRemoved,
       issueIds: [] as string[],
       escalationIssueIds: [] as string[],
+      failed: 0,
+      failedIssueIds: [] as string[],
       retiredRecoveryIssueIds: obsoleteRecoveryCleanup.retiredIssueIds,
     };
 
@@ -3198,10 +3267,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.skipped += 1;
         continue;
       }
-      const escalation = await createIssueGraphLivenessEscalation({
-        finding,
-        runId: opts?.runId ?? null,
-      });
+      let escalation: Awaited<ReturnType<typeof createIssueGraphLivenessEscalation>>;
+      try {
+        escalation = await createIssueGraphLivenessEscalation({
+          finding,
+          runId: opts?.runId ?? null,
+        });
+      } catch (error) {
+        result.failed += 1;
+        result.skipped += 1;
+        result.failedIssueIds.push(finding.issueId);
+        logger.warn({
+          err: error,
+          incidentKey: finding.incidentKey,
+          findingState: finding.state,
+          sourceIssueId: finding.issueId,
+          recoveryIssueId: finding.recoveryIssueId,
+        }, "issue graph liveness escalation failed for finding");
+        continue;
+      }
       if (escalation.kind === "created") {
         result.escalationsCreated += 1;
         result.issueIds.push(finding.issueId);

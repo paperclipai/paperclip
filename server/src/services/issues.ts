@@ -31,6 +31,7 @@ import {
 } from "@paperclipai/db";
 import type {
   IssueCommentAuthorType,
+  IssueAttachment,
   IssueCommentMetadata,
   IssueCommentPresentation,
   IssueBlockerAttention,
@@ -86,6 +87,21 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+const ISSUE_ATTACHMENT_CONTENT_PATH_RE = /\/api\/attachments\/([^/\s)"'`]+)\/content\b/g;
+
+function issueAttachmentContentPath(id: string) {
+  return `/api/attachments/${id}/content`;
+}
+
+function extractIssueAttachmentIdsFromText(text: string) {
+  const ids = new Set<string>();
+  for (const match of text.matchAll(ISSUE_ATTACHMENT_CONTENT_PATH_RE)) {
+    const id = match[1]?.trim();
+    if (id && isUuidLike(id)) ids.add(id);
+  }
+  return [...ids];
+}
+
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -434,6 +450,192 @@ function appendAcceptanceCriteriaToDescription(description: string | null | unde
   const base = description?.trim() ?? "";
   const criteriaMarkdown = ["## Acceptance Criteria", "", ...criteria.map((item) => `- ${item}`)].join("\n");
   return base ? `${base}\n\n${criteriaMarkdown}` : criteriaMarkdown;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeExecutionContractValue(value: unknown): Record<string, unknown> | null {
+  if (value == null) return null;
+  return isRecord(value) ? value : null;
+}
+
+function extractJsonObjectFromMarkdown(value: string): Record<string, unknown> | null {
+  const fenced = value.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced?.[1]?.trim() ?? (() => {
+    const start = value.indexOf("{");
+    const end = value.lastIndexOf("}");
+    return start >= 0 && end > start ? value.slice(start, end + 1).trim() : "";
+  })();
+  if (!candidate) return null;
+  try {
+    const parsed = JSON.parse(candidate);
+    return normalizeExecutionContractValue(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function extractExecutionContractFromDescription(description: string | null | undefined): {
+  description: string | null;
+  executionContract: Record<string, unknown> | null;
+} | null {
+  if (typeof description !== "string" || !description.trim()) return null;
+  const headingPattern = /^##\s+Execution Contract\s*$/gim;
+  const match = headingPattern.exec(description);
+  if (!match) return null;
+
+  const sectionStart = (() => {
+    const lineEnd = description.indexOf("\n", match.index + match[0].length);
+    return lineEnd === -1 ? description.length : lineEnd + 1;
+  })();
+  const nextHeadingPattern = /^##\s+\S.*$/gm;
+  nextHeadingPattern.lastIndex = sectionStart;
+  const nextHeading = nextHeadingPattern.exec(description);
+  const sectionEnd = nextHeading?.index ?? description.length;
+  const sectionBody = description.slice(sectionStart, sectionEnd);
+  const executionContract = extractJsonObjectFromMarkdown(sectionBody);
+  if (!executionContract) return null;
+
+  const before = description.slice(0, match.index).trimEnd();
+  const after = description.slice(sectionEnd).trimStart();
+  const nextDescription = [before, after].filter(Boolean).join("\n\n").trim();
+  return {
+    description: nextDescription || null,
+    executionContract,
+  };
+}
+
+function resolveExecutionContractFields(input: {
+  description?: string | null;
+  executionContract?: Record<string, unknown> | null;
+}): {
+  description?: string | null;
+  executionContract?: Record<string, unknown> | null;
+} {
+  const extracted = extractExecutionContractFromDescription(input.description);
+  const description = extracted ? extracted.description : input.description;
+  if (input.executionContract !== undefined) {
+    return {
+      description,
+      executionContract: normalizeExecutionContractValue(input.executionContract),
+    };
+  }
+  if (extracted) {
+    return {
+      description,
+      executionContract: extracted.executionContract,
+    };
+  }
+  return { description };
+}
+
+export type DelegatedIssueExecutionContractValidation = {
+  valid: boolean;
+  warnings: string[];
+};
+
+function readContractField(record: Record<string, unknown> | null | undefined, ...keys: string[]) {
+  if (!record) return undefined;
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(record, key)) return record[key];
+  }
+  return undefined;
+}
+
+function readContractString(record: Record<string, unknown> | null | undefined, ...keys: string[]) {
+  const value = readContractField(record, ...keys);
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function hasContractContent(value: unknown): boolean {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (typeof value === "number" || typeof value === "boolean") return true;
+  if (Array.isArray(value)) return value.some(hasContractContent);
+  if (isRecord(value)) return Object.values(value).some(hasContractContent);
+  return false;
+}
+
+export function validateDelegatedIssueExecutionContract(
+  executionContract: Record<string, unknown> | null | undefined,
+): DelegatedIssueExecutionContractValidation {
+  const warnings: string[] = [];
+  if (!executionContract) {
+    return {
+      valid: false,
+      warnings: ["executionContract is required for agent-created child issues"],
+    };
+  }
+
+  const schemaVersion = readContractField(executionContract, "schemaVersion", "schema_version");
+  if (
+    typeof schemaVersion !== "number" ||
+    !Number.isInteger(schemaVersion) ||
+    schemaVersion < 1
+  ) {
+    warnings.push("executionContract.schemaVersion must be a positive integer");
+  }
+
+  if (!readContractString(executionContract, "contractType", "contract_type")) {
+    warnings.push("executionContract.contractType is required");
+  }
+  if (!readContractString(executionContract, "taskType", "task_type")) {
+    warnings.push("executionContract.taskType is required");
+  }
+
+  const coreValue = readContractField(executionContract, "core");
+  if (!isRecord(coreValue)) {
+    warnings.push("executionContract.core is required");
+    return { valid: false, warnings };
+  }
+
+  if (!readContractString(coreValue, "objective")) {
+    warnings.push("executionContract.core.objective is required");
+  }
+  if (!readContractString(coreValue, "why")) {
+    warnings.push("executionContract.core.why is required");
+  }
+
+  const sourceOfTruth = readContractField(coreValue, "sourceOfTruth", "source_of_truth");
+  if (!hasContractContent(sourceOfTruth)) {
+    warnings.push("executionContract.core.sourceOfTruth must contain at least one source");
+  }
+
+  const acceptanceChecks = readContractField(coreValue, "acceptanceChecks", "acceptance_checks");
+  if (!hasContractContent(acceptanceChecks)) {
+    warnings.push("executionContract.core.acceptanceChecks must contain at least one check");
+  }
+
+  const handoffNotesValue = readContractField(coreValue, "handoffNotes", "handoff_notes");
+  const handoffNotes = isRecord(handoffNotesValue) ? handoffNotesValue : null;
+  if (!readContractString(handoffNotes, "managerReasoning", "manager_reasoning")) {
+    warnings.push("executionContract.core.handoffNotes.managerReasoning is required");
+  }
+
+  return {
+    valid: warnings.length === 0,
+    warnings,
+  };
+}
+
+export function assertDelegatedIssueExecutionContract(
+  executionContract: Record<string, unknown> | null | undefined,
+  input: {
+    parentId: string;
+    mode?: "enforce";
+  },
+) {
+  const validation = validateDelegatedIssueExecutionContract(executionContract);
+  if (validation.valid) return;
+
+  throw unprocessable("Agent-created child issues require a valid executionContract", {
+    code: "invalid_execution_contract",
+    mode: input.mode ?? "enforce",
+    parentId: input.parentId,
+    missingExecutionContract: executionContract == null,
+    warnings: validation.warnings,
+  });
 }
 
 function createIssueDependencyReadiness(issueId: string): IssueDependencyReadiness {
@@ -1793,6 +1995,7 @@ const issueListSelect = {
   requestDepth: issues.requestDepth,
   billingCode: issues.billingCode,
   assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
+  executionContract: sql<null>`null`,
   executionPolicy: sql<null>`null`,
   executionState: sql<null>`null`,
   monitorNextCheckAt: issues.monitorNextCheckAt,
@@ -2109,6 +2312,96 @@ export function issueService(db: Db) {
       presentation: issueCommentPresentationSchema.nullable().catch(null).parse(comment.presentation ?? null),
       metadata: issueCommentMetadataSchema.nullable().catch(null).parse(comment.metadata ?? null),
     };
+  }
+
+  async function attachIssueAttachmentsToComments<T extends { id: string; issueId: string; body: string }>(
+    comments: readonly T[],
+  ): Promise<Array<T & { attachments: IssueAttachment[] }>> {
+    if (comments.length === 0) return [];
+
+    const issueIds = [...new Set(comments.map((comment) => comment.issueId))];
+    const commentIds = comments.map((comment) => comment.id);
+    const referencedIdsByCommentId = new Map<string, string[]>();
+    const referencedAttachmentIds = new Set<string>();
+
+    for (const comment of comments) {
+      const ids = extractIssueAttachmentIdsFromText(comment.body);
+      referencedIdsByCommentId.set(comment.id, ids);
+      for (const id of ids) referencedAttachmentIds.add(id);
+    }
+
+    const directCommentCondition = commentIds.length > 0
+      ? inArray(issueAttachments.issueCommentId, commentIds)
+      : null;
+    const referencedAttachmentCondition = referencedAttachmentIds.size > 0
+      ? inArray(issueAttachments.id, [...referencedAttachmentIds])
+      : null;
+    const attachmentScopeCondition = directCommentCondition && referencedAttachmentCondition
+      ? or(directCommentCondition, referencedAttachmentCondition)!
+      : directCommentCondition ?? referencedAttachmentCondition;
+
+    if (!attachmentScopeCondition) {
+      return comments.map((comment) => ({ ...comment, attachments: [] }));
+    }
+
+    const issueCondition = issueIds.length === 1
+      ? eq(issueAttachments.issueId, issueIds[0])
+      : inArray(issueAttachments.issueId, issueIds);
+
+    const attachmentRows = await db
+      .select({
+        id: issueAttachments.id,
+        companyId: issueAttachments.companyId,
+        issueId: issueAttachments.issueId,
+        issueCommentId: issueAttachments.issueCommentId,
+        assetId: issueAttachments.assetId,
+        provider: assets.provider,
+        objectKey: assets.objectKey,
+        contentType: assets.contentType,
+        byteSize: assets.byteSize,
+        sha256: assets.sha256,
+        originalFilename: assets.originalFilename,
+        createdByAgentId: assets.createdByAgentId,
+        createdByUserId: assets.createdByUserId,
+        createdAt: issueAttachments.createdAt,
+        updatedAt: issueAttachments.updatedAt,
+      })
+      .from(issueAttachments)
+      .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
+      .where(and(issueCondition, attachmentScopeCondition));
+
+    const attachments = attachmentRows.map((row): IssueAttachment => ({
+      ...row,
+      contentPath: issueAttachmentContentPath(row.id),
+    }));
+    const attachmentById = new Map(attachments.map((attachment) => [attachment.id, attachment]));
+    const directAttachmentsByCommentId = new Map<string, IssueAttachment[]>();
+
+    for (const attachment of attachments) {
+      if (!attachment.issueCommentId) continue;
+      const current = directAttachmentsByCommentId.get(attachment.issueCommentId) ?? [];
+      current.push(attachment);
+      directAttachmentsByCommentId.set(attachment.issueCommentId, current);
+    }
+
+    return comments.map((comment) => {
+      const seen = new Set<string>();
+      const commentAttachments: IssueAttachment[] = [];
+      const addAttachment = (attachment: IssueAttachment | undefined) => {
+        if (!attachment || seen.has(attachment.id)) return;
+        seen.add(attachment.id);
+        commentAttachments.push(attachment);
+      };
+
+      for (const attachment of directAttachmentsByCommentId.get(comment.id) ?? []) {
+        addAttachment(attachment);
+      }
+      for (const id of referencedIdsByCommentId.get(comment.id) ?? []) {
+        addAttachment(attachmentById.get(id));
+      }
+
+      return { ...comment, attachments: commentAttachments };
+    });
   }
 
   async function readRunLogText(run: {
@@ -3339,6 +3632,16 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
+      const description = appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria);
+      if (actorAgentId) {
+        const contractFields = resolveExecutionContractFields({
+          description,
+          executionContract: issueData.executionContract,
+        });
+        assertDelegatedIssueExecutionContract(contractFields.executionContract ?? null, {
+          parentId: parent.id,
+        });
+      }
       const child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
@@ -3347,7 +3650,7 @@ export function issueService(db: Db) {
         requestDepth: clampIssueRequestDepth(
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
-        description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
+        description,
         inheritExecutionWorkspaceFromIssueId: parent.id,
       });
 
@@ -3381,6 +3684,21 @@ export function issueService(db: Db) {
         budgetLimits: _budgetLimits,
         ...issueData
       } = data;
+      const contractFields = resolveExecutionContractFields({
+        description: issueData.description,
+        executionContract: issueData.executionContract,
+      });
+      issueData.description = contractFields.description ?? null;
+      if (Object.prototype.hasOwnProperty.call(contractFields, "executionContract")) {
+        issueData.executionContract = contractFields.executionContract ?? null;
+      } else {
+        delete issueData.executionContract;
+      }
+      if (issueData.parentId && issueData.createdByAgentId) {
+        assertDelegatedIssueExecutionContract(issueData.executionContract ?? null, {
+          parentId: issueData.parentId,
+        });
+      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -3635,6 +3953,20 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
+      const contractFields = resolveExecutionContractFields({
+        ...(Object.prototype.hasOwnProperty.call(issueData, "description")
+          ? { description: issueData.description }
+          : {}),
+        ...(Object.prototype.hasOwnProperty.call(issueData, "executionContract")
+          ? { executionContract: issueData.executionContract }
+          : {}),
+      });
+      if (Object.prototype.hasOwnProperty.call(contractFields, "description")) {
+        issueData.description = contractFields.description ?? null;
+      }
+      if (Object.prototype.hasOwnProperty.call(contractFields, "executionContract")) {
+        issueData.executionContract = contractFields.executionContract ?? null;
+      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -4382,7 +4714,8 @@ export function issueService(db: Db) {
       const comments = limit ? await query.limit(limit) : await query;
       const { censorUsernameInLogs } = await instanceSettings.getGeneral();
       const enrichedComments = await enrichCommentsWithDerivedAgentAttribution(comments);
-      return enrichedComments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
+      const commentsWithAttachments = await attachIssueAttachmentsToComments(enrichedComments);
+      return commentsWithAttachments.map((comment) => redactIssueComment(comment, censorUsernameInLogs));
     },
 
     getCommentCursor: async (issueId: string) => {
@@ -4422,7 +4755,8 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!comment) return null;
       const [enrichedComment] = await enrichCommentsWithDerivedAgentAttribution([comment]);
-      return redactIssueComment(enrichedComment ?? comment, censorUsernameInLogs);
+      const [commentWithAttachments] = await attachIssueAttachmentsToComments([enrichedComment ?? comment]);
+      return redactIssueComment(commentWithAttachments ?? { ...comment, attachments: [] }, censorUsernameInLogs);
     },
 
     removeComment: async (commentId: string) => {
@@ -4499,7 +4833,8 @@ export function issueService(db: Db) {
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
 
-      return redactIssueComment(comment, currentUserRedactionOptions.enabled);
+      const [commentWithAttachments] = await attachIssueAttachmentsToComments([comment]);
+      return redactIssueComment(commentWithAttachments ?? { ...comment, attachments: [] }, currentUserRedactionOptions.enabled);
     },
 
     createAttachment: async (input: {

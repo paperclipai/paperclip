@@ -1519,6 +1519,11 @@ function deriveSkillSourceInfo(skill: SkillSourceInfoTarget): {
   };
 }
 
+function isPaperclipBundledSkill(skill: Pick<CompanySkill, "key" | "metadata">): boolean {
+  const metadata = getSkillMeta(skill);
+  return metadata.sourceKind === "paperclip_bundled" || skill.key.startsWith("paperclipai/paperclip/");
+}
+
 function enrichSkill(skill: CompanySkill, attachedAgentCount: number, usedByAgents: CompanySkillUsageAgent[] = []) {
   const source = deriveSkillSourceInfo(skill);
   return {
@@ -2456,6 +2461,14 @@ export function companySkillService(db: Db) {
     if (!row) return null;
 
     const skill = toCompanySkill(row);
+    if (isPaperclipBundledSkill(skill)) {
+      throw unprocessable("Bundled Paperclip skills are managed by Paperclip and cannot be deleted.", {
+        skillId: skill.id,
+        skillKey: skill.key,
+        sourceKind: getSkillMeta(skill).sourceKind ?? null,
+      });
+    }
+
     const usedByAgents = await usage(companyId, skill.key);
 
     if (usedByAgents.length > 0) {

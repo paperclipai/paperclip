@@ -1,33 +1,35 @@
 # Plan: Server-Side Execution Contract Enforcement (Stage 2)
 
 Date: 2026-07-06
-Status: proposed (stage 1 — skill-level contracts — shipped on branch `root-skills-governance`)
+Status: shipped for agent-created child execution lanes (V2 hidden storage/transport/UI live; hard 422 enforcement live for agent-created child issues; comments and human-created issues remain natural/intake-first)
 
 ## Context
 
-Stage 1 added execution-contract rules to the bundled `paperclip` skill (`references/execution-contract.md`): managers embed a contract in every delegated child issue, executors run preflight, QA reviews against the contract. This is instruction-level enforcement — agents follow it because the skill tells them to, but the server does not verify anything.
+Stage 1 added execution-contract rules to the bundled `paperclip` skill (`references/execution-contract.md`): managers include a contract with every delegated child issue, executors run preflight, QA reviews against the contract. This is instruction-level enforcement — agents follow it because the skill tells them to, but the server does not verify required contract presence.
+
+V2 added hidden contract storage and transport: `issues.execution_contract`, API `executionContract`, issue detail/heartbeat-context/wake payload delivery, legacy description extraction, and a collapsed UI audit panel.
 
 Stage 2 makes the contract structural, replicating the property that makes isolated-subagent handoffs (e.g. Claude Code's Agent tool) reliable: **the handoff artifact is the executor's primary starting context, and its presence is mechanically enforced.**
 
-## Proposed changes
+## Shipped / Proposed Changes
 
 ### 1. Contract validation on delegation
 
-In the issue service (`server/src/services/issues.ts`), when an **agent** creates an issue with `parentId` set:
+Shipped in enforce mode. In the issue service, when an **agent** creates an issue with `parentId` set:
 
-- Parse the description for a `## Execution Contract` section containing a fenced JSON block (or an issue document with key `contract` created in the same flow).
-- Validate required fields: `objective`, `why`, `task_type`, non-empty `source_of_truth`, non-empty `acceptance_checks`, `handoff_notes.manager_reasoning`.
-- Reject with `422` and a field-level error message when missing/invalid, mirroring the existing two-level topology enforcement (which already rejects grandchildren and >10 lanes — precedent for hard orchestration gates in this service).
+- Read the hidden `executionContract` field. Legacy `## Execution Contract` description blocks may still be extracted for compatibility, but new delegation validation should target the JSON field.
+- Validate required fields: `schemaVersion`, `contractType`, `taskType`, `core.objective`, `core.why`, non-empty `core.sourceOfTruth`, non-empty `core.acceptanceChecks`, `core.handoffNotes.managerReasoning`.
+- Enforce-mode behavior: reject with `422` and a field-level error message when missing/invalid, mirroring the existing two-level topology enforcement (which already rejects grandchildren and >10 lanes — precedent for hard orchestration gates in this service).
 - Human-created issues are exempt (agents reconstruct contracts for human requests, per the skill).
-- Rollout flag: per-company setting (`instance_settings` or company metadata) `requireExecutionContracts: warn | enforce | off`, default `warn` initially; flip to `enforce` after contract adoption is visible in real issues.
+- Future rollback flag, if needed: per-company setting (`instance_settings` or company metadata) `requireExecutionContracts: enforce | warn | off`. The current server behavior is hard enforcement for agent-created child lanes.
 
 ### 2. Contract-driven wake payloads
 
-`PAPERCLIP_WAKE_PAYLOAD_JSON` (and `heartbeat-context`) already exist. Extend them to include the parsed contract as a first-class field for execution-lane wakes, so the executor's starting context IS the contract rather than "go read the thread". QA-stage wakes include the same contract for mechanical comparison.
+Shipped in V2. `PAPERCLIP_WAKE_PAYLOAD_JSON` and `heartbeat-context` include the contract as a first-class field for execution-lane wakes, so the executor's starting context IS the contract rather than "go read the thread". QA-stage wakes include the same contract for mechanical comparison.
 
 ### 3. Protected-skill hardening (small)
 
-`companySkillService.deleteSkill()` currently allows deleting `paperclip_bundled` skills (self-heal masks it until the next inventory refresh). Add an explicit guard: reject deletion of skills whose metadata `sourceKind === "paperclip_bundled"` with a clear error. One conditional + test, consistent with the existing `editable: false` treatment.
+Shipped. `companySkillService.deleteSkill()` rejects bundled root skills before usage checks. The guard treats `metadata.sourceKind === "paperclip_bundled"` and the canonical `paperclipai/paperclip/` key namespace as immutable, consistent with the existing `editable: false` treatment.
 
 ### 4. Optional: contract compliance surfacing
 
@@ -40,7 +42,7 @@ Company dashboard counts: delegated lanes with/without contracts, preflight bloc
 
 ## Acceptance
 
-- Agent delegation without a valid contract is rejected (enforce mode) or logged (warn mode).
-- Execution-lane wake payloads carry the contract.
-- Bundled skills cannot be deleted via the API.
-- Existing tests pass; new tests cover the 422 path, warn-mode logging, and the delete guard.
+- Agent delegation without a valid contract is rejected.
+- Execution-lane wake payloads carry the contract. (Shipped)
+- Bundled skills cannot be deleted via the API. (Shipped)
+- Existing tests pass; new tests cover contract rejection, human exemptions, legacy extraction, and the delete guard.

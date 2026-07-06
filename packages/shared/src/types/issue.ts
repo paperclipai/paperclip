@@ -83,6 +83,8 @@ export interface IssueAssigneeAdapterOverrides {
   useProjectWorkspace?: boolean;
 }
 
+export type IssueExecutionContract = Record<string, unknown>;
+
 export type DocumentFormat = "markdown";
 
 export interface IssueDocumentSummary {
@@ -390,6 +392,7 @@ export interface Issue {
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;
+  executionContract?: IssueExecutionContract | null;
   executionPolicy?: IssueExecutionPolicy | null;
   executionState?: IssueExecutionState | null;
   monitorNextCheckAt?: Date | null;
@@ -453,6 +456,7 @@ export interface IssueComment {
   body: string;
   presentation: IssueCommentPresentation | null;
   metadata: IssueCommentMetadata | null;
+  attachments?: IssueAttachment[];
   followUpRequested?: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -556,6 +560,7 @@ export interface SuggestedTaskDraft {
   projectId?: string | null;
   goalId?: string | null;
   billingCode?: string | null;
+  executionContract?: IssueExecutionContract | null;
   labels?: string[];
   hiddenInPreview?: boolean;
 }

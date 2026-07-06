@@ -6,48 +6,69 @@ Core invariant: **missing required context is a blocker, not permission to inven
 
 ## Where the contract lives
 
-Embed the contract in the child issue **description** under a `## Execution Contract` heading, as a fenced `json` block. For very large contracts, put the full contract in an issue document with key `contract` and keep a summary block in the description that links to it (`#document-contract`).
+Put the contract in the child issue's hidden `executionContract` JSON field when creating or updating the issue. The issue `description` is only the human-readable brief.
+
+Agents receive this hidden field through `PAPERCLIP_WAKE_PAYLOAD_JSON.executionContract` and `paperclipIssue.executionContract`. It is also returned by `GET /api/issues/{issueId}` for audit views. Do not require humans to read or maintain the contract inside the description.
+
+Legacy compatibility: older issues may still have a `## Execution Contract` fenced `json` block in the description or an issue document with key `contract`. Use those only as fallback sources. New delegations must use the hidden `executionContract` field.
+
+Server enforcement: agent-created child issues are rejected when the resolved hidden contract is missing or invalid. Human-created issues are exempt; agents reconstruct a contract from a human's natural-language request when they pick up the work.
 
 ## Contract schema
 
 ```json
 {
-  "objective": "Concrete outcome required",
-  "why": "Business/user reason this matters",
-  "task_type": "implementation | research | design | qa | ops | marketing | docs | finance | reference_fidelity | incident_response | other",
-  "source_of_truth": {
-    "links": [],
-    "files": [],
-    "issue_documents": [],
-    "previous_outputs": [],
-    "external_systems": [],
-    "required_context": []
+  "schemaVersion": 2,
+  "contractType": "delegated_task",
+  "taskType": "implementation | research | design | qa | ops | marketing | docs | finance | reference_fidelity | incident_response | other",
+  "core": {
+    "objective": "Concrete outcome required",
+    "why": "Business/user reason this matters",
+    "sourceOfTruth": {
+      "links": [],
+      "files": [],
+      "issueDocuments": [],
+      "previousOutputs": [],
+      "externalSystems": [],
+      "requiredContext": []
+    },
+    "constraints": {
+      "mustPreserve": [],
+      "mustChange": [],
+      "mustNotChange": [],
+      "assumptionsAllowed": [],
+      "assumptionsForbidden": []
+    },
+    "dependencies": {
+      "blockedByIssueIds": [],
+      "externalBlockers": [],
+      "requiredAccess": []
+    },
+    "acceptanceChecks": [],
+    "evidenceRequired": [],
+    "blockIfMissing": [],
+    "handoffNotes": {
+      "managerReasoning": "",
+      "knownRisks": [],
+      "openQuestions": [],
+      "nonGoals": []
+    }
   },
-  "constraints": {
-    "must_preserve": [],
-    "must_change": [],
-    "must_not_change": [],
-    "assumptions_allowed": [],
-    "assumptions_forbidden": []
-  },
-  "dependencies": {
-    "blocked_by_issue_ids": [],
-    "external_blockers": [],
-    "required_access": []
-  },
-  "acceptance_checks": [],
-  "evidence_required": [],
-  "block_if_missing": [],
-  "handoff_notes": {
-    "manager_reasoning": "",
-    "known_risks": [],
-    "open_questions": [],
-    "non_goals": []
+  "extensions": {
+    "qa": {
+      "reviewMode": "contract_fidelity",
+      "failConditions": []
+    },
+    "skillSpecificNamespace": {
+      "customField": "custom value"
+    }
   }
 }
 ```
 
-Required fields for every contract: `objective`, `why`, `task_type`, `source_of_truth` (at least one non-empty entry), `acceptance_checks` (at least one), `handoff_notes.manager_reasoning`. Empty arrays are fine for the rest, but must be deliberate, not omitted by laziness.
+Required fields for every contract: `schemaVersion`, `contractType`, `taskType`, `core.objective`, `core.why`, `core.sourceOfTruth` (at least one non-empty entry), `core.acceptanceChecks` (at least one), `core.handoffNotes.managerReasoning`. Empty arrays are fine for the rest, but must be deliberate, not omitted by laziness.
+
+The `extensions` object is intentionally open-ended. QA, deployment, reference-fidelity, finance, or company-specific skills may add namespaced extension objects. A skill may validate its own extension, but it must not delete or reinterpret the core contract.
 
 ## Manager duties (before delegating)
 
@@ -68,11 +89,11 @@ Required fields for every contract: `objective`, `why`, `task_type`, `source_of_
 
 Run this checklist immediately after checkout, before doing any domain work:
 
-1. The issue has an execution contract (description section or `contract` document).
-2. Every `source_of_truth` entry is reachable — open the links, stat the files, fetch the documents.
-3. Every `block_if_missing` item is present.
-4. `dependencies.required_access` is available to you.
-5. The `objective` and `acceptance_checks` are concrete enough that you could hand your output to QA and they could verify it without talking to you.
+1. The issue has an execution contract (`PAPERCLIP_WAKE_PAYLOAD_JSON.executionContract`, `GET /api/issues/{issueId}.executionContract`, or a legacy description/document fallback).
+2. Every `core.sourceOfTruth` entry is reachable — open the links, stat the files, fetch the documents.
+3. Every `core.blockIfMissing` item is present.
+4. `core.dependencies.requiredAccess` is available to you.
+5. The `core.objective` and `core.acceptanceChecks` are concrete enough that you could hand your output to QA and they could verify it without talking to you.
 
 If any check fails:
 
@@ -86,15 +107,17 @@ If the issue has no contract at all and the delegator is an agent, comment askin
 
 QA verifies the work **against the contract**, not against general quality intuition:
 
-- Required `source_of_truth` was actually used.
-- `must_preserve` items preserved; `must_change` items changed; `must_not_change` items untouched.
-- Every `acceptance_check` passes, with evidence.
-- Every `evidence_required` item exists (link it in the QA comment).
-- `block_if_missing` items were not silently skipped.
-- The output solves the contract's `objective` — not a related, plausible-looking problem.
+- Required `core.sourceOfTruth` was actually used.
+- `core.constraints.mustPreserve` items preserved; `core.constraints.mustChange` items changed; `core.constraints.mustNotChange` items untouched.
+- Every `core.acceptanceChecks` item passes, with evidence.
+- Every `core.evidenceRequired` item exists (link it in the QA comment).
+- `core.blockIfMissing` items were not silently skipped.
+- The output solves the contract's `core.objective` — not a related, plausible-looking problem.
 
 QA MUST fail work that is high quality but solves the wrong problem. "Looks great" is not a pass. When failing, cite the specific contract field violated.
 
 ## Evidence
 
 Record evidence appropriate to the task type: files changed, tests run, screenshots, API checks, logs, old-vs-new comparison, deployment URL, artifact links, remaining risks. Attach it to the issue (comments, documents, work products, attachments) before requesting review.
+
+When evidence uses attachments, reference each attachment by filename/link and exact location: screenshot region, page number, table row, timestamp, or visible UI area. Preserve those attachment links in downstream execution-contract comments so reviewers can open the same evidence from the comment that mentions it.

@@ -56,7 +56,7 @@ export function buildGeminiLocalConfig(v: CreateConfigValues): Record<string, un
   if (v.cwd) ac.cwd = v.cwd;
   if (v.instructionsFilePath) ac.instructionsFilePath = v.instructionsFilePath;
   ac.model = v.model || DEFAULT_GEMINI_LOCAL_MODEL;
-  ac.timeoutSec = 0;
+  ac.timeoutSec = 3600;
   ac.graceSec = 15;
   const env = parseEnvBindings(v.envBindings);
   const legacy = parseEnvVars(v.envVars);

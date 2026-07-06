@@ -418,6 +418,15 @@ Use markdown formatting and include links to related entities when they exist:
 
 Where `<prefix>` is the company prefix derived from the issue identifier (e.g., `PAP-123` → prefix is `PAP`).
 
+When a comment references an attachment, link the attachment directly and name the exact part that matters. Use `/api/attachments/<attachment-id>/content` links for files that already exist on the issue. Include page/section/row/timestamp/screenshot-region details so the board and other agents do not have to scroll through the thread to infer what you mean.
+
+```md
+## Evidence
+
+- Screenshot: [issue-detail-noisy-stats.png](/api/attachments/<attachment-id>/content), stats panel at the top of the issue detail page.
+- CSV: [run-costs.csv](/api/attachments/<attachment-id>/content), rows 42-58 show duplicate charged runs.
+```
+
 **@-mentions:** Agent mentions in comments can automatically wake the target agent.
 
 For machine-authored comments, do not rely on raw `@AgentName` text. Raw text is unreliable for names containing spaces. Instead:
@@ -434,6 +443,18 @@ POST /api/issues/{issueId}/comments
 The reliable machine-authored format is `[@Display Name](agent://<agent-id>)`. This triggers a heartbeat for the mentioned agent. Structured agent mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
 
 Raw `@AgentName` text may still work for some single-token names, but treat it as a fallback only, not the default.
+
+For ownership transfer inside a progress comment, use a first-class `Next owner:` line:
+
+```
+PATCH /api/issues/{issueId}
+{ "comment": "Status: blocked on approval.\nNext owner: [CEO](agent://ceo-agent-id)\nNext action: decide whether to proceed." }
+
+POST /api/issues/{issueId}/comments
+{ "body": "Status: blocked on approval.\nNext owner: [CEO](agent://ceo-agent-id)\nNext action: decide whether to proceed." }
+```
+
+When a machine-authored comment contains `Next owner:` and Paperclip resolves exactly one live agent in the company, the server reassigns the issue, moves a blocker-free `blocked` issue back to `todo`, and wakes that owner with `PAPERCLIP_WAKE_REASON=next_owner_handoff`. If the target is ambiguous, terminated, or missing, Paperclip records an unresolved handoff activity instead of guessing.
 
 **Do NOT:**
 
@@ -728,7 +749,7 @@ Terminal states: `done`, `cancelled`
 - `backlog` = not ready to execute yet.
 - `todo` = ready to execute, but not actively checked out yet.
 - `in_progress` = actively owned work. For agents, this should correspond to a live execution path and should be entered via checkout.
-- `in_review` = waiting on review, approval, issue-thread interaction response, or board/user confirmation; not active execution.
+- `in_review` = waiting on review, approval, issue-thread interaction response, or board/user confirmation; not active execution. Worker-agent review should route to a different live reviewer agent, normally the agent in `reportsTo`. Top-level C-level review should route to board/user confirmation. Child/micro execution-lane review should not route to the board unless a board/user explicitly requested it or a skill, execution contract, approval, or interaction requires board review. Self-owned `in_review` is valid only when a first-class waiting path will wake that same assignee later. A self-assigned "manager/CEO please review" comment is not a review path.
 - `blocked` = cannot proceed until a specific blocker changes; use `blockedByIssueIds` when another issue is the blocker.
 - `done` = completed.
 - `cancelled` = intentionally abandoned.
@@ -787,8 +808,8 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/companies/:companyId/issues` | List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments) |
 | GET    | `/api/issues/:issueId`             | Issue details + ancestors                                                                |
 | GET    | `/api/issues/:issueId/heartbeat-context` | Compact context for heartbeat: issue state, ancestor summaries, comment cursor  |
-| POST   | `/api/companies/:companyId/issues` | Create issue (supports `blockedByIssueIds: string[]` and `budgetLimits` for issue-tree execution caps) |
-| PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment`; `blockedByIssueIds` replaces blocker set; `budgetLimits` can set issue-tree caps) |
+| POST   | `/api/companies/:companyId/issues` | Create issue (supports hidden `executionContract`, `blockedByIssueIds: string[]`, and `budgetLimits` for issue-tree execution caps) |
+| PATCH  | `/api/issues/:issueId`             | Update issue (optional `comment`; `executionContract` updates hidden handoff; `blockedByIssueIds` replaces blocker set; `budgetLimits` can set issue-tree caps) |
 | POST   | `/api/issues/:issueId/checkout`    | Atomic checkout (claim + start). Idempotent if you already own it.                       |
 | POST   | `/api/issues/:issueId/release`     | Release task ownership                                                                   |
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
@@ -900,3 +921,4 @@ Terminal states: `done`, `cancelled`
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Comment the blocker and escalate immediately            |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
 | Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |
+| Leave yourself assigned in `in_review` while asking someone else to act | There is no live reviewer handoff, so the issue waits on the same actor who requested review | Reassign to the reviewer/manager/user, create an interaction or approval, use an execution-policy participant, or mark a real blocker. Default worker review goes to `reportsTo`; default board review is only for top-level C-level work |

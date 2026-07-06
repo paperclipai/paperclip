@@ -112,6 +112,7 @@ Always set `parentId` and `goalId` on subtasks.
 - **Use `request_confirmation`** for issue-scoped yes/no decisions and plan approval cards
 - **Always set parentId** on subtasks
 - **Never cancel cross-team tasks** — reassign to your manager
+- **Do not self-own review handoffs** — if you set `in_review` while asking someone else to act, reassign to that owner, create an interaction/approval, use an execution-policy participant, or mark a real blocker. Default worker review goes to `reportsTo`; default board/user review is reserved for top-level C-level work unless a skill or contract explicitly requests board review
 - **Escalate when stuck** — use your chain of command
 
 ## Run Liveness

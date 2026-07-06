@@ -1,14 +1,22 @@
+import { execFile as execFileCallback } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
-import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
+import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
   buildRealizedExecutionWorkspaceFromPersisted,
   buildExplicitResumeSessionOverride,
   deriveTaskKeyWithHeartbeatFallback,
+  ensureProjectWorkspacePath,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
+  isProjectWorkspaceFilesystemPermissionError,
+  isProjectWorkspaceRepoAccessError,
   mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
   prioritizeProjectWorkspaceCandidatesForRun,
@@ -18,6 +26,24 @@ import {
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
+
+const execFile = promisify(execFileCallback);
+
+async function git(cwd: string, args: string[]) {
+  return execFile("git", args, { cwd });
+}
+
+async function createGitSource(root: string, name: string) {
+  const repo = path.join(root, name);
+  await fs.mkdir(repo, { recursive: true });
+  await git(repo, ["init", "-b", "main"]);
+  await git(repo, ["config", "user.email", "test@example.com"]);
+  await git(repo, ["config", "user.name", "Test User"]);
+  await fs.writeFile(path.join(repo, "README.md"), `# ${name}\n`);
+  await git(repo, ["add", "README.md"]);
+  await git(repo, ["commit", "-m", "initial"]);
+  return repo;
+}
 
 function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}): ResolvedWorkspaceForRun {
   return {
@@ -58,6 +84,142 @@ function buildAgent(adapterType: string, runtimeConfig: Record<string, unknown> 
     updatedAt: new Date(),
   } as unknown as typeof agents.$inferSelect;
 }
+
+describe("ensureProjectWorkspacePath", () => {
+  it("clones the configured repo when the configured workspace path does not exist", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-path-"));
+    try {
+      const sourceRepo = await createGitSource(root, "source-repo");
+      const target = path.join(root, "configured", "ab-dashboard");
+
+      const result = await ensureProjectWorkspacePath({
+        cwd: target,
+        repoUrl: sourceRepo,
+        label: "AB Associate workspace",
+      });
+
+      const origin = (await git(result.cwd, ["config", "--get", "remote.origin.url"])).stdout.trim();
+      expect(result.cwd).toBe(target);
+      expect(origin).toBe(sourceRepo);
+      await expect(fs.stat(path.join(target, ".git"))).resolves.toEqual(expect.objectContaining({}));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an existing git checkout with the wrong origin instead of using it", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-path-"));
+    try {
+      const expectedRepo = await createGitSource(root, "expected-repo");
+      const wrongRepo = await createGitSource(root, "wrong-repo");
+      const target = path.join(root, "configured", "ab-dashboard");
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await git(root, ["clone", wrongRepo, target]);
+
+      await expect(
+        ensureProjectWorkspacePath({
+          cwd: target,
+          repoUrl: expectedRepo,
+          label: "AB Associate workspace",
+        }),
+      ).rejects.toThrow(/project expects/);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("creates a plain configured project directory when no repo is configured", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-path-"));
+    try {
+      const target = path.join(root, "managed", "AB Associate");
+
+      const result = await ensureProjectWorkspacePath({
+        cwd: target,
+        repoUrl: null,
+      });
+
+      await expect(fs.stat(result.cwd)).resolves.toEqual(expect.objectContaining({}));
+      expect(result.cwd).toBe(target);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses an empty isolated workspace with a warning when the repo cannot be cloned", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-path-"));
+    try {
+      const target = path.join(root, "managed", "ab-dashboard");
+      const missingRepo = path.join(root, "missing-repo");
+
+      const result = await ensureProjectWorkspacePath({
+        cwd: target,
+        repoUrl: missingRepo,
+        label: "AB Associate workspace",
+      });
+
+      await expect(fs.stat(result.cwd)).resolves.toEqual(expect.objectContaining({}));
+      await expect(fs.readdir(result.cwd)).resolves.toEqual([]);
+      expect(result.cwd).toBe(target);
+      expect(result.warning).toContain("Could not clone AB Associate workspace repo");
+      expect(result.warning).toContain("Using empty project workspace");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("isProjectWorkspaceFilesystemPermissionError", () => {
+  it("treats git work tree creation permission failures as filesystem errors", () => {
+    const error = new Error(
+      "Command failed: git clone https://github.com/derrick-pixel/AB.dashboard /ab_associate\n" +
+        "fatal: could not create work tree dir '/ab_associate': Permission denied",
+    );
+
+    expect(isProjectWorkspaceFilesystemPermissionError(error)).toBe(true);
+  });
+
+  it("does not treat git authentication permission failures as workspace path errors", () => {
+    const error = new Error(
+      "Command failed: git clone git@github.com:derrick-pixel/AB.dashboard.git /tmp/ab_associate\n" +
+        "git@github.com: Permission denied (publickey).",
+    );
+
+    expect(isProjectWorkspaceFilesystemPermissionError(error)).toBe(false);
+  });
+});
+
+describe("isProjectWorkspaceRepoAccessError", () => {
+  it("treats GitHub HTTPS auth failures as repo access errors", () => {
+    const error = new Error(
+      "Command failed: git clone https://github.com/derrick-pixel/AB.dashboard /tmp/ab_associate\n" +
+        "fatal: could not read Username for 'https://github.com': No such device or address",
+    );
+
+    expect(isProjectWorkspaceRepoAccessError(error)).toBe(true);
+  });
+
+  it("does not treat local worktree permission failures as repo access errors", () => {
+    const error = new Error(
+      "Command failed: git clone https://github.com/derrick-pixel/AB.dashboard /ab_associate\n" +
+        "fatal: could not create work tree dir '/ab_associate': Permission denied",
+    );
+
+    expect(isProjectWorkspaceRepoAccessError(error)).toBe(false);
+  });
+});
+
+describe("resolveManagedProjectWorkspaceDir", () => {
+  it("uses the project name in generated managed workspace folders", () => {
+    const result = resolveManagedProjectWorkspaceDir({
+      companyId: "company-1",
+      projectId: "project-123",
+      projectName: "AB Associate",
+      repoName: null,
+    });
+
+    expect(result).toContain(`${path.sep}AB-Associate-project-123${path.sep}_default`);
+  });
+});
 
 describe("resolveRuntimeSessionParamsForWorkspace", () => {
   it("migrates fallback workspace sessions to project workspace when project cwd becomes available", () => {

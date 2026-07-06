@@ -446,6 +446,14 @@ describe("renderPaperclipWakePrompt", () => {
         title: "Update prompts",
         status: "in_progress",
       },
+      executionContract: {
+        schemaVersion: 2,
+        contractType: "delegated_task",
+        taskType: "implementation",
+        core: {
+          objective: "Update prompts without losing handoff context.",
+        },
+      },
       commentWindow: {
         requestedCount: 0,
         includedCount: 0,
@@ -457,6 +465,8 @@ describe("renderPaperclipWakePrompt", () => {
 
     expect(prompt).toContain("## Paperclip Wake Payload");
     expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
+    expect(prompt).toContain("- hidden execution contract: present");
+    expect(prompt).toContain("Follow `executionContract` from `PAPERCLIP_WAKE_PAYLOAD_JSON`");
     expect(prompt).toContain("clear final disposition");
     expect(prompt).toContain("evidence, not valid liveness paths by themselves");
     expect(prompt).toContain("Use direct child issues only for bounded parent-level parallelism");
@@ -499,6 +509,44 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     expect(commentPrompt).toContain("Update the plan only. Do not write code or perform implementation work.");
+  });
+
+  it("renders comment attachment metadata in wake prompts", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3902",
+        title: "Review attachment context",
+        status: "todo",
+      },
+      commentIds: ["comment-1"],
+      latestCommentId: "comment-1",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [
+        {
+          id: "comment-1",
+          body: "Please check the screenshot.",
+          createdAt: "2026-07-06T05:00:00.000Z",
+          author: { type: "user", id: "user-1" },
+          attachments: [
+            {
+              id: "attachment-1",
+              filename: "issue-detail-noisy-stats.png",
+              contentType: "image/png",
+              byteSize: 2048,
+              contentPath: "/api/attachments/attachment-1/content",
+            },
+          ],
+        },
+      ],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("Attachments:");
+    expect(prompt).toContain(
+      "- issue-detail-noisy-stats.png (image/png, 2048 bytes) /api/attachments/attachment-1/content",
+    );
   });
 
   it("does not render stale accepted-plan continuation guidance for later planning comment wakes", () => {

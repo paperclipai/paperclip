@@ -157,7 +157,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
   "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
   "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
-  "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; use `blocked` only with first-class blockers or a named unblock owner/action; create direct child execution lanes with blockers only when this issue is a main parent and another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
+  "- Final disposition checklist: mark `done` when complete; use `in_review` only with a real reviewer, approval, interaction, or monitor path; route worker review to `reportsTo` and reserve default board/user review for top-level C-level work; use `blocked` only with first-class blockers or a named unblock owner/action; create direct child execution lanes with blockers only when this issue is a main parent and another agent owns the next step; keep `in_progress` only when a live continuation path exists.",
   "- Prefer the smallest verification that proves the change; do not default to full workspace typecheck/build/test on every heartbeat unless the task scope warrants it.",
   "- Use direct child issues only from main parent issues for bounded parallel execution lanes. A parent may have at most 10 direct children, and execution lanes must never create child issues or grandchildren.",
   "- If this issue already has `parentId`, coordinate engineer/QA/fix loops inside this same issue thread and escalate blockers in comments instead of creating more issues. A child lane that cannot continue must explicitly route the blocker/recovery state to the parent manager lane; do not leave the parent to discover the stall later.",
@@ -369,6 +369,17 @@ type PaperclipWakeExecutionStage = {
   allowedActions: string[];
 };
 
+type PaperclipWakeAttachment = {
+  id: string | null;
+  issueId: string | null;
+  issueCommentId: string | null;
+  filename: string | null;
+  contentType: string | null;
+  byteSize: number | null;
+  contentPath: string | null;
+  createdAt: string | null;
+};
+
 type PaperclipWakeComment = {
   id: string | null;
   issueId: string | null;
@@ -377,6 +388,7 @@ type PaperclipWakeComment = {
   createdAt: string | null;
   authorType: string | null;
   authorId: string | null;
+  attachments: PaperclipWakeAttachment[];
 };
 
 type PaperclipWakeContinuationSummary = {
@@ -423,6 +435,7 @@ type PaperclipWakeTreeHoldSummary = {
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
+  executionContract: Record<string, unknown> | null;
   checkedOutByHarness: boolean;
   dependencyBlockedInteraction: boolean;
   treeHoldInteraction: boolean;
@@ -471,6 +484,11 @@ function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | n
   const author = parseObject(comment.author);
   const body = asString(comment.body, "");
   if (!body.trim()) return null;
+  const attachments = Array.isArray(comment.attachments)
+    ? comment.attachments
+        .map((entry) => normalizePaperclipWakeAttachment(entry))
+        .filter((entry): entry is PaperclipWakeAttachment => Boolean(entry))
+    : [];
   return {
     id: asString(comment.id, "").trim() || null,
     issueId: asString(comment.issueId, "").trim() || null,
@@ -479,7 +497,31 @@ function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | n
     createdAt: asString(comment.createdAt, "").trim() || null,
     authorType: asString(author.type, "").trim() || null,
     authorId: asString(author.id, "").trim() || null,
+    attachments,
   };
+}
+
+function normalizePaperclipWakeAttachment(value: unknown): PaperclipWakeAttachment | null {
+  const attachment = parseObject(value);
+  const id = asString(attachment.id, "").trim() || null;
+  const filename =
+    asString(attachment.filename, "").trim() ||
+    asString(attachment.originalFilename, "").trim() ||
+    null;
+  const contentPath = asString(attachment.contentPath, "").trim() || null;
+  const byteSize = asNumber(attachment.byteSize, 0);
+  const normalized: PaperclipWakeAttachment = {
+    id,
+    issueId: asString(attachment.issueId, "").trim() || null,
+    issueCommentId: asString(attachment.issueCommentId, "").trim() || null,
+    filename,
+    contentType: asString(attachment.contentType, "").trim() || null,
+    byteSize: byteSize > 0 ? byteSize : null,
+    contentPath,
+    createdAt: asString(attachment.createdAt, "").trim() || null,
+  };
+  if (!normalized.id && !normalized.filename && !normalized.contentPath) return null;
+  return normalized;
 }
 
 function normalizePaperclipWakeContinuationSummary(value: unknown): PaperclipWakeContinuationSummary | null {
@@ -609,6 +651,14 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         .map((entry) => entry.trim())
     : [];
   const executionStage = normalizePaperclipWakeExecutionStage(payload.executionStage);
+  const executionContractFromTopLevel = parseObject(payload.executionContract);
+  const executionContractFromIssue = parseObject(parseObject(payload.issue).executionContract);
+  const executionContract =
+    Object.keys(executionContractFromTopLevel).length > 0
+      ? executionContractFromTopLevel
+      : Object.keys(executionContractFromIssue).length > 0
+        ? executionContractFromIssue
+        : null;
   const continuationSummary = normalizePaperclipWakeContinuationSummary(payload.continuationSummary);
   const livenessContinuation = normalizePaperclipWakeLivenessContinuation(payload.livenessContinuation);
   const childIssueSummaries = Array.isArray(payload.childIssueSummaries)
@@ -628,13 +678,14 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
 
   const activeTreeHold = normalizePaperclipWakeTreeHoldSummary(payload.activeTreeHold);
-  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !executionContract && !continuationSummary && !livenessContinuation && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
   return {
     reason: asString(payload.reason, "").trim() || null,
     issue: normalizePaperclipWakeIssue(payload.issue),
+    executionContract,
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
     treeHoldInteraction: asBoolean(payload.treeHoldInteraction, false),
@@ -678,6 +729,15 @@ export function readPaperclipIssueWorkModeFromContext(value: unknown): string | 
   return wake?.issue?.workMode ?? null;
 }
 
+function formatWakeAttachmentLine(attachment: PaperclipWakeAttachment) {
+  const label = attachment.filename ?? attachment.id ?? "attachment";
+  const details = [attachment.contentType, attachment.byteSize ? `${attachment.byteSize} bytes` : null]
+    .filter((entry): entry is string => Boolean(entry));
+  const detailText = details.length > 0 ? ` (${details.join(", ")})` : "";
+  const pathText = attachment.contentPath ? ` ${attachment.contentPath}` : "";
+  return `- ${label}${detailText}${pathText}`;
+}
+
 export function renderPaperclipWakePrompt(
   value: unknown,
   options: { resumedSession?: boolean } = {},
@@ -701,7 +761,7 @@ export function renderPaperclipWakePrompt(
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
         "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, direct child execution lanes with blockers only from main parent issues, or `in_progress` only when a live continuation path exists. Use direct child issues only for bounded parent-level parallelism; if this issue already has `parentId`, coordinate inside this issue, never create grandchildren, and explicitly route blockers/recovery to the parent manager lane. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path (worker review routes to `reportsTo`; default board/user review is reserved for top-level C-level work), `blocked` with first-class blockers or a named unblock owner/action, direct child execution lanes with blockers only from main parent issues, or `in_progress` only when a live continuation path exists. Use direct child issues only for bounded parent-level parallelism; if this issue already has `parentId`, coordinate inside this issue, never create grandchildren, and explicitly route blockers/recovery to the parent manager lane. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
@@ -718,7 +778,7 @@ export function renderPaperclipWakePrompt(
         "Use this inline wake data first before refetching the issue thread.",
         "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, direct child execution lanes with blockers only from main parent issues, or `in_progress` only when a live continuation path exists. Use direct child issues only for bounded parent-level parallelism; if this issue already has `parentId`, coordinate inside this issue, never create grandchildren, and explicitly route blockers/recovery to the parent manager lane. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path (worker review routes to `reportsTo`; default board/user review is reserved for top-level C-level work), `blocked` with first-class blockers or a named unblock owner/action, direct child execution lanes with blockers only from main parent issues, or `in_progress` only when a live continuation path exists. Use direct child issues only for bounded parent-level parallelism; if this issue already has `parentId`, coordinate inside this issue, never create grandchildren, and explicitly route blockers/recovery to the parent manager lane. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
         "",
         `- reason: ${normalized.reason ?? "unknown"}`,
         `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
@@ -735,6 +795,12 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.executionContract) {
+    lines.push(
+      "- hidden execution contract: present",
+      "Follow `executionContract` from `PAPERCLIP_WAKE_PAYLOAD_JSON` as the delegated source-of-truth before relying on issue description or thread memory.",
+    );
   }
   if (normalized.issue?.workMode === "planning") {
     const hasWakeComments = normalized.comments.length > 0;
@@ -925,6 +991,12 @@ export function renderPaperclipWakePrompt(
     );
     if (comment.bodyTruncated) {
       lines.push("[comment body truncated]");
+    }
+    if (comment.attachments.length > 0) {
+      lines.push("Attachments:");
+      for (const attachment of comment.attachments) {
+        lines.push(formatWakeAttachmentLine(attachment));
+      }
     }
     lines.push("");
   }

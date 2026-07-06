@@ -92,6 +92,7 @@ import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -147,6 +148,7 @@ import {
   SlidersHorizontal,
   Trash2,
   XCircle,
+  type LucideIcon,
 } from "lucide-react";
 import {
   getClosedIsolatedExecutionWorkspaceMessage,
@@ -211,6 +213,30 @@ function issueTreeControlLabel(mode: IssueTreeControlMode, scope: "leaf" | "subt
     : TREE_CONTROL_MODE_LABEL[mode];
 }
 
+function hasExecutionContract(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.keys(value).length > 0;
+}
+
+function IssueExecutionContractPanel({ contract }: { contract: unknown }) {
+  if (!hasExecutionContract(contract)) return null;
+
+  return (
+    <details className="group rounded-md border border-border bg-muted/20">
+      <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium">
+        <span className="flex min-w-0 items-center gap-2">
+          <ListTree className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span className="truncate">Execution Contract</span>
+        </span>
+        <span className="shrink-0 text-xs font-normal text-muted-foreground">Hidden handoff</span>
+      </summary>
+      <pre className="max-h-96 overflow-auto border-t border-border px-3 py-2 text-xs leading-5 text-muted-foreground">
+        {JSON.stringify(contract, null, 2)}
+      </pre>
+    </details>
+  );
+}
+
 function issueTreeControlHelpText(mode: IssueTreeControlMode, scope: "leaf" | "subtree") {
   return scope === "leaf"
     ? LEAF_WORK_CONTROL_MODE_HELP_TEXT[mode] ?? TREE_CONTROL_MODE_HELP_TEXT[mode]
@@ -267,6 +293,7 @@ function IssuePlanningStat({
 }
 
 function IssuePlanningStrip({ issue, childIssues }: { issue: Issue; childIssues: Issue[] }) {
+  const [open, setOpen] = useState(false);
   const actualHumanSeconds = actualHumanSecondsForIssue(issue);
   const actualAiSecondsWithChildren = useMemo(
     () => sumIssueValuesWithDescendants([issue], [issue, ...childIssues], actualAiSecondsForIssue),
@@ -274,37 +301,331 @@ function IssuePlanningStrip({ issue, childIssues }: { issue: Issue; childIssues:
   );
 
   return (
-    <div className="grid gap-2 border-t border-border pt-3 sm:grid-cols-2 xl:grid-cols-5">
-      <IssuePlanningStat
-        icon={Hash}
-        label="Story points"
-        value={issue.storyPoints != null ? `${issue.storyPoints} pts` : "No points"}
-        detail="Human planning weight"
-      />
-      <IssuePlanningStat
-        icon={Clock3}
-        label="Estimate"
-        value={formatIssuePlanningHours(issue.estimateHours)}
-        detail="Rough hours"
-      />
-      <IssuePlanningStat
-        icon={Clock3}
-        label="Human time"
-        value={formatIssueAiHours(actualHumanSeconds)}
-        detail="Created to done/now"
-      />
-      <IssuePlanningStat
-        icon={Bot}
-        label="AI time"
-        value={formatIssueAiHours(actualAiSecondsWithChildren)}
-        detail={childIssues.length > 0 ? "Including sub-issues" : "Recorded execution"}
-      />
-      <IssuePlanningStat
-        icon={CalendarClock}
-        label="Cycle"
-        value={issue.cycle?.name ?? "No cycle"}
-        detail={formatIssueDueDate(issue)}
-      />
+    <Collapsible open={open} onOpenChange={setOpen} className="border-t border-border pt-2">
+      <div className="flex min-h-7 items-center">
+        <CollapsibleTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="h-7 px-2 text-muted-foreground hover:text-foreground"
+            aria-expanded={open}
+            aria-label={open ? "Hide issue details" : "Show issue details"}
+          >
+            <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />
+            <span>Details</span>
+          </Button>
+        </CollapsibleTrigger>
+      </div>
+      <CollapsibleContent>
+        <div className="grid gap-2 pt-2 sm:grid-cols-2 xl:grid-cols-5">
+          <IssuePlanningStat
+            icon={Hash}
+            label="Story points"
+            value={issue.storyPoints != null ? `${issue.storyPoints} pts` : "No points"}
+            detail="Human planning weight"
+          />
+          <IssuePlanningStat
+            icon={Clock3}
+            label="Estimate"
+            value={formatIssuePlanningHours(issue.estimateHours)}
+            detail="Rough hours"
+          />
+          <IssuePlanningStat
+            icon={Clock3}
+            label="Human time"
+            value={formatIssueAiHours(actualHumanSeconds)}
+            detail="Created to done/now"
+          />
+          <IssuePlanningStat
+            icon={Bot}
+            label="AI time"
+            value={formatIssueAiHours(actualAiSecondsWithChildren)}
+            detail={childIssues.length > 0 ? "Including sub-issues" : "Recorded execution"}
+          />
+          <IssuePlanningStat
+            icon={CalendarClock}
+            label="Cycle"
+            value={issue.cycle?.name ?? "No cycle"}
+            detail={formatIssueDueDate(issue)}
+          />
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+type IssuePauseSummary = {
+  isRoot: boolean;
+  rootLabel: string | null;
+  heldCount: number;
+};
+
+type IssueStateSummaryTone = "neutral" | "live" | "warning" | "danger" | "success";
+
+type IssueStateSummaryModel = {
+  icon: LucideIcon;
+  tone: IssueStateSummaryTone;
+  title: string;
+  detail: string;
+  meta: string[];
+};
+
+const ISSUE_STATE_SUMMARY_TONE_CLASSES: Record<IssueStateSummaryTone, { container: string; icon: string }> = {
+  neutral: {
+    container: "border-border bg-muted/20",
+    icon: "text-muted-foreground",
+  },
+  live: {
+    container: "border-cyan-500/30 bg-cyan-500/10",
+    icon: "text-cyan-600 dark:text-cyan-400",
+  },
+  warning: {
+    container: "border-amber-500/35 bg-amber-500/10",
+    icon: "text-amber-700 dark:text-amber-300",
+  },
+  danger: {
+    container: "border-destructive/35 bg-destructive/10",
+    icon: "text-destructive",
+  },
+  success: {
+    container: "border-emerald-500/30 bg-emerald-500/10",
+    icon: "text-emerald-700 dark:text-emerald-300",
+  },
+};
+
+function formatIssueStatusLabel(status: Issue["status"]): string {
+  return status.replace(/_/g, " ");
+}
+
+function formatIssueCount(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function formatScheduledRetryAt(date: Date | string | null | undefined): string | null {
+  if (!date) return null;
+  const timestamp = new Date(date).getTime();
+  if (!Number.isFinite(timestamp)) return null;
+  const diffMinutes = Math.round((timestamp - Date.now()) / 60000);
+  if (diffMinutes <= 0) return "due now";
+  if (diffMinutes < 60) return `in ${diffMinutes}m`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (diffHours < 24) return `in ${diffHours}h`;
+  const diffDays = Math.round(diffHours / 24);
+  if (diffDays < 14) return `in ${diffDays}d`;
+  return new Date(date).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function buildIssueStateSummary(input: {
+  issue: Issue;
+  childIssues: Issue[];
+  hasLiveRuns: boolean;
+  activePauseSummary: IssuePauseSummary | null;
+}): IssueStateSummaryModel {
+  const { issue, childIssues, hasLiveRuns, activePauseSummary } = input;
+  const statusLabel = formatIssueStatusLabel(issue.status);
+  const meta = [
+    statusLabel,
+    childIssues.length > 0 ? formatIssueCount(childIssues.length, "sub-issue") : null,
+  ].filter((item): item is string => Boolean(item));
+  const blockerAttention = issue.blockerAttention ?? null;
+  const blockedByCount = issue.blockedBy?.length ?? 0;
+  const scheduledRetry = issue.scheduledRetry ?? null;
+
+  if (activePauseSummary) {
+    const heldLabel = activePauseSummary.isRoot
+      ? formatIssueCount(activePauseSummary.heldCount, "issue")
+      : activePauseSummary.rootLabel
+        ? `Root ${activePauseSummary.rootLabel}`
+        : "Parent hold";
+    return {
+      icon: PauseCircle,
+      tone: "warning",
+      title: activePauseSummary.isRoot ? "Work paused" : "Paused by parent",
+      detail: activePauseSummary.isRoot
+        ? "Execution is held until the board resumes this work."
+        : "Execution is held by an ancestor pause. Resume from the root issue.",
+      meta: [heldLabel, ...meta],
+    };
+  }
+
+  if (issue.successfulRunHandoff?.state === "escalated") {
+    return {
+      icon: AlertTriangle,
+      tone: "danger",
+      title: "Handoff escalated",
+      detail: issue.successfulRunHandoff.detectedProgressSummary
+        ?? "A successful run still needs board review before this issue can move on.",
+      meta,
+    };
+  }
+
+  if (issue.successfulRunHandoff?.state === "required") {
+    return {
+      icon: AlertTriangle,
+      tone: "warning",
+      title: "Handoff needs review",
+      detail: issue.successfulRunHandoff.detectedProgressSummary
+        ?? "A successful run reported progress and needs a human handoff decision.",
+      meta,
+    };
+  }
+
+  if (issue.activeRecoveryAction) {
+    return {
+      icon: Flag,
+      tone: "warning",
+      title: "Recovery action open",
+      detail: issue.activeRecoveryAction.nextAction || "A recovery workflow is waiting for the next action.",
+      meta: [issue.activeRecoveryAction.kind.replace(/_/g, " "), ...meta],
+    };
+  }
+
+  if (blockerAttention?.state === "needs_attention") {
+    const sample = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier;
+    return {
+      icon: AlertTriangle,
+      tone: "danger",
+      title: "Blocked work needs attention",
+      detail: sample
+        ? `${sample} needs attention before this issue can continue.`
+        : "One or more blockers need attention before this issue can continue.",
+      meta: [
+        formatIssueCount(blockerAttention.attentionBlockerCount || blockedByCount || 1, "blocker"),
+        ...meta,
+      ],
+    };
+  }
+
+  if (blockerAttention?.state === "stalled") {
+    const sample = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier;
+    return {
+      icon: Flag,
+      tone: "warning",
+      title: "Blocker looks stalled",
+      detail: sample
+        ? `${sample} is not making visible progress.`
+        : "A blocker is not making visible progress.",
+      meta: [
+        formatIssueCount(blockerAttention.stalledBlockerCount || blockedByCount || 1, "blocker"),
+        ...meta,
+      ],
+    };
+  }
+
+  if (blockedByCount > 0) {
+    const sample = issue.blockedBy?.[0]?.identifier ?? issue.blockedBy?.[0]?.title ?? null;
+    return {
+      icon: Flag,
+      tone: "warning",
+      title: "Waiting on blockers",
+      detail: sample
+        ? `${sample} must clear before this issue can proceed.`
+        : "This issue is waiting on dependency work.",
+      meta: [formatIssueCount(blockedByCount, "blocker"), ...meta],
+    };
+  }
+
+  if (hasLiveRuns) {
+    return {
+      icon: Bot,
+      tone: "live",
+      title: "Agent is working",
+      detail: "Live execution is active for this issue.",
+      meta,
+    };
+  }
+
+  if (scheduledRetry?.status === "scheduled_retry") {
+    const retryAt = formatScheduledRetryAt(scheduledRetry.scheduledRetryAt);
+    return {
+      icon: Clock3,
+      tone: "neutral",
+      title: "Retry scheduled",
+      detail: retryAt
+        ? `Paperclip will retry ${retryAt}.`
+        : scheduledRetry.scheduledRetryReason ?? "Paperclip will retry automatically.",
+      meta: [scheduledRetry.agentName ?? "Scheduled retry", ...meta],
+    };
+  }
+
+  if (issue.status === "done") {
+    return {
+      icon: Check,
+      tone: "success",
+      title: "Work complete",
+      detail: issue.completedAt ? `Completed ${relativeTime(issue.completedAt)}.` : "This issue is marked done.",
+      meta,
+    };
+  }
+
+  if (issue.status === "cancelled") {
+    return {
+      icon: XCircle,
+      tone: "neutral",
+      title: "Work cancelled",
+      detail: "This issue is no longer active.",
+      meta,
+    };
+  }
+
+  if (issue.status === "blocked") {
+    return {
+      icon: Flag,
+      tone: "warning",
+      title: "Marked blocked",
+      detail: "This issue is blocked, but no active dependency is shown in the header.",
+      meta,
+    };
+  }
+
+  return {
+    icon: issue.status === "in_review" ? Eye : PlayCircle,
+    tone: issue.status === "in_review" ? "warning" : "neutral",
+    title: issue.status === "in_review" ? "Ready for review" : "Ready for next update",
+    detail: issue.status === "backlog"
+      ? "This issue is parked in backlog."
+      : "No active blockers, pauses, or live runs are visible.",
+    meta,
+  };
+}
+
+function IssueStateSummary({
+  issue,
+  childIssues,
+  hasLiveRuns,
+  activePauseSummary,
+}: {
+  issue: Issue;
+  childIssues: Issue[];
+  hasLiveRuns: boolean;
+  activePauseSummary: IssuePauseSummary | null;
+}) {
+  const state = buildIssueStateSummary({ issue, childIssues, hasLiveRuns, activePauseSummary });
+  const Icon = state.icon;
+  const toneClasses = ISSUE_STATE_SUMMARY_TONE_CLASSES[state.tone];
+
+  return (
+    <div className={cn("flex flex-col gap-2 rounded-md border px-3 py-2 text-sm sm:flex-row sm:items-start sm:justify-between", toneClasses.container)}>
+      <div className="flex min-w-0 items-start gap-2">
+        <Icon className={cn("mt-0.5 h-4 w-4 shrink-0", toneClasses.icon)} />
+        <div className="min-w-0">
+          <div className="font-medium text-foreground">{state.title}</div>
+          <p className="mt-0.5 text-xs leading-5 text-muted-foreground">{state.detail}</p>
+        </div>
+      </div>
+      {state.meta.length > 0 ? (
+        <div className="flex shrink-0 flex-wrap gap-1.5 sm:justify-end">
+          {state.meta.map((item) => (
+            <span
+              key={item}
+              className="inline-flex rounded-full border border-border/70 bg-background/70 px-2 py-0.5 text-[10px] font-medium capitalize text-muted-foreground"
+            >
+              {item}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -3464,6 +3785,17 @@ export function IssueDetail() {
   const treePreviewWarnings = treeControlPreview?.warnings ?? [];
   const heldDescendantCount = activeRootPauseHold?.members?.filter((member) => member.depth > 0 && !member.skipped).length
     ?? Math.max(heldIssueIds.size - 1, 0);
+  const activePauseSummary = activePauseHold
+    ? {
+        isRoot: activePauseHold.isRoot === true,
+        rootLabel: activePauseHoldRoot?.identifier ?? activePauseHold.rootIssueId.slice(0, 8),
+        heldCount: activePauseHold.isRoot === true
+          ? childIssues.length === 0
+            ? 1
+            : heldDescendantCount
+          : 0,
+      }
+    : null;
   const canShowSubtreeControls = canManageTreeControl && childIssues.length > 0;
   const canResumeSubtree = canShowSubtreeControls && activePauseHold?.isRoot === true;
   const canRestoreSubtree = canShowSubtreeControls && activeCancelHolds.length > 0;
@@ -3994,7 +4326,14 @@ export function IssueDetail() {
           }}
         />
 
+        <IssueStateSummary
+          issue={issue}
+          childIssues={childIssues}
+          hasLiveRuns={hasLiveRuns}
+          activePauseSummary={activePauseSummary}
+        />
         <IssuePlanningStrip issue={issue} childIssues={childIssues} />
+        <IssueExecutionContractPanel contract={issue.executionContract} />
       </div>
 
       <PluginSlotOutlet

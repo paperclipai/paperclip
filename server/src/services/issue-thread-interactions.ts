@@ -846,6 +846,7 @@ export function issueThreadInteractionService(db: Db) {
             projectId: task.projectId ?? issue.projectId,
             goalId: task.goalId ?? issue.goalId,
             billingCode: task.billingCode ?? null,
+            executionContract: task.executionContract ?? null,
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
             actorAgentId: actor.agentId ?? null,

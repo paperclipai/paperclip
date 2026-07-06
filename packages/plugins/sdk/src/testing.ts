@@ -1416,6 +1416,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           requestDepth: input.requestDepth ?? 0,
           billingCode: input.billingCode ?? null,
           assigneeAdapterOverrides: input.assigneeAdapterOverrides ?? null,
+          executionContract: input.executionContract ?? null,
           executionWorkspaceId: input.executionWorkspaceId ?? null,
           executionWorkspacePreference: input.executionWorkspacePreference ?? null,
           executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
