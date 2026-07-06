@@ -49,8 +49,8 @@ function renderChart(
 function timelineSample(): WorkTimelineResult {
   return {
     actors: [
-      { id: "agent:codex", type: "agent", name: "CodexCoder" },
-      { id: "agent:qa", type: "agent", name: "QA" },
+      { id: "agent:codex", type: "agent", name: "CodexCoder", avatar: "code" },
+      { id: "agent:qa", type: "agent", name: "QA", avatar: "shield" },
     ],
     spans: [
       {
@@ -146,6 +146,16 @@ describe("WorkTimelineChart", () => {
     });
 
     expect(container.querySelector("[data-testid='work-timeline-actor-gutter']")?.textContent).toContain("CodexCoder");
+  });
+
+  it("renders configured agent icons in the actor gutter instead of generated initials", () => {
+    renderChart(timelineSample());
+
+    const gutter = container.querySelector<SVGSVGElement>("[data-testid='work-timeline-actor-gutter']");
+
+    expect(gutter?.querySelector(".lucide-code")).not.toBeNull();
+    expect(gutter?.querySelector(".lucide-shield")).not.toBeNull();
+    expect(gutter?.textContent).not.toContain("CC");
   });
 
   it("does not render created diamonds or comment bubbles from instant events", () => {
@@ -248,9 +258,14 @@ describe("WorkTimelineChart", () => {
     expect(layout.connectors[0].x2).toBe(bars.get("run-2")?.x1);
   });
 
-  it("renders kickoff chips for human users but not delegating agents", () => {
+  it("renders kickoff chips with human avatar images but not delegating agents", () => {
     const data = timelineSample();
-    data.actors.push({ id: "user:dotta", type: "user", name: "Dotta" });
+    data.actors.push({
+      id: "user:dotta",
+      type: "user",
+      name: "Dotta",
+      avatar: "/api/assets/dotta-avatar/content",
+    });
     data.edges = [
       {
         fromActorId: "user:dotta",
@@ -272,7 +287,8 @@ describe("WorkTimelineChart", () => {
 
     const kickoffChips = container.querySelectorAll("[data-testid='timeline-kickoff-chip']");
     expect(kickoffChips).toHaveLength(1);
-    expect(kickoffChips[0].textContent).toContain("DO");
+    expect(kickoffChips[0].querySelector("image")?.getAttribute("href")).toBe("/api/assets/dotta-avatar/content");
+    expect(kickoffChips[0].textContent).not.toContain("DO");
   });
 
   it("reserves normal wheel input for panning and uses modifier-wheel for continuous zoom", () => {
