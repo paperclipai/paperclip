@@ -63,6 +63,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours: 24,
+    enableWorkspaceBranchReconcileForward: false,
   };
 }
 
