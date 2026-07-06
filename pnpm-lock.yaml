@@ -553,6 +553,40 @@ importers:
         specifier: ^4.1.8
         version: 4.1.8(@types/node@22.19.21)(jsdom@28.1.0(@noble/hashes@2.2.0))(vite@7.3.1(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4))
 
+  packages/plugins/plugin-chat:
+    dependencies:
+      '@paperclipai/plugin-sdk':
+        specifier: workspace:*
+        version: link:../sdk
+      react-markdown:
+        specifier: ^10.1.0
+        version: 10.1.0(@types/react@19.2.17)(react@19.2.7)
+      remark-gfm:
+        specifier: ^4.0.1
+        version: 4.0.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.6.0
+        version: 24.13.2
+      '@types/react':
+        specifier: ^19.0.8
+        version: 19.2.17
+      '@types/react-dom':
+        specifier: ^19.0.3
+        version: 19.2.3(@types/react@19.2.17)
+      esbuild:
+        specifier: ^0.27.3
+        version: 0.27.7
+      react:
+        specifier: ^19.2.7
+        version: 19.2.7
+      react-dom:
+        specifier: ^19.2.7
+        version: 19.2.7(react@19.2.7)
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
   packages/plugins/plugin-llm-wiki:
     dependencies:
       react:
@@ -4746,6 +4780,9 @@ packages:
   '@types/node@22.19.21':
     resolution: {integrity: sha512-VMeFBSCKQKmm2swI2kW51SFusDqekC6q9trBCvJ/JliDchFSuoYYKN7yVNjPthP1HKZcx3U1gI/wTcEBjEFKTA==}
 
+  '@types/node@24.13.2':
+    resolution: {integrity: sha512-fRa09kZTgu8o71KFcDjUFuc7F+dEbZYZmkI0mg5YBTRs0yMKjYHsq/c0urDKeDb+D5qVgXOdFcuu+DZPKOITwA==}
+
   '@types/node@25.2.3':
     resolution: {integrity: sha512-m0jEgYlYz+mDJZ2+F4v8D1AyQb+QzsNqRuI7xg1VQX/KlKS0qT9r1Mo16yo5F/MtifXFgaofIFsdFMox2SxIbQ==}
 
@@ -7175,9 +7212,6 @@ packages:
   prop-types@15.8.1:
     resolution: {integrity: sha512-oj87CgZICdulUohogVAR7AjlC0327U4el4L6eAvOqCeudMDVU0NThNaV+b9Df4dXgSP1gXMTnPdhfe/2qDH5cg==}
 
-  property-information@7.1.0:
-    resolution: {integrity: sha512-TwEZ+X+yCJmYfL7TPUOcvBZ4QfoT5YenQiJuX//0th53DE6w0xxLEtfK3iyryQFddXuvkIk51EEgrJQ0WJkOmQ==}
-
   property-information@7.2.0:
     resolution: {integrity: sha512-IAtzIB6sUiWaJYrX9smp3V46pBGbBeLFRGdh25kg1334VcBlD8HzhPeNIWQH9zhGmo2itIe25EHt9dQP7G5hmg==}
 
@@ -7843,6 +7877,9 @@ packages:
 
   undici-types@7.16.0:
     resolution: {integrity: sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==}
+
+  undici-types@7.18.2:
+    resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
 
   undici-types@7.24.4:
     resolution: {integrity: sha512-cRaY9PagdEZoRmcwzk3tUV3SVGrVQkR6bcSilav/A0vXsfpW4Lvd0BvgRMwTEDTLLGN+QdyBTG+nnvTgJhdt6w==}
@@ -12067,6 +12104,10 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
+  '@types/node@24.13.2':
+    dependencies:
+      undici-types: 7.18.2
+
   '@types/node@25.2.3':
     dependencies:
       undici-types: 7.16.0
@@ -13588,7 +13629,7 @@ snapshots:
       mdast-util-mdx-expression: 2.0.1
       mdast-util-mdx-jsx: 3.2.0
       mdast-util-mdxjs-esm: 2.0.1
-      property-information: 7.1.0
+      property-information: 7.2.0
       space-separated-tokens: 2.0.2
       style-to-js: 1.1.21
       unist-util-position: 5.0.0
@@ -14935,8 +14976,6 @@ snapshots:
       object-assign: 4.1.1
       react-is: 16.13.1
 
-  property-information@7.1.0: {}
-
   property-information@7.2.0: {}
 
   proxy-addr@2.0.7:
@@ -15847,6 +15886,8 @@ snapshots:
 
   undici-types@7.16.0:
     optional: true
+
+  undici-types@7.18.2: {}
 
   undici-types@7.24.4: {}
 
