@@ -2570,6 +2570,50 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("fails orphaned deferred wakes before re-enqueueing stranded in-progress work", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    const deferredWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: { issueId },
+      status: "deferred_issue_execution",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.orphanedDeferredWakesFailed).toBe(1);
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const deferredWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(deferredWake?.status).toBe("failed");
+    expect(deferredWake?.error).toContain("orphaned");
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect((retryRun?.contextSnapshot as Record<string, unknown>)?.retryReason).toBe("issue_continuation_needed");
+    if (retryRun) {
+      await waitForRunToSettle(heartbeat, retryRun.id);
+    }
+  });
+
   it("does not continue seeded in-progress work that has no run linkage", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

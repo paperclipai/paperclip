@@ -723,6 +723,7 @@ export async function startServer(): Promise<StartedServer> {
           reconciled.assignmentDispatched > 0 ||
           reconciled.dispatchRequeued > 0 ||
           reconciled.continuationRequeued > 0 ||
+          reconciled.orphanedDeferredWakesFailed > 0 ||
           reconciled.successfulRunHandoffEscalated > 0 ||
           reconciled.escalated > 0
         ) {
@@ -800,6 +801,7 @@ export async function startServer(): Promise<StartedServer> {
             reconciled.assignmentDispatched > 0 ||
             reconciled.dispatchRequeued > 0 ||
             reconciled.continuationRequeued > 0 ||
+            reconciled.orphanedDeferredWakesFailed > 0 ||
             reconciled.successfulRunHandoffEscalated > 0 ||
             reconciled.escalated > 0
           ) {

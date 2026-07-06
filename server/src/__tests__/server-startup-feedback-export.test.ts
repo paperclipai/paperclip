@@ -154,6 +154,7 @@ vi.mock("../services/index.js", () => ({
     reconcileStrandedAssignedIssues: vi.fn(async () => ({
       dispatchRequeued: 0,
       continuationRequeued: 0,
+      orphanedDeferredWakesFailed: 0,
       successfulRunHandoffEscalated: 0,
       escalated: 0,
       skipped: 0,

@@ -427,35 +427,45 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
   }
 
-  async function hasActiveExecutionPath(companyId: string, issueId: string) {
-    const [run, deferredWake] = await Promise.all([
-      db
-        .select({ id: heartbeatRuns.id })
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, companyId),
-            inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null),
-      db
-        .select({ id: agentWakeupRequests.id })
-        .from(agentWakeupRequests)
-        .where(
-          and(
-            eq(agentWakeupRequests.companyId, companyId),
-            eq(agentWakeupRequests.status, "deferred_issue_execution"),
-            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null),
-    ]);
+  async function getActiveExecutionRun(companyId: string, issueId: string) {
+    return db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
 
-    return Boolean(run || deferredWake);
+  async function hasActiveExecutionPath(companyId: string, issueId: string) {
+    return Boolean(await getActiveExecutionRun(companyId, issueId));
+  }
+
+  async function failOrphanedDeferredIssueWakes(companyId: string, issueId: string) {
+    if (await getActiveExecutionRun(companyId, issueId)) return [];
+    const now = new Date();
+    return db
+      .update(agentWakeupRequests)
+      .set({
+        status: "failed",
+        finishedAt: now,
+        error:
+          "Deferred issue execution wake was orphaned after the issue lost its active execution run; stranded issue recovery will requeue the current assignee.",
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+        ),
+      )
+      .returning({ id: agentWakeupRequests.id });
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string) {
@@ -2174,6 +2184,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       productiveContinuationObserved: 0,
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
+      orphanedDeferredWakesFailed: 0,
       successfulRunHandoffEscalated: 0,
       escalated: 0,
       skipped: 0,
@@ -2197,6 +2208,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.skipped += 1;
         continue;
       }
+      const orphanedDeferredWakes = await failOrphanedDeferredIssueWakes(issue.companyId, issue.id);
+      result.orphanedDeferredWakesFailed += orphanedDeferredWakes.length;
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
         result.skipped += 1;
