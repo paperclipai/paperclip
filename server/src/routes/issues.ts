@@ -5441,50 +5441,69 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
-    const result = await db.transaction(async (tx) => {
-      const comment = await svc.addComment(
-        issue.id,
-        req.body.body,
-        {
-          agentId: actor.agentId ?? undefined,
-          userId: actor.actorType === "user" ? actor.actorId : undefined,
-          runId: actor.runId,
-        },
-        undefined,
-        tx,
-      );
-      const updatedAction = await recoveryActionsSvc.bumpFollowupAttempt(
-        {
-          companyId: issue.companyId,
-          sourceIssueId: issue.id,
-          actionId: activeRecoveryAction.id,
-        },
-        tx,
-      );
-      return { comment, action: updatedAction };
-    });
+    // Sentinel thrown inside the transaction so a concurrently
+    // resolved/cancelled recovery action rolls back the comment insert
+    // instead of committing a comment whose attempt was never counted.
+    const concurrentlyResolved = Symbol("recovery-action-concurrently-resolved");
+    try {
+      const result = await db.transaction(async (tx) => {
+        const comment = await svc.addComment(
+          issue.id,
+          req.body.body,
+          {
+            agentId: actor.agentId ?? undefined,
+            userId: actor.actorType === "user" ? actor.actorId : undefined,
+            runId: actor.runId,
+          },
+          undefined,
+          tx,
+        );
+        const updatedAction = await recoveryActionsSvc.bumpFollowupAttempt(
+          {
+            companyId: issue.companyId,
+            sourceIssueId: issue.id,
+            actionId: activeRecoveryAction.id,
+          },
+          tx,
+        );
+        if (!updatedAction) {
+          throw concurrentlyResolved;
+        }
+        return { comment, action: updatedAction };
+      });
 
-    await logActivity(db, {
-      companyId: issue.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "issue.recovery_action_followup_comment",
-      entityType: "issue",
-      entityId: issue.id,
-      details: {
-        identifier: issue.identifier,
-        recoveryActionId: result.action?.id ?? activeRecoveryAction.id,
-        commentId: result.comment.id,
-      },
-    });
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.recovery_action_followup_comment",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          recoveryActionId: result.action.id,
+          commentId: result.comment.id,
+        },
+      });
 
-    res.status(201).json({
-      issueId: issue.id,
-      recoveryActionId: result.action?.id ?? activeRecoveryAction.id,
-      comment: result.comment,
-    });
+      res.status(201).json({
+        issueId: issue.id,
+        recoveryActionId: result.action.id,
+        comment: result.comment,
+      });
+    } catch (err) {
+      if (err !== concurrentlyResolved) throw err;
+      res.status(409).json({
+        error:
+          "Recovery action was resolved or cancelled concurrently; follow-up comment was not recorded",
+        details: {
+          issueId: issue.id,
+          recoveryActionId: activeRecoveryAction.id,
+        },
+      });
+    }
   });
 
   router.post("/issues/:id/recovery-actions/resolve", validate(resolveIssueRecoveryActionSchema), async (req, res) => {
