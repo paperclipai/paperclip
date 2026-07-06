@@ -323,6 +323,51 @@ describeEmbeddedPostgres("force-reassign service", () => {
     ).rejects.toThrow("issue_not_orphaned");
   });
 
+  it("forceReassign throws issue_not_orphaned for a terminated assignee with a valid manager chain", async () => {
+    const db = await startEmbeddedPostgresTestDatabase();
+
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "TestCo" });
+
+    const rootId = randomUUID();
+    const terminatedId = randomUUID();
+    const targetId = randomUUID();
+    const actorId = randomUUID();
+    await db.insert(agents).values([
+      { id: rootId, companyId, name: "CEO", role: "ceo", status: "active", reportsTo: null },
+      { id: terminatedId, companyId, name: "Old", role: "general", status: "terminated", reportsTo: rootId },
+      { id: targetId, companyId, name: "Target", role: "general", status: "active", reportsTo: rootId },
+      { id: actorId, companyId, name: "Board", role: "ceo", status: "active", reportsTo: null },
+    ]);
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue with terminated but chain-valid assignee",
+      assigneeAgentId: terminatedId,
+    });
+
+    const svc = forceReassignService(db);
+
+    // First confirm isOrphaned returns false
+    const orphanCheck = await svc.isOrphaned(companyId, terminatedId);
+    expect(orphanCheck.orphaned).toBe(false);
+    expect(orphanCheck.evidence.matchedCondition).toBe("assignee_terminated_but_chain_valid");
+
+    // forceReassign should reject — the chain is valid, so the issue isn't orphaned
+    await expect(
+      svc.forceReassign({
+        issueId,
+        fromAssigneeId: terminatedId,
+        toAssigneeId: targetId,
+        reason: "Should be rejected.",
+        idempotencyKey: randomUUID(),
+        actorId,
+      }),
+    ).rejects.toThrow("issue_not_orphaned");
+  });
+
   it("forceReassign throws expected_from_mismatch when assignee doesn't match", async () => {
     const db = await startEmbeddedPostgresTestDatabase();
 

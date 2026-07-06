@@ -350,6 +350,61 @@ describeEmbeddedPostgres("force-reassign concurrency", () => {
     expect(afterSwap.valid).toBe(false);
   });
 
+  it("audit chain hashing is deterministic for nested JSON — varying key orders produce the same hash", async () => {
+    const db = await makeDb();
+
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "TestCo" });
+
+    const rootId = randomUUID();
+    const midId = randomUUID();
+    const terminatedId = randomUUID();
+    const targetId = randomUUID();
+    const actorId = randomUUID();
+    await db.insert(agents).values([
+      { id: rootId, companyId, name: "CEO", role: "ceo", status: "active", reportsTo: null },
+      { id: midId, companyId, name: "Mid", role: "general", status: "active", reportsTo: rootId },
+      { id: terminatedId, companyId, name: "Dead", role: "general", status: "terminated", reportsTo: midId },
+      { id: targetId, companyId, name: "Target", role: "general", status: "active", reportsTo: rootId },
+      { id: actorId, companyId, name: "Board", role: "ceo", status: "active", reportsTo: null },
+    ]);
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Nested JSON Test",
+      assigneeAgentId: terminatedId,
+      status: "todo",
+    });
+
+    const svc = forceReassignService(db);
+    await svc.forceReassign({
+      issueId,
+      fromAssigneeId: terminatedId,
+      toAssigneeId: targetId,
+      reason: "Override with deep chain snapshot.",
+      idempotencyKey: randomUUID(),
+      actorId,
+    });
+
+    // Chain validation should pass: the fromChainSnapshot has nested objects
+    // (agent rows with id, status, role, etc.) and canonicalJson must
+    // deep-sort keys so the hash is deterministic.
+    const auditResult = await svc.verifyAuditChain(companyId);
+    expect(auditResult.valid).toBe(true);
+    expect(auditResult.rowCount).toBe(1);
+
+    // Read back the audit row — orphanEvidence is also a nested object
+    const rows = await db
+      .select()
+      .from(securityAuditLog)
+      .where(eq(securityAuditLog.tenantId, companyId));
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.fromChainSnapshot).toBeTruthy();
+    expect(rows[0]!.orphanEvidence).toBeTruthy();
+  });
+
   it("idempotency table prevents re-execution even when the original issue is deleted", async () => {
     const db = await makeDb();
 

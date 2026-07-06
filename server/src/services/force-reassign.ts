@@ -15,8 +15,18 @@ function sha256(data: string): string {
   return createHash("sha256").update(data).digest("hex");
 }
 
+function deepCanonicalize(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(deepCanonicalize);
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+    sorted[key] = deepCanonicalize((value as Record<string, unknown>)[key]);
+  }
+  return sorted;
+}
+
 function canonicalJson(obj: unknown): string {
-  return JSON.stringify(obj, Object.keys(obj as object).sort());
+  return JSON.stringify(deepCanonicalize(obj));
 }
 
 type OrphanEvidence = {
@@ -47,7 +57,9 @@ export function forceReassignService(db: Db) {
   async function isOrphaned(
     companyId: string,
     assigneeAgentId: string,
+    tx?: typeof db,
   ): Promise<{ orphaned: boolean; evidence: OrphanEvidence }> {
+    const client = tx ?? db;
     const evidence: OrphanEvidence = {
       matchedCondition: "none",
       computedAt: new Date().toISOString(),
@@ -60,7 +72,7 @@ export function forceReassignService(db: Db) {
       return { orphaned: false, evidence };
     }
 
-    const assignee = await db
+    const assignee = await client
       .select({ id: agents.id, status: agents.status })
       .from(agents)
       .where(and(eq(agents.id, assigneeAgentId), eq(agents.companyId, companyId)))
@@ -76,7 +88,7 @@ export function forceReassignService(db: Db) {
     evidence.assigneeStatus = assignee.status;
 
     if (assignee.status === "terminated" || assignee.status === "uninvokable") {
-      const chainValid = await chainReachesLiveRoot(assignee.id, companyId);
+      const chainValid = await chainReachesLiveRoot(assignee.id, companyId, tx, assignee.status);
       evidence.chainReachesLiveRoot = chainValid;
       if (!chainValid) {
         evidence.matchedCondition = "assignee_terminated_and_chain_broken";
@@ -86,7 +98,7 @@ export function forceReassignService(db: Db) {
       return { orphaned: false, evidence };
     }
 
-    const chainValid = await chainReachesLiveRoot(assignee.id, companyId);
+    const chainValid = await chainReachesLiveRoot(assignee.id, companyId, tx);
     evidence.chainReachesLiveRoot = chainValid;
     if (!chainValid) {
       evidence.matchedCondition = "chain_broken_but_assignee_alive";
@@ -100,15 +112,29 @@ export function forceReassignService(db: Db) {
   async function chainReachesLiveRoot(
     agentId: string,
     companyId: string,
+    tx?: typeof db,
+    initialStatus?: string,
   ): Promise<boolean> {
+    const client = tx ?? db;
     const visited = new Set<string>();
     let currentId: string | null = agentId;
+
+    if (initialStatus === "terminated" || initialStatus === "uninvokable") {
+      const agentRow = await client
+        .select({ reportsTo: agents.reportsTo })
+        .from(agents)
+        .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+
+      if (!agentRow || !agentRow.reportsTo) return false;
+      currentId = agentRow.reportsTo;
+    }
 
     while (currentId && visited.size < CHAIN_DEPTH_CAP) {
       if (visited.has(currentId)) return false;
       visited.add(currentId);
 
-      const rows = await db
+      const rows = await client
         .select({ id: agents.id, reportsTo: agents.reportsTo, status: agents.status })
         .from(agents)
         .where(and(eq(agents.id, currentId), eq(agents.companyId, companyId)));
@@ -177,68 +203,7 @@ export function forceReassignService(db: Db) {
       if (target.companyId !== issue.companyId) throw new Error("tenant_isolation_violation");
       if (!LIVE_STATUSES.has(target.status)) throw new Error("target_not_invokable");
 
-      const evidence: OrphanEvidence = {
-        matchedCondition: "none",
-        computedAt: new Date().toISOString(),
-        assigneeExists: false,
-        assigneeStatus: null,
-        chainReachesLiveRoot: false,
-      };
-
-      const assigneeResult = await tx
-        .select({ id: agents.id, status: agents.status })
-        .from(agents)
-        .where(and(eq(agents.id, fromAssigneeId), eq(agents.companyId, issue.companyId)));
-
-      const assignee = assigneeResult[0];
-
-      if (!assignee) {
-        evidence.matchedCondition = "assignee_missing_or_deleted";
-        evidence.computedAt = new Date().toISOString();
-      } else {
-        evidence.assigneeExists = true;
-        evidence.assigneeStatus = assignee.status;
-
-        let chainValid = false;
-        const visited = new Set<string>();
-        let currentId: string | null = assignee.id;
-
-        while (currentId && visited.size < CHAIN_DEPTH_CAP) {
-          if (visited.has(currentId)) break;
-          visited.add(currentId);
-
-          const agentRows = await tx
-            .select({ id: agents.id, reportsTo: agents.reportsTo, status: agents.status })
-            .from(agents)
-            .where(and(eq(agents.id, currentId), eq(agents.companyId, issue.companyId)));
-
-          const agentRow = agentRows[0];
-          if (!agentRow) break;
-          if (!LIVE_STATUSES.has(agentRow.status)) break;
-
-          if (!agentRow.reportsTo) {
-            chainValid = true;
-            break;
-          }
-
-          currentId = agentRow.reportsTo;
-        }
-
-        evidence.chainReachesLiveRoot = chainValid;
-
-        if (assignee.status === "terminated" || assignee.status === "uninvokable") {
-          evidence.matchedCondition = chainValid
-            ? "assignee_terminated_but_chain_valid"
-            : "assignee_terminated_and_chain_broken";
-        } else if (!chainValid) {
-          evidence.matchedCondition = "chain_broken_but_assignee_alive";
-        } else {
-          evidence.matchedCondition = "healthy";
-        }
-      }
-
-      const orphaned = evidence.matchedCondition === "assignee_missing_or_deleted" ||
-        evidence.matchedCondition === "assignee_terminated_and_chain_broken";
+      const { orphaned, evidence } = await isOrphaned(issue.companyId, fromAssigneeId, tx as unknown as typeof db);
 
       if (!orphaned) {
         throw new Error("issue_not_orphaned");
@@ -369,45 +334,48 @@ export function forceReassignService(db: Db) {
   }
 
   async function sweepOrphanedIssues(companyId: string, maxReassign: number = 10): Promise<number> {
-    const orphanedIssues = await db
-      .select({
-        id: issues.id,
-        companyId: issues.companyId,
-        assigneeAgentId: issues.assigneeAgentId,
-      })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, companyId),
-          sql`${issues.status} in ('todo', 'in_progress', 'in_review', 'blocked')`,
-          sql`${issues.assigneeAgentId} is not null`,
-        ),
-      )
-      .limit(100);
-
-    let flagged = 0;
-
-    for (const issue of orphanedIssues) {
-      if (flagged >= maxReassign) break;
-      if (!issue.assigneeAgentId) continue;
-
-      const { orphaned } = await isOrphaned(issue.companyId, issue.assigneeAgentId);
-      if (!orphaned) continue;
-
-      await db
-        .update(issues)
-        .set({
-          assigneeUninvokable: "true",
-          assigneeUninvokableAt: new Date(),
-          assigneeLivenessStatus: "orphaned",
-          updatedAt: new Date(),
+    return db.transaction(async (tx) => {
+      const orphanedIssues = await tx
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          assigneeAgentId: issues.assigneeAgentId,
         })
-        .where(eq(issues.id, issue.id));
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            sql`${issues.status} in ('todo', 'in_progress', 'in_review', 'blocked')`,
+            sql`${issues.assigneeAgentId} is not null`,
+          ),
+        )
+        .limit(100)
+        .for("update");
 
-      flagged++;
-    }
+      let flagged = 0;
 
-    return flagged;
+      for (const issue of orphanedIssues) {
+        if (flagged >= maxReassign) break;
+        if (!issue.assigneeAgentId) continue;
+
+        const { orphaned } = await isOrphaned(issue.companyId, issue.assigneeAgentId, tx as unknown as typeof db);
+        if (!orphaned) continue;
+
+        await tx
+          .update(issues)
+          .set({
+            assigneeUninvokable: "true",
+            assigneeUninvokableAt: new Date(),
+            assigneeLivenessStatus: "orphaned",
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, issue.id));
+
+        flagged++;
+      }
+
+      return flagged;
+    });
   }
 
   async function getLatestAuditHash(tenantId: string): Promise<string | null> {
