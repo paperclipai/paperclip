@@ -92,6 +92,7 @@ import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -291,6 +292,7 @@ function IssuePlanningStat({
 }
 
 function IssuePlanningStrip({ issue, childIssues }: { issue: Issue; childIssues: Issue[] }) {
+  const [open, setOpen] = useState(false);
   const actualHumanSeconds = actualHumanSecondsForIssue(issue);
   const actualAiSecondsWithChildren = useMemo(
     () => sumIssueValuesWithDescendants([issue], [issue, ...childIssues], actualAiSecondsForIssue),
@@ -298,38 +300,57 @@ function IssuePlanningStrip({ issue, childIssues }: { issue: Issue; childIssues:
   );
 
   return (
-    <div className="grid gap-2 border-t border-border pt-3 sm:grid-cols-2 xl:grid-cols-5">
-      <IssuePlanningStat
-        icon={Hash}
-        label="Story points"
-        value={issue.storyPoints != null ? `${issue.storyPoints} pts` : "No points"}
-        detail="Human planning weight"
-      />
-      <IssuePlanningStat
-        icon={Clock3}
-        label="Estimate"
-        value={formatIssuePlanningHours(issue.estimateHours)}
-        detail="Rough hours"
-      />
-      <IssuePlanningStat
-        icon={Clock3}
-        label="Human time"
-        value={formatIssueAiHours(actualHumanSeconds)}
-        detail="Created to done/now"
-      />
-      <IssuePlanningStat
-        icon={Bot}
-        label="AI time"
-        value={formatIssueAiHours(actualAiSecondsWithChildren)}
-        detail={childIssues.length > 0 ? "Including sub-issues" : "Recorded execution"}
-      />
-      <IssuePlanningStat
-        icon={CalendarClock}
-        label="Cycle"
-        value={issue.cycle?.name ?? "No cycle"}
-        detail={formatIssueDueDate(issue)}
-      />
-    </div>
+    <Collapsible open={open} onOpenChange={setOpen} className="border-t border-border pt-2">
+      <div className="flex min-h-7 items-center">
+        <CollapsibleTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="h-7 px-2 text-muted-foreground hover:text-foreground"
+            aria-expanded={open}
+            aria-label={open ? "Hide issue details" : "Show issue details"}
+          >
+            <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />
+            <span>Details</span>
+          </Button>
+        </CollapsibleTrigger>
+      </div>
+      <CollapsibleContent>
+        <div className="grid gap-2 pt-2 sm:grid-cols-2 xl:grid-cols-5">
+          <IssuePlanningStat
+            icon={Hash}
+            label="Story points"
+            value={issue.storyPoints != null ? `${issue.storyPoints} pts` : "No points"}
+            detail="Human planning weight"
+          />
+          <IssuePlanningStat
+            icon={Clock3}
+            label="Estimate"
+            value={formatIssuePlanningHours(issue.estimateHours)}
+            detail="Rough hours"
+          />
+          <IssuePlanningStat
+            icon={Clock3}
+            label="Human time"
+            value={formatIssueAiHours(actualHumanSeconds)}
+            detail="Created to done/now"
+          />
+          <IssuePlanningStat
+            icon={Bot}
+            label="AI time"
+            value={formatIssueAiHours(actualAiSecondsWithChildren)}
+            detail={childIssues.length > 0 ? "Including sub-issues" : "Recorded execution"}
+          />
+          <IssuePlanningStat
+            icon={CalendarClock}
+            label="Cycle"
+            value={issue.cycle?.name ?? "No cycle"}
+            detail={formatIssueDueDate(issue)}
+          />
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
