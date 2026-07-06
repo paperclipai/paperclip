@@ -1447,8 +1447,9 @@ function IssueChatUserMessage({
             : deleted
               ? "bg-muted/50 text-muted-foreground"
             : isCurrentUser
-              // Liveness blue (--status-task-in_progress) for the human's own messages (PAP-95 rev 5).
-              ? "bg-(--status-task-in_progress) text-white"
+              // Liveness blue (--liveness-blue, decoupled from --status-task-in_progress
+              // in DECISION-SHEET.md A6) for the human's own messages (PAP-95 rev 5).
+              ? "bg-(--liveness-blue) text-white"
               : "bg-muted",
           pending && "opacity-80",
         )}
