@@ -1429,3 +1429,64 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 .status-fill {
   background-color: var(--sc);
 }
+
+/* ── Extracted verbatim tokens (Phase 2, design/token-extraction) ── */
+/* Batch 1/4: color literals only. Reused-from-existing-token sites (see
+   TOKEN-AUDIT.md section 1.1) are NOT duplicated here — they reference
+   --status-task-in_progress / --status-task-done directly at the call site.
+
+   Allowlist (sites intentionally left as hardcoded / functional literals,
+   NOT converted to tokens — each also carries an inline
+   `token-extraction: allowlisted` comment at the site):
+   - pages/CompanyEnvironments.tsx — xterm.js terminal theme config; functional JS values, third-party.
+   - pages/CompanySettings.tsx — <input type="color"> value; functional form control, not a rendered value.
+   - components/issue-properties/IssueProperties.tsx (newLabelColor) — color-picker seed persisted into label-create payload.
+   - pages/CompanySkills.tsx (DISCOVERY_ACCENTS) — persisted/compared skill.color JS data, not just rendered.
+   - components/IssueColumns.tsx (accentColor fallback) — also feeds pickTextColorForPillBg() contrast math.
+   - components/CompanyPatternIcon.tsx — canvas fillStyle computed at runtime from numeric props, not a static literal.
+   - components/FileViewerSheet.tsx — half-migrated var(--paperclip-code-highlight-*, fallback) pattern; needs human decision, see TOKEN-AUDIT.md section 2.
+   - pages/InviteUxLab.tsx (brandColor prop, x2) — demo/showcase-only prop feeding CompanyPatternIcon's hexToHue() color math, not a rendered CSS value.
+*/
+:root {
+  --hex-959596: #959596; /* Muted feed actor/verb/title text (ActivityFeed.tsx, FeedCard.tsx) — PRIOR-ART-flagged gap cluster, no existing token match. */
+  --hex-1d1d1d: #1d1d1d; /* OnboardingWizard.tsx dark decorative panel background, singleton. */
+  --hex-22d3ee: #22d3ee; /* OrgChart.tsx agent status dot — 'running' (independent palette from --status-agent-*, see TOKEN-AUDIT.md 1.2). */
+  --hex-4ade80: #4ade80; /* OrgChart.tsx agent status dot — 'active'. */
+  --hex-facc15: #facc15; /* OrgChart.tsx agent status dot — 'paused' / 'idle' (shared value). */
+  --hex-f87171: #f87171; /* OrgChart.tsx agent status dot — 'error'. */
+  --hex-a3a3a3: #a3a3a3; /* OrgChart.tsx agent status dot — 'terminated' + defaultDotColor fallback. */
+  --hex-ef4444: #ef4444; /* ActivityCharts.tsx — priority 'critical' + status 'blocked' (shared value); also the <0.5 success-rate bar tint. */
+  --hex-f97316: #f97316; /* ActivityCharts.tsx — priority 'high'. */
+  --hex-eab308: #eab308; /* ActivityCharts.tsx — priority 'medium'; also the 0.5-0.8 success-rate bar tint. */
+  --hex-6b7280: #6b7280; /* ActivityCharts.tsx — priority 'low' + status 'cancelled' + statusColors fallback (shared value). */
+  --hex-3b82f6: #3b82f6; /* ActivityCharts.tsx — status 'todo' (independent from --status-task-todo which is #f59e0b). */
+  --hex-8b5cf6: #8b5cf6; /* ActivityCharts.tsx — status 'in_progress' (independent from --status-task-in_progress which is #2563eb — flagged inconsistency, TOKEN-AUDIT.md 1.2). */
+  --hex-a855f7: #a855f7; /* ActivityCharts.tsx — status 'in_review'. */
+  --hex-10b981: #10b981; /* ActivityCharts.tsx — status 'done'; also the >=0.8 success-rate bar tint. */
+  --hex-64748b: #64748b; /* ActivityCharts.tsx status 'backlog'; also the widely-repeated 'no project assigned' muted-slate fallback color (TOKEN-AUDIT.md 1.3) across Routines/MarkdownEditor/RoutineRunVariablesDialog/RoutineList/IssueColumns/editable-sections. */
+  --hex-6366f1: #6366f1; /* Project-color-fallback indigo seed default (ProjectDetail/PipelineSettings/IssueProperties/NewIssueDialog) — new-project-color-picker-seed family per TOKEN-AUDIT.md 1.3. */
+  --gradient-extract-1: linear-gradient(180deg,rgba(255,80,80,0.12),rgba(255,255,255,0.02)); /* Dashboard.tsx budget-alert card gradient. */
+  --gradient-extract-2: linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02)); /* Costs.tsx subtle white card gradient. */
+  --gradient-extract-3: radial-gradient(circle at top left,rgba(244,114,182,0.08),transparent 35%),radial-gradient(circle at bottom right,rgba(56,189,248,0.1),transparent 32%); /* AccountingModelCard.tsx decorative overlay. */
+  --gradient-extract-4: linear-gradient(180deg,rgba(255,70,70,0.10),rgba(255,255,255,0.02)); /* BudgetIncidentCard.tsx incident-card gradient. */
+  --gradient-extract-5: radial-gradient(circle at top left,rgba(8,145,178,0.08),transparent 36%),radial-gradient(circle at bottom right,rgba(245,158,11,0.10),transparent 28%); /* RunTranscriptUxLab.tsx:78 hero gradient. */
+  --gradient-extract-6: linear-gradient(135deg,rgba(8,145,178,0.08),transparent 28%),linear-gradient(180deg,rgba(245,158,11,0.08),transparent 40%),var(--background); /* RunTranscriptUxLab.tsx:203 hero-card gradient. */
+  --gradient-extract-7: radial-gradient(circle at top right,rgba(255,255,255,0.22),transparent 34%),radial-gradient(circle at bottom left,rgba(255,255,255,0.08),transparent 36%); /* ProfileSettings.tsx:162 decorative overlay. */
+  --gradient-extract-8: radial-gradient(circle at top,rgba(8,145,178,0.18),transparent 48%),linear-gradient(180deg,rgba(15,23,42,0.96),rgba(2,6,23,1)); /* InviteUxLab.tsx:510 dark hero gradient. */
+  --gradient-extract-9: linear-gradient(135deg,rgba(8,145,178,0.10),transparent 28%),linear-gradient(180deg,rgba(245,158,11,0.10),transparent 44%),var(--background); /* IssueChatUxLab.tsx:139 + InviteUxLab.tsx:700 hero-card gradient (identical string, 2 sites). */
+  --gradient-extract-10: linear-gradient(180deg,rgba(168,85,247,0.06),transparent 28%),var(--background); /* IssueChatUxLab.tsx:203 + InviteUxLab.tsx:909 accent gradient (identical string, 2 sites). */
+  --gradient-extract-11: linear-gradient(180deg,rgba(16,185,129,0.06),transparent 28%),var(--background); /* IssueChatUxLab.tsx:226 accent gradient. */
+  --gradient-extract-12: linear-gradient(180deg,rgba(6,182,212,0.05),transparent 28%),var(--background); /* IssueChatUxLab.tsx:263 accent gradient. */
+  --gradient-extract-13: linear-gradient(180deg,rgba(59,130,246,0.06),transparent 28%),var(--background); /* IssueChatUxLab.tsx:294 accent gradient. */
+  --gradient-extract-14: linear-gradient(180deg,rgba(168,85,247,0.05),transparent 26%),var(--background); /* IssueChatUxLab.tsx:315 accent gradient. */
+  --gradient-extract-15: linear-gradient(180deg,rgba(245,158,11,0.08),transparent 26%),var(--background); /* IssueChatUxLab.tsx:339 accent gradient. */
+  --gradient-extract-16: linear-gradient(135deg,rgba(245,158,11,0.10),transparent 28%),linear-gradient(180deg,rgba(8,145,178,0.08),transparent 44%),var(--background); /* SystemNoticeUxLab.tsx:140 hero-card gradient. */
+  --gradient-extract-17: linear-gradient(180deg,rgba(245,158,11,0.05),transparent 28%),var(--background); /* SystemNoticeUxLab.tsx:193 accent gradient. */
+  --gradient-extract-18: linear-gradient(180deg,rgba(8,145,178,0.05),transparent 28%),var(--background); /* SystemNoticeUxLab.tsx:225 accent gradient. */
+  --gradient-extract-19: linear-gradient(180deg,rgba(244,63,94,0.05),transparent 28%),var(--background); /* SystemNoticeUxLab.tsx:289 accent gradient. */
+  --gradient-extract-20: linear-gradient(180deg,rgba(16,185,129,0.05),transparent 28%),var(--background); /* SystemNoticeUxLab.tsx:331 accent gradient. */
+  --gradient-extract-21: linear-gradient(180deg,rgba(59,130,246,0.05),transparent 30%),var(--background); /* InviteUxLab.tsx:753 accent gradient. */
+  --gradient-extract-22: linear-gradient(180deg,rgba(234,179,8,0.06),transparent 28%),var(--background); /* InviteUxLab.tsx:807 accent gradient. */
+  --gradient-extract-23: linear-gradient(180deg,rgba(16,185,129,0.06),transparent 30%),var(--background); /* InviteUxLab.tsx:884 accent gradient. */
+  --gradient-extract-24: linear-gradient(180deg,rgba(244,114,182,0.06),transparent 28%),var(--background); /* InviteUxLab.tsx:921 accent gradient. */
+}

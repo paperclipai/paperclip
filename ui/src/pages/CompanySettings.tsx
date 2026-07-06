@@ -267,6 +267,7 @@ export function CompanySettings() {
                 hint="Sets the hue for the company icon. Leave empty for auto-generated color."
               >
                 <div className="flex items-center gap-2">
+                  {/* token-extraction: allowlisted — <input type="color"> value must be a real hex string, not a var() reference. */}
                   <input
                     type="color"
                     value={brandColor || "#6366f1"}

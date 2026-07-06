@@ -159,14 +159,14 @@ function touchCenter(a: React.Touch, b: React.Touch, container: HTMLDivElement):
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 
 const statusDotColor: Record<string, string> = {
-  running: "#22d3ee",
-  active: "#4ade80",
-  paused: "#facc15",
-  idle: "#facc15",
-  error: "#f87171",
-  terminated: "#a3a3a3",
+  running: "var(--hex-22d3ee)",
+  active: "var(--hex-4ade80)",
+  paused: "var(--hex-facc15)",
+  idle: "var(--hex-facc15)",
+  error: "var(--hex-f87171)",
+  terminated: "var(--hex-a3a3a3)",
 };
-const defaultDotColor = "#a3a3a3";
+const defaultDotColor = "var(--hex-a3a3a3)";
 
 // ── Main component ──────────────────────────────────────────────────────
 

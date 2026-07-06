@@ -125,6 +125,7 @@ function makeCompanyPatternDataUrl(seed: string, brandColor?: string | null, log
   const diagonalPhase = rand() * Math.PI * 2;
   const antiDiagonalPhase = rand() * Math.PI * 2;
 
+  // token-extraction: allowlisted — canvas 2D fillStyle computed at runtime from numeric channel props; not a static literal.
   ctx.fillStyle = `rgb(${offR} ${offG} ${offB})`;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 

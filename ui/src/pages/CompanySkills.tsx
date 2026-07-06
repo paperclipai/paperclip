@@ -545,6 +545,7 @@ export type DiscoveryCard = {
 // Stable palette used to auto-assign an accent colour to a skill when the
 // backend has not stored an explicit one. Colour is derived from the skill key
 // so the same skill always lands on the same hue.
+// token-extraction: allowlisted — skill.color is persisted/compared JS data (SkillCreateDraft), not just a rendered value; a var() string would corrupt it.
 const DISCOVERY_ACCENTS = [
   "#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444",
   "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#22c55e",

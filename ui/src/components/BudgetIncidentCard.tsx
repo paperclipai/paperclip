@@ -43,7 +43,7 @@ export function BudgetIncidentCard({
   const stateLabel = incidentStateLabel(incident);
 
   return (
-    <Card className="overflow-hidden border-red-500/20 bg-[linear-gradient(180deg,rgba(255,70,70,0.10),rgba(255,255,255,0.02))]">
+    <Card className="overflow-hidden border-red-500/20 bg-(image:--gradient-extract-4)">
       <CardHeader className="px-5 pt-5 pb-3">
         <div className="flex items-start justify-between gap-3">
           <div>

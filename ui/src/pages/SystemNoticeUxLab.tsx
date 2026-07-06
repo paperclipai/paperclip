@@ -137,7 +137,7 @@ export function SystemNoticeUxLab() {
 
   return (
     <div className="space-y-6">
-      <div className="overflow-hidden rounded-[32px] border border-border/70 bg-[linear-gradient(135deg,rgba(245,158,11,0.10),transparent_28%),linear-gradient(180deg,rgba(8,145,178,0.08),transparent_44%),var(--background)] shadow-[0_30px_80px_rgba(15,23,42,0.10)]">
+      <div className="overflow-hidden rounded-[32px] border border-border/70 bg-(image:--gradient-extract-16) shadow-[0_30px_80px_rgba(15,23,42,0.10)]">
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_320px]">
           <div className="p-6 sm:p-7">
             <div className="inline-flex items-center gap-2 rounded-full border border-amber-500/25 bg-amber-500/[0.08] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] text-amber-700 dark:text-amber-300">
@@ -190,7 +190,7 @@ export function SystemNoticeUxLab() {
         eyebrow="Tone matrix"
         title="Three tones, two states"
         description="Each tone pairs a unique icon and tone label so the notice is recognizable without color. Collapsed is the default; the Details affordance reveals operational metadata only when reviewers ask for it."
-        accentClassName="bg-[linear-gradient(180deg,rgba(245,158,11,0.05),transparent_28%),var(--background)]"
+        accentClassName="bg-(image:--gradient-extract-17)"
       >
         <div className="space-y-5">
           <FixtureFrame caption={warningCollapsed.caption}>
@@ -222,7 +222,7 @@ export function SystemNoticeUxLab() {
         eyebrow="Hierarchy in thread"
         title="Distinct from user and agent comments"
         description="Side-by-side with adjacent comment types so reviewers can confirm the system row reads as a system row — full width, no avatar gutter, no chat bubble — while user and agent comments keep their existing rounded bubbles."
-        accentClassName="bg-[linear-gradient(180deg,rgba(8,145,178,0.05),transparent_28%),var(--background)]"
+        accentClassName="bg-(image:--gradient-extract-18)"
       >
         <div className="space-y-4 rounded-2xl border border-border/70 bg-background/70 p-4">
           <MockUserBubble
@@ -286,7 +286,7 @@ export function SystemNoticeUxLab() {
           eyebrow="Before"
           title="Today's nested treatment"
           description="The same content rendered through the existing user-bubble + warning-callout path. Two containers, same gray background as user comments, and the warning icon is forced inside a chat row."
-          accentClassName="bg-[linear-gradient(180deg,rgba(244,63,94,0.05),transparent_28%),var(--background)]"
+          accentClassName="bg-(image:--gradient-extract-19)"
         >
           <div className="space-y-3 rounded-2xl border border-border/70 bg-background/70 p-4">
             <div className="flex items-start gap-2.5">
@@ -328,7 +328,7 @@ export function SystemNoticeUxLab() {
           eyebrow="After"
           title="System notice replacement"
           description="One container, system-authored label, hidden details. The chat surface keeps user and agent bubbles unchanged."
-          accentClassName="bg-[linear-gradient(180deg,rgba(16,185,129,0.05),transparent_28%),var(--background)]"
+          accentClassName="bg-(image:--gradient-extract-20)"
         >
           <div className="space-y-3 rounded-2xl border border-border/70 bg-background/70 p-4">
             <SystemNotice {...dangerCollapsed} />

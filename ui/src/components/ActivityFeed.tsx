@@ -283,9 +283,9 @@ function CollapsedFeedGroup({
             : <Settings className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         }
         <span className="flex-1 min-w-0 truncate">
-          <span data-fc="actor" className="font-medium text-[#959596] group-hover:text-white">{actorName}</span>
-          <span data-fc="verb" className="ml-1 text-[#959596]">made {group.events.length} updates to</span>
-          <span data-fc="title" className="ml-1 text-[#959596] group-hover:text-white">{entityName ?? group.entityId}</span>
+          <span data-fc="actor" className="font-medium text-(--hex-959596) group-hover:text-white">{actorName}</span>
+          <span data-fc="verb" className="ml-1 text-(--hex-959596)">made {group.events.length} updates to</span>
+          <span data-fc="title" className="ml-1 text-(--hex-959596) group-hover:text-white">{entityName ?? group.entityId}</span>
         </span>
         <span data-fc="time" className="text-muted-foreground shrink-0">
           {timeAgo(group.latestEvent.createdAt)}

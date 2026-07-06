@@ -367,6 +367,7 @@ export function FileContentViewer({ content, highlightedLine, onLoaded }: FileCo
               data-line-number={lineNumber}
               className={cn(
                 "grid grid-cols-[auto_minmax(0,1fr)]",
+                // token-extraction: allowlisted — half-migrated var(--x, fallback) pattern; --paperclip-code-highlight-bg/-border don't exist in index.css yet. Needs human decision (see TOKEN-AUDIT.md 2) before minting, since defining the var changes a fallback-CSS-var-expression, not a plain literal swap.
                 isHighlighted && "bg-[var(--paperclip-code-highlight-bg,rgba(250,204,21,0.12))]",
               )}
             >

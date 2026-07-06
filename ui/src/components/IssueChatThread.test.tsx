@@ -1757,7 +1757,7 @@ describe("IssueChatThread", () => {
     expect(bubble?.className).toContain("max-w-[calc(100%-0.5rem)]");
     expect(bubble?.className).toContain("sm:max-w-[85%]");
     // Neutral, not the human liveness-blue bubble.
-    expect(bubble?.className).not.toContain("bg-[#2563EB]");
+    expect(bubble?.className).not.toContain("bg-(--status-task-in_progress)");
 
     act(() => {
       root.unmount();

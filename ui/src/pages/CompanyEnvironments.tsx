@@ -424,6 +424,7 @@ function EnvironmentCustomImageBrowserTerminal({
       lineHeight: 1.35,
       scrollback: CUSTOM_IMAGE_TERMINAL_SCROLLBACK_ROWS,
       theme: {
+        // token-extraction: allowlisted — xterm.js terminal theme config; functional third-party option object, not a rendered CSS value.
         background: "#0a0a0a",
         foreground: "#f5f5f5",
         cursor: "#22d3ee",
