@@ -17,26 +17,26 @@ Every open question from TOKEN-AUDIT.md §8 + batch logs and COMPONENT-INVENTORY
 
 | # | Decision | Recommendation | Status |
 |---|---|---|---|
-| B1 | One-off decorative gradients/shadows (5 production + UxLab; 38 arbitrary shadows, no `--shadow-*` tokens existed) | Allowlist as documented "intentional one-off decoration" (extend allowlist criteria beyond third-party); DELETE the ~20 never-reused singleton `--gradient-extract-*` tokens back to inline, keep only reused ones. Spirit over letter of principle 2 | PENDING |
+| B1 | One-off decorative gradients/shadows (5 production + UxLab; 38 arbitrary shadows, no `--shadow-*` tokens existed) | Allowlist as documented "intentional one-off decoration" (extend allowlist criteria beyond third-party); DELETE the ~20 never-reused singleton `--gradient-extract-*` tokens back to inline, keep only reused ones. Spirit over letter of principle 2 | APPROVED — middle path, executed: 27 demo-only tokens reverted inline (19 gradients: --gradient-extract-5,6,8-24; 8 shadows: --shadow-extract-15,16,17,19-23 — all consumed solely by *UxLab.tsx pages), 35 call sites restored to original bracket literals, definitions deleted, 4 UxLab pages allowlisted + criteria doc-comment extended to first-party intentional decoration. KEPT 22 production tokens (gradients 1,2,3,4,7,25,26 + 15 shadows) — NOTE: --shadow-extract-4/5 kept contrary to the audit's first cut because ChatComposer.tsx and IssueChatThread.tsx (production) consume them, not just ChatComposer.test.tsx |
 | B2 | Tailwind palette classes (`bg-red-500` etc.) — 3,115 sites / 145 files | Own future run (Run 4): cluster-by-cluster mapping to semantic tokens, starting with status-adjacent colors; NOT wholesale now, NOT permanent exemption. Update DESIGN.md principle 2 to name palette classes explicitly | APPROVED — own Run 4 later |
 | B3 | Micro type cluster 9–15px (730 sites) + letter-spacing 9 values (202 sites) | Adopt PRIOR-ART named ladder (map 9→10 nano, keep 10/11/12/13/14; 15→14; tracking → 3 steps) via contact-sheet review — executed in the preset-tune session, decided now | APPROVED — ladder locked, lands with preset session |
-| B4 | Radius conflict (`--radius-lg/xl` = 0px vs stock 2xl/3xl) | Defer to preset session — it's a brand question. Candidate: PRIOR-ART monotonic 6/8/10/14/16 | PENDING |
-| B5 | Chart palette vs canonical status hues (ActivityCharts in_progress = violet, elsewhere blue) | Re-point charts at `--status-task-*` (operator learns one vocabulary — DESIGN.md P5). Visible change → contact sheet | PENDING |
+| B4 | Radius conflict (`--radius-lg/xl` = 0px vs stock 2xl/3xl) | Defer to preset session — it's a brand question. Candidate: PRIOR-ART monotonic 6/8/10/14/16 | DEFERRED to preset session |
+| B5 | Chart palette vs canonical status hues (ActivityCharts in_progress = violet, elsewhere blue) | Re-point charts at `--status-task-*` (operator learns one vocabulary — DESIGN.md P5). Visible change → contact sheet | APPROVED pending contact-sheet review — code staged on its own commit, visual diffs exported for user review, snapshots NOT re-baselined |
 
 ## C. Component calls (from COMPONENT-INVENTORY.md §6)
 
 | # | Decision | Recommendation | Status |
 |---|---|---|---|
-| C1 | ChatComposer vs MarkdownEditor split | Keep split; document as deliberate in COMPONENT-INVENTORY | PENDING |
-| C2 | FileTree vs WorkspaceFileBrowser parallel tree models | Investigate data-shape needs in Run 3; refactor onto FileTree only if shapes align | PENDING |
-| C3 | Entity-picker family (4 components) | Prop-by-prop diff as Run 3 prep task; no merge without it | PENDING |
-| C4 | Finance card family (5 components) | Keep; revisit only if a 6th appears | PENDING |
-| C5 | Hand-rolled cards (~26 files) → `Card`; pills (~34 files) → `Badge` | Run 3 shadcn-swap list, per-site snapshot verification | PENDING |
-| C6 | `plugins/launchers.tsx` overlay | Dedicated review task; exclude from Run 3 | PENDING |
-| C7 | radio-card / toggle-switch custom primitives | Document as deliberate custom; skip swaps | PENDING |
-| C8 | StatusBadge not wrapping Badge primitive | Document as intentional exception (WCAG-tuned .status-chip mechanic) | PENDING |
-| C9 | Toast system (no shadcn primitive installed) | Keep custom toast; document as permanent choice (working tone/variant system; sonner migration = churn without user-visible gain) | PENDING |
-| C10 | FeatureGate wrapper pattern (3 near-identical gates) | Nice-to-have shared primitive; backlog, not a run | PENDING |
+| C1 | ChatComposer vs MarkdownEditor split | Keep split; document as deliberate in COMPONENT-INVENTORY | APPROVED — keep split, documented deliberate (user re-confirmed after visual review) |
+| C2 | FileTree vs WorkspaceFileBrowser parallel tree models | Investigate data-shape needs in Run 3; refactor onto FileTree only if shapes align | APPROVED — investigate data-shape needs in Run 3 prep |
+| C3 | Entity-picker family (4 components) | Prop-by-prop diff as Run 3 prep task; no merge without it | APPROVED — prop-by-prop diff as Run 3 prep task; no merge without it |
+| C4 | Finance card family (5 components) | Keep; revisit only if a 6th appears | APPROVED — keep all five; revisit only if a 6th appears |
+| C5 | Hand-rolled cards (~26 files) → `Card`; pills (~34 files) → `Badge` | Run 3 shadcn-swap list, per-site snapshot verification | APPROVED — queued Run 3 shadcn-swap list, per-site snapshot verification |
+| C6 | `plugins/launchers.tsx` overlay | Dedicated review task; exclude from Run 3 | APPROVED — dedicated review task, excluded from Run 3 |
+| C7 | radio-card / toggle-switch custom primitives | Document as deliberate custom; skip swaps | APPROVED — documented as deliberate custom; skip swaps |
+| C8 | StatusBadge not wrapping Badge primitive | Document as intentional exception (WCAG-tuned .status-chip mechanic) | APPROVED — documented as intentional exception (WCAG-tuned .status-chip mechanic) |
+| C9 | Toast system (no shadcn primitive installed) | Keep custom toast; document as permanent choice (working tone/variant system; sonner migration = churn without user-visible gain) | DEFERRED to Run 4 — decide when toast palette colors get retokenized; sonner-behind-a-pushToast-facade is the alternative to evaluate |
+| C10 | FeatureGate wrapper pattern (3 near-identical gates) | Nice-to-have shared primitive; backlog, not a run | APPROVED — backlog nice-to-have, not a run |
 
 ## Verification status (this review)
 
