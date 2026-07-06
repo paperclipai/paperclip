@@ -402,6 +402,22 @@ export interface PluginUiSlotDeclaration {
    * Defaults to host-defined ordering if omitted.
    */
   order?: number;
+  /**
+   * When `true`, the host only mounts this slot (sidebar entry, page route, …)
+   * for a user who is an admin of the active company, resolved by calling the
+   * data handler this slot names in `adminGateHandler` with the active `companyId`.
+   * The check re-runs whenever the active company changes, so visibility tracks
+   * the per-company admin grant. Defaults to `false` (visible to any
+   * authenticated company member).
+   */
+  requiresAdmin?: boolean;
+  /**
+   * Name of the plugin data handler the host calls to resolve the admin gate.
+   * Must return `{ isAdmin: boolean }`. REQUIRED when `requiresAdmin` is
+   * `true`; a gated slot without it resolves fail-closed (hidden) and the
+   * manifest validator rejects it at install time.
+   */
+  adminGateHandler?: string;
 }
 
 /**
@@ -476,6 +492,34 @@ export interface PluginLauncherDeclaration {
  * the declared minimum.
  */
 export type PluginMinimumHostVersion = string;
+
+/**
+ * The minimal manifest shape needed to resolve the compatibility floor.
+ * Accepting this structural subset (instead of the full manifest) lets the
+ * resolver run against partially-parsed manifests and keeps it dependency-free.
+ */
+export interface PluginMinimumHostVersionSource {
+  /** Preferred generic minimum host version field. */
+  minimumHostVersion?: PluginMinimumHostVersion;
+  /** Legacy alias of `minimumHostVersion`. */
+  minimumPaperclipVersion?: PluginMinimumHostVersion;
+}
+
+/**
+ * Resolve the effective minimum host version a manifest gates compatibility on.
+ *
+ * A manifest may declare either the preferred `minimumHostVersion` field or its
+ * legacy alias `minimumPaperclipVersion`. This is the single canonical place
+ * the host reads that contract from: `minimumHostVersion` wins,
+ * falling back to `minimumPaperclipVersion`, and `undefined` when neither is
+ * declared (meaning "no lower bound — compatible with any host"). The host
+ * loader compares its running version against this value to gate install.
+ */
+export function resolvePluginMinimumHostVersion(
+  manifest: PluginMinimumHostVersionSource,
+): PluginMinimumHostVersion | undefined {
+  return manifest.minimumHostVersion ?? manifest.minimumPaperclipVersion;
+}
 
 /**
  * Groups plugin UI declarations that are served from the shared UI bundle

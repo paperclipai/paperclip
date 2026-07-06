@@ -831,4 +831,94 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "git_branch_delete",
     ]));
   }, 20_000);
+
+  it("forces a stable C locale in the environment of every git invocation", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+
+    // A fake `git` first on PATH records the locale environment runGit spawns
+    // it with. Close-readiness inspection (and other callers that parse git's
+    // human-readable output) only works when the child process runs under the
+    // C locale, no matter what locale the host server itself runs under.
+    const shimDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-shim-"));
+    tempDirs.add(shimDir);
+    await fs.writeFile(
+      path.join(shimDir, "git"),
+      [
+        "#!/bin/sh",
+        "# argv: -C <cwd> <subcommand ...>",
+        "shift 2",
+        'if [ "$1" = "rev-parse" ] && [ "$2" = "--show-toplevel" ]; then',
+        "  printf 'locale-probe LC_ALL=%s LANG=%s LANGUAGE=%s\\n' \"$LC_ALL\" \"$LANG\" \"$LANGUAGE\"",
+        "fi",
+        "exit 0",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspaces",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "git_repo",
+      isPrimary: true,
+      cwd: repoRoot,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Shared workspace",
+      status: "active",
+      providerType: "local_fs",
+      cwd: repoRoot,
+      branchName: "main",
+    });
+
+    const savedEnv: Record<string, string | undefined> = {
+      PATH: process.env.PATH,
+      LC_ALL: process.env.LC_ALL,
+      LANG: process.env.LANG,
+      LANGUAGE: process.env.LANGUAGE,
+    };
+    process.env.PATH = `${shimDir}${path.delimiter}${savedEnv.PATH ?? ""}`;
+    // Simulate a non-English host locale: without the LC_ALL=C override the
+    // spawned git would inherit it and emit translated, unparseable output.
+    process.env.LC_ALL = "es_ES.UTF-8";
+    process.env.LANG = "es_ES.UTF-8";
+    process.env.LANGUAGE = "es_ES";
+    try {
+      const readiness = await svc.getCloseReadiness(executionWorkspaceId);
+      expect(readiness?.git?.repoRoot).toBe("locale-probe LC_ALL=C LANG=C LANGUAGE=C");
+    } finally {
+      for (const [key, value] of Object.entries(savedEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }, 20_000);
 });

@@ -915,6 +915,7 @@ export type {
   PluginLauncherRenderContextSnapshot,
   PluginLauncherDeclaration,
   PluginMinimumHostVersion,
+  PluginMinimumHostVersionSource,
   PluginUiDeclaration,
   PluginDatabaseDeclaration,
   PluginApiRouteCompanyResolution,
@@ -936,7 +937,7 @@ export type {
   QuotaWindow,
   ProviderQuotaResult,
 } from "./types/index.js";
-export { COMPANY_SEARCH_SCOPES } from "./types/index.js";
+export { COMPANY_SEARCH_SCOPES, resolvePluginMinimumHostVersion } from "./types/index.js";
 export {
   ISSUE_REFERENCE_IDENTIFIER_RE,
   buildIssueReferenceHref,

@@ -96,6 +96,34 @@ export function PluginPage() {
     [resolvedCompanyId, companyPrefix],
   );
 
+  // Defense-in-depth: an admin-gated page route is mounted ONLY for an admin
+  // of the active company. The plugin's authoritative manifest-declared
+  // `adminGateHandler` is consulted (server-resolved, never a client claim),
+  // scoped by `companyId` so the check re-runs on company switch. Fail-closed
+  // while pending / on error.
+  const pageRequiresAdmin = pageSlot?.requiresAdmin === true;
+  const pageAdminGateHandler = pageSlot?.adminGateHandler ?? null;
+  const { data: pageAdmin, isLoading: pageAdminLoading } = useQuery({
+    queryKey: queryKeys.plugins.adminVisibility(pageSlot?.pluginId ?? "none", resolvedCompanyId ?? null),
+    enabled: pageRequiresAdmin && !!pageSlot && !!resolvedCompanyId,
+    queryFn: async () => {
+      // Fail-closed: a gated page whose manifest names no handler never mounts.
+      if (!pageSlot || !pageAdminGateHandler) return { isAdmin: false };
+      try {
+        const response = await pluginsApi.bridgeGetData(
+          pageSlot.pluginId,
+          pageAdminGateHandler,
+          undefined,
+          resolvedCompanyId ?? null,
+        );
+        const payload = response?.data as { isAdmin?: boolean } | null | undefined;
+        return { isAdmin: payload?.isAdmin === true };
+      } catch {
+        return { isAdmin: false };
+      }
+    },
+  });
+
   // When the active route has a routeSidebar slot, the sidebar provides the
   // back affordance, but the top bar still needs a route-specific title.
   const routeSidebarActive = useMemo(() => {
@@ -161,6 +189,17 @@ export function PluginPage() {
       ? `/company/settings/instance/plugins/${pluginId}`
       : "/company/settings/instance/plugins";
     return <Navigate to={settingsPath} replace />;
+  }
+
+  // Host-side admin gate for the full-page route: never mount
+  // the page UI for a non-admin (the plugin's in-page banner is a second gate).
+  if (pageRequiresAdmin) {
+    if (pageAdminLoading) {
+      return <div className="text-sm text-muted-foreground">Loading…</div>;
+    }
+    if (pageAdmin?.isAdmin !== true) {
+      return <NotFoundPage scope="board" />;
+    }
   }
 
   return (

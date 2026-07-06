@@ -73,7 +73,13 @@ async function pathExists(value: string | null | undefined) {
 }
 
 async function runGit(args: string[], cwd: string) {
-  return await execFileAsync("git", ["-C", cwd, ...args], { cwd });
+  // Force a stable C/English locale so git's human-readable output is parseable
+  // regardless of the host's system language (Spanish/other would break callers
+  // that match English git messages).
+  return await execFileAsync("git", ["-C", cwd, ...args], {
+    cwd,
+    env: { ...process.env, LC_ALL: "C", LANG: "C", LANGUAGE: "C" },
+  });
 }
 
 async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<{

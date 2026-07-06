@@ -330,6 +330,12 @@ export const pluginUiSlotDeclarationSchema = z.object({
     message: "routePath must be a lowercase single-segment slug (letters, numbers, hyphens)",
   }).optional(),
   order: z.number().int().optional(),
+  // Admin-gated slots. Declared here as well as on the TS type: z.object()
+  // strips unknown keys, so omitting them from the schema would silently
+  // drop the admin gate from any code path persisting the parsed manifest.
+  // `adminGateHandler` names the plugin data handler of the gate.
+  requiresAdmin: z.boolean().optional(),
+  adminGateHandler: z.string().min(1).optional(),
 }).superRefine((value, ctx) => {
   // context-sensitive slots require explicit entity targeting.
   const entityScopedTypes = ["detailTab", "taskDetailView", "contextMenuItem", "commentAnnotation", "commentContextMenuItem", "projectSidebarItem"];
@@ -404,6 +410,14 @@ export const pluginUiSlotDeclarationSchema = z.object({
       code: z.ZodIssueCode.custom,
       message: `company settings routePath "${value.routePath}" is reserved by the host`,
       path: ["routePath"],
+    });
+  }
+  if (value.requiresAdmin === true && !value.adminGateHandler) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "requiresAdmin slots must declare adminGateHandler (the plugin data handler that resolves the admin gate)",
+      path: ["adminGateHandler"],
     });
   }
 });

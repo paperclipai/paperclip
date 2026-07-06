@@ -299,6 +299,8 @@ export const queryKeys = {
       ["plugins", pluginId, "companies", companyId, "local-folders"] as const,
     dashboard: (pluginId: string) => ["plugins", pluginId, "dashboard"] as const,
     logs: (pluginId: string) => ["plugins", pluginId, "logs"] as const,
+    adminVisibility: (pluginId: string, companyId: string | null) =>
+      ["plugins", pluginId, "admin-visibility", companyId ?? "none"] as const,
   },
   adapters: {
     all: ["adapters"] as const,

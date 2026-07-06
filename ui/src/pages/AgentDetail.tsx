@@ -25,6 +25,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { resolveSkillSummaryText } from "../lib/company-skill-summary";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { PluginSlotMount, usePluginSlots } from "../plugins/slots";
 import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -251,7 +252,7 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget";
+type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget" | string;
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "instructions" || value === "prompts") return "instructions";
@@ -259,6 +260,8 @@ function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "skills") return "skills";
   if (value === "budget") return "budget";
   if (value === "runs") return value;
+  // Allow plugin tab values (e.g., "plugin:acme.tools:agent-insights")
+  if (value && value.startsWith("plugin:")) return value;
   return "dashboard";
 }
 
@@ -678,6 +681,22 @@ export function AgentDetail() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
   const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
+  // Plugin-contributed agent detail tabs (detailTab slots, entityType "agent").
+  const { slots: agentPluginDetailSlots } = usePluginSlots({
+    slotTypes: ["detailTab"],
+    entityType: "agent",
+    companyId: selectedCompanyId ?? undefined,
+    enabled: !!selectedCompanyId,
+  });
+  const agentPluginTabItems = useMemo(
+    () => agentPluginDetailSlots.map((slot) => ({
+      value: `plugin:${slot.pluginKey}:${slot.id}`,
+      label: slot.displayName,
+      slot,
+    })),
+    [agentPluginDetailSlots],
+  );
+  const activeAgentPluginTab = agentPluginTabItems.find((item) => item.value === activeView) ?? null;
   const needsDashboardData = activeView === "dashboard";
   const needsRunData = activeView === "runs" || Boolean(urlRunId);
   const shouldLoadHeartbeats = needsDashboardData || needsRunData;
@@ -803,7 +822,12 @@ export function AgentDetail() {
               ? "runs"
               : activeView === "budget"
                 ? "budget"
-              : "dashboard";
+                // Plugin tabs (e.g. "plugin:acme.tools:agent-insights") are
+                // first-class tab values — preserve them so users navigating
+                // to a plugin slot URL don't get stranded back on dashboard.
+                : typeof activeView === "string" && activeView.startsWith("plugin:")
+                  ? activeView
+                  : "dashboard";
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
       return;
@@ -910,6 +934,8 @@ export function AgentDetail() {
         crumbs.push({ label: "Runs" });
       } else if (activeView === "budget") {
         crumbs.push({ label: "Budget" });
+      } else if (activeAgentPluginTab) {
+        crumbs.push({ label: activeAgentPluginTab.label });
       } else {
         crumbs.push({ label: "Dashboard" });
       }
@@ -1069,6 +1095,7 @@ export function AgentDetail() {
               { value: "configuration", label: "Configuration" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
+              ...agentPluginTabItems,
             ]}
             value={activeView}
             onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
@@ -1206,6 +1233,19 @@ export function AgentDetail() {
           />
         </div>
       ) : null}
+
+      {/* Plugin-contributed agent detail tabs */}
+      {activeAgentPluginTab && agent && (
+        <PluginSlotMount
+          slot={activeAgentPluginTab.slot}
+          context={{
+            companyId: agent.companyId,
+            entityId: agent.id,
+            entityType: "agent",
+          }}
+          missingBehavior="placeholder"
+        />
+      )}
     </div>
   );
 }

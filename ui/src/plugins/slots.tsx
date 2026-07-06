@@ -113,6 +113,66 @@ type SlotFilters = {
   enabled?: boolean;
 };
 
+/**
+ * Resolve, per plugin that declares any `requiresAdmin` slot, whether the
+ * current user is an admin of the active company. Each plugin's authoritative
+ * manifest-declared `adminGateHandler` is called (server-resolved — never a
+ * client claim) scoped by `companyId`. The query is
+ * keyed by `companyId`, so toggling the active company re-runs the check and
+ * the resolved visibility flips accordingly.
+ *
+ * Returns a map `pluginId -> isAdmin`. A plugin absent from the map (or mapped
+ * to `false`) has its admin-gated slots hidden. Defaults to hidden while the
+ * check is pending or on error — fail-closed, never leaking an admin surface.
+ */
+function usePluginAdminVisibility(
+  adminGatedPlugins: ReadonlyMap<string, string>, // pluginId -> manifest adminGateHandler
+  companyId: string | null | undefined,
+): Map<string, boolean> {
+  const pluginIdsKey = useMemo(
+    () =>
+      [...adminGatedPlugins.entries()]
+        .map(([pluginId, handler]) => `${pluginId}:${handler}`)
+        .sort()
+        .join("|"),
+    [adminGatedPlugins],
+  );
+  const scopedCompanyId = companyId ?? null;
+
+  const { data } = useQuery({
+    queryKey: queryKeys.plugins.adminVisibility(pluginIdsKey || "none", scopedCompanyId),
+    enabled: pluginIdsKey.length > 0 && !!scopedCompanyId,
+    queryFn: async () => {
+      const results = await Promise.all(
+        [...adminGatedPlugins.entries()].map(async ([pluginId, adminGateHandler]) => {
+          try {
+            const response = await pluginsApi.bridgeGetData(
+              pluginId,
+              adminGateHandler,
+              undefined,
+              scopedCompanyId,
+            );
+            const payload = response?.data as { isAdmin?: boolean } | null | undefined;
+            return [pluginId, payload?.isAdmin === true] as const;
+          } catch {
+            // Fail-closed: a failed admin check hides the gated surface.
+            return [pluginId, false] as const;
+          }
+        }),
+      );
+      return Object.fromEntries(results) as Record<string, boolean>;
+    },
+  });
+
+  return useMemo(() => {
+    const map = new Map<string, boolean>();
+    for (const [pluginId, isAdmin] of Object.entries(data ?? {})) {
+      map.set(pluginId, isAdmin === true);
+    }
+    return map;
+  }, [data]);
+}
+
 type UsePluginSlotsResult = {
   slots: ResolvedPluginSlot[];
   isLoading: boolean;
@@ -651,7 +711,7 @@ export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
 
   const slotTypesKey = useMemo(() => [...filters.slotTypes].sort().join("|"), [filters.slotTypes]);
 
-  const slots = useMemo(() => {
+  const candidateSlots = useMemo(() => {
     const allowedTypes = new Set(slotTypesKey.split("|").filter(Boolean) as PluginUiSlotType[]);
     const rows: ResolvedPluginSlot[] = [];
     for (const contribution of data ?? []) {
@@ -680,6 +740,33 @@ export function usePluginSlots(filters: SlotFilters): UsePluginSlotsResult {
     });
     return rows;
   }, [data, filters.entityType, slotTypesKey]);
+
+  // Plugins declaring admin-gated slots, keyed to the data handler their
+  // MANIFEST names (slot.adminGateHandler). A gated slot without a declared
+  // handler is never queried and stays hidden (fail-closed).
+  const adminGatedPlugins = useMemo(() => {
+    const handlers = new Map<string, string>();
+    for (const slot of candidateSlots) {
+      if (slot.requiresAdmin === true && slot.adminGateHandler) {
+        handlers.set(slot.pluginId, slot.adminGateHandler);
+      }
+    }
+    return handlers;
+  }, [candidateSlots]);
+
+  const adminVisibility = usePluginAdminVisibility(adminGatedPlugins, filters.companyId);
+
+  // Drop admin-gated slots whose plugin did not resolve the current user as an
+  // admin of the active company. Non-gated slots pass through unchanged. The
+  // drop re-evaluates on company switch because `adminVisibility` is keyed by
+  // `companyId`.
+  const slots = useMemo(
+    () =>
+      candidateSlots.filter((slot) =>
+        slot.requiresAdmin === true ? adminVisibility.get(slot.pluginId) === true : true,
+      ),
+    [candidateSlots, adminVisibility],
+  );
 
   // Consider loading until both query and module imports are done.
   const modulesLoaded = data ? aggregateLoadState(data) === "loaded" : true;

@@ -38,6 +38,7 @@ import type {
   PluginRecord,
   PluginUiSlotDeclaration,
 } from "@paperclipai/shared";
+import { resolvePluginMinimumHostVersion } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { pluginManifestValidator } from "./plugin-manifest-validator.js";
 import { pluginCapabilityValidator } from "./plugin-capability-validator.js";
@@ -976,9 +977,11 @@ function compareSemver(left: string, right: string): number {
   return 0;
 }
 
-function getMinimumHostVersion(manifest: PaperclipPluginManifestV1): string | undefined {
-  return manifest.minimumHostVersion ?? manifest.minimumPaperclipVersion;
-}
+// The effective compatibility floor is resolved by the canonical shared helper
+// `resolvePluginMinimumHostVersion`, which owns the `minimumHostVersion ??
+// minimumPaperclipVersion` precedence declared on the manifest type.
+// Aliased here to keep the call site below unchanged.
+const getMinimumHostVersion = resolvePluginMinimumHostVersion;
 
 /**
  * Extract UI contribution metadata from a manifest for route serialization.

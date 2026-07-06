@@ -245,4 +245,39 @@ describe("plugin UI slot validators", () => {
     if (parsed.success) return;
     expect(parsed.error.issues.some((issue) => issue.message.includes("reserved by the host"))).toBe(true);
   });
+
+  // The schema must KNOW `requiresAdmin` and `adminGateHandler` (z.object()
+  // drops unknown keys, so any route persisting the parsed manifest would
+  // silently lose an admin gate). This round-trip preserves both.
+  it("accepts an admin-gated slot and preserves requiresAdmin + adminGateHandler", () => {
+    const parsed = pluginUiSlotDeclarationSchema.parse({
+      type: "sidebar",
+      id: "admin-tools-sidebar",
+      displayName: "Admin Tools",
+      exportName: "AdminToolsSidebar",
+      requiresAdmin: true,
+      adminGateHandler: "isCompanyAdmin",
+    });
+
+    expect(parsed.requiresAdmin).toBe(true);
+    expect(parsed.adminGateHandler).toBe("isCompanyAdmin");
+  });
+
+  it("rejects a requiresAdmin slot that omits adminGateHandler (fail-closed at install time)", () => {
+    const parsed = pluginUiSlotDeclarationSchema.safeParse({
+      type: "sidebar",
+      id: "admin-tools-sidebar",
+      displayName: "Admin Tools",
+      exportName: "AdminToolsSidebar",
+      requiresAdmin: true,
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(
+      parsed.error.issues.some((issue) =>
+        issue.message.includes("requiresAdmin slots must declare adminGateHandler"),
+      ),
+    ).toBe(true);
+  });
 });

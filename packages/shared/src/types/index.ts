@@ -585,6 +585,7 @@ export type {
   PluginLauncherRenderContextSnapshot,
   PluginLauncherDeclaration,
   PluginMinimumHostVersion,
+  PluginMinimumHostVersionSource,
   PluginUiDeclaration,
   PluginDatabaseDeclaration,
   PluginApiRouteCompanyResolution,
@@ -608,3 +609,4 @@ export type {
   PluginDatabaseNamespaceMode,
   PluginDatabaseNamespaceStatus,
 } from "./plugin.js";
+export { resolvePluginMinimumHostVersion } from "./plugin.js";
