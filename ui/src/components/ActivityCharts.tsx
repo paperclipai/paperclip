@@ -174,13 +174,20 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
   );
 }
 
+// DECISION-SHEET.md B5: chart status colors re-pointed at the canonical
+// --status-task-* system (DESIGN.md principle 5 — an operator learns one
+// status vocabulary; badge, row, chart, and log agree). Previously an
+// independent palette (todo blue, in_progress violet, etc.). `backlog`
+// deliberately keeps --project-none (pre-B5, per user ruling); the
+// priority series and success-rate tints below are not status hues and
+// are left alone.
 const statusColors: Record<string, string> = {
-  todo: "var(--hex-3b82f6)",
-  in_progress: "var(--hex-8b5cf6)",
-  in_review: "var(--hex-a855f7)",
-  done: "var(--hex-10b981)",
-  blocked: "var(--hex-ef4444)",
-  cancelled: "var(--hex-6b7280)",
+  todo: "var(--status-task-todo)",
+  in_progress: "var(--status-task-in_progress)",
+  in_review: "var(--status-task-in_review)",
+  done: "var(--status-task-done)",
+  blocked: "var(--status-task-blocked)",
+  cancelled: "var(--status-task-cancelled)",
   backlog: "var(--project-none)",
 };
 
