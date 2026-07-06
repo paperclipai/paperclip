@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mergeActorContext } from "../routes/plugin-actor-context.js";
 
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -45,10 +46,12 @@ async function createApp(
     captureJsonContext?: (context: unknown, body: unknown) => void;
   } = {},
 ) {
-  const [{ pluginRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/plugins.js"),
-    import("../middleware/index.js"),
-  ]);
+  // Import sequentially rather than via Promise.all: plugins.js pulls in a large
+  // dependency graph, and initializing it concurrently with middleware (which shares
+  // deep dependencies) intermittently deadlocked the first createApp() call in this
+  // file under the serialized regression. Sequential ESM init is deterministic.
+  const { pluginRoutes } = await import("../routes/plugins.js");
+  const { errorHandler } = await import("../middleware/index.js");
 
   const loader = {
     installPlugin: vi.fn(),
@@ -425,6 +428,111 @@ describe.sequential("scoped plugin API routes", () => {
       }),
     );
   }, 20_000);
+
+  function readyUserAuthRoutePlugin() {
+    const pluginId = "11111111-1111-4111-8111-111111111111";
+    mockRegistry.getById.mockResolvedValue(null);
+    mockRegistry.getByKey.mockResolvedValue({
+      id: pluginId,
+      pluginKey: "paperclip.example",
+      version: "1.0.0",
+      status: "ready",
+      manifestJson: {
+        id: "paperclip.example",
+        capabilities: ["api.routes.register"],
+        apiRoutes: [
+          {
+            routeKey: "self-feed",
+            method: "GET",
+            path: "/self-feed",
+            auth: "user",
+            capability: "api.routes.register",
+            companyResolution: { from: "query", key: "companyId" },
+          },
+        ],
+      },
+    });
+    return pluginId;
+  }
+
+  it("allows any authenticated board user on user-auth scoped routes", async () => {
+    const pluginId = readyUserAuthRoutePlugin();
+    const workerManager = {
+      call: vi.fn().mockResolvedValue({ status: 200, body: { ok: true } }),
+    };
+    const { app } = await createApp(
+      boardActor({ companyIds: ["company-1"] }),
+      {},
+      { bridgeDeps: { workerManager } },
+    );
+
+    const res = await request(app)
+      .get("/api/plugins/paperclip.example/api/self-feed")
+      .query({ companyId: "company-1" });
+
+    expect(res.status).toBe(200);
+    expect(workerManager.call).toHaveBeenCalledWith(
+      pluginId,
+      "handleApiRequest",
+      expect.objectContaining({ routeKey: "self-feed" }),
+    );
+  }, 20_000);
+
+  it("rejects agent actors on user-auth scoped routes before worker dispatch", async () => {
+    readyUserAuthRoutePlugin();
+    const workerManager = { call: vi.fn() };
+    const { app } = await createApp(agentActor(), {}, { bridgeDeps: { workerManager } });
+
+    const res = await request(app)
+      .get("/api/plugins/paperclip.example/api/self-feed")
+      .query({ companyId: companyA });
+
+    expect(res.status).toBe(403);
+    expect(workerManager.call).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("rejects anonymous actors on user-auth scoped routes before worker dispatch", async () => {
+    readyUserAuthRoutePlugin();
+    const workerManager = { call: vi.fn() };
+    const { app } = await createApp(
+      { type: "none", source: "none" },
+      {},
+      { bridgeDeps: { workerManager } },
+    );
+
+    const res = await request(app)
+      .get("/api/plugins/paperclip.example/api/self-feed")
+      .query({ companyId: "company-1" });
+
+    expect(res.status).toBe(401);
+    expect(workerManager.call).not.toHaveBeenCalled();
+  }, 20_000);
+});
+
+describe("mergeActorContext boundary", () => {
+  it("strips client-supplied identity keys and injects the authenticated actor", () => {
+    const merged = mergeActorContext(
+      { userId: "spoofed", user_id: "also-spoofed", view: "compact" },
+      { type: "board", userId: "user-1", isInstanceAdmin: true },
+      companyA,
+    );
+
+    expect(merged).toEqual({
+      view: "compact",
+      __actor: {
+        userId: "user-1",
+        isInstanceAdmin: true,
+        type: "board",
+        companyId: companyA,
+      },
+    });
+  });
+
+  it("defaults to a null/none actor when no authenticated actor is present", () => {
+    expect(mergeActorContext(undefined, null)).toEqual({
+      __actor: { userId: null, isInstanceAdmin: false, type: "none", companyId: null },
+    });
+  });
 });
 
 describe.sequential("plugin local folder routes", () => {
@@ -660,10 +768,11 @@ describe.sequential("plugin tool and bridge authz", () => {
       .send({ companyId: companyA, params: { view: "compact" } });
 
     expect(res.status).toBe(200);
+    // objectContaining: the host also injects the reserved `__actor` envelope.
     expect(call).toHaveBeenCalledWith(pluginId, "getData", {
       key: "health",
       companyId: companyA,
-      params: { view: "compact" },
+      params: expect.objectContaining({ view: "compact" }),
       renderEnvironment: null,
     });
   });
@@ -686,9 +795,15 @@ describe.sequential("plugin tool and bridge authz", () => {
       .send({});
 
     expect(res.status).toBe(200);
+    // The host forwards the authenticated actor under the reserved `__actor` key so a
+    // plugin worker can perform RBAC against the REAL caller (the instance-admin
+    // governs the control plane). The action params therefore carry `__actor` in
+    // addition to any client params.
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key: "sync",
-      params: {},
+      params: expect.objectContaining({
+        __actor: expect.objectContaining({ userId: "admin-1", isInstanceAdmin: true }),
+      }),
       actorContext: {
         type: "user",
         userId: "admin-1",
@@ -720,12 +835,21 @@ describe.sequential("plugin tool and bridge authz", () => {
       });
 
     expect(res.status).toBe(200);
+    // Params use objectContaining because the host ALSO injects the
+    // server-authenticated `__actor` envelope; the spoofed-company override
+    // (companyId: companyA, not companyB) and the first-class actorContext
+    // channel are still asserted verbatim. `__actor.companyId` must be the
+    // VERIFIED company (companyA), never the client-claimed one.
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key: "sync",
-      params: {
+      params: expect.objectContaining({
         companyId: companyA,
         reviewerUserId: "spoofed-user",
-      },
+        __actor: expect.objectContaining({
+          userId: "user-1",
+          companyId: companyA,
+        }),
+      }),
       actorContext: {
         type: "user",
         userId: "user-1",
@@ -780,12 +904,13 @@ describe.sequential("plugin tool and bridge authz", () => {
       });
 
     expect(res.status).toBe(200);
+    // objectContaining: the host also injects the reserved `__actor` envelope.
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key: "sync",
-      params: {
+      params: expect.objectContaining({
         companyId: companyA,
         reviewerAgentId: "spoofed-agent",
-      },
+      }),
       actorContext: {
         type: "agent",
         userId: null,
@@ -809,12 +934,13 @@ describe.sequential("plugin tool and bridge authz", () => {
       });
 
     expect(legacyRes.status).toBe(200);
+    // objectContaining: the host also injects the reserved `__actor` envelope.
     expect(call).toHaveBeenCalledWith(pluginId, "performAction", {
       key: "sync",
-      params: {
+      params: expect.objectContaining({
         companyId: companyA,
         reviewerAgentId: "spoofed-agent",
-      },
+      }),
       actorContext: {
         type: "agent",
         userId: null,
@@ -875,6 +1001,43 @@ describe.sequential("plugin tool and bridge authz", () => {
         bridgeCode: "UNKNOWN",
       },
     });
+  });
+
+  it("maps worker RBAC denials to 403 instead of 502 on bridge action errors", async () => {
+    readyPlugin();
+    const call = vi.fn().mockRejectedValue(
+      new Error("FORBIDDEN_NOT_ADMIN: administrator privileges required"),
+    );
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/actions/sync`)
+      .send({ companyId: companyA });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      message: "FORBIDDEN_NOT_ADMIN: administrator privileges required",
+    });
+  });
+
+  it("maps worker RBAC denials to 403 instead of 502 on bridge data errors", async () => {
+    readyPlugin();
+    const call = vi.fn().mockRejectedValue(new Error("caller is not authorized to read this feed"));
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/data/health`)
+      .send({ companyId: companyA });
+
+    expect(res.status).toBe(403);
   });
 
   it("rejects manual job triggers for non-admin board users", async () => {

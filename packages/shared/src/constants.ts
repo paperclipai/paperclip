@@ -1035,7 +1035,7 @@ export type PluginDatabaseCoreReadTable = (typeof PLUGIN_DATABASE_CORE_READ_TABL
 export const PLUGIN_API_ROUTE_METHODS = ["GET", "POST", "PATCH", "DELETE"] as const;
 export type PluginApiRouteMethod = (typeof PLUGIN_API_ROUTE_METHODS)[number];
 
-export const PLUGIN_API_ROUTE_AUTH_MODES = ["board", "agent", "board-or-agent", "webhook"] as const;
+export const PLUGIN_API_ROUTE_AUTH_MODES = ["board", "agent", "board-or-agent", "user", "webhook"] as const;
 export type PluginApiRouteAuthMode = (typeof PLUGIN_API_ROUTE_AUTH_MODES)[number];
 
 export const PLUGIN_API_ROUTE_CHECKOUT_POLICIES = [

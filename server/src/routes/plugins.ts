@@ -456,6 +456,19 @@ interface PluginToolExecuteRequest {
   runContext: ToolRunContext;
 }
 
+// The actor-context security boundary lives in a dependency-free sibling module so
+// it can be unit-tested in isolation (and imported by plugin worker tests that rely
+// on the strip) without pulling this Express route module's dependency graph. Both
+// symbols are re-exported here so existing importers of `./plugins` are unchanged.
+export {
+  mergeActorContext,
+  type ActorContextInput,
+} from "./plugin-actor-context.js";
+import {
+  mergeActorContext,
+  type ActorContextInput,
+} from "./plugin-actor-context.js";
+
 /**
  * Create Express router for plugin management API.
  *
@@ -615,6 +628,11 @@ export function pluginRoutes(
     if (route.auth === "agent") {
       assertAuthenticated(req);
       if (req.actor.type !== "agent") throw forbidden("Agent access required");
+      return;
+    }
+    if (route.auth === "user") {
+      assertAuthenticated(req);
+      if (req.actor.type !== "board") throw forbidden("User access required");
       return;
     }
     if (route.auth === "webhook") {
@@ -1231,6 +1249,25 @@ export function pluginRoutes(
   }
 
   /**
+   * RBAC denials a plugin worker raises (e.g. a non-admin POSTing an admin-gated
+   * action past the UI) are authorization failures, not bad-gateway/worker faults:
+   * surface them as HTTP 403 (not 502) so a UI/client sees a forbidden response and
+   * the worker's structured FORBIDDEN code reaches the body. Detected by the
+   * forbidden markers a worker RBAC error carries in its message (the worker→host
+   * JSON-RPC boundary propagates only the message string).
+   */
+  function isForbiddenBridgeError(bridgeError: PluginBridgeErrorResponse): boolean {
+    return /FORBIDDEN_NOT_ADMIN|\bFORBIDDEN\b|not authorized|forbidden/i.test(
+      bridgeError.message ?? "",
+    );
+  }
+
+  /** HTTP status for a worker bridge error: 403 for RBAC denials, else 502. */
+  function statusForBridgeError(bridgeError: PluginBridgeErrorResponse): number {
+    return isForbiddenBridgeError(bridgeError) ? 403 : 502;
+  }
+
+  /**
    * POST /api/plugins/:pluginId/bridge/data
    *
    * Proxy a `getData` call from the plugin UI to the plugin worker.
@@ -1297,7 +1334,7 @@ export function pluginRoutes(
       return;
     }
 
-    const companyId = assertPluginBridgeScope(req, body.companyId);
+    const verifiedCompanyId = assertPluginBridgeScope(req, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1305,8 +1342,13 @@ export function pluginRoutes(
         "getData",
         {
           key: body.key,
-          ...(companyId ? { companyId } : {}),
-          params: body.params ?? {},
+          // existing top-level companyId (server-verified) for the worker-side scope
+          ...(verifiedCompanyId ? { companyId: verifiedCompanyId } : {}),
+          // Same self-only actor envelope as the URL-keyed /data/:key route: the
+          // legacy bridge route must NOT forward raw client params (which could
+          // carry a spoofed `userId`) — inject the server-authenticated identity
+          // and strip client identity keys.
+          params: withActorContext(body.params, req, verifiedCompanyId),
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
@@ -1319,7 +1361,7 @@ export function pluginRoutes(
         bridgeMethod: "getData",
         dataKey: body.key,
       });
-      res.status(502).json(bridgeError);
+      res.status(statusForBridgeError(bridgeError)).json(bridgeError);
     }
   });
 
@@ -1390,7 +1432,7 @@ export function pluginRoutes(
       return;
     }
 
-    const companyId = assertPluginBridgeScope(req, body.companyId);
+    const verifiedCompanyId = assertPluginBridgeScope(req, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1398,8 +1440,15 @@ export function pluginRoutes(
         "performAction",
         {
           key: body.key,
-          params: actionParamsWithAuthorizedCompanyScope(body.params, companyId),
-          actorContext: performActionActorContext(req, companyId),
+          // Combined: the authorized company scope in params + the typed
+          // actorContext channel, plus the server-authenticated __actor
+          // envelope (strips spoofable client identity keys).
+          params: withActorContext(
+            actionParamsWithAuthorizedCompanyScope(body.params, verifiedCompanyId),
+            req,
+            verifiedCompanyId,
+          ),
+          actorContext: performActionActorContext(req, verifiedCompanyId),
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
@@ -1412,13 +1461,32 @@ export function pluginRoutes(
         bridgeMethod: "performAction",
         actionKey: body.key,
       });
-      res.status(502).json(bridgeError);
+      res.status(statusForBridgeError(bridgeError)).json(bridgeError);
     }
   });
 
   // ===========================================================================
   // URL-keyed bridge routes (key as path parameter)
   // ===========================================================================
+
+  /**
+   * Merge the authenticated host actor's identity into the worker call params
+   * under the reserved `__actor` key so a plugin worker that performs RBAC can
+   * resolve the REAL caller (and honor the host instance-admin) instead of
+   * trusting a client-supplied flag. Additive and back-compatible: plugins that
+   * don't read `__actor` simply ignore it.
+   */
+  function withActorContext(
+    params: Record<string, unknown> | undefined,
+    req: Request,
+    companyId?: string,
+  ): Record<string, unknown> {
+    return mergeActorContext(
+      params,
+      req.actor as ActorContextInput,
+      companyId,
+    );
+  }
 
   /**
    * POST /api/plugins/:pluginId/data/:key
@@ -1484,7 +1552,7 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    const companyId = assertPluginBridgeScope(req, body?.companyId);
+    const verifiedCompanyId = assertPluginBridgeScope(req, body?.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1492,8 +1560,12 @@ export function pluginRoutes(
         "getData",
         {
           key,
-          ...(companyId ? { companyId } : {}),
-          params: body?.params ?? {},
+          // existing top-level companyId (server-verified) for the worker-side scope
+          ...(verifiedCompanyId ? { companyId: verifiedCompanyId } : {}),
+          // companyId comes from assertPluginBridgeScope's RETURN (server-verified via
+          // assertCompanyAccess), never the raw client field — so the trusted __actor
+          // envelope can never carry a spoofed company scope.
+          params: withActorContext(body?.params, req, verifiedCompanyId),
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );
@@ -1506,7 +1578,7 @@ export function pluginRoutes(
         bridgeMethod: "getData",
         dataKey: key,
       });
-      res.status(502).json(bridgeError);
+      res.status(statusForBridgeError(bridgeError)).json(bridgeError);
     }
   });
 
@@ -1574,7 +1646,7 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    const companyId = assertPluginBridgeScope(req, body?.companyId);
+    const verifiedCompanyId = assertPluginBridgeScope(req, body?.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1582,8 +1654,16 @@ export function pluginRoutes(
         "performAction",
         {
           key,
-          params: actionParamsWithAuthorizedCompanyScope(body?.params, companyId),
-          actorContext: performActionActorContext(req, companyId),
+          // Combined: the authorized company scope in params + the typed
+          // actorContext channel, plus the server-authenticated __actor
+          // envelope (companyId is assertPluginBridgeScope's server-verified RETURN,
+          // never the raw client field — no spoofed company scope possible).
+          params: withActorContext(
+            actionParamsWithAuthorizedCompanyScope(body?.params, verifiedCompanyId),
+            req,
+            verifiedCompanyId,
+          ),
+          actorContext: performActionActorContext(req, verifiedCompanyId),
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );
@@ -1596,7 +1676,7 @@ export function pluginRoutes(
         bridgeMethod: "performAction",
         actionKey: key,
       });
-      res.status(502).json(bridgeError);
+      res.status(statusForBridgeError(bridgeError)).json(bridgeError);
     }
   });
 
@@ -2349,7 +2429,7 @@ export function pluginRoutes(
 
       // Worker unavailable or other RPC errors
       const bridgeError = mapRpcErrorToBridgeError(err);
-      res.status(502).json(bridgeError);
+      res.status(statusForBridgeError(bridgeError)).json(bridgeError);
     }
   });
 
