@@ -3,6 +3,7 @@ import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
   createIssueSchema,
+  delegateIssueRecoveryActionSchema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
   respondIssueThreadInteractionSchema,
@@ -87,6 +88,26 @@ describe("issue validators", () => {
     expect(
       resolveIssueRecoveryActionSchema.safeParse({
         outcome: "false_positive",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts delegated recovery action requests for the CEO target", () => {
+    const actionId = "11111111-1111-4111-8111-111111111111";
+    expect(
+      delegateIssueRecoveryActionSchema.parse({
+        actionId,
+        target: "ceo",
+      }),
+    ).toEqual({
+      actionId,
+      target: "ceo",
+    });
+
+    expect(
+      delegateIssueRecoveryActionSchema.safeParse({
+        actionId,
+        target: "cto",
       }).success,
     ).toBe(false);
   });

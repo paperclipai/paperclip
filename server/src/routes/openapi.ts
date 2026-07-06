@@ -24,6 +24,7 @@ import {
   createIssueLabelSchema,
   addIssueCommentSchema,
   checkoutIssueSchema,
+  delegateIssueRecoveryActionSchema,
   linkIssueApprovalSchema,
   createIssueWorkProductSchema,
   updateIssueWorkProductSchema,
@@ -5811,6 +5812,14 @@ registerCurrentRoute({
   path: "/api/issues/{id}/recovery-actions",
   tags: ["issues"],
   summary: "List issue recovery actions",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/recovery-actions/delegate",
+  tags: ["issues"],
+  summary: "Delegate an issue recovery action",
+  body: delegateIssueRecoveryActionSchema,
 });
 
 registerCurrentRoute({
