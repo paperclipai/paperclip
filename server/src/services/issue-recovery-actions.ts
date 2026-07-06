@@ -335,7 +335,12 @@ export function issueRecoveryActionService(db: Db) {
         lastAttemptAt: input.lastAttemptAt ?? now,
         updatedAt: now,
       })
-      .where(eq(issueRecoveryActions.id, existing.id))
+      .where(
+        and(
+          eq(issueRecoveryActions.id, existing.id),
+          inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+        ),
+      )
       .returning();
 
     return updated ? toReadModel(updated) : null;
