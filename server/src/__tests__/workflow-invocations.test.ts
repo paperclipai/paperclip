@@ -209,12 +209,13 @@ describeEmbeddedPostgres("workflow invocation bridge", () => {
     await expect(resolveWorkflowByInvocationTarget(db, companyId, {
       capability: "briefing",
     })).resolves.toMatchObject({ id: workflowId });
+    const escapedOtherCompanyWorkflowId = otherCompanyWorkflowId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     await expect(resolveWorkflowByInvocationTarget(db, companyId, {
       workflowId: otherCompanyWorkflowId,
-    })).rejects.toThrow(/not found for this company/i);
+    })).rejects.toThrow(new RegExp(`workflowId=${escapedOtherCompanyWorkflowId}`));
     await expect(resolveWorkflowByInvocationTarget(db, companyId, {
       capability: "missing-capability",
-    })).rejects.toThrow(/no workflow matches/i);
+    })).rejects.toThrow(/capability=missing-capability/i);
     await seedWorkflow(db, companyId, {
       title: "Duplicate capability",
       workflowKey: "duplicate-capability",
@@ -222,7 +223,7 @@ describeEmbeddedPostgres("workflow invocation bridge", () => {
     });
     await expect(resolveWorkflowByInvocationTarget(db, companyId, {
       capability: "briefing",
-    })).rejects.toThrow(/ambiguous/i);
+    })).rejects.toThrow(/capability=briefing/i);
   });
 
   it("records markdown invocations and links them to a workflow run", async () => {

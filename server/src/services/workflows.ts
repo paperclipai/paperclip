@@ -329,6 +329,19 @@ async function ensureUniqueWorkflowKey(
   throw unprocessable("Unable to allocate a unique workflow key");
 }
 
+function formatWorkflowSelectorAttempt(target: WorkflowInvocationTargetSelector): string {
+  const parts: string[] = [];
+  const workflowId = target.workflowId?.trim();
+  const workflowKey = target.workflowKey?.trim();
+  const capability = target.capability?.trim();
+
+  if (workflowId) parts.push(`workflowId=${workflowId}`);
+  if (workflowKey) parts.push(`workflowKey=${workflowKey}`);
+  if (capability) parts.push(`capability=${capability}`);
+
+  return parts.length > 0 ? parts.join(", ") : "no workflow selector";
+}
+
 export async function resolveWorkflowByInvocationTarget(
   db: Db,
   companyId: string,
@@ -341,7 +354,9 @@ export async function resolveWorkflowByInvocationTarget(
       .where(and(eq(workflows.id, target.workflowId), eq(workflows.companyId, companyId)))
       .then((rows) => rows[0] ?? null);
     if (!row) {
-      throw unprocessable("Workflow id not found for this company");
+      throw unprocessable(
+        `Workflow id not found for this company (attempted ${formatWorkflowSelectorAttempt(target)})`,
+      );
     }
     return row;
   }
@@ -354,7 +369,9 @@ export async function resolveWorkflowByInvocationTarget(
       .where(and(eq(workflows.companyId, companyId), eq(workflows.workflowKey, workflowKey)))
       .then((rows) => rows[0] ?? null);
     if (!row) {
-      throw unprocessable("Workflow key not found for this company");
+      throw unprocessable(
+        `Workflow key not found for this company (attempted ${formatWorkflowSelectorAttempt(target)})`,
+      );
     }
     return row;
   }
@@ -369,15 +386,19 @@ export async function resolveWorkflowByInvocationTarget(
         sql`${workflows.capabilities} @> ${JSON.stringify([capability])}::jsonb`,
       ));
     if (rows.length === 0) {
-      throw unprocessable("No workflow matches the requested capability");
+      throw unprocessable(
+        `No workflow matches the requested capability (attempted ${formatWorkflowSelectorAttempt(target)})`,
+      );
     }
     if (rows.length > 1) {
-      throw unprocessable("Capability selector is ambiguous; provide a workflow key or workflow id");
+      throw unprocessable(
+        `Capability selector is ambiguous; provide a workflow key or workflow id (attempted ${formatWorkflowSelectorAttempt(target)})`,
+      );
     }
     return rows[0] ?? null;
   }
 
-  throw unprocessable("Missing workflow selector");
+  throw unprocessable(`Missing workflow selector (attempted ${formatWorkflowSelectorAttempt(target)})`);
 }
 
 async function selectCurrentPhaseMap(db: Db, runIds: string[]) {

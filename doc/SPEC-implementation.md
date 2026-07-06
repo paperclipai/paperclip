@@ -36,7 +36,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Org graph | Strict tree (`reports_to` nullable root); no multi-manager reporting |
 | Visibility | Full visibility to board and all agents in same company |
 | Communication | Tasks + comments for work; `agent thread` for direct board-to-agent communication |
-| Workflow invocation | Routine autonomous mode can invoke workflows through a versioned, company-local contract. The contract prefers explicit workflow id, falls back to workflow key or capability, and carries either markdown or JSON payloads while keeping markdown as the backward-compatible transport |
+| Workflow invocation | Routine autonomous mode can invoke workflows through a versioned, company-local contract. The contract prefers explicit workflow id, falls back to workflow key or capability, carries either markdown or JSON payloads while keeping markdown as the backward-compatible transport, and can surface a compact `workflowBridge` / `workflowContext` block so downstream routers resolve workflows from workflow records rather than agent-roster visibility |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Recovery | No automatic reassignment; work recovery stays manual/explicit |
 | Agent adapters | Built-in `process` and `http` adapters |

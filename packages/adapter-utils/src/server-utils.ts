@@ -272,6 +272,14 @@ type PaperclipWakeThread = {
   agentName: string | null;
 };
 
+type PaperclipWakeWorkflowBridge = {
+  workflowId: string | null;
+  workflowKey: string | null;
+  capability: string | null;
+  workflowRunId: string | null;
+  workflowHandoffId: string | null;
+};
+
 type PaperclipWakeExecutionPrincipal = {
   type: "agent" | "user" | null;
   agentId: string | null;
@@ -347,6 +355,7 @@ type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
   thread: PaperclipWakeThread | null;
+  workflowBridge: PaperclipWakeWorkflowBridge | null;
   checkedOutByHarness: boolean;
   dependencyBlockedInteraction: boolean;
   unresolvedBlockerIssueIds: string[];
@@ -396,6 +405,23 @@ function normalizePaperclipWakeThread(value: unknown): PaperclipWakeThread | nul
     id,
     agentId,
     agentName,
+  };
+}
+
+function normalizePaperclipWakeWorkflowBridge(value: unknown): PaperclipWakeWorkflowBridge | null {
+  const bridge = parseObject(value);
+  const workflowId = asString(bridge.workflowId ?? bridge.workflow_id, "").trim() || null;
+  const workflowKey = asString(bridge.workflowKey ?? bridge.workflow_key, "").trim() || null;
+  const capability = asString(bridge.capability, "").trim() || null;
+  const workflowRunId = asString(bridge.workflowRunId ?? bridge.workflow_run_id, "").trim() || null;
+  const workflowHandoffId = asString(bridge.workflowHandoffId ?? bridge.workflow_handoff_id, "").trim() || null;
+  if (!workflowId && !workflowKey && !capability && !workflowRunId && !workflowHandoffId) return null;
+  return {
+    workflowId,
+    workflowKey,
+    capability,
+    workflowRunId,
+    workflowHandoffId,
   };
 }
 
@@ -576,6 +602,13 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
 
   const thread = normalizePaperclipWakeThread(payload.thread);
   const issue = normalizePaperclipWakeIssue(payload.issue);
+  const workflowBridge = normalizePaperclipWakeWorkflowBridge(
+    payload.workflowBridge ??
+      payload.workflowContext ??
+      payload.workflow_bridge ??
+      payload.workflow_context ??
+      payload,
+  );
 
   if (
     comments.length === 0 &&
@@ -589,7 +622,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     !continuationSummary &&
     !livenessContinuation &&
     !issue &&
-    !thread
+    !thread &&
+    !workflowBridge
   ) {
     return null;
   }
@@ -598,6 +632,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     reason: asString(payload.reason, "").trim() || null,
     issue,
     thread,
+    workflowBridge,
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
     unresolvedBlockerIssueIds,
@@ -649,6 +684,22 @@ export function renderPaperclipWakePrompt(
   const normalized = normalizePaperclipWakePayload(value);
   if (!normalized) return "";
   const resumedSession = options.resumedSession === true;
+  const workflowTarget = normalized.workflowBridge
+    ? [
+        normalized.workflowBridge.workflowId
+          ? `workflowId=${normalized.workflowBridge.workflowId}`
+          : null,
+        normalized.workflowBridge.workflowKey
+          ? `workflowKey=${normalized.workflowBridge.workflowKey}`
+          : null,
+        normalized.workflowBridge.capability
+          ? `capability=${normalized.workflowBridge.capability}`
+          : null,
+      ]
+        .filter((entry): entry is string => Boolean(entry))
+        .join(", ")
+    : "";
+  const workflowTargetLine = workflowTarget ? `Workflow target: ${workflowTarget}` : "";
   if (normalized.thread && !normalized.issue) {
     const lines = resumedSession
       ? [
@@ -665,6 +716,7 @@ export function renderPaperclipWakePrompt(
         `- pending messages: ${normalized.includedCount}/${normalized.requestedCount}`,
         `- latest message id: ${normalized.latestThreadMessageId ?? "unknown"}`,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+        ...(workflowTargetLine ? [`- ${workflowTargetLine}`] : []),
         "",
       ]
       : [
@@ -680,6 +732,7 @@ export function renderPaperclipWakePrompt(
         `- pending messages: ${normalized.includedCount}/${normalized.requestedCount}`,
         `- latest message id: ${normalized.latestThreadMessageId ?? "unknown"}`,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+        ...(workflowTargetLine ? [`- ${workflowTargetLine}`] : []),
         "",
       ];
 
@@ -726,6 +779,7 @@ export function renderPaperclipWakePrompt(
         `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
         `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+        ...(workflowTargetLine ? [`- ${workflowTargetLine}`] : []),
       ]
     : [
         "## Paperclip Wake Payload",
@@ -743,6 +797,7 @@ export function renderPaperclipWakePrompt(
         `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
         `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+        ...(workflowTargetLine ? [`- ${workflowTargetLine}`] : []),
       ];
 
   if (normalized.issue?.status) {

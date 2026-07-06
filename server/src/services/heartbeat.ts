@@ -1524,6 +1524,43 @@ function mergeWakeCommentIds(...values: Array<unknown>): string[] {
   return merged;
 }
 
+type WakeWorkflowBridge = {
+  workflowId: string | null;
+  workflowKey: string | null;
+  capability: string | null;
+  workflowRunId: string | null;
+  workflowHandoffId: string | null;
+};
+
+function readWakeWorkflowBridgeSelector(contextSnapshot: Record<string, unknown>): WakeWorkflowBridge | null {
+  const bridgeSource = parseObject(
+    contextSnapshot.workflowBridge ??
+      contextSnapshot.workflowContext ??
+      contextSnapshot.workflow_bridge ??
+      contextSnapshot.workflow_context,
+  );
+  const selectorSource = Object.keys(bridgeSource).length > 0 ? bridgeSource : contextSnapshot;
+  const workflowId = readNonEmptyString(selectorSource.workflowId ?? selectorSource.workflow_id);
+  const workflowKey = readNonEmptyString(selectorSource.workflowKey ?? selectorSource.workflow_key);
+  const capability = readNonEmptyString(selectorSource.capability);
+  const workflowRunId = readNonEmptyString(selectorSource.workflowRunId ?? selectorSource.workflow_run_id);
+  const workflowHandoffId = readNonEmptyString(
+    selectorSource.workflowHandoffId ?? selectorSource.workflow_handoff_id,
+  );
+
+  if (!workflowId && !workflowKey && !capability && !workflowRunId && !workflowHandoffId) {
+    return null;
+  }
+
+  return {
+    workflowId,
+    workflowKey,
+    capability,
+    workflowRunId,
+    workflowHandoffId,
+  };
+}
+
 function enrichWakeContextSnapshot(input: {
   contextSnapshot: Record<string, unknown>;
   reason: string | null;
@@ -1630,6 +1667,7 @@ export async function buildPaperclipWakePayload(input: {
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const agentThreadId = readNonEmptyString(input.contextSnapshot.agentThreadId);
   const agentThreadMessageId = readNonEmptyString(input.contextSnapshot.agentThreadMessageId);
+  const workflowBridge = readWakeWorkflowBridgeSelector(input.contextSnapshot);
   const continuationSummary = input.continuationSummary ?? null;
   const issueSummary =
     input.issueSummary ??
@@ -1666,7 +1704,8 @@ export async function buildPaperclipWakePayload(input: {
     Object.keys(executionStage).length === 0 &&
     !issueSummary &&
     !threadSummary &&
-    !agentThreadMessageId
+    !agentThreadMessageId &&
+    !workflowBridge
   ) {
     return null;
   }
@@ -1841,6 +1880,7 @@ export async function buildPaperclipWakePayload(input: {
           agentName: threadSummary.agentName,
         }
       : null,
+    workflowBridge,
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
       ? input.contextSnapshot.childIssueSummaries
       : [],

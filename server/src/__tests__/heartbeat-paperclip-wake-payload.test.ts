@@ -31,4 +31,28 @@ describe("buildPaperclipWakePayload", () => {
       },
     });
   });
+
+  it("includes workflow bridge context when the wake is routed through a workflow", async () => {
+    const payload = await buildPaperclipWakePayload({
+      db: {} as never,
+      companyId: "company-1",
+      contextSnapshot: {
+        wakeReason: "workflow_invoked",
+        workflowContext: {
+          workflowId: "workflow-1",
+          workflowKey: "content_strategist",
+          capability: "content-strategist",
+        },
+      },
+    });
+
+    expect(payload).toMatchObject({
+      reason: "workflow_invoked",
+      workflowBridge: {
+        workflowId: "workflow-1",
+        workflowKey: "content_strategist",
+        capability: "content-strategist",
+      },
+    });
+  });
 });
