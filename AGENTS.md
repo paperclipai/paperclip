@@ -220,3 +220,7 @@ PR #2218 (`feat/external-adapter-phase1`) adds external adapter support. See roo
 - `createServerAdapter()` must include ALL optional fields (especially `detectModel`)
 - Built-in UI adapters can shadow external plugin parsers; external override pause/resume should restore the built-in parser.
 - Reference external adapters: Droid (npm); Hermes can also be tested as an override package.
+
+## Design system
+
+`DESIGN.md` at the repo root is the source of truth for UI design decisions. The token-only rule applies to all `ui/` changes: every color, spacing, radius, type, shadow, and motion value comes from the token layer in `ui/src/index.css` — no hex, raw px, or arbitrary Tailwind bracket values in components.
