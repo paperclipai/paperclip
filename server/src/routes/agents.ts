@@ -25,6 +25,7 @@ import {
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
   updateAgentSchema,
+  delegateRunSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
 } from "@paperclipai/shared";
@@ -50,7 +51,7 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -3491,6 +3492,45 @@ export function agentRoutes(
     }
 
     res.json(run);
+  });
+
+  router.post("/heartbeat-runs/:runId/delegate", async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return;
+    }
+    const runId = req.params.runId as string;
+    if (req.actor.runId !== runId) {
+      res.status(403).json({ error: "X-Paperclip-Run-Id must match the delegate source run" });
+      return;
+    }
+
+    const parsed = delegateRunSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const existing = await heartbeat.getRun(runId);
+    if (!existing) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+
+    try {
+      const result = await heartbeat.delegateFromRun(runId, req.actor.agentId, parsed.data);
+      res.json(result);
+    } catch (err) {
+      if (err instanceof HttpError) {
+        res.status(err.status).json({
+          error: err.message,
+          ...(err.details && typeof err.details === "object" ? err.details as Record<string, unknown> : {}),
+        });
+        return;
+      }
+      throw err;
+    }
   });
 
   router.post("/heartbeat-runs/:runId/watchdog-decisions", async (req, res) => {

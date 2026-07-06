@@ -61,6 +61,7 @@ Write tools:
 - `paperclipCreateIssue`
 - `paperclipUpdateIssue`
 - `paperclipCheckoutIssue`
+- `paperclipDelegate`
 - `paperclipReleaseIssue`
 - `paperclipAddComment`
 - `paperclipSuggestTasks`

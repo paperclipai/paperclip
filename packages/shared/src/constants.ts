@@ -660,7 +660,18 @@ export const RUN_LIVENESS_STATES = [
   "blocked",
   "failed",
   "needs_followup",
+  "awaiting_delegation",
 ] as const;
+
+export const DELEGATION_STATUSES = [
+  "pending",
+  "completed",
+  "failed",
+  "cancelled",
+] as const;
+export type DelegationStatus = (typeof DELEGATION_STATUSES)[number];
+
+export const DELEGATION_CHILD_COMPLETED_WAKE_REASON = "delegation_child_completed";
 export type RunLivenessState = (typeof RUN_LIVENESS_STATES)[number];
 
 export const LIVE_EVENT_TYPES = [

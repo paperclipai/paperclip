@@ -569,3 +569,8 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export {
+  delegateRunSchema,
+  type DelegateRunInput,
+} from "./delegation.js";

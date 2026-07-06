@@ -12,6 +12,7 @@ import {
   updateIssueSchema,
   upsertIssueDocumentSchema,
   linkIssueApprovalSchema,
+  delegateRunSchema,
 } from "@paperclipai/shared";
 import { PaperclipApiClient } from "./client.js";
 import { formatErrorResponse, formatTextResponse } from "./format.js";
@@ -478,6 +479,18 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
             expectedStatuses: expectedStatuses ?? ["todo", "backlog", "blocked"],
           },
         }),
+    ),
+    makeTool(
+      "paperclipDelegate",
+      "Delegate work to a report agent from the current heartbeat run (A2A). Requires PAPERCLIP_RUN_ID. Prefer this over creating child issues manually when the target should execute synchronously or with automatic parent continuation.",
+      delegateRunSchema,
+      async (body) => {
+        const runId = client.defaults.runId;
+        if (!runId) {
+          throw new Error("paperclipDelegate requires PAPERCLIP_RUN_ID for the active heartbeat run");
+        }
+        return client.requestJson("POST", `/heartbeat-runs/${encodeURIComponent(runId)}/delegate`, { body });
+      },
     ),
     makeTool(
       "paperclipReleaseIssue",

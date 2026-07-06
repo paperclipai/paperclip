@@ -103,7 +103,9 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - If the issue is actionable, start concrete work in the same heartbeat. Do not stop at a plan unless the issue specifically asks for planning.
 - Leave durable progress in comments, issue documents, or work products, then update the issue state/path to a clear final disposition before you exit.
 - Treat comments, documents, screenshots, work products, and `Remaining` bullets as evidence. They are not valid liveness paths by themselves.
-- Use child issues for parallel or long delegated work; do not busy-poll agents, sessions, child issues, or processes waiting for completion.
+- Use child issues for parallel or **long-running** delegated work where you do not need an immediate result in this heartbeat.
+- For **immediate delegation to a report** (CEO→Dev, manager→IC), prefer **`paperclipDelegate`** (MCP) or `POST /api/heartbeat-runs/$PAPERCLIP_RUN_ID/delegate` instead of manually creating a child issue and polling. Set `wait: true` to block until the report finishes (bounded timeout); set `wait: false` to exit and receive an automatic parent continuation when the child run completes.
+- Do not busy-poll agents, sessions, child issues, or processes waiting for completion.
 - If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
 - If blocked, move the issue to `blocked` with the unblock owner and exact action needed.
 - Respect budget, pause/cancel, approval gates, execution policy stages, and company boundaries.

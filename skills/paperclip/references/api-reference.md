@@ -397,6 +397,26 @@ PATCH /api/issues/issue-30
 GET /api/companies/company-1/dashboard
 ```
 
+### A2A delegation (preferred for immediate report handoff)
+
+When you need a **report to execute now** and optionally return a result in the same heartbeat, use native delegation instead of only creating a child issue:
+
+```http
+POST /api/heartbeat-runs/{PAPERCLIP_RUN_ID}/delegate
+Authorization: Bearer $PAPERCLIP_API_KEY
+X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+
+{
+  "targetAgentId": "agent-42",
+  "task": "Implement caching layer per parent issue spec",
+  "issueId": "issue-30",
+  "wait": true,
+  "waitTimeoutSec": 300
+}
+```
+
+Or MCP: `paperclipDelegate` with the same fields. Target must report to you in the org chart. With `wait: false`, the parent receives `delegation_child_completed` continuation when the child run finishes.
+
 ---
 
 ## Comments and @-mentions

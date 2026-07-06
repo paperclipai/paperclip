@@ -42,6 +42,9 @@ export interface HeartbeatRun {
   lastOutputStream: "stdout" | "stderr" | null;
   lastOutputBytes: number | null;
   retryOfRunId: string | null;
+  parentRunId: string | null;
+  delegationStatus: string | null;
+  delegationResultJson: Record<string, unknown> | null;
   processLossRetryCount: number;
   scheduledRetryAt?: Date | null;
   scheduledRetryAttempt?: number;
