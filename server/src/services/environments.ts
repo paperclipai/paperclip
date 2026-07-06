@@ -213,23 +213,17 @@ export function environmentService(db: Db) {
           createdAt: now,
           updatedAt: now,
         })
-        .onConflictDoNothing({
+        .onConflictDoUpdate({
           target: [environments.driver],
-          where: sql`${environments.driver} = 'local'`,
+          targetWhere: sql`${environments.driver} = 'local'`,
+          set: { driver: sql`EXCLUDED.driver` },
         })
         .returning()
         .then((rows) => rows[0] ?? null);
-      if (row) return toEnvironment(row);
-
-      const existing = await db
-        .select()
-        .from(environments)
-        .where(eq(environments.driver, "local"))
-        .then((rows) => rows[0] ?? null);
-      if (!existing) {
+      if (!row) {
         throw new Error("Failed to ensure local environment");
       }
-      return toEnvironment(existing);
+      return toEnvironment(row);
     },
 
     /**
