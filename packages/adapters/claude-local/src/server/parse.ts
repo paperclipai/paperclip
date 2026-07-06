@@ -2,6 +2,7 @@ import type { UsageSummary } from "@paperclipai/adapter-utils";
 import {
   asString,
   asNumber,
+  asBoolean,
   parseObject,
   parseJson,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -162,6 +163,27 @@ export function describeClaudeFailure(parsed: Record<string, unknown>): string |
   if (subtype) parts.push(`subtype=${subtype}`);
   if (detail) parts.push(detail);
   return parts.length > 1 ? parts.join(": ") : null;
+}
+
+/**
+ * Terminal-subtype-wins guard (VER-1414). The Claude CLI emits a terminal
+ * `result` message with `subtype: "success"` (and `is_error: false`) once the
+ * agent loop has completed normally and the work has landed. If the wrapper
+ * SIGTERMs the process during teardown *after* that message, the process exits
+ * non-zero (typically 143) — but the run genuinely succeeded. Likewise, a
+ * mid-run transient `claude_auth_required` line (token-refresh race) may match
+ * the login detector even though the session recovered and finished.
+ *
+ * When this returns true, callers must NOT classify the run as failed on the
+ * strength of a non-zero exit code or a historical transient auth flag: the
+ * terminal success subtype is authoritative. Genuine failures never reach a
+ * `subtype: "success"` terminal, so this stays false for them.
+ */
+export function isClaudeSuccessResult(parsed: Record<string, unknown> | null | undefined): boolean {
+  if (!parsed) return false;
+  const subtype = asString(parsed.subtype, "").trim().toLowerCase();
+  if (subtype !== "success") return false;
+  return !asBoolean(parsed.is_error, false);
 }
 
 export function isClaudeMaxTurnsResult(parsed: Record<string, unknown> | null | undefined): boolean {

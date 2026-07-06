@@ -5,6 +5,7 @@ import {
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeRefusalResult,
+  isClaudeSuccessResult,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
 } from "./parse.js";
@@ -216,6 +217,42 @@ describe("isClaudeRefusalResult", () => {
   it("returns false for null/empty parsed result", () => {
     expect(isClaudeRefusalResult(null)).toBe(false);
     expect(isClaudeRefusalResult({})).toBe(false);
+  });
+});
+
+describe("isClaudeSuccessResult", () => {
+  it("treats a clean success terminal as success", () => {
+    expect(isClaudeSuccessResult({ subtype: "success", is_error: false })).toBe(true);
+    // subtype casing/whitespace tolerated
+    expect(isClaudeSuccessResult({ subtype: " Success " })).toBe(true);
+  });
+
+  it("stays success when the process was SIGTERMed after the success terminal (VER-1414)", () => {
+    // The terminal subtype is authoritative; exit-code handling lives in the
+    // caller, so a success result must classify as success regardless.
+    expect(
+      isClaudeSuccessResult({
+        subtype: "success",
+        is_error: false,
+        result: "TICK disposition complete. Work landed.",
+      }),
+    ).toBe(true);
+  });
+
+  it("is not success when is_error is set even with a success subtype", () => {
+    expect(isClaudeSuccessResult({ subtype: "success", is_error: true })).toBe(false);
+  });
+
+  it("is not success for error/refusal/max-turns terminals", () => {
+    expect(isClaudeSuccessResult({ subtype: "error_max_turns" })).toBe(false);
+    expect(isClaudeSuccessResult({ subtype: "error_during_execution" })).toBe(false);
+    expect(isClaudeSuccessResult({ subtype: "model_refusal", is_error: false })).toBe(false);
+  });
+
+  it("returns false for null/empty parsed result", () => {
+    expect(isClaudeSuccessResult(null)).toBe(false);
+    expect(isClaudeSuccessResult(undefined)).toBe(false);
+    expect(isClaudeSuccessResult({})).toBe(false);
   });
 });
 

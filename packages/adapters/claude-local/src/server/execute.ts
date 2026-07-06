@@ -50,6 +50,7 @@ import {
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
+  isClaudeSuccessResult,
   isClaudeRefusalResult,
   isClaudeTransientUpstreamError,
   isClaudeUnknownSessionError,
@@ -907,7 +908,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // successful run to Paperclip and the heartbeat stalls silently. See RY-604.
     const claudeRefusal = isClaudeRefusalResult(parsed);
     const parsedIsError = asBoolean(parsed.is_error, false);
-    const failed = (proc.exitCode ?? 0) !== 0 || parsedIsError;
+    // Terminal-subtype-wins guard (VER-1414): a `subtype: "success"` terminal
+    // result is authoritative. A post-success SIGTERM (exit 143) during teardown
+    // or a mid-run transient `claude_auth_required` line must NOT flip a genuinely
+    // successful run to failed. Genuine failures never carry a success terminal.
+    const claudeSucceeded = isClaudeSuccessResult(parsed);
+    const failed = !claudeSucceeded && ((proc.exitCode ?? 0) !== 0 || parsedIsError);
     // Validate-before-persist guard: never persist a sessionId whose transcript
     // is known-poisoned. The Claude CLI keeps an on-disk JSONL keyed by the
     // session id; if the last entry contains a non-`msg_`-prefixed
@@ -954,7 +960,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorMessage,
         })
       : null;
-    const resolvedErrorCode = loginMeta.requiresLogin
+    const resolvedErrorCode = claudeSucceeded
+      ? null
+      : loginMeta.requiresLogin
       ? "claude_auth_required"
       : failed && clearSessionForMaxTurns
       ? "max_turns_exhausted"
