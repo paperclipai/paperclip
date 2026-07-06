@@ -260,6 +260,7 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const HUNG_RUN_ERROR_CODE = "process_hung";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -4590,6 +4591,24 @@ function buildProcessLossMessage(run: {
     return `Process lost -- process group ${run.processGroupId} is no longer running`;
   }
   return "Process lost -- server may have restarted";
+}
+
+function buildHungRunMessage(
+  run: {
+    processPid: number | null;
+    processGroupId: number | null;
+  },
+  noProgressMs: number,
+) {
+  const where = run.processPid
+    ? `child pid ${run.processPid}`
+    : run.processGroupId
+      ? `process group ${run.processGroupId}`
+      : "worker";
+  const duration = Number.isFinite(noProgressMs)
+    ? `${Math.floor(noProgressMs / 60_000)}m`
+    : "an extended period";
+  return `Run hung -- ${where} made no observable progress (no new output) for ${duration} and was reaped so the issue can be adopted`;
 }
 
 function truncateDisplayId(value: string | null | undefined, max = 128) {
@@ -9580,8 +9599,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; hungRunThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const hungRunThresholdMs = opts?.hungRunThresholdMs ?? 0;
     const now = new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
@@ -9609,7 +9629,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
-      if (processPidAlive) {
+
+      // No-progress ("hung") watchdog for non-terminal runs. A worker can stay alive as a PID
+      // while doing no work (e.g. blocked in epoll_wait) and emitting no output. Such a run
+      // would otherwise pin its issue in `in_progress` forever: the pid-alive branch below
+      // never reaps it, and lock-sweep / checkout adoption only release terminal runs. When a
+      // run whose process is still alive has shown no observable progress (no new streamed
+      // output) for longer than the configured threshold, reap it anyway so the issue becomes
+      // adoptable. This is deliberately gated on a *live* local process: a run whose pid is
+      // already gone is handled by the process-loss path below (which retries once), and a
+      // run with no observable progress but a dead/unknown process is not "hung" — it is lost.
+      // The threshold defaults large enough that healthy long runs — which stream output
+      // regularly — are never affected. Disabled when the threshold is <= 0.
+      const lastProgressAt =
+        run.lastOutputAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt;
+      const noProgressMs = lastProgressAt
+        ? now.getTime() - new Date(lastProgressAt).getTime()
+        : Number.POSITIVE_INFINITY;
+      const hung =
+        hungRunThresholdMs > 0 &&
+        (processPidAlive || processGroupAlive) &&
+        noProgressMs >= hungRunThresholdMs;
+
+      if (processPidAlive && !hung) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
@@ -9632,7 +9674,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       let descendantOnlyCleanup = false;
-      if (processGroupAlive) {
+      if (hung) {
+        // `hung` implies a live local process; terminate it before finalizing so it cannot keep
+        // holding resources or later mutate the shared working tree.
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      } else if (processGroupAlive) {
         descendantOnlyCleanup = true;
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
@@ -9640,19 +9689,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const reapErrorCode = hung ? HUNG_RUN_ERROR_CODE : "process_lost";
+      // Hung runs are never auto-retried: the same degraded worker would likely hang again,
+      // and re-driving a stuck assignee can corrupt the shared working tree. Releasing the
+      // issue lets the orphan/adoption path hand the work to a healthy run instead.
+      const shouldRetry =
+        !hung && tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const baseMessage = hung
+        ? buildHungRunMessage(run, noProgressMs)
+        : buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-        errorCode: "process_lost",
+        errorCode: reapErrorCode,
         finishedAt: now,
         resultJson: mergeRunStopMetadataForAgent(
           { adapterType, adapterConfig },
           "failed",
           {
             resultJson: parseObject(run.resultJson),
-            errorCode: "process_lost",
+            errorCode: reapErrorCode,
             errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
           },
         ),
@@ -9694,6 +9750,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
+          ...(hung
+            ? {
+                hung: true,
+                errorCode: HUNG_RUN_ERROR_CODE,
+                noProgressMs: Number.isFinite(noProgressMs) ? noProgressMs : null,
+              }
+            : {}),
         },
       });
 

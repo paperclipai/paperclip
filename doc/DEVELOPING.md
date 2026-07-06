@@ -638,6 +638,27 @@ DB backups are not full instance filesystem backups. For full local disaster
 recovery, also back up local storage files and the local encrypted secrets key if
 those providers are enabled.
 
+## Run Recovery (Orphan & Hung-Run Reaping)
+
+The server periodically reaps heartbeat runs that are stuck in the `running` state so a
+hung run cannot pin its issue in `in_progress` forever:
+
+- **Lost-process runs** — a `running` run whose worker process is gone is failed with
+  `errorCode = process_lost` (and retried once for local adapters), releasing the issue.
+- **Hung (no-progress) runs** — a `running` run whose worker is still alive as a PID but has
+  produced no new output for longer than the hung-run threshold is failed with
+  `errorCode = process_hung`. Hung runs are **not** auto-retried; their issue's execution and
+  checkout locks are released so a healthy run can adopt the work (no more 409 on checkout).
+
+Environment overrides:
+
+- `PAPERCLIP_HUNG_RUN_REAP_THRESHOLD_MS=<ms>` — no-progress window after which an alive-but-idle
+  `running` run is treated as hung and reaped. Default `21600000` (6h). Positive values are
+  floored at `60000` (1m). Set to `0` (or any value `<= 0`) to disable the hung-run watchdog and
+  reap only runs whose process is provably gone. Output progress is measured from the run's last
+  streamed output (falling back to process/run start time), so healthy long runs that stream
+  output regularly are never affected.
+
 ## Secrets in Dev
 
 Agent env vars now support secret references. By default, secret values are stored with local encryption and only secret refs are persisted in agent config.
