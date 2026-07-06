@@ -3113,37 +3113,36 @@ export function heartbeatService(db: Db) {
             // cap, transient failure) the task sits forever because
             // Worker/Reviewer/Architect have no timer wake to fall back on.
             //
-            // Deliberately EXCLUDE `in_review` here (AA-1582 livelock fix).
-            // Tasks are born `todo` (issuesSvc.create); a no-skill agent's task
-            // becomes `in_review` ONLY because a run just above held it there
-            // (branch not on origin → not done). So a SELF chain-wake onto an
-            // `in_review` task always re-runs work this agent just failed to
-            // land — and because the runtime reuses the task session, the model
-            // resumes its prior stance ("waiter re-armed / redundant, stopping")
-            // and exits in ~30s, which re-enters this hook and re-selects the
-            // same task → an infinite, server-driven burn (89 runs / ~$196,
-            // none landing). `in_review` tasks still advance correctly via the
-            // step-above "next mover" wake (Coordinator/parent, fires every
-            // hook) and via explicit re-dispatch — both use a FRESH session and
-            // a real decision, and are picked up by the task-injection selector
-            // (which keeps `in_review`). Only this self chain-wake must skip it.
-            const nextTask = await db
-              .select()
-              .from(issues)
-              .where(
-                and(
-                  eq(issues.companyId, agent.companyId),
-                  eq(issues.assigneeAgentId, agent.id),
-                  inArray(issues.status, ["in_progress", "todo"]),
-                ),
-              )
-              .orderBy(
-                sql`CASE ${issues.status} WHEN 'in_progress' THEN 0 ELSE 1 END`,
-                asc(issues.createdAt),
-              )
-              .limit(1)
-              .then((rows) => rows[0] ?? null);
-            if (nextTask) {
+            // CRITICAL — exclude the task this run just processed (`issueId`).
+            // A no-skill Architect that commits-but-doesn't-land leaves its
+            // task at `in_review` (above); since `in_review` sorts ahead of
+            // `todo`, the *same* task would otherwise be re-selected here and
+            // chain-woken back onto the agent in a reused session, which
+            // repeats its last "waiter re-armed / redundant, stopping" stance
+            // and loops every ~30s without ever landing — the AA-1582
+            // livelock (~$196 burned). Chain-wake only advances the queue to a
+            // *different* task; re-running the same one is the next external
+            // trigger's job, not this immediate re-fire's.
+            //
+            // SECOND GUARD (AA-1611) — suppress chain-wake after a *no-progress*
+            // run (one that made zero tool calls). The `ne(issues.id, issueId)`
+            // guard above only breaks a 1-cycle (re-firing the same task); two
+            // no-skill verify tasks both runnable form a 2-cycle: run A →
+            // chain-wake selects B (≠A, passes the guard) → run B → chain-wake
+            // selects A → … forever. Each run is a no-skill short-circuit that
+            // emits text and succeeds without touching the worktree. A run that
+            // called no tools advanced nothing, so it must not advance the
+            // queue — that breaks the 2-cycle (and any N-cycle) at the source.
+            // For the claude_local adapter the CLI `result` event reports
+            // `num_turns`; a single-turn text reply with no tool round-trip is
+            // `num_turns <= 1` (empirically: real work is always >= 2). When
+            // turns can't be measured (other adapters / missing field), fall
+            // back to the prior behaviour and allow the chain-wake.
+            const numTurnsRaw = adapterResult.resultJson?.num_turns;
+            const numTurns =
+              typeof numTurnsRaw === "number" ? numTurnsRaw : Number(numTurnsRaw);
+            const lastRunMadeNoProgress = Number.isFinite(numTurns) && numTurns <= 1;
+            if (lastRunMadeNoProgress) {
               logger.info(
                 { agentId: agent.id, issueId, numTurns },
                 "skipping chain-wake — last run made zero tool calls (no-progress run must not advance the queue; AA-1611 N-cycle guard)",
