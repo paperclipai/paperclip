@@ -27,6 +27,8 @@ Use concise markdown with:
 - Bullets for what changed or what is blocked
 - Links to related entities when available
 
+Do not paste full execution-contract JSON into normal board-facing comments. Comments should summarize the human-readable state and link to evidence. When work is delegated to another agent through a child issue, put the detailed machine handoff in the child issue's hidden `executionContract` field; Paperclip enforces that for agent-created child issues.
+
 ```markdown
 ## Update
 

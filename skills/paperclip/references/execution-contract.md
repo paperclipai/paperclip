@@ -12,6 +12,8 @@ Agents receive this hidden field through `PAPERCLIP_WAKE_PAYLOAD_JSON.executionC
 
 Legacy compatibility: older issues may still have a `## Execution Contract` fenced `json` block in the description or an issue document with key `contract`. Use those only as fallback sources. New delegations must use the hidden `executionContract` field.
 
+Server enforcement: agent-created child issues are rejected when the resolved hidden contract is missing or invalid. Human-created issues are exempt; agents reconstruct a contract from a human's natural-language request when they pick up the work.
+
 ## Contract schema
 
 ```json

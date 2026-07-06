@@ -560,6 +560,7 @@ export interface SuggestedTaskDraft {
   projectId?: string | null;
   goalId?: string | null;
   billingCode?: string | null;
+  executionContract?: IssueExecutionContract | null;
   labels?: string[];
   hiddenInPreview?: boolean;
 }

@@ -563,6 +563,7 @@ export const suggestedTaskDraftSchema = z.object({
   projectId: z.string().uuid().nullable().optional(),
   goalId: z.string().uuid().nullable().optional(),
   billingCode: z.string().trim().max(120).nullable().optional(),
+  executionContract: issueExecutionContractSchema.optional().nullable(),
   labels: z.array(z.string().trim().min(1).max(48)).max(20).optional(),
   hiddenInPreview: z.boolean().optional(),
 }).superRefine((value, ctx) => {

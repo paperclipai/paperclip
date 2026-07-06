@@ -52,6 +52,27 @@ describe("issue validators", () => {
       .toEqual(contract);
   });
 
+  it("accepts execution contracts on suggested task drafts", () => {
+    const contract = {
+      schemaVersion: 2,
+      contractType: "delegated_task",
+      taskType: "implementation",
+      core: {
+        objective: "Build the suggested execution lane.",
+        why: "The child issue needs the manager handoff.",
+        sourceOfTruth: { links: ["/PAP/issues/PAP-100"] },
+        acceptanceChecks: ["Created child issue stores the contract"],
+        handoffNotes: { managerReasoning: "This task was proposed from the parent plan." },
+      },
+    };
+
+    expect(suggestedTaskDraftSchema.parse({
+      clientKey: "task-1",
+      title: "Implementation lane",
+      executionContract: contract,
+    }).executionContract).toEqual(contract);
+  });
+
   it("rejects malformed execution contract envelopes", () => {
     expect(createIssueSchema.safeParse({
       title: "QA lane",

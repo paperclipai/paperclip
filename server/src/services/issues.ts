@@ -619,6 +619,25 @@ export function validateDelegatedIssueExecutionContract(
   };
 }
 
+export function assertDelegatedIssueExecutionContract(
+  executionContract: Record<string, unknown> | null | undefined,
+  input: {
+    parentId: string;
+    mode?: "enforce";
+  },
+) {
+  const validation = validateDelegatedIssueExecutionContract(executionContract);
+  if (validation.valid) return;
+
+  throw unprocessable("Agent-created child issues require a valid executionContract", {
+    code: "invalid_execution_contract",
+    mode: input.mode ?? "enforce",
+    parentId: input.parentId,
+    missingExecutionContract: executionContract == null,
+    warnings: validation.warnings,
+  });
+}
+
 function createIssueDependencyReadiness(issueId: string): IssueDependencyReadiness {
   return {
     issueId,
@@ -3613,6 +3632,16 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
+      const description = appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria);
+      if (actorAgentId) {
+        const contractFields = resolveExecutionContractFields({
+          description,
+          executionContract: issueData.executionContract,
+        });
+        assertDelegatedIssueExecutionContract(contractFields.executionContract ?? null, {
+          parentId: parent.id,
+        });
+      }
       const child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
@@ -3621,7 +3650,7 @@ export function issueService(db: Db) {
         requestDepth: clampIssueRequestDepth(
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
-        description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
+        description,
         inheritExecutionWorkspaceFromIssueId: parent.id,
       });
 
@@ -3664,6 +3693,11 @@ export function issueService(db: Db) {
         issueData.executionContract = contractFields.executionContract ?? null;
       } else {
         delete issueData.executionContract;
+      }
+      if (issueData.parentId && issueData.createdByAgentId) {
+        assertDelegatedIssueExecutionContract(issueData.executionContract ?? null, {
+          parentId: issueData.parentId,
+        });
       }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {

@@ -1,7 +1,7 @@
 # Plan: Server-Side Execution Contract Enforcement (Stage 2)
 
 Date: 2026-07-06
-Status: partially shipped (V2 hidden storage/transport/UI live; warn-mode validation/logging live; hard 422 enforcement still pending)
+Status: shipped for agent-created child execution lanes (V2 hidden storage/transport/UI live; hard 422 enforcement live for agent-created child issues; comments and human-created issues remain natural/intake-first)
 
 ## Context
 
@@ -15,14 +15,13 @@ Stage 2 makes the contract structural, replicating the property that makes isola
 
 ### 1. Contract validation on delegation
 
-Shipped in warn mode. In the issue service/routes, when an **agent** creates an issue with `parentId` set:
+Shipped in enforce mode. In the issue service, when an **agent** creates an issue with `parentId` set:
 
 - Read the hidden `executionContract` field. Legacy `## Execution Contract` description blocks may still be extracted for compatibility, but new delegation validation should target the JSON field.
 - Validate required fields: `schemaVersion`, `contractType`, `taskType`, `core.objective`, `core.why`, non-empty `core.sourceOfTruth`, non-empty `core.acceptanceChecks`, `core.handoffNotes.managerReasoning`.
-- Warn-mode behavior: create the child issue, then log `issue.execution_contract_warning` activity with field-level warnings. This is non-blocking and does not include the contract body in activity details.
-- Future enforce-mode behavior: reject with `422` and a field-level error message when missing/invalid, mirroring the existing two-level topology enforcement (which already rejects grandchildren and >10 lanes — precedent for hard orchestration gates in this service).
+- Enforce-mode behavior: reject with `422` and a field-level error message when missing/invalid, mirroring the existing two-level topology enforcement (which already rejects grandchildren and >10 lanes — precedent for hard orchestration gates in this service).
 - Human-created issues are exempt (agents reconstruct contracts for human requests, per the skill).
-- Rollout flag: per-company setting (`instance_settings` or company metadata) `requireExecutionContracts: warn | enforce | off`, default `warn` initially; flip to `enforce` after contract adoption is visible in real issues.
+- Future rollback flag, if needed: per-company setting (`instance_settings` or company metadata) `requireExecutionContracts: enforce | warn | off`. The current server behavior is hard enforcement for agent-created child lanes.
 
 ### 2. Contract-driven wake payloads
 
@@ -43,7 +42,7 @@ Company dashboard counts: delegated lanes with/without contracts, preflight bloc
 
 ## Acceptance
 
-- Agent delegation without a valid contract is rejected (enforce mode) or logged (warn mode).
+- Agent delegation without a valid contract is rejected.
 - Execution-lane wake payloads carry the contract. (Shipped)
 - Bundled skills cannot be deleted via the API. (Shipped)
-- Existing tests pass; new tests cover contract validation warnings and the delete guard.
+- Existing tests pass; new tests cover contract rejection, human exemptions, legacy extraction, and the delete guard.
