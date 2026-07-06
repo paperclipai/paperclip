@@ -77,6 +77,7 @@ import * as serviceIndex from "../services/index.js";
 import {
   accessService,
   agentService,
+  applyCompanyDefaultExecutionPolicy,
   companyService,
   companySearchService,
   executionWorkspaceService,
@@ -5258,10 +5259,13 @@ export function issueRoutes(
     }
     await assertIssueEnvironmentSelection(companyId, createBody.executionWorkspaceSettings?.environmentId);
 
-    const executionPolicy = applyActorMonitorScheduledBy(
-      normalizeIssueExecutionPolicy(createBody.executionPolicy),
-      actor.actorType,
+    const policyBeforeActor = await applyCompanyDefaultExecutionPolicy(
+      db,
+      companyId,
+      createBody.executionPolicy,
+      createBody.type,
     );
+    const executionPolicy = applyActorMonitorScheduledBy(policyBeforeActor, actor.actorType);
     await assertCanManageIssueMonitor(access, req, companyId, createBody.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
     const issueId = randomUUID();
     const sourceTrust = await sourceTrustForActorWrite({

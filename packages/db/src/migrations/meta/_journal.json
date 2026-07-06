@@ -897,6 +897,13 @@
       "when": 1782526500000,
       "tag": "0127_environment_custom_images_instance_scoped",
       "breakpoints": true
+    },
+    {
+      "idx": 128,
+      "version": "7",
+      "when": 1782612900000,
+      "tag": "0128_default_execution_policy",
+      "breakpoints": true
     }
   ]
 }

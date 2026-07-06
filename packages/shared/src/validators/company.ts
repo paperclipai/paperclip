@@ -3,6 +3,7 @@ import {
   COMPANY_STATUSES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
 } from "../constants.js";
+import { issueExecutionPolicySchema } from "./issue.js";
 
 const logoAssetIdSchema = z.string().uuid().nullable().optional();
 const brandColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional();
@@ -12,6 +13,14 @@ const attachmentMaxBytesSchema = z
   .int()
   .min(1)
   .max(MAX_COMPANY_ATTACHMENT_MAX_BYTES);
+
+const companySettingsSchema = z
+  .object({
+    defaultExecutionPolicy: issueExecutionPolicySchema.nullable().optional(),
+  })
+  .partial()
+  .nullable()
+  .optional();
 
 export const createCompanySchema = z.object({
   name: z.string().min(1),
@@ -35,6 +44,7 @@ export const updateCompanySchema = createCompanySchema
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
     attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
+    settings: companySettingsSchema,
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;
