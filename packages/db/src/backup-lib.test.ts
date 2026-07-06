@@ -122,6 +122,19 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           `;
         }
 
+        const stalePartial = path.join(
+          backupDir,
+          "paperclip-test-20200101-000000.sql.gz.partial",
+        );
+        fs.writeFileSync(stalePartial, "orphaned crashed backup");
+        const staleMtime = new Date(Date.now() - 48 * 60 * 60 * 1000);
+        fs.utimesSync(stalePartial, staleMtime, staleMtime);
+        const freshPartial = path.join(
+          backupDir,
+          "paperclip-test-20990101-000000.sql.gz.partial",
+        );
+        fs.writeFileSync(freshPartial, "concurrent in-progress backup");
+
         const result = await runDatabaseBackup({
           connectionString: sourceConnectionString,
           backupDir,
@@ -133,6 +146,11 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         expect(result.backupFile).toMatch(/paperclip-test-.*\.sql\.gz$/);
         expect(result.sizeBytes).toBeGreaterThan(0);
         expect(fs.existsSync(result.backupFile)).toBe(true);
+        // The completed archive is renamed from its .partial staging path,
+        // stale orphaned partials are pruned, recent ones are left alone.
+        expect(fs.existsSync(`${result.backupFile}.partial`)).toBe(false);
+        expect(fs.existsSync(stalePartial)).toBe(false);
+        expect(fs.existsSync(freshPartial)).toBe(true);
 
         await runDatabaseRestore({
           connectionString: restoreConnectionString,
