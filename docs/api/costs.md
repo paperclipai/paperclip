@@ -3,7 +3,7 @@ title: Costs
 summary: Cost events, summaries, and budget management
 ---
 
-Track token usage and spending across agents, projects, and the company.
+Track token usage and model-equivalent spending across agents, projects, and the company. `costCents` is the budget/control-plane valuation for the underlying model call; subscription-backed authentication should still report the model's equivalent cost so agent budgets can control subscription burn.
 
 ## Report Cost Event
 
@@ -19,7 +19,7 @@ POST /api/companies/{companyId}/cost-events
 }
 ```
 
-Typically reported automatically by adapters after each heartbeat.
+Typically reported automatically by adapters after each heartbeat. For subscription or proxy-backed routes, adapters should keep `billingType`/`biller` accurate while still reporting the underlying model's equivalent cost in `costCents` when known. If a subscription-backed event reports tokens with zero cost for a known Anthropic/OpenAI model family, Paperclip estimates `costCents` from the underlying model pricing so budgets still apply.
 
 ## Company Cost Summary
 
