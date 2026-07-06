@@ -1056,9 +1056,11 @@ export interface ThreadMessageSection {
 }
 
 function messagePresentation(message: ThreadMessage): { kind?: string; title?: string | null } | null {
-  const custom = (message.metadata as { custom?: Record<string, unknown> } | undefined)?.custom;
-  const presentation = custom?.presentation as { kind?: string; title?: string | null } | null | undefined;
-  return presentation ?? null;
+  const meta = message.metadata as { custom?: Record<string, unknown> } | null | undefined;
+  if (!meta?.custom) return null;
+  const presentation = meta.custom["presentation"];
+  if (!presentation || typeof presentation !== "object") return null;
+  return presentation as { kind?: string; title?: string | null };
 }
 
 export function groupMessagesIntoPhaseSections(messages: readonly ThreadMessage[]): ThreadMessageSection[] {
@@ -1073,6 +1075,10 @@ export function groupMessagesIntoPhaseSections(messages: readonly ThreadMessage[
       current.messages.push(message);
     }
   }
-  if (current.messages.length > 0) sections.push(current);
+  // Always return at least the prelude section — for a non-empty `messages`
+  // input `current` can never be empty here (every branch above pushes to
+  // it), so this only changes behavior for a genuinely empty thread, letting
+  // callers assume `sections.length >= 1` instead of special-casing `[]`.
+  if (current.messages.length > 0 || sections.length === 0) sections.push(current);
   return sections;
 }

@@ -1272,4 +1272,12 @@ describe("groupMessagesIntoPhaseSections", () => {
     expect(sections[0]?.boundaryMessage).toBeNull();
     expect(sections[0]?.messages.map((m) => m.id)).toEqual(["c1", "c2"]);
   });
+
+  it("returns a single empty prelude section for an empty thread, never []", () => {
+    const sections = groupMessagesIntoPhaseSections([]);
+    expect(sections).toHaveLength(1);
+    expect(sections[0]?.key).toBe("prelude");
+    expect(sections[0]?.boundaryMessage).toBeNull();
+    expect(sections[0]?.messages).toEqual([]);
+  });
 });
