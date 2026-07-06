@@ -4902,6 +4902,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const detectedProgressSummary = await buildDetectedSuccessfulRunProgressSummary(run);
 
     const [
+      recentHandoffWake,
+      latestUserComment,
       activeExecutionPath,
       queuedWake,
       pendingInteraction,
@@ -4911,9 +4913,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       existingWake,
       budgetBlock,
       pauseHold,
-      recentHandoffWake,
-      latestUserComment,
     ] = await Promise.all([
+      // Most recent successful_run_missing_state handoff wake already queued for this
+      // issue across ANY source run — used to enforce the per-issue recovery cooldown.
+      issue
+        ? db
+          .select({ createdAt: agentWakeupRequests.createdAt })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, issue.companyId),
+              eq(agentWakeupRequests.reason, FINISH_SUCCESSFUL_RUN_HANDOFF_REASON),
+              sql`(
+                ${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}
+                or ${agentWakeupRequests.payload} ->> 'taskId' = ${issue.id}
+                or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId' = ${issue.id}
+                or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId' = ${issue.id}
+              )`,
+            ),
+          )
+          .orderBy(desc(agentWakeupRequests.createdAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      // Most recent human/board (authorType = "user") comment on the issue — a fresh
+      // one after the last handoff wake bypasses the cooldown.
+      issue
+        ? db
+          .select({ createdAt: issueComments.createdAt })
+          .from(issueComments)
+          .where(
+            and(
+              eq(issueComments.companyId, issue.companyId),
+              eq(issueComments.issueId, issue.id),
+              eq(issueComments.authorType, "user"),
+            ),
+          )
+          .orderBy(desc(issueComments.createdAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
       issue
         ? db
           .select({ id: heartbeatRuns.id })
@@ -5037,45 +5076,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : Promise.resolve(null),
       issue
         ? treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id)
-        : Promise.resolve(null),
-      // Most recent successful_run_missing_state handoff wake already queued for this
-      // issue across ANY source run — used to enforce the per-issue recovery cooldown.
-      issue
-        ? db
-          .select({ createdAt: agentWakeupRequests.createdAt })
-          .from(agentWakeupRequests)
-          .where(
-            and(
-              eq(agentWakeupRequests.companyId, issue.companyId),
-              eq(agentWakeupRequests.reason, FINISH_SUCCESSFUL_RUN_HANDOFF_REASON),
-              sql`(
-                ${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}
-                or ${agentWakeupRequests.payload} ->> 'taskId' = ${issue.id}
-                or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId' = ${issue.id}
-                or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId' = ${issue.id}
-              )`,
-            ),
-          )
-          .orderBy(desc(agentWakeupRequests.createdAt))
-          .limit(1)
-          .then((rows) => rows[0] ?? null)
-        : Promise.resolve(null),
-      // Most recent human/board (authorType = "user") comment on the issue — a fresh
-      // one after the last handoff wake bypasses the cooldown.
-      issue
-        ? db
-          .select({ createdAt: issueComments.createdAt })
-          .from(issueComments)
-          .where(
-            and(
-              eq(issueComments.companyId, issue.companyId),
-              eq(issueComments.issueId, issue.id),
-              eq(issueComments.authorType, "user"),
-            ),
-          )
-          .orderBy(desc(issueComments.createdAt))
-          .limit(1)
-          .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
     ]);
 
