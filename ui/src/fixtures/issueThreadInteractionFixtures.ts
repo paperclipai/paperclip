@@ -329,6 +329,34 @@ export const acceptedSuggestedTasksInteraction = createSuggestTasksInteraction({
   },
 });
 
+export const partialAcceptedSuggestedTasksInteraction = createSuggestTasksInteraction({
+  id: "interaction-suggest-partial-accepted",
+  status: "accepted",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T14:16:30.000Z"),
+  updatedAt: new Date("2026-04-20T14:16:30.000Z"),
+  result: {
+    version: 1,
+    createdTasks: [
+      {
+        clientKey: "root-design",
+        issueId: "issue-created-1",
+        identifier: "PAP-1713",
+        title: "Prototype issue-thread interaction cards",
+      },
+      {
+        clientKey: "child-stories",
+        issueId: "issue-created-2",
+        identifier: "PAP-1714",
+        title: "Add Storybook coverage for acceptance and rejection states",
+        parentIssueId: "issue-created-1",
+        parentIdentifier: "PAP-1713",
+      },
+    ],
+    skippedClientKeys: ["child-mixed-thread", "hidden-follow-up"],
+  },
+});
+
 export const rejectedSuggestedTasksInteraction = createSuggestTasksInteraction({
   id: "interaction-suggest-rejected",
   status: "rejected",
@@ -342,7 +370,91 @@ export const rejectedSuggestedTasksInteraction = createSuggestTasksInteraction({
   },
 });
 
+export const expiredSuggestedTasksInteraction = createSuggestTasksInteraction({
+  id: "interaction-suggest-expired",
+  status: "expired",
+  resolvedByAgentId: "agent-codex",
+  resolvedAt: new Date("2026-04-20T14:17:30.000Z"),
+  updatedAt: new Date("2026-04-20T14:17:30.000Z"),
+});
+
+export const cancelledSuggestedTasksInteraction = createSuggestTasksInteraction({
+  id: "interaction-suggest-cancelled",
+  status: "cancelled",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T14:17:45.000Z"),
+  updatedAt: new Date("2026-04-20T14:17:45.000Z"),
+});
+
+export const failedSuggestedTasksInteraction = createSuggestTasksInteraction({
+  id: "interaction-suggest-failed",
+  status: "failed",
+  updatedAt: new Date("2026-04-20T14:17:55.000Z"),
+});
+
 export const pendingAskUserQuestionsInteraction = createAskUserQuestionsInteraction({});
+
+export const everyQuestionTypeAskUserQuestionsInteraction = createAskUserQuestionsInteraction({
+  id: "interaction-questions-every-type",
+  title: "Confirm rollout answers",
+  summary:
+    "This fixture keeps single-select, multi-select, optional, long-copy, and other free-text inputs visible in one form.",
+  payload: {
+    version: 1,
+    title: "Rollout choices",
+    submitLabel: "Submit rollout answers",
+    questions: [
+      {
+        id: "free-text",
+        prompt: "What extra context should the implementer carry into the rollout?",
+        helpText:
+          "Use the Other field for free-form text. The schema still stores this as a structured question answer.",
+        selectionMode: "single",
+        required: true,
+        options: [
+          {
+            id: "use-other",
+            label: "I'll write the answer in Other",
+            description: "Exercises the free-text answer path without adding a separate schema shape.",
+          },
+        ],
+      },
+      {
+        id: "single-select",
+        prompt: "Which rollout path should be treated as the default?",
+        selectionMode: "single",
+        required: true,
+        options: [
+          { id: "guarded", label: "Guarded rollout", description: "Ship behind the existing flag first." },
+          { id: "direct", label: "Direct rollout", description: "Enable the behavior immediately." },
+        ],
+      },
+      {
+        id: "multi-select",
+        prompt: "Which review signals should be included in the handoff?",
+        helpText:
+          "This intentionally uses longer copy so the option rows prove wrapping behavior in the card.",
+        selectionMode: "multi",
+        required: true,
+        options: [
+          { id: "storybook", label: "Storybook snapshots", description: "Reference the visual matrix directly." },
+          { id: "unit-tests", label: "Focused unit tests", description: "Keep the regression proof close to the component." },
+          { id: "accessibility", label: "A11y notes", description: "Flag keyboard and screen-reader concerns while reviewing the card." },
+        ],
+      },
+      {
+        id: "optional",
+        prompt: "Optional: which follow-up should wait until after this change?",
+        selectionMode: "multi",
+        required: false,
+        options: [
+          { id: "animation", label: "Micro-animation polish" },
+          { id: "copy-pass", label: "Long-form copy review" },
+        ],
+      },
+    ],
+  },
+});
 
 export const answeredAskUserQuestionsInteraction = createAskUserQuestionsInteraction({
   id: "interaction-questions-answered",
@@ -370,6 +482,41 @@ export const answeredAskUserQuestionsInteraction = createAskUserQuestionsInterac
   },
 });
 
+export const everyQuestionTypeAnsweredAskUserQuestionsInteraction = createAskUserQuestionsInteraction({
+  id: "interaction-questions-every-type-answered",
+  status: "answered",
+  title: everyQuestionTypeAskUserQuestionsInteraction.title,
+  summary: everyQuestionTypeAskUserQuestionsInteraction.summary,
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T14:24:30.000Z"),
+  updatedAt: new Date("2026-04-20T14:24:30.000Z"),
+  payload: everyQuestionTypeAskUserQuestionsInteraction.payload,
+  result: {
+    version: 1,
+    answers: [
+      {
+        questionId: "free-text",
+        optionIds: [],
+        otherText: "Keep the rollout reversible until QA signs off on mobile-width cards.",
+      },
+      {
+        questionId: "single-select",
+        optionIds: ["guarded"],
+      },
+      {
+        questionId: "multi-select",
+        optionIds: ["storybook", "accessibility"],
+      },
+      {
+        questionId: "optional",
+        optionIds: [],
+      },
+    ],
+    summaryMarkdown:
+      "Use a guarded rollout, include Storybook and a11y notes, and keep the free-text guidance visible.",
+  },
+});
+
 export const commentExpiredAskUserQuestionsInteraction = createAskUserQuestionsInteraction({
   id: "interaction-questions-expired-comment",
   status: "expired",
@@ -381,6 +528,32 @@ export const commentExpiredAskUserQuestionsInteraction = createAskUserQuestionsI
     answers: [],
     expirationReason: "superseded_by_comment",
     commentId: "22222222-2222-4222-8222-222222222222",
+    summaryMarkdown: null,
+  },
+});
+
+export const cancelledAskUserQuestionsInteraction = createAskUserQuestionsInteraction({
+  id: "interaction-questions-cancelled",
+  status: "cancelled",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T14:25:30.000Z"),
+  updatedAt: new Date("2026-04-20T14:25:30.000Z"),
+  result: {
+    version: 1,
+    answers: [],
+    cancelled: true,
+    cancellationReason: "The board answered this in a later synchronous review.",
+    summaryMarkdown: null,
+  },
+});
+
+export const failedAskUserQuestionsInteraction = createAskUserQuestionsInteraction({
+  id: "interaction-questions-failed",
+  status: "failed",
+  updatedAt: new Date("2026-04-20T14:25:45.000Z"),
+  result: {
+    version: 1,
+    answers: [],
     summaryMarkdown: null,
   },
 });
@@ -540,6 +713,14 @@ export const failedRequestConfirmationInteraction = createRequestConfirmationInt
   updatedAt: new Date("2026-04-20T14:42:00.000Z"),
 });
 
+export const cancelledRequestConfirmationInteraction = createRequestConfirmationInteraction({
+  id: "interaction-confirmation-cancelled",
+  status: "cancelled",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T14:43:00.000Z"),
+  updatedAt: new Date("2026-04-20T14:43:00.000Z"),
+});
+
 export const pendingRequestCheckboxConfirmationInteraction =
   createRequestCheckboxConfirmationInteraction({});
 
@@ -642,6 +823,21 @@ export const rejectedRequestCheckboxConfirmationInteraction =
     },
   });
 
+export const commentExpiredRequestCheckboxConfirmationInteraction =
+  createRequestCheckboxConfirmationInteraction({
+    id: "interaction-checkbox-expired-comment",
+    status: "expired",
+    resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+    resolvedAt: new Date("2026-04-20T14:50:30.000Z"),
+    updatedAt: new Date("2026-04-20T14:50:30.000Z"),
+    result: {
+      version: 1,
+      outcome: "superseded_by_comment",
+      commentId: "22222222-2222-4222-8222-222222222222",
+      selectedOptionIds: [],
+    },
+  });
+
 export const staleTargetRequestCheckboxConfirmationInteraction =
   createRequestCheckboxConfirmationInteraction({
     id: "interaction-checkbox-stale",
@@ -677,6 +873,22 @@ export const staleTargetRequestCheckboxConfirmationInteraction =
         revisionNumber: 3,
       },
     },
+  });
+
+export const cancelledRequestCheckboxConfirmationInteraction =
+  createRequestCheckboxConfirmationInteraction({
+    id: "interaction-checkbox-cancelled",
+    status: "cancelled",
+    resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+    resolvedAt: new Date("2026-04-20T14:51:30.000Z"),
+    updatedAt: new Date("2026-04-20T14:51:30.000Z"),
+  });
+
+export const failedRequestCheckboxConfirmationInteraction =
+  createRequestCheckboxConfirmationInteraction({
+    id: "interaction-checkbox-failed",
+    status: "failed",
+    updatedAt: new Date("2026-04-20T14:51:45.000Z"),
   });
 
 export const issueThreadInteractionComments: IssueChatComment[] = [

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { Agent } from "@paperclipai/shared";
-import { AlertTriangle, CheckCircle2, ChevronRight, CircleDashed, FileText, GitBranch, ImagePlus, ListChecks, Loader2, MessageSquareQuote, X, XCircle } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, FileText, GitBranch, ImagePlus, ListChecks, Loader2, MessageSquareQuote, X, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import {
@@ -20,13 +20,12 @@ import {
   type SuggestedTaskDraft,
   type SuggestedTaskTreeNode,
 } from "../lib/issue-thread-interactions";
-import { cn, formatDateTime, formatShortDate } from "../lib/utils";
+import { cn, formatShortDate } from "../lib/utils";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
 import { PriorityIcon } from "./PriorityIcon";
 import { Textarea } from "./ui/textarea";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 const OTHER_ANSWER_ID = "__paperclip_other__";
 
@@ -99,19 +98,17 @@ function statusLabel(status: IssueThreadInteraction["status"]) {
   }
 }
 
-function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
-  switch (kind) {
-    case "suggest_tasks":
-      return "Suggested tasks";
-    case "ask_user_questions":
-      return "Ask user questions";
-    case "request_confirmation":
-      return "Confirmation";
-    case "request_checkbox_confirmation":
-      return "Checkbox confirmation";
-    default:
-      return kind;
-  }
+function interactionFallbackTitle(interaction: IssueThreadInteraction, isPlan: boolean) {
+  return interaction.title
+    ?? (interaction.kind === "suggest_tasks"
+      ? "Suggested task tree"
+      : interaction.kind === "ask_user_questions"
+        ? interaction.payload.title ?? "Questions for the operator"
+        : interaction.kind === "request_checkbox_confirmation"
+          ? "Checkbox confirmation requested"
+          : isPlan
+            ? "Plan review"
+            : "Confirmation requested");
 }
 
 function statusIcon(status: IssueThreadInteraction["status"]) {
@@ -130,39 +127,66 @@ function statusIcon(status: IssueThreadInteraction["status"]) {
   }
 }
 
-function statusClasses(status: IssueThreadInteraction["status"]) {
+function interactionTypeIcon(kind: IssueThreadInteraction["kind"]) {
+  switch (kind) {
+    case "suggest_tasks":
+      return ListChecks;
+    case "ask_user_questions":
+      return MessageSquareQuote;
+    case "request_confirmation":
+      return FileText;
+    case "request_checkbox_confirmation":
+      return ListChecks;
+    default:
+      return CircleDashed;
+  }
+}
+
+function statusBadgeLabel(interaction: IssueThreadInteraction, isPlan: boolean) {
+  if (interaction.status === "pending") {
+    switch (interaction.kind) {
+      case "suggest_tasks":
+        return "Needs review";
+      case "ask_user_questions":
+        return "Needs answers";
+      case "request_checkbox_confirmation":
+        return "Needs selection";
+      case "request_confirmation":
+        return isPlan ? "Needs approval" : "Needs confirmation";
+      default:
+        return "Pending";
+    }
+  }
+
+  if (isPlan && interaction.status === "accepted") return "Approved";
+  if (isPlan && interaction.status === "rejected") return "Changes requested";
+  if (interaction.kind === "request_confirmation" && interaction.status === "accepted") return "Confirmed";
+  if (interaction.kind === "request_checkbox_confirmation" && interaction.status === "accepted") return "Confirmed";
+  return statusLabel(interaction.status);
+}
+
+function statusTone(status: IssueThreadInteraction["status"]): "pending" | "success" | "danger" | "warning" | "muted" {
   switch (status) {
     case "accepted":
     case "answered":
-      return {
-        shell: "border-emerald-400/70 bg-transparent",
-        badge: "border-emerald-500/60 bg-emerald-500/10 text-emerald-900 dark:bg-emerald-500/15 dark:text-emerald-100",
-      };
+      return "success";
     case "rejected":
     case "cancelled":
-      return {
-        shell: "border-rose-400/70 bg-transparent",
-        badge: "border-rose-500/60 bg-rose-500/10 text-rose-900 dark:bg-rose-500/15 dark:text-rose-100",
-      };
+      return "danger";
     case "failed":
     case "expired":
-      return {
-        shell: "border-amber-400/70 bg-transparent",
-        badge: "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
-      };
+      return "warning";
+    case "pending":
+      return "pending";
     default:
-      return {
-        shell: "border-sky-500/70 bg-transparent",
-        badge: "border-sky-500/70 bg-sky-500/10 text-sky-900 dark:bg-sky-500/15 dark:text-sky-100",
-      };
+      return "muted";
   }
 }
 
 /**
- * A confirmation that targets the issue's `plan` document renders as a distinct
- * plan card (PAP-95g): a full state-coloured outline — violet while in review,
- * green once approved, red when changes are requested (PAP-75 palette) — with no
- * left stripe, so plans stand out from comments and status rows.
+ * A confirmation that targets the issue's `plan` document uses plan-specific
+ * label copy ("Plan review", approve/request-changes wording). The card shell
+ * itself is the same neutral disclosure row as every other interaction.
  */
 function isPlanConfirmation(interaction: IssueThreadInteraction): boolean {
   if (interaction.kind !== "request_confirmation") return false;
@@ -170,40 +194,59 @@ function isPlanConfirmation(interaction: IssueThreadInteraction): boolean {
   return target?.type === "issue_document" && target?.key === "plan";
 }
 
-function planStatusClasses(status: IssueThreadInteraction["status"]) {
-  switch (status) {
-    case "accepted":
-    case "answered":
-      return {
-        shell: "border-2 border-green-500/80 bg-transparent",
-        badge: "border-green-500/60 bg-green-500/10 text-green-900 dark:bg-green-500/15 dark:text-green-100",
-        label: "Approved",
-        Icon: CheckCircle2,
-      };
-    case "rejected":
-    case "cancelled":
-      return {
-        shell: "border-2 border-red-500/80 bg-transparent",
-        badge: "border-red-500/60 bg-red-500/10 text-red-900 dark:bg-red-500/15 dark:text-red-100",
-        label: "Changes requested",
-        Icon: XCircle,
-      };
-    case "failed":
-    case "expired":
-      return {
-        shell: "border-2 border-amber-500/70 bg-transparent",
-        badge: "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
-        label: "Expired",
-        Icon: AlertTriangle,
-      };
-    default:
-      return {
-        shell: "border-2 border-violet-500/80 bg-transparent",
-        badge: "border-violet-500/60 bg-violet-500/10 text-violet-900 dark:bg-violet-500/15 dark:text-violet-100",
-        label: "In review",
-        Icon: FileText,
-      };
-  }
+function StatusBadge({
+  status,
+  children,
+}: {
+  status: IssueThreadInteraction["status"];
+  children: ReactNode;
+}) {
+  const tone = statusTone(status);
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium",
+        tone === "pending" && "bg-yellow-500/10 text-yellow-700 dark:text-yellow-400",
+        tone === "success" && "bg-green-500/10 text-green-700 dark:text-green-400",
+        tone === "danger" && "bg-rose-500/10 text-rose-700 dark:text-rose-400",
+        tone === "warning" && "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+        tone === "muted" && "bg-muted text-muted-foreground",
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
+function InteractionOutcomeLine({
+  interaction,
+  resolvedByLabel,
+}: {
+  interaction: IssueThreadInteraction;
+  resolvedByLabel: string | null;
+}) {
+  if (!resolvedByLabel && !interaction.resolvedAt) return null;
+
+  const Icon = statusIcon(interaction.status);
+  const tone = statusTone(interaction.status);
+  return (
+    <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+      <Icon
+        className={cn(
+          "h-3.5 w-3.5 shrink-0",
+          tone === "success" && "text-green-600 dark:text-green-400",
+          tone === "danger" && "text-rose-600 dark:text-rose-400",
+          tone === "warning" && "text-amber-600 dark:text-amber-400",
+          tone === "pending" && "text-yellow-600 dark:text-yellow-400",
+        )}
+      />
+      <span>
+        <span className="font-medium text-foreground">{statusBadgeLabel(interaction, isPlanConfirmation(interaction))}</span>
+        {resolvedByLabel ? ` by ${resolvedByLabel}` : ""}
+        {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
+      </span>
+    </p>
+  );
 }
 
 function TaskField({
@@ -583,7 +626,7 @@ function SuggestTasksCard({
 
             <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
               <Button
-                size="sm"
+                size="xs"
                 disabled={!onAcceptInteraction || working !== null || selectedCount === 0}
                 onClick={() => void handleAccept()}
               >
@@ -597,7 +640,7 @@ function SuggestTasksCard({
                 )}
               </Button>
               <Button
-                size="sm"
+                size="xs"
                 variant="outline"
                 disabled={!onRejectInteraction || working !== null}
                 onClick={() => setRejecting((current) => !current)}
@@ -606,7 +649,7 @@ function SuggestTasksCard({
               </Button>
               {selectedCount < totalTasks ? (
                 <Button
-                  size="sm"
+                  size="xs"
                   variant="ghost"
                   disabled={working !== null}
                   onClick={() => setSelectedClientKeys(new Set(interaction.payload.tasks.map((task) => task.clientKey)))}
@@ -627,7 +670,7 @@ function SuggestTasksCard({
               />
               <div className="flex justify-end">
                 <Button
-                  size="sm"
+                  size="xs"
                   variant="outline"
                   disabled={!onRejectInteraction || working !== null}
                   onClick={() => void handleReject()}
@@ -671,34 +714,31 @@ function QuestionOptionButton({
       role={selectionMode === "single" ? "radio" : "checkbox"}
       aria-checked={selected}
       className={cn(
-        "w-full rounded-sm border px-4 py-3 text-left transition-colors outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
-        selected
-          ? "border-sky-500/80 bg-sky-500/10 text-sky-950 dark:border-sky-400/80 dark:bg-sky-400/15 dark:text-sky-50"
-          : "border-border/70 bg-transparent text-foreground hover:border-sky-500/70 hover:bg-sky-500/10 dark:hover:border-sky-400/70 dark:hover:bg-sky-400/10",
+        "flex min-h-8 w-full items-start gap-2 text-left text-sm outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/50",
+        selected ? "text-foreground" : "text-muted-foreground hover:text-foreground",
       )}
       id={id}
       onClick={onClick}
     >
-      <div
+      <span
         className={cn(
-          "text-sm font-medium",
-          selected ? "text-sky-950 dark:text-sky-50" : "text-foreground",
+          "mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center border",
+          selectionMode === "single" ? "rounded-full" : "rounded-[3px]",
+          selected
+            ? "border-primary bg-primary text-primary-foreground"
+            : "border-input bg-background",
         )}
       >
-        {label}
-      </div>
-      {description ? (
-        <div
-          className={cn(
-            "mt-1 text-sm leading-6",
-            selected
-              ? "text-sky-900/80 dark:text-sky-100/80"
-              : "text-muted-foreground",
-          )}
-        >
-          {description}
-        </div>
-      ) : null}
+        {selected ? <Check className="h-2.5 w-2.5" /> : null}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block font-medium">{label}</span>
+        {description ? (
+          <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
+            {description}
+          </span>
+        ) : null}
+      </span>
     </button>
   );
 }
@@ -840,28 +880,22 @@ function AskUserQuestionsCard({
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2.5 py-1 font-medium uppercase tracking-[0.16em] text-foreground/70">
-          <MessageSquareQuote className="h-3 w-3" />
-          Ask user questions
-        </span>
-        <span>
-          {questions.length === 1
-            ? "1 question"
-            : `${questions.length} questions`}
-        </span>
+    <div className="space-y-3">
+      <div className="text-xs text-muted-foreground">
+        {questions.length === 1
+          ? "1 question"
+          : `${questions.length} questions`}
       </div>
 
       {interaction.status === "pending" ? (
-        <div className="space-y-4">
+        <div className="space-y-3">
           {questions.map((question, index) => (
             <div
               key={question.id}
-              className="rounded-2xl border border-border/70 bg-background/82 p-4 shadow-[0_18px_42px_rgba(15,23,42,0.06)]"
+              className="border-b border-border/60 pb-3 last:border-b-0 last:pb-0"
             >
               <div className="flex items-start justify-between gap-3">
-                <div>
+                <div className="min-w-0 flex-1">
                   <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
                     Question {index + 1}
                   </div>
@@ -884,9 +918,9 @@ function AskUserQuestionsCard({
                 />
               </div>
 
-              <div className="mt-3 space-y-3">
+              <div className="mt-2.5 space-y-2">
                 <div
-                  className="grid gap-3"
+                  className="space-y-1"
                   role={question.selectionMode === "single" ? "radiogroup" : "group"}
                   aria-labelledby={`${interaction.id}-${question.id}-prompt`}
                 >
@@ -935,14 +969,14 @@ function AskUserQuestionsCard({
             </div>
           ))}
 
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border/70 bg-background/75 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="text-sm text-muted-foreground">
               Submit once after you finish the full form.
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {onCancelInteraction ? (
                 <Button
-                  size="sm"
+                  size="xs"
                   variant="outline"
                   disabled={working || cancelling}
                   onClick={() => void handleCancel()}
@@ -958,7 +992,7 @@ function AskUserQuestionsCard({
                   </Button>
                 ) : null}
               <Button
-                size="sm"
+                size="xs"
                 disabled={!onSubmitInteractionAnswers || !canSubmit || working || cancelling}
                 onClick={() => void handleSubmit()}
               >
@@ -975,7 +1009,7 @@ function AskUserQuestionsCard({
           </div>
         </div>
       ) : interaction.status === "cancelled" ? (
-        <div className="rounded-2xl border border-rose-300/60 bg-rose-50/85 p-4 text-sm leading-6 text-rose-950 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100">
+        <div className="rounded-sm border-l-2 border-rose-500/70 bg-rose-500/10 px-3 py-2 text-sm leading-6 text-rose-900 dark:text-rose-100">
           <div className="font-semibold">Question cancelled</div>
           {interaction.result?.cancellationReason ? (
             <p className="mt-1">{interaction.result.cancellationReason}</p>
@@ -984,7 +1018,7 @@ function AskUserQuestionsCard({
           )}
         </div>
       ) : interaction.status === "expired" ? (
-        <div className="rounded-2xl border border-amber-300/70 bg-amber-50/85 p-4 text-sm leading-6 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+        <div className="rounded-sm border-l-2 border-amber-500/70 bg-amber-500/10 px-3 py-2 text-sm leading-6 text-amber-900 dark:text-amber-100">
           <div className="flex items-center gap-2 font-semibold">
             <AlertTriangle className="h-4 w-4" />
             {questions.length === 1 ? "Question expired by comment" : "Questions expired by comment"}
@@ -1011,7 +1045,7 @@ function AskUserQuestionsCard({
             return (
               <div
                 key={question.id}
-                className="rounded-2xl border border-border/70 bg-background/82 p-4"
+                className="border-b border-border/60 pb-3 last:border-b-0 last:pb-0"
               >
                 <div className="text-sm font-semibold text-foreground">
                   {question.prompt}
@@ -1030,7 +1064,7 @@ function AskUserQuestionsCard({
           })}
 
           {interaction.result?.summaryMarkdown ? (
-            <div className="rounded-2xl border border-emerald-300/60 bg-emerald-50/85 p-4">
+            <div className="rounded-sm border-l-2 border-emerald-500/70 bg-emerald-500/10 px-3 py-2">
               <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
                 Submitted summary
               </div>
@@ -1156,7 +1190,7 @@ function RequestConfirmationResolution({
             : "The requested target changed before this confirmation was resolved."}
         </p>
         {expiredByComment && interaction.result?.commentId ? (
-          <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
+          <Button asChild size="xs" variant="ghost" className="text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
             <a href={`#comment-${interaction.result.commentId}`}>Jump to comment</a>
           </Button>
         ) : null}
@@ -1300,7 +1334,7 @@ function RequestConfirmationCard({
   return (
     <div className="space-y-4">
       {interaction.status === "pending" ? (
-        <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
+        <div className="space-y-2">
           <div className="text-sm leading-6 text-foreground">
             {interaction.payload.prompt}
           </div>
@@ -1320,7 +1354,7 @@ function RequestConfirmationCard({
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
-              size="sm"
+              size="xs"
               variant={rejecting ? "outline" : isPlan ? "cta" : "default"}
               disabled={!onAcceptInteraction || working !== null}
               onClick={() => void handleAccept()}
@@ -1335,7 +1369,7 @@ function RequestConfirmationCard({
               )}
             </Button>
             <Button
-              size="sm"
+              size="xs"
               variant="outline"
               disabled={!onRejectInteraction || working !== null}
               onClick={() => {
@@ -1408,7 +1442,7 @@ function RequestConfirmationCard({
                   />
                   <Button
                     type="button"
-                    size="sm"
+                    size="xs"
                     variant="outline"
                     disabled={working !== null || uploading}
                     onClick={() => fileInputRef.current?.click()}
@@ -1432,7 +1466,7 @@ function RequestConfirmationCard({
               ) : null}
               <div className="flex flex-wrap justify-end gap-2">
                 <Button
-                  size="sm"
+                  size="xs"
                   variant="ghost"
                   disabled={working !== null}
                   onClick={() => {
@@ -1443,7 +1477,7 @@ function RequestConfirmationCard({
                   Cancel decline
                 </Button>
                 <Button
-                  size="sm"
+                  size="xs"
                   variant="outline"
                   disabled={!onRejectInteraction || working !== null}
                   onClick={() => void handleReject()}
@@ -1741,8 +1775,8 @@ function RequestCheckboxConfirmationCard({
       : null;
 
   return (
-    <div className="space-y-4">
-      <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
+    <div className="space-y-3">
+      <div className="space-y-2">
         <div className="text-sm leading-6 text-foreground">{interaction.payload.prompt}</div>
         {interaction.payload.detailsMarkdown ? (
           <div className="border-t border-border/60 pt-3 text-sm">
@@ -1763,7 +1797,7 @@ function RequestCheckboxConfirmationCard({
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
-              size="sm"
+              size="xs"
               variant="ghost"
               disabled={working !== null || selectedCount === totalOptions || (maxSelected != null && selectedCount >= maxSelected)}
               onClick={handleSelectAll}
@@ -1771,7 +1805,7 @@ function RequestCheckboxConfirmationCard({
               Select all
             </Button>
             <Button
-              size="sm"
+              size="xs"
               variant="ghost"
               disabled={working !== null || selectedCount === 0}
               onClick={handleClearSelection}
@@ -1808,7 +1842,7 @@ function RequestCheckboxConfirmationCard({
 
         <div className="flex flex-wrap items-center justify-end gap-2">
           <Button
-            size="sm"
+            size="xs"
             variant={rejecting ? "outline" : "default"}
             disabled={!onAcceptInteraction || working !== null}
             onClick={() => void handleAccept()}
@@ -1823,7 +1857,7 @@ function RequestCheckboxConfirmationCard({
             )}
           </Button>
           <Button
-            size="sm"
+            size="xs"
             variant="outline"
             disabled={!onRejectInteraction || working !== null}
             onClick={() => {
@@ -1857,7 +1891,7 @@ function RequestCheckboxConfirmationCard({
             ) : null}
             <div className="flex flex-wrap justify-end gap-2">
               <Button
-                size="sm"
+                size="xs"
                 variant="ghost"
                 disabled={working !== null}
                 onClick={() => {
@@ -1868,7 +1902,7 @@ function RequestCheckboxConfirmationCard({
                 Cancel
               </Button>
               <Button
-                size="sm"
+                size="xs"
                 variant="outline"
                 disabled={!onRejectInteraction || working !== null}
                 onClick={() => void handleReject()}
@@ -1909,9 +1943,11 @@ export function IssueThreadInteractionCard({
   externalReferences,
 }: IssueThreadInteractionCardProps) {
   const isPlan = isPlanConfirmation(interaction);
-  const planStyles = isPlan ? planStatusClasses(interaction.status) : null;
-  const StatusIcon = planStyles ? planStyles.Icon : statusIcon(interaction.status);
-  const styles = planStyles ?? statusClasses(interaction.status);
+  const [open, setOpen] = useState(true);
+  const TypeIcon = interactionTypeIcon(interaction.kind);
+  const typeIconTone = interaction.status === "pending"
+    ? "text-yellow-600 dark:text-yellow-400"
+    : "text-muted-foreground";
   const createdByLabel = resolveActorLabel({
     agentId: interaction.createdByAgentId,
     userId: interaction.createdByUserId,
@@ -1929,101 +1965,92 @@ export function IssueThreadInteractionCard({
           userLabelMap,
         })
       : null;
+  const title = interactionFallbackTitle(interaction, isPlan);
+  const continuationLabel =
+    interaction.continuationPolicy === "wake_assignee_on_accept"
+      ? "Wakes on confirm"
+      : interaction.continuationPolicy === "wake_assignee"
+        ? "Wakes responsible"
+        : null;
+  const metaParts = [
+    resolvedByLabel ?? createdByLabel,
+    resolvedByLabel && interaction.resolvedAt
+      ? formatShortDate(interaction.resolvedAt)
+      : formatShortDate(interaction.createdAt),
+    continuationLabel,
+  ].filter(Boolean);
+
+  useEffect(() => {
+    setOpen(true);
+  }, [interaction.id]);
 
   return (
-    <div className={cn("rounded-sm border p-5 shadow-none", styles.shell)}>
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0 flex-1 basis-64">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={cn("inline-flex items-center gap-1 rounded-sm border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em]", styles.badge)}>
-              <StatusIcon className="h-3.5 w-3.5" />
-              {isPlan ? "Plan" : interactionKindLabel(interaction.kind)}
-              <span className="text-current/60">/</span>
-              {planStyles ? planStyles.label : statusLabel(interaction.status)}
-            </span>
-            {interaction.continuationPolicy === "wake_assignee"
-              || interaction.continuationPolicy === "wake_assignee_on_accept" ? (
-              <span className="inline-flex items-center gap-1 rounded-sm border border-border/70 bg-transparent px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-foreground/70">
-                <ListChecks className="h-3.5 w-3.5" />
-                {interaction.continuationPolicy === "wake_assignee_on_accept"
-                  ? "Wakes on confirm"
-                  : "Wakes responsible"}
-              </span>
-            ) : null}
-          </div>
-
-          <div className="mt-3 text-lg font-bold text-foreground">
-            {interaction.title
-              ?? (interaction.kind === "suggest_tasks"
-                ? "Suggested task tree"
-                : interaction.kind === "ask_user_questions"
-                  ? interaction.payload.title ?? "Questions for the operator"
-                : interaction.kind === "request_checkbox_confirmation"
-                  ? "Checkbox confirmation requested"
-                  : isPlan
-                    ? "Plan review"
-                    : "Confirmation requested")}
-          </div>
-          {interaction.summary ? (
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
-              {interaction.summary}
-            </p>
-          ) : null}
-        </div>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="rounded-sm border border-border/70 bg-transparent px-3 py-2 text-right text-xs text-muted-foreground">
-              <div className="font-medium text-foreground">{formatShortDate(interaction.createdAt)}</div>
-              <div>proposed by {createdByLabel}</div>
-            </div>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="text-xs">
-            Created {formatDateTime(interaction.createdAt)}
-          </TooltipContent>
-        </Tooltip>
-      </div>
-
-      <div className="mt-5">
-        {interaction.kind === "suggest_tasks" ? (
-          <SuggestTasksCard
-            interaction={interaction}
-            agentMap={agentMap}
-            currentUserId={currentUserId}
-            userLabelMap={userLabelMap}
-            onAcceptInteraction={onAcceptInteraction}
-            onRejectInteraction={onRejectInteraction}
-          />
-        ) : interaction.kind === "ask_user_questions" ? (
-          <AskUserQuestionsCard
-            interaction={interaction}
-            onSubmitInteractionAnswers={onSubmitInteractionAnswers}
-            onCancelInteraction={onCancelInteraction}
-            externalReferences={externalReferences}
-          />
-        ) : interaction.kind === "request_checkbox_confirmation" ? (
-          <RequestCheckboxConfirmationCard
-            interaction={interaction}
-            onAcceptInteraction={onAcceptInteraction}
-            onRejectInteraction={onRejectInteraction}
-            externalReferences={externalReferences}
-          />
+    <div className="rounded-md border border-border bg-card">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="flex min-h-10 w-full cursor-pointer items-center gap-2 px-3 py-2 text-left hover:bg-accent/40"
+      >
+        {open ? (
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         ) : (
-          <RequestConfirmationCard
-            interaction={interaction}
-            isPlan={isPlan}
-            onAcceptInteraction={onAcceptInteraction}
-            onRejectInteraction={onRejectInteraction}
-            onUploadImage={onUploadImage}
-            externalReferences={externalReferences}
-          />
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         )}
-      </div>
+        <TypeIcon className={cn("h-3.5 w-3.5 shrink-0", typeIconTone)} />
+        <span className="min-w-0 flex-1 truncate text-sm text-foreground">{title}</span>
+        <StatusBadge status={interaction.status}>
+          {statusBadgeLabel(interaction, isPlan)}
+        </StatusBadge>
+        <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+          {metaParts.join(" · ")}
+        </span>
+      </button>
 
-      {resolvedByLabel ? (
-        <div className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground">
-          Resolved by <span className="font-medium text-foreground">{resolvedByLabel}</span>
-          {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
+      {open ? (
+        <div className="space-y-3 border-t border-border/60 px-3 pb-3 pt-2.5">
+          {interaction.summary ? (
+            <p className="text-sm leading-6 text-muted-foreground">{interaction.summary}</p>
+          ) : null}
+          {interaction.status !== "pending" ? (
+            <InteractionOutcomeLine
+              interaction={interaction}
+              resolvedByLabel={resolvedByLabel}
+            />
+          ) : null}
+          {interaction.kind === "suggest_tasks" ? (
+            <SuggestTasksCard
+              interaction={interaction}
+              agentMap={agentMap}
+              currentUserId={currentUserId}
+              userLabelMap={userLabelMap}
+              onAcceptInteraction={onAcceptInteraction}
+              onRejectInteraction={onRejectInteraction}
+            />
+          ) : interaction.kind === "ask_user_questions" ? (
+            <AskUserQuestionsCard
+              interaction={interaction}
+              onSubmitInteractionAnswers={onSubmitInteractionAnswers}
+              onCancelInteraction={onCancelInteraction}
+              externalReferences={externalReferences}
+            />
+          ) : interaction.kind === "request_checkbox_confirmation" ? (
+            <RequestCheckboxConfirmationCard
+              interaction={interaction}
+              onAcceptInteraction={onAcceptInteraction}
+              onRejectInteraction={onRejectInteraction}
+              externalReferences={externalReferences}
+            />
+          ) : (
+            <RequestConfirmationCard
+              interaction={interaction}
+              isPlan={isPlan}
+              onAcceptInteraction={onAcceptInteraction}
+              onRejectInteraction={onRejectInteraction}
+              onUploadImage={onUploadImage}
+              externalReferences={externalReferences}
+            />
+          )}
         </div>
       ) : null}
     </div>

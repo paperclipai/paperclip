@@ -390,13 +390,17 @@ describe("IssueThreadInteractionCard", () => {
     );
   });
 
-  it("renders a plan confirmation as a distinct state-coloured plan card", () => {
+  it("renders a plan confirmation as a default-expanded interaction row", () => {
     const pending = renderCard({ interaction: pendingRequestConfirmationInteraction });
     const pendingShell = pending.firstElementChild as HTMLElement;
-    expect(pendingShell.className).toContain("border-violet-500/80");
+    expect(pendingShell.className).toContain("rounded-md");
+    expect(pendingShell.className).toContain("border-border");
+    expect(pendingShell.className).toContain("bg-card");
+    expect(pendingShell.className).not.toContain("border-violet-500/80");
     expect(pendingShell.className).not.toContain("border-l-");
-    expect(pending.textContent).toContain("Plan");
-    expect(pending.textContent).toContain("In review");
+    expect(pending.textContent).toContain("Needs approval");
+    const toggle = pending.querySelector('button[aria-expanded="true"]');
+    expect(toggle).toBeTruthy();
     // Approve is a neutral CTA (foreground/background), not the blue primary.
     const approve = Array.from(pending.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Approve plan"),
@@ -411,7 +415,7 @@ describe("IssueThreadInteractionCard", () => {
     const accepted = renderCard({
       interaction: { ...pendingRequestConfirmationInteraction, status: "accepted" },
     });
-    expect((accepted.firstElementChild as HTMLElement).className).toContain("border-green-500/80");
+    expect((accepted.firstElementChild as HTMLElement).className).toContain("bg-card");
     expect(accepted.textContent).toContain("Approved");
 
     act(() => root?.unmount());
@@ -425,7 +429,7 @@ describe("IssueThreadInteractionCard", () => {
         result: { version: 1, outcome: "rejected", reason: "Tighten the spacing" },
       },
     });
-    expect((rejected.firstElementChild as HTMLElement).className).toContain("border-red-500/80");
+    expect((rejected.firstElementChild as HTMLElement).className).toContain("bg-card");
     expect(rejected.textContent).toContain("Changes requested");
   });
 

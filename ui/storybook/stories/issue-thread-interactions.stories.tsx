@@ -10,8 +10,20 @@ import {
   answeredAskUserQuestionsInteraction,
   acceptedRequestConfirmationInteraction,
   boundedRequestCheckboxConfirmationInteraction,
+  cancelledAskUserQuestionsInteraction,
+  cancelledRequestCheckboxConfirmationInteraction,
+  cancelledRequestConfirmationInteraction,
+  cancelledSuggestedTasksInteraction,
+  commentExpiredAskUserQuestionsInteraction,
+  commentExpiredRequestCheckboxConfirmationInteraction,
   commentExpiredRequestConfirmationInteraction,
+  everyQuestionTypeAnsweredAskUserQuestionsInteraction,
+  everyQuestionTypeAskUserQuestionsInteraction,
+  expiredSuggestedTasksInteraction,
+  failedAskUserQuestionsInteraction,
+  failedRequestCheckboxConfirmationInteraction,
   failedRequestConfirmationInteraction,
+  failedSuggestedTasksInteraction,
   genericPendingRequestConfirmationInteraction,
   issueThreadInteractionComments,
   issueThreadInteractionEvents,
@@ -21,6 +33,7 @@ import {
   manyOptionsRequestCheckboxConfirmationInteraction,
   mixedIssueThreadInteractions,
   optionalDeclineRequestConfirmationInteraction,
+  partialAcceptedSuggestedTasksInteraction,
   pendingAskUserQuestionsInteraction,
   pendingRequestCheckboxConfirmationInteraction,
   pendingRequestConfirmationInteraction,
@@ -39,6 +52,7 @@ import type {
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
+  IssueThreadInteraction,
 } from "@/lib/issue-thread-interactions";
 import { storybookAgentMap } from "../fixtures/paperclipData";
 
@@ -97,6 +111,39 @@ function ScenarioCard({
   );
 }
 
+function StaticInteractionCard({
+  interaction,
+}: {
+  interaction: IssueThreadInteraction;
+}) {
+  return (
+    <IssueThreadInteractionCard
+      interaction={interaction}
+      agentMap={storybookAgentMap}
+      currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+      userLabelMap={boardUserLabels}
+    />
+  );
+}
+
+function MobileScenario({
+  title,
+  interaction,
+}: {
+  title: string;
+  interaction: IssueThreadInteraction;
+}) {
+  return (
+    <StoryFrame>
+      <div className="mx-auto w-[390px] max-w-full">
+        <ScenarioCard title={title} description="390px-wide mobile render.">
+          <StaticInteractionCard interaction={interaction} />
+        </ScenarioCard>
+      </div>
+    </StoryFrame>
+  );
+}
+
 function InteractiveSuggestedTasksCard() {
   const [interaction, setInteraction] = useState<SuggestTasksInteraction>(
     pendingSuggestedTasksInteraction,
@@ -133,6 +180,100 @@ function InteractiveSuggestedTasksCard() {
           },
         })}
     />
+  );
+}
+
+function AutoClickInteractionCard({
+  buttonText,
+  children,
+}: {
+  buttonText: string;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const button = Array.from(ref.current?.querySelectorAll("button") ?? [])
+      .find((candidate) => candidate.textContent?.includes(buttonText));
+    button?.click();
+  }, [buttonText]);
+
+  return <div ref={ref}>{children}</div>;
+}
+
+function InFlightSuggestedTasksCard() {
+  return (
+    <AutoClickInteractionCard buttonText="Accept drafts">
+      <IssueThreadInteractionCard
+        interaction={pendingSuggestedTasksInteraction}
+        agentMap={storybookAgentMap}
+        currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+        userLabelMap={boardUserLabels}
+        onAcceptInteraction={() => new Promise(() => {})}
+        onRejectInteraction={() => undefined}
+      />
+    </AutoClickInteractionCard>
+  );
+}
+
+function InFlightAskUserQuestionsCard() {
+  const readyInteraction: AskUserQuestionsInteraction = {
+    ...pendingAskUserQuestionsInteraction,
+    result: {
+      version: 1,
+      answers: [
+        {
+          questionId: "collapse-depth",
+          optionIds: ["visible-root"],
+        },
+        {
+          questionId: "post-submit-summary",
+          optionIds: ["answers-inline"],
+        },
+      ],
+    },
+  };
+
+  return (
+    <AutoClickInteractionCard buttonText="Send answers">
+      <IssueThreadInteractionCard
+        interaction={readyInteraction}
+        agentMap={storybookAgentMap}
+        currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+        userLabelMap={boardUserLabels}
+        onSubmitInteractionAnswers={() => new Promise(() => {})}
+      />
+    </AutoClickInteractionCard>
+  );
+}
+
+function InFlightRequestConfirmationCard() {
+  return (
+    <AutoClickInteractionCard buttonText="Approve plan">
+      <IssueThreadInteractionCard
+        interaction={pendingRequestConfirmationInteraction}
+        agentMap={storybookAgentMap}
+        currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+        userLabelMap={boardUserLabels}
+        onAcceptInteraction={() => new Promise(() => {})}
+        onRejectInteraction={() => undefined}
+      />
+    </AutoClickInteractionCard>
+  );
+}
+
+function InFlightCheckboxConfirmationCard() {
+  return (
+    <AutoClickInteractionCard buttonText="Delete selected">
+      <IssueThreadInteractionCard
+        interaction={pendingRequestCheckboxConfirmationInteraction}
+        agentMap={storybookAgentMap}
+        currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+        userLabelMap={boardUserLabels}
+        onAcceptInteraction={() => new Promise(() => {})}
+        onRejectInteraction={() => undefined}
+      />
+    </AutoClickInteractionCard>
   );
 }
 
@@ -314,6 +455,19 @@ export const SuggestedTasksAccepted: Story = {
   ),
 };
 
+export const SuggestedTasksPartiallyAccepted: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Partially accepted suggested tasks"
+        description="Some suggested tasks became issues while the rest stayed marked as skipped."
+      >
+        <StaticInteractionCard interaction={partialAcceptedSuggestedTasksInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
 export const SuggestedTasksRejected: Story = {
   render: () => (
     <StoryFrame>
@@ -332,6 +486,45 @@ export const SuggestedTasksRejected: Story = {
   ),
 };
 
+export const SuggestedTasksExpired: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Expired suggested tasks"
+        description="The suggestion is no longer actionable, but the proposed task tree remains readable."
+      >
+        <StaticInteractionCard interaction={expiredSuggestedTasksInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const SuggestedTasksCancelled: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Cancelled suggested tasks"
+        description="The cancelled state keeps the draft artifact visible without action controls."
+      >
+        <StaticInteractionCard interaction={cancelledSuggestedTasksInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const SuggestedTasksFailed: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Failed suggested tasks"
+        description="Failed resolution removes controls while preserving the task tree for inspection."
+      >
+        <StaticInteractionCard interaction={failedSuggestedTasksInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
 export const AskUserQuestionsPending: Story = {
   render: () => (
     <StoryFrame>
@@ -340,6 +533,26 @@ export const AskUserQuestionsPending: Story = {
         description="Single- and multi-select questions remain local until submitted."
       >
         <InteractiveAskUserQuestionsCard />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const AskUserQuestionsEveryQuestionType: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Every question input shape"
+        description="Single-select, multi-select, optional, long-copy, and Other free-text paths render together."
+      >
+        <IssueThreadInteractionCard
+          interaction={everyQuestionTypeAskUserQuestionsInteraction}
+          agentMap={storybookAgentMap}
+          currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+          userLabelMap={boardUserLabels}
+          onSubmitInteractionAnswers={() => undefined}
+          onCancelInteraction={() => undefined}
+        />
       </ScenarioCard>
     </StoryFrame>
   ),
@@ -358,6 +571,58 @@ export const AskUserQuestionsAnswered: Story = {
           currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
           userLabelMap={boardUserLabels}
         />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const AskUserQuestionsEveryQuestionTypeAnswered: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Answered every question input shape"
+        description="Answered summaries include selected choices, empty optional answers, and Other free text."
+      >
+        <StaticInteractionCard interaction={everyQuestionTypeAnsweredAskUserQuestionsInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const AskUserQuestionsExpiredByComment: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Question form expired by comment"
+        description="A later board comment superseded the unanswered question request."
+      >
+        <StaticInteractionCard interaction={commentExpiredAskUserQuestionsInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const AskUserQuestionsCancelled: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Cancelled question form"
+        description="Cancellation records why no answer set was captured."
+      >
+        <StaticInteractionCard interaction={cancelledAskUserQuestionsInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const AskUserQuestionsFailed: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Failed question form"
+        description="The failed state is read-only and keeps each unanswered prompt visible."
+      >
+        <StaticInteractionCard interaction={failedAskUserQuestionsInteraction} />
       </ScenarioCard>
     </StoryFrame>
   ),
@@ -570,6 +835,19 @@ export const RequestConfirmationFailed: Story = {
   ),
 };
 
+export const RequestConfirmationCancelled: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Cancelled request confirmation"
+        description="A cancelled confirmation has the same shell language as other inactive states."
+      >
+        <StaticInteractionCard interaction={cancelledRequestConfirmationInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
 export const RequestConfirmationAccepted = RequestConfirmationConfirmed;
 export const RequestConfirmationRejected = RequestConfirmationDeclinedWithReason;
 
@@ -661,6 +939,19 @@ export const CheckboxConfirmationRejected: Story = {
   ),
 };
 
+export const CheckboxConfirmationExpiredByComment: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Checkbox confirmation expired by comment"
+        description="A later board comment superseded the selection before it was confirmed."
+      >
+        <StaticInteractionCard interaction={commentExpiredRequestCheckboxConfirmationInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
 export const CheckboxConfirmationStaleTarget: Story = {
   render: () => (
     <StoryFrame>
@@ -679,6 +970,32 @@ export const CheckboxConfirmationStaleTarget: Story = {
   ),
 };
 
+export const CheckboxConfirmationCancelled: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Cancelled checkbox confirmation"
+        description="The cancelled state keeps the prompt and option context visible without controls."
+      >
+        <StaticInteractionCard interaction={cancelledRequestCheckboxConfirmationInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const CheckboxConfirmationFailed: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Failed checkbox confirmation"
+        description="Failed resolution shows the recovery copy used by inactive checkbox confirmations."
+      >
+        <StaticInteractionCard interaction={failedRequestCheckboxConfirmationInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
 export const CheckboxConfirmationManyOptions: Story = {
   render: () => (
     <StoryFrame>
@@ -692,6 +1009,129 @@ export const CheckboxConfirmationManyOptions: Story = {
           rejected={rejectedRequestCheckboxConfirmationInteraction}
         />
       </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const InteractionInFlightStates: Story = {
+  render: () => (
+    <StoryFrame>
+      <Section eyebrow="In-flight" title="Submitting states where the card can represent a pending action">
+        <div className="grid gap-6 xl:grid-cols-2">
+          <ScenarioCard
+            title="Suggested tasks accepting"
+            description="The primary action shows a loading state while acceptance is in flight."
+          >
+            <InFlightSuggestedTasksCard />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Questions submitting"
+            description="The submit button shows a loading state while answers are being sent."
+          >
+            <InFlightAskUserQuestionsCard />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Confirmation accepting"
+            description="The confirmation button stays disabled and shows progress."
+          >
+            <InFlightRequestConfirmationCard />
+          </ScenarioCard>
+          <ScenarioCard
+            title="Checkbox confirmation accepting"
+            description="Selection confirmation shows progress while the response is unresolved."
+          >
+            <InFlightCheckboxConfirmationCard />
+          </ScenarioCard>
+        </div>
+      </Section>
+    </StoryFrame>
+  ),
+};
+
+export const SuggestedTasksMobile390: Story = {
+  render: () => (
+    <MobileScenario
+      title="Suggested tasks mobile"
+      interaction={pendingSuggestedTasksInteraction}
+    />
+  ),
+};
+
+export const AskUserQuestionsMobile390: Story = {
+  render: () => (
+    <MobileScenario
+      title="Question form mobile"
+      interaction={everyQuestionTypeAskUserQuestionsInteraction}
+    />
+  ),
+};
+
+export const RequestConfirmationMobile390: Story = {
+  render: () => (
+    <MobileScenario
+      title="Confirmation mobile"
+      interaction={pendingRequestConfirmationInteraction}
+    />
+  ),
+};
+
+export const CheckboxConfirmationMobile390: Story = {
+  render: () => (
+    <MobileScenario
+      title="Checkbox confirmation mobile"
+      interaction={pendingRequestCheckboxConfirmationInteraction}
+    />
+  ),
+};
+
+export const StateMatrix: Story = {
+  render: () => (
+    <StoryFrame>
+      <Section eyebrow="State matrix" title="Issue-thread interaction status coverage">
+        <div className="grid gap-6 xl:grid-cols-2">
+          <ScenarioCard title="Suggested tasks" description="Pending, accepted, rejected, expired, cancelled, and failed.">
+            <div className="space-y-4">
+              <StaticInteractionCard interaction={pendingSuggestedTasksInteraction} />
+              <StaticInteractionCard interaction={partialAcceptedSuggestedTasksInteraction} />
+              <StaticInteractionCard interaction={rejectedSuggestedTasksInteraction} />
+              <StaticInteractionCard interaction={expiredSuggestedTasksInteraction} />
+              <StaticInteractionCard interaction={cancelledSuggestedTasksInteraction} />
+              <StaticInteractionCard interaction={failedSuggestedTasksInteraction} />
+            </div>
+          </ScenarioCard>
+          <ScenarioCard title="Ask user questions" description="Pending, answered, expired by comment, cancelled, and failed.">
+            <div className="space-y-4">
+              <StaticInteractionCard interaction={everyQuestionTypeAskUserQuestionsInteraction} />
+              <StaticInteractionCard interaction={everyQuestionTypeAnsweredAskUserQuestionsInteraction} />
+              <StaticInteractionCard interaction={commentExpiredAskUserQuestionsInteraction} />
+              <StaticInteractionCard interaction={cancelledAskUserQuestionsInteraction} />
+              <StaticInteractionCard interaction={failedAskUserQuestionsInteraction} />
+            </div>
+          </ScenarioCard>
+          <ScenarioCard title="Request confirmation" description="Pending, accepted, rejected, both expiry reasons, cancelled, and failed.">
+            <div className="space-y-4">
+              <StaticInteractionCard interaction={pendingRequestConfirmationInteraction} />
+              <StaticInteractionCard interaction={acceptedRequestConfirmationInteraction} />
+              <StaticInteractionCard interaction={rejectedRequestConfirmationInteraction} />
+              <StaticInteractionCard interaction={commentExpiredRequestConfirmationInteraction} />
+              <StaticInteractionCard interaction={staleTargetRequestConfirmationInteraction} />
+              <StaticInteractionCard interaction={cancelledRequestConfirmationInteraction} />
+              <StaticInteractionCard interaction={failedRequestConfirmationInteraction} />
+            </div>
+          </ScenarioCard>
+          <ScenarioCard title="Checkbox confirmation" description="Pending, accepted, rejected, both expiry reasons, cancelled, and failed.">
+            <div className="space-y-4">
+              <StaticInteractionCard interaction={pendingRequestCheckboxConfirmationInteraction} />
+              <StaticInteractionCard interaction={acceptedRequestCheckboxConfirmationInteraction} />
+              <StaticInteractionCard interaction={rejectedRequestCheckboxConfirmationInteraction} />
+              <StaticInteractionCard interaction={commentExpiredRequestCheckboxConfirmationInteraction} />
+              <StaticInteractionCard interaction={staleTargetRequestCheckboxConfirmationInteraction} />
+              <StaticInteractionCard interaction={cancelledRequestCheckboxConfirmationInteraction} />
+              <StaticInteractionCard interaction={failedRequestCheckboxConfirmationInteraction} />
+            </div>
+          </ScenarioCard>
+        </div>
+      </Section>
     </StoryFrame>
   ),
 };
