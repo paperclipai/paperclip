@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import os from "node:os";
+import { join as joinPath } from "node:path";
 import type { Agent, AgentSessionEvent, Issue, IssueComment, PluginContext, PluginEvent, PluginLocalFolderEntry, Project, ToolResult } from "@paperclipai/plugin-sdk";
 import type { IssueDocument, PluginIssueOriginKind, PluginManagedRoutineResolution, PluginManagedSkillResolution } from "@paperclipai/plugin-sdk/types";
 import {
@@ -216,6 +218,8 @@ export type WikiSpace = {
   ownerUserId: string | null;
   ownerAgentId: string | null;
   teamKey: string | null;
+  bindingKind: "none" | "project" | string;
+  projectId: string | null;
   settings: Record<string, unknown>;
   status: "active" | "archived" | string;
   createdAt: string | null;
@@ -246,6 +250,8 @@ type CreateSpaceInput = {
   folderMode?: "managed_subfolder" | "existing_local_folder" | null;
   accessScope?: "shared" | "personal" | "team" | null;
   settings?: Record<string, unknown> | null;
+  bindingKind?: "none" | "project" | null;
+  projectId?: string | null;
 };
 
 type UpdateSpaceInput = SpaceInput & {
@@ -290,6 +296,7 @@ type CaptureSourceInput = {
   contents: string;
   rawPath?: string | null;
   metadata?: Record<string, unknown> | null;
+  author?: { kind: "agent" | "user" | "plugin"; id?: string | null; runId?: string | null } | null;
 };
 
 type PaperclipSourceBundleInput = {
@@ -379,7 +386,8 @@ type WritePageInput = {
   summary?: string | null;
   sourceRefs?: unknown;
   operationId?: string | null;
-  writer?: "agent_tool" | "board_ui" | "plugin_internal";
+  writer?: "agent_tool" | "board_ui" | "plugin_internal" | "agent_api";
+  author?: { kind: "agent" | "user" | "plugin"; id?: string | null; runId?: string | null } | null;
 };
 
 type FileQueryAnswerInput = {
@@ -1278,6 +1286,8 @@ type WikiSpaceRow = {
   owner_user_id: string | null;
   owner_agent_id: string | null;
   team_key: string | null;
+  binding_kind?: string | null;
+  project_id?: string | null;
   settings: unknown;
   status: string;
   created_at: string | null;
@@ -1300,6 +1310,8 @@ function wikiSpaceFromRow(row: WikiSpaceRow): WikiSpace {
     ownerUserId: row.owner_user_id,
     ownerAgentId: row.owner_agent_id,
     teamKey: row.team_key,
+    bindingKind: row.binding_kind ?? "none",
+    projectId: row.project_id ?? null,
     settings: parseJsonObject(row.settings),
     status: row.status,
     createdAt: row.created_at,
@@ -1323,6 +1335,8 @@ function fallbackDefaultSpace(input: { companyId: string; wikiId: string }): Wik
     ownerUserId: null,
     ownerAgentId: null,
     teamKey: null,
+    bindingKind: "none",
+    projectId: null,
     settings: {},
     status: "active",
     createdAt: null,
@@ -1344,6 +1358,7 @@ export async function ensureDefaultSpace(ctx: PluginContext, input: { companyId:
   const rows = await ctx.db.query<WikiSpaceRow>(
     `SELECT id, company_id, wiki_id, slug, display_name, space_type, folder_mode, root_folder_key,
             path_prefix, configured_root_path, access_scope, owner_user_id, owner_agent_id, team_key,
+            binding_kind, project_id,
             settings, status, created_at::text AS created_at, updated_at::text AS updated_at
        FROM ${spaceTable(ctx)}
       WHERE company_id = $1 AND wiki_id = $2 AND slug = 'default'
@@ -1362,6 +1377,7 @@ export async function resolveSpace(ctx: PluginContext, input: SpaceInput): Promi
   const rows = await ctx.db.query<WikiSpaceRow>(
     `SELECT id, company_id, wiki_id, slug, display_name, space_type, folder_mode, root_folder_key,
             path_prefix, configured_root_path, access_scope, owner_user_id, owner_agent_id, team_key,
+            binding_kind, project_id,
             settings, status, created_at::text AS created_at, updated_at::text AS updated_at
        FROM ${spaceTable(ctx)}
       WHERE company_id = $1 AND wiki_id = $2 AND slug = $3 AND status <> 'archived'
@@ -1381,6 +1397,7 @@ async function resolveSpaceAnyStatus(ctx: PluginContext, input: SpaceInput): Pro
   const rows = await ctx.db.query<WikiSpaceRow>(
     `SELECT id, company_id, wiki_id, slug, display_name, space_type, folder_mode, root_folder_key,
             path_prefix, configured_root_path, access_scope, owner_user_id, owner_agent_id, team_key,
+            binding_kind, project_id,
             settings, status, created_at::text AS created_at, updated_at::text AS updated_at
        FROM ${spaceTable(ctx)}
       WHERE company_id = $1 AND wiki_id = $2 AND slug = $3
@@ -1397,6 +1414,7 @@ export async function listSpaces(ctx: PluginContext, input: { companyId: string;
   const rows = await ctx.db.query<WikiSpaceRow>(
     `SELECT id, company_id, wiki_id, slug, display_name, space_type, folder_mode, root_folder_key,
             path_prefix, configured_root_path, access_scope, owner_user_id, owner_agent_id, team_key,
+            binding_kind, project_id,
             settings, status, created_at::text AS created_at, updated_at::text AS updated_at
        FROM ${spaceTable(ctx)}
       WHERE company_id = $1 AND wiki_id = $2 AND status <> 'archived'
@@ -1419,12 +1437,17 @@ export async function createSpace(ctx: PluginContext, input: CreateSpaceInput): 
     throw new Error("Only managed_subfolder spaces are supported until dynamic local folder bindings are available.");
   }
   const accessScope = input.accessScope ?? "shared";
+  const bindingKind = input.bindingKind ?? "none";
+  const projectId = bindingKind === "project" ? stringField(input.projectId) : null;
+  if (bindingKind === "project" && !projectId) {
+    throw new Error("Project-bound spaces require a projectId.");
+  }
   const id = randomUUID();
   const pathPrefix = `spaces/${slug}`;
   await ctx.db.execute(
     `INSERT INTO ${spaceTable(ctx)}
-       (id, company_id, wiki_id, slug, display_name, space_type, folder_mode, root_folder_key, path_prefix, access_scope, settings, status)
-     VALUES ($1, $2, $3, $4, $5, 'local_folder', $6, $7, $8, $9, $10::jsonb, 'active')`,
+       (id, company_id, wiki_id, slug, display_name, space_type, folder_mode, root_folder_key, path_prefix, access_scope, settings, status, binding_kind, project_id)
+     VALUES ($1, $2, $3, $4, $5, 'local_folder', $6, $7, $8, $9, $10::jsonb, 'active', $11, $12)`,
     [
       id,
       input.companyId,
@@ -1436,6 +1459,8 @@ export async function createSpace(ctx: PluginContext, input: CreateSpaceInput): 
       pathPrefix,
       accessScope,
       jsonParam(input.settings ?? {}),
+      bindingKind,
+      projectId,
     ],
   );
   const space: WikiSpace = {
@@ -1453,6 +1478,8 @@ export async function createSpace(ctx: PluginContext, input: CreateSpaceInput): 
     ownerUserId: null,
     ownerAgentId: null,
     teamKey: null,
+    bindingKind,
+    projectId,
     settings: input.settings ?? {},
     status: "active",
     createdAt: null,
@@ -1513,6 +1540,228 @@ export async function archiveSpace(ctx: PluginContext, input: SpaceInput): Promi
     [input.companyId, space.wikiId, space.slug],
   );
   return { status: "archived", space: { ...space, status: "archived" } };
+}
+
+export const PROJECT_SPACE_SLUG_PREFIX = "proj-";
+
+// Slugs stay stable after creation; project renames only update display_name so
+// the managed subfolder never has to move on disk.
+export function projectSpaceSlug(projectName: string, projectId: string): string {
+  const base = slugify(projectName).slice(0, 40).replace(/^-+|-+$/g, "");
+  return normalizeSpaceSlug(`${PROJECT_SPACE_SLUG_PREFIX}${base || projectId.slice(0, 8)}`);
+}
+
+async function querySpaceBySlugAnyStatus(
+  ctx: PluginContext,
+  input: { companyId: string; wikiId: string; slug: string },
+): Promise<WikiSpace | null> {
+  const rows = await ctx.db.query<WikiSpaceRow>(
+    `SELECT id, company_id, wiki_id, slug, display_name, space_type, folder_mode, root_folder_key,
+            path_prefix, configured_root_path, access_scope, owner_user_id, owner_agent_id, team_key,
+            binding_kind, project_id,
+            settings, status, created_at::text AS created_at, updated_at::text AS updated_at
+       FROM ${spaceTable(ctx)}
+      WHERE company_id = $1 AND wiki_id = $2 AND slug = $3
+      LIMIT 1`,
+    [input.companyId, input.wikiId, input.slug],
+  );
+  return rows[0] ? wikiSpaceFromRow(rows[0]) : null;
+}
+
+export async function findProjectSpace(
+  ctx: PluginContext,
+  input: { companyId: string; wikiId?: string | null; projectId: string },
+): Promise<WikiSpace | null> {
+  const wikiId = normalizeWikiId(input.wikiId);
+  const rows = await ctx.db.query<WikiSpaceRow>(
+    `SELECT id, company_id, wiki_id, slug, display_name, space_type, folder_mode, root_folder_key,
+            path_prefix, configured_root_path, access_scope, owner_user_id, owner_agent_id, team_key,
+            binding_kind, project_id,
+            settings, status, created_at::text AS created_at, updated_at::text AS updated_at
+       FROM ${spaceTable(ctx)}
+      WHERE company_id = $1 AND wiki_id = $2 AND project_id = $3
+      LIMIT 1`,
+    [input.companyId, wikiId, input.projectId],
+  );
+  return rows[0] ? wikiSpaceFromRow(rows[0]) : null;
+}
+
+export type EnsureProjectSpaceResult = {
+  status: "created" | "updated" | "unchanged" | "archived" | "skipped";
+  space: WikiSpace | null;
+  warnings: string[];
+};
+
+export async function ensureProjectSpace(
+  ctx: PluginContext,
+  input: { companyId: string; wikiId?: string | null; project: Project },
+): Promise<EnsureProjectSpaceResult> {
+  const wikiId = normalizeWikiId(input.wikiId);
+  const project = input.project;
+  const warnings: string[] = [];
+  if (project.companyId !== input.companyId) {
+    return { status: "skipped", space: null, warnings: [`Project ${project.id} belongs to another company.`] };
+  }
+  if (project.managedByPlugin) {
+    return { status: "skipped", space: null, warnings: [] };
+  }
+  const projectArchived = Boolean(project.archivedAt);
+  const existing = await findProjectSpace(ctx, { companyId: input.companyId, wikiId, projectId: project.id });
+
+  if (existing) {
+    if (projectArchived) {
+      if (existing.status === "archived") return { status: "unchanged", space: existing, warnings };
+      await ctx.db.execute(
+        `UPDATE ${spaceTable(ctx)} SET status = 'archived', updated_at = now() WHERE company_id = $1 AND wiki_id = $2 AND id = $3`,
+        [input.companyId, wikiId, existing.id],
+      );
+      return { status: "archived", space: { ...existing, status: "archived" }, warnings };
+    }
+    if (existing.displayName === project.name && existing.status === "active") {
+      return { status: "unchanged", space: existing, warnings };
+    }
+    await ctx.db.execute(
+      `UPDATE ${spaceTable(ctx)} SET display_name = $4, status = 'active', updated_at = now() WHERE company_id = $1 AND wiki_id = $2 AND id = $3`,
+      [input.companyId, wikiId, existing.id, project.name],
+    );
+    return { status: "updated", space: { ...existing, displayName: project.name, status: "active" }, warnings };
+  }
+
+  if (projectArchived) {
+    return { status: "skipped", space: null, warnings };
+  }
+
+  try {
+    await ensureWikiRootConfigured(ctx, input.companyId);
+  } catch (error) {
+    warnings.push(`Wiki root is not configured and could not be initialized: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  let slug = projectSpaceSlug(project.name, project.id);
+  const collision = await querySpaceBySlugAnyStatus(ctx, { companyId: input.companyId, wikiId, slug });
+  if (collision && collision.projectId !== project.id) {
+    slug = normalizeSpaceSlug(`${slug}-${project.id.slice(0, 8)}`);
+  }
+
+  const attemptCreate = (spaceSlug: string) => createSpace(ctx, {
+    companyId: input.companyId,
+    wikiId,
+    slug: spaceSlug,
+    displayName: project.name,
+    accessScope: "shared",
+    bindingKind: "project",
+    projectId: project.id,
+  });
+
+  try {
+    const created = await attemptCreate(slug);
+    return { status: "created", space: created.space, warnings };
+  } catch (error) {
+    // createSpace bootstraps skeleton files after inserting the row; when the
+    // wiki root is unavailable the row may still exist, so surface the space if
+    // it does instead of failing the whole reconcile.
+    const space = await findProjectSpace(ctx, { companyId: input.companyId, wikiId, projectId: project.id });
+    warnings.push(`Project space files pending: ${error instanceof Error ? error.message : String(error)}`);
+    if (space) return { status: "created", space, warnings };
+    // Losing a slug race against a concurrently created same-name project
+    // leaves no row for this project; retry once with the deterministic
+    // project-id suffix before giving up.
+    const suffixed = normalizeSpaceSlug(`${projectSpaceSlug(project.name, project.id)}-${project.id.slice(0, 8)}`);
+    if (slug !== suffixed) {
+      try {
+        const retried = await attemptCreate(suffixed);
+        return { status: "created", space: retried.space, warnings };
+      } catch (retryError) {
+        warnings.push(`Retry with suffixed slug failed: ${retryError instanceof Error ? retryError.message : String(retryError)}`);
+        const raced = await findProjectSpace(ctx, { companyId: input.companyId, wikiId, projectId: project.id });
+        if (raced) return { status: "created", space: raced, warnings };
+      }
+    }
+    return { status: "skipped", space: null, warnings };
+  }
+}
+
+const PROJECT_LIST_PAGE_SIZE = 200;
+const PROJECT_LIST_MAX_PAGES = 50;
+
+// ctx.projects.list windows results host-side, so a single capped call
+// silently truncates large companies; page until a short page instead.
+export async function listAllCompanyProjects(ctx: PluginContext, companyId: string): Promise<Project[]> {
+  const projects: Project[] = [];
+  for (let page = 0; page < PROJECT_LIST_MAX_PAGES; page += 1) {
+    const batch = await ctx.projects.list({
+      companyId,
+      limit: PROJECT_LIST_PAGE_SIZE,
+      offset: page * PROJECT_LIST_PAGE_SIZE,
+    });
+    projects.push(...batch);
+    if (batch.length < PROJECT_LIST_PAGE_SIZE) return projects;
+  }
+  return projects;
+}
+
+export type ReconcileProjectSpacesResult = {
+  status: "ok";
+  wikiId: string;
+  created: string[];
+  updated: string[];
+  archived: string[];
+  skipped: string[];
+  warnings: string[];
+};
+
+export async function reconcileProjectSpaces(
+  ctx: PluginContext,
+  input: { companyId: string; wikiId?: string | null },
+): Promise<ReconcileProjectSpacesResult> {
+  const wikiId = normalizeWikiId(input.wikiId);
+  const projects = await listAllCompanyProjects(ctx, input.companyId);
+  const result: ReconcileProjectSpacesResult = {
+    status: "ok",
+    wikiId,
+    created: [],
+    updated: [],
+    archived: [],
+    skipped: [],
+    warnings: [],
+  };
+  const activeProjectIds = new Set<string>();
+  for (const project of projects) {
+    if (!project.archivedAt && !project.managedByPlugin) activeProjectIds.add(project.id);
+    const outcome = await ensureProjectSpace(ctx, { companyId: input.companyId, wikiId, project });
+    result.warnings.push(...outcome.warnings);
+    const label = outcome.space ? `${outcome.space.slug} (${project.name})` : project.name;
+    if (outcome.status === "created") result.created.push(label);
+    else if (outcome.status === "updated") result.updated.push(label);
+    else if (outcome.status === "archived") result.archived.push(label);
+    else if (outcome.status === "skipped") result.skipped.push(label);
+  }
+
+  const rows = await ctx.db.query<WikiSpaceRow>(
+    `SELECT id, company_id, wiki_id, slug, display_name, space_type, folder_mode, root_folder_key,
+            path_prefix, configured_root_path, access_scope, owner_user_id, owner_agent_id, team_key,
+            binding_kind, project_id,
+            settings, status, created_at::text AS created_at, updated_at::text AS updated_at
+       FROM ${spaceTable(ctx)}
+      WHERE company_id = $1 AND wiki_id = $2 AND binding_kind = 'project' AND status <> 'archived'`,
+    [input.companyId, wikiId],
+  );
+  for (const row of rows.map(wikiSpaceFromRow)) {
+    if (row.projectId && activeProjectIds.has(row.projectId)) continue;
+    // The snapshot can miss projects created while this reconcile was running
+    // (fire-and-forget startup sweep racing project.created handlers), so
+    // confirm against live state before archiving.
+    if (row.projectId) {
+      const project = await ctx.projects.get(row.projectId, input.companyId);
+      if (project && !project.archivedAt) continue;
+    }
+    await ctx.db.execute(
+      `UPDATE ${spaceTable(ctx)} SET status = 'archived', updated_at = now() WHERE company_id = $1 AND wiki_id = $2 AND id = $3`,
+      [input.companyId, wikiId, row.id],
+    );
+    result.archived.push(row.slug);
+  }
+  return result;
 }
 
 export function spaceRelativePath(space: Pick<WikiSpace, "pathPrefix">, path: string): string {
@@ -1661,6 +1910,36 @@ function inferPageType(path: string): string | null {
   return match?.[1] ?? (path === "index.md" || path === "wiki/index.md" ? "index" : path === "log.md" || path === "wiki/log.md" ? "log" : null);
 }
 
+const WIKI_LINK_TOKEN_PATTERN = /\[\[([^\]\r\n]+)\]\]/g;
+const ROOT_WIKI_LINK_PAGES = new Set(["WIKI.md", "AGENTS.md", "IDEA.md", "index.md", "log.md"]);
+
+// Must mirror normalizeWikiLinkPagePath in src/ui/app.tsx so indexed backlinks
+// match the pages the renderer actually links to.
+function normalizeWikiLinkTarget(target: string): string | null {
+  const [rawTarget] = target.split("|");
+  const trimmed = rawTarget?.trim() ?? "";
+  if (!trimmed || trimmed.includes("[") || trimmed.includes("]")) return null;
+  if (/^[a-z][a-z\d+.-]*:/i.test(trimmed) || trimmed.startsWith("//")) return null;
+  const hashIndex = trimmed.indexOf("#");
+  const rawPath = (hashIndex >= 0 ? trimmed.slice(0, hashIndex) : trimmed).trim().replace(/^\/+/, "");
+  if (
+    !rawPath ||
+    rawPath.includes("\\") ||
+    rawPath.split("/").some((segment) => !segment || segment === "." || segment === "..")
+  ) {
+    return null;
+  }
+  let path = rawPath.toLowerCase().endsWith(".md") ? rawPath : `${rawPath}.md`;
+  if (!path.startsWith("wiki/") && !path.startsWith("raw/") && !ROOT_WIKI_LINK_PAGES.has(path)) {
+    path = `wiki/${path}`;
+  }
+  return path;
+}
+
+function stripCodeSegments(contents: string): string {
+  return contents.replace(/```[\s\S]*?```/g, "").replace(/`[^`\r\n]*`/g, "");
+}
+
 function extractWikiLinks(contents: string): string[] {
   const links = new Set<string>();
   const markdownLinkPattern = /\[[^\]]+\]\(([^)]+)\)/g;
@@ -1673,6 +1952,10 @@ function extractWikiLinks(contents: string): string[] {
   const wikiTokenPattern = /\bwiki\/[A-Za-z0-9._/-]+\.md\b/g;
   for (const match of contents.matchAll(wikiTokenPattern)) {
     links.add(match[0]);
+  }
+  for (const match of stripCodeSegments(contents).matchAll(WIKI_LINK_TOKEN_PATTERN)) {
+    const normalized = normalizeWikiLinkTarget(match[1] ?? "");
+    if (normalized) links.add(normalized);
   }
   return [...links].sort();
 }
@@ -1759,9 +2042,21 @@ function mergeLocalSourceRows(sources: WikiSourceRow[], entries: PluginLocalFold
   return [...byPath.values()].sort((a, b) => a.rawPath.localeCompare(b.rawPath));
 }
 
+export class WikiHashConflictError extends Error {
+  readonly currentHash: string | null;
+  readonly path: string;
+
+  constructor(path: string, expectedHash: string, currentHash: string | null) {
+    super(`Refusing to overwrite ${path}: expected hash ${expectedHash} but current hash is ${currentHash}`);
+    this.name = "WikiHashConflictError";
+    this.path = path;
+    this.currentHash = currentHash;
+  }
+}
+
 function assertExpectedHash(expectedHash: string | null | undefined, currentHash: string | null, path: string): void {
   if (expectedHash && currentHash && expectedHash !== currentHash) {
-    throw new Error(`Refusing to overwrite ${path}: expected hash ${expectedHash} but current hash is ${currentHash}`);
+    throw new WikiHashConflictError(path, expectedHash, currentHash);
   }
 }
 
@@ -1787,6 +2082,40 @@ async function upsertWikiInstance(ctx: PluginContext, input: { companyId: string
   );
 }
 
+export type WikiWriteAuthor = {
+  kind: "agent" | "user" | "plugin";
+  id?: string | null;
+  runId?: string | null;
+};
+
+const SEARCH_DOCUMENT_MAX_CHARS = 200_000;
+const REVISION_CONTENTS_MAX_CHARS = 512_000;
+
+async function upsertSearchDocument(ctx: PluginContext, input: {
+  companyId: string;
+  wikiId: string;
+  spaceId: string;
+  docKind: "page" | "source";
+  path: string;
+  title: string | null;
+  contents: string;
+  contentHash: string;
+}) {
+  const bodyText = redactDistillationSensitiveText(input.contents).slice(0, SEARCH_DOCUMENT_MAX_CHARS);
+  const title = input.title ? redactDistillationSensitiveText(input.title) : null;
+  await ctx.db.execute(
+    `INSERT INTO ${tableName(ctx.db.namespace, "wiki_search_documents")}
+       (id, company_id, wiki_id, space_id, doc_kind, path, title, body_text, content_hash, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+     ON CONFLICT (company_id, wiki_id, space_id, doc_kind, path)
+     DO UPDATE SET title = EXCLUDED.title,
+                   body_text = EXCLUDED.body_text,
+                   content_hash = EXCLUDED.content_hash,
+                   updated_at = now()`,
+    [randomUUID(), input.companyId, input.wikiId, input.spaceId, input.docKind, input.path, title, bodyText, input.contentHash],
+  );
+}
+
 async function upsertPageMetadata(ctx: PluginContext, input: {
   companyId: string;
   wikiId: string;
@@ -1796,6 +2125,7 @@ async function upsertPageMetadata(ctx: PluginContext, input: {
   summary?: string | null;
   sourceRefs?: unknown;
   operationId?: string | null;
+  author?: WikiWriteAuthor | null;
 }) {
   const pageId = randomUUID();
   const revisionId = randomUUID();
@@ -1832,12 +2162,42 @@ async function upsertPageMetadata(ctx: PluginContext, input: {
     ],
   );
 
+  // The append-only log grows without bound and gets a revision per append, so
+  // storing full snapshots there would be quadratic; keep log revisions (and
+  // oversized pages) hash-only like before migration 006.
+  const revisionContents = pageType === "log" || input.contents.length > REVISION_CONTENTS_MAX_CHARS
+    ? null
+    : input.contents;
   await ctx.db.execute(
     `INSERT INTO ${tableName(ctx.db.namespace, "wiki_page_revisions")}
-       (id, company_id, wiki_id, space_id, page_id, operation_id, path, content_hash, summary, metadata)
-     VALUES ($1, $2, $3, $8, (SELECT id FROM ${tableName(ctx.db.namespace, "wiki_pages")} WHERE company_id = $2 AND wiki_id = $3 AND space_id = $8 AND path = $4), $7, $4, $5, $6, '{}'::jsonb)`,
-    [revisionId, input.companyId, input.wikiId, input.path, hash, input.summary ?? null, input.operationId ?? null, input.spaceId],
+       (id, company_id, wiki_id, space_id, page_id, operation_id, path, content_hash, summary, metadata, author_kind, author_id, author_run_id, contents)
+     VALUES ($1, $2, $3, $8, (SELECT id FROM ${tableName(ctx.db.namespace, "wiki_pages")} WHERE company_id = $2 AND wiki_id = $3 AND space_id = $8 AND path = $4), $7, $4, $5, $6, '{}'::jsonb, $9, $10, $11, $12)`,
+    [
+      revisionId,
+      input.companyId,
+      input.wikiId,
+      input.path,
+      hash,
+      input.summary ?? null,
+      input.operationId ?? null,
+      input.spaceId,
+      input.author?.kind ?? null,
+      input.author?.id ?? null,
+      input.author?.runId ?? null,
+      revisionContents,
+    ],
   );
+
+  await upsertSearchDocument(ctx, {
+    companyId: input.companyId,
+    wikiId: input.wikiId,
+    spaceId: input.spaceId,
+    docKind: "page",
+    path: input.path,
+    title,
+    contents: input.contents,
+    contentHash: hash,
+  });
 
   return { title, pageType, backlinks, hash, revisionId };
 }
@@ -1859,6 +2219,7 @@ export async function writeWikiPage(ctx: PluginContext, input: WritePageInput) {
     summary: input.summary,
     sourceRefs: input.sourceRefs,
     operationId: input.operationId,
+    author: input.author ?? null,
   });
   await upsertWikiInstance(ctx, { companyId: input.companyId, wikiId });
   return { status: "ok", wikiId, spaceSlug: space.slug, path, previousHash: current.hash, ...metadata };
@@ -1875,7 +2236,34 @@ export async function captureWikiSource(ctx: PluginContext, input: CaptureSource
     : assertRawPath(`raw/${new Date().toISOString().slice(0, 10)}-${slugify(title)}-${hash.slice(0, 8)}.md`);
   await ctx.localFolders.writeTextAtomic(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, rawPath), input.contents);
   await upsertWikiInstance(ctx, { companyId: input.companyId, wikiId });
+  // rawPath embeds the content hash, so an existing row means this is a retry
+  // of an already-persisted capture (e.g. after a failure later in the
+  // pipeline); refresh the search doc and return the original source instead
+  // of inserting a duplicate row.
+  const existingRows = await ctx.db.query<{ id: string }>(
+    `SELECT id FROM ${tableName(ctx.db.namespace, "wiki_sources")}
+      WHERE company_id = $1 AND wiki_id = $2 AND space_id = $3 AND raw_path = $4
+      LIMIT 1`,
+    [input.companyId, wikiId, space.id, rawPath],
+  );
+  if (existingRows[0]) {
+    await upsertSearchDocument(ctx, {
+      companyId: input.companyId,
+      wikiId,
+      spaceId: space.id,
+      docKind: "source",
+      path: rawPath,
+      title,
+      contents: input.contents,
+      contentHash: hash,
+    });
+    return { status: "ok", sourceId: existingRows[0].id, wikiId, spaceSlug: space.slug, rawPath, hash, title };
+  }
   const sourceId = randomUUID();
+  const metadata = {
+    ...(input.metadata ?? {}),
+    ...(input.author ? { author: { kind: input.author.kind, id: input.author.id ?? null, runId: input.author.runId ?? null } } : {}),
+  };
   await ctx.db.execute(
     `INSERT INTO ${tableName(ctx.db.namespace, "wiki_sources")}
        (id, company_id, wiki_id, space_id, source_type, title, url, raw_path, content_hash, status, metadata)
@@ -1889,10 +2277,20 @@ export async function captureWikiSource(ctx: PluginContext, input: CaptureSource
       stringField(input.url),
       rawPath,
       hash,
-      jsonParam(input.metadata ?? {}),
+      jsonParam(metadata),
       space.id,
     ],
   );
+  await upsertSearchDocument(ctx, {
+    companyId: input.companyId,
+    wikiId,
+    spaceId: space.id,
+    docKind: "source",
+    path: rawPath,
+    title,
+    contents: input.contents,
+    contentHash: hash,
+  });
   return { status: "ok", sourceId, wikiId, spaceSlug: space.slug, rawPath, hash, title };
 }
 
@@ -2193,6 +2591,40 @@ function assertWikiRootCanBootstrap(folder: LocalFolderStatus): void {
   }
 }
 
+function expandHomePath(value: string): string {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/") || value.startsWith("~\\")) return joinPath(os.homedir(), value.slice(2));
+  return value;
+}
+
+// Mirrors packages/shared/src/home-paths.ts resolution so the managed default
+// lands inside the same instance-owned tree the server uses. The worker
+// inherits PAPERCLIP_HOME / PAPERCLIP_INSTANCE_ID from the host process.
+export function defaultWikiRootPath(companyId: string): string {
+  const configuredHome = process.env.PAPERCLIP_HOME?.trim();
+  const home = configuredHome ? expandHomePath(configuredHome) : joinPath(os.homedir(), ".paperclip");
+  const rawInstanceId = process.env.PAPERCLIP_INSTANCE_ID?.trim() || "default";
+  const instanceId = /^[a-zA-Z0-9_-]+$/.test(rawInstanceId) ? rawInstanceId : "default";
+  return joinPath(home, "instances", instanceId, "plugin-data", companyId, PLUGIN_ID, "wiki-root");
+}
+
+export async function ensureWikiRootConfigured(ctx: PluginContext, companyId: string): Promise<LocalFolderStatus> {
+  const status = await ctx.localFolders.status(companyId, WIKI_ROOT_FOLDER_KEY);
+  if (status.configured && status.path) return status;
+  const folder = await ctx.localFolders.configure({
+    companyId,
+    folderKey: WIKI_ROOT_FOLDER_KEY,
+    path: defaultWikiRootPath(companyId),
+    access: "readWrite",
+    requiredDirectories: [...REQUIRED_WIKI_DIRECTORIES],
+    requiredFiles: [...REQUIRED_WIKI_FILES],
+  });
+  const defaultSpace = await ensureDefaultSpace(ctx, { companyId });
+  await bootstrapSpaceFiles(ctx, companyId, defaultSpace);
+  await upsertWikiInstance(ctx, { companyId, wikiId: DEFAULT_WIKI_ID, rootPath: folder.path });
+  return folder;
+}
+
 export async function bootstrapWikiRoot(ctx: PluginContext, input: BootstrapInput) {
   const wikiId = DEFAULT_WIKI_ID;
   const defaultSpace = await ensureDefaultSpace(ctx, { companyId: input.companyId, wikiId });
@@ -2211,7 +2643,7 @@ export async function bootstrapWikiRoot(ctx: PluginContext, input: BootstrapInpu
     ? await configureFolder(input.path)
     : currentFolder?.configured && currentFolder.path
       ? await configureFolder(currentFolder.path)
-      : currentFolder ?? await ctx.localFolders.status(input.companyId, WIKI_ROOT_FOLDER_KEY);
+      : await configureFolder(defaultWikiRootPath(input.companyId));
   assertWikiRootCanBootstrap(folder);
 
   const writtenFiles: string[] = [];
@@ -4091,6 +4523,7 @@ export async function registerWikiTools(ctx: PluginContext) {
     const space = await resolveSpace(ctx, { companyId, wikiId, spaceSlug: input.spaceSlug as string | null | undefined });
     const query = requireString(input.query, "query");
     const limit = normalizeLimit(input.limit, 20, 50);
+    const body = await searchWikiDocuments(ctx, { companyId, wikiId, spaceSlug: space.slug, query, limit });
     const rows = await ctx.db.query<{ kind: string; path: string; title: string | null; match_text: string | null }>(
       `SELECT 'page' AS kind, path, title, page_type AS match_text
          FROM ${tableName(ctx.db.namespace, "wiki_pages")}
@@ -4103,9 +4536,14 @@ export async function registerWikiTools(ctx: PluginContext) {
        LIMIT $4`,
       [companyId, wikiId, `%${query}%`, limit, space.id],
     );
+    const seen = new Set(body.results.map((result) => `${result.kind}:${result.path}`));
+    const merged = [
+      ...body.results.map((result) => ({ kind: result.kind, path: result.path, title: result.title, match_text: result.snippet })),
+      ...rows.filter((row) => !seen.has(`${row.kind}:${row.path}`)),
+    ].slice(0, limit);
     return {
-      content: rows.length ? rows.map((row) => `${row.kind}: ${row.path}${row.title ? ` - ${row.title}` : ""}`).join("\n") : "No wiki matches found.",
-      data: { companyId, wikiId, spaceSlug: space.slug, query, results: rows },
+      content: merged.length ? merged.map((row) => `${row.kind}: ${row.path}${row.title ? ` - ${row.title}` : ""}`).join("\n") : "No wiki matches found.",
+      data: { companyId, wikiId, spaceSlug: space.slug, query, results: merged, bodyResults: body.results },
     };
   });
 
@@ -4213,27 +4651,13 @@ export async function registerWikiTools(ctx: PluginContext) {
     parametersSchema: ctx.manifest.tools?.find((tool) => tool.name === "wiki_append_log")?.parametersSchema ?? { type: "object" },
   }, async (params: unknown): Promise<ToolResult> => {
     const input = params as ToolParams;
-    const companyId = requireString(input.companyId, "companyId");
-    const wikiId = normalizeWikiId(input.wikiId);
-    const space = await resolveSpace(ctx, { companyId, wikiId, spaceSlug: input.spaceSlug as string | null | undefined });
-    const entry = requireString(input.entry, "entry");
-    let current = "";
-    try {
-      current = await ctx.localFolders.readText(companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, "wiki/log.md"));
-    } catch {
-      current = "# Log\n\nAppend-only chronological record of wiki operations.\n";
-    }
-    const next = `${current.trimEnd()}\n\n- ${new Date().toISOString()} ${entry}\n`;
-    await ctx.localFolders.writeTextAtomic(companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, "wiki/log.md"), next);
-    await upsertPageMetadata(ctx, {
-      companyId,
-      wikiId,
-      spaceId: space.id,
-      path: "wiki/log.md",
-      contents: next,
-      summary: "Append log entry",
+    const result = await appendWikiLog(ctx, {
+      companyId: requireString(input.companyId, "companyId"),
+      wikiId: stringField(input.wikiId),
+      spaceSlug: input.spaceSlug as string | null | undefined,
+      entry: requireString(input.entry, "entry"),
     });
-    return { content: "Appended log entry", data: { companyId, wikiId, spaceSlug: space.slug, hash: contentHash(next) } };
+    return { content: "Appended log entry", data: { companyId: requireString(input.companyId, "companyId"), wikiId: result.wikiId, spaceSlug: result.spaceSlug, hash: result.hash } };
   });
 
   ctx.tools.register("wiki_update_index", {
@@ -4296,6 +4720,301 @@ export async function registerWikiTools(ctx: PluginContext) {
       data: { companyId, wikiId, spaceSlug: space.slug, pages: rows },
     };
   });
+}
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
+function tokenizeWikiQuery(query: string): string[] {
+  const tokens = query
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 2);
+  return [...new Set(tokens)].slice(0, 8);
+}
+
+function createWikiSnippet(body: string, query: string, tokens: string[]): string | null {
+  const plain = body
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/[#>*_~|`]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!plain) return null;
+  const lower = plain.toLowerCase();
+  const needles = [query.toLowerCase().trim(), ...tokens].filter((needle) => needle.length > 0);
+  let index = -1;
+  for (const needle of needles) {
+    index = lower.indexOf(needle);
+    if (index >= 0) break;
+  }
+  if (index < 0) index = 0;
+  const start = Math.max(0, index - 80);
+  const snippet = plain.slice(start, start + 240).trim();
+  if (!snippet) return null;
+  return `${start > 0 ? "…" : ""}${snippet}${start + 240 < plain.length ? "…" : ""}`;
+}
+
+export type WikiSearchResult = {
+  kind: "page" | "source";
+  wikiId: string;
+  spaceSlug: string;
+  spaceDisplayName: string;
+  projectId: string | null;
+  path: string;
+  title: string | null;
+  score: number;
+  snippet: string | null;
+  updatedAt: string | null;
+};
+
+type WikiSearchDocumentRow = {
+  doc_kind: string;
+  path: string;
+  title: string | null;
+  body_text: string;
+  updated_at: string | null;
+  space_slug: string;
+  space_display_name: string;
+  project_id: string | null;
+  score: number | string;
+};
+
+// Body search over wiki_search_documents using the same lexical recipe as core
+// company search (lower LIKE + per-token unnest + pg_trgm similarity, CASE score).
+export async function searchWikiDocuments(ctx: PluginContext, input: {
+  companyId: string;
+  wikiId?: string | null;
+  spaceSlug?: string | null;
+  query: string;
+  limit?: number | null;
+}): Promise<{ results: WikiSearchResult[] }> {
+  const wikiId = normalizeWikiId(input.wikiId);
+  const query = stringField(input.query);
+  if (!query) return { results: [] };
+  const limit = normalizeLimit(input.limit, 20, 50);
+  const normalizedQuery = query.toLowerCase().trim();
+  const escapedQuery = escapeLikePattern(normalizedQuery);
+  const containsPattern = `%${escapedQuery}%`;
+  const startsPattern = `${escapedQuery}%`;
+  const tokens = tokenizeWikiQuery(query).map(escapeLikePattern);
+  const space = stringField(input.spaceSlug)
+    ? await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug })
+    : null;
+
+  const tokenMatch = (expression: string) =>
+    `EXISTS (
+       SELECT 1 FROM unnest($6::text[]) AS search_token(value)
+       WHERE lower(coalesce(${expression}, '')) LIKE '%' || search_token.value || '%' ESCAPE '\\'
+     )`;
+  const searchText = `coalesce(d.title, '') || ' ' || d.body_text`;
+  const scopeClause = space ? "AND d.space_id = $8" : "AND s.access_scope = 'shared'";
+  const params: unknown[] = [input.companyId, wikiId, containsPattern, startsPattern, normalizedQuery, tokens, limit];
+  if (space) params.push(space.id);
+
+  const rows = await ctx.db.query<WikiSearchDocumentRow>(
+    `SELECT d.doc_kind, d.path, d.title, d.body_text, d.updated_at::text AS updated_at,
+            s.slug AS space_slug, s.display_name AS space_display_name, s.project_id,
+            (
+              CASE WHEN lower(coalesce(d.title, '')) = $5 THEN 900 ELSE 0 END
+              + CASE WHEN lower(coalesce(d.title, '')) LIKE $4 ESCAPE '\\' THEN 550 ELSE 0 END
+              + CASE WHEN lower(coalesce(d.title, '')) LIKE $3 ESCAPE '\\' THEN 350 ELSE 0 END
+              + CASE WHEN lower(d.body_text) LIKE $3 ESCAPE '\\' THEN 170 ELSE 0 END
+              + CASE WHEN ${tokenMatch(searchText)} THEN 260 ELSE 0 END
+              + CASE WHEN similarity(lower(coalesce(d.title, '')), $5) >= 0.45 THEN 110 ELSE 0 END
+            )::double precision AS score
+       FROM ${tableName(ctx.db.namespace, "wiki_search_documents")} d
+       JOIN ${spaceTable(ctx)} s ON s.id = d.space_id
+      WHERE d.company_id = $1 AND d.wiki_id = $2
+        AND s.status <> 'archived'
+        ${scopeClause}
+        AND (
+          lower(coalesce(d.title, '')) LIKE $3 ESCAPE '\\'
+          OR lower(d.body_text) LIKE $3 ESCAPE '\\'
+          OR ${tokenMatch(searchText)}
+          OR similarity(lower(coalesce(d.title, '')), $5) >= 0.45
+        )
+      ORDER BY score DESC, d.updated_at DESC
+      LIMIT $7`,
+    params,
+  );
+
+  const results = rows.map((row): WikiSearchResult => ({
+    kind: row.doc_kind === "source" ? "source" : "page",
+    wikiId,
+    spaceSlug: row.space_slug,
+    spaceDisplayName: row.space_display_name,
+    projectId: row.project_id ?? null,
+    path: row.path,
+    title: row.title,
+    score: typeof row.score === "number" ? row.score : Number(row.score ?? 0),
+    snippet: createWikiSnippet(row.body_text ?? "", normalizedQuery, tokens),
+    updatedAt: row.updated_at ?? null,
+  }));
+  return { results };
+}
+
+export async function appendWikiLog(ctx: PluginContext, input: {
+  companyId: string;
+  wikiId?: string | null;
+  spaceSlug?: string | null;
+  entry: string;
+  author?: WikiWriteAuthor | null;
+}) {
+  const wikiId = normalizeWikiId(input.wikiId);
+  const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
+  const entry = stringField(input.entry);
+  if (!entry) throw new Error("entry is required");
+  let current = "";
+  try {
+    current = await ctx.localFolders.readText(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, "wiki/log.md"));
+  } catch {
+    current = "# Log\n\nAppend-only chronological record of wiki operations.\n";
+  }
+  const next = `${current.trimEnd()}\n\n- ${new Date().toISOString()} ${entry}\n`;
+  await ctx.localFolders.writeTextAtomic(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, "wiki/log.md"), next);
+  await upsertPageMetadata(ctx, {
+    companyId: input.companyId,
+    wikiId,
+    spaceId: space.id,
+    path: "wiki/log.md",
+    contents: next,
+    summary: "Append log entry",
+    author: input.author ?? null,
+  });
+  return { status: "ok" as const, wikiId, spaceSlug: space.slug, hash: contentHash(next) };
+}
+
+const SPACE_INDEX_MAX_CHARS = 4000;
+
+export async function readSpaceIndex(ctx: PluginContext, input: {
+  companyId: string;
+  wikiId?: string | null;
+  spaceSlug?: string | null;
+}) {
+  const wikiId = normalizeWikiId(input.wikiId);
+  const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
+  try {
+    const contents = await ctx.localFolders.readText(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, "wiki/index.md"));
+    return {
+      wikiId,
+      spaceSlug: space.slug,
+      spaceDisplayName: space.displayName,
+      projectId: space.projectId,
+      path: "wiki/index.md",
+      contents: contents.slice(0, SPACE_INDEX_MAX_CHARS),
+      truncated: contents.length > SPACE_INDEX_MAX_CHARS,
+    };
+  } catch {
+    return {
+      wikiId,
+      spaceSlug: space.slug,
+      spaceDisplayName: space.displayName,
+      projectId: space.projectId,
+      path: "wiki/index.md",
+      contents: null,
+      truncated: false,
+    };
+  }
+}
+
+export async function reindexWikiSearch(ctx: PluginContext, input: { companyId: string; wikiId?: string | null }) {
+  const wikiId = normalizeWikiId(input.wikiId);
+  const startedAt = new Date().toISOString();
+  const { spaces } = await listSpaces(ctx, { companyId: input.companyId, wikiId });
+  const summary = {
+    status: "ok" as const,
+    wikiId,
+    spaces: 0,
+    pages: 0,
+    sources: 0,
+    removed: 0,
+    warnings: [] as string[],
+  };
+  for (const space of spaces) {
+    summary.spaces += 1;
+    const seen = new Set<string>();
+    const pageEntries = await listLocalFiles(ctx, { companyId: input.companyId, space, relativePath: "wiki" });
+    for (const entry of pageEntries) {
+      if (!entry.path.endsWith(".md")) continue;
+      try {
+        const contents = await ctx.localFolders.readText(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, entry.path));
+        const hash = contentHash(contents);
+        seen.add(`page:${entry.path}`);
+        const rows = await ctx.db.query<{ content_hash: string | null }>(
+          `SELECT content_hash FROM ${tableName(ctx.db.namespace, "wiki_pages")}
+            WHERE company_id = $1 AND wiki_id = $2 AND space_id = $3 AND path = $4
+            LIMIT 1`,
+          [input.companyId, wikiId, space.id, entry.path],
+        );
+        if (rows[0]?.content_hash === hash) {
+          await upsertSearchDocument(ctx, {
+            companyId: input.companyId,
+            wikiId,
+            spaceId: space.id,
+            docKind: "page",
+            path: entry.path,
+            title: inferTitle(entry.path, contents),
+            contents,
+            contentHash: hash,
+          });
+        } else {
+          await upsertPageMetadata(ctx, {
+            companyId: input.companyId,
+            wikiId,
+            spaceId: space.id,
+            path: entry.path,
+            contents,
+            summary: "Search reindex",
+            author: { kind: "plugin" },
+          });
+        }
+        summary.pages += 1;
+      } catch (error) {
+        summary.warnings.push(`${space.slug}/${entry.path}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const rawEntries = await listLocalFiles(ctx, { companyId: input.companyId, space, relativePath: "raw" });
+    for (const entry of rawEntries) {
+      if (!entry.path.endsWith(".md")) continue;
+      try {
+        const contents = await ctx.localFolders.readText(input.companyId, WIKI_ROOT_FOLDER_KEY, spaceRelativePath(space, entry.path));
+        seen.add(`source:${entry.path}`);
+        await upsertSearchDocument(ctx, {
+          companyId: input.companyId,
+          wikiId,
+          spaceId: space.id,
+          docKind: "source",
+          path: entry.path,
+          title: inferTitle(entry.path, contents),
+          contents,
+          contentHash: contentHash(contents),
+        });
+        summary.sources += 1;
+      } catch (error) {
+        summary.warnings.push(`${space.slug}/${entry.path}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    const docRows = await ctx.db.query<{ doc_kind: string; path: string }>(
+      `SELECT doc_kind, path FROM ${tableName(ctx.db.namespace, "wiki_search_documents")}
+        WHERE company_id = $1 AND wiki_id = $2 AND space_id = $3`,
+      [input.companyId, wikiId, space.id],
+    );
+    for (const row of docRows) {
+      if (seen.has(`${row.doc_kind}:${row.path}`)) continue;
+      // updated_at guard: a doc upserted after this reindex started belongs to
+      // a concurrent write whose file simply postdates our directory listing.
+      await ctx.db.execute(
+        `DELETE FROM ${tableName(ctx.db.namespace, "wiki_search_documents")}
+          WHERE company_id = $1 AND wiki_id = $2 AND space_id = $3 AND doc_kind = $4 AND path = $5
+            AND updated_at < $6::timestamptz`,
+        [input.companyId, wikiId, space.id, row.doc_kind, row.path, startedAt],
+      );
+      summary.removed += 1;
+    }
+  }
+  return summary;
 }
 
 export function readCompanyIdFromParams(params: Record<string, unknown>): string {

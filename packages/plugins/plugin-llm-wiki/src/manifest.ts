@@ -6,6 +6,7 @@ export const PLUGIN_ID = "paperclipai.plugin-llm-wiki";
 export const WIKI_ROOT_FOLDER_KEY = "wiki-root";
 export const WIKI_MAINTAINER_AGENT_KEY = "wiki-maintainer";
 export const WIKI_MAINTAINER_SKILL_KEY = "wiki-maintainer";
+export const WIKI_AGENT_SKILL_KEY = "wiki";
 export const WIKI_INGEST_SKILL_KEY = "wiki-ingest";
 export const WIKI_QUERY_SKILL_KEY = "wiki-query";
 export const WIKI_LINT_SKILL_KEY = "wiki-lint";
@@ -32,6 +33,7 @@ export const WIKI_MANAGED_SKILL_KEYS = [
   WIKI_LINT_SKILL_KEY,
   PAPERCLIP_DISTILL_SKILL_KEY,
   INDEX_REFRESH_SKILL_KEY,
+  WIKI_AGENT_SKILL_KEY,
 ] as const;
 
 function canonicalSkillKey(skillKey: string) {
@@ -107,6 +109,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "issue.documents.read",
     "issue.documents.write",
     "agents.read",
+    "agents.resume",
     "agents.managed",
     "agent.sessions.create",
     "agent.sessions.list",
@@ -238,6 +241,14 @@ const manifest: PaperclipPluginManifestV1 = {
       slug: INDEX_REFRESH_SKILL_KEY,
       description: "Refresh wiki/index.md so it accurately catalogs current wiki pages.",
       markdown: skillMarkdown(INDEX_REFRESH_SKILL_KEY)
+    },
+    {
+      skillKey: WIKI_AGENT_SKILL_KEY,
+      displayName: "Company Wiki",
+      slug: WIKI_AGENT_SKILL_KEY,
+      description: "Read and contribute shared company context: per-project wiki spaces, decision records, meeting-transcript capture, and company-wide search over the wiki.",
+      required: true,
+      markdown: skillMarkdown(WIKI_AGENT_SKILL_KEY)
     }
   ],
   routines: [
@@ -567,6 +578,54 @@ const manifest: PaperclipPluginManifestV1 = {
       method: "POST",
       path: "/file-as-page",
       auth: "board",
+      capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" }
+    },
+    {
+      routeKey: "agent-search",
+      method: "GET",
+      path: "/agent/search",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" }
+    },
+    {
+      routeKey: "agent-space-index",
+      method: "GET",
+      path: "/agent/space-index",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" }
+    },
+    {
+      routeKey: "agent-page",
+      method: "GET",
+      path: "/agent/page",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "query", key: "companyId" }
+    },
+    {
+      routeKey: "agent-page-write",
+      method: "POST",
+      path: "/agent/page",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" }
+    },
+    {
+      routeKey: "agent-capture",
+      method: "POST",
+      path: "/agent/capture",
+      auth: "board-or-agent",
+      capability: "api.routes.register",
+      companyResolution: { from: "body", key: "companyId" }
+    },
+    {
+      routeKey: "agent-log-append",
+      method: "POST",
+      path: "/agent/log",
+      auth: "board-or-agent",
       capability: "api.routes.register",
       companyResolution: { from: "body", key: "companyId" }
     }

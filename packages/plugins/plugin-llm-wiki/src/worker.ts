@@ -12,12 +12,22 @@ import {
   WIKI_ROOT_FOLDER_KEY,
 } from "./manifest.js";
 import {
+  appendWikiLog,
   bootstrapWikiRoot,
   bootstrapSpace,
   assemblePaperclipSourceBundle,
   archiveSpace,
   captureWikiSource,
   createSpace,
+  DEFAULT_SPACE_SLUG,
+  ensureProjectSpace,
+  findProjectSpace,
+  listAllCompanyProjects,
+  readSpaceIndex,
+  reconcileProjectSpaces,
+  reindexWikiSearch,
+  searchWikiDocuments,
+  WikiHashConflictError,
   createPaperclipDistillationRun,
   createPaperclipDistillationWorkItem,
   createOperationIssue,
@@ -93,6 +103,53 @@ const PAPERCLIP_EVENT_INGESTION_EVENTS = [
   "issue.document.created",
   "issue.document.updated",
 ] as const;
+const PROJECT_SPACE_SYNC_EVENTS = ["project.created", "project.updated"] as const;
+
+type ApiActor = { kind: "agent" | "user"; id: string | null; runId: string | null };
+
+function apiAuthor(input: PluginApiRequestInput): ApiActor {
+  return input.actor.actorType === "agent"
+    ? { kind: "agent", id: input.actor.agentId ?? input.actor.actorId ?? null, runId: input.actor.runId ?? null }
+    : { kind: "user", id: input.actor.userId ?? input.actor.actorId ?? null, runId: null };
+}
+
+function queryString(query: Record<string, string | string[]>, key: string): string | null {
+  const value = query[key];
+  return stringField(Array.isArray(value) ? value[0] : value);
+}
+
+// Agents outside a project workspace have no PAPERCLIP_PROJECT_ID, so the wiki
+// API accepts an explicit projectId or projectName and resolves the bound space.
+async function resolveTargetSpaceSlug(
+  ctx: PluginContext,
+  companyId: string,
+  target: { spaceSlug?: string | null; projectId?: string | null; projectName?: string | null },
+): Promise<string> {
+  const explicit = stringField(target.spaceSlug);
+  if (explicit) return explicit;
+  const projectId = stringField(target.projectId);
+  const projectName = stringField(target.projectName);
+  if (!projectId && !projectName) return DEFAULT_SPACE_SLUG;
+
+  let resolvedProjectId = projectId;
+  if (!resolvedProjectId && projectName) {
+    const projects = await listAllCompanyProjects(ctx, companyId);
+    const match = projects.find((project) => project.name.trim().toLowerCase() === projectName.toLowerCase());
+    if (!match) throw new Error(`No project named "${projectName}" in this company.`);
+    resolvedProjectId = match.id;
+  }
+  if (!resolvedProjectId) return DEFAULT_SPACE_SLUG;
+
+  const existing = await findProjectSpace(ctx, { companyId, projectId: resolvedProjectId });
+  if (existing && existing.status === "active") return existing.slug;
+  const project = await ctx.projects.get(resolvedProjectId, companyId);
+  if (!project) throw new Error(`Project not found: ${resolvedProjectId}`);
+  const ensured = await ensureProjectSpace(ctx, { companyId, project });
+  if (!ensured.space) {
+    throw new Error(`No wiki space available for project "${project.name}": ${ensured.warnings.join("; ") || ensured.status}`);
+  }
+  return ensured.space.slug;
+}
 
 type ManagedRoutineDefaultDrift = {
   changedFields: string[];
@@ -183,6 +240,171 @@ function withManagedRoutineDefaultDrift(
   };
 }
 
+const AGENT_ROUTE_NOT_FOUND_PATTERN = /not found|no project named|no wiki space/i;
+
+async function handleAgentWikiRoute(
+  ctx: PluginContext,
+  input: PluginApiRequestInput,
+): Promise<{ status?: number; body?: unknown } | null> {
+  if (input.routeKey === "agent-search") {
+    const explicit = queryString(input.query, "spaceSlug");
+    const projectId = queryString(input.query, "projectId");
+    const projectName = queryString(input.query, "projectName");
+    const spaceSlug = !explicit && !projectId && !projectName
+      ? null
+      : await resolveTargetSpaceSlug(ctx, input.companyId, { spaceSlug: explicit, projectId, projectName });
+    const limitRaw = queryString(input.query, "limit");
+    return {
+      body: await searchWikiDocuments(ctx, {
+        companyId: input.companyId,
+        wikiId: queryString(input.query, "wikiId"),
+        spaceSlug,
+        query: queryString(input.query, "q") ?? queryString(input.query, "query") ?? "",
+        limit: limitRaw ? Number(limitRaw) : null,
+      }),
+    };
+  }
+
+  if (input.routeKey === "agent-space-index") {
+    const spaceSlug = await resolveTargetSpaceSlug(ctx, input.companyId, {
+      spaceSlug: queryString(input.query, "spaceSlug"),
+      projectId: queryString(input.query, "projectId"),
+      projectName: queryString(input.query, "projectName"),
+    });
+    const wikiId = queryString(input.query, "wikiId");
+    const index = await readSpaceIndex(ctx, { companyId: input.companyId, wikiId, spaceSlug });
+    const { spaces } = await listSpaces(ctx, { companyId: input.companyId, wikiId });
+    return {
+      body: {
+        ...index,
+        spaces: spaces
+          .filter((space) => space.accessScope === "shared")
+          .map((space) => ({
+            slug: space.slug,
+            displayName: space.displayName,
+            bindingKind: space.bindingKind,
+            projectId: space.projectId,
+            status: space.status,
+          })),
+      },
+    };
+  }
+
+  if (input.routeKey === "agent-page") {
+    const path = queryString(input.query, "path");
+    if (!path) return { status: 400, body: { error: "path is required" } };
+    const spaceSlug = await resolveTargetSpaceSlug(ctx, input.companyId, {
+      spaceSlug: queryString(input.query, "spaceSlug"),
+      projectId: queryString(input.query, "projectId"),
+      projectName: queryString(input.query, "projectName"),
+    });
+    return {
+      body: await readWikiPage(ctx, {
+        companyId: input.companyId,
+        wikiId: queryString(input.query, "wikiId"),
+        spaceSlug,
+        path,
+      }),
+    };
+  }
+
+  if (input.routeKey === "agent-page-write") {
+    const body = input.body as Record<string, unknown> | null;
+    const spaceSlug = await resolveTargetSpaceSlug(ctx, input.companyId, {
+      spaceSlug: stringField(body?.spaceSlug),
+      projectId: stringField(body?.projectId),
+      projectName: stringField(body?.projectName),
+    });
+    return {
+      status: 201,
+      body: await writeWikiPage(ctx, {
+        companyId: input.companyId,
+        wikiId: stringField(body?.wikiId),
+        spaceSlug,
+        path: stringField(body?.path) ?? "",
+        contents: typeof body?.contents === "string" ? body.contents : "",
+        expectedHash: stringField(body?.expectedHash),
+        summary: stringField(body?.summary),
+        sourceRefs: body?.sourceRefs,
+        writer: "agent_api",
+        author: apiAuthor(input),
+      }),
+    };
+  }
+
+  if (input.routeKey === "agent-capture") {
+    const body = input.body as Record<string, unknown> | null;
+    const spaceSlug = await resolveTargetSpaceSlug(ctx, input.companyId, {
+      spaceSlug: stringField(body?.spaceSlug),
+      projectId: stringField(body?.projectId),
+      projectName: stringField(body?.projectName),
+    });
+    const author = apiAuthor(input);
+    const wikiId = stringField(body?.wikiId);
+    const sourceType = stringField(body?.sourceType) ?? "text";
+    const title = stringField(body?.title) ?? sourceType.toUpperCase();
+    const url = stringField(body?.url);
+    const captured = await captureWikiSource(ctx, {
+      companyId: input.companyId,
+      wikiId,
+      spaceSlug,
+      sourceType,
+      title,
+      url,
+      contents: typeof body?.contents === "string" ? body.contents : "",
+      metadata: typeof body?.metadata === "object" && body?.metadata != null ? body.metadata as Record<string, unknown> : null,
+      author,
+    });
+    // The capture is already durable at this point; a failure while queuing the
+    // maintainer operation must not surface as an error that provokes a retry
+    // (which would duplicate the ingest issue).
+    let operation = null;
+    let warning: string | null = null;
+    if (body?.ingest !== false) {
+      try {
+        operation = await createOperationIssue(ctx, {
+          companyId: input.companyId,
+          wikiId,
+          spaceSlug,
+          operationType: "ingest",
+          title: `Ingest ${sourceType}: ${title}`,
+          prompt: [
+            `Ingest a captured source from ${captured.rawPath}.`,
+            url ? `Source URL: ${url}` : null,
+            author.kind === "agent" && author.id ? `Captured by agent ${author.id} via the wiki API.` : null,
+            author.kind === "user" && author.id ? `Captured by user ${author.id} via the wiki API.` : null,
+            "Follow the installed wiki-ingest skill: read the raw file end to end, summarise into wiki/sources/<slug>.md, update related entity/concept/synthesis pages, refresh wiki/index.md, and append wiki/log.md.",
+          ].filter(Boolean).join("\n"),
+        });
+      } catch (error) {
+        warning = `Captured, but queuing the ingest operation failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+    return { status: 201, body: { status: "ok", source: captured, operation, ...(warning ? { warning } : {}) } };
+  }
+
+  if (input.routeKey === "agent-log-append") {
+    const body = input.body as Record<string, unknown> | null;
+    const spaceSlug = await resolveTargetSpaceSlug(ctx, input.companyId, {
+      spaceSlug: stringField(body?.spaceSlug),
+      projectId: stringField(body?.projectId),
+      projectName: stringField(body?.projectName),
+    });
+    return {
+      status: 201,
+      body: await appendWikiLog(ctx, {
+        companyId: input.companyId,
+        wikiId: stringField(body?.wikiId),
+        spaceSlug,
+        entry: stringField(body?.entry) ?? "",
+        author: apiAuthor(input),
+      }),
+    };
+  }
+
+  return null;
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
     activeContext = ctx;
@@ -203,6 +425,66 @@ const plugin = definePlugin({
       });
     }
 
+    for (const eventName of PROJECT_SPACE_SYNC_EVENTS) {
+      ctx.events.on(eventName, async (event) => {
+        if (event.entityType !== "project" || !event.entityId) return;
+        const project = await ctx.projects.get(event.entityId, event.companyId);
+        if (!project) return;
+        const result = await ensureProjectSpace(ctx, { companyId: event.companyId, project });
+        if (result.status === "created" || result.status === "updated" || result.status === "archived") {
+          ctx.logger.info("LLM Wiki synced project space", {
+            companyId: event.companyId,
+            projectId: project.id,
+            status: result.status,
+            spaceSlug: result.space?.slug ?? null,
+            warnings: result.warnings,
+          });
+        }
+      });
+    }
+
+    // Best-effort startup sweep so projects that existed before this plugin
+    // version (or before the plugin was enabled) get their wiki spaces, and so
+    // pre-existing wiki content lands in the body-search cache once.
+    void (async () => {
+      try {
+        const pageSize = 100;
+        for (let page = 0; page < 100; page += 1) {
+          const companies = await ctx.companies.list({ limit: pageSize, offset: page * pageSize });
+          for (const company of companies) {
+            try {
+              await reconcileProjectSpaces(ctx, { companyId: company.id });
+              const backfillKey = {
+                scopeKind: "company" as const,
+                scopeId: company.id,
+                namespace: "llm-wiki",
+                stateKey: "search-backfill-v1",
+              };
+              if (!(await ctx.state.get(backfillKey))) {
+                const summary = await reindexWikiSearch(ctx, { companyId: company.id });
+                await ctx.state.set(backfillKey, {
+                  at: new Date().toISOString(),
+                  pages: summary.pages,
+                  sources: summary.sources,
+                  warnings: summary.warnings.length,
+                });
+              }
+            } catch (error) {
+              ctx.logger.warn("LLM Wiki project space reconcile failed", {
+                companyId: company.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          if (companies.length < pageSize) break;
+        }
+      } catch (error) {
+        ctx.logger.warn("LLM Wiki project space sweep skipped", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+
     ctx.data.register("overview", async (params) => {
       const companyId = readCompanyIdFromParams(params);
       return getOverview(ctx, companyId);
@@ -216,10 +498,62 @@ const plugin = definePlugin({
     });
 
     ctx.actions.register("bootstrap-root", async (params) => {
-      return bootstrapWikiRoot(ctx, {
-        companyId: readCompanyIdFromParams(params),
+      const companyId = readCompanyIdFromParams(params);
+      const result = await bootstrapWikiRoot(ctx, {
+        companyId,
         path: stringField(params.path),
       });
+      const projectSpaces = await reconcileProjectSpaces(ctx, { companyId });
+      return { ...result, projectSpaces };
+    });
+
+    ctx.actions.register("reconcile-project-spaces", async (params) => {
+      return reconcileProjectSpaces(ctx, {
+        companyId: readCompanyIdFromParams(params),
+        wikiId: stringField(params.wikiId),
+      });
+    });
+
+    ctx.actions.register("reindex-search", async (params) => {
+      return reindexWikiSearch(ctx, {
+        companyId: readCompanyIdFromParams(params),
+        wikiId: stringField(params.wikiId),
+      });
+    });
+
+    ctx.actions.register("activate-wiki-maintenance", async (params) => {
+      const companyId = readCompanyIdFromParams(params);
+      const warnings: string[] = [];
+      const agentResource = await reconcileWikiAgentResource(ctx, companyId);
+      let agent = agentResource.agent;
+      if (agent && agent.status === "paused") {
+        try {
+          agent = await ctx.agents.resume(agent.id, companyId);
+        } catch (error) {
+          warnings.push(`Could not resume the Wiki Maintainer: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      const routines: Array<{ routineKey: string; status: string | null }> = [];
+      for (const routineKey of WIKI_MAINTENANCE_ROUTINE_KEYS) {
+        try {
+          const updated = await ctx.routines.managed.update(routineKey, companyId, { status: "active" });
+          routines.push({ routineKey, status: (updated as { status?: string | null }).status ?? null });
+        } catch (error) {
+          warnings.push(`Could not activate routine ${routineKey}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      const budgetMonthlyCents = agent && "budgetMonthlyCents" in agent
+        ? (agent as { budgetMonthlyCents?: number | null }).budgetMonthlyCents ?? 0
+        : 0;
+      if (agent && budgetMonthlyCents <= 0) {
+        warnings.push("The Wiki Maintainer has no monthly budget. Set one in the agent settings so ingest and distillation operations can run.");
+      }
+      return {
+        status: "ok",
+        agent: agent ? { id: agent.id, name: agent.name, status: agent.status, budgetMonthlyCents } : null,
+        routines,
+        warnings,
+      };
     });
 
     ctx.data.register("spaces", async (params) => {
@@ -928,12 +1262,14 @@ const plugin = definePlugin({
 
     if (input.routeKey === "bootstrap") {
       const body = input.body as Record<string, unknown> | null;
+      const result = await bootstrapWikiRoot(ctx, {
+        companyId: input.companyId,
+        path: stringField(body?.path),
+      });
+      const projectSpaces = await reconcileProjectSpaces(ctx, { companyId: input.companyId });
       return {
         status: 201,
-        body: await bootstrapWikiRoot(ctx, {
-          companyId: input.companyId,
-          path: stringField(body?.path),
-        }),
+        body: { ...result, projectSpaces },
       };
     }
 
@@ -1061,6 +1397,28 @@ const plugin = definePlugin({
           expectedHash: stringField(body?.expectedHash),
         }),
       };
+    }
+
+    if (input.routeKey.startsWith("agent-")) {
+      try {
+        const response = await handleAgentWikiRoute(ctx, input);
+        if (response) return response;
+      } catch (error) {
+        if (error instanceof WikiHashConflictError) {
+          return {
+            status: 409,
+            body: { error: error.message, currentHash: error.currentHash, path: error.path },
+          };
+        }
+        // Caller mistakes (bad project name, unknown space, invalid path) must
+        // surface as 4xx, not the host's generic 502, so agents self-correct
+        // instead of retrying a "transient" failure.
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          status: AGENT_ROUTE_NOT_FOUND_PATTERN.test(message) ? 404 : 400,
+          body: { error: message },
+        };
+      }
     }
 
     return { status: 404, body: { error: `Unknown LLM Wiki route: ${input.routeKey}` } };

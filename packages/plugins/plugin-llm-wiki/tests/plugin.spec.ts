@@ -3,12 +3,13 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import type { Agent, Issue, PluginManagedRoutineResolution, Project } from "@paperclipai/plugin-sdk";
+import type { Agent, Issue, PluginApiRequestInput, PluginManagedRoutineResolution, Project } from "@paperclipai/plugin-sdk";
 import manifest, {
   CURSOR_WINDOW_ROUTINE_KEY,
   INDEX_REFRESH_ROUTINE_KEY,
   NIGHTLY_LINT_ROUTINE_KEY,
   PAPERCLIP_DISTILL_SKILL_KEY,
+  WIKI_AGENT_SKILL_KEY,
   WIKI_MAINTAINER_AGENT_KEY,
   WIKI_MAINTAINER_SKILL_CANONICAL_KEY,
   WIKI_MAINTAINER_SKILL_KEY,
@@ -3746,5 +3747,292 @@ Duplicate headings receive stable suffixes.
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_operations"))).toBe(true);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_page_revisions"))).toBe(true);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("filed_outputs"))).toBe(true);
+  });
+});
+
+describe("Project-bound wiki spaces and the agent wiki API", () => {
+  const PROJECT_SPACE_SLUG = "proj-existing-wiki-project";
+
+  function projectSpaceRow(project: Project, overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: "44444444-4444-4444-8444-444444444444",
+      company_id: COMPANY_ID,
+      wiki_id: "default",
+      slug: PROJECT_SPACE_SLUG,
+      display_name: project.name,
+      space_type: "local_folder",
+      folder_mode: "managed_subfolder",
+      root_folder_key: "wiki-root",
+      path_prefix: `spaces/${PROJECT_SPACE_SLUG}`,
+      configured_root_path: null,
+      access_scope: "shared",
+      owner_user_id: null,
+      owner_agent_id: null,
+      team_key: null,
+      binding_kind: "project",
+      project_id: project.id,
+      settings: {},
+      status: "active",
+      created_at: null,
+      updated_at: null,
+      ...overrides,
+    };
+  }
+
+  function mockProjectSpace(harness: ReturnType<typeof createTestHarness>, row: Record<string, unknown>) {
+    const originalQuery = harness.ctx.db.query.bind(harness.ctx.db);
+    harness.ctx.db.query = async <T,>(sql: string, params?: unknown[]) => {
+      if (sql.includes("wiki_spaces") && (params?.[2] === row.slug || params?.[2] === row.project_id)) {
+        return [row] as T[];
+      }
+      return originalQuery<T>(sql, params);
+    };
+  }
+
+  function apiRequest(routeKey: string, overrides: Partial<PluginApiRequestInput> = {}): PluginApiRequestInput {
+    return {
+      routeKey,
+      method: "GET",
+      path: `/${routeKey}`,
+      params: {},
+      query: {},
+      body: null,
+      actor: { actorType: "agent", actorId: "agent-007", agentId: "agent-007", userId: null, runId: "run-42" },
+      companyId: COMPANY_ID,
+      headers: {},
+      ...overrides,
+    };
+  }
+
+  it("declares the company wiki skill as required for all agents", () => {
+    const entry = manifest.skills?.find((skill) => skill.skillKey === WIKI_AGENT_SKILL_KEY);
+    expect(entry?.required).toBe(true);
+    expect(entry?.markdown).toContain("/api/plugins/paperclipai.plugin-llm-wiki/api");
+    expect(entry?.markdown).toContain("$PAPERCLIP_API_KEY");
+  });
+
+  it("creates a project-bound space when a project.created event arrives", async () => {
+    const harness = createTestHarness({ manifest });
+    const project = existingProject();
+    harness.seed({ projects: [project] });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.emit("project.created", {}, {
+      companyId: COMPANY_ID,
+      entityId: project.id,
+      entityType: "project",
+      eventId: "event-project-created",
+    });
+
+    const insert = harness.dbExecutes.find((execute) =>
+      execute.sql.includes("INSERT INTO")
+      && execute.sql.includes("wiki_spaces")
+      && execute.params?.[3] === PROJECT_SPACE_SLUG);
+    expect(insert).toBeTruthy();
+    expect(insert?.params?.[10]).toBe("project");
+    expect(insert?.params?.[11]).toBe(project.id);
+  });
+
+  it("updates the bound space display name when the project is renamed", async () => {
+    const harness = createTestHarness({ manifest });
+    const renamed = { ...existingProject(), name: "Rebranded Project" };
+    harness.seed({ projects: [renamed] });
+    await plugin.definition.setup(harness.ctx);
+    mockProjectSpace(harness, projectSpaceRow(existingProject()));
+
+    await harness.emit("project.updated", {}, {
+      companyId: COMPANY_ID,
+      entityId: renamed.id,
+      entityType: "project",
+      eventId: "event-project-renamed",
+    });
+
+    const update = harness.dbExecutes.find((execute) => execute.sql.includes("SET display_name = $4"));
+    expect(update).toBeTruthy();
+    expect(update?.params?.[3]).toBe("Rebranded Project");
+  });
+
+  it("reconciles project spaces on demand, skipping archived projects", async () => {
+    const harness = createTestHarness({ manifest });
+    const active = existingProject();
+    const archived = {
+      ...existingProject(),
+      id: "77777777-7777-4777-8777-777777777777",
+      name: "Sunset Initiative",
+      archivedAt: new Date().toISOString(),
+    } as unknown as Project;
+    harness.seed({ projects: [active, archived] });
+    await plugin.definition.setup(harness.ctx);
+
+    const result = await harness.performAction<{ created: string[]; skipped: string[] }>(
+      "reconcile-project-spaces",
+      { companyId: COMPANY_ID },
+    );
+    expect(result.created.some((label) => label.includes(PROJECT_SPACE_SLUG))).toBe(true);
+    expect(result.skipped).toContain("Sunset Initiative");
+  });
+
+  it("bootstraps the wiki root with a managed default path when none is configured", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    const result = await harness.performAction<{
+      folder: { configured: boolean; path: string | null };
+      projectSpaces: { status: string };
+    }>("bootstrap-root", { companyId: COMPANY_ID });
+
+    expect(result.folder.configured).toBe(true);
+    expect(result.folder.path ?? "").toContain("plugin-data");
+    expect(result.folder.path ?? "").toContain(COMPANY_ID);
+    expect(result.projectSpaces.status).toBe("ok");
+  });
+
+  it("captures transcripts through the agent API with attribution and a queued ingest operation", async () => {
+    const harness = createTestHarness({ manifest });
+    const project = existingProject();
+    harness.seed({ projects: [project] });
+    await plugin.definition.setup(harness.ctx);
+    mockProjectSpace(harness, projectSpaceRow(project));
+
+    const response = await plugin.definition.onApiRequest!(apiRequest("agent-capture", {
+      method: "POST",
+      body: {
+        companyId: COMPANY_ID,
+        projectName: "existing wiki project",
+        title: "2026-07-06 board meeting",
+        sourceType: "meeting_transcript",
+        contents: "We decided to focus Q3 on pricing.",
+      },
+    }));
+
+    expect(response.status).toBe(201);
+    const body = response.body as {
+      source: { rawPath: string; spaceSlug: string };
+      operation: { issue: { id: string } } | null;
+    };
+    expect(body.source.spaceSlug).toBe(PROJECT_SPACE_SLUG);
+    expect(body.source.rawPath).toMatch(/^raw\/\d{4}-\d{2}-\d{2}-2026-07-06-board-meeting-/);
+    expect(body.operation?.issue?.id).toBeTruthy();
+
+    const sourceInsert = harness.dbExecutes.find((execute) => execute.sql.includes("wiki_sources"));
+    expect(String(sourceInsert?.params?.[8])).toContain('"kind":"agent"');
+    expect(String(sourceInsert?.params?.[8])).toContain('"id":"agent-007"');
+    const searchUpsert = harness.dbExecutes.find((execute) => execute.sql.includes("wiki_search_documents"));
+    expect(searchUpsert?.params?.[4]).toBe("source");
+  });
+
+  it("writes pages via the agent API and returns 409 with the current hash on conflicts", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    const first = await plugin.definition.onApiRequest!(apiRequest("agent-page-write", {
+      method: "POST",
+      body: {
+        companyId: COMPANY_ID,
+        path: "wiki/concepts/pricing.md",
+        contents: "# Pricing\n\nSee [[decisions]] and [[concepts/tiers|tier notes]] but not `[[code-span]]`.\n",
+        summary: "Initial page",
+      },
+    }));
+    expect(first.status).toBe(201);
+    const firstBody = first.body as { hash: string; backlinks: string[] };
+    expect(firstBody.backlinks).toContain("wiki/decisions.md");
+    expect(firstBody.backlinks).toContain("wiki/concepts/tiers.md");
+    expect(firstBody.backlinks).not.toContain("wiki/code-span.md");
+
+    const revisionInsert = harness.dbExecutes.find((execute) => execute.sql.includes("wiki_page_revisions"));
+    expect(revisionInsert?.params?.[8]).toBe("agent");
+    expect(revisionInsert?.params?.[9]).toBe("agent-007");
+    expect(revisionInsert?.params?.[10]).toBe("run-42");
+    expect(String(revisionInsert?.params?.[11])).toContain("# Pricing");
+
+    const searchUpsert = harness.dbExecutes.find((execute) =>
+      execute.sql.includes("wiki_search_documents") && execute.params?.[4] === "page");
+    expect(searchUpsert?.params?.[5]).toBe("wiki/concepts/pricing.md");
+
+    const conflict = await plugin.definition.onApiRequest!(apiRequest("agent-page-write", {
+      method: "POST",
+      body: {
+        companyId: COMPANY_ID,
+        path: "wiki/concepts/pricing.md",
+        contents: "overwrite",
+        expectedHash: "0".repeat(64),
+      },
+    }));
+    expect(conflict.status).toBe(409);
+    expect((conflict.body as { currentHash: string }).currentHash).toBe(firstBody.hash);
+  });
+
+  it("serves company-wide body search over indexed documents", async () => {
+    const harness = createTestHarness({ manifest });
+    const project = existingProject();
+    harness.seed({ projects: [project] });
+    await plugin.definition.setup(harness.ctx);
+    const originalQuery = harness.ctx.db.query.bind(harness.ctx.db);
+    let capturedSql = "";
+    harness.ctx.db.query = async <T,>(sql: string, params?: unknown[]) => {
+      if (sql.includes("wiki_search_documents")) {
+        capturedSql = sql;
+        return [{
+          doc_kind: "source",
+          path: "raw/2026-07-06-board-meeting.md",
+          title: "2026-07-06 board meeting",
+          body_text: "We decided to focus Q3 on pricing changes for the enterprise tier.",
+          updated_at: "2026-07-06T00:00:00Z",
+          space_slug: PROJECT_SPACE_SLUG,
+          space_display_name: project.name,
+          project_id: project.id,
+          score: 620,
+        }] as T[];
+      }
+      return originalQuery<T>(sql, params);
+    };
+
+    const response = await plugin.definition.onApiRequest!(apiRequest("agent-search", {
+      query: { companyId: COMPANY_ID, q: "pricing decision" },
+    }));
+    const body = response.body as {
+      results: Array<{ kind: string; spaceSlug: string; snippet: string | null; projectId: string | null }>;
+    };
+    expect(body.results).toHaveLength(1);
+    expect(body.results[0]).toMatchObject({
+      kind: "source",
+      spaceSlug: PROJECT_SPACE_SLUG,
+      projectId: project.id,
+    });
+    expect(body.results[0]?.snippet ?? "").toContain("pricing");
+    expect(capturedSql).toContain("similarity(");
+    expect(capturedSql).toContain("access_scope = 'shared'");
+  });
+
+  it("serves the space index plus a shared-space catalog to agents", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    await harness.ctx.localFolders.writeTextAtomic(COMPANY_ID, "wiki-root", "wiki/index.md", "# Wiki index\n\n- [[decisions]]\n");
+
+    const response = await plugin.definition.onApiRequest!(apiRequest("agent-space-index", {
+      query: { companyId: COMPANY_ID },
+    }));
+    const body = response.body as {
+      spaceSlug: string;
+      contents: string | null;
+      spaces: Array<{ slug: string }>;
+    };
+    expect(body.spaceSlug).toBe("default");
+    expect(body.contents).toContain("# Wiki index");
+    expect(body.spaces.some((space) => space.slug === "default")).toBe(true);
+  });
+
+  it("appends attributed log entries through the agent API", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+
+    const response = await plugin.definition.onApiRequest!(apiRequest("agent-log-append", {
+      method: "POST",
+      body: { companyId: COMPANY_ID, entry: "decisions | recorded Q3 pricing decision" },
+    }));
+    expect(response.status).toBe(201);
+    const log = await harness.ctx.localFolders.readText(COMPANY_ID, "wiki-root", "wiki/log.md");
+    expect(log).toContain("decisions | recorded Q3 pricing decision");
   });
 });
