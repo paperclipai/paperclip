@@ -257,6 +257,39 @@ describe("migration safety check", () => {
     );
   });
 
+  it("does not suppress full-table finding when WHERE only constrains a joined table", () => {
+    const result = analyze(`
+      UPDATE "issue_comments"
+        SET "derived_author_agent_id" = NULL
+        FROM "companies"
+        WHERE "companies"."id" = '00000000-0000-0000-0000-000000000000';
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "full-table-mutation-large-table",
+    );
+  });
+
+  it("does not suppress missing-index finding when support index uses an expression", () => {
+    const result = analyze(`
+      CREATE INDEX CONCURRENTLY IF NOT EXISTS "issue_comments_expr_idx"
+        ON "issue_comments" ((lower("body")));--> statement-breakpoint
+      UPDATE "issue_comments" c
+        SET "derived_author_agent_id" = NULL
+        FROM (
+          SELECT "id"
+          FROM "issue_comments"
+          ORDER BY "id"
+          LIMIT 5000
+        ) b
+        WHERE c."id" = b."id";
+    `);
+
+    expect(result.newFindings.map((f) => f.rule)).toContain(
+      "batched-mutation-large-table-missing-index",
+    );
+  });
+
   it("flags a batch backfill when the support index does not cover the ORDER BY key", () => {
     const result = analyze(`
       CREATE INDEX CONCURRENTLY IF NOT EXISTS "issue_comments_author_idx"

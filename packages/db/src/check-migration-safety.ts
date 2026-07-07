@@ -331,6 +331,17 @@ function identifierList(value: string): string[] {
     .filter((identifier) => !RESERVED_ALIAS_WORDS.has(identifier.toLowerCase()));
 }
 
+function plainIndexColumns(columnSpec: string): string[] {
+  // Only include simple column references. Skip expression columns such as
+  // (id * 2) or lower(col) — PostgreSQL cannot use those to satisfy ORDER BY
+  // on the plain column, so they must not suppress a missing-index finding.
+  return splitSqlList(columnSpec).flatMap((part) => {
+    const trimmed = part.trim();
+    if (/\(/.test(trimmed)) return [];
+    return identifierList(trimmed);
+  });
+}
+
 function splitSqlList(value: string): string[] {
   const parts: string[] = [];
   let start = 0;
@@ -443,7 +454,7 @@ function parseCreateIndexes(statement: string): CreateIndexInfo[] {
     if (!table) continue;
     indexes.push({
       table,
-      columns: identifierList(match[4] ?? ""),
+      columns: plainIndexColumns(match[4] ?? ""),
       predicateColumns: predicateColumns(match[5] ?? ""),
       concurrently: Boolean(match[1]),
       statement,
@@ -529,7 +540,26 @@ function hasSelectiveWhere(mutation: MutationInfo): boolean {
 
   const whereClause = normalizeSql(afterWhere).replace(/;$/, "");
   if (/^(?:true|1\s*=\s*1)$/i.test(whereClause)) return false;
-  return /(?:=|<>|!=|<|>|\bIN\s*\(|\bEXISTS\s*\(|\bLIKE\b|\bIS\s+(?:NOT\s+)?NULL\b)/i.test(whereClause);
+  if (!/(?:=|<>|!=|<|>|\bIN\s*\(|\bEXISTS\s*\(|\bLIKE\b|\bIS\s+(?:NOT\s+)?NULL\b)/i.test(whereClause))
+    return false;
+
+  // A WHERE that only constrains joined tables is not a filter on the target table.
+  // If every "table"."column" reference names a table other than the mutated table,
+  // and no bare (unqualified) identifiers remain after stripping those refs and
+  // string literals, the predicate does not narrow the mutated table's rows.
+  const qualifiedRefs = [...whereClause.matchAll(/"([^"]+)"\s*\.\s*"[^"]+"/g)];
+  if (qualifiedRefs.length > 0) {
+    const refTables = qualifiedRefs.map((m) => normalizeIdentifier(m[1] ?? ""));
+    if (!refTables.some((t) => t === mutation.table)) {
+      const noQualified = whereClause.replace(/"[^"]+"\s*\.\s*"[^"]+"/g, " ");
+      const noStrings = noQualified.replace(/'(?:[^']|'')*'/g, " ");
+      const SQL_KW =
+        /\b(?:AND|OR|NOT|IN|EXISTS|LIKE|IS|NULL|TRUE|FALSE|BETWEEN|CASE|WHEN|THEN|END|CAST|AS|ANY|ALL|SOME)\b/gi;
+      if (!/\b[A-Za-z_][A-Za-z0-9_]*\b/.test(noStrings.replace(SQL_KW, " "))) return false;
+    }
+  }
+
+  return true;
 }
 
 function hasLeadingOrderPrefix(
