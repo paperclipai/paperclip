@@ -3828,9 +3828,12 @@ export function IssueDetail() {
     </>
   );
 
+  const hasDocuments = (issue.documentSummaries?.length ?? 0) > 0;
+
   return (
     <FileViewerProvider issueId={issue.id} enabled={fileViewerEnabled}>
-    <div className="max-w-3xl space-y-6">
+    <div className="paperclip-issue-outer">
+      <div className="paperclip-issue-left-col">
       {/* Parent chain breadcrumb */}
       {ancestors.length > 0 && (
         <nav className="flex items-center gap-1 text-xs text-muted-foreground flex-wrap">
@@ -4367,7 +4370,9 @@ export function IssueDetail() {
           agentMap={agentMap}
         />
       ) : null}
+      </div>{/* end paperclip-issue-left-col */}
 
+      <div {...(hasDocuments ? { "data-paperclip-docs": "1" } : {})}>
       <IssueDocumentsSection
         issue={issue}
         canDeleteDocuments={Boolean(session?.user?.id)}
@@ -4395,6 +4400,7 @@ export function IssueDetail() {
         agentMap={agentMap}
         userProfileMap={userProfileMap}
       />
+      </div>{/* end data-paperclip-docs wrapper */}
 
       <IssueOutputSection
         workProducts={workProducts}

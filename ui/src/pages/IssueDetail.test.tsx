@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent, Issue, IssueAttachment, IssueComment, IssueTreeControlPreview, IssueTreeHold, IssueWorkProduct } from "@paperclipai/shared";
+import type { Agent, Issue, IssueAttachment, IssueComment, IssueDocumentSummary, IssueTreeControlPreview, IssueTreeHold, IssueWorkProduct } from "@paperclipai/shared";
 import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from "react";
 import { NavigationType } from "react-router-dom";
 import { flushSync } from "react-dom";
@@ -2470,7 +2470,76 @@ describe("IssueDetail", () => {
         && element.className.includes("border-t")
         && element.textContent?.includes("Close"),
       );
-    expect(footer?.className).toContain("bg-background");
+        expect(footer?.className).toContain("bg-background");
+  });
+
+  describe("two-column layout CSS classes", () => {
+    async function renderIssueDetail(overrides: Partial<Parameters<typeof createIssue>[0]> = {}) {
+      const issue = createIssue(overrides);
+      mockIssuesApi.get.mockResolvedValue(issue);
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+      return { container, issue };
+    }
+
+    it("renders the outer wrapper with paperclip-issue-outer class", async () => {
+      await renderIssueDetail();
+      const outer = container.querySelector(".paperclip-issue-outer");
+      expect(outer).not.toBeNull();
+    });
+
+    it("renders the left-column wrapper with paperclip-issue-left-col class", async () => {
+      await renderIssueDetail();
+      const leftCol = container.querySelector(".paperclip-issue-left-col");
+      expect(leftCol).not.toBeNull();
+    });
+
+    it("does not add data-paperclip-docs attribute when issue has no documents", async () => {
+      await renderIssueDetail({ documentSummaries: [] });
+      const docsWrapper = container.querySelector("[data-paperclip-docs]");
+      expect(docsWrapper).toBeNull();
+    });
+
+    it("adds data-paperclip-docs='1' wrapper when issue has at least one document", async () => {
+      const now = new Date("2026-04-21T00:00:00.000Z");
+      const docSummary: IssueDocumentSummary = {
+        id: "doc-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        key: "plan",
+        title: "Plan",
+        format: "markdown",
+        latestRevisionId: "rev-1",
+        latestRevisionNumber: 1,
+        createdByAgentId: null,
+        createdByUserId: null,
+        updatedByAgentId: null,
+        updatedByUserId: null,
+        lockedAt: null,
+        lockedByAgentId: null,
+        lockedByUserId: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await renderIssueDetail({ documentSummaries: [docSummary] });
+      const docsWrapper = container.querySelector("[data-paperclip-docs='1']");
+      expect(docsWrapper).not.toBeNull();
+    });
+
+    it("left-column wrapper is a child of paperclip-issue-outer", async () => {
+      await renderIssueDetail();
+      const outer = container.querySelector(".paperclip-issue-outer");
+      const leftCol = outer?.querySelector(".paperclip-issue-left-col");
+      expect(leftCol).not.toBeNull();
+    });
   });
 });
 
