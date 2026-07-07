@@ -204,7 +204,14 @@ describe("adapter model listing", () => {
   it("loads cursor models dynamically and caches them", async () => {
     const runner = vi.fn(() => ({
       status: 0,
-      stdout: "Available models: auto, composer-1.5, gpt-5.3-codex-high, sonnet-4.6",
+      stdout: [
+        "Available models",
+        "",
+        "auto - Auto",
+        "composer-1.5 - Composer 1.5",
+        "gpt-5.3-codex-high - Codex 5.3 High",
+        "sonnet-4.6 - Sonnet 4.6",
+      ].join("\n"),
       stderr: "",
       hasError: false,
     }));
@@ -217,7 +224,8 @@ describe("adapter model listing", () => {
     expect(first).toEqual(second);
     expect(first.some((model) => model.id === "auto")).toBe(true);
     expect(first.some((model) => model.id === "gpt-5.3-codex-high")).toBe(true);
-    expect(first.some((model) => model.id === "composer-1")).toBe(true);
+    expect(first.some((model) => model.id === "composer-1.5")).toBe(true);
+    expect(first.some((model) => model.label === "Codex 5.3 High")).toBe(true);
   });
 
   describe("PAPERCLIP_ADAPTER_MODELS declared models", () => {

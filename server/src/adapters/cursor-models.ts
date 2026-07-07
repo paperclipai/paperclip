@@ -41,10 +41,15 @@ function isLikelyModelId(raw: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value);
 }
 
-function pushModelId(target: AdapterModel[], raw: string) {
-  const id = sanitizeModelId(raw);
+function pushModelEntry(target: AdapterModel[], rawId: string, rawLabel?: string) {
+  const id = sanitizeModelId(rawId);
   if (!isLikelyModelId(id)) return;
-  target.push({ id, label: id });
+  const label = rawLabel?.trim() || id;
+  target.push({ id, label });
+}
+
+function pushModelId(target: AdapterModel[], raw: string) {
+  pushModelEntry(target, raw);
 }
 
 function collectFromJsonValue(value: unknown, target: AdapterModel[]) {
@@ -97,6 +102,16 @@ export function parseCursorModelsOutput(stdout: string, stderr: string): Adapter
   for (const lineRaw of combined.split(/\r?\n/)) {
     const line = lineRaw.trim();
     if (!line) continue;
+    if (/^available models?/i.test(line)) continue;
+    if (/^tip:/i.test(line)) continue;
+
+    // Cursor CLI (2026.07+): "model-id - Human readable label"
+    const labeled = line.match(/^([A-Za-z0-9][A-Za-z0-9._/-]*)\s+-\s+(.+)$/);
+    if (labeled) {
+      pushModelEntry(models, labeled[1] ?? "", labeled[2]);
+      continue;
+    }
+
     const bullet = line.replace(/^[-*]\s+/, "").trim();
     if (!bullet || bullet.includes(" ")) continue;
     pushModelId(models, bullet);
