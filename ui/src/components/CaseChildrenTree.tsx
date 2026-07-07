@@ -1,4 +1,4 @@
-import { Link } from "@/lib/router";
+import { Link, useCaseHref } from "@/lib/router";
 import type { CaseSummary } from "@/api/cases";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -9,6 +9,7 @@ import { StatusBadge } from "@/components/StatusBadge";
  * a flat list; nesting depth is intentionally one level in v1.
  */
 export function CaseChildrenTree({ children }: { children: CaseSummary[] }) {
+  const caseHref = useCaseHref();
   if (children.length === 0) {
     return <p className="text-xs text-muted-foreground">No child cases.</p>;
   }
@@ -17,7 +18,7 @@ export function CaseChildrenTree({ children }: { children: CaseSummary[] }) {
       {children.map((child) => (
         <li key={child.id}>
           <Link
-            to={`/cases/${child.identifier}`}
+            to={caseHref(child.identifier)}
             className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-sm transition-colors hover:bg-accent/50"
           >
             <span className="font-mono text-xs text-muted-foreground shrink-0">{child.identifier}</span>

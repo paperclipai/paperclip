@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, Plus } from "lucide-react";
-import { Link, Navigate, useParams } from "@/lib/router";
+import { Link, Navigate, useCaseHref, useParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { usePanel } from "@/context/PanelContext";
@@ -251,6 +251,7 @@ export function CaseDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { openPanel, closePanel } = usePanel();
   const queryClient = useQueryClient();
+  const caseHref = useCaseHref();
 
   const caseQuery = useQuery({
     queryKey: queryKeys.cases.detail(caseIdentifier ?? ""),
@@ -286,10 +287,10 @@ export function CaseDetail() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Cases", href: "/cases" },
+      { label: "Cases", href: caseHref() },
       { label: caseData ? `${caseData.identifier} — ${caseData.title}` : (caseIdentifier ?? "Case") },
     ]);
-  }, [setBreadcrumbs, caseData, caseIdentifier]);
+  }, [setBreadcrumbs, caseData, caseIdentifier, caseHref]);
 
   const events = useMemo(() => eventsQuery.data ?? [], [eventsQuery.data]);
   useEffect(() => {
@@ -298,13 +299,13 @@ export function CaseDetail() {
     return () => closePanel();
   }, [caseData, children, events, openPanel, closePanel]);
 
-  if (!caseIdentifier) return <Navigate to="/cases" replace />;
+  if (!caseIdentifier) return <Navigate to={caseHref()} replace />;
   if (caseQuery.isLoading) return <PageSkeleton variant="detail" />;
   if (caseQuery.isError || !caseData) {
     return (
       <div className="mx-auto max-w-md py-16 text-center">
         <p className="text-sm text-muted-foreground">Case not found.</p>
-        <Link to="/cases" className="mt-2 inline-block text-sm text-primary hover:underline">
+        <Link to={caseHref()} className="mt-2 inline-block text-sm text-primary hover:underline">
           ← Back to cases
         </Link>
       </div>
@@ -352,7 +353,7 @@ export function CaseDetail() {
 
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
           {caseData.parent ? (
-            <Link to={`/cases/${caseData.parent.identifier}`} className="hover:underline">
+            <Link to={caseHref(caseData.parent.identifier)} className="hover:underline">
               ↑ {caseData.parent.identifier} — {caseData.parent.title}
             </Link>
           ) : (

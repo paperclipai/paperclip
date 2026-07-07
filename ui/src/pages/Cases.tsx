@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Layers, SearchX } from "lucide-react";
-import { Link } from "@/lib/router";
+import { Link, useCaseHref } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { queryKeys } from "@/lib/queryKeys";
@@ -34,9 +34,10 @@ const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
 const ALL = "__all__";
 
 function CaseListRow({ row }: { row: CaseSummary }) {
+  const caseHref = useCaseHref();
   return (
     <Link
-      to={`/cases/${row.identifier}`}
+      to={caseHref(row.identifier)}
       className="grid grid-cols-[7rem_1fr_auto_6rem] items-center gap-3 px-3 py-2 text-sm hover:bg-accent/50"
     >
       <span className="truncate font-mono text-xs text-muted-foreground">{row.identifier}</span>

@@ -14,6 +14,8 @@ vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => (
     <a href={to} {...props}>{children}</a>
   ),
+  useCaseHref: () => (...segments: string[]) =>
+    `/PAP/${["cases", ...segments].filter(Boolean).join("/")}`,
 }));
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -70,7 +72,7 @@ describe("CaseFieldsPanel", () => {
     expect(urlLink?.getAttribute("target")).toBe("_blank");
     // case identifier → case link chip
     const caseLink = [...container.querySelectorAll("a")].find(
-      (a) => a.getAttribute("href") === "/cases/PAP-C12",
+      (a) => a.getAttribute("href") === "/PAP/cases/PAP-C12",
     );
     expect(caseLink).toBeTruthy();
     // boolean never renders raw "true"/"false"

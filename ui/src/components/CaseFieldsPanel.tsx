@@ -1,7 +1,7 @@
 import { Check } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
-import { Link } from "@/lib/router";
+import { Link, useCaseHref } from "@/lib/router";
 
 // -----------------------------------------------------------------------------
 // CaseFieldsPanel (PAP-12968 §3) — the generic key-value renderer for a case's
@@ -23,6 +23,7 @@ function EmptyValue() {
 }
 
 function StringValue({ value }: { value: string }) {
+  const caseHref = useCaseHref();
   const trimmed = value.trim();
   if (trimmed === "") return <EmptyValue />;
   if (URL_RE.test(trimmed)) {
@@ -41,7 +42,7 @@ function StringValue({ value }: { value: string }) {
   }
   if (CASE_ID_RE.test(trimmed)) {
     return (
-      <Link to={`/cases/${trimmed}`} className="font-mono text-sm text-primary hover:underline">
+      <Link to={caseHref(trimmed)} className="font-mono text-sm text-primary hover:underline">
         {trimmed}
       </Link>
     );

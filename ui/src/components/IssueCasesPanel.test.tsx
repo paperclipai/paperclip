@@ -24,6 +24,8 @@ vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => (
     <a href={to} {...props}>{children}</a>
   ),
+  useCaseHref: () => (...segments: string[]) =>
+    `/PAP/${["cases", ...segments].filter(Boolean).join("/")}`,
 }));
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -88,7 +90,7 @@ describe("IssueCasesPanel", () => {
     expect(text).toContain("Launch post");
     expect(text).toContain("work");
     expect(text).toContain("in review");
-    expect(container.querySelector('a[href="/cases/PAP-C7"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/PAP/cases/PAP-C7"]')).not.toBeNull();
     act(() => root.unmount());
   });
 

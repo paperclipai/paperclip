@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "@/lib/router";
+import { Link, useCaseHref } from "@/lib/router";
 import { casesApi, type CaseLinkRole } from "@/api/cases";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { queryKeys } from "@/lib/queryKeys";
@@ -19,6 +19,7 @@ const ROLE_LABEL: Record<CaseLinkRole, string> = {
  * dropped into the issue properties panel unconditionally.
  */
 export function IssueCasesPanel({ issueId }: { issueId: string }) {
+  const caseHref = useCaseHref();
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -41,7 +42,7 @@ export function IssueCasesPanel({ issueId }: { issueId: string }) {
         {links.map((link) => (
           <Link
             key={link.id}
-            to={`/cases/${link.case.identifier}`}
+            to={caseHref(link.case.identifier)}
             className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-sm transition-colors hover:bg-accent/50"
           >
             <span className="font-mono text-xs text-muted-foreground shrink-0">{link.case.identifier}</span>
