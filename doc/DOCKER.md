@@ -190,7 +190,7 @@ The `docker/quadlet/` directory contains unit files to run Paperclip + PostgreSQ
    POSTGRES_USER=paperclip
    POSTGRES_PASSWORD=paperclip
    POSTGRES_DB=paperclip
-   DATABASE_URL=postgres://paperclip:paperclip@127.0.0.1:5432/paperclip
+   PAPERCLIP_DATABASE_URL=postgres://paperclip:paperclip@127.0.0.1:5432/paperclip
    # OPENAI_API_KEY=sk-...
    # ANTHROPIC_API_KEY=sk-...
    EOL
