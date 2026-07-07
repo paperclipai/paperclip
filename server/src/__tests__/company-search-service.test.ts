@@ -267,6 +267,11 @@ describeEmbeddedPostgres("companySearchService", () => {
       title: "Hidden needle",
       hiddenAt: new Date(),
     });
+    await createIssue(companyId, {
+      identifier: "HAR-1",
+      title: "Harness needle",
+      harnessKind: "skill_test",
+    });
     await createIssue(otherCompanyId, {
       identifier: "OTH-1",
       title: "Other company needle",

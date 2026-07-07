@@ -21,6 +21,7 @@ import { parseObject } from "../adapters/utils.js";
 import { logActivity } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueService } from "./issues.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
 
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
@@ -740,6 +741,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         WHERE company_id = ${companyId}
           AND id = ${watchedIssueId}
           AND hidden_at IS NULL
+          AND harness_kind IS NULL
         UNION ALL
         SELECT
           child.id,
@@ -758,6 +760,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         JOIN watched_issues ON child.parent_id = watched_issues.id
         WHERE child.company_id = ${companyId}
           AND child.hidden_at IS NULL
+          AND child.harness_kind IS NULL
           AND child.origin_kind <> ${TASK_WATCHDOG_ORIGIN_KIND}
           AND watched_issues.depth < ${TASK_WATCHDOG_SUBTREE_MAX_DEPTH - 1}
       )
@@ -836,7 +839,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .where(and(
           eq(issues.companyId, companyId),
           inArray(issues.id, subtreeIssueIds),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           inArray(heartbeatRuns.status, [...TASK_WATCHDOG_LIVE_RUN_STATUSES]),
         )),
       db
@@ -1025,7 +1028,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         eq(issues.companyId, companyId),
         eq(issues.originKind, TASK_WATCHDOG_ORIGIN_KIND),
         eq(issues.originId, watchedIssueId),
-        isNull(issues.hiddenAt),
+        visibleIssueCondition(),
       ))
       .orderBy(asc(issues.createdAt), asc(issues.id))
       .limit(1)
@@ -1177,7 +1180,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .where(and(
           eq(issues.companyId, input.watchdog.companyId),
           eq(issues.id, input.watchdog.watchdogIssueId),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
         ))
         .then((rows) => rows[0] ?? null)
       : null;
@@ -1280,7 +1283,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     const sourceIssue = await db
       .select()
       .from(issues)
-      .where(and(eq(issues.companyId, watchdog.companyId), eq(issues.id, watchdog.issueId), isNull(issues.hiddenAt)))
+      .where(and(eq(issues.companyId, watchdog.companyId), eq(issues.id, watchdog.issueId), visibleIssueCondition()))
       .then((rows) => rows[0] ?? null);
     if (!sourceIssue || sourceIssue.originKind === TASK_WATCHDOG_ORIGIN_KIND) {
       return { state: "skipped" as const, reason: "watched_issue_not_applicable" };
@@ -1314,7 +1317,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .where(and(
           eq(issues.companyId, watchdog.companyId),
           eq(issues.id, existingWatchdogIssueId),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
         ))
         .then((rows) => rows[0] ?? null)
       : null;
@@ -1420,12 +1423,14 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         WHERE company_id = ${companyId}
           AND id = ${issueId}
           AND hidden_at IS NULL
+          AND harness_kind IS NULL
         UNION ALL
         SELECT parent.id, parent.parent_id, ancestors.depth + 1
         FROM issues parent
         JOIN ancestors ON parent.id = ancestors.parent_id
         WHERE parent.company_id = ${companyId}
           AND parent.hidden_at IS NULL
+          AND parent.harness_kind IS NULL
           AND ancestors.depth < ${TASK_WATCHDOG_SUBTREE_MAX_DEPTH - 1}
       )
       SELECT id FROM ancestors

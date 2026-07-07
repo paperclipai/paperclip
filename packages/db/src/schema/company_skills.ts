@@ -12,6 +12,7 @@ import {
 import type { CompanySkillFileInventoryEntry, CompanySkillSharingScope } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
+import { issues } from "./issues.js";
 
 export const companySkills = pgTable(
   "company_skills",
@@ -129,5 +130,67 @@ export const companySkillComments = pgTable(
       table.createdAt,
     ),
     parentIdx: index("company_skill_comments_parent_idx").on(table.parentCommentId),
+  }),
+);
+
+export const companySkillTestInputs = pgTable(
+  "company_skill_test_inputs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    skillId: uuid("skill_id").notNull().references(() => companySkills.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    content: text("content").notNull(),
+    createdBy: text("created_by"),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companySkillNameIdx: index("company_skill_test_inputs_company_skill_name_idx").on(
+      table.companyId,
+      table.skillId,
+      table.name,
+    ),
+    companySkillActiveIdx: index("company_skill_test_inputs_company_skill_active_idx").on(
+      table.companyId,
+      table.skillId,
+      table.deletedAt,
+    ),
+  }),
+);
+
+export const companySkillTestRuns = pgTable(
+  "company_skill_test_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    skillId: uuid("skill_id").notNull().references(() => companySkills.id, { onDelete: "cascade" }),
+    inputId: uuid("input_id").references(() => companySkillTestInputs.id, { onDelete: "set null" }),
+    inputSnapshot: text("input_snapshot").notNull(),
+    skillVersionId: uuid("skill_version_id").notNull().references(() => companySkillVersions.id, { onDelete: "restrict" }),
+    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "restrict" }),
+    agentConfigSnapshot: jsonb("agent_config_snapshot").$type<Record<string, unknown>>().notNull().default({}),
+    issueId: uuid("issue_id").notNull().references(() => issues.id, { onDelete: "restrict" }),
+    status: text("status").notNull().default("queued"),
+    outputDocumentKey: text("output_document_key").notNull().default("output"),
+    outputSnapshot: text("output_snapshot").notNull().default(""),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companySkillCreatedIdx: index("company_skill_test_runs_company_skill_created_idx").on(
+      table.companyId,
+      table.skillId,
+      table.createdAt,
+    ),
+    companyIssueIdx: uniqueIndex("company_skill_test_runs_company_issue_idx").on(table.companyId, table.issueId),
+    companyInputCreatedIdx: index("company_skill_test_runs_company_input_created_idx").on(
+      table.companyId,
+      table.inputId,
+      table.createdAt,
+    ),
+    companyStatusIdx: index("company_skill_test_runs_company_status_idx").on(table.companyId, table.status),
   }),
 );
