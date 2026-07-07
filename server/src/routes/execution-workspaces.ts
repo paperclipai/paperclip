@@ -5,6 +5,7 @@ import { issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
+  reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
@@ -24,7 +25,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectExecutionWorkspaceCommandPaths,
@@ -490,6 +491,61 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
   router.post("/execution-workspaces/:id/runtime-services/:action", validate(workspaceRuntimeControlTargetSchema), handleExecutionWorkspaceRuntimeCommand);
   router.post("/execution-workspaces/:id/runtime-commands/:action", validate(workspaceRuntimeControlTargetSchema), handleExecutionWorkspaceRuntimeCommand);
+
+  router.post("/execution-workspaces/:id/reconcile-branch", validate(reconcileExecutionWorkspaceBranchSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Execution workspace not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    assertBoard(req);
+    if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
+
+    const actor = getActorInfo(req);
+    const result = await svc.reconcileExecutionWorkspaceBranch(id, {
+      mode: req.body.mode,
+      reason: req.body.reason ?? null,
+      actor: {
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+      },
+    });
+
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "execution_workspace.branch_reconciled",
+      entityType: "execution_workspace",
+      entityId: existing.id,
+      details: {
+        mode: req.body.mode,
+        reason: req.body.reason ?? null,
+        fromBranch: result.inspection.fromBranch,
+        toBranch: result.inspection.toBranch,
+        fromSha: result.inspection.fromSha,
+        toSha: result.inspection.toSha,
+        ancestryVerdict: result.inspection.ancestryVerdict,
+        fingerprint: result.inspection.fingerprint,
+        sourceIssueId: existing.sourceIssueId,
+        auditCommentId: result.auditCommentId,
+        recoveryActionId: result.recoveryAction?.id ?? null,
+        actor: {
+          type: actor.actorType,
+          id: actor.actorId,
+          source: actor.actorSource,
+        },
+      },
+    });
+
+    res.json(result);
+  });
 
   router.patch("/execution-workspaces/:id", validate(updateExecutionWorkspaceSchema), async (req, res) => {
     const id = req.params.id as string;

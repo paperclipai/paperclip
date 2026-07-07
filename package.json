@@ -75,7 +75,17 @@
     "overrides": {
       "rollup": ">=4.59.0",
       "react": "^19.2.7",
-      "react-dom": "^19.2.7"
+      "react-dom": "^19.2.7",
+      "lexical": "0.46.0",
+      "@lexical/clipboard": "0.46.0",
+      "@lexical/link": "0.46.0",
+      "@lexical/list": "0.46.0",
+      "@lexical/markdown": "0.46.0",
+      "@lexical/plain-text": "0.46.0",
+      "@lexical/react": "0.46.0",
+      "@lexical/rich-text": "0.46.0",
+      "@lexical/selection": "0.46.0",
+      "@lexical/utils": "0.46.0"
     }
   }
 }

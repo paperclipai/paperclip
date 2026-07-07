@@ -134,7 +134,7 @@ describe("buildCodexExecArgs", () => {
   it("adds --skip-git-repo-check when requested", () => {
     const result = buildCodexExecArgs(
       {
-        model: "gpt-5.3-codex",
+        model: "gpt-5.5",
       },
       { skipGitRepoCheck: true },
     );

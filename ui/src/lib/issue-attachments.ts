@@ -1,5 +1,5 @@
 import type { IssueAttachment } from "@paperclipai/shared";
-import { isVideoContentType } from "./issue-output";
+import { isVideoLikeOutput } from "./issue-output";
 
 const GENERIC_ATTACHMENT_CONTENT_TYPES = new Set([
   "application/octet-stream",
@@ -36,19 +36,7 @@ export function isImageAttachment(attachment: Pick<IssueAttachment, "contentType
 export function isVideoAttachment(
   attachment: Pick<IssueAttachment, "contentType" | "originalFilename">,
 ) {
-  const contentType = normalizedContentType(attachment);
-  if (isVideoContentType(contentType)) return true;
-  if (!GENERIC_ATTACHMENT_CONTENT_TYPES.has(contentType)) return false;
-
-  const filename = (attachment.originalFilename ?? "").toLowerCase();
-  return (
-    filename.endsWith(".mp4") ||
-    filename.endsWith(".m4v") ||
-    filename.endsWith(".webm") ||
-    filename.endsWith(".mov") ||
-    filename.endsWith(".qt") ||
-    filename.endsWith(".quicktime")
-  );
+  return isVideoLikeOutput(attachment.contentType, attachment.originalFilename);
 }
 
 export function isMarkdownAttachment(

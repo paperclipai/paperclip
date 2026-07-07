@@ -17,6 +17,7 @@ export interface SearchableSelectOption<TValue extends string = string> {
   key: string;
   value: TValue;
   label: string;
+  title?: string;
   searchText?: string;
   disabled?: boolean;
 }
@@ -37,7 +38,7 @@ export interface SearchableSelectProps<
 > {
   value: TValue | "";
   groups: readonly SearchableSelectGroup<TValue, TOption>[];
-  onValueChange: (value: TValue, option: TOption) => void;
+  onValueChange: (value: TValue, option: TOption) => void | boolean | { close?: boolean };
   placeholder: string;
   searchPlaceholder?: string;
   emptyMessage?: string;
@@ -51,9 +52,24 @@ export interface SearchableSelectProps<
   contentWidth?: "trigger" | "auto";
   renderValue?: (option: TOption | null) => ReactNode;
   renderOption?: (option: TOption, state: SearchableSelectRenderState) => ReactNode;
+  deriveGroups?: (
+    query: string,
+    groups: readonly SearchableSelectGroup<TValue, TOption>[],
+  ) => readonly SearchableSelectGroup<TValue, TOption>[];
   filterOption?: (option: TOption, query: string) => boolean;
   scoreOption?: (option: TOption, query: string) => number | null;
   disablePortal?: boolean;
+  /**
+   * Optional pinned "creatable" item rendered at the bottom of the list,
+   * regardless of the query (used e.g. by the secret picker's
+   * `+ Create secret "<query>"…` affordance). `render` receives the live
+   * query so the label can echo it; `onSelect` fires with the query and the
+   * popover closes.
+   */
+  createItem?: {
+    render: (query: string) => ReactNode;
+    onSelect: (query: string) => void;
+  };
 }
 
 function defaultFilterOption(option: SearchableSelectOption, query: string) {
@@ -87,9 +103,11 @@ export function SearchableSelect<
   contentWidth = "trigger",
   renderValue,
   renderOption,
+  deriveGroups,
   filterOption = defaultFilterOption,
   scoreOption,
   disablePortal,
+  createItem,
 }: SearchableSelectProps<TValue, TOption>) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -104,10 +122,15 @@ export function SearchableSelect<
     return null;
   }, [groups, value]);
 
+  const visibleGroups = useMemo(
+    () => (deriveGroups ? deriveGroups(query, groups) : groups),
+    [deriveGroups, groups, query],
+  );
+
   const filteredGroups = useMemo(() => {
     if (loading) return [];
     const normalizedQuery = normalizeSearchText(query);
-    return groups
+    return visibleGroups
       .map((group) => {
         const options = group.options
           .map((option, index) => {
@@ -138,7 +161,7 @@ export function SearchableSelect<
         };
       })
       .filter((group) => group.options.length > 0);
-  }, [filterOption, groups, loading, query, scoreOption]);
+  }, [filterOption, loading, query, scoreOption, visibleGroups]);
 
   const hasOptions = filteredGroups.some((group) => group.options.length > 0);
 
@@ -153,7 +176,10 @@ export function SearchableSelect<
   function selectOption(option: TOption) {
     if (option.disabled) return;
     suppressNextTriggerFocusRef.current = true;
-    onValueChange(option.value, option);
+    const result = onValueChange(option.value, option);
+    if (result === false || (typeof result === "object" && result?.close === false)) {
+      return;
+    }
     closePopover();
   }
 
@@ -192,7 +218,7 @@ export function SearchableSelect<
           role="combobox"
           className={cn("w-full justify-between overflow-hidden", className, triggerClassName)}
         >
-          <span className={cn("min-w-0 truncate", !selectedOption && "text-muted-foreground")}>
+          <span className={cn("min-w-0 flex-1 truncate text-left", !selectedOption && "text-muted-foreground")}>
             {renderValue ? renderValue(selectedOption) : selectedOption?.label ?? placeholder}
           </span>
           <ChevronsUpDown className="ml-2 size-4 opacity-50" />
@@ -233,29 +259,54 @@ export function SearchableSelect<
           >
             {loading ? (
               <div className="px-3 py-6 text-center text-sm text-muted-foreground">{loadingMessage}</div>
-            ) : !hasOptions ? (
-              <CommandEmpty>{emptyMessage}</CommandEmpty>
             ) : (
-              filteredGroups.map((group) => (
-                <CommandGroup key={group.id} heading={group.label}>
-                  {group.options.map((option) => {
-                    const selected = option.value === value;
-                    return (
-                      <CommandItem
-                        key={option.key}
-                        value={option.key}
-                        disabled={option.disabled}
-                        onSelect={() => selectOption(option)}
-                      >
-                        {renderOption
-                          ? renderOption(option, { selected })
-                          : <span className="min-w-0 truncate">{option.label}</span>}
-                        <Check className={cn("ml-auto size-4", selected ? "opacity-100" : "opacity-0")} />
-                      </CommandItem>
-                    );
-                  })}
-                </CommandGroup>
-              ))
+              <>
+                {!hasOptions && !createItem ? <CommandEmpty>{emptyMessage}</CommandEmpty> : null}
+                {!hasOptions && createItem ? (
+                  <div className="px-3 py-3 text-center text-xs text-muted-foreground">{emptyMessage}</div>
+                ) : null}
+                {filteredGroups.map((group) => (
+                  <CommandGroup key={group.id} heading={group.label}>
+                    {group.options.map((option) => {
+                      const selected = option.value === value;
+                      return (
+                        <CommandItem
+                          key={option.key}
+                          value={option.key}
+                          disabled={option.disabled}
+                          onSelect={() => selectOption(option)}
+                        >
+                          {renderOption
+                            ? renderOption(option, { selected })
+                            : <span className="min-w-0 truncate">{option.label}</span>}
+                          <Check className={cn("ml-auto size-4", selected ? "opacity-100" : "opacity-0")} />
+                        </CommandItem>
+                      );
+                    })}
+                  </CommandGroup>
+                ))}
+                {createItem ? (
+                  <CommandGroup className="border-t border-border">
+                    <CommandItem
+                      value="__searchable_select_create__"
+                      onSelect={() => {
+                        const q = query;
+                        suppressNextTriggerFocusRef.current = true;
+                        closePopover();
+                        // Defer to the next macrotask so this popover fully
+                        // closes (and Radix returns focus to the trigger)
+                        // before the consumer opens its own popover. Firing
+                        // synchronously lets the close's focus-return land as a
+                        // `focusOutside` on the newly-opened popover, which
+                        // Radix would immediately dismiss (see PAP-12476).
+                        window.setTimeout(() => createItem.onSelect(q), 0);
+                      }}
+                    >
+                      {createItem.render(query)}
+                    </CommandItem>
+                  </CommandGroup>
+                ) : null}
+              </>
             )}
           </CommandList>
         </Command>

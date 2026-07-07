@@ -1,5 +1,5 @@
 ---
-title: Codex Local
+title: Codex
 summary: OpenAI Codex local adapter setup and configuration
 ---
 

@@ -2,9 +2,13 @@ export { execute, ensureCodexSkillsInjected } from "./execute.js";
 export {
   reconcileManagedCodexHome,
   isManagedCodexHomePath,
+  evaluateCodexCredentialReadiness,
   type ReconcileManagedCodexHomeInput,
   type ReconcileManagedCodexHomeResult,
   type ReconcileManagedCodexHomeStatus,
+  type CodexCredentialReadiness,
+  type CodexCredentialReadinessInput,
+  type CodexCredentialAuthMode,
 } from "./codex-home.js";
 export { listCodexSkills, syncCodexSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";

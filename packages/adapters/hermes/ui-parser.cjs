@@ -1,5 +1,11 @@
 "use strict";
 
+function stripAnsi(text) {
+  return text
+    .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, "")
+    .replace(/\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+}
+
 const TOOL_OUTPUT_PREFIX = "\u250a";
 
 function stripKaomoji(text) {
@@ -114,7 +120,7 @@ function isThinkingLine(line) {
 }
 
 function parseStdoutLine(line, ts) {
-  const trimmed = line.trim();
+  const trimmed = stripAnsi(line).trim();
   if (!trimmed) return [];
 
   if (trimmed.startsWith("[hermes]") || trimmed.startsWith("[paperclip]")) {

@@ -28,7 +28,11 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { pipelineService, type PipelineActor } from "../services/pipelines.ts";
+import {
+  PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE,
+  pipelineService,
+  type PipelineActor,
+} from "../services/pipelines.ts";
 import { routineService } from "../services/routines.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 
@@ -86,6 +90,7 @@ describeEmbeddedPostgres("pipelineService", () => {
     const [company] = await db.insert(companies).values({
       name: "Pipeline Co",
       issuePrefix: `P${randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
     }).returning();
     return company!;
   }
@@ -1469,6 +1474,105 @@ describeEmbeddedPostgres("pipelineService", () => {
       executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode: "isolated_workspace" },
     });
+  });
+
+  it("defaults, preserves, and interpolates pipeline automation issue title templates", async () => {
+    const { company, pipeline, byKey } = await seedPipeline();
+    const routineSeed = await seedRoutine(company.id, "Automation seed");
+    const stageId = byKey.get("in_progress")!.id;
+
+    const firstSave = await svc.updateStage({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      stageId,
+      patch: {
+        config: {
+          automation: {
+            assigneeAgentId: routineSeed.assigneeAgentId,
+            instructionsBody: "Draft from {{body}} for {{case_title}}.",
+          },
+        },
+      },
+      actor: userActor,
+    });
+    const firstRoutineId = (firstSave.config as { onEnter?: { routineId?: string } }).onEnter?.routineId;
+    expect(firstRoutineId).toBeTruthy();
+    const [defaultRoutine] = await db.select().from(routines).where(eq(routines.id, firstRoutineId!));
+    expect(defaultRoutine!.title).toBe(PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE);
+    expect((defaultRoutine!.variables ?? []).map((variable) => variable.name)).toEqual([
+      "pipeline_name",
+      "stage_name",
+      "case_title",
+      "body",
+    ]);
+
+    await db
+      .update(routines)
+      .set({ title: "Custom {{case_key}}: {{case_title}}" })
+      .where(eq(routines.id, firstRoutineId!));
+    await svc.updateStage({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      stageId,
+      patch: {
+        config: {
+          automation: {
+            assigneeAgentId: routineSeed.assigneeAgentId,
+            instructionsBody: "Updated instructions for {{case_title}}.",
+          },
+        },
+      },
+      actor: userActor,
+    });
+    const [customRoutine] = await db.select().from(routines).where(eq(routines.id, firstRoutineId!));
+    expect(customRoutine!.title).toBe("Custom {{case_key}}: {{case_title}}");
+    expect((customRoutine!.variables ?? []).map((variable) => variable.name)).toContain("case_key");
+
+    await db
+      .update(routines)
+      .set({ title: "In progress automation" })
+      .where(eq(routines.id, firstRoutineId!));
+    await svc.updateStage({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      stageId,
+      patch: {
+        config: {
+          automation: {
+            assigneeAgentId: routineSeed.assigneeAgentId,
+            instructionsBody: "Runtime interpolation for {{case_title}}.",
+          },
+        },
+      },
+      actor: userActor,
+    });
+    const [upgradedRoutine] = await db.select().from(routines).where(eq(routines.id, firstRoutineId!));
+    expect(upgradedRoutine!.title).toBe(PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE);
+
+    const created = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "pulpit-opinion",
+      title: "Pulpit opinion piece",
+      body: "Agentic work should be composed, not rebuilt",
+      actor: userActor,
+    });
+    const moved = await svc.transitionCase({
+      companyId: company.id,
+      caseId: created.case.id,
+      toStageKey: "in_progress",
+      expectedVersion: 1,
+      actor: userActor,
+    });
+    expect(moved.automationExecution.status).toBe("succeeded");
+    const executionIssueId = moved.automationExecution.status === "succeeded"
+      ? moved.automationExecution.execution.executionIssueId
+      : null;
+    const [issue] = await db
+      .select({ title: issues.title })
+      .from(issues)
+      .where(eq(issues.id, executionIssueId!));
+    expect(issue!.title).toBe("Content / In progress: Pulpit opinion piece");
   });
 
   it("rejects cross-company stage automation routines at save and execution", async () => {

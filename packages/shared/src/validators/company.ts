@@ -36,6 +36,7 @@ export const createCompanySchema = z.object({
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
   defaultAgentCwd: defaultAgentCwdSchema,
+  defaultResponsibleUserId: z.string().min(1).nullable().optional(),
 });
 
 export type CreateCompany = z.infer<typeof createCompanySchema>;

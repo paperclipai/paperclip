@@ -462,6 +462,40 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
+  it("does not reattribute a genuine board/user comment that has no derived agent", () => {
+    const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "Claude")]]);
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorUserId: "local-board",
+          authorType: "user",
+          // No agent ever resolved for this comment — a real board action.
+          derivedAuthorAgentId: null,
+          derivedCreatedByRunId: null,
+          runId: null,
+          runAgentId: null,
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap,
+      currentUserId: "user-1",
+      userLabelMap: new Map([["local-board", "Board"]]),
+    });
+
+    expect(messages[0]).toMatchObject({
+      role: "user",
+      metadata: {
+        custom: {
+          authorType: "user",
+          authorAgentId: null,
+          authorUserId: "local-board",
+        },
+      },
+    });
+  });
+
   it("renders a comment as agent-authored when runAgentId is set from activity log", () => {
     const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "Claude")]]);
     const messages = buildIssueChatMessages({
@@ -654,6 +688,9 @@ describe("buildIssueChatMessages", () => {
       adapterType: "codex_local",
       currentStatusMessage: "Syncing git worktree to sandbox",
       currentStatusUpdatedAt: "2026-04-06T12:03:05.000Z",
+      currentToolName: "bash",
+      lastAssistantSnippet: "Checking repository status",
+      lastEventAt: "2026-04-06T12:03:08.000Z",
     };
 
     const messages = buildIssueChatMessages({
@@ -675,6 +712,9 @@ describe("buildIssueChatMessages", () => {
           runId: "run-active-1",
           currentStatusMessage: "Syncing git worktree to sandbox",
           currentStatusUpdatedAt: "2026-04-06T12:03:05.000Z",
+          currentToolName: "bash",
+          lastAssistantSnippet: "Checking repository status",
+          lastEventAt: "2026-04-06T12:03:08.000Z",
         },
       },
     });

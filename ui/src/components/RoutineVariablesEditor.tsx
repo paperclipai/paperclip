@@ -85,7 +85,7 @@ export function RoutineVariablesEditor({
         <div>
           <p className="text-sm font-medium">Variables</p>
           <p className="text-xs text-muted-foreground">
-            Detected from `{"{{name}}"}` placeholders in the routine title and instructions.
+            Detected from `{"{{name}}"}` placeholders in the title and instructions.
           </p>
         </div>
         {open ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
@@ -275,7 +275,7 @@ export function RoutineVariablesHint() {
     <>
       <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground">
         <span>
-          Use `{"{{variable_name}}"}` placeholders in the instructions to prompt for inputs when the routine runs.
+          Use `{"{{variable_name}}"}` placeholders in the title or instructions to prompt for inputs when the routine runs.
         </span>
         <button
           type="button"

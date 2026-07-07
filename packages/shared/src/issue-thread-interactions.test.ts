@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   acceptIssueThreadInteractionSchema,
+  askUserQuestionsResultSchema,
   createIssueThreadInteractionSchema,
 } from "./validators/issue.js";
 
@@ -101,6 +102,44 @@ describe("issue thread interaction schemas", () => {
         href,
       });
     }
+  });
+
+  it("parses ask_user_questions supersede flags and expired results", () => {
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        title: "Choose scope",
+        supersedeOnUserComment: false,
+        questions: [
+          {
+            id: "scope",
+            prompt: "Which scope should I use?",
+            selectionMode: "single",
+            options: [{ id: "small", label: "Small" }],
+          },
+        ],
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        supersedeOnUserComment: false,
+      },
+    });
+
+    expect(askUserQuestionsResultSchema.parse({
+      version: 1,
+      answers: [],
+      expirationReason: "superseded_by_comment",
+      commentId: "11111111-1111-4111-8111-111111111111",
+      summaryMarkdown: null,
+    })).toMatchObject({
+      expirationReason: "superseded_by_comment",
+      commentId: "11111111-1111-4111-8111-111111111111",
+    });
   });
 
   it("rejects unsafe request_confirmation target hrefs", () => {

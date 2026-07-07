@@ -328,6 +328,45 @@ describe("agent instructions bundle routes", () => {
     );
   });
 
+  it("preserves paperclip skill-sync selections when switching adapters", async () => {
+    // Desired skills live inside the per-adapter config under
+    // `paperclipSkillSync`, yet they are adapter-agnostic company-level
+    // selections. Switching adapter type must not silently wipe them — the
+    // server carries them over from the existing config the same way it
+    // preserves env/cwd and the instructions bundle.
+    mockAgentService.getById.mockResolvedValue({
+      ...makeAgent(),
+      adapterType: "claude_local",
+      adapterConfig: {
+        model: "claude-sonnet-4",
+        paperclipSkillSync: { desiredSkills: ["research", "code-review"] },
+      },
+    });
+
+    const res = await requestApp(await createApp(), (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({
+        adapterType: "codex_local",
+        replaceAdapterConfig: true,
+        adapterConfig: {
+          model: "gpt-5.4",
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterType: "codex_local",
+        adapterConfig: expect.objectContaining({
+          model: "gpt-5.4",
+          paperclipSkillSync: { desiredSkills: ["research", "code-review"] },
+        }),
+      }),
+      expect.any(Object),
+    );
+  });
+
   it("merges same-adapter config patches so instructions metadata is not dropped", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...makeAgent(),

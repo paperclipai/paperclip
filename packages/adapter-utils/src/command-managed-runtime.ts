@@ -69,10 +69,25 @@ function toBuffer(bytes: Buffer | Uint8Array | ArrayBuffer): Buffer {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 }
 
+const FAILED_COMMAND_OUTPUT_TAIL_CHARS = 4_000;
+
+function formatFailedCommandOutput(result: RunProcessResult): string {
+  const tail = (text: string): string => {
+    const trimmed = text.trim();
+    if (trimmed.length <= FAILED_COMMAND_OUTPUT_TAIL_CHARS) return trimmed;
+    return `...[truncated]\n${trimmed.slice(-FAILED_COMMAND_OUTPUT_TAIL_CHARS)}`;
+  };
+  const stderr = tail(result.stderr);
+  const stdout = tail(result.stdout);
+  const parts: string[] = [];
+  if (stderr.length > 0) parts.push(`stderr: ${stderr}`);
+  if (stdout.length > 0) parts.push(`stdout: ${stdout}`);
+  return parts.length > 0 ? `:\n${parts.join("\n")}` : "";
+}
+
 function requireSuccessfulResult(result: RunProcessResult, action: string): void {
   if (result.exitCode === 0 && !result.timedOut) return;
-  const stderr = result.stderr.trim();
-  const detail = stderr.length > 0 ? `: ${stderr}` : "";
+  const detail = formatFailedCommandOutput(result);
   throw new Error(`${action} failed with exit code ${result.exitCode ?? "null"}${detail}`);
 }
 

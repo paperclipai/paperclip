@@ -39,6 +39,7 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { issueRoutes } from "../routes/issues.js";
 import { pipelineRoutes } from "../routes/pipelines.js";
 import {
+  PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE,
   PIPELINE_CASE_EVENTS_MAX_LIMIT,
   PIPELINE_CONTEXT_PACK_EVENT_LIMIT,
 } from "../services/pipelines.js";
@@ -677,6 +678,7 @@ describeEmbeddedPostgres("pipeline routes", () => {
     const automatedStage = detail.body.stages.find((stage: { key: string }) => stage.key === "in_progress");
     expect(automatedStage.config.automation).toMatchObject({
       assigneeAgentId: agent.id,
+      titleTemplate: PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE,
       instructionsBody: "Legacy automation body.",
       projectId: null,
       projectWorkspaceId: null,
@@ -684,6 +686,14 @@ describeEmbeddedPostgres("pipeline routes", () => {
       executionWorkspacePreference: null,
       executionWorkspaceSettings: null,
     });
+
+    await db
+      .update(routines)
+      .set({ title: "Custom automation for {{case_key}}" })
+      .where(eq(routines.id, automatedStage.config.automation.routineId));
+    const detailAfterRoutineEdit = await http.get(`/api/pipelines/${pipeline.body.id}`).expect(200);
+    const editedStage = detailAfterRoutineEdit.body.stages.find((stage: { key: string }) => stage.key === "in_progress");
+    expect(editedStage.config.automation.titleTemplate).toBe("Custom automation for {{case_key}}");
 
     const created = await http
       .post(`/api/pipelines/${pipeline.body.id}/cases`)

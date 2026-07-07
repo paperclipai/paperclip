@@ -11,6 +11,12 @@ describe("instance experimental settings validators", () => {
     expect(settings.enableServerInfoDebugView).toBe(false);
   });
 
+  it("defaults workspace branch forward reconciliation off", () => {
+    const settings = instanceExperimentalSettingsSchema.parse({});
+
+    expect(settings.enableWorkspaceBranchReconcileForward).toBe(false);
+  });
+
   it("accepts server info debug view patches", () => {
     expect(
       patchInstanceExperimentalSettingsSchema.parse({
@@ -18,6 +24,16 @@ describe("instance experimental settings validators", () => {
       }),
     ).toEqual({
       enableServerInfoDebugView: true,
+    });
+  });
+
+  it("accepts workspace branch forward reconciliation patches", () => {
+    expect(
+      patchInstanceExperimentalSettingsSchema.parse({
+        enableWorkspaceBranchReconcileForward: true,
+      }),
+    ).toEqual({
+      enableWorkspaceBranchReconcileForward: true,
     });
   });
 });

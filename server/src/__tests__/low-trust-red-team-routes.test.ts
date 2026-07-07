@@ -337,6 +337,7 @@ async function seedLowTrustFixture(db: Db) {
   const [company] = await db.insert(companies).values({
     name: `Low trust ${nonce}`,
     issuePrefix: `LT${nonce.slice(0, 4).toUpperCase()}`,
+    defaultResponsibleUserId: "board-user",
   }).returning();
   const [allowedProject] = await db.insert(projects).values({
     companyId: company!.id,
@@ -384,6 +385,7 @@ async function seedLowTrustFixture(db: Db) {
     title: "Review root",
     status: "todo",
     priority: "medium",
+    responsibleUserId: "board-user",
   }).returning();
   const [assignedReview] = await db.insert(issues).values({
     companyId: company!.id,
@@ -392,6 +394,7 @@ async function seedLowTrustFixture(db: Db) {
     title: "Assigned low-trust review",
     status: "in_progress",
     priority: "medium",
+    responsibleUserId: "board-user",
   }).returning();
   const [sameBoundaryChild] = await db.insert(issues).values({
     companyId: company!.id,
@@ -400,6 +403,7 @@ async function seedLowTrustFixture(db: Db) {
     title: "Same boundary child",
     status: "todo",
     priority: "medium",
+    responsibleUserId: "board-user",
   }).returning();
   const [siblingOutOfScope] = await db.insert(issues).values({
     companyId: company!.id,
@@ -408,6 +412,7 @@ async function seedLowTrustFixture(db: Db) {
     description: canaries.issueSibling,
     status: "todo",
     priority: "medium",
+    responsibleUserId: "board-user",
   }).returning();
 
   const [lowTrust] = await db.insert(agents).values({
@@ -616,6 +621,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       status: "in_progress",
       priority: "medium",
       assigneeAgentId: fixture.agents.standard.id,
+      responsibleUserId: "board-user",
     }).returning();
     await db.insert(issueComments).values({
       companyId: fixture.company.id,
@@ -1053,6 +1059,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     const [otherCompany] = await db.insert(companies).values({
       name: "Foreign low-trust source",
       issuePrefix: `FGN${randomUUID().slice(0, 4).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
     }).returning();
     const [foreignIssue] = await db.insert(issues).values({
       companyId: otherCompany!.id,
