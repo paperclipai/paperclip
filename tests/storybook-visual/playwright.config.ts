@@ -33,7 +33,6 @@ export default defineConfig({
     browserName: "chromium",
     viewport: { width: 1200, height: 800 },
     deviceScaleFactor: 1,
-    reducedMotion: "reduce",
     baseURL: "http://localhost:6106",
   },
   webServer: {
