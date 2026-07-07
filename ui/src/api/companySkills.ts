@@ -19,6 +19,13 @@ import type {
   CompanySkillProjectScanRequest,
   CompanySkillProjectScanResult,
   CompanySkillStarResult,
+  CompanySkillTestInput,
+  CompanySkillTestInputCreateRequest,
+  CompanySkillTestInputUpdateRequest,
+  CompanySkillTestRun,
+  CompanySkillTestRunCreateRequest,
+  CompanySkillTestRunDetail,
+  CompanySkillTestRunListQuery,
   CompanySkillUpdateRequest,
   CompanySkillUpdateStatus,
   CompanySkillVersion,
@@ -60,6 +67,53 @@ export const companySkillsApi = {
     api.post<CompanySkillVersion>(
       `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/versions`,
       payload,
+    ),
+  // --- Skill Studio test inputs (PAP-12960 P1 API) ---
+  testInputs: (companyId: string, skillId: string) =>
+    api.get<CompanySkillTestInput[]>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/test-inputs`,
+    ),
+  createTestInput: (companyId: string, skillId: string, payload: CompanySkillTestInputCreateRequest) =>
+    api.post<CompanySkillTestInput>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/test-inputs`,
+      payload,
+    ),
+  updateTestInput: (
+    companyId: string,
+    skillId: string,
+    inputId: string,
+    payload: CompanySkillTestInputUpdateRequest,
+  ) =>
+    api.patch<CompanySkillTestInput>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/test-inputs/${encodeURIComponent(inputId)}`,
+      payload,
+    ),
+  deleteTestInput: (companyId: string, skillId: string, inputId: string) =>
+    api.delete<CompanySkillTestInput>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/test-inputs/${encodeURIComponent(inputId)}`,
+    ),
+  // --- Skill Studio test runs ---
+  testRuns: (companyId: string, skillId: string, query: CompanySkillTestRunListQuery = {}) => {
+    const params = new URLSearchParams();
+    if (query.inputId) params.set("inputId", query.inputId);
+    const search = params.toString();
+    return api.get<CompanySkillTestRun[]>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/test-runs${search ? `?${search}` : ""}`,
+    );
+  },
+  testRunDetail: (companyId: string, skillId: string, runId: string) =>
+    api.get<CompanySkillTestRunDetail>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/test-runs/${encodeURIComponent(runId)}`,
+    ),
+  createTestRun: (companyId: string, skillId: string, payload: CompanySkillTestRunCreateRequest) =>
+    api.post<CompanySkillTestRun>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/test-runs`,
+      payload,
+    ),
+  cancelTestRun: (companyId: string, skillId: string, runId: string) =>
+    api.post<CompanySkillTestRun>(
+      `/companies/${encodeURIComponent(companyId)}/skills/${encodeURIComponent(skillId)}/test-runs/${encodeURIComponent(runId)}/cancel`,
+      {},
     ),
   star: (companyId: string, skillId: string) =>
     api.post<CompanySkillStarResult>(

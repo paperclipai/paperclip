@@ -98,6 +98,7 @@ import {
   Link2,
   Lock,
   ExternalLink,
+  FlaskConical,
   Paperclip,
   Pause,
   Pencil,
@@ -3452,6 +3453,12 @@ function SkillPane({
             )}
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button variant="outline" size="sm" asChild>
+              <Link to={`/skills/${detail.id}/studio`}>
+                <FlaskConical className="mr-1.5 h-3.5 w-3.5" />
+                Open in Studio
+              </Link>
+            </Button>
             <Button
               variant="ghost"
               size="sm"

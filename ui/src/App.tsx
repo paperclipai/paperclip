@@ -45,6 +45,7 @@ import { CompanySettingsPluginPage } from "./pages/CompanySettingsPluginPage";
 import { CompanyAccess, CompanyAccessLegacyRoute } from "./pages/CompanyAccess";
 import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
+import { SkillStudio } from "./pages/SkillStudio";
 import { Secrets } from "./pages/Secrets";
 import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
@@ -105,6 +106,7 @@ function boardRoutes() {
       <Route path="company/settings/instance/plugins/:pluginId" element={<PluginSettings />} />
       <Route path="company/settings/instance/adapters" element={<AdapterManager />} />
       <Route path="company/settings/:settingsRoutePath/*" element={<CompanySettingsPluginPage />} />
+      <Route path="skills/:skillId/studio" element={<SkillStudio />} />
       <Route path="skills/*" element={<CompanySkills />} />
       <Route path="settings" element={<LegacySettingsRedirect />} />
       <Route path="settings/*" element={<LegacySettingsRedirect />} />
@@ -421,6 +423,7 @@ export function App() {
           <Route path="pipelines/:pipelineId/cases/:caseId" element={<UnprefixedBoardRedirect />} />
           <Route path="artifacts" element={<UnprefixedBoardRedirect />} />
           <Route path="u/:userSlug" element={<UnprefixedBoardRedirect />} />
+          <Route path="skills/:skillId/studio" element={<UnprefixedBoardRedirect />} />
           <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
