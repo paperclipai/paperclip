@@ -28,6 +28,7 @@ import type {
 } from "../constants.js";
 import type { Agent } from "./agent.js";
 import type { CompanySkill } from "./company-skill.js";
+import type { IssueAssigneeAdapterOverrides } from "./issue.js";
 import type { Project } from "./project.js";
 import type { Routine, RoutineTrigger, RoutineVariable } from "./routine.js";
 
@@ -311,6 +312,8 @@ export interface PluginManagedRoutineDeclaration {
   catchUpPolicy?: RoutineCatchUpPolicy;
   /** Suggested routine variables. */
   variables?: RoutineVariable[];
+  /** Adapter overrides inherited by every run-issue dispatched from this routine. */
+  assigneeAdapterOverrides?: IssueAssigneeAdapterOverrides | null;
   /** Suggested triggers created when the routine is first reconciled. */
   triggers?: Array<Pick<RoutineTrigger, "kind" | "label" | "enabled" | "cronExpression" | "timezone" | "signingMode" | "replayWindowSec">>;
   /** Defaults for issues created by this routine. */

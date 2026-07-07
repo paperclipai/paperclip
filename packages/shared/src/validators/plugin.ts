@@ -25,6 +25,7 @@ import {
   ISSUE_SURFACE_VISIBILITIES,
 } from "../constants.js";
 import { routineVariableSchema } from "./routine.js";
+import { issueAssigneeAdapterOverridesSchema } from "./issue.js";
 import { externalObjectProviderKeySchema, externalObjectTypeSchema } from "./external-object.js";
 
 // ---------------------------------------------------------------------------
@@ -238,6 +239,7 @@ export const pluginManagedRoutineDeclarationSchema = z.object({
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional(),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional(),
   variables: z.array(routineVariableSchema).optional(),
+  assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.nullable().optional(),
   triggers: z.array(z.object({
     kind: z.enum(ROUTINE_TRIGGER_KINDS),
     label: z.string().trim().max(120).nullable().optional(),
