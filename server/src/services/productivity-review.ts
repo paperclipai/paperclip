@@ -38,6 +38,68 @@ const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
 export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review evidence refreshed.";
 
+// Error codes that mark an infra / transient failure the agent hit BEFORE it
+// booted and produced any output (rate-limit rejection, adapter crash,
+// transient upstream). A run that never got to work is not evidence of agent
+// unproductivity, so it must not count toward the no-comment streak (ZOL-6966).
+const INFRA_STARTUP_FAILURE_ERROR_CODES = new Set([
+  "adapter_failed",
+  "claude_transient_upstream",
+  "codex_transient_upstream",
+]);
+
+function readNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function parseObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function asNonNegativeInteger(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
+function isInfraErrorCode(errorCode: string | null | undefined): boolean {
+  if (!errorCode) return false;
+  if (INFRA_STARTUP_FAILURE_ERROR_CODES.has(errorCode)) return true;
+  // rate_limit_five_hour, rate_limit_weekly, rate_limited, … — any rate-limit variant.
+  return errorCode.startsWith("rate_limit");
+}
+
+// Total tokens (raw preferred, else normalized) the run reported. A run that
+// produced 0 input+output+cached tokens never generated anything — the agent
+// crashed before boost, per the ZOL-6960 / ZOL-6918 retry-loop incident.
+function readRunTokenTotal(usageJson: unknown): number {
+  const parsed = parseObject(usageJson);
+  if (Object.keys(parsed).length === 0) return 0;
+  const input = asNonNegativeInteger(parsed.rawInputTokens ?? parsed.inputTokens);
+  const cached = asNonNegativeInteger(parsed.rawCachedInputTokens ?? parsed.cachedInputTokens);
+  const output = asNonNegativeInteger(parsed.rawOutputTokens ?? parsed.outputTokens);
+  return input + cached + output;
+}
+
+// A terminal run that failed at startup on infra: not `succeeded`, produced no
+// tokens, and carries an infra/transient error signal. Such runs are skipped
+// when computing the no-comment streak so a burst of rate-limit / adapter
+// failures cannot be misread as the agent going silent (ZOL-6966).
+function isInfraStartupFailureRun(
+  run: Pick<HeartbeatRunRow, "status" | "errorCode" | "resultJson" | "usageJson">,
+): boolean {
+  if (run.status === "succeeded") return false;
+  if (!TERMINAL_RUN_STATUSES.includes(run.status as (typeof TERMINAL_RUN_STATUSES)[number])) {
+    return false;
+  }
+  if (readRunTokenTotal(run.usageJson) > 0) return false;
+  if (readNonEmptyString(parseObject(run.resultJson).errorFamily) === "transient_upstream") {
+    return true;
+  }
+  return isInfraErrorCode(run.errorCode);
+}
+
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
@@ -425,6 +487,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     );
     let noCommentStreak = 0;
     for (const run of terminalRuns) {
+      // Infra failures at startup (0-token rate-limit / adapter / transient
+      // upstream) never gave the agent a chance to comment. Treat them as
+      // transparent: neither count them nor let them break a real streak
+      // sitting behind them (ZOL-6966).
+      if (isInfraStartupFailureRun(run)) continue;
       if (commentRunIds.has(run.id)) break;
       noCommentStreak += 1;
     }

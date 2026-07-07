@@ -120,11 +120,16 @@ describeEmbeddedPostgres("productivity review service", () => {
     count: number;
     now: Date;
     withRunComments?: boolean;
+    startOffset?: number;
+    spacingMs?: number;
+    overrides?: Partial<typeof heartbeatRuns.$inferInsert>;
   }) {
     const runs: Array<typeof heartbeatRuns.$inferInsert> = [];
+    const startOffset = input.startOffset ?? 0;
+    const spacingMs = input.spacingMs ?? 60_000;
     for (let index = 0; index < input.count; index += 1) {
       const runId = randomUUID();
-      const createdAt = new Date(input.now.getTime() - index * 60_000);
+      const createdAt = new Date(input.now.getTime() - (startOffset + index) * spacingMs);
       runs.push({
         id: runId,
         companyId: input.companyId,
@@ -139,6 +144,7 @@ describeEmbeddedPostgres("productivity review service", () => {
         nextAction: "Continue processing the next batch.",
         createdAt,
         updatedAt: createdAt,
+        ...input.overrides,
       });
     }
     await db.insert(heartbeatRuns).values(runs);
@@ -208,6 +214,106 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
 
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
+  });
+
+  it("does not count infra startup failures (0-token rate-limit / adapter / transient) toward the no-comment streak", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    // Twice the threshold of runs that all failed BEFORE booting: 0 tokens +
+    // infra errorCode. This is the ZOL-6918 retry-loop shape (ZOL-6960).
+    const infraErrorCodes = ["claude_transient_upstream", "rate_limit_five_hour", "adapter_failed"];
+    for (let i = 0; i < DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS * 2; i += 1) {
+      await insertRuns({
+        companyId: seeded.companyId,
+        agentId: seeded.coderId,
+        issueId: seeded.issueId,
+        count: 1,
+        now,
+        startOffset: i,
+        // Spread runs across ~8h so the high-churn trigger (10/1h, 30/6h) never
+        // fires — this test isolates the no_comment_streak heuristic.
+        spacingMs: 25 * 60_000,
+        overrides: {
+          status: "failed",
+          errorCode: infraErrorCodes[i % infraErrorCodes.length],
+          usageJson: null,
+          livenessState: null,
+          nextAction: null,
+        },
+      });
+    }
+
+    const service = productivityReviewService(db);
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
+  it("skips infra startup failures without breaking a real no-comment streak behind them", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    // Newest runs are infra failures (must be transparent), older runs are a
+    // full threshold of completed runs with no comment (the real signal).
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 5,
+      now,
+      startOffset: 0,
+      overrides: {
+        status: "failed",
+        errorCode: "rate_limit_weekly",
+        usageJson: null,
+        livenessState: null,
+        nextAction: null,
+      },
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      startOffset: 5,
+    });
+
+    const service = productivityReviewService(db);
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.created).toBe(1);
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
+  });
+
+  it("still counts a failed run that produced tokens (agent worked then crashed) toward the streak", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    // A `failed` run that reported real token usage is NOT an infra startup
+    // failure — the agent booted and worked, so it stays a productivity signal.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+      overrides: {
+        status: "failed",
+        errorCode: "adapter_failed",
+        usageJson: { inputTokens: 1200, outputTokens: 340 },
+      },
+    });
+
+    const service = productivityReviewService(db);
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.created).toBe(1);
+    const reviews = await listProductivityReviews(seeded.companyId);
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]?.description).toContain("Primary trigger: `no_comment_streak`");
+    expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
   });
 
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
