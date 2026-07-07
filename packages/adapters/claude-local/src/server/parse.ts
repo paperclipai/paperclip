@@ -159,7 +159,9 @@ export function describeClaudeFailure(parsed: Record<string, unknown>): string |
   }
 
   const parts = ["Claude run failed"];
-  if (subtype) parts.push(`subtype=${subtype}`);
+  // Claude can report subtype=success alongside is_error=true (e.g. mid-run
+  // API errors); the label would only mislead, so omit it for that case.
+  if (subtype && subtype !== "success") parts.push(`subtype=${subtype}`);
   if (detail) parts.push(detail);
   return parts.length > 1 ? parts.join(": ") : null;
 }
