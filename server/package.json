@@ -40,6 +40,7 @@
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
     "start": "node dist/index.js",
+    "test:coverage:heartbeat": "vitest run --coverage.enabled --coverage.provider=v8 --coverage.include=src/services/heartbeat.ts --coverage.include='src/services/heartbeat/**' --coverage.reporter=text --coverage.reporter=html",
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
   "dependencies": {
@@ -90,6 +91,7 @@
     "@types/sharp": "^0.32.0",
     "@types/supertest": "^6.0.2",
     "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "4.1.8",
     "cross-env": "^10.1.0",
     "supertest": "^7.0.0",
     "tsx": "^4.22.4",
