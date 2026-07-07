@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { isAgentPluginDetailView, parseAgentDetailView, resolveCanonicalAgentTab } from "./agent-detail-tabs";
+import { agentDetailTabPath, isAgentPluginDetailView, parseAgentDetailView, resolveCanonicalAgentTab } from "./agent-detail-tabs";
 
 describe("agent detail tabs", () => {
   it("preserves a plugin tab route instead of redirecting it to the dashboard", () => {
     const tab = "plugin:costs:agent-costs";
     expect(isAgentPluginDetailView(tab)).toBe(true);
     expect(parseAgentDetailView(tab)).toBe(tab);
+  });
+
+  it("encodes scoped plugin keys as one route segment", () => {
+    expect(agentDetailTabPath("demo-agent", "plugin:@scope/name:costs"))
+      .toBe("/agents/demo-agent/plugin%3A%40scope%2Fname%3Acosts");
   });
 
   it("defers plugin deep links while slots load, then rejects stale tabs", () => {

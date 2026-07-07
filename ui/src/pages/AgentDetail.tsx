@@ -54,6 +54,7 @@ import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd 
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
 import {
+  agentDetailTabPath,
   isAgentPluginDetailView,
   parseAgentDetailView,
   resolveCanonicalAgentTab,
@@ -814,7 +815,7 @@ export function AgentDetail() {
     );
     if (canonicalTab === null) return;
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
-      navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
+      navigate(agentDetailTabPath(canonicalAgentRef, canonicalTab), { replace: true });
       return;
     }
   }, [
@@ -1097,7 +1098,7 @@ export function AgentDetail() {
       {!urlRunId && (
         <Tabs
           value={activeView}
-          onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
+          onValueChange={(value) => navigate(agentDetailTabPath(canonicalAgentRef, value))}
         >
           <PageTabBar
             items={[
@@ -1110,7 +1111,7 @@ export function AgentDetail() {
               ...pluginTabItems.map(({ value, label }) => ({ value, label })),
             ]}
             value={activeView}
-            onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
+            onValueChange={(value) => navigate(agentDetailTabPath(canonicalAgentRef, value))}
           />
         </Tabs>
       )}

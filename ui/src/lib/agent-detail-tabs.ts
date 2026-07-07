@@ -16,6 +16,10 @@ export function parseAgentDetailView(value: string | null): AgentDetailView {
   return "dashboard";
 }
 
+export function agentDetailTabPath(agentRef: string, tab: string): string {
+  return `/agents/${agentRef}/${encodeURIComponent(tab)}`;
+}
+
 export function resolveCanonicalAgentTab(
   activeView: AgentDetailView,
   pluginSlotsLoading: boolean,
