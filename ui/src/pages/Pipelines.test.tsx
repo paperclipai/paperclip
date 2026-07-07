@@ -5,6 +5,7 @@ import {
   pipelineStageAutomationSettingsHref,
 } from "../lib/pipeline-stage-presentation";
 import {
+  buildWorkflowBoardRecords,
   groupCasesByBuiltFor,
   normalizePipelineConversationComments,
   pipelineBoardGroupByStorageKey,
@@ -12,6 +13,69 @@ import {
   readPipelineStageAutomationAssigneeAgentId,
   writeStoredPipelineBoardGroupBy,
 } from "./Pipelines";
+import type { PipelineListItem } from "../api/pipelines";
+
+function pipeline(input: Partial<PipelineListItem> & Pick<PipelineListItem, "id" | "name">): PipelineListItem {
+  return {
+    id: input.id,
+    companyId: "company-1",
+    key: input.key ?? input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+    name: input.name,
+    description: input.description ?? null,
+    projectId: null,
+    enforceTransitions: false,
+    archivedAt: null,
+    stageCount: 0,
+    stages: [],
+    openCaseCount: input.openCaseCount ?? 0,
+    attentionCount: input.attentionCount ?? 0,
+    inMotionCount: input.inMotionCount ?? 0,
+    descendantActiveWorkCount: input.descendantActiveWorkCount ?? 0,
+    lastActivityAt: null,
+    connections: input.connections ?? { upstreamPipelineIds: [], downstreamPipelineIds: [] },
+    createdAt: "2026-07-07T00:00:00.000Z",
+    updatedAt: "2026-07-07T00:00:00.000Z",
+  };
+}
+
+describe("buildWorkflowBoardRecords", () => {
+  it("ships the approved Customer Journey sample path with TBD unknowns", () => {
+    const model = buildWorkflowBoardRecords([]);
+    const customerNames = model.steps.filter((step) => step.view === "customer").map((step) => step.shortName);
+
+    expect(customerNames).toEqual(expect.arrayContaining([
+      "Website",
+      "Social Media",
+      "Cold Outreach",
+      "Direct Requests",
+      "Newsletter",
+      "Past Client Follow-Up",
+      "Qualify",
+      "Proposal",
+      "Production Kickoff",
+    ]));
+    expect(model.steps.find((step) => step.shortName === "Website")?.ownerName).toBe("_TBD_");
+    expect(model.edges.map((edge) => edge.kind)).toEqual(expect.arrayContaining(["trigger", "handoff", "approval", "support", "file", "governance"]));
+  });
+
+  it("keeps Business Operations separate from the conversion stages", () => {
+    const model = buildWorkflowBoardRecords([
+      pipeline({ id: "sales", name: "Sales proposal workflow", connections: { downstreamPipelineIds: ["production"] } }),
+      pipeline({ id: "production", name: "Production delivery workflow" }),
+      pipeline({ id: "ops", name: "Business reporting workflow" }),
+    ]);
+
+    expect(model.steps.find((step) => step.id === "pipeline-sales")?.view).toBe("customer");
+    expect(model.steps.find((step) => step.id === "pipeline-production")?.view).toBe("customer");
+    expect(model.steps.find((step) => step.id === "pipeline-ops")?.view).toBe("operations");
+    expect(model.edges).toContainEqual(expect.objectContaining({
+      fromId: "pipeline-sales",
+      toId: "pipeline-production",
+      kind: "handoff",
+      source: "real",
+    }));
+  });
+});
 
 describe("groupCasesByBuiltFor", () => {
   it("groups items by the parent case shown as Built for", () => {

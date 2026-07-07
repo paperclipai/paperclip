@@ -598,6 +598,700 @@ function PipelineStatusChip({ archivedAt }: { archivedAt: Date | string | null }
   );
 }
 
+type WorkflowBoardView = "customer" | "operations";
+type WorkflowOwnerType = "human" | "agent" | "hybrid" | "tbd";
+type WorkflowStepType = "intake" | "manual" | "agent" | "approval" | "handoff" | "reporting" | "governance";
+type WorkflowEdgeKind = "trigger" | "handoff" | "file" | "support" | "governance" | "approval";
+type WorkflowStage = "demand" | "sales" | "production" | "support" | "tools" | "governance" | "reporting" | "manual" | "agent";
+type WorkflowDataSource = "real" | "sample" | "local";
+
+export interface WorkflowStepRecord {
+  id: string;
+  shortName: string;
+  view: WorkflowBoardView;
+  stage: WorkflowStage;
+  ownerType: WorkflowOwnerType;
+  ownerName: string;
+  stepType: WorkflowStepType;
+  x: number;
+  y: number;
+  source: WorkflowDataSource;
+  completionMethod?: string;
+  triggerMechanism?: string;
+  inputs?: string;
+  outputs?: string;
+  knowledgeSources?: string;
+  handoffFiles?: string;
+  linkedRecord?: string;
+}
+
+export interface WorkflowEdgeRecord {
+  id: string;
+  fromId: string;
+  toId: string;
+  kind: WorkflowEdgeKind;
+  label: string;
+  source: WorkflowDataSource;
+}
+
+const TBD = "_TBD_";
+
+const WORKFLOW_STAGE_LABELS: Record<WorkflowStage, string> = {
+  demand: "Demand Gen",
+  sales: "Sales",
+  production: "Production/Execution",
+  support: "Support",
+  tools: "Tools",
+  governance: "Governance",
+  reporting: "Reporting",
+  manual: "Manual Work",
+  agent: "Agent Work",
+};
+
+const WORKFLOW_STAGE_X: Record<WorkflowStage, number> = {
+  demand: 80,
+  sales: 500,
+  production: 920,
+  support: 80,
+  tools: 400,
+  governance: 720,
+  reporting: 1040,
+  manual: 240,
+  agent: 720,
+};
+
+const WORKFLOW_STEP_TYPE_CLASS: Record<WorkflowStepType, string> = {
+  intake: "border-sky-400/70 bg-sky-500/15 text-sky-950 dark:text-sky-100",
+  manual: "border-amber-400/70 bg-amber-500/15 text-amber-950 dark:text-amber-100",
+  agent: "border-violet-400/70 bg-violet-500/15 text-violet-950 dark:text-violet-100",
+  approval: "border-rose-400/70 bg-rose-500/15 text-rose-950 dark:text-rose-100",
+  handoff: "border-emerald-400/70 bg-emerald-500/15 text-emerald-950 dark:text-emerald-100",
+  reporting: "border-cyan-400/70 bg-cyan-500/15 text-cyan-950 dark:text-cyan-100",
+  governance: "border-zinc-400/70 bg-zinc-500/15 text-zinc-950 dark:text-zinc-100",
+};
+
+const WORKFLOW_EDGE_CLASS: Record<WorkflowEdgeKind, string> = {
+  trigger: "bg-sky-500",
+  handoff: "bg-emerald-500",
+  file: "bg-amber-500",
+  support: "bg-cyan-500",
+  governance: "bg-zinc-500",
+  approval: "bg-rose-500",
+};
+
+const WORKFLOW_OWNER_LABELS: Record<WorkflowOwnerType, string> = {
+  human: "Human",
+  agent: "Agent",
+  hybrid: "Human + Agent",
+  tbd: TBD,
+};
+
+const CUSTOMER_SEED_STEPS: WorkflowStepRecord[] = [
+  { id: "seed-website", shortName: "Website", view: "customer", stage: "demand", ownerType: "tbd", ownerName: TBD, stepType: "intake", x: 90, y: 130, source: "sample", triggerMechanism: "Visitor submits or engages", inputs: "Site traffic", outputs: "Lead", knowledgeSources: "process-map.html" },
+  { id: "seed-social", shortName: "Social Media", view: "customer", stage: "demand", ownerType: "tbd", ownerName: TBD, stepType: "agent", x: 90, y: 250, source: "sample", triggerMechanism: "Audience response", inputs: "Posts / DMs", outputs: "Lead", knowledgeSources: "process-map.html" },
+  { id: "seed-cold", shortName: "Cold Outreach", view: "customer", stage: "demand", ownerType: "tbd", ownerName: TBD, stepType: "manual", x: 90, y: 370, source: "sample", triggerMechanism: "Outbound sequence", inputs: "Prospect list", outputs: "Lead", knowledgeSources: "process-map.html" },
+  { id: "seed-direct", shortName: "Direct Requests", view: "customer", stage: "demand", ownerType: "tbd", ownerName: TBD, stepType: "intake", x: 300, y: 130, source: "sample", triggerMechanism: "Referral or inbound ask", inputs: "Request", outputs: "Qualified ask", knowledgeSources: "process-map.html" },
+  { id: "seed-newsletter", shortName: "Newsletter", view: "customer", stage: "demand", ownerType: "tbd", ownerName: TBD, stepType: "agent", x: 300, y: 250, source: "sample", triggerMechanism: "Newsletter reply", inputs: "Campaign", outputs: "Lead", knowledgeSources: "process-map.html" },
+  { id: "seed-past-client", shortName: "Past Client Follow-Up", view: "customer", stage: "demand", ownerType: "tbd", ownerName: TBD, stepType: "manual", x: 300, y: 370, source: "sample", triggerMechanism: "Reactivation", inputs: "Client list", outputs: "Opportunity", knowledgeSources: "process-map.html" },
+  { id: "seed-qualify", shortName: "Qualify", view: "customer", stage: "sales", ownerType: "tbd", ownerName: TBD, stepType: "handoff", x: 570, y: 190, source: "sample", completionMethod: TBD, inputs: "Lead", outputs: "Qualified opportunity" },
+  { id: "seed-proposal", shortName: "Proposal", view: "customer", stage: "sales", ownerType: "tbd", ownerName: TBD, stepType: "approval", x: 570, y: 330, source: "sample", completionMethod: TBD, inputs: "Qualified opportunity", outputs: "Approved scope" },
+  { id: "seed-production", shortName: "Production Kickoff", view: "customer", stage: "production", ownerType: "tbd", ownerName: TBD, stepType: "handoff", x: 980, y: 250, source: "sample", completionMethod: TBD, inputs: "Approved scope", outputs: "Execution work" },
+];
+
+const OPERATIONS_SEED_STEPS: WorkflowStepRecord[] = [
+  { id: "seed-ops-approval", shortName: "Approval Gate", view: "operations", stage: "governance", ownerType: "tbd", ownerName: TBD, stepType: "approval", x: 760, y: 150, source: "sample", completionMethod: "Human approval required before workflow/routine changes", outputs: "Approved change or rejection" },
+  { id: "seed-ops-reporting", shortName: "Operating Report", view: "operations", stage: "reporting", ownerType: "agent", ownerName: TBD, stepType: "reporting", x: 1080, y: 260, source: "sample", completionMethod: TBD, outputs: "Status summary" },
+  { id: "seed-ops-tools", shortName: "Tool Registry", view: "operations", stage: "tools", ownerType: "tbd", ownerName: TBD, stepType: "governance", x: 420, y: 210, source: "sample", completionMethod: TBD, outputs: "Available tools" },
+  { id: "seed-ops-support", shortName: "Customer Support", view: "operations", stage: "support", ownerType: "human", ownerName: TBD, stepType: "manual", x: 100, y: 210, source: "sample", completionMethod: TBD, outputs: "Support request" },
+  { id: "seed-ops-manual", shortName: "Manual Exception", view: "operations", stage: "manual", ownerType: "human", ownerName: TBD, stepType: "manual", x: 260, y: 430, source: "sample", completionMethod: TBD, outputs: "Exception handling" },
+  { id: "seed-ops-agent", shortName: "Agent Suggestion", view: "operations", stage: "agent", ownerType: "agent", ownerName: TBD, stepType: "agent", x: 760, y: 430, source: "sample", completionMethod: "Pending suggestion only", outputs: "Suggestion awaiting approval" },
+];
+
+const SEED_EDGES: WorkflowEdgeRecord[] = [
+  { id: "edge-website-qualify", fromId: "seed-website", toId: "seed-qualify", kind: "trigger", label: "lead", source: "sample" },
+  { id: "edge-social-qualify", fromId: "seed-social", toId: "seed-qualify", kind: "trigger", label: "lead", source: "sample" },
+  { id: "edge-cold-qualify", fromId: "seed-cold", toId: "seed-qualify", kind: "handoff", label: "opportunity", source: "sample" },
+  { id: "edge-direct-qualify", fromId: "seed-direct", toId: "seed-qualify", kind: "trigger", label: "request", source: "sample" },
+  { id: "edge-newsletter-qualify", fromId: "seed-newsletter", toId: "seed-qualify", kind: "trigger", label: "reply", source: "sample" },
+  { id: "edge-past-qualify", fromId: "seed-past-client", toId: "seed-qualify", kind: "handoff", label: "reactivation", source: "sample" },
+  { id: "edge-qualify-proposal", fromId: "seed-qualify", toId: "seed-proposal", kind: "handoff", label: "qualified", source: "sample" },
+  { id: "edge-proposal-production", fromId: "seed-proposal", toId: "seed-production", kind: "approval", label: "approved", source: "sample" },
+  { id: "edge-support-qualify", fromId: "seed-ops-support", toId: "seed-qualify", kind: "support", label: "support", source: "sample" },
+  { id: "edge-tools-production", fromId: "seed-ops-tools", toId: "seed-production", kind: "file", label: "source handoff", source: "sample" },
+  { id: "edge-approval-proposal", fromId: "seed-ops-approval", toId: "seed-proposal", kind: "governance", label: "approval gate", source: "sample" },
+];
+
+function normalizeWorkflowText(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : TBD;
+}
+
+function classifyWorkflowStage(pipeline: PipelineListItem): WorkflowStage {
+  const text = `${pipeline.name} ${pipeline.description ?? ""}`.toLowerCase();
+  if (/\b(sales|proposal|close|deal)\b/.test(text)) return "sales";
+  if (/\b(prod|production|execution|delivery|deliverable|fulfill)\b/.test(text)) return "production";
+  if (/\b(report|metric|dashboard|analytics)\b/.test(text)) return "reporting";
+  if (/\b(govern|approval|policy|gate)\b/.test(text)) return "governance";
+  if (/\b(tool|source|asset|file)\b/.test(text)) return "tools";
+  if (/\b(support|service|help)\b/.test(text)) return "support";
+  if (/\b(agent|automation|routine)\b/.test(text)) return "agent";
+  return "demand";
+}
+
+export function buildWorkflowBoardRecords(pipelines: PipelineListItem[]) {
+  const realSteps = pipelines.map<WorkflowStepRecord>((pipeline, index) => {
+    const stage = classifyWorkflowStage(pipeline);
+    const operationsStage = stage === "support" || stage === "tools" || stage === "governance" || stage === "reporting" || stage === "agent";
+    return {
+      id: `pipeline-${pipeline.id}`,
+      shortName: pipeline.name,
+      view: operationsStage ? "operations" : "customer",
+      stage,
+      ownerType: "tbd",
+      ownerName: TBD,
+      stepType: operationsStage ? "governance" : "handoff",
+      x: WORKFLOW_STAGE_X[stage] + (index % 2) * 150,
+      y: 120 + Math.floor(index / 2) * 118,
+      source: "real",
+      completionMethod: "Backed by a pipeline record.",
+      triggerMechanism: pipeline.connections ? "Connection metadata present" : TBD,
+      inputs: TBD,
+      outputs: formatOpenItems(pipelineOpenItemCount(pipeline)),
+      linkedRecord: `/pipelines/${pipeline.id}`,
+    };
+  });
+
+  const realEdges: WorkflowEdgeRecord[] = [];
+  const realIds = new Set(pipelines.map((pipeline) => pipeline.id));
+  for (const pipeline of pipelines) {
+    for (const downstreamId of downstreamPipelineIds(pipeline.connections)) {
+      if (realIds.has(downstreamId)) {
+        realEdges.push({
+          id: `pipeline-edge-${pipeline.id}-${downstreamId}`,
+          fromId: `pipeline-${pipeline.id}`,
+          toId: `pipeline-${downstreamId}`,
+          kind: "handoff",
+          label: "connection",
+          source: "real",
+        });
+      }
+    }
+  }
+
+  return {
+    steps: [...CUSTOMER_SEED_STEPS, ...OPERATIONS_SEED_STEPS, ...realSteps],
+    edges: [...SEED_EDGES, ...realEdges],
+  };
+}
+
+function workflowOwnerShapeClass(ownerType: WorkflowOwnerType) {
+  if (ownerType === "agent") return "rotate-45 rounded-sm";
+  if (ownerType === "hybrid") return "rounded-md";
+  if (ownerType === "human") return "rounded-full";
+  return "rounded-sm border-dashed";
+}
+
+function workflowStageRows(view: WorkflowBoardView): WorkflowStage[] {
+  return view === "customer"
+    ? ["demand", "sales", "production"]
+    : ["support", "tools", "governance", "reporting", "manual", "agent"];
+}
+
+function workflowFieldValue(value: string | undefined) {
+  return normalizeWorkflowText(value);
+}
+
+function WorkflowSourceChip({ source }: { source: WorkflowDataSource }) {
+  const label = source === "real" ? "real data" : source === "local" ? "local draft" : "sample data";
+  return (
+    <span className="inline-flex rounded-sm border border-current/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide opacity-80">
+      {label}
+    </span>
+  );
+}
+
+function WorkflowEdgeLegend() {
+  return (
+    <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+      {(Object.keys(WORKFLOW_EDGE_CLASS) as WorkflowEdgeKind[]).map((kind) => (
+        <span key={kind} className="inline-flex items-center gap-1.5">
+          <span className={cn("h-1.5 w-5 rounded-full", WORKFLOW_EDGE_CLASS[kind])} />
+          {kind}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function WorkflowStepCard({
+  step,
+  selected,
+  onSelect,
+}: {
+  step: WorkflowStepRecord;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid="workflow-step-card"
+      className={cn(
+        "absolute w-48 border p-3 text-left shadow-sm transition-transform hover:-translate-y-0.5",
+        "bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
+        WORKFLOW_STEP_TYPE_CLASS[step.stepType],
+        selected ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : "ring-0",
+      )}
+      style={{ left: step.x, top: step.y }}
+      onClick={(event) => {
+        event.stopPropagation();
+        onSelect();
+      }}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold">{step.shortName}</p>
+          <p className="mt-0.5 truncate text-[11px] opacity-75">{WORKFLOW_STAGE_LABELS[step.stage]}</p>
+        </div>
+        <span className={cn("mt-0.5 h-5 w-5 shrink-0 border-2 border-current", workflowOwnerShapeClass(step.ownerType))} aria-hidden="true" />
+      </div>
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <span className="truncate text-[11px] font-medium">{WORKFLOW_OWNER_LABELS[step.ownerType]}</span>
+        <WorkflowSourceChip source={step.source} />
+      </div>
+      <p className="mt-1 truncate text-[11px] opacity-80">{workflowFieldValue(step.ownerName)}</p>
+    </button>
+  );
+}
+
+function WorkflowEdgeLine({ edge, from, to }: { edge: WorkflowEdgeRecord; from: WorkflowStepRecord; to: WorkflowStepRecord }) {
+  const x1 = from.x + 192;
+  const y1 = from.y + 48;
+  const x2 = to.x;
+  const y2 = to.y + 48;
+  const left = Math.min(x1, x2);
+  const top = Math.min(y1, y2);
+  const width = Math.max(1, Math.abs(x2 - x1));
+  const height = Math.max(1, Math.abs(y2 - y1));
+  return (
+    <svg className="absolute overflow-visible" style={{ left, top, width, height, pointerEvents: "none" }} aria-hidden="true">
+      <line
+        x1={x1 - left}
+        y1={y1 - top}
+        x2={x2 - left}
+        y2={y2 - top}
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeDasharray={edge.source === "sample" ? "6 5" : undefined}
+        className={cn("opacity-55", edge.kind === "trigger" ? "text-sky-500" : edge.kind === "approval" ? "text-rose-500" : edge.kind === "support" ? "text-cyan-500" : "text-emerald-500")}
+      />
+      <circle cx={x2 - left} cy={y2 - top} r="4" className={cn(WORKFLOW_EDGE_CLASS[edge.kind])} />
+    </svg>
+  );
+}
+
+function WorkflowInspector({
+  step,
+  edges,
+  stepsById,
+  onEdit,
+}: {
+  step: WorkflowStepRecord | null;
+  edges: WorkflowEdgeRecord[];
+  stepsById: Map<string, WorkflowStepRecord>;
+  onEdit: () => void;
+}) {
+  if (!step) {
+    return (
+      <aside className="w-full border-l border-border bg-background/95 p-4 text-sm text-muted-foreground lg:w-80">
+        <p className="font-semibold text-foreground">Inspector</p>
+        <p className="mt-2">Select a step to inspect ownership, trigger, handoff, files, sources, and linked workflow/routine details.</p>
+      </aside>
+    );
+  }
+
+  const relatedEdges = edges.filter((edge) => edge.fromId === step.id || edge.toId === step.id);
+  const rows: Array<[string, string]> = [
+    ["Owner", workflowFieldValue(step.ownerName)],
+    ["Step type", step.stepType],
+    ["Completion", workflowFieldValue(step.completionMethod)],
+    ["Trigger", workflowFieldValue(step.triggerMechanism)],
+    ["Inputs", workflowFieldValue(step.inputs)],
+    ["Outputs", workflowFieldValue(step.outputs)],
+    ["Knowledge", workflowFieldValue(step.knowledgeSources)],
+    ["Handoff files", workflowFieldValue(step.handoffFiles)],
+    ["Linked record", workflowFieldValue(step.linkedRecord)],
+  ];
+
+  return (
+    <aside className="w-full overflow-y-auto border-l border-border bg-background/95 p-4 lg:w-80">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Selected step</p>
+          <h2 className="mt-1 text-lg font-semibold">{step.shortName}</h2>
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={onEdit}>Edit</Button>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <WorkflowSourceChip source={step.source} />
+        <span className="rounded-sm border border-border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide">{WORKFLOW_STAGE_LABELS[step.stage]}</span>
+      </div>
+      <dl className="mt-4 space-y-3 text-sm">
+        {rows.map(([label, value]) => (
+          <div key={label}>
+            <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</dt>
+            <dd className="mt-1 break-words text-foreground">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="mt-5 border-t border-border pt-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Relationships</p>
+        <div className="mt-3 space-y-2">
+          {relatedEdges.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{TBD}</p>
+          ) : relatedEdges.map((edge) => {
+            const otherId = edge.fromId === step.id ? edge.toId : edge.fromId;
+            const other = stepsById.get(otherId);
+            return (
+              <div key={edge.id} className="rounded-md border border-border p-2 text-sm">
+                <div className="flex items-center gap-2">
+                  <span className={cn("h-1.5 w-5 rounded-full", WORKFLOW_EDGE_CLASS[edge.kind])} />
+                  <span className="font-medium">{edge.kind}</span>
+                  <WorkflowSourceChip source={edge.source} />
+                </div>
+                <p className="mt-1 text-muted-foreground">{edge.fromId === step.id ? "To" : "From"} {other?.shortName ?? TBD}: {edge.label}</p>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div className="mt-5 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-950 dark:text-amber-100">
+        Agent suggestions are pending-only in this UI. Persisting workflow-step records and routine mutations needs backend approval plumbing.
+      </div>
+    </aside>
+  );
+}
+
+function WorkflowStepDialog({
+  open,
+  initial,
+  view,
+  onOpenChange,
+  onSave,
+}: {
+  open: boolean;
+  initial: WorkflowStepRecord | null;
+  view: WorkflowBoardView;
+  onOpenChange: (open: boolean) => void;
+  onSave: (step: WorkflowStepRecord) => void;
+}) {
+  const [draft, setDraft] = useState<WorkflowStepRecord>(() => initial ?? {
+    id: `local-${Date.now().toString(36)}`,
+    shortName: "",
+    view,
+    stage: view === "customer" ? "demand" : "support",
+    ownerType: "tbd",
+    ownerName: TBD,
+    stepType: "manual",
+    x: WORKFLOW_STAGE_X[view === "customer" ? "demand" : "support"],
+    y: 520,
+    source: "local",
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    setDraft(initial ?? {
+      id: `local-${Date.now().toString(36)}`,
+      shortName: "",
+      view,
+      stage: view === "customer" ? "demand" : "support",
+      ownerType: "tbd",
+      ownerName: TBD,
+      stepType: "manual",
+      x: WORKFLOW_STAGE_X[view === "customer" ? "demand" : "support"],
+      y: 520,
+      source: "local",
+    });
+  }, [initial, open, view]);
+
+  const update = <K extends keyof WorkflowStepRecord>(key: K, value: WorkflowStepRecord[K]) => {
+    setDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <form
+          className="space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!draft.shortName.trim()) return;
+            onSave({ ...draft, shortName: draft.shortName.trim(), ownerName: normalizeWorkflowText(draft.ownerName), source: draft.source === "real" ? "real" : "local" });
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>{initial ? "Edit step" : "Create step"}</DialogTitle>
+            <DialogDescription>Required fields stay structured; unknown values should be left as _TBD_.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1.5 text-sm font-medium">
+              <span>Short name</span>
+              <Input value={draft.shortName} onChange={(event) => update("shortName", event.target.value)} autoFocus />
+            </label>
+            <label className="space-y-1.5 text-sm font-medium">
+              <span>View</span>
+              <Select value={draft.view} onValueChange={(value) => update("view", value as WorkflowBoardView)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="customer">Customer Journey</SelectItem>
+                  <SelectItem value="operations">Business Operations</SelectItem>
+                </SelectContent>
+              </Select>
+            </label>
+            <label className="space-y-1.5 text-sm font-medium">
+              <span>Stage</span>
+              <Select value={draft.stage} onValueChange={(value) => update("stage", value as WorkflowStage)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {workflowStageRows(draft.view).map((stage) => <SelectItem key={stage} value={stage}>{WORKFLOW_STAGE_LABELS[stage]}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </label>
+            <label className="space-y-1.5 text-sm font-medium">
+              <span>Owner type</span>
+              <Select value={draft.ownerType} onValueChange={(value) => update("ownerType", value as WorkflowOwnerType)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="human">Human</SelectItem>
+                  <SelectItem value="agent">Agent</SelectItem>
+                  <SelectItem value="hybrid">Human + Agent</SelectItem>
+                  <SelectItem value="tbd">_TBD_</SelectItem>
+                </SelectContent>
+              </Select>
+            </label>
+            <label className="space-y-1.5 text-sm font-medium">
+              <span>Owner name</span>
+              <Input value={draft.ownerName} onChange={(event) => update("ownerName", event.target.value)} />
+            </label>
+            <label className="space-y-1.5 text-sm font-medium">
+              <span>Step type</span>
+              <Select value={draft.stepType} onValueChange={(value) => update("stepType", value as WorkflowStepType)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(WORKFLOW_STEP_TYPE_CLASS) as WorkflowStepType[]).map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </label>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Textarea value={draft.completionMethod ?? ""} onChange={(event) => update("completionMethod", event.target.value)} placeholder="Completion method" rows={3} />
+            <Textarea value={draft.triggerMechanism ?? ""} onChange={(event) => update("triggerMechanism", event.target.value)} placeholder="Trigger mechanism" rows={3} />
+            <Textarea value={draft.inputs ?? ""} onChange={(event) => update("inputs", event.target.value)} placeholder="Inputs" rows={3} />
+            <Textarea value={draft.outputs ?? ""} onChange={(event) => update("outputs", event.target.value)} placeholder="Outputs" rows={3} />
+            <Textarea value={draft.knowledgeSources ?? ""} onChange={(event) => update("knowledgeSources", event.target.value)} placeholder="Knowledge sources" rows={3} />
+            <Textarea value={draft.handoffFiles ?? ""} onChange={(event) => update("handoffFiles", event.target.value)} placeholder="Uploaded handoff files" rows={3} />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button type="submit" disabled={!draft.shortName.trim()}>{initial ? "Save step" : "Create step"}</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function WorkflowsOperatingBoard({ pipelines }: { pipelines: PipelineListItem[] }) {
+  const base = useMemo(() => buildWorkflowBoardRecords(pipelines), [pipelines]);
+  const [view, setView] = useState<WorkflowBoardView>("customer");
+  const [localSteps, setLocalSteps] = useState<WorkflowStepRecord[]>([]);
+  const [selectedId, setSelectedId] = useState<string>("seed-website");
+  const [search, setSearch] = useState("");
+  const [zoom, setZoom] = useState(0.78);
+  const [pan, setPan] = useState({ x: 20, y: 20 });
+  const [lightMode, setLightMode] = useState(false);
+  const [stressMode, setStressMode] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingStep, setEditingStep] = useState<WorkflowStepRecord | null>(null);
+  const [draggingPalette, setDraggingPalette] = useState<WorkflowStepType | null>(null);
+  const [panning, setPanning] = useState<{ pointerId: number; x: number; y: number; panX: number; panY: number } | null>(null);
+
+  const stressSteps = useMemo<WorkflowStepRecord[]>(() => {
+    if (!stressMode) return [];
+    return Array.from({ length: 100 }, (_, index) => {
+      const stage = workflowStageRows(view)[index % workflowStageRows(view).length];
+      return {
+        id: `stress-${view}-${index}`,
+        shortName: `Cluster ${index + 1}`,
+        view,
+        stage,
+        ownerType: index % 3 === 0 ? "agent" : index % 3 === 1 ? "human" : "tbd",
+        ownerName: index % 5 === 0 ? TBD : `Owner ${index + 1}`,
+        stepType: (Object.keys(WORKFLOW_STEP_TYPE_CLASS) as WorkflowStepType[])[index % 7],
+        x: WORKFLOW_STAGE_X[stage] + (index % 3) * 68,
+        y: 110 + Math.floor(index / 6) * 74,
+        source: "sample",
+      };
+    });
+  }, [stressMode, view]);
+
+  const steps = useMemo(() => [...base.steps, ...localSteps, ...stressSteps].filter((step) => step.view === view), [base.steps, localSteps, stressSteps, view]);
+  const stepsById = useMemo(() => new Map(steps.map((step) => [step.id, step])), [steps]);
+  const edges = useMemo(() => base.edges.filter((edge) => stepsById.has(edge.fromId) && stepsById.has(edge.toId)), [base.edges, stepsById]);
+  const selectedStep = stepsById.get(selectedId) ?? steps[0] ?? null;
+
+  useEffect(() => {
+    if (selectedStep) return;
+    if (steps[0]) setSelectedId(steps[0].id);
+  }, [selectedStep, steps]);
+
+  const focusStep = (step: WorkflowStepRecord) => {
+    setSelectedId(step.id);
+    setPan({ x: 360 - step.x * zoom, y: 220 - step.y * zoom });
+  };
+
+  const focusSearch = () => {
+    const q = search.trim().toLowerCase();
+    if (!q) return;
+    const match = steps.find((step) => `${step.shortName} ${step.ownerName} ${WORKFLOW_STAGE_LABELS[step.stage]}`.toLowerCase().includes(q));
+    if (match) focusStep(match);
+  };
+
+  const saveStep = (step: WorkflowStepRecord) => {
+    setLocalSteps((current) => {
+      const next = current.filter((item) => item.id !== step.id);
+      return [...next, { ...step, source: step.source === "real" ? "real" : "local" }];
+    });
+    setSelectedId(step.id);
+    setDialogOpen(false);
+    setEditingStep(null);
+  };
+
+  const createAt = (stepType: WorkflowStepType, clientX: number, clientY: number, bounds: DOMRect) => {
+    const stage = workflowStageRows(view)[0];
+    setEditingStep({
+      id: `local-${Date.now().toString(36)}`,
+      shortName: "",
+      view,
+      stage,
+      ownerType: "tbd",
+      ownerName: TBD,
+      stepType,
+      x: Math.round((clientX - bounds.left - pan.x) / zoom),
+      y: Math.round((clientY - bounds.top - pan.y) / zoom),
+      source: "local",
+    });
+    setDialogOpen(true);
+  };
+
+  return (
+    <div data-testid="workflows-operating-board" className={cn("flex min-h-[calc(100vh-7rem)] overflow-hidden border border-border", lightMode ? "bg-white text-zinc-950" : "dark bg-zinc-950 text-zinc-50")}>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex flex-col gap-3 border-b border-white/10 bg-background/95 p-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex overflow-hidden rounded-md border border-border">
+              <button type="button" className={cn("px-3 py-1.5 text-sm", view === "customer" ? "bg-primary text-primary-foreground" : "bg-background")} onClick={() => setView("customer")}>Customer Journey</button>
+              <button type="button" className={cn("px-3 py-1.5 text-sm", view === "operations" ? "bg-primary text-primary-foreground" : "bg-background")} onClick={() => setView("operations")}>Business Operations</button>
+            </div>
+            <WorkflowEdgeLegend />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="relative">
+              <span className="sr-only">Search workflows</span>
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") focusSearch(); }} placeholder="Search" className="h-8 w-44 pl-8" />
+            </label>
+            <Button type="button" variant="outline" size="sm" onClick={focusSearch}>Focus</Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => setZoom((value) => Math.max(0.45, value - 0.1))}>-</Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => setZoom((value) => Math.min(1.4, value + 0.1))}>+</Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => { setZoom(0.78); setPan({ x: 20, y: 20 }); }}>Fit</Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => setStressMode((value) => !value)}>100 items</Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => setLightMode((value) => !value)}>{lightMode ? "Dark" : "Light"}</Button>
+            <Button type="button" size="sm" onClick={() => { setEditingStep(null); setDialogOpen(true); }}><Plus className="mr-1.5 h-3.5 w-3.5" />Step</Button>
+          </div>
+        </div>
+        <div className="flex min-h-0 flex-1">
+          <div className="w-36 shrink-0 border-r border-white/10 bg-background/80 p-3">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Palette</p>
+            <div className="mt-3 space-y-2">
+              {(Object.keys(WORKFLOW_STEP_TYPE_CLASS) as WorkflowStepType[]).map((type) => (
+                <button
+                  key={type}
+                  type="button"
+                  draggable
+                  onDragStart={() => setDraggingPalette(type)}
+                  onDragEnd={() => setDraggingPalette(null)}
+                  className={cn("w-full border px-2 py-1.5 text-left text-xs font-medium", WORKFLOW_STEP_TYPE_CLASS[type])}
+                >
+                  {type}
+                </button>
+              ))}
+            </div>
+            <p className="mt-4 text-xs text-muted-foreground">Drop creates a local structured step. Persistence is pending backend support.</p>
+          </div>
+          <div
+            className="relative min-w-0 flex-1 cursor-grab overflow-hidden bg-[linear-gradient(to_right,rgba(148,163,184,.16)_1px,transparent_1px),linear-gradient(to_bottom,rgba(148,163,184,.16)_1px,transparent_1px)] bg-[size:40px_40px] active:cursor-grabbing"
+            onClick={() => setSelectedId("")}
+            onPointerDown={(event) => {
+              if (event.button !== 0 || event.target !== event.currentTarget) return;
+              event.currentTarget.setPointerCapture(event.pointerId);
+              setPanning({ pointerId: event.pointerId, x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y });
+            }}
+            onPointerMove={(event) => {
+              if (!panning || panning.pointerId !== event.pointerId) return;
+              setPan({ x: panning.panX + event.clientX - panning.x, y: panning.panY + event.clientY - panning.y });
+            }}
+            onPointerUp={() => setPanning(null)}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault();
+              if (!draggingPalette) return;
+              createAt(draggingPalette, event.clientX, event.clientY, event.currentTarget.getBoundingClientRect());
+              setDraggingPalette(null);
+            }}
+          >
+            <div className="absolute h-[1200px] w-[1500px] origin-top-left" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>
+              {workflowStageRows(view).map((stage) => (
+                <div key={stage} className="absolute top-6 h-[1080px] w-px border-l border-dashed border-current/20" style={{ left: WORKFLOW_STAGE_X[stage] - 24 }}>
+                  <span className="absolute -left-1 top-0 w-48 text-xs font-semibold uppercase tracking-[0.16em] text-current/55">{WORKFLOW_STAGE_LABELS[stage]}</span>
+                </div>
+              ))}
+              {edges.map((edge) => {
+                const from = stepsById.get(edge.fromId);
+                const to = stepsById.get(edge.toId);
+                return from && to ? <WorkflowEdgeLine key={edge.id} edge={edge} from={from} to={to} /> : null;
+              })}
+              {steps.map((step) => (
+                <WorkflowStepCard key={step.id} step={step} selected={selectedId === step.id} onSelect={() => setSelectedId(step.id)} />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+      <WorkflowInspector
+        step={selectedStep}
+        edges={edges}
+        stepsById={stepsById}
+        onEdit={() => {
+          if (!selectedStep) return;
+          setEditingStep(selectedStep);
+          setDialogOpen(true);
+        }}
+      />
+      <WorkflowStepDialog
+        open={dialogOpen}
+        initial={editingStep}
+        view={view}
+        onOpenChange={(open) => {
+          setDialogOpen(open);
+          if (!open) setEditingStep(null);
+        }}
+        onSave={saveStep}
+      />
+    </div>
+  );
+}
+
 interface PipelinesIndexTableProps {
   pipelines: PipelineListItem[];
   viewMode: PipelineViewMode;
@@ -899,11 +1593,9 @@ function PipelinesIndex() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [search, setSearch] = useState("");
-  const [viewMode, setViewMode] = useState<PipelineViewMode>("nested");
   const [newPipelineOpen, setNewPipelineOpen] = useState(false);
 
-  useEffect(() => setBreadcrumbs([{ label: "Pipelines" }]), [setBreadcrumbs]);
+  useEffect(() => setBreadcrumbs([{ label: "Workflows" }]), [setBreadcrumbs]);
 
   const pipelinesQuery = useQuery({
     queryKey: selectedCompanyId ? queryKeys.pipelines.list(selectedCompanyId) : ["pipelines", "missing-company"],
@@ -939,50 +1631,33 @@ function PipelinesIndex() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Select a company to view pipelines.</div>;
+    return <div className="mx-auto max-w-3xl py-10 text-sm text-muted-foreground">Select a company to view workflows.</div>;
   }
   if (pipelinesQuery.isLoading) return <PageSkeleton />;
 
   const pipelines = pipelinesQuery.data ?? [];
-  const connectionsAvailable = pipelinesHaveConnectionData(pipelines);
 
   return (
-    <div className="w-full max-w-6xl px-6 py-8">
+    <div className="w-full px-4 py-4">
       <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Work</p>
-          <h1 className="text-2xl font-semibold text-foreground">Pipelines</h1>
+          <h1 className="text-2xl font-semibold text-foreground">Workflows</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            {formatNumber(pipelines.length)} pipeline{pipelines.length === 1 ? "" : "s"}. Connected ones are grouped from upstream work into downstream work.
+            Structured operating board for Customer Journey and Business Operations. Real pipeline records are included where present; missing operating details stay {TBD}.
           </p>
         </div>
         <Button onClick={() => setNewPipelineOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
-          New pipeline
+          New workflow record
         </Button>
       </div>
 
       {pipelinesQuery.error ? (
-        <p className="mb-4 text-sm text-destructive">Could not load pipelines.</p>
+        <p className="mb-4 text-sm text-destructive">Could not load workflow records.</p>
       ) : null}
 
-      {pipelines.length === 0 && !pipelinesQuery.error ? (
-        <EmptyState
-          icon={Hexagon}
-          message="No pipelines yet."
-          action="New pipeline"
-          onAction={() => setNewPipelineOpen(true)}
-        />
-      ) : (
-        <PipelinesIndexTable
-          pipelines={pipelines}
-          viewMode={viewMode}
-          onViewModeChange={setViewMode}
-          connectionsAvailable={connectionsAvailable}
-          search={search}
-          onSearchChange={setSearch}
-        />
-      )}
+      <WorkflowsOperatingBoard pipelines={pipelines} />
 
       <NewPipelineDialog
         open={newPipelineOpen}

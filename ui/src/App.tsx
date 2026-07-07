@@ -154,6 +154,10 @@ function boardRoutes() {
         element={<PipelinesExperimentalGate><Pipelines /></PipelinesExperimentalGate>}
       />
       <Route
+        path="workflows"
+        element={<PipelinesExperimentalGate><Pipelines /></PipelinesExperimentalGate>}
+      />
+      <Route
         path="pipelines/:pipelineId"
         element={<PipelinesExperimentalGate><Pipelines /></PipelinesExperimentalGate>}
       />
