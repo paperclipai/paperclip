@@ -61,6 +61,8 @@ Three stories are known to flake under full parallel load (they pass in isolatio
 
 ## For AI-agent sessions
 
+(Running a session as the human? See [`AGENT-SESSIONS.md`](AGENT-SESSIONS.md) — this section is instructions for the agent itself.)
+
 This system was built to be steered by instruction. "Make all running indicators blue" or "collapse these three grays into one" should land as a token edit or a small codemod plus a snapshot diff — not a manual hunt. If a change is mechanical and touches many files, write an idempotent script in `scripts/` (see `codemod-*.mjs` for the pattern) instead of hand-editing. DESIGN.md is loaded via AGENTS.md; follow it exactly, and record consequential choices in DECISION-SHEET.md.
 
 ## What's deliberately not done yet (don't fix ad hoc)
