@@ -38,6 +38,14 @@ Every open question from TOKEN-AUDIT.md §8 + batch logs and COMPONENT-INVENTORY
 | C9 | Toast system (no shadcn primitive installed) | Keep custom toast; document as permanent choice (working tone/variant system; sonner migration = churn without user-visible gain) | DEFERRED to Run 4 — decide when toast palette colors get retokenized; sonner-behind-a-pushToast-facade is the alternative to evaluate |
 | C10 | FeatureGate wrapper pattern (3 near-identical gates) | Nice-to-have shared primitive; backlog, not a run | APPROVED — backlog nice-to-have, not a run |
 
+## Gallery feedback round 1 (preset-tune session, Jul 6) — executed
+
+User rulings from the tune-session gallery review; all intentionally visible, snapshots NOT re-baselined (fresh before/after triplets regenerated in tests/storybook-visual/test-results/ against the old baseline):
+
+1. **Dark destructive red reverted** — `.dark --destructive` back to master's original `oklch(0.637 0.237 25.331)` (preset's softer `oklch(0.704 0.191 22.216)` rejected); light mode untouched.
+2. **Budget/quota BAR FILLS reuse status colors** — moving-fill elements only: healthy → `bg-(--status-task-done)`, warning → `bg-(--status-task-todo)`, exceeded/hard-stop → `bg-(--status-task-blocked)` in BudgetPolicyCard.tsx, QuotaBar.tsx (feeds ProviderQuotaCard/BillerSpendCard pages), Costs.tsx, CodexSubscriptionPanel.tsx (escalation tiers only). Inspected and deliberately LEFT: Org.tsx status dot (not a bar), BudgetPolicyCard chip washes/notice borders (not fills), CodexSubscriptionPanel healthy `bg-primary/70` + null `bg-zinc-700` (healthy tier uses brand primary by design — flagged as ambiguous, not emerald).
+3. **RUNNING = status blue, not cyan/teal** — IssueChatThread running chip now composes `brandChipBadge.blue` (layout classes unchanged); RunTranscriptView running label uses new `runningLabelText` export (`text-[#1D4ED8] dark:text-[#2563EB]`, hexes kept in lib/status-colors.ts for gate cleanliness); `statusBadge.running` + `agentStatusDot.running` maps and AgentDetail `runStatusIcons.running` re-pointed cyan→blue. Deliberately LEFT + flagged: `externalObjectStatusIcon/Badge.running` (same-map collision — `open` is already blue there; documented UX-spec tone system), and the cyan "Live" branding family (LiveRunWidget theme, AgentDetail live-card border + Live pulse dots, DesignGuide Live sample) — "Live" is a distinct motif from RUNNING chips; note AgentDetail's mobile Live pill is already blue, so a dedicated Live-color decision is recommended.
+
 ## Verification status (this review)
 
 - `pnpm check:token-gates` — re-run independently: 3/3 CLEAN (468 files, 31 allowlist entries).

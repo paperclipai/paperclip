@@ -162,6 +162,7 @@ import {
 } from "../lib/transcriptPresentation";
 import { buildAgentMentionHref } from "@paperclipai/shared";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
+import { brandChipBadge } from "../lib/status-colors";
 import { nextWorkMode, titleForPendingWorkMode, workModeMetaFor, workModeMetaList } from "../lib/work-mode-meta";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -1896,7 +1897,14 @@ function IssueChatAssistantMessage({
                 </Badge>
               ) : null}
               {isRunning ? (
-                <span className="inline-flex items-center gap-1 rounded-full border border-cyan-400/40 bg-cyan-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-cyan-700 dark:text-cyan-200">
+                // Gallery feedback r1: running chip uses the canonical brand blue
+                // (brandChipBadge.blue), not cyan; layout/size classes unchanged.
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow)",
+                    brandChipBadge.blue,
+                  )}
+                >
                   <Loader2 className="h-3 w-3 animate-spin" />
                   Running
                 </span>

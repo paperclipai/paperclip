@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { TranscriptEntry } from "../../adapters";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "../MarkdownBody";
 import { cn, formatTokens } from "../../lib/utils";
+import { runningLabelText } from "../../lib/status-colors";
 import {
   Check,
   ChevronDown,
@@ -1057,7 +1058,8 @@ function TranscriptToolGroup({
                   {humanizeLabel(item.name)}
                 </span>
                 <span className={cn("text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow)",
-                  item.status === "running" ? "text-cyan-700 dark:text-cyan-300"
+                  // Gallery feedback r1: running label uses brand blue, not cyan.
+                  item.status === "running" ? runningLabelText
                   : item.status === "error" ? "text-red-700 dark:text-red-300"
                   : "text-emerald-700 dark:text-emerald-300"
                 )}>

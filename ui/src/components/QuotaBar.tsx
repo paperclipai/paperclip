@@ -12,9 +12,9 @@ interface QuotaBarProps {
 }
 
 function fillColor(pct: number): string {
-  if (pct > 90) return "bg-red-400";
-  if (pct > 70) return "bg-yellow-400";
-  return "bg-green-400";
+  if (pct > 90) return "bg-(--status-task-blocked)";
+  if (pct > 70) return "bg-(--status-task-todo)";
+  return "bg-(--status-task-done)";
 }
 
 export function QuotaBar({

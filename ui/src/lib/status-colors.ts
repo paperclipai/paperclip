@@ -49,7 +49,7 @@ export const issueStatusTextDefault = "text-muted-foreground";
 export const statusBadge: Record<string, string> = {
   // Agent statuses
   active: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
-  running: "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/50 dark:text-cyan-300",
+  running: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300", // Gallery feedback r1: running = status blue (matches in_progress liveness), not cyan.
   scheduled_retry: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
   paused: "bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300",
   idle: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
@@ -147,6 +147,14 @@ export const brandChipBadge: Record<BrandChipColor, string> = {
 };
 
 /**
+ * Brand blue TEXT pair (the text hues of `brandChipBadge.blue`) for non-chip
+ * "Running" labels — Gallery feedback round 1: running-state copy uses the
+ * canonical status blue, not cyan/teal. Kept here so components stay free of
+ * hex literals (token-gate scope).
+ */
+export const runningLabelText = "text-[#1D4ED8] dark:text-[#2563EB]";
+
+/**
  * Issue/task status → brand colour name (PAP-75). `in_progress` is blue
  * (liveness), `todo` amber (queued), `in_review` violet (awaiting review),
  * `done` green, `blocked` red, `backlog`/`cancelled` gray (inert).
@@ -219,7 +227,7 @@ export const taskStatusIconVarDefault = "--status-task-icon-backlog";
 // ---------------------------------------------------------------------------
 
 export const agentStatusDot: Record<string, string> = {
-  running: "bg-cyan-400 animate-pulse",
+  running: "bg-blue-400 animate-pulse", // Gallery feedback r1: running dot = blue, not cyan.
   active: "bg-green-400",
   paused: "bg-yellow-400",
   idle: "bg-yellow-400",

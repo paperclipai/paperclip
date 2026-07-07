@@ -104,10 +104,10 @@ export function BudgetPolicyCard({
           className={cn(
             "h-full rounded-full transition-(--tp-width-background-color) duration-200",
             summary.status === "hard_stop"
-              ? "bg-red-400"
+              ? "bg-(--status-task-blocked)"
               : summary.status === "warning"
-                ? "bg-amber-300"
-                : "bg-emerald-300",
+                ? "bg-(--status-task-todo)"
+                : "bg-(--status-task-done)",
           )}
           style={{ width: `${progress}%` }}
         />
