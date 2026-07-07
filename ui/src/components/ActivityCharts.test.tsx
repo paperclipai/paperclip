@@ -99,12 +99,37 @@ describe("ActivityCharts", () => {
       <RunActivityChart
         runs={[
           createRun({ id: "run-success", status: "succeeded" }),
-          createRun({ id: "run-failed", status: "failed" }),
+          createRun({ id: "run-failed", status: "failed", errorCode: "provider_quota" }),
         ]}
       />,
     );
 
     expect(container.textContent).not.toContain("No runs yet");
-    expect(container.querySelector("[title='2026-04-20: 2 runs']")).not.toBeNull();
+    // Tooltip now carries the per-day breakdown (incl. failure error codes).
+    const dayCell = container.querySelector("[title^='2026-04-20: 2 runs']");
+    expect(dayCell).not.toBeNull();
+    expect(dayCell?.getAttribute("title")).toContain("provider_quota: 1");
+  });
+
+  it("renders a distinct recovered segment and legend for recovered restart kills", () => {
+    render(
+      <RunActivityChart
+        activity={[
+          {
+            date: "2026-04-20",
+            succeeded: 3,
+            failed: 1,
+            recovered: 4,
+            other: 0,
+            total: 8,
+            failedByErrorCode: { process_lost: 1 },
+          },
+        ]}
+      />,
+    );
+
+    expect(container.textContent).toContain("Recovered");
+    const dayCell = container.querySelector("[title*='recovered: 4']");
+    expect(dayCell).not.toBeNull();
   });
 });
