@@ -1312,7 +1312,7 @@ export function NewIssueDialog() {
           // dialog does not dismiss before the shortcut can run.
           if (isWorkModeEscapeShortcut(event)) {
             event.preventDefault();
-            setWorkMode((current) => nextWorkMode(current));
+            setWorkMode((current) => nextWorkMode(current, conferenceRoomChatEnabled));
             return;
           }
           if (createIssue.isPending) {

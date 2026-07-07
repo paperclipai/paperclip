@@ -116,6 +116,8 @@ const longValueIssue: Issue = {
       priority: longParentIssue.priority,
       assigneeAgentId: longParentIssue.assigneeAgentId,
       assigneeUserId: longParentIssue.assigneeUserId,
+      createdByAgentId: longParentIssue.createdByAgentId,
+      createdByUserId: longParentIssue.createdByUserId,
       projectId: longParentIssue.projectId,
       goalId: longParentIssue.goalId,
       project: null,
